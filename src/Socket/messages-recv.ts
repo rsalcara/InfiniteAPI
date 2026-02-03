@@ -1266,7 +1266,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 
 		try {
-			await messageMutex.mutex(async () => {
+			// Use KeyedMutex with remoteJid to allow parallel processing of messages from different chats
+			// while maintaining order for messages within the same chat
+			const mutexKey = msg.key.remoteJid || 'unknown'
+			await messageMutex.mutex(mutexKey, async () => {
 				await decrypt()
 				// message failed to decrypt
 				if (msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT && msg.category !== 'peer') {

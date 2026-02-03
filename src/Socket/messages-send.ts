@@ -1639,7 +1639,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// Emit own event for album root if configured
 			if (config.emitOwnEvents) {
 				process.nextTick(async () => {
-					await messageMutex.mutex(() => upsertMessage(albumRootMsg, 'append'))
+					const mutexKey = albumRootMsg.key.remoteJid || 'unknown'
+					await messageMutex.mutex(mutexKey, () => upsertMessage(albumRootMsg, 'append'))
 				})
 			}
 
@@ -1732,7 +1733,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						// Emit own event if configured
 						if (config.emitOwnEvents) {
 							process.nextTick(async () => {
-								await messageMutex.mutex(() => upsertMessage(mediaMsg, 'append'))
+								const mutexKey = mediaMsg.key.remoteJid || 'unknown'
+								await messageMutex.mutex(mutexKey, () => upsertMessage(mediaMsg, 'append'))
 							})
 						}
 
@@ -1931,7 +1933,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				})
 				if (config.emitOwnEvents) {
 					process.nextTick(async () => {
-						await messageMutex.mutex(() => upsertMessage(fullMsg, 'append'))
+						const mutexKey = fullMsg.key.remoteJid || 'unknown'
+						await messageMutex.mutex(mutexKey, () => upsertMessage(fullMsg, 'append'))
 					})
 				}
 
