@@ -38,6 +38,8 @@ jobs:
           git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
 
       - name: Install packages
+        env:
+          YARN_ENABLE_HARDENED_MODE: 0
         run: |
           yarn install --immutable
           yarn --cwd proto-extract install --immutable

@@ -54,9 +54,10 @@ jobs:
             ${{ runner.os }}-yarn-
 
       - name: Install Dependencies
-        run: yarn install --immutable
         env:
+          YARN_ENABLE_HARDENED_MODE: 0
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: yarn install --immutable
 
       - name: Publish in NPM (as `baileys`)
         run: npm publish --access public
