@@ -6357,6 +6357,178 @@ export const proto = $root.proto = (() => {
         return BotAgeCollectionMetadata;
     })();
 
+    proto.BotAvatarMetadata = (function() {
+
+        function BotAvatarMetadata(p) {
+            if (p)
+                for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                    if (p[ks[i]] != null)
+                        this[ks[i]] = p[ks[i]];
+        }
+
+        BotAvatarMetadata.prototype.sentiment = null;
+        BotAvatarMetadata.prototype.behaviorGraph = null;
+        BotAvatarMetadata.prototype.action = null;
+        BotAvatarMetadata.prototype.intensity = null;
+        BotAvatarMetadata.prototype.wordCount = null;
+
+        let $oneOfFields;
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(BotAvatarMetadata.prototype, "_sentiment", {
+            get: $util.oneOfGetter($oneOfFields = ["sentiment"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(BotAvatarMetadata.prototype, "_behaviorGraph", {
+            get: $util.oneOfGetter($oneOfFields = ["behaviorGraph"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(BotAvatarMetadata.prototype, "_action", {
+            get: $util.oneOfGetter($oneOfFields = ["action"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(BotAvatarMetadata.prototype, "_intensity", {
+            get: $util.oneOfGetter($oneOfFields = ["intensity"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(BotAvatarMetadata.prototype, "_wordCount", {
+            get: $util.oneOfGetter($oneOfFields = ["wordCount"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        BotAvatarMetadata.create = function create(properties) {
+            return new BotAvatarMetadata(properties);
+        };
+
+        BotAvatarMetadata.encode = function encode(m, w) {
+            if (!w)
+                w = $Writer.create();
+            if (m.sentiment != null && Object.hasOwnProperty.call(m, "sentiment"))
+                w.uint32(8).uint32(m.sentiment);
+            if (m.behaviorGraph != null && Object.hasOwnProperty.call(m, "behaviorGraph"))
+                w.uint32(18).string(m.behaviorGraph);
+            if (m.action != null && Object.hasOwnProperty.call(m, "action"))
+                w.uint32(24).uint32(m.action);
+            if (m.intensity != null && Object.hasOwnProperty.call(m, "intensity"))
+                w.uint32(32).uint32(m.intensity);
+            if (m.wordCount != null && Object.hasOwnProperty.call(m, "wordCount"))
+                w.uint32(40).uint32(m.wordCount);
+            return w;
+        };
+
+        BotAvatarMetadata.decode = function decode(r, l, e) {
+            if (!(r instanceof $Reader))
+                r = $Reader.create(r);
+            var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.BotAvatarMetadata();
+            while (r.pos < c) {
+                var t = r.uint32();
+                if (t === e)
+                    break;
+                switch (t >>> 3) {
+                case 1: {
+                        m.sentiment = r.uint32();
+                        break;
+                    }
+                case 2: {
+                        m.behaviorGraph = r.string();
+                        break;
+                    }
+                case 3: {
+                        m.action = r.uint32();
+                        break;
+                    }
+                case 4: {
+                        m.intensity = r.uint32();
+                        break;
+                    }
+                case 5: {
+                        m.wordCount = r.uint32();
+                        break;
+                    }
+                default:
+                    r.skipType(t & 7);
+                    break;
+                }
+            }
+            return m;
+        };
+
+        BotAvatarMetadata.fromObject = function fromObject(d) {
+            if (d instanceof $root.proto.BotAvatarMetadata)
+                return d;
+            var m = new $root.proto.BotAvatarMetadata();
+            if (d.sentiment != null) {
+                m.sentiment = d.sentiment >>> 0;
+            }
+            if (d.behaviorGraph != null) {
+                m.behaviorGraph = String(d.behaviorGraph);
+            }
+            if (d.action != null) {
+                m.action = d.action >>> 0;
+            }
+            if (d.intensity != null) {
+                m.intensity = d.intensity >>> 0;
+            }
+            if (d.wordCount != null) {
+                m.wordCount = d.wordCount >>> 0;
+            }
+            return m;
+        };
+
+        BotAvatarMetadata.toObject = function toObject(m, o) {
+            if (!o)
+                o = {};
+            var d = {};
+            if (m.sentiment != null && m.hasOwnProperty("sentiment")) {
+                d.sentiment = m.sentiment;
+                if (o.oneofs)
+                    d._sentiment = "sentiment";
+            }
+            if (m.behaviorGraph != null && m.hasOwnProperty("behaviorGraph")) {
+                d.behaviorGraph = m.behaviorGraph;
+                if (o.oneofs)
+                    d._behaviorGraph = "behaviorGraph";
+            }
+            if (m.action != null && m.hasOwnProperty("action")) {
+                d.action = m.action;
+                if (o.oneofs)
+                    d._action = "action";
+            }
+            if (m.intensity != null && m.hasOwnProperty("intensity")) {
+                d.intensity = m.intensity;
+                if (o.oneofs)
+                    d._intensity = "intensity";
+            }
+            if (m.wordCount != null && m.hasOwnProperty("wordCount")) {
+                d.wordCount = m.wordCount;
+                if (o.oneofs)
+                    d._wordCount = "wordCount";
+            }
+            return d;
+        };
+
+        BotAvatarMetadata.prototype.toJSON = function toJSON() {
+            return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+        };
+
+        BotAvatarMetadata.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+            if (typeUrlPrefix === undefined) {
+                typeUrlPrefix = "type.googleapis.com";
+            }
+            return typeUrlPrefix + "/proto.BotAvatarMetadata";
+        };
+
+        return BotAvatarMetadata;
+    })();
+
     proto.BotCapabilityMetadata = (function() {
 
         function BotCapabilityMetadata(p) {
@@ -10176,6 +10348,7 @@ export const proto = $root.proto = (() => {
                         this[ks[i]] = p[ks[i]];
         }
 
+        BotMetadata.prototype.avatarMetadata = null;
         BotMetadata.prototype.personaId = null;
         BotMetadata.prototype.pluginMetadata = null;
         BotMetadata.prototype.suggestedPromptMetadata = null;
@@ -10216,6 +10389,12 @@ export const proto = $root.proto = (() => {
         BotMetadata.prototype.internalMetadata = null;
 
         let $oneOfFields;
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(BotMetadata.prototype, "_avatarMetadata", {
+            get: $util.oneOfGetter($oneOfFields = ["avatarMetadata"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
 
         // Virtual OneOf for proto3 optional field
         Object.defineProperty(BotMetadata.prototype, "_personaId", {
@@ -10452,6 +10631,8 @@ export const proto = $root.proto = (() => {
         BotMetadata.encode = function encode(m, w) {
             if (!w)
                 w = $Writer.create();
+            if (m.avatarMetadata != null && Object.hasOwnProperty.call(m, "avatarMetadata"))
+                $root.proto.BotAvatarMetadata.encode(m.avatarMetadata, w.uint32(10).fork()).ldelim();
             if (m.personaId != null && Object.hasOwnProperty.call(m, "personaId"))
                 w.uint32(18).string(m.personaId);
             if (m.pluginMetadata != null && Object.hasOwnProperty.call(m, "pluginMetadata"))
@@ -10540,6 +10721,10 @@ export const proto = $root.proto = (() => {
                 if (t === e)
                     break;
                 switch (t >>> 3) {
+                case 1: {
+                        m.avatarMetadata = $root.proto.BotAvatarMetadata.decode(r, r.uint32());
+                        break;
+                    }
                 case 2: {
                         m.personaId = r.string();
                         break;
@@ -10704,6 +10889,11 @@ export const proto = $root.proto = (() => {
             if (d instanceof $root.proto.BotMetadata)
                 return d;
             var m = new $root.proto.BotMetadata();
+            if (d.avatarMetadata != null) {
+                if (typeof d.avatarMetadata !== "object")
+                    throw TypeError(".proto.BotMetadata.avatarMetadata: object expected");
+                m.avatarMetadata = $root.proto.BotAvatarMetadata.fromObject(d.avatarMetadata);
+            }
             if (d.personaId != null) {
                 m.personaId = String(d.personaId);
             }
@@ -10891,6 +11081,11 @@ export const proto = $root.proto = (() => {
             if (!o)
                 o = {};
             var d = {};
+            if (m.avatarMetadata != null && m.hasOwnProperty("avatarMetadata")) {
+                d.avatarMetadata = $root.proto.BotAvatarMetadata.toObject(m.avatarMetadata, o);
+                if (o.oneofs)
+                    d._avatarMetadata = "avatarMetadata";
+            }
             if (m.personaId != null && m.hasOwnProperty("personaId")) {
                 d.personaId = m.personaId;
                 if (o.oneofs)
@@ -21580,6 +21775,7 @@ export const proto = $root.proto = (() => {
         ContextInfo.prototype.isSpoiler = null;
         ContextInfo.prototype.mediaDomainInfo = null;
         ContextInfo.prototype.partiallySelectedContent = null;
+        ContextInfo.prototype.afterReadDurationMs = null;
 
         let $oneOfFields;
 
@@ -21913,6 +22109,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(ContextInfo.prototype, "_afterReadDurationMs", {
+            get: $util.oneOfGetter($oneOfFields = ["afterReadDurationMs"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         ContextInfo.create = function create(properties) {
             return new ContextInfo(properties);
         };
@@ -22042,6 +22244,8 @@ export const proto = $root.proto = (() => {
                 $root.proto.MediaDomainInfo.encode(m.mediaDomainInfo, w.uint32(594).fork()).ldelim();
             if (m.partiallySelectedContent != null && Object.hasOwnProperty.call(m, "partiallySelectedContent"))
                 $root.proto.ContextInfo.PartiallySelectedContent.encode(m.partiallySelectedContent, w.uint32(602).fork()).ldelim();
+            if (m.afterReadDurationMs != null && Object.hasOwnProperty.call(m, "afterReadDurationMs"))
+                w.uint32(608).uint32(m.afterReadDurationMs);
             return w;
         };
 
@@ -22290,6 +22494,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 75: {
                         m.partiallySelectedContent = $root.proto.ContextInfo.PartiallySelectedContent.decode(r, r.uint32());
+                        break;
+                    }
+                case 76: {
+                        m.afterReadDurationMs = r.uint32();
                         break;
                     }
                 default:
@@ -22688,6 +22896,9 @@ export const proto = $root.proto = (() => {
                     throw TypeError(".proto.ContextInfo.partiallySelectedContent: object expected");
                 m.partiallySelectedContent = $root.proto.ContextInfo.PartiallySelectedContent.fromObject(d.partiallySelectedContent);
             }
+            if (d.afterReadDurationMs != null) {
+                m.afterReadDurationMs = d.afterReadDurationMs >>> 0;
+            }
             return m;
         };
 
@@ -22995,6 +23206,11 @@ export const proto = $root.proto = (() => {
                 d.partiallySelectedContent = $root.proto.ContextInfo.PartiallySelectedContent.toObject(m.partiallySelectedContent, o);
                 if (o.oneofs)
                     d._partiallySelectedContent = "partiallySelectedContent";
+            }
+            if (m.afterReadDurationMs != null && m.hasOwnProperty("afterReadDurationMs")) {
+                d.afterReadDurationMs = m.afterReadDurationMs;
+                if (o.oneofs)
+                    d._afterReadDurationMs = "afterReadDurationMs";
             }
             return d;
         };
@@ -63762,12 +63978,19 @@ export const proto = $root.proto = (() => {
             }
 
             RequestWelcomeMessageMetadata.prototype.localChatState = null;
+            RequestWelcomeMessageMetadata.prototype.welcomeTrigger = null;
 
             let $oneOfFields;
 
             // Virtual OneOf for proto3 optional field
             Object.defineProperty(RequestWelcomeMessageMetadata.prototype, "_localChatState", {
                 get: $util.oneOfGetter($oneOfFields = ["localChatState"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(RequestWelcomeMessageMetadata.prototype, "_welcomeTrigger", {
+                get: $util.oneOfGetter($oneOfFields = ["welcomeTrigger"]),
                 set: $util.oneOfSetter($oneOfFields)
             });
 
@@ -63780,6 +64003,8 @@ export const proto = $root.proto = (() => {
                     w = $Writer.create();
                 if (m.localChatState != null && Object.hasOwnProperty.call(m, "localChatState"))
                     w.uint32(8).int32(m.localChatState);
+                if (m.welcomeTrigger != null && Object.hasOwnProperty.call(m, "welcomeTrigger"))
+                    w.uint32(16).int32(m.welcomeTrigger);
                 return w;
             };
 
@@ -63794,6 +64019,10 @@ export const proto = $root.proto = (() => {
                     switch (t >>> 3) {
                     case 1: {
                             m.localChatState = r.int32();
+                            break;
+                        }
+                    case 2: {
+                            m.welcomeTrigger = r.int32();
                             break;
                         }
                     default:
@@ -63824,6 +64053,22 @@ export const proto = $root.proto = (() => {
                     m.localChatState = 1;
                     break;
                 }
+                switch (d.welcomeTrigger) {
+                default:
+                    if (typeof d.welcomeTrigger === "number") {
+                        m.welcomeTrigger = d.welcomeTrigger;
+                        break;
+                    }
+                    break;
+                case "CHAT_OPEN":
+                case 0:
+                    m.welcomeTrigger = 0;
+                    break;
+                case "COMPANION_PAIRING":
+                case 1:
+                    m.welcomeTrigger = 1;
+                    break;
+                }
                 return m;
             };
 
@@ -63835,6 +64080,11 @@ export const proto = $root.proto = (() => {
                     d.localChatState = o.enums === String ? $root.proto.Message.RequestWelcomeMessageMetadata.LocalChatState[m.localChatState] === undefined ? m.localChatState : $root.proto.Message.RequestWelcomeMessageMetadata.LocalChatState[m.localChatState] : m.localChatState;
                     if (o.oneofs)
                         d._localChatState = "localChatState";
+                }
+                if (m.welcomeTrigger != null && m.hasOwnProperty("welcomeTrigger")) {
+                    d.welcomeTrigger = o.enums === String ? $root.proto.Message.RequestWelcomeMessageMetadata.WelcomeTrigger[m.welcomeTrigger] === undefined ? m.welcomeTrigger : $root.proto.Message.RequestWelcomeMessageMetadata.WelcomeTrigger[m.welcomeTrigger] : m.welcomeTrigger;
+                    if (o.oneofs)
+                        d._welcomeTrigger = "welcomeTrigger";
                 }
                 return d;
             };
@@ -63854,6 +64104,13 @@ export const proto = $root.proto = (() => {
                 const valuesById = {}, values = Object.create(valuesById);
                 values[valuesById[0] = "EMPTY"] = 0;
                 values[valuesById[1] = "NON_EMPTY"] = 1;
+                return values;
+            })();
+
+            RequestWelcomeMessageMetadata.WelcomeTrigger = (function() {
+                const valuesById = {}, values = Object.create(valuesById);
+                values[valuesById[0] = "CHAT_OPEN"] = 0;
+                values[valuesById[1] = "COMPANION_PAIRING"] = 1;
                 return values;
             })();
 
@@ -66409,6 +66666,7 @@ export const proto = $root.proto = (() => {
                 Sticker.prototype.accessibilityLabel = null;
                 Sticker.prototype.isLottie = null;
                 Sticker.prototype.mimetype = null;
+                Sticker.prototype.premium = null;
 
                 let $oneOfFields;
 
@@ -66442,6 +66700,12 @@ export const proto = $root.proto = (() => {
                     set: $util.oneOfSetter($oneOfFields)
                 });
 
+                // Virtual OneOf for proto3 optional field
+                Object.defineProperty(Sticker.prototype, "_premium", {
+                    get: $util.oneOfGetter($oneOfFields = ["premium"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+
                 Sticker.create = function create(properties) {
                     return new Sticker(properties);
                 };
@@ -66463,6 +66727,8 @@ export const proto = $root.proto = (() => {
                         w.uint32(40).bool(m.isLottie);
                     if (m.mimetype != null && Object.hasOwnProperty.call(m, "mimetype"))
                         w.uint32(50).string(m.mimetype);
+                    if (m.premium != null && Object.hasOwnProperty.call(m, "premium"))
+                        w.uint32(56).int32(m.premium);
                     return w;
                 };
 
@@ -66501,6 +66767,10 @@ export const proto = $root.proto = (() => {
                                 m.mimetype = r.string();
                                 break;
                             }
+                        case 7: {
+                                m.premium = r.int32();
+                                break;
+                            }
                         default:
                             r.skipType(t & 7);
                             break;
@@ -66535,6 +66805,9 @@ export const proto = $root.proto = (() => {
                     }
                     if (d.mimetype != null) {
                         m.mimetype = String(d.mimetype);
+                    }
+                    if (d.premium != null) {
+                        m.premium = d.premium | 0;
                     }
                     return m;
                 };
@@ -66576,6 +66849,11 @@ export const proto = $root.proto = (() => {
                         d.mimetype = m.mimetype;
                         if (o.oneofs)
                             d._mimetype = "mimetype";
+                    }
+                    if (m.premium != null && m.hasOwnProperty("premium")) {
+                        d.premium = m.premium;
+                        if (o.oneofs)
+                            d._premium = "premium";
                     }
                     return d;
                 };
@@ -80390,6 +80668,10 @@ export const proto = $root.proto = (() => {
             case 9:
                 m.type = 9;
                 break;
+            case "STATUS_CLOSE_SHARING":
+            case 10:
+                m.type = 10;
+                break;
             }
             if (d.actionUrl != null) {
                 m.actionUrl = String(d.actionUrl);
@@ -81517,6 +81799,7 @@ export const proto = $root.proto = (() => {
             values[valuesById[7] = "AI_CREATED"] = 7;
             values[valuesById[8] = "LAYOUTS"] = 8;
             values[valuesById[9] = "NEWSLETTER_STATUS"] = 9;
+            values[valuesById[10] = "STATUS_CLOSE_SHARING"] = 10;
             return values;
         })();
 
