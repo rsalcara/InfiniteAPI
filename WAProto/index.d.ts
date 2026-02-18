@@ -4145,6 +4145,7 @@ export namespace proto {
             completeOnDemandReady?: (boolean|null);
             thumbnailSyncDaysLimit?: (number|null);
             initialSyncMaxMessagesPerChat?: (number|null);
+            supportManusHistory?: (boolean|null);
         }
 
         class HistorySyncConfig implements IHistorySyncConfig {
@@ -4169,6 +4170,7 @@ export namespace proto {
             public completeOnDemandReady?: (boolean|null);
             public thumbnailSyncDaysLimit?: (number|null);
             public initialSyncMaxMessagesPerChat?: (number|null);
+            public supportManusHistory?: (boolean|null);
             public static create(properties?: proto.DeviceProps.IHistorySyncConfig): proto.DeviceProps.HistorySyncConfig;
             public static encode(m: proto.DeviceProps.IHistorySyncConfig, w?: $protobuf.Writer): $protobuf.Writer;
             public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.DeviceProps.HistorySyncConfig;

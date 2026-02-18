@@ -28176,6 +28176,7 @@ export const proto = $root.proto = (() => {
             HistorySyncConfig.prototype.completeOnDemandReady = null;
             HistorySyncConfig.prototype.thumbnailSyncDaysLimit = null;
             HistorySyncConfig.prototype.initialSyncMaxMessagesPerChat = null;
+            HistorySyncConfig.prototype.supportManusHistory = null;
 
             let $oneOfFields;
 
@@ -28299,6 +28300,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(HistorySyncConfig.prototype, "_supportManusHistory", {
+                get: $util.oneOfGetter($oneOfFields = ["supportManusHistory"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             HistorySyncConfig.create = function create(properties) {
                 return new HistorySyncConfig(properties);
             };
@@ -28346,6 +28353,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(152).uint32(m.thumbnailSyncDaysLimit);
                 if (m.initialSyncMaxMessagesPerChat != null && Object.hasOwnProperty.call(m, "initialSyncMaxMessagesPerChat"))
                     w.uint32(160).uint32(m.initialSyncMaxMessagesPerChat);
+                if (m.supportManusHistory != null && Object.hasOwnProperty.call(m, "supportManusHistory"))
+                    w.uint32(168).bool(m.supportManusHistory);
                 return w;
             };
 
@@ -28438,6 +28447,10 @@ export const proto = $root.proto = (() => {
                             m.initialSyncMaxMessagesPerChat = r.uint32();
                             break;
                         }
+                    case 21: {
+                            m.supportManusHistory = r.bool();
+                            break;
+                        }
                     default:
                         r.skipType(t & 7);
                         break;
@@ -28509,6 +28522,9 @@ export const proto = $root.proto = (() => {
                 }
                 if (d.initialSyncMaxMessagesPerChat != null) {
                     m.initialSyncMaxMessagesPerChat = d.initialSyncMaxMessagesPerChat >>> 0;
+                }
+                if (d.supportManusHistory != null) {
+                    m.supportManusHistory = Boolean(d.supportManusHistory);
                 }
                 return m;
             };
@@ -28616,6 +28632,11 @@ export const proto = $root.proto = (() => {
                     d.initialSyncMaxMessagesPerChat = m.initialSyncMaxMessagesPerChat;
                     if (o.oneofs)
                         d._initialSyncMaxMessagesPerChat = "initialSyncMaxMessagesPerChat";
+                }
+                if (m.supportManusHistory != null && m.hasOwnProperty("supportManusHistory")) {
+                    d.supportManusHistory = m.supportManusHistory;
+                    if (o.oneofs)
+                        d._supportManusHistory = "supportManusHistory";
                 }
                 return d;
             };
