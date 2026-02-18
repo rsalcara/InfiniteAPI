@@ -976,6 +976,30 @@ export namespace proto {
         }
     }
 
+    interface IBotAvatarMetadata {
+        sentiment?: (number|null);
+        behaviorGraph?: (string|null);
+        action?: (number|null);
+        intensity?: (number|null);
+        wordCount?: (number|null);
+    }
+
+    class BotAvatarMetadata implements IBotAvatarMetadata {
+        constructor(p?: proto.IBotAvatarMetadata);
+        public sentiment?: (number|null);
+        public behaviorGraph?: (string|null);
+        public action?: (number|null);
+        public intensity?: (number|null);
+        public wordCount?: (number|null);
+        public static create(properties?: proto.IBotAvatarMetadata): proto.BotAvatarMetadata;
+        public static encode(m: proto.IBotAvatarMetadata, w?: $protobuf.Writer): $protobuf.Writer;
+        public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.BotAvatarMetadata;
+        public static fromObject(d: { [k: string]: any }): proto.BotAvatarMetadata;
+        public static toObject(m: proto.BotAvatarMetadata, o?: $protobuf.IConversionOptions): { [k: string]: any };
+        public toJSON(): { [k: string]: any };
+        public static getTypeUrl(typeUrlPrefix?: string): string;
+    }
+
     interface IBotCapabilityMetadata {
         capabilities?: (proto.BotCapabilityMetadata.BotCapabilityType[]|null);
     }
@@ -1603,6 +1627,7 @@ export namespace proto {
     }
 
     interface IBotMetadata {
+        avatarMetadata?: (proto.IBotAvatarMetadata|null);
         personaId?: (string|null);
         pluginMetadata?: (proto.IBotPluginMetadata|null);
         suggestedPromptMetadata?: (proto.IBotSuggestedPromptMetadata|null);
@@ -1645,6 +1670,7 @@ export namespace proto {
 
     class BotMetadata implements IBotMetadata {
         constructor(p?: proto.IBotMetadata);
+        public avatarMetadata?: (proto.IBotAvatarMetadata|null);
         public personaId?: (string|null);
         public pluginMetadata?: (proto.IBotPluginMetadata|null);
         public suggestedPromptMetadata?: (proto.IBotSuggestedPromptMetadata|null);
@@ -3339,6 +3365,7 @@ export namespace proto {
         isSpoiler?: (boolean|null);
         mediaDomainInfo?: (proto.IMediaDomainInfo|null);
         partiallySelectedContent?: (proto.ContextInfo.IPartiallySelectedContent|null);
+        afterReadDurationMs?: (number|null);
     }
 
     class ContextInfo implements IContextInfo {
@@ -3401,6 +3428,7 @@ export namespace proto {
         public isSpoiler?: (boolean|null);
         public mediaDomainInfo?: (proto.IMediaDomainInfo|null);
         public partiallySelectedContent?: (proto.ContextInfo.IPartiallySelectedContent|null);
+        public afterReadDurationMs?: (number|null);
         public static create(properties?: proto.IContextInfo): proto.ContextInfo;
         public static encode(m: proto.IContextInfo, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.ContextInfo;
@@ -9098,11 +9126,13 @@ export namespace proto {
 
         interface IRequestWelcomeMessageMetadata {
             localChatState?: (proto.Message.RequestWelcomeMessageMetadata.LocalChatState|null);
+            welcomeTrigger?: (proto.Message.RequestWelcomeMessageMetadata.WelcomeTrigger|null);
         }
 
         class RequestWelcomeMessageMetadata implements IRequestWelcomeMessageMetadata {
             constructor(p?: proto.Message.IRequestWelcomeMessageMetadata);
             public localChatState?: (proto.Message.RequestWelcomeMessageMetadata.LocalChatState|null);
+            public welcomeTrigger?: (proto.Message.RequestWelcomeMessageMetadata.WelcomeTrigger|null);
             public static create(properties?: proto.Message.IRequestWelcomeMessageMetadata): proto.Message.RequestWelcomeMessageMetadata;
             public static encode(m: proto.Message.IRequestWelcomeMessageMetadata, w?: $protobuf.Writer): $protobuf.Writer;
             public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Message.RequestWelcomeMessageMetadata;
@@ -9117,6 +9147,11 @@ export namespace proto {
             enum LocalChatState {
                 EMPTY = 0,
                 NON_EMPTY = 1
+            }
+
+            enum WelcomeTrigger {
+                CHAT_OPEN = 0,
+                COMPANION_PAIRING = 1
             }
         }
 
@@ -9478,6 +9513,7 @@ export namespace proto {
                 accessibilityLabel?: (string|null);
                 isLottie?: (boolean|null);
                 mimetype?: (string|null);
+                premium?: (number|null);
             }
 
             class Sticker implements ISticker {
@@ -9488,6 +9524,7 @@ export namespace proto {
                 public accessibilityLabel?: (string|null);
                 public isLottie?: (boolean|null);
                 public mimetype?: (string|null);
+                public premium?: (number|null);
                 public static create(properties?: proto.Message.StickerPackMessage.ISticker): proto.Message.StickerPackMessage.Sticker;
                 public static encode(m: proto.Message.StickerPackMessage.ISticker, w?: $protobuf.Writer): $protobuf.Writer;
                 public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Message.StickerPackMessage.Sticker;
@@ -11700,7 +11737,8 @@ export namespace proto {
             RL_ATTRIBUTION = 6,
             AI_CREATED = 7,
             LAYOUTS = 8,
-            NEWSLETTER_STATUS = 9
+            NEWSLETTER_STATUS = 9,
+            STATUS_CLOSE_SHARING = 10
         }
     }
 
