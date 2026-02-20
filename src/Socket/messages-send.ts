@@ -1654,7 +1654,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// This ensures failed issuance allows re-issuance on the next message
 				// rather than blocking it for up to 7 days (one bucket duration).
 				getPrivacyTokens([destinationJid], issueTimestamp)
-					.then(async () => {
+					.then(async result => {
+						// Store any tokens received in the IQ response
+						await storeTcTokensFromIqResult({
+							result,
+							fallbackJid: tcTokenJid,
+							keys: authState.keys,
+							getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+						})
+
 						// Re-read entry to avoid overwriting concurrent notification handler updates
 						const currentData = await authState.keys.get('tctoken', [tcTokenJid])
 						const currentEntry = currentData[tcTokenJid]
