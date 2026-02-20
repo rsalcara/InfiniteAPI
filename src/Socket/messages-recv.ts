@@ -1085,6 +1085,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					continue
 				}
 
+				// Don't store timestamp-less tokens — they expire immediately and would
+				// corrupt a valid existing entry if one is already present
+				if(!incomingTs) {
+					continue
+				}
+
 				await authState.keys.set({
 					tctoken: {
 						[storageJid]: {

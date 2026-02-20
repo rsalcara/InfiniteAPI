@@ -148,9 +148,9 @@ export async function storeTcTokensFromIqResult({
 			continue
 		}
 
-		// Don't overwrite a valid timestamped token with a timestamp-less one —
-		// it would be treated as immediately expired by isTcTokenExpired
-		if(existingTs > 0 && !incomingTs) {
+		// Don't store timestamp-less tokens at all — isTcTokenExpired treats them
+		// as immediately expired regardless of whether an existing entry is present
+		if(!incomingTs) {
 			continue
 		}
 
