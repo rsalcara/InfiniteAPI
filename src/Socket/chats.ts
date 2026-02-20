@@ -40,6 +40,7 @@ import {
 	extractSyncdPatches,
 	generateProfilePicture,
 	getHistoryMsg,
+	ensureLTHashStateVersion,
 	newLTHashState,
 	processSyncAction
 } from '../Utils'
@@ -595,6 +596,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 						let state = result[name]
 
 						if (state) {
+							state = ensureLTHashStateVersion(state)
 							if (typeof initialVersionMap[name] === 'undefined') {
 								initialVersionMap[name] = state.version
 							}
@@ -935,7 +937,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				await resyncAppState([name], false)
 
 				const { [name]: currentSyncVersion } = await authState.keys.get('app-state-sync-version', [name])
-				initial = currentSyncVersion || newLTHashState()
+				initial = currentSyncVersion ? ensureLTHashStateVersion(currentSyncVersion) : newLTHashState()
 
 				encodeResult = await encodeSyncdPatch(patchCreate, myAppStateKeyId, initial, getAppStateSyncKey)
 				const { patch, state } = encodeResult
