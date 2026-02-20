@@ -1482,8 +1482,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 
 			// tctoken lifecycle: fetch, validate expiry, proactive re-fetch if missing/expired
-			const is1on1Send = !isGroup && !isRetryResend && !isStatus && !isNewsletter
-			let didFetchTcToken = false
+			// WA Web never attaches tctoken to peer (AppStateSync) messages — server
+			const isPeerMessage = additionalAttributes?.['category'] === 'peer'
+			const is1on1Send = !isGroup && !isRetryResend && !isStatus && !isNewsletter && !isPeerMessage
 
 			// Resolve destination to LID for tctoken storage — matches Signal session key pattern
 			const tcTokenJid = is1on1Send
@@ -1506,69 +1507,46 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				} catch { /* ignore cleanup errors */ }
 			}
 
-			// If tctoken is missing or expired for a 1:1 send, proactively fetch it from the server
+			// If tctoken is missing for a 1:1 send, fire-and-forget fetch so the
+			// retry path (error 463 → handleBadAck) can pick it up on resend
 			if(!tcTokenBuffer?.length && is1on1Send) {
-				try {
-					logTcToken('fetch', { jid: destinationJid })
-					didFetchTcToken = true
-					const fetchResult = await getPrivacyTokens([destinationJid])
-
-					// Parse inline tokens from IQ result using the shared parser
-					// (includes monotonicity guard)
-					await storeTcTokensFromIqResult({
-						result: fetchResult,
-						fallbackJid: destinationJid,
-						keys: authState.keys,
-						getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping),
-						onNewJidStored: (storedJid) => {
-							// Fire-and-forget: persist JID into tctoken index for pruning
-							(async () => {
-								try {
-									const TC_IDX = '__index'
-									const idxData = await authState.keys.get('tctoken', [TC_IDX])
-									const idxEntry = idxData[TC_IDX]
-									const existing: string[] = idxEntry?.token
-										? JSON.parse(Buffer.from(idxEntry.token).toString('utf8'))
-										: []
-									if(!existing.includes(storedJid)) {
-										existing.push(storedJid)
-										await authState.keys.set({
-											tctoken: {
-												[TC_IDX]: {
-													token: Buffer.from(JSON.stringify(existing), 'utf8'),
-													timestamp: unixTimestampSeconds().toString()
+				logTcToken('fetch', { jid: destinationJid })
+				getPrivacyTokens([destinationJid])
+					.then(async fetchResult => {
+						await storeTcTokensFromIqResult({
+							result: fetchResult,
+							fallbackJid: destinationJid,
+							keys: authState.keys,
+							getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping),
+							onNewJidStored: (storedJid) => {
+								// Fire-and-forget: persist JID into tctoken index for pruning
+								(async () => {
+									try {
+										const TC_IDX = '__index'
+										const idxData = await authState.keys.get('tctoken', [TC_IDX])
+										const idxEntry = idxData[TC_IDX]
+										const existing: string[] = idxEntry?.token
+											? JSON.parse(Buffer.from(idxEntry.token).toString('utf8'))
+											: []
+										if(!existing.includes(storedJid)) {
+											existing.push(storedJid)
+											await authState.keys.set({
+												tctoken: {
+													[TC_IDX]: {
+														token: Buffer.from(JSON.stringify(existing), 'utf8'),
+														timestamp: unixTimestampSeconds().toString()
+													}
 												}
-											}
-										})
-									}
+											})
+										}
 								} catch { /* non-critical — index rebuilt on next pruning cycle */ }
-							})()
-						}
-					})
-
-					// Re-read from key store — the notification handler or inline
-					// parsing above may have stored the token
-					const refreshed = await authState.keys.get('tctoken', [tcTokenJid])
-					const refreshedEntry = refreshed[tcTokenJid]
-					tcTokenBuffer = refreshedEntry?.token
-
-					// The getPrivacyTokens IQ (type='set') also acts as issuance,
-					// so record senderTimestamp to prevent redundant fire-and-forget
-					// on the next message to this contact.
-					if(refreshedEntry?.token?.length) {
-						logTcToken('fetched', { jid: destinationJid })
-						await authState.keys.set({
-							tctoken: {
-								[tcTokenJid]: {
-									...refreshedEntry,
-									senderTimestamp: unixTimestampSeconds()
-								}
+								})()
 							}
 						})
-					}
-				} catch(err: any) {
-					logger.warn({ jid: destinationJid, trace: err?.stack }, 'failed to fetch privacy token before send')
-				}
+					})
+					.catch(err => {
+						logger.debug({ jid: destinationJid, err: err?.message }, 'fire-and-forget tctoken fetch failed')
+					})
 			}
 
 			if(tcTokenBuffer?.length) {
@@ -1660,8 +1638,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			await sendNode(stanza)
 
 			// Fire-and-forget: issue our token to the contact (like WA Web's sendTcToken)
-			// Only for 1:1 sends where we didn't already fetch, and only when bucket boundary crossed
-			if(is1on1Send && !didFetchTcToken && shouldSendNewTcToken(existingTokenEntry?.senderTimestamp)) {
+			// Only for 1:1 sends where we already have a token, and when bucket boundary crossed
+			if(is1on1Send && tcTokenBuffer?.length && shouldSendNewTcToken(existingTokenEntry?.senderTimestamp)) {
 				const issueTimestamp = unixTimestampSeconds()
 				logTcToken('reissue', { jid: destinationJid })
 				// WA Web writes senderTimestamp only AFTER the IQ succeeds

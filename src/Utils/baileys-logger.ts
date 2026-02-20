@@ -958,7 +958,7 @@ export function logLidMapping(
  * // Output: [BAILEYS] 🔑 TcToken expired → 5511999999999@s.whatsapp.net { age: 32d }
  */
 export function logTcToken(
-	event: 'stored' | 'expired' | 'fetch' | 'fetched' | 'reissue' | 'reissue_ok' | 'reissue_fail' | 'prune' | 'error_463' | 'error_479' | 'attached',
+	event: 'stored' | 'expired' | 'fetch' | 'fetched' | 'reissue' | 'reissue_ok' | 'reissue_fail' | 'prune' | 'error_463' | 'error_479' | 'attached' | 'retry_463_ok',
 	data?: Record<string, unknown>,
 	sessionName?: string
 ): void {
@@ -1003,6 +1003,9 @@ export function logTcToken(
 			break
 		case 'error_479':
 			console.log(`${prefix} ⚠️ TcToken smax-invalid (479)${jid}${extraStr}`)
+			break
+		case 'retry_463_ok':
+			console.log(`${prefix} 🔄 TcToken retry 463 OK${jid}${extraStr}`)
 			break
 	}
 }

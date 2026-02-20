@@ -155,6 +155,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const TC_TOKEN_INDEX_KEY = '__index'
 	const TC_TOKEN_PRUNE_TS_KEY = '__prune_ts'
 	const tcTokenKnownJids = new Set<string>()
+	const tcTokenRetriedMsgIds = new Set<string>()
 	let tcTokenIndexSaveTimer: ReturnType<typeof setTimeout> | undefined
 	let lastTcTokenPruneTs = 0
 
@@ -1876,7 +1877,35 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// device could not display the message
 		if(attrs.error) {
 			if(attrs.error === SERVER_ERROR_CODES.MissingTcToken) {
-				logTcToken('error_463', { jid: attrs.from, msgId: attrs.id })
+				const msgId = attrs.id
+				const jid = attrs.from
+				logTcToken('error_463', { jid, msgId })
+
+				// Single-retry: wait 1.5s for the server's tctoken notification to arrive,
+				// then resend. A Set prevents infinite retry loops.
+				if(msgId && jid && !tcTokenRetriedMsgIds.has(msgId)) {
+					tcTokenRetriedMsgIds.add(msgId)
+					// Safety cap — prevent unbounded memory growth
+					if(tcTokenRetriedMsgIds.size > 500) {
+						tcTokenRetriedMsgIds.clear()
+					}
+
+					;(async () => {
+						try {
+							await delay(1500)
+							const msg = await getMessage(key)
+							if(msg) {
+								await relayMessage(jid, msg, { messageId: msgId, useUserDevicesCache: true })
+								logTcToken('retry_463_ok', { jid, msgId })
+							} else {
+								logger.warn({ jid, msgId }, '463 retry: message not found in store')
+							}
+						} catch(err: any) {
+							logger.warn({ jid, msgId, err: err?.message }, '463 retry failed')
+						}
+					})()
+					return
+				}
 			} else if(attrs.error === SERVER_ERROR_CODES.SmaxInvalid) {
 				logTcToken('error_479', { jid: attrs.from, msgId: attrs.id })
 			} else {
