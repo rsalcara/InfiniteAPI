@@ -1899,9 +1899,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								logTcToken('retry_463_ok', { jid, msgId })
 							} else {
 								logger.warn({ jid, msgId }, '463 retry: message not found in store')
+								ev.emit('messages.update', [{ key, update: { status: WAMessageStatus.ERROR, messageStubParameters: ['463'] } }])
 							}
 						} catch(err: any) {
 							logger.warn({ jid, msgId, err: err?.message }, '463 retry failed')
+							ev.emit('messages.update', [{ key, update: { status: WAMessageStatus.ERROR, messageStubParameters: ['463'] } }])
 						}
 					})()
 					return

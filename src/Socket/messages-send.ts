@@ -119,6 +119,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	// Prevent race conditions in Signal session encryption by user
 	const encryptionMutex = makeKeyedMutex()
 
+	// Tracks JIDs with an in-flight getPrivacyTokens IQ to avoid duplicate concurrent fetches
+	const tcTokenFetchingJids = new Set<string>()
+
 	let mediaConn: Promise<MediaConnInfo>
 	const refreshMediaConn = async (forceGet = false) => {
 		const media = await mediaConn
@@ -1509,7 +1512,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			// If tctoken is missing for a 1:1 send, fire-and-forget fetch so the
 			// retry path (error 463 → handleBadAck) can pick it up on resend
-			if(!tcTokenBuffer?.length && is1on1Send) {
+			if(!tcTokenBuffer?.length && is1on1Send && !tcTokenFetchingJids.has(tcTokenJid)) {
+				tcTokenFetchingJids.add(tcTokenJid)
 				logTcToken('fetch', { jid: destinationJid })
 				getPrivacyTokens([destinationJid])
 					.then(async fetchResult => {
@@ -1546,6 +1550,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					})
 					.catch(err => {
 						logger.debug({ jid: destinationJid, err: err?.message }, 'fire-and-forget tctoken fetch failed')
+					})
+					.finally(() => {
+						tcTokenFetchingJids.delete(tcTokenJid)
 					})
 			}
 
