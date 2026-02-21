@@ -622,9 +622,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return { nodes, shouldIncludeDeviceIdentity }
 	}
 
-	// ⚠️ EXPERIMENTAL: Functions to detect and handle interactive messages
-	// These features may not work and can cause account bans
-	// Based on Itsukichan/Baileys and baileys_helpers implementation
+	// Interactive message detection and binary node injection
 
 	/**
 	 * Detects the type of interactive message and returns the appropriate binary node tag
@@ -1247,8 +1245,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				content: binaryNodeContent
 			}
 
-			// ⚠️ EXPERIMENTAL: Inject 'biz' node for interactive messages
-			// This may not work and can cause account bans
+			// Inject 'biz' node for interactive messages
 			const buttonType = getButtonType(message)
 			const isCatalog = isCatalogMessage(message)
 			const isCarousel = isCarouselMessage(message)
@@ -1291,19 +1288,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					{
 						msgId,
 						buttonType,
+						to: destinationJid,
 						hasListMessage: !!listMsg,
 						hasInteractiveMessage: !!interactiveMsg,
 						hasNativeFlow: !!interactiveMsg?.nativeFlowMessage,
 						nativeFlowButtonNames: nativeFlowButtons.map((b: any) => b?.name),
-						buttonDetails: JSON.stringify(buttonDetails, null, 2),
-						isListDetected
+						isListDetected,
+						isCatalog,
+						isCarousel
 					},
-					'[DEBUG] Interactive message structure'
-				)
-
-				logger.warn(
-					{ msgId, buttonType, to: destinationJid, enableInteractiveMessages, isCatalog },
-					'[EXPERIMENTAL] Injecting biz node for interactive message - may cause ban'
+					'[Interactive] Preparing biz node'
 				)
 
 				// Track that we're sending an interactive message
@@ -1335,7 +1329,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						})
 						logger.info(
 							{ msgId, to: destinationJid },
-							'[EXPERIMENTAL] Injected biz node for listMessage (legacy format)'
+							'[BIZ NODE] Injected biz > list (product_list, v=2)'
 						)
 					} else {
 						const SPECIAL_FLOW_NAMES: Record<string, string> = {
@@ -1349,7 +1343,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 						logger.info(
 							{ msgId, buttonNames: allButtonNames, hasCTA, hasQuickReply, isCTAOnly, nativeFlowName },
-							'[EXPERIMENTAL] Determined native_flow name based on button types'
+							'[BIZ NODE] Injected biz > interactive(native_flow, v=1) > native_flow(v=9, name=' + nativeFlowName + ')'
 						)
 
 						const interactiveType = 'native_flow'
@@ -1389,24 +1383,24 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							tag: 'bot',
 							attrs: { biz_bot: '1' }
 						})
-						logger.debug(
+						logger.info(
 							{ msgId, to: destinationJid },
-							'[EXPERIMENTAL] Added bot node for private chat interactive message'
+							'[BOT NODE] Added bot node (biz_bot=1)'
 						)
 					} else if (isNativeFlowButtons) {
 						logger.debug(
-							{ msgId, to: destinationJid, buttonNames: allButtonNames },
-							'[EXPERIMENTAL] Skipping bot node for native_flow buttons (Web/Desktop compatibility)'
+							{ msgId, to: destinationJid },
+							'[BOT NODE] Skipped — native_flow (Web compatibility)'
 						)
 					} else if (isCarousel) {
 						logger.debug(
-							{ msgId, to: destinationJid, buttonType },
-							'[EXPERIMENTAL] Skipping bot node for carousel message'
+							{ msgId, to: destinationJid },
+							'[BOT NODE] Skipped — carousel message'
 						)
 					} else if (isCatalog) {
 						logger.debug(
-							{ msgId, to: destinationJid, buttonType },
-							'[EXPERIMENTAL] Skipping bot node for catalog message (with biz node)'
+							{ msgId, to: destinationJid },
+							'[BOT NODE] Skipped — catalog message'
 						)
 					}
 
@@ -1414,13 +1408,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					metrics.interactiveMessagesSuccess.inc({ type: buttonType })
 					metrics.interactiveMessagesLatency.observe({ type: buttonType }, Date.now() - startTime)
 				} catch (error) {
-					logger.error({ error, msgId, buttonType }, '[EXPERIMENTAL] Failed to inject biz node for interactive message')
+					logger.error({ error, msgId, buttonType }, '[BIZ NODE] Failed to inject biz node')
 					metrics.interactiveMessagesFailures.inc({ type: buttonType, reason: 'injection_failed' })
 				}
 			} else if (buttonType && !enableInteractiveMessages) {
 				logger.warn(
 					{ msgId, buttonType },
-					'[EXPERIMENTAL] Interactive message detected but feature disabled (enableInteractiveMessages=false)'
+					'[Interactive] Message detected but feature disabled (enableInteractiveMessages=false)'
 				)
 				metrics.interactiveMessagesFailures.inc({ type: buttonType, reason: 'feature_disabled' })
 			}
@@ -1542,6 +1536,17 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// Stanza order: participants → device-identity → tctoken → biz
 			if (deferredNodes.length > 0) {
 				;(stanza.content as BinaryNode[]).push(...deferredNodes)
+			}
+
+			// Log stanza structure for interactive messages
+			if (buttonType || isCarousel) {
+				const contentTags = Array.isArray(stanza.content)
+					? (stanza.content as BinaryNode[]).map((n: BinaryNode) => n.tag)
+					: []
+				logger.info(
+					{ msgId, to: destinationJid, contentTags },
+					'[STANZA] Content tags: ' + JSON.stringify(contentTags)
+				)
 			}
 
 			logger.debug({ msgId }, `sending message to ${participants.length} devices`)

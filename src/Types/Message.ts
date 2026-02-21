@@ -281,9 +281,7 @@ export type WASendableProduct = Omit<proto.Message.ProductMessage.IProductSnapsh
 	productImage: WAMediaUpload
 }
 
-// ⚠️ EXPERIMENTAL: Interactive message types
-// These features may not work and can cause account bans
-// Use only for testing with disposable accounts
+// Interactive message types
 
 export type ButtonInfo = {
 	buttonId: string

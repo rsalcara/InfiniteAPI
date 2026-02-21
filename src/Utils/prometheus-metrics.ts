@@ -1444,7 +1444,7 @@ export const metrics = {
 		new Counter('ctwa_recovery_failures_total', 'Total CTWA recovery failures', ['reason'])
 	),
 
-	// ========== Interactive Messages Metrics (EXPERIMENTAL) ==========
+	// ========== Interactive Messages Metrics ==========
 	interactiveMessagesSent: baileysMetrics.register(
 		new Counter(
 			'interactive_messages_sent_total',

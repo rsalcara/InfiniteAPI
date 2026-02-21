@@ -1287,8 +1287,7 @@ export const generateWAMessageContent = async (
 		m.viewOnceMessage = generated.viewOnceMessage
 		options.logger?.info('Sending productCarouselMessage with viewOnceMessage wrapper')
 	}
-	// ⚠️ EXPERIMENTAL: Check for interactive messages FIRST (buttons, lists, templates)
-	// These use the older API which may not work reliably
+	// Interactive messages: buttons, lists, templates
 	else if (hasNonNullishProperty(message, 'text') && hasNonNullishProperty(message, 'buttons')) {
 		// Process buttons for text messages
 		const buttonsMessage: proto.Message.IButtonsMessage = {
@@ -1304,7 +1303,7 @@ export const generateWAMessageContent = async (
 		}))
 
 		m.buttonsMessage = buttonsMessage
-		options.logger?.warn('[EXPERIMENTAL] Sending buttonsMessage - this may not work and can cause bans')
+		options.logger?.info('[Interactive] Sending buttonsMessage (legacy format)')
 	} else if (hasNonNullishProperty(message, 'text') && hasNonNullishProperty(message, 'templateButtons')) {
 		// Process templateButtons
 		const hydratedButtons = ((message as any).templateButtons as any[]).map((btn: any) => {
@@ -1328,7 +1327,7 @@ export const generateWAMessageContent = async (
 		}
 
 		m.templateMessage = templateMessage
-		options.logger?.warn('[EXPERIMENTAL] Sending templateMessage - this may not work and can cause bans')
+		options.logger?.info('[Interactive] Sending templateMessage')
 	} else if (hasNonNullishProperty(message, 'sections')) {
 		// Process list messages - validate limits
 		validateListSections((message as any).sections, (message as any).buttonText)
@@ -1350,7 +1349,7 @@ export const generateWAMessageContent = async (
 		}))
 
 		m.listMessage = listMessage
-		options.logger?.warn('[EXPERIMENTAL] Sending listMessage - this may not work and can cause bans')
+		options.logger?.info({ sections: message.listMessage?.sections?.length || 0 }, '[Interactive] Sending listMessage (sections: ' + (message.listMessage?.sections?.length || 0) + ')')
 	} else if (hasNonNullishProperty(message, 'carousel')) {
 		// Process carousel/interactive messages with viewOnceMessage wrapper
 		const carousel = (message as any).carousel
@@ -1530,7 +1529,7 @@ export const generateWAMessageContent = async (
 				break
 		}
 	}
-	// ⚠️ EXPERIMENTAL: Process buttons with media (image/video)
+	// Process buttons with media (image/video)
 	else if (
 		(hasNonNullishProperty(message, 'image') || hasNonNullishProperty(message, 'video')) &&
 		hasNonNullishProperty(message, 'buttons')
@@ -1583,7 +1582,7 @@ export const generateWAMessageContent = async (
 		}))
 
 		m.buttonsMessage = buttonsMessage
-		options.logger?.warn('[EXPERIMENTAL] Sending buttonsMessage with media - this may not work and can cause bans')
+		options.logger?.info('[Interactive] Sending buttonsMessage with media')
 	} else if (hasOptionalProperty(message, 'ptv') && message.ptv) {
 		const { videoMessage } = await prepareWAMessageMedia({ video: message.video }, options)
 		m.ptvMessage = videoMessage

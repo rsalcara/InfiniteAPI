@@ -85,10 +85,7 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	// Enable automatic recovery of Click-to-WhatsApp ads messages
 	// These arrive as "placeholder messages" and need to be requested from the phone
 	enableCTWARecovery: true,
-	// ⚠️ EXPERIMENTAL: Enable interactive messages (buttons, lists, templates, carousel)
-	// WARNING: These features may not work and can cause account BANS
-	// Use ONLY for testing with DISPOSABLE accounts in DEV environment
-	// Default: true (for dev/testing) - set to false in production
+	// Enable interactive messages (buttons, lists, templates, carousel)
 	enableInteractiveMessages: true,
 	options: {},
 	appStateMacVerification: {
