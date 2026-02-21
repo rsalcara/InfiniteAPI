@@ -1884,38 +1884,25 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		if(attrs.error) {
 			if(attrs.error === SERVER_ERROR_CODES.MissingTcToken) {
 				const msgId = attrs.id
-<<<<<<< claude/check-baileys-pr-2339-blJ29
 				const jid = jidNormalizedUser(attrs.from)
-=======
-				const jid = attrs.from
->>>>>>> master
 				logTcToken('error_463', { jid, msgId })
 
 				// Single-retry: wait 1.5s for the server's tctoken notification to arrive,
 				// then resend. A Set prevents infinite retry loops.
-				if(msgId && jid && !tcTokenRetriedMsgIds.has(msgId)) {
-					tcTokenRetriedMsgIds.add(msgId)
-<<<<<<< claude/check-baileys-pr-2339-blJ29
+				// Composite key (jid:msgId) ensures retries are isolated per destination.
+				const retryKey = `${jid}:${msgId}`
+				if(msgId && jid && !tcTokenRetriedMsgIds.has(retryKey)) {
+					tcTokenRetriedMsgIds.add(retryKey)
 					// Each entry auto-expires after 60s — naturally bounded under normal use
-					setTimeout(() => tcTokenRetriedMsgIds.delete(msgId), 60_000)
-=======
-					// Safety cap — prevent unbounded memory growth
-					if(tcTokenRetriedMsgIds.size > 500) {
-						tcTokenRetriedMsgIds.clear()
-					}
->>>>>>> master
+					setTimeout(() => tcTokenRetriedMsgIds.delete(retryKey), 60_000)
 
 					;(async () => {
 						try {
 							await delay(1500)
-<<<<<<< claude/check-baileys-pr-2339-blJ29
 							const msg =
 								(await getMessage(key)) ??
 								// Fallback: ack can arrive <30ms after send, before store persists
 								messageRetryManager?.getRecentMessage(jid, msgId)?.message
-=======
-							const msg = await getMessage(key)
->>>>>>> master
 							if(msg) {
 								await relayMessage(jid, msg, { messageId: msgId, useUserDevicesCache: true })
 								logTcToken('retry_463_ok', { jid, msgId })
@@ -2105,15 +2092,18 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		if(connection === 'close' && tcTokenIndexSaveTimer) {
 			clearTimeout(tcTokenIndexSaveTimer)
 			tcTokenIndexSaveTimer = undefined
-			// Best-effort flush — may fail if store is already closed
-			Promise.resolve(authState.keys.set({
-				tctoken: {
-					[TC_TOKEN_INDEX_KEY]: {
-						token: Buffer.from(JSON.stringify([...tcTokenKnownJids]), 'utf8'),
-						timestamp: unixTimestampSeconds().toString()
+			// Await index load first — prevents overwriting a more complete persisted index
+			// if the connection closes before the initial load finishes.
+			tcTokenIndexLoaded.then(() => {
+				Promise.resolve(authState.keys.set({
+					tctoken: {
+						[TC_TOKEN_INDEX_KEY]: {
+							token: Buffer.from(JSON.stringify([...tcTokenKnownJids]), 'utf8'),
+							timestamp: unixTimestampSeconds().toString()
+						}
 					}
-				}
-			})).catch(() => { /* non-critical */ })
+				})).catch(() => { /* non-critical */ })
+			}).catch(() => { /* non-critical */ })
 		}
 
 		if(typeof isOnline !== 'undefined') {
