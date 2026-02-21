@@ -1278,12 +1278,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				const isListDetected = isListNativeFlow(message)
 
-				// Log full button details including buttonParamsJson for debugging
-				const buttonDetails = nativeFlowButtons.map((b: any) => ({
-					name: b?.name,
-					paramsJson: b?.buttonParamsJson ? JSON.parse(b.buttonParamsJson) : null
-				}))
-
 				logger.info(
 					{
 						msgId,
@@ -1327,10 +1321,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								}
 							]
 						})
-						logger.info(
-							{ msgId, to: destinationJid },
-							'[BIZ NODE] Injected biz > list (product_list, v=2)'
-						)
+						logger.info({ msgId, to: destinationJid }, '[BIZ NODE] Injected biz > list (product_list, v=2)')
 					} else {
 						const SPECIAL_FLOW_NAMES: Record<string, string> = {
 							review_and_pay: 'payment_info',
@@ -1383,25 +1374,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							tag: 'bot',
 							attrs: { biz_bot: '1' }
 						})
-						logger.info(
-							{ msgId, to: destinationJid },
-							'[BOT NODE] Added bot node (biz_bot=1)'
-						)
+						logger.info({ msgId, to: destinationJid }, '[BOT NODE] Added bot node (biz_bot=1)')
 					} else if (isNativeFlowButtons) {
-						logger.debug(
-							{ msgId, to: destinationJid },
-							'[BOT NODE] Skipped — native_flow (Web compatibility)'
-						)
+						logger.debug({ msgId, to: destinationJid }, '[BOT NODE] Skipped — native_flow (Web compatibility)')
 					} else if (isCarousel) {
-						logger.debug(
-							{ msgId, to: destinationJid },
-							'[BOT NODE] Skipped — carousel message'
-						)
+						logger.debug({ msgId, to: destinationJid }, '[BOT NODE] Skipped — carousel message')
 					} else if (isCatalog) {
-						logger.debug(
-							{ msgId, to: destinationJid },
-							'[BOT NODE] Skipped — catalog message'
-						)
+						logger.debug({ msgId, to: destinationJid }, '[BOT NODE] Skipped — catalog message')
 					}
 
 					// Track success and latency after message is sent
@@ -1487,18 +1466,20 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			let tcTokenBuffer = existingTokenEntry?.token
 
 			// Treat expired tokens the same as missing — re-fetch from server
-			if(tcTokenBuffer?.length && isTcTokenExpired(existingTokenEntry?.timestamp)) {
+			if (tcTokenBuffer?.length && isTcTokenExpired(existingTokenEntry?.timestamp)) {
 				logTcToken('expired', { jid: destinationJid, timestamp: existingTokenEntry?.timestamp })
 				tcTokenBuffer = undefined
 				// Opportunistic cleanup: remove expired token from store
 				try {
 					await authState.keys.set({ tctoken: { [tcTokenJid]: null } })
-				} catch { /* ignore cleanup errors */ }
+				} catch {
+					/* ignore cleanup errors */
+				}
 			}
 
 			// If tctoken is missing for a 1:1 send, fire-and-forget fetch so the
 			// retry path (error 463 → handleBadAck) can pick it up on resend
-			if(!tcTokenBuffer?.length && is1on1Send && !tcTokenFetchingJids.has(tcTokenJid)) {
+			if (!tcTokenBuffer?.length && is1on1Send && !tcTokenFetchingJids.has(tcTokenJid)) {
 				tcTokenFetchingJids.add(tcTokenJid)
 				logTcToken('fetch', { jid: destinationJid })
 				getPrivacyTokens([destinationJid])
@@ -1519,7 +1500,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					})
 			}
 
-			if(tcTokenBuffer?.length) {
+			if (tcTokenBuffer?.length) {
 				;(stanza.content as BinaryNode[]).push({
 					tag: 'tctoken',
 					attrs: {},
@@ -1540,13 +1521,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			// Log stanza structure for interactive messages
 			if (buttonType || isCarousel) {
-				const contentTags = Array.isArray(stanza.content)
-					? (stanza.content as BinaryNode[]).map((n: BinaryNode) => n.tag)
-					: []
-				logger.info(
-					{ msgId, to: destinationJid, contentTags },
-					'[STANZA] Content tags: ' + JSON.stringify(contentTags)
-				)
+				const contentTags = Array.isArray(stanza.content) ? stanza.content.map((n: BinaryNode) => n.tag) : []
+				logger.info({ msgId, to: destinationJid, contentTags }, '[STANZA] Content tags: ' + JSON.stringify(contentTags))
 			}
 
 			logger.debug({ msgId }, `sending message to ${participants.length} devices`)
@@ -1620,7 +1596,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			// Fire-and-forget: issue our token to the contact (like WA Web's sendTcToken)
 			// Only for 1:1 sends where we already have a token, and when bucket boundary crossed
-			if(is1on1Send && tcTokenBuffer?.length && shouldSendNewTcToken(existingTokenEntry?.senderTimestamp)) {
+			if (is1on1Send && tcTokenBuffer?.length && shouldSendNewTcToken(existingTokenEntry?.senderTimestamp)) {
 				const issueTimestamp = unixTimestampSeconds()
 				logTcToken('reissue', { jid: destinationJid })
 				// WA Web writes senderTimestamp only AFTER the IQ succeeds
@@ -1640,7 +1616,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						// Re-read entry to avoid overwriting concurrent notification handler updates
 						const currentData = await authState.keys.get('tctoken', [tcTokenJid])
 						const currentEntry = currentData[tcTokenJid]
-						if(currentEntry?.token?.length) {
+						if (currentEntry?.token?.length) {
 							await authState.keys.set({
 								tctoken: {
 									[tcTokenJid]: {
