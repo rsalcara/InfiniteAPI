@@ -1349,7 +1349,7 @@ export const generateWAMessageContent = async (
 		}))
 
 		m.listMessage = listMessage
-		options.logger?.info({ sections: message.listMessage?.sections?.length || 0 }, '[Interactive] Sending listMessage (sections: ' + (message.listMessage?.sections?.length || 0) + ')')
+		options.logger?.info({ sections: listMessage.sections?.length || 0 }, '[Interactive] Sending listMessage (sections: ' + (listMessage.sections?.length || 0) + ')')
 	} else if (hasNonNullishProperty(message, 'carousel')) {
 		// Process carousel/interactive messages with viewOnceMessage wrapper
 		const carousel = (message as any).carousel
