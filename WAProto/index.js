@@ -10301,6 +10301,10 @@ export const proto = $root.proto = (() => {
             case 47:
                 m.botEntryPointOrigin = 47;
                 break;
+            case "GROUP_MEMBER":
+            case 54:
+                m.botEntryPointOrigin = 54;
+                break;
             }
             if (d.forwardScore != null) {
                 m.forwardScore = d.forwardScore >>> 0;
@@ -11340,6 +11344,7 @@ export const proto = $root.proto = (() => {
         values[valuesById[45] = "META_AI_SETTINGS"] = 45;
         values[valuesById[46] = "WEB_INTRO_PANEL"] = 46;
         values[valuesById[47] = "WEB_NAVIGATION_BAR"] = 47;
+        values[valuesById[54] = "GROUP_MEMBER"] = 54;
         return values;
     })();
 
@@ -11614,6 +11619,10 @@ export const proto = $root.proto = (() => {
             case "WEB_NAVIGATION_BAR":
             case 47:
                 m.destinationEntryPoint = 47;
+                break;
+            case "GROUP_MEMBER":
+            case 54:
+                m.destinationEntryPoint = 54;
                 break;
             }
             switch (d.threadOrigin) {

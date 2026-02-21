@@ -1884,23 +1884,38 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		if(attrs.error) {
 			if(attrs.error === SERVER_ERROR_CODES.MissingTcToken) {
 				const msgId = attrs.id
+<<<<<<< claude/check-baileys-pr-2339-blJ29
 				const jid = jidNormalizedUser(attrs.from)
+=======
+				const jid = attrs.from
+>>>>>>> master
 				logTcToken('error_463', { jid, msgId })
 
 				// Single-retry: wait 1.5s for the server's tctoken notification to arrive,
 				// then resend. A Set prevents infinite retry loops.
 				if(msgId && jid && !tcTokenRetriedMsgIds.has(msgId)) {
 					tcTokenRetriedMsgIds.add(msgId)
+<<<<<<< claude/check-baileys-pr-2339-blJ29
 					// Each entry auto-expires after 60s — naturally bounded under normal use
 					setTimeout(() => tcTokenRetriedMsgIds.delete(msgId), 60_000)
+=======
+					// Safety cap — prevent unbounded memory growth
+					if(tcTokenRetriedMsgIds.size > 500) {
+						tcTokenRetriedMsgIds.clear()
+					}
+>>>>>>> master
 
 					;(async () => {
 						try {
 							await delay(1500)
+<<<<<<< claude/check-baileys-pr-2339-blJ29
 							const msg =
 								(await getMessage(key)) ??
 								// Fallback: ack can arrive <30ms after send, before store persists
 								messageRetryManager?.getRecentMessage(jid, msgId)?.message
+=======
+							const msg = await getMessage(key)
+>>>>>>> master
 							if(msg) {
 								await relayMessage(jid, msg, { messageId: msgId, useUserDevicesCache: true })
 								logTcToken('retry_463_ok', { jid, msgId })
