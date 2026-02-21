@@ -640,6 +640,7 @@ export const generateCarouselMessage = async (
 
 			const header: any = {
 				title: card.title || '',
+				subtitle: card.footer || '',
 				hasMediaAttachment: hasMedia
 			}
 
@@ -683,19 +684,15 @@ export const generateCarouselMessage = async (
 	)
 
 	// Build the interactive message with carousel
-	// Known working structure:
-	// - Direct interactiveMessage at root (NO viewOnceMessage wrapper)
-	// - Root header with title + hasMediaAttachment: false
-	// - messageVersion: 1 in carouselMessage
-	// - Body and footer at root level
+	// carouselMessage first, then header/body/footer (matches working structure)
 	const interactiveMessage: proto.Message.IInteractiveMessage = {
-		header: { title: title || ' ', hasMediaAttachment: false },
-		body: { text: text || '' },
-		footer: footer ? { text: footer } : undefined,
 		carouselMessage: {
 			cards: carouselCards,
 			messageVersion: 1
-		}
+		},
+		header: { title: title || ' ', hasMediaAttachment: false },
+		body: { text: text || '' },
+		footer: footer ? { text: footer } : undefined
 	}
 
 	// Log carousel structure summary for debugging
@@ -720,9 +717,7 @@ export const generateCarouselMessage = async (
 		'[CAROUSEL] Structure summary'
 	)
 
-	// Direct interactiveMessage at root - NO viewOnceMessage, NO messageContextInfo
-	// viewOnceMessage breaks iOS, messageContextInfo breaks iOS
-	// Web shows header-only fallback (carousel is mobile-only on WhatsApp)
+	// Direct interactiveMessage at root (field 45) — no viewOnceMessage wrapper
 	return {
 		interactiveMessage
 	}
@@ -1244,12 +1239,9 @@ export const generateWAMessageContent = async (
 		}
 		// Pass options for media processing if cards have images/videos
 		const generated = await generateCarouselMessage(carouselOptions, options)
-		// Send carousel as direct interactiveMessage (no viewOnceMessage wrapper)
-		// viewOnceMessage breaks iOS; messageContextInfo breaks iOS delivery
+		// Direct interactiveMessage — no viewOnceMessage wrapper, no root header/body/footer
 		m.interactiveMessage = generated.interactiveMessage
-		options.logger?.info('Sending carousel as direct interactiveMessage')
-		// Return plain JS object - no fromObject() to avoid corrupting nested carousel structures
-		return m
+		return m as proto.IMessage
 	}
 	// Check for nativeList
 	else if (hasNonNullishProperty(message, 'nativeList')) {
@@ -1377,17 +1369,8 @@ export const generateWAMessageContent = async (
 			}
 		}
 
-		// Wrap in viewOnceMessage for better iOS/Android compatibility
-		m.viewOnceMessage = {
-			message: {
-				messageContextInfo: {
-					deviceListMetadata: {},
-					deviceListMetadataVersion: 2
-				},
-				interactiveMessage
-			}
-		}
-		options.logger?.warn('[EXPERIMENTAL] Sending carouselMessage with viewOnceMessage wrapper')
+		// Direct interactiveMessage — no viewOnceMessage wrapper
+		m.interactiveMessage = interactiveMessage
 	} else if (hasNonNullishProperty(message, 'album')) {
 		// Album message validation - actual sending is handled in messages-send.ts
 		const { medias } = message.album
@@ -1827,10 +1810,9 @@ export const generateWAMessageFromContent = (
 		}
 	}
 
-	// Skip ephemeral contextInfo for carousel messages - carousel was already
-	// processed with fromObject and adding contextInfo.expiration may cause
-	// error 479 on linked devices (Web/Desktop)
-	const isCarouselEphemeral = !!(message as any)?.viewOnceMessage?.message?.interactiveMessage?.carouselMessage
+	// Skip ephemeral contextInfo for carousel messages
+	const isCarouselEphemeral = !!(message as any)?.interactiveMessage?.carouselMessage ||
+		!!(message as any)?.viewOnceMessage?.message?.interactiveMessage?.carouselMessage
 	if (
 		// if we want to send a disappearing message
 		!!options?.ephemeralExpiration &&
@@ -1851,11 +1833,11 @@ export const generateWAMessageFromContent = (
 		}
 	}
 
-	// For carousel messages already processed with fromObject, skip create() to
-	// preserve the deep protobuf conversion. create() does shallow assignment which
-	// may not properly handle deeply nested carousel structures (cards > headers > media)
-	const isCarouselVOM = !!(message as any)?.viewOnceMessage?.message?.interactiveMessage?.carouselMessage
-	if (!isCarouselVOM) {
+	// Skip Message.create() for carousel — InteractiveMessage has oneOf (fields 4-7)
+	// and create() may corrupt the carouselMessage/nativeFlowMessage oneOf resolution
+	const isCarouselMsg = !!(message as any)?.interactiveMessage?.carouselMessage ||
+		!!(message as any)?.viewOnceMessage?.message?.interactiveMessage?.carouselMessage
+	if (!isCarouselMsg) {
 		message = WAProto.Message.create(message)
 	}
 

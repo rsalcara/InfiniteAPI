@@ -1143,9 +1143,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const { user: mePnUser } = jidDecode(meId)!
 				const { user: meLidUser } = meLid ? jidDecode(meLid)! : { user: null }
 
-				// Carousel in DSM wrapper causes error 479 on own devices
-				const isCarouselMsg = isCarouselMessage(message)
-
 				for (const { user, jid } of devices) {
 					const isExactSenderDevice = jid === meId || (meLid && jid === meLid)
 					if (isExactSenderDevice) {
@@ -1157,11 +1154,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					const isMe = user === mePnUser || user === meLidUser
 
 					if (isMe) {
-						if (isCarouselMsg) {
-							logger.debug({ jid }, '[CAROUSEL] Skipping own device - DSM carousel causes error 479')
-							continue
-						}
-
+						// Send DSM to ALL own companion devices including carousel
+						// Error 479 on companion devices is non-fatal
 						meRecipients.push(jid)
 					} else {
 						otherRecipients.push(jid)
@@ -1197,8 +1191,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const isParticipantLid = isLidUser(participant.jid)
 				const isMe = areJidsSameUser(participant.jid, isParticipantLid ? meLid : meId)
 
-				// Skip DSM for carousel - own devices reject it with error 479
-				const usesDSM = isMe && !isCarouselMessage(message)
+				// Send DSM for all message types including carousel
+				const usesDSM = isMe
 				const encodedMessageToSend = usesDSM
 					? encodeWAMessage({
 							deviceSentMessage: {
@@ -1262,8 +1256,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// The biz node MUST be last for WhatsApp Web carousel rendering
 			const deferredNodes: BinaryNode[] = []
 
-			// EXPERIMENTAL: Try biz node injection for ALL interactive messages including catalog
-			// Previously we skipped catalog messages but they weren't rendering properly
+			// Inject biz node for interactive messages (including carousel)
 			if (buttonType && enableInteractiveMessages) {
 				const startTime = Date.now()
 
@@ -2217,59 +2210,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 
 			const userJid = authState.creds.me!.id
-
-			// Special path for carousel: call relayMessage directly with plain JS object
-			// This matches the known working approach:
-			// 1. Build message as plain JS object (not proto instance)
-			// 2. Pass directly to relayMessage (no WAProto.Message.fromObject/create)
-			// 3. protobuf encode() handles plain objects correctly during serialization
-			// Going through fromObject() can corrupt nested carousel InteractiveMessage oneOf fields
-			if (typeof content === 'object' && 'nativeCarousel' in content && (content as any).nativeCarousel) {
-				const messageId = generateMessageIDV2(sock.user?.id)
-				// generateWAMessageContent returns a plain JS object for carousel
-				// (not a proto instance) to preserve nested structure integrity
-				const msgContent = await generateWAMessageContent(content, {
-					logger,
-					upload: waUploadToServer,
-					mediaCache: config.mediaCache,
-					options: config.options,
-					jid
-				})
-
-				// Pass the plain JS object directly to relayMessage
-				// This avoids proto.WebMessageInfo.fromObject() which would call
-				// Message.fromObject() on the nested message, potentially corrupting it
-				await relayMessage(jid, msgContent, {
-					messageId,
-					useCachedGroupMetadata: options.useCachedGroupMetadata,
-					additionalAttributes: {},
-					statusJidList: options.statusJidList
-				})
-
-				// Build WebMessageInfo only for event emission and return value
-				const timestamp = unixTimestampSeconds()
-				const fullMsg = proto.WebMessageInfo.fromObject({
-					key: {
-						remoteJid: jid,
-						fromMe: true,
-						id: messageId
-					},
-					message: msgContent,
-					messageTimestamp: timestamp,
-					messageStubParameters: [],
-					participant: isJidGroup(jid) ? userJid : undefined,
-					status: proto.WebMessageInfo.Status.PENDING
-				}) as WAMessage
-
-				if (config.emitOwnEvents) {
-					process.nextTick(async () => {
-						const mutexKey = fullMsg.key.remoteJid || fullMsg.key.id || 'unknown'
-						await messageMutex.mutex(mutexKey, () => upsertMessage(fullMsg, 'append'))
-					})
-				}
-
-				return fullMsg
-			}
 
 			if (
 				typeof content === 'object' &&
