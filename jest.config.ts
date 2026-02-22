@@ -17,12 +17,23 @@ const config: Config = {
 				useESM: true,
 				tsconfig: {
 					module: 'esnext',
+					allowJs: true,
 					verbatimModuleSyntax: false,
 					allowImportingTsExtensions: false,
 				},
 			},
 		],
-		'^.+\\.js$': ['ts-jest', { useESM: true }],
+		'^.+\\.js$': [
+			'ts-jest',
+			{
+				useESM: true,
+				tsconfig: {
+					module: 'esnext',
+					allowJs: true,
+					verbatimModuleSyntax: false,
+				},
+			},
+		],
 	},
 	transformIgnorePatterns: [
 		'node_modules/(?!(protobufjs|long|@protobufjs|@types/long|whatsapp-rust-bridge)/)',

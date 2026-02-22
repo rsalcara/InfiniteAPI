@@ -37,10 +37,11 @@ import {
 	decodePatches,
 	decodeSyncdSnapshot,
 	encodeSyncdPatch,
+	ensureLTHashStateVersion,
 	extractSyncdPatches,
 	generateProfilePicture,
 	getHistoryMsg,
-	ensureLTHashStateVersion,
+	isAppStateSyncIrrecoverable,
 	newLTHashState,
 	processSyncAction
 } from '../Utils'
@@ -60,7 +61,6 @@ import {
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeSocket } from './socket.js'
-const MAX_SYNC_ATTEMPTS = 2
 
 export const makeChatsSocket = (config: SocketConfig) => {
 	const {
@@ -573,11 +573,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	}
 
-	const isAppStateSyncIrrecoverable = (error: any): boolean => {
-		const statusCode = error?.output?.statusCode
-		return statusCode === 400 || statusCode === 405 || statusCode === 406
-	}
-
 	const resyncAppState = ev.createBufferedFunction(
 		async (collections: readonly WAPatchName[], isInitialSync: boolean) => {
 			// we use this to determine which events to fire
@@ -612,15 +607,20 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 						states[name] = state
 
-						logger.info(`resyncing ${name} from v${state.version}`)
+						const shouldForceSnapshot = forceSnapshotCollections.has(name)
+						if (shouldForceSnapshot) {
+							forceSnapshotCollections.delete(name)
+						}
+
+						logger.info(`resyncing ${name} from v${state.version}${shouldForceSnapshot ? ' (forcing snapshot)' : ''}`)
 
 						nodes.push({
 							tag: 'collection',
 							attrs: {
 								name,
 								version: state.version.toString(),
-								// return snapshot if being synced from scratch or forced by a previous error
-								return_snapshot: (!state.version || forceSnapshotCollections.has(name)).toString()
+								// return snapshot if syncing from scratch or forcing after a failed attempt
+								return_snapshot: (shouldForceSnapshot || !state.version).toString()
 							}
 						})
 					}
@@ -691,39 +691,26 @@ export const makeChatsSocket = (config: SocketConfig) => {
 								collectionsToHandle.delete(name)
 							}
 						} catch (error: any) {
-							// if retry attempts overshoot, key not found, or irrecoverable status
-							const isKeyNotFound = error.output?.statusCode === 404
-							const isIrrecoverableStatus = isAppStateSyncIrrecoverable(error)
-							const isIrrecoverableError =
-								(attemptsMap[name] || 0) >= MAX_SYNC_ATTEMPTS || isKeyNotFound || error.name === 'TypeError' || isIrrecoverableStatus
-							if (isKeyNotFound) {
-								const currentVersion = states[name]?.version ?? 0
-								logger.info(
-									{ name },
-									`app state sync: decryption key not available for "${name}" (syncing from v${currentVersion}) -- expected for new sessions where old keys are not shared by the server`
-								)
-							} else if (isIrrecoverableStatus) {
-								logger.info(
-									{ name, statusCode: error?.output?.statusCode },
-									`app state sync: irrecoverable error for "${name}" (status ${error?.output?.statusCode}) -- stopping retry`
-								)
-							} else {
-								logger.info(
-									{ name, error: error.stack },
-									`failed to sync state from version${isIrrecoverableError ? '' : ', forcing snapshot on next retry'}`
-								)
-							}
-
-							// schedule a forced snapshot on next retry instead of aggressively resetting state to null
-							if (!isIrrecoverableError) {
-								forceSnapshotCollections.add(name)
-							}
-							// increment number of retries
 							attemptsMap[name] = (attemptsMap[name] || 0) + 1
 
-							if (isIrrecoverableError) {
-								// stop retrying
+							const irrecoverable = isAppStateSyncIrrecoverable(error, attemptsMap[name])
+							const logData = {
+								name,
+								attempt: attemptsMap[name],
+								version: states[name].version,
+								statusCode: error.output?.statusCode,
+								errorType: error.name,
+								error: error.stack
+							}
+
+							if (irrecoverable) {
+								logger.warn(logData, `failed to sync ${name} from v${states[name].version}, giving up`)
 								collectionsToHandle.delete(name)
+							} else {
+								logger.info(logData, `failed to sync ${name} from v${states[name].version}, forcing snapshot retry`)
+								// force a full snapshot on retry to recover from
+								// corrupted local state (e.g. LTHash MAC mismatch)
+								forceSnapshotCollections.add(name)
 							}
 						}
 					}
