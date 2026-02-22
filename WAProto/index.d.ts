@@ -5550,7 +5550,7 @@ export namespace proto {
         newsletterAdminProfileMessage?: (proto.Message.IFutureProofMessage|null);
         newsletterAdminProfileMessageV2?: (proto.Message.IFutureProofMessage|null);
         spoilerMessage?: (proto.Message.IFutureProofMessage|null);
-        pollCreationMessageV6?: (proto.Message.IFutureProofMessage|null);
+        pollCreationMessageV6?: (proto.Message.IPollCreationMessage|null);
     }
 
     class Message implements IMessage {
@@ -5653,7 +5653,7 @@ export namespace proto {
         public newsletterAdminProfileMessage?: (proto.Message.IFutureProofMessage|null);
         public newsletterAdminProfileMessageV2?: (proto.Message.IFutureProofMessage|null);
         public spoilerMessage?: (proto.Message.IFutureProofMessage|null);
-        public pollCreationMessageV6?: (proto.Message.IFutureProofMessage|null);
+        public pollCreationMessageV6?: (proto.Message.IPollCreationMessage|null);
         public static create(properties?: proto.IMessage): proto.Message;
         public static encode(m: proto.IMessage, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Message;
@@ -14065,12 +14065,14 @@ export namespace proto {
     interface IWallpaperSettings {
         filename?: (string|null);
         opacity?: (number|null);
+        isGenAi?: (boolean|null);
     }
 
     class WallpaperSettings implements IWallpaperSettings {
         constructor(p?: proto.IWallpaperSettings);
         public filename?: (string|null);
         public opacity?: (number|null);
+        public isGenAi?: (boolean|null);
         public static create(properties?: proto.IWallpaperSettings): proto.WallpaperSettings;
         public static encode(m: proto.IWallpaperSettings, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.WallpaperSettings;

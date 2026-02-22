@@ -38174,7 +38174,7 @@ export const proto = $root.proto = (() => {
             if (m.spoilerMessage != null && Object.hasOwnProperty.call(m, "spoilerMessage"))
                 $root.proto.Message.FutureProofMessage.encode(m.spoilerMessage, w.uint32(946).fork()).ldelim();
             if (m.pollCreationMessageV6 != null && Object.hasOwnProperty.call(m, "pollCreationMessageV6"))
-                $root.proto.Message.FutureProofMessage.encode(m.pollCreationMessageV6, w.uint32(954).fork()).ldelim();
+                $root.proto.Message.PollCreationMessage.encode(m.pollCreationMessageV6, w.uint32(954).fork()).ldelim();
             return w;
         };
 
@@ -38580,7 +38580,7 @@ export const proto = $root.proto = (() => {
                         break;
                     }
                 case 119: {
-                        m.pollCreationMessageV6 = $root.proto.Message.FutureProofMessage.decode(r, r.uint32());
+                        m.pollCreationMessageV6 = $root.proto.Message.PollCreationMessage.decode(r, r.uint32());
                         break;
                     }
                 default:
@@ -39086,7 +39086,7 @@ export const proto = $root.proto = (() => {
             if (d.pollCreationMessageV6 != null) {
                 if (typeof d.pollCreationMessageV6 !== "object")
                     throw TypeError(".proto.Message.pollCreationMessageV6: object expected");
-                m.pollCreationMessageV6 = $root.proto.Message.FutureProofMessage.fromObject(d.pollCreationMessageV6);
+                m.pollCreationMessageV6 = $root.proto.Message.PollCreationMessage.fromObject(d.pollCreationMessageV6);
             }
             return m;
         };
@@ -39586,7 +39586,7 @@ export const proto = $root.proto = (() => {
                     d._spoilerMessage = "spoilerMessage";
             }
             if (m.pollCreationMessageV6 != null && m.hasOwnProperty("pollCreationMessageV6")) {
-                d.pollCreationMessageV6 = $root.proto.Message.FutureProofMessage.toObject(m.pollCreationMessageV6, o);
+                d.pollCreationMessageV6 = $root.proto.Message.PollCreationMessage.toObject(m.pollCreationMessageV6, o);
                 if (o.oneofs)
                     d._pollCreationMessageV6 = "pollCreationMessageV6";
             }
@@ -96848,6 +96848,7 @@ export const proto = $root.proto = (() => {
 
         WallpaperSettings.prototype.filename = null;
         WallpaperSettings.prototype.opacity = null;
+        WallpaperSettings.prototype.isGenAi = null;
 
         let $oneOfFields;
 
@@ -96863,6 +96864,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(WallpaperSettings.prototype, "_isGenAi", {
+            get: $util.oneOfGetter($oneOfFields = ["isGenAi"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         WallpaperSettings.create = function create(properties) {
             return new WallpaperSettings(properties);
         };
@@ -96874,6 +96881,8 @@ export const proto = $root.proto = (() => {
                 w.uint32(10).string(m.filename);
             if (m.opacity != null && Object.hasOwnProperty.call(m, "opacity"))
                 w.uint32(16).uint32(m.opacity);
+            if (m.isGenAi != null && Object.hasOwnProperty.call(m, "isGenAi"))
+                w.uint32(24).bool(m.isGenAi);
             return w;
         };
 
@@ -96894,6 +96903,10 @@ export const proto = $root.proto = (() => {
                         m.opacity = r.uint32();
                         break;
                     }
+                case 3: {
+                        m.isGenAi = r.bool();
+                        break;
+                    }
                 default:
                     r.skipType(t & 7);
                     break;
@@ -96912,6 +96925,9 @@ export const proto = $root.proto = (() => {
             if (d.opacity != null) {
                 m.opacity = d.opacity >>> 0;
             }
+            if (d.isGenAi != null) {
+                m.isGenAi = Boolean(d.isGenAi);
+            }
             return m;
         };
 
@@ -96928,6 +96944,11 @@ export const proto = $root.proto = (() => {
                 d.opacity = m.opacity;
                 if (o.oneofs)
                     d._opacity = "opacity";
+            }
+            if (m.isGenAi != null && m.hasOwnProperty("isGenAi")) {
+                d.isGenAi = m.isGenAi;
+                if (o.oneofs)
+                    d._isGenAi = "isGenAi";
             }
             return d;
         };
