@@ -25,6 +25,9 @@ jobs:
           corepack enable
           corepack prepare yarn@4.x --activate
 
+      - name: Fix Git config
+        run: git config --global core.autocrlf input
+
       - name: Configure Git for HTTPS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
