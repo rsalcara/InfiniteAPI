@@ -573,12 +573,18 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	}
 
+	const isAppStateSyncIrrecoverable = (error: any): boolean => {
+		const statusCode = error?.output?.statusCode
+		return statusCode === 400 || statusCode === 405 || statusCode === 406
+	}
+
 	const resyncAppState = ev.createBufferedFunction(
 		async (collections: readonly WAPatchName[], isInitialSync: boolean) => {
 			// we use this to determine which events to fire
 			// otherwise when we resync from scratch -- all notifications will fire
 			const initialVersionMap: { [T in WAPatchName]?: number } = {}
 			const globalMutationMap: ChatMutationMap = {}
+			const forceSnapshotCollections = new Set<WAPatchName>()
 
 			await authState.keys.transaction(async () => {
 				const collectionsToHandle = new Set<string>(collections)
@@ -613,8 +619,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 							attrs: {
 								name,
 								version: state.version.toString(),
-								// return snapshot if being synced from scratch
-								return_snapshot: (!state.version).toString()
+								// return snapshot if being synced from scratch or forced by a previous error
+								return_snapshot: (!state.version || forceSnapshotCollections.has(name)).toString()
 							}
 						})
 					}
@@ -685,25 +691,33 @@ export const makeChatsSocket = (config: SocketConfig) => {
 								collectionsToHandle.delete(name)
 							}
 						} catch (error: any) {
-							// if retry attempts overshoot
-							// or key not found
+							// if retry attempts overshoot, key not found, or irrecoverable status
 							const isKeyNotFound = error.output?.statusCode === 404
+							const isIrrecoverableStatus = isAppStateSyncIrrecoverable(error)
 							const isIrrecoverableError =
-								(attemptsMap[name] || 0) >= MAX_SYNC_ATTEMPTS || isKeyNotFound || error.name === 'TypeError'
+								(attemptsMap[name] || 0) >= MAX_SYNC_ATTEMPTS || isKeyNotFound || error.name === 'TypeError' || isIrrecoverableStatus
 							if (isKeyNotFound) {
 								const currentVersion = states[name]?.version ?? 0
 								logger.info(
 									{ name },
 									`app state sync: decryption key not available for "${name}" (syncing from v${currentVersion}) -- expected for new sessions where old keys are not shared by the server`
 								)
+							} else if (isIrrecoverableStatus) {
+								logger.info(
+									{ name, statusCode: error?.output?.statusCode },
+									`app state sync: irrecoverable error for "${name}" (status ${error?.output?.statusCode}) -- stopping retry`
+								)
 							} else {
 								logger.info(
 									{ name, error: error.stack },
-									`failed to sync state from version${isIrrecoverableError ? '' : ', removing and trying from scratch'}`
+									`failed to sync state from version${isIrrecoverableError ? '' : ', forcing snapshot on next retry'}`
 								)
 							}
 
-							await authState.keys.set({ 'app-state-sync-version': { [name]: null } })
+							// schedule a forced snapshot on next retry instead of aggressively resetting state to null
+							if (!isIrrecoverableError) {
+								forceSnapshotCollections.add(name)
+							}
 							// increment number of retries
 							attemptsMap[name] = (attemptsMap[name] || 0) + 1
 

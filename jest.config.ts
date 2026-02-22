@@ -25,7 +25,7 @@ const config: Config = {
 		'^.+\\.js$': ['ts-jest', { useESM: true }],
 	},
 	transformIgnorePatterns: [
-		'node_modules/(?!(protobufjs|long|@protobufjs|@types/long)/)',
+		'node_modules/(?!(protobufjs|long|@protobufjs|@types/long|whatsapp-rust-bridge)/)',
 	],
 }
 
