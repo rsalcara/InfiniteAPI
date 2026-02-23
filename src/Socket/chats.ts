@@ -54,8 +54,6 @@ import {
 	getBinaryNodeChildren,
 	isAnyLidUser,
 	isAnyPnUser,
-	isLidUser,
-	isPnUser,
 	jidDecode,
 	jidNormalizedUser,
 	reduceBinaryNodeToDictionary,
@@ -864,7 +862,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const presenceSubscribe = async (toJid: string) => {
 		// Only include tctoken for user JIDs — groups/newsletters don't use tctokens
 		const normalizedToJid = jidNormalizedUser(toJid)
-		const isUserJid = isPnUser(normalizedToJid) || isLidUser(normalizedToJid)
+		const isUserJid = isAnyPnUser(normalizedToJid) || isAnyLidUser(normalizedToJid)
 		const tcTokenContent = isUserJid
 			? await buildTcTokenFromJid({ authState, jid: normalizedToJid, getLIDForPN })
 			: undefined
