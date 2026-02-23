@@ -123,6 +123,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		getPrivacyTokens
 	} = sock
 
+	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
 	const retryMutex = makeMutex()
 
@@ -720,10 +722,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// When a session is refreshed (identity change), re-issue tctoken fire-and-forget
 			if(result.action === 'session_refreshed') {
 				const normalizedJid = jidNormalizedUser(from)
-				resolveTcTokenJid(
-					normalizedJid,
-					signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
-				).then(async (tcJid) => {
+				resolveTcTokenJid(normalizedJid, getLIDForPN).then(async (tcJid) => {
 					const tcData = await authState.keys.get('tctoken', [tcJid])
 					const entry = tcData[tcJid]
 					if(entry?.token?.length && !isTcTokenExpired(entry.timestamp)) {
@@ -1064,7 +1063,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		if(!tokensNode) return
 
 		const tokenNodes = getBinaryNodeChildren(tokensNode, 'token')
-		const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 
 		for(const tokenNode of tokenNodes) {
 			const { attrs, content } = tokenNode

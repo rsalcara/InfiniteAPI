@@ -100,6 +100,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		groupToggleEphemeral
 	} = sock
 
+	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+
 	const userDevicesCache =
 		config.userDevicesCache ||
 		new NodeCache<JidWithDevice[]>({
@@ -1456,10 +1458,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			// Resolve destination to LID for tctoken storage — matches Signal session key pattern
 			const tcTokenJid = is1on1Send
-				? await resolveTcTokenJid(
-						destinationJid,
-						signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
-					)
+				? await resolveTcTokenJid(destinationJid, getLIDForPN)
 				: destinationJid
 			const contactTcTokenData = is1on1Send ? await authState.keys.get('tctoken', [tcTokenJid]) : {}
 			const existingTokenEntry = contactTcTokenData[tcTokenJid]
@@ -1488,7 +1487,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							result: fetchResult,
 							fallbackJid: destinationJid,
 							keys: authState.keys,
-							getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+							getLIDForPN
 							// onNewJidStored not passed — the pruning index lives in messages-recv (higher layer)
 						})
 					})
@@ -1594,38 +1593,37 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			await sendNode(stanza)
 
-			// Fire-and-forget: issue our token to the contact (like WA Web's sendTcToken)
-			// Only for 1:1 sends where we already have a token, and when bucket boundary crossed
-			if (is1on1Send && tcTokenBuffer?.length && shouldSendNewTcToken(existingTokenEntry?.senderTimestamp)) {
+			// Fire-and-forget: issue our token to the contact (like WA Web's sendTcToken).
+			// Gated only by shouldSendNewTcToken — removed tcTokenBuffer?.length guard so
+			// issuance fires even when we don't yet hold a token (bucket boundary crossed).
+			// IMPORTANT: must run AFTER sendNode — issuing before the message causes error 463.
+			if (is1on1Send && shouldSendNewTcToken(existingTokenEntry?.senderTimestamp)) {
 				const issueTimestamp = unixTimestampSeconds()
 				logTcToken('reissue', { jid: destinationJid })
-				// WA Web writes senderTimestamp only AFTER the IQ succeeds
-				// (WAWebSendTcTokenChatAction.sendTcToken).
-				// This ensures failed issuance allows re-issuance on the next message
-				// rather than blocking it for up to 7 days (one bucket duration).
 				getPrivacyTokens([destinationJid], issueTimestamp)
 					.then(async result => {
-						// Store any tokens received in the IQ response
+						// Store any tokens received in the IQ response.
+						// onNewJidStored not passed — pruning index lives in messages-recv (higher layer).
 						await storeTcTokensFromIqResult({
 							result,
 							fallbackJid: tcTokenJid,
 							keys: authState.keys,
-							getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+							getLIDForPN
 						})
 
-						// Re-read entry to avoid overwriting concurrent notification handler updates
+						// Persist senderTimestamp unconditionally — WA Web stores it in the chat table
+						// regardless of whether a token exists. Spread preserves token+timestamp if present.
 						const currentData = await authState.keys.get('tctoken', [tcTokenJid])
 						const currentEntry = currentData[tcTokenJid]
-						if (currentEntry?.token?.length) {
-							await authState.keys.set({
-								tctoken: {
-									[tcTokenJid]: {
-										...currentEntry,
-										senderTimestamp: issueTimestamp
-									}
+						await authState.keys.set({
+							tctoken: {
+								[tcTokenJid]: {
+									token: Buffer.alloc(0),
+									...currentEntry,
+									senderTimestamp: issueTimestamp
 								}
-							})
-						}
+							}
+						})
 
 						logTcToken('reissue_ok', { jid: destinationJid })
 					})
