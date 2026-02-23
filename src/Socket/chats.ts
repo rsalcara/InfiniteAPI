@@ -705,6 +705,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 							if (irrecoverable) {
 								logger.warn(logData, `failed to sync ${name} from v${states[name].version}, giving up`)
+								// reset persisted version to null so the next resyncAppState call
+								// requests a full snapshot instead of reusing the stale version that caused the error
+								await authState.keys.set({ 'app-state-sync-version': { [name]: null } })
 								collectionsToHandle.delete(name)
 							} else {
 								logger.info(logData, `failed to sync ${name} from v${states[name].version}, forcing snapshot retry`)
