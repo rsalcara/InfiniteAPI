@@ -385,8 +385,8 @@ export const getErrorCodeFromStreamError = (node: BinaryNode) => {
 		return { reason: 'device_removed', statusCode: DisconnectReason.loggedOut }
 	}
 
-	// Child-level code parsing: parent code attr > CODE_MAP from child tag > badSession
-	const statusCode = +(node.attrs.code || CODE_MAP[reason] || DisconnectReason.badSession)
+	// Child-level code parsing: parent code attr > child code attr > CODE_MAP from child tag > badSession
+	const statusCode = +(node.attrs.code || reasonNode?.attrs?.code || CODE_MAP[reason] || DisconnectReason.badSession)
 
 	if(statusCode === DisconnectReason.restartRequired) {
 		reason = 'restart required'

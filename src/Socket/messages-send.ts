@@ -1618,7 +1618,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						await authState.keys.set({
 							tctoken: {
 								[tcTokenJid]: {
-									token: Buffer.alloc(0),
+									token: currentEntry?.token ?? Buffer.alloc(0),
 									...currentEntry,
 									senderTimestamp: issueTimestamp
 								}
