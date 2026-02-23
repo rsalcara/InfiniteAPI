@@ -28,13 +28,10 @@ jobs:
         run: git config --global core.autocrlf input
 
       - name: Configure Git for HTTPS
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Force git to use HTTPS with token instead of SSH for GitHub repositories
-          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
-          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "git@github.com:"
-          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+          # Reescreve SSH -> HTTPS para repositórios públicos do GitHub (sem token, evita erros de autenticação)
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
 
       - name: Restore Yarn Cache
         uses: actions/cache@v4
