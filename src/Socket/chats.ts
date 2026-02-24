@@ -1347,7 +1347,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					)
 					return
 				}
-
 				logger.info('Doing app state sync')
 				await resyncAppState(ALL_WA_PATCH_NAMES, true)
 
