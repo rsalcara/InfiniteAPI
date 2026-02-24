@@ -274,7 +274,7 @@ describe('handleBadAck error 463 retry', () => {
 	it('should fall back to messageRetryManager when getMessage returns undefined', async () => {
 		const cachedMsg = { conversation: 'cached' }
 		const mockRetryManager: MockMessageRetryManager = {
-			getRecentMessage: jest.fn().mockReturnValue({ message: cachedMsg })
+			getRecentMessage: jest.fn<(jid: string, msgId: string) => { message: any } | undefined>().mockReturnValue({ message: cachedMsg })
 		}
 		mockGetMessage.mockResolvedValue(undefined)
 		mockRelayMessage.mockResolvedValue(undefined)
