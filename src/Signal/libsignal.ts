@@ -286,6 +286,17 @@ export function makeLibSignalRepository(
 		updateAgeOnGet: true
 	})
 
+	// Cache for device-list DB reads in migrateSession.
+	// The device list changes rarely (new linked device), so a 5-minute TTL avoids
+	// a DB round-trip on every incoming LID message without risking stale state:
+	// new devices are picked up at most 5 minutes late (still migrated via their own
+	// decrypt transaction when the session is first used).
+	const deviceListCache = new LRUCache<string, string[]>({
+		max: 500,
+		ttl: 5 * 60 * 1000, // 5 minutes
+		ttlAutopurge: true
+	})
+
 	const repository: SignalRepositoryWithLIDStore = {
 		decryptGroupMessage({ group, authorJid, msg }) {
 			const senderName = jidToSignalSenderKeyName(group, authorJid)
@@ -493,11 +504,23 @@ export function makeLibSignalRepository(
 
 			logger.debug({ fromJid }, 'bulk device migration - loading all user devices')
 
-			// Get user's device list from storage
-			const { [user]: userDevices } = await parsedKeys.get('device-list', [user])
+			// Get user's device list — use in-memory cache to avoid a DB round-trip on
+			// every incoming LID message. Cache is invalidated after 5 minutes.
+			let userDevices: string[] | undefined = deviceListCache.get(user)
+			if (!userDevices) {
+				const result = await parsedKeys.get('device-list', [user])
+				userDevices = result[user]
+				if (userDevices) {
+					deviceListCache.set(user, userDevices)
+				}
+			}
+
 			if (!userDevices) {
 				return { migrated: 0, skipped: 0, total: 0 }
 			}
+
+			// Work on a copy so we don't mutate the cached array
+			userDevices = [...userDevices]
 
 			const { device: fromDevice } = decoded1
 			const fromDeviceStr = fromDevice?.toString() || '0'

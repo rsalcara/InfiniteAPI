@@ -54,9 +54,9 @@ export interface BufferConfig {
  */
 export function loadBufferConfig(): BufferConfig {
 	return {
-		bufferTimeoutMs: parseInt(process.env.BAILEYS_BUFFER_TIMEOUT_MS || '30000', 10),
-		minBufferTimeoutMs: parseInt(process.env.BAILEYS_BUFFER_MIN_TIMEOUT_MS || '5000', 10),
-		maxBufferTimeoutMs: parseInt(process.env.BAILEYS_BUFFER_MAX_TIMEOUT_MS || '60000', 10),
+		bufferTimeoutMs: parseInt(process.env.BAILEYS_BUFFER_TIMEOUT_MS || '15000', 10),
+		minBufferTimeoutMs: parseInt(process.env.BAILEYS_BUFFER_MIN_TIMEOUT_MS || '3000', 10),
+		maxBufferTimeoutMs: parseInt(process.env.BAILEYS_BUFFER_MAX_TIMEOUT_MS || '20000', 10),
 		maxHistoryCacheSize: parseInt(process.env.BAILEYS_BUFFER_MAX_HISTORY_CACHE || '10000', 10),
 		maxBufferSize: parseInt(process.env.BAILEYS_BUFFER_MAX_SIZE || '5000', 10),
 		flushDebounceMs: parseInt(process.env.BAILEYS_BUFFER_FLUSH_DEBOUNCE_MS || '100', 10),

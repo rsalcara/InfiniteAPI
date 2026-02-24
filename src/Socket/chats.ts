@@ -1330,6 +1330,24 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			if (syncState === SyncState.Syncing) {
 				// All collections will be synced, so clear any blocked ones
 				blockedCollections.clear()
+
+				// On reconnections, the app state was already synced in a previous session.
+				// Run the resync in the background so that live incoming messages are not
+				// blocked waiting for the IQ queries (which can take up to 60s each).
+				const isReconnect = (authState.creds.accountSyncCounter ?? 0) > 0
+				if (isReconnect) {
+					logger.info('Reconnection: running app state resync in background to avoid blocking live messages')
+					syncState = SyncState.Online
+					ev.flush()
+					const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
+					ev.emit('creds.update', { accountSyncCounter })
+					// Fire-and-forget: patches are applied in background, mutations arrive via resyncAppState
+					resyncAppState(ALL_WA_PATCH_NAMES, true).catch(err =>
+						logger.warn({ err }, 'Background app state resync failed (non-critical on reconnection)')
+					)
+					return
+				}
+
 				logger.info('Doing app state sync')
 				await resyncAppState(ALL_WA_PATCH_NAMES, true)
 
@@ -1429,6 +1447,19 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		syncState = SyncState.AwaitingInitialSync
 		logger.info('Connection is now AwaitingInitialSync, buffering events')
 		ev.buffer()
+
+		// On reconnections (accountSyncCounter > 0), app state was already synced in a previous
+		// session. Skip the 20s AwaitingInitialSync wait and go directly to Online so that
+		// live incoming messages are not held in the buffer for up to 20-60 seconds.
+		// History messages that arrive later are still processed via processMessage regardless
+		// of the state machine phase (see the Syncing → Online path below).
+		const isReconnection = (authState.creds.accountSyncCounter ?? 0) > 0
+		if (isReconnection) {
+			logger.info('Reconnection detected (accountSyncCounter > 0), skipping AwaitingInitialSync wait. Transitioning to Online immediately.')
+			syncState = SyncState.Online
+			setTimeout(() => ev.flush(), 0)
+			return
+		}
 
 		const willSyncHistory = shouldSyncHistoryMessage(
 			proto.Message.HistorySyncNotification.create({
