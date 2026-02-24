@@ -1619,6 +1619,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							tctoken: {
 								[tcTokenJid]: {
 									token: currentEntry?.token ?? Buffer.alloc(0),
+									token: Buffer.alloc(0),
 									...currentEntry,
 									senderTimestamp: issueTimestamp
 								}
