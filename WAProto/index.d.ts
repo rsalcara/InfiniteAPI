@@ -10322,6 +10322,7 @@ export namespace proto {
         SETTINGS_SYNC_ACTION = 78,
         OUT_CONTACT_ACTION = 79,
         NCT_SALT_SYNC_ACTION = 80,
+        BUSINESS_BROADCAST_CAMPAIGN_ACTION = 81,
         SHARE_OWN_PN = 10001,
         BUSINESS_BROADCAST_ACTION = 10002,
         AI_THREAD_DELETE_ACTION = 10003
@@ -11913,6 +11914,7 @@ export namespace proto {
         settingsSyncAction?: (proto.SyncActionValue.ISettingsSyncAction|null);
         outContactAction?: (proto.SyncActionValue.IOutContactAction|null);
         nctSaltSyncAction?: (proto.SyncActionValue.INctSaltSyncAction|null);
+        businessBroadcastCampaignAction?: (proto.SyncActionValue.IBusinessBroadcastCampaignAction|null);
     }
 
     class SyncActionValue implements ISyncActionValue {
@@ -11988,6 +11990,7 @@ export namespace proto {
         public settingsSyncAction?: (proto.SyncActionValue.ISettingsSyncAction|null);
         public outContactAction?: (proto.SyncActionValue.IOutContactAction|null);
         public nctSaltSyncAction?: (proto.SyncActionValue.INctSaltSyncAction|null);
+        public businessBroadcastCampaignAction?: (proto.SyncActionValue.IBusinessBroadcastCampaignAction|null);
         public static create(properties?: proto.ISyncActionValue): proto.SyncActionValue;
         public static encode(m: proto.ISyncActionValue, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue;
@@ -12144,6 +12147,54 @@ export namespace proto {
             public static toObject(m: proto.SyncActionValue.BusinessBroadcastAssociationAction, o?: $protobuf.IConversionOptions): { [k: string]: any };
             public toJSON(): { [k: string]: any };
             public static getTypeUrl(typeUrlPrefix?: string): string;
+        }
+
+        interface IBusinessBroadcastCampaignAction {
+            deviceId?: (number|null);
+            adId?: (string|null);
+            name?: (string|null);
+            msgId?: (string|null);
+            broadcastJid?: (string|null);
+            reservedQuota?: (number|null);
+            scheduledTimestamp?: (number|Long|null);
+            createTimestamp?: (number|Long|null);
+            status?: (proto.SyncActionValue.BusinessBroadcastCampaignStatus|null);
+            messageBody?: (string|null);
+            mediaData?: (Uint8Array|null);
+            mediaMetadata?: (string|null);
+            ctaButtonJson?: (string|null);
+        }
+
+        class BusinessBroadcastCampaignAction implements IBusinessBroadcastCampaignAction {
+            constructor(p?: proto.SyncActionValue.IBusinessBroadcastCampaignAction);
+            public deviceId?: (number|null);
+            public adId?: (string|null);
+            public name?: (string|null);
+            public msgId?: (string|null);
+            public broadcastJid?: (string|null);
+            public reservedQuota?: (number|null);
+            public scheduledTimestamp?: (number|Long|null);
+            public createTimestamp?: (number|Long|null);
+            public status?: (proto.SyncActionValue.BusinessBroadcastCampaignStatus|null);
+            public messageBody?: (string|null);
+            public mediaData?: (Uint8Array|null);
+            public mediaMetadata?: (string|null);
+            public ctaButtonJson?: (string|null);
+            public static create(properties?: proto.SyncActionValue.IBusinessBroadcastCampaignAction): proto.SyncActionValue.BusinessBroadcastCampaignAction;
+            public static encode(m: proto.SyncActionValue.IBusinessBroadcastCampaignAction, w?: $protobuf.Writer): $protobuf.Writer;
+            public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue.BusinessBroadcastCampaignAction;
+            public static fromObject(d: { [k: string]: any }): proto.SyncActionValue.BusinessBroadcastCampaignAction;
+            public static toObject(m: proto.SyncActionValue.BusinessBroadcastCampaignAction, o?: $protobuf.IConversionOptions): { [k: string]: any };
+            public toJSON(): { [k: string]: any };
+            public static getTypeUrl(typeUrlPrefix?: string): string;
+        }
+
+        enum BusinessBroadcastCampaignStatus {
+            DRAFT = 1,
+            SCHEDULED = 2,
+            PROCESSING = 3,
+            FAILED = 4,
+            SENT = 5
         }
 
         interface IBusinessBroadcastListAction {

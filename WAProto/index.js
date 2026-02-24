@@ -72418,6 +72418,7 @@ export const proto = $root.proto = (() => {
         values[valuesById[78] = "SETTINGS_SYNC_ACTION"] = 78;
         values[valuesById[79] = "OUT_CONTACT_ACTION"] = 79;
         values[valuesById[80] = "NCT_SALT_SYNC_ACTION"] = 80;
+        values[valuesById[81] = "BUSINESS_BROADCAST_CAMPAIGN_ACTION"] = 81;
         values[valuesById[10001] = "SHARE_OWN_PN"] = 10001;
         values[valuesById[10002] = "BUSINESS_BROADCAST_ACTION"] = 10002;
         values[valuesById[10003] = "AI_THREAD_DELETE_ACTION"] = 10003;
@@ -82663,6 +82664,7 @@ export const proto = $root.proto = (() => {
         SyncActionValue.prototype.settingsSyncAction = null;
         SyncActionValue.prototype.outContactAction = null;
         SyncActionValue.prototype.nctSaltSyncAction = null;
+        SyncActionValue.prototype.businessBroadcastCampaignAction = null;
 
         let $oneOfFields;
 
@@ -83092,6 +83094,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(SyncActionValue.prototype, "_businessBroadcastCampaignAction", {
+            get: $util.oneOfGetter($oneOfFields = ["businessBroadcastCampaignAction"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         SyncActionValue.create = function create(properties) {
             return new SyncActionValue(properties);
         };
@@ -83241,6 +83249,8 @@ export const proto = $root.proto = (() => {
                 $root.proto.SyncActionValue.OutContactAction.encode(m.outContactAction, w.uint32(634).fork()).ldelim();
             if (m.nctSaltSyncAction != null && Object.hasOwnProperty.call(m, "nctSaltSyncAction"))
                 $root.proto.SyncActionValue.NctSaltSyncAction.encode(m.nctSaltSyncAction, w.uint32(642).fork()).ldelim();
+            if (m.businessBroadcastCampaignAction != null && Object.hasOwnProperty.call(m, "businessBroadcastCampaignAction"))
+                $root.proto.SyncActionValue.BusinessBroadcastCampaignAction.encode(m.businessBroadcastCampaignAction, w.uint32(650).fork()).ldelim();
             return w;
         };
 
@@ -83535,6 +83545,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 80: {
                         m.nctSaltSyncAction = $root.proto.SyncActionValue.NctSaltSyncAction.decode(r, r.uint32());
+                        break;
+                    }
+                case 81: {
+                        m.businessBroadcastCampaignAction = $root.proto.SyncActionValue.BusinessBroadcastCampaignAction.decode(r, r.uint32());
                         break;
                     }
                 default:
@@ -83909,6 +83923,11 @@ export const proto = $root.proto = (() => {
                     throw TypeError(".proto.SyncActionValue.nctSaltSyncAction: object expected");
                 m.nctSaltSyncAction = $root.proto.SyncActionValue.NctSaltSyncAction.fromObject(d.nctSaltSyncAction);
             }
+            if (d.businessBroadcastCampaignAction != null) {
+                if (typeof d.businessBroadcastCampaignAction !== "object")
+                    throw TypeError(".proto.SyncActionValue.businessBroadcastCampaignAction: object expected");
+                m.businessBroadcastCampaignAction = $root.proto.SyncActionValue.BusinessBroadcastCampaignAction.fromObject(d.businessBroadcastCampaignAction);
+            }
             return m;
         };
 
@@ -84273,6 +84292,11 @@ export const proto = $root.proto = (() => {
                 d.nctSaltSyncAction = $root.proto.SyncActionValue.NctSaltSyncAction.toObject(m.nctSaltSyncAction, o);
                 if (o.oneofs)
                     d._nctSaltSyncAction = "nctSaltSyncAction";
+            }
+            if (m.businessBroadcastCampaignAction != null && m.hasOwnProperty("businessBroadcastCampaignAction")) {
+                d.businessBroadcastCampaignAction = $root.proto.SyncActionValue.BusinessBroadcastCampaignAction.toObject(m.businessBroadcastCampaignAction, o);
+                if (o.oneofs)
+                    d._businessBroadcastCampaignAction = "businessBroadcastCampaignAction";
             }
             return d;
         };
@@ -85132,6 +85156,404 @@ export const proto = $root.proto = (() => {
             };
 
             return BusinessBroadcastAssociationAction;
+        })();
+
+        SyncActionValue.BusinessBroadcastCampaignAction = (function() {
+
+            function BusinessBroadcastCampaignAction(p) {
+                if (p)
+                    for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null)
+                            this[ks[i]] = p[ks[i]];
+            }
+
+            BusinessBroadcastCampaignAction.prototype.deviceId = null;
+            BusinessBroadcastCampaignAction.prototype.adId = null;
+            BusinessBroadcastCampaignAction.prototype.name = null;
+            BusinessBroadcastCampaignAction.prototype.msgId = null;
+            BusinessBroadcastCampaignAction.prototype.broadcastJid = null;
+            BusinessBroadcastCampaignAction.prototype.reservedQuota = null;
+            BusinessBroadcastCampaignAction.prototype.scheduledTimestamp = null;
+            BusinessBroadcastCampaignAction.prototype.createTimestamp = null;
+            BusinessBroadcastCampaignAction.prototype.status = null;
+            BusinessBroadcastCampaignAction.prototype.messageBody = null;
+            BusinessBroadcastCampaignAction.prototype.mediaData = null;
+            BusinessBroadcastCampaignAction.prototype.mediaMetadata = null;
+            BusinessBroadcastCampaignAction.prototype.ctaButtonJson = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessBroadcastCampaignAction.prototype, "_deviceId", {
+                get: $util.oneOfGetter($oneOfFields = ["deviceId"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessBroadcastCampaignAction.prototype, "_adId", {
+                get: $util.oneOfGetter($oneOfFields = ["adId"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessBroadcastCampaignAction.prototype, "_name", {
+                get: $util.oneOfGetter($oneOfFields = ["name"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessBroadcastCampaignAction.prototype, "_msgId", {
+                get: $util.oneOfGetter($oneOfFields = ["msgId"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessBroadcastCampaignAction.prototype, "_broadcastJid", {
+                get: $util.oneOfGetter($oneOfFields = ["broadcastJid"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessBroadcastCampaignAction.prototype, "_reservedQuota", {
+                get: $util.oneOfGetter($oneOfFields = ["reservedQuota"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessBroadcastCampaignAction.prototype, "_scheduledTimestamp", {
+                get: $util.oneOfGetter($oneOfFields = ["scheduledTimestamp"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessBroadcastCampaignAction.prototype, "_createTimestamp", {
+                get: $util.oneOfGetter($oneOfFields = ["createTimestamp"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessBroadcastCampaignAction.prototype, "_status", {
+                get: $util.oneOfGetter($oneOfFields = ["status"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessBroadcastCampaignAction.prototype, "_messageBody", {
+                get: $util.oneOfGetter($oneOfFields = ["messageBody"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessBroadcastCampaignAction.prototype, "_mediaData", {
+                get: $util.oneOfGetter($oneOfFields = ["mediaData"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessBroadcastCampaignAction.prototype, "_mediaMetadata", {
+                get: $util.oneOfGetter($oneOfFields = ["mediaMetadata"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessBroadcastCampaignAction.prototype, "_ctaButtonJson", {
+                get: $util.oneOfGetter($oneOfFields = ["ctaButtonJson"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            BusinessBroadcastCampaignAction.create = function create(properties) {
+                return new BusinessBroadcastCampaignAction(properties);
+            };
+
+            BusinessBroadcastCampaignAction.encode = function encode(m, w) {
+                if (!w)
+                    w = $Writer.create();
+                if (m.deviceId != null && Object.hasOwnProperty.call(m, "deviceId"))
+                    w.uint32(8).int32(m.deviceId);
+                if (m.adId != null && Object.hasOwnProperty.call(m, "adId"))
+                    w.uint32(18).string(m.adId);
+                if (m.name != null && Object.hasOwnProperty.call(m, "name"))
+                    w.uint32(26).string(m.name);
+                if (m.msgId != null && Object.hasOwnProperty.call(m, "msgId"))
+                    w.uint32(34).string(m.msgId);
+                if (m.broadcastJid != null && Object.hasOwnProperty.call(m, "broadcastJid"))
+                    w.uint32(42).string(m.broadcastJid);
+                if (m.reservedQuota != null && Object.hasOwnProperty.call(m, "reservedQuota"))
+                    w.uint32(48).int32(m.reservedQuota);
+                if (m.scheduledTimestamp != null && Object.hasOwnProperty.call(m, "scheduledTimestamp"))
+                    w.uint32(56).int64(m.scheduledTimestamp);
+                if (m.createTimestamp != null && Object.hasOwnProperty.call(m, "createTimestamp"))
+                    w.uint32(64).int64(m.createTimestamp);
+                if (m.status != null && Object.hasOwnProperty.call(m, "status"))
+                    w.uint32(72).int32(m.status);
+                if (m.messageBody != null && Object.hasOwnProperty.call(m, "messageBody"))
+                    w.uint32(82).string(m.messageBody);
+                if (m.mediaData != null && Object.hasOwnProperty.call(m, "mediaData"))
+                    w.uint32(90).bytes(m.mediaData);
+                if (m.mediaMetadata != null && Object.hasOwnProperty.call(m, "mediaMetadata"))
+                    w.uint32(98).string(m.mediaMetadata);
+                if (m.ctaButtonJson != null && Object.hasOwnProperty.call(m, "ctaButtonJson"))
+                    w.uint32(106).string(m.ctaButtonJson);
+                return w;
+            };
+
+            BusinessBroadcastCampaignAction.decode = function decode(r, l, e) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.SyncActionValue.BusinessBroadcastCampaignAction();
+                while (r.pos < c) {
+                    var t = r.uint32();
+                    if (t === e)
+                        break;
+                    switch (t >>> 3) {
+                    case 1: {
+                            m.deviceId = r.int32();
+                            break;
+                        }
+                    case 2: {
+                            m.adId = r.string();
+                            break;
+                        }
+                    case 3: {
+                            m.name = r.string();
+                            break;
+                        }
+                    case 4: {
+                            m.msgId = r.string();
+                            break;
+                        }
+                    case 5: {
+                            m.broadcastJid = r.string();
+                            break;
+                        }
+                    case 6: {
+                            m.reservedQuota = r.int32();
+                            break;
+                        }
+                    case 7: {
+                            m.scheduledTimestamp = r.int64();
+                            break;
+                        }
+                    case 8: {
+                            m.createTimestamp = r.int64();
+                            break;
+                        }
+                    case 9: {
+                            m.status = r.int32();
+                            break;
+                        }
+                    case 10: {
+                            m.messageBody = r.string();
+                            break;
+                        }
+                    case 11: {
+                            m.mediaData = r.bytes();
+                            break;
+                        }
+                    case 12: {
+                            m.mediaMetadata = r.string();
+                            break;
+                        }
+                    case 13: {
+                            m.ctaButtonJson = r.string();
+                            break;
+                        }
+                    default:
+                        r.skipType(t & 7);
+                        break;
+                    }
+                }
+                return m;
+            };
+
+            BusinessBroadcastCampaignAction.fromObject = function fromObject(d) {
+                if (d instanceof $root.proto.SyncActionValue.BusinessBroadcastCampaignAction)
+                    return d;
+                var m = new $root.proto.SyncActionValue.BusinessBroadcastCampaignAction();
+                if (d.deviceId != null) {
+                    m.deviceId = d.deviceId | 0;
+                }
+                if (d.adId != null) {
+                    m.adId = String(d.adId);
+                }
+                if (d.name != null) {
+                    m.name = String(d.name);
+                }
+                if (d.msgId != null) {
+                    m.msgId = String(d.msgId);
+                }
+                if (d.broadcastJid != null) {
+                    m.broadcastJid = String(d.broadcastJid);
+                }
+                if (d.reservedQuota != null) {
+                    m.reservedQuota = d.reservedQuota | 0;
+                }
+                if (d.scheduledTimestamp != null) {
+                    if ($util.Long)
+                        (m.scheduledTimestamp = $util.Long.fromValue(d.scheduledTimestamp)).unsigned = false;
+                    else if (typeof d.scheduledTimestamp === "string")
+                        m.scheduledTimestamp = parseInt(d.scheduledTimestamp, 10);
+                    else if (typeof d.scheduledTimestamp === "number")
+                        m.scheduledTimestamp = d.scheduledTimestamp;
+                    else if (typeof d.scheduledTimestamp === "object")
+                        m.scheduledTimestamp = new $util.LongBits(d.scheduledTimestamp.low >>> 0, d.scheduledTimestamp.high >>> 0).toNumber();
+                }
+                if (d.createTimestamp != null) {
+                    if ($util.Long)
+                        (m.createTimestamp = $util.Long.fromValue(d.createTimestamp)).unsigned = false;
+                    else if (typeof d.createTimestamp === "string")
+                        m.createTimestamp = parseInt(d.createTimestamp, 10);
+                    else if (typeof d.createTimestamp === "number")
+                        m.createTimestamp = d.createTimestamp;
+                    else if (typeof d.createTimestamp === "object")
+                        m.createTimestamp = new $util.LongBits(d.createTimestamp.low >>> 0, d.createTimestamp.high >>> 0).toNumber();
+                }
+                switch (d.status) {
+                default:
+                    if (typeof d.status === "number") {
+                        m.status = d.status;
+                        break;
+                    }
+                    break;
+                case "DRAFT":
+                case 1:
+                    m.status = 1;
+                    break;
+                case "SCHEDULED":
+                case 2:
+                    m.status = 2;
+                    break;
+                case "PROCESSING":
+                case 3:
+                    m.status = 3;
+                    break;
+                case "FAILED":
+                case 4:
+                    m.status = 4;
+                    break;
+                case "SENT":
+                case 5:
+                    m.status = 5;
+                    break;
+                }
+                if (d.messageBody != null) {
+                    m.messageBody = String(d.messageBody);
+                }
+                if (d.mediaData != null) {
+                    if (typeof d.mediaData === "string")
+                        $util.base64.decode(d.mediaData, m.mediaData = $util.newBuffer($util.base64.length(d.mediaData)), 0);
+                    else if (d.mediaData.length >= 0)
+                        m.mediaData = d.mediaData;
+                }
+                if (d.mediaMetadata != null) {
+                    m.mediaMetadata = String(d.mediaMetadata);
+                }
+                if (d.ctaButtonJson != null) {
+                    m.ctaButtonJson = String(d.ctaButtonJson);
+                }
+                return m;
+            };
+
+            BusinessBroadcastCampaignAction.toObject = function toObject(m, o) {
+                if (!o)
+                    o = {};
+                var d = {};
+                if (m.deviceId != null && m.hasOwnProperty("deviceId")) {
+                    d.deviceId = m.deviceId;
+                    if (o.oneofs)
+                        d._deviceId = "deviceId";
+                }
+                if (m.adId != null && m.hasOwnProperty("adId")) {
+                    d.adId = m.adId;
+                    if (o.oneofs)
+                        d._adId = "adId";
+                }
+                if (m.name != null && m.hasOwnProperty("name")) {
+                    d.name = m.name;
+                    if (o.oneofs)
+                        d._name = "name";
+                }
+                if (m.msgId != null && m.hasOwnProperty("msgId")) {
+                    d.msgId = m.msgId;
+                    if (o.oneofs)
+                        d._msgId = "msgId";
+                }
+                if (m.broadcastJid != null && m.hasOwnProperty("broadcastJid")) {
+                    d.broadcastJid = m.broadcastJid;
+                    if (o.oneofs)
+                        d._broadcastJid = "broadcastJid";
+                }
+                if (m.reservedQuota != null && m.hasOwnProperty("reservedQuota")) {
+                    d.reservedQuota = m.reservedQuota;
+                    if (o.oneofs)
+                        d._reservedQuota = "reservedQuota";
+                }
+                if (m.scheduledTimestamp != null && m.hasOwnProperty("scheduledTimestamp")) {
+                    if (typeof m.scheduledTimestamp === "number")
+                        d.scheduledTimestamp = o.longs === String ? String(m.scheduledTimestamp) : m.scheduledTimestamp;
+                    else
+                        d.scheduledTimestamp = o.longs === String ? longToString(m.scheduledTimestamp) : o.longs === Number ? longToNumber(m.scheduledTimestamp) : m.scheduledTimestamp;
+                    if (o.oneofs)
+                        d._scheduledTimestamp = "scheduledTimestamp";
+                }
+                if (m.createTimestamp != null && m.hasOwnProperty("createTimestamp")) {
+                    if (typeof m.createTimestamp === "number")
+                        d.createTimestamp = o.longs === String ? String(m.createTimestamp) : m.createTimestamp;
+                    else
+                        d.createTimestamp = o.longs === String ? longToString(m.createTimestamp) : o.longs === Number ? longToNumber(m.createTimestamp) : m.createTimestamp;
+                    if (o.oneofs)
+                        d._createTimestamp = "createTimestamp";
+                }
+                if (m.status != null && m.hasOwnProperty("status")) {
+                    d.status = o.enums === String ? $root.proto.SyncActionValue.BusinessBroadcastCampaignStatus[m.status] === undefined ? m.status : $root.proto.SyncActionValue.BusinessBroadcastCampaignStatus[m.status] : m.status;
+                    if (o.oneofs)
+                        d._status = "status";
+                }
+                if (m.messageBody != null && m.hasOwnProperty("messageBody")) {
+                    d.messageBody = m.messageBody;
+                    if (o.oneofs)
+                        d._messageBody = "messageBody";
+                }
+                if (m.mediaData != null && m.hasOwnProperty("mediaData")) {
+                    d.mediaData = o.bytes === String ? $util.base64.encode(m.mediaData, 0, m.mediaData.length) : o.bytes === Array ? Array.prototype.slice.call(m.mediaData) : m.mediaData;
+                    if (o.oneofs)
+                        d._mediaData = "mediaData";
+                }
+                if (m.mediaMetadata != null && m.hasOwnProperty("mediaMetadata")) {
+                    d.mediaMetadata = m.mediaMetadata;
+                    if (o.oneofs)
+                        d._mediaMetadata = "mediaMetadata";
+                }
+                if (m.ctaButtonJson != null && m.hasOwnProperty("ctaButtonJson")) {
+                    d.ctaButtonJson = m.ctaButtonJson;
+                    if (o.oneofs)
+                        d._ctaButtonJson = "ctaButtonJson";
+                }
+                return d;
+            };
+
+            BusinessBroadcastCampaignAction.prototype.toJSON = function toJSON() {
+                return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            BusinessBroadcastCampaignAction.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                if (typeUrlPrefix === undefined) {
+                    typeUrlPrefix = "type.googleapis.com";
+                }
+                return typeUrlPrefix + "/proto.SyncActionValue.BusinessBroadcastCampaignAction";
+            };
+
+            return BusinessBroadcastCampaignAction;
+        })();
+
+        SyncActionValue.BusinessBroadcastCampaignStatus = (function() {
+            const valuesById = {}, values = Object.create(valuesById);
+            values[valuesById[1] = "DRAFT"] = 1;
+            values[valuesById[2] = "SCHEDULED"] = 2;
+            values[valuesById[3] = "PROCESSING"] = 3;
+            values[valuesById[4] = "FAILED"] = 4;
+            values[valuesById[5] = "SENT"] = 5;
+            return values;
         })();
 
         SyncActionValue.BusinessBroadcastListAction = (function() {
