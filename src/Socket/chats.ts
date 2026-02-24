@@ -1331,22 +1331,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				// All collections will be synced, so clear any blocked ones
 				blockedCollections.clear()
 
-				// On reconnections, the app state was already synced in a previous session.
-				// Run the resync in the background so that live incoming messages are not
-				// blocked waiting for the IQ queries (which can take up to 60s each).
-				const isReconnect = (authState.creds.accountSyncCounter ?? 0) > 0
-				if (isReconnect) {
-					logger.info('Reconnection: running app state resync in background to avoid blocking live messages')
-					syncState = SyncState.Online
-					ev.flush()
-					const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
-					ev.emit('creds.update', { accountSyncCounter })
-					// Fire-and-forget: patches are applied in background, mutations arrive via resyncAppState
-					resyncAppState(ALL_WA_PATCH_NAMES, true).catch(err =>
-						logger.warn({ err }, 'Background app state resync failed (non-critical on reconnection)')
-					)
-					return
-				}
 				logger.info('Doing app state sync')
 				await resyncAppState(ALL_WA_PATCH_NAMES, true)
 
@@ -1455,7 +1439,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		const isReconnection = (authState.creds.accountSyncCounter ?? 0) > 0
 		if (isReconnection) {
 			logger.info('Reconnection detected (accountSyncCounter > 0), skipping AwaitingInitialSync wait. Transitioning to Online immediately.')
+			blockedCollections.clear()
 			syncState = SyncState.Online
+			const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
+			ev.emit('creds.update', { accountSyncCounter })
+			// Fire-and-forget: pick up patches missed during downtime (mute/archive/pin/read state).
+			// Runs in background so live incoming messages are not blocked.
+			resyncAppState(ALL_WA_PATCH_NAMES, true).catch(err =>
+				logger.warn({ err }, 'Background app state resync failed (non-critical on reconnection)')
+			)
 			setTimeout(() => ev.flush(), 0)
 			return
 		}
