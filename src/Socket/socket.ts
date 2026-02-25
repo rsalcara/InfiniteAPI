@@ -189,9 +189,6 @@ export const makeSocket = (config: SocketConfig) => {
 		logger.info('clearRoutingInfoOnStart: discarding stored routingInfo to force fresh edge server assignment')
 		authState.creds.routingInfo = undefined
 		hadStaleRoutingInfo = true
-	if (config.clearRoutingInfoOnStart && authState?.creds?.routingInfo) {
-		logger.info('clearRoutingInfoOnStart: discarding stored routingInfo to force fresh edge server assignment')
-		authState.creds.routingInfo = undefined
 	}
 
 	if (url.protocol === 'wss' && authState?.creds?.routingInfo) {
@@ -1624,7 +1621,6 @@ export const makeSocket = (config: SocketConfig) => {
 	// server to finish flushing the pending-message backlog (CB:ib,,offline).
 	// For normal restarts (no stale routingInfo) the standard 5 s safety cap applies.
 	const OFFLINE_BUFFER_TIMEOUT_MS = hadStaleRoutingInfo ? 0 : 5_000
-	const OFFLINE_BUFFER_TIMEOUT_MS = 5_000
 	let offlineBufferTimeout: NodeJS.Timeout | undefined
 
 	process.nextTick(() => {
