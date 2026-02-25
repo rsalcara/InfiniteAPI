@@ -191,6 +191,17 @@ export const makeSocket = (config: SocketConfig) => {
 		hadStaleRoutingInfo = true
 	}
 
+	// Skip the offline-phase buffer for ANY restart of an existing session.
+	// accountSyncCounter > 0 means at least one full sync has completed before — this is a
+	// reconnect, not a first-time QR scan. This is a superset of hadStaleRoutingInfo:
+	// it covers channels where WhatsApp never sends routingInfo, where routingInfo was already
+	// cleared on a previous restart, or any other reconnect scenario.
+	// ev.buffer() is called twice on connect (here and in chats.ts). chats.ts already flushes
+	// immediately on reconnect (accountSyncCounter > 0), but if socket.ts also buffers, the
+	// refcount stays at 1 and events are held for up to 5 s. Skipping this buffer on reconnects
+	// lets the chats.ts flush drop the refcount to 0 and release messages immediately.
+	const skipOfflineBuffer = hadStaleRoutingInfo || (authState?.creds?.accountSyncCounter ?? 0) > 0
+
 	if (url.protocol === 'wss' && authState?.creds?.routingInfo) {
 		url.searchParams.append('ED', authState.creds.routingInfo.toString('base64url'))
 	}
@@ -1624,9 +1635,9 @@ export const makeSocket = (config: SocketConfig) => {
 	let offlineBufferTimeout: NodeJS.Timeout | undefined
 
 	process.nextTick(() => {
-		if (creds.me?.id && !hadStaleRoutingInfo) {
-			// start buffering important events
-			// if we're logged in (and this is not a reconnect-after-stale-routing)
+		if (creds.me?.id && !skipOfflineBuffer) {
+			// First-time QR connection: buffer events until CB:ib,,offline signals all
+			// offline messages have been delivered, then flush everything at once.
 			ev.buffer()
 			didStartBuffer = true
 
@@ -1643,9 +1654,9 @@ export const makeSocket = (config: SocketConfig) => {
 					didStartBuffer = false
 				}
 			}, OFFLINE_BUFFER_TIMEOUT_MS)
-		} else if (creds.me?.id && hadStaleRoutingInfo) {
+		} else if (creds.me?.id && skipOfflineBuffer) {
 			logger.info(
-				'clearRoutingInfoOnStart: skipping offline buffer — reconnect scenario, messages will be delivered immediately'
+				'perf: skipping offline-phase buffer — reconnect of existing session, messages will be delivered immediately'
 			)
 		}
 
