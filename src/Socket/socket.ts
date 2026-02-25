@@ -1572,12 +1572,32 @@ export const makeSocket = (config: SocketConfig) => {
 	})
 
 	let didStartBuffer = false
+	// perf(inbound-latency): safety timer that caps how long the offline-phase buffer may
+	// block live message delivery. The server sends CB:ib,,offline only after transmitting
+	// ALL queued offline messages; on busy accounts this can take 10-30+ seconds, holding
+	// every buffered event hostage. This timer fires after OFFLINE_BUFFER_TIMEOUT_MS and
+	// force-flushes so live messages are never delayed beyond that cap.
+	// CB:ib,,offline clears the timer when it fires normally (fast path).
+	const OFFLINE_BUFFER_TIMEOUT_MS = parseInt(process.env.BAILEYS_OFFLINE_BUFFER_TIMEOUT_MS || '5000', 10)
+	let offlineBufferTimeout: NodeJS.Timeout | undefined
+
 	process.nextTick(() => {
 		if (creds.me?.id) {
 			// start buffering important events
 			// if we're logged in
 			ev.buffer()
 			didStartBuffer = true
+
+			// Cap the offline-phase buffer so a large backlog of missed messages
+			// does not delay delivery of the very next live message beyond OFFLINE_BUFFER_TIMEOUT_MS.
+			offlineBufferTimeout = setTimeout(() => {
+				offlineBufferTimeout = undefined
+				if (didStartBuffer) {
+					logger.warn({ timeoutMs: OFFLINE_BUFFER_TIMEOUT_MS }, 'perf: offline-buffer safety timeout reached, force-flushing before CB:ib,,offline')
+					ev.flush()
+					didStartBuffer = false
+				}
+			}, OFFLINE_BUFFER_TIMEOUT_MS)
 		}
 
 		ev.emit('connection.update', { connection: 'connecting', receivedPendingNotifications: false, qr: undefined })
@@ -1589,8 +1609,16 @@ export const makeSocket = (config: SocketConfig) => {
 		const offlineNotifs = +(child?.attrs.count || 0)
 
 		logger.info(`handled ${offlineNotifs} offline messages/notifications`)
+
+		// Clear safety timeout — CB:ib,,offline arrived in time, do the normal flush.
+		if (offlineBufferTimeout) {
+			clearTimeout(offlineBufferTimeout)
+			offlineBufferTimeout = undefined
+		}
+
 		if (didStartBuffer) {
 			ev.flush()
+			didStartBuffer = false
 			logger.trace('flushed events for initial buffer')
 		}
 

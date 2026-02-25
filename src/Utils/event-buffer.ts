@@ -54,9 +54,12 @@ export interface BufferConfig {
  */
 export function loadBufferConfig(): BufferConfig {
 	return {
-		bufferTimeoutMs: parseInt(process.env.BAILEYS_BUFFER_TIMEOUT_MS || '15000', 10),
-		minBufferTimeoutMs: parseInt(process.env.BAILEYS_BUFFER_MIN_TIMEOUT_MS || '3000', 10),
-		maxBufferTimeoutMs: parseInt(process.env.BAILEYS_BUFFER_MAX_TIMEOUT_MS || '20000', 10),
+		// perf(inbound-latency): reduced from 15s → 5s so the safety auto-flush fires sooner.
+		// processNodeWithBuffer always calls ev.flush() explicitly (no-op for this timer),
+		// but socket.ts's offline-phase buffer and any stalled buffer benefit from the lower cap.
+		bufferTimeoutMs: parseInt(process.env.BAILEYS_BUFFER_TIMEOUT_MS || '5000', 10),
+		minBufferTimeoutMs: parseInt(process.env.BAILEYS_BUFFER_MIN_TIMEOUT_MS || '1000', 10),
+		maxBufferTimeoutMs: parseInt(process.env.BAILEYS_BUFFER_MAX_TIMEOUT_MS || '8000', 10),
 		maxHistoryCacheSize: parseInt(process.env.BAILEYS_BUFFER_MAX_HISTORY_CACHE || '10000', 10),
 		maxBufferSize: parseInt(process.env.BAILEYS_BUFFER_MAX_SIZE || '5000', 10),
 		flushDebounceMs: parseInt(process.env.BAILEYS_BUFFER_FLUSH_DEBOUNCE_MS || '100', 10),

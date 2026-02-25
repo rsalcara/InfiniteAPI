@@ -1465,7 +1465,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			return
 		}
 
-		logger.info('First connection, awaiting history sync notification with a 20s timeout.')
+		// perf(inbound-latency): reduced from 20s → 8s. On first connection we wait for the
+		// history-sync notification so that doAppStateSync runs before live messages are emitted.
+		// If the notification does not arrive within 8s we stop waiting, go Online, and flush
+		// so that any live message arriving after connection is never held more than ~8s.
+		// History that arrives late is still processed via processMessage regardless of state.
+		logger.info('First connection, awaiting history sync notification with an 8s timeout.')
 
 		if (awaitingSyncTimeout) {
 			clearTimeout(awaitingSyncTimeout)
@@ -1473,18 +1478,17 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		awaitingSyncTimeout = setTimeout(() => {
 			if (syncState === SyncState.AwaitingInitialSync) {
-				// TODO: investigate
-				logger.warn('Timeout in AwaitingInitialSync, forcing state to Online and flushing buffer')
+				logger.warn('Timeout in AwaitingInitialSync (8s), forcing state to Online and flushing buffer')
 				syncState = SyncState.Online
 				ev.flush()
 
-				// Increment so subsequent reconnections skip the 20s wait.
+				// Increment so subsequent reconnections skip the wait entirely.
 				// Late-arriving history is still processed via processMessage
 				// regardless of the state machine phase.
 				const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
 				ev.emit('creds.update', { accountSyncCounter })
 			}
-		}, 20_000)
+		}, 8_000)
 	})
 
 	// When an app state sync key arrives (myAppStateKeyId is set) and there are
