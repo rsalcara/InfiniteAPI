@@ -157,7 +157,7 @@ export type SocketConfig = {
 	 * Recommended usage: enable this option in your `startSock()` call right after
 	 * deploying a new version, then disable it on subsequent reconnections.
 	 *
-	 * @default false
+	 * @default true
 	 */
 	clearRoutingInfoOnStart: boolean
 
