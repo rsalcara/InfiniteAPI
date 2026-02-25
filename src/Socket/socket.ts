@@ -1578,7 +1578,13 @@ export const makeSocket = (config: SocketConfig) => {
 	// every buffered event hostage. This timer fires after OFFLINE_BUFFER_TIMEOUT_MS and
 	// force-flushes so live messages are never delayed beyond that cap.
 	// CB:ib,,offline clears the timer when it fires normally (fast path).
-	const OFFLINE_BUFFER_TIMEOUT_MS = parseInt(process.env.BAILEYS_OFFLINE_BUFFER_TIMEOUT_MS || '5000', 10)
+	//
+	// INTENTIONALLY hardcoded — not controlled by BAILEYS_BUFFER_TIMEOUT_MS or any other
+	// env var. BAILEYS_BUFFER_TIMEOUT_MS governs general-purpose buffer batching (for
+	// Prometheus / history consolidation) and is typically set to 5-30 s by operators.
+	// This constant must remain short regardless so that a large offline backlog cannot
+	// hold live incoming messages hostage for minutes.
+	const OFFLINE_BUFFER_TIMEOUT_MS = 5_000
 	let offlineBufferTimeout: NodeJS.Timeout | undefined
 
 	process.nextTick(() => {
