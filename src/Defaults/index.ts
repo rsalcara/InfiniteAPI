@@ -87,8 +87,12 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	enableCTWARecovery: true,
 	// Enable interactive messages (buttons, lists, templates, carousel)
 	enableInteractiveMessages: true,
-	// Do not clear routingInfo by default; opt-in when deploying updates
-	clearRoutingInfoOnStart: false,
+	// Clear stale routingInfo on every socket creation so the WhatsApp load balancer
+	// assigns a fresh, healthy edge server after any restart (pm2, server reboot, deploy).
+	// The server always sends a new routingInfo during the connection handshake, so the
+	// old value is never needed. Keeping it can cause slow or unstable sessions when the
+	// previous edge server is overloaded or has stale state.
+	clearRoutingInfoOnStart: true,
 	options: {},
 	appStateMacVerification: {
 		patch: false,
