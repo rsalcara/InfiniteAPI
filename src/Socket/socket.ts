@@ -1565,11 +1565,11 @@ export const makeSocket = (config: SocketConfig) => {
 		const [reasonNode] = getAllBinaryNodeChildren(node)
 		const { reason, statusCode } = getErrorCodeFromStreamError(node)
 
-		if(reason === 'device_removed') {
+		if (reason === 'device_removed') {
 			logger.error({ node }, 'stream error: device removed — logging out')
-		} else if(reason === 'xml-not-well-formed') {
+		} else if (reason === 'xml-not-well-formed') {
 			logger.warn({ node }, 'stream error: sent malformed stanza (xml-not-well-formed)')
-		} else if(reason === 'ack') {
+		} else if (reason === 'ack') {
 			logger.warn({ ackId: reasonNode?.attrs?.id, node }, 'stream error: ack-based error')
 		} else {
 			logger.error({ reason, statusCode, node }, 'stream errored out')
@@ -1639,13 +1639,18 @@ export const makeSocket = (config: SocketConfig) => {
 			offlineBufferTimeout = setTimeout(() => {
 				offlineBufferTimeout = undefined
 				if (didStartBuffer) {
-					logger.warn({ timeoutMs: OFFLINE_BUFFER_TIMEOUT_MS }, 'perf: offline-buffer safety timeout reached, force-flushing before CB:ib,,offline')
+					logger.warn(
+						{ timeoutMs: OFFLINE_BUFFER_TIMEOUT_MS },
+						'perf: offline-buffer safety timeout reached, force-flushing before CB:ib,,offline'
+					)
 					ev.flush()
 					didStartBuffer = false
 				}
 			}, OFFLINE_BUFFER_TIMEOUT_MS)
 		} else if (creds.me?.id && hadStaleRoutingInfo) {
-			logger.info('clearRoutingInfoOnStart: skipping offline buffer — reconnect scenario, messages will be delivered immediately')
+			logger.info(
+				'clearRoutingInfoOnStart: skipping offline buffer — reconnect scenario, messages will be delivered immediately'
+			)
 		}
 
 		ev.emit('connection.update', { connection: 'connecting', receivedPendingNotifications: false, qr: undefined })
