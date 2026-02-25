@@ -1110,6 +1110,17 @@ export const makeSocket = (config: SocketConfig) => {
 		clearInterval(keepAliveReq)
 		clearTimeout(qrTimer)
 
+		// Clear offline-buffer safety timer so its callback cannot call ev.flush()
+		// on an already-closed socket (e.g. auth failure or early network drop before
+		// CB:ib,,offline ever arrives).  Mirrors how awaitingSyncTimeout is cleared in
+		// chats.ts on connection close.
+		if (offlineBufferTimeout) {
+			clearTimeout(offlineBufferTimeout)
+			offlineBufferTimeout = undefined
+		}
+
+		didStartBuffer = false
+
 		// Stop session cleanup scheduler
 		sessionCleanup.stop()
 
