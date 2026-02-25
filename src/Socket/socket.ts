@@ -182,9 +182,13 @@ export const makeSocket = (config: SocketConfig) => {
 	// assigns a fresh edge server on this connection. This fixes sessions that became slow
 	// after a pm2 restart because the previous edge server retained stale state.
 	// Signal keys and auth credentials are NOT affected — no QR re-scan is needed.
+	// hadStaleRoutingInfo is used below to skip the offline buffer on reconnect scenarios
+	// (same channel, new QR scan) so live messages are not held hostage by the backlog buffer.
+	let hadStaleRoutingInfo = false
 	if (config.clearRoutingInfoOnStart && authState?.creds?.routingInfo) {
 		logger.info('clearRoutingInfoOnStart: discarding stored routingInfo to force fresh edge server assignment')
 		authState.creds.routingInfo = undefined
+		hadStaleRoutingInfo = true
 	}
 
 	if (url.protocol === 'wss' && authState?.creds?.routingInfo) {
@@ -1611,13 +1615,18 @@ export const makeSocket = (config: SocketConfig) => {
 	// Prometheus / history consolidation) and is typically set to 5-30 s by operators.
 	// This constant must remain short regardless so that a large offline backlog cannot
 	// hold live incoming messages hostage for minutes.
-	const OFFLINE_BUFFER_TIMEOUT_MS = 5_000
+	// When clearRoutingInfoOnStart cleared a stale routingInfo, this is a reconnect of an
+	// existing session (same channel, new QR scan after disconnect). In this case we skip
+	// the offline buffer entirely so live messages are not held hostage waiting for the
+	// server to finish flushing the pending-message backlog (CB:ib,,offline).
+	// For normal restarts (no stale routingInfo) the standard 5 s safety cap applies.
+	const OFFLINE_BUFFER_TIMEOUT_MS = hadStaleRoutingInfo ? 0 : 5_000
 	let offlineBufferTimeout: NodeJS.Timeout | undefined
 
 	process.nextTick(() => {
-		if (creds.me?.id) {
+		if (creds.me?.id && !hadStaleRoutingInfo) {
 			// start buffering important events
-			// if we're logged in
+			// if we're logged in (and this is not a reconnect-after-stale-routing)
 			ev.buffer()
 			didStartBuffer = true
 
@@ -1631,6 +1640,8 @@ export const makeSocket = (config: SocketConfig) => {
 					didStartBuffer = false
 				}
 			}, OFFLINE_BUFFER_TIMEOUT_MS)
+		} else if (creds.me?.id && hadStaleRoutingInfo) {
+			logger.info('clearRoutingInfoOnStart: skipping offline buffer — reconnect scenario, messages will be delivered immediately')
 		}
 
 		ev.emit('connection.update', { connection: 'connecting', receivedPendingNotifications: false, qr: undefined })
