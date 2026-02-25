@@ -8,17 +8,12 @@ export type ContactsUpsertResult = {
 	data: Contact[]
 }
 
-export type ContactsUpdateResult = {
-	event: 'contacts.update'
-	data: Partial<Contact>[]
-}
-
 export type LidMappingUpdateResult = {
 	event: 'lid-mapping.update'
 	data: BaileysEventMap['lid-mapping.update']
 }
 
-export type SyncActionResult = ContactsUpsertResult | ContactsUpdateResult | LidMappingUpdateResult
+export type SyncActionResult = ContactsUpsertResult | LidMappingUpdateResult
 
 /**
  * Process contactAction and return events to emit.
@@ -44,11 +39,9 @@ export const processContactAction = (
 	// PN is in index[1], not in contactAction.pnJid which is usually null
 	const phoneNumber = idIsPn ? id : action.pnJid || undefined
 
-	// Emit contacts.update (partial) so backends preserve existing fields like imgUrl.
-	// App-state sync actions represent changes to existing contacts (name, phone mapping),
-	// not new contact discovery — a partial update is semantically correct here.
+	// Always emit contacts.upsert
 	results.push({
-		event: 'contacts.update',
+		event: 'contacts.upsert',
 		data: [
 			{
 				id,
@@ -74,8 +67,6 @@ export const emitSyncActionResults = (ev: BaileysEventEmitter, results: SyncActi
 	for (const result of results) {
 		if (result.event === 'contacts.upsert') {
 			ev.emit('contacts.upsert', result.data)
-		} else if (result.event === 'contacts.update') {
-			ev.emit('contacts.update', result.data)
 		} else {
 			ev.emit('lid-mapping.update', result.data)
 		}
