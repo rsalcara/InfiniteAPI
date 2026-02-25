@@ -178,6 +178,15 @@ export const makeSocket = (config: SocketConfig) => {
 		throw new Boom('Mobile API is not supported anymore', { statusCode: DisconnectReason.loggedOut })
 	}
 
+	// If clearRoutingInfoOnStart is enabled, discard the stored routing hint so WhatsApp
+	// assigns a fresh edge server on this connection. This fixes sessions that became slow
+	// after a pm2 restart because the previous edge server retained stale state.
+	// Signal keys and auth credentials are NOT affected — no QR re-scan is needed.
+	if (config.clearRoutingInfoOnStart && authState?.creds?.routingInfo) {
+		logger.info('clearRoutingInfoOnStart: discarding stored routingInfo to force fresh edge server assignment')
+		authState.creds.routingInfo = undefined
+	}
+
 	if (url.protocol === 'wss' && authState?.creds?.routingInfo) {
 		url.searchParams.append('ED', authState.creds.routingInfo.toString('base64url'))
 	}
@@ -499,6 +508,13 @@ export const makeSocket = (config: SocketConfig) => {
 	}
 
 	const ev = makeEventBuffer(logger)
+
+	// Persist the routingInfo clearing so the consumer's saveCreds() writes the clean state to disk.
+	// This ensures that if the process restarts again before the server assigns new routingInfo,
+	// the stale value is not reused.
+	if (config.clearRoutingInfoOnStart && !authState?.creds?.routingInfo) {
+		ev.emit('creds.update', authState.creds)
+	}
 
 	const { creds } = authState
 	// add transaction capability

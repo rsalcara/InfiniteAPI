@@ -142,6 +142,26 @@ export type SocketConfig = {
 	enableInteractiveMessages: boolean
 
 	/**
+	 * When true, clears the `routingInfo` stored in credentials before connecting.
+	 *
+	 * `routingInfo` is a hint that directs the socket to reconnect to the same
+	 * WhatsApp edge server used in the previous session. After a code update or
+	 * server-side configuration change, the old edge server may retain stale state
+	 * (throttling, queued messages, etc.) that causes persistent slowness even with
+	 * fresh code — only solvable by re-scanning the QR code.
+	 *
+	 * Setting this to `true` forces WhatsApp to assign a fresh edge server on the
+	 * next connection, equivalent to the clean state you get after a QR re-scan,
+	 * but without invalidating the session or Signal keys.
+	 *
+	 * Recommended usage: enable this option in your `startSock()` call right after
+	 * deploying a new version, then disable it on subsequent reconnections.
+	 *
+	 * @default false
+	 */
+	clearRoutingInfoOnStart: boolean
+
+	/**
 	 * Returns if a jid should be ignored,
 	 * no event for that jid will be triggered.
 	 * Messages from that jid will also not be decrypted

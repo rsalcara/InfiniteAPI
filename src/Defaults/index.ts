@@ -87,6 +87,8 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	enableCTWARecovery: true,
 	// Enable interactive messages (buttons, lists, templates, carousel)
 	enableInteractiveMessages: true,
+	// Do not clear routingInfo by default; opt-in when deploying updates
+	clearRoutingInfoOnStart: false,
 	options: {},
 	appStateMacVerification: {
 		patch: false,
