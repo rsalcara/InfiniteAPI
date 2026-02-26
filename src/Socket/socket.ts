@@ -1499,31 +1499,26 @@ export const makeSocket = (config: SocketConfig) => {
 	})
 	// login complete
 	ws.on('CB:success', async (node: BinaryNode) => {
-		// ─── Critical path: signal readiness to WA and the app layer immediately ───
-		// sendPassiveIq('active') tells the WA edge server to start routing live
-		// messages to this connection. Every millisecond it is delayed = a millisecond
-		// of messages held on the server. Pre-key validation and key-bundle digest are
-		// important but do NOT need to complete before WA can deliver messages — move
-		// them to a background Promise so they never block the hot path.
-		try {
-			await sendPassiveIq('active')
-		} catch (err) {
-			logger.warn({ err }, 'failed to send initial passive iq')
-		}
-
 		logger.info('opened connection to WA')
 		clearTimeout(qrTimer) // will never happen in all likelyhood -- but just in case WA sends success on first try
 
 		ev.emit('creds.update', { me: { ...authState.creds.me!, lid: node.attrs.lid } })
 
-		// Emit connection:open BEFORE background ops so the application layer begins
-		// processing incoming messages without waiting for pre-key / digest round-trips.
+		// Emit connection:open immediately so the application layer begins processing
+		// incoming messages without waiting for any WA round-trips.
 		ev.emit('connection.update', { connection: 'open' })
 
-		// ─── Background: pre-key validation + key-bundle digest ──────────────────
-		// Run in parallel. Neither blocks message delivery; failures are non-fatal.
-		Promise.allSettled([uploadPreKeysToServerIfRequired(), digestKeyBundle()]).then(results => {
-			for (const result of results) {
+		// ─── Background: sendPassiveIq + pre-key validation + key-bundle digest ──
+		// sendPassiveIq('active') tells the WA edge server to start routing live
+		// messages to this connection. All three operations involve WA round-trips
+		// (100–500 ms each) but none need to complete before the app can handle
+		// messages. Run them in parallel, fire-and-forget, non-blocking.
+		Promise.allSettled([sendPassiveIq('active'), uploadPreKeysToServerIfRequired(), digestKeyBundle()]).then(results => {
+			const [passiveResult] = results
+			if (passiveResult.status === 'rejected') {
+				logger.warn({ err: passiveResult.reason }, 'failed to send initial passive iq')
+			}
+			for (const result of results.slice(1)) {
 				if (result.status === 'rejected') {
 					logger.warn({ err: result.reason }, 'background key operation failed after login (non-critical)')
 				}
