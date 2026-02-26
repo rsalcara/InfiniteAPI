@@ -1513,17 +1513,21 @@ export const makeSocket = (config: SocketConfig) => {
 		// messages to this connection. All three operations involve WA round-trips
 		// (100–500 ms each) but none need to complete before the app can handle
 		// messages. Run them in parallel, fire-and-forget, non-blocking.
-		Promise.allSettled([sendPassiveIq('active'), uploadPreKeysToServerIfRequired(), digestKeyBundle()]).then(results => {
-			const [passiveResult] = results
-			if (passiveResult.status === 'rejected') {
-				logger.warn({ err: passiveResult.reason }, 'failed to send initial passive iq')
-			}
-			for (const result of results.slice(1)) {
-				if (result.status === 'rejected') {
-					logger.warn({ err: result.reason }, 'background key operation failed after login (non-critical)')
+		Promise.allSettled([sendPassiveIq('active'), uploadPreKeysToServerIfRequired(), digestKeyBundle()])
+			.then(results => {
+				const [passiveResult] = results
+				if (passiveResult.status === 'rejected') {
+					logger.warn({ err: passiveResult.reason }, 'failed to send initial passive iq')
 				}
-			}
-		})
+				for (const result of results.slice(1)) {
+					if (result.status === 'rejected') {
+						logger.warn({ err: result.reason }, 'background key operation failed after login (non-critical)')
+					}
+				}
+			})
+			.catch(err => {
+				logger.error({ err }, 'unexpected error in background post-login handler')
+			})
 
 		// Record successful connection metrics
 		recordConnectionAttempt('success')
