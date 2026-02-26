@@ -156,12 +156,28 @@ export class MessageRetryManager {
 	}
 
 	/**
-	 * Get a recent message from the cache
+	 * Get a recent message from the cache.
+	 *
+	 * First attempts an exact `to+id` key lookup. If that misses — which happens when
+	 * the retry receipt arrives from a device-specific JID (e.g. `55123:82@s.whatsapp.net`)
+	 * while the message was stored under the normalised base JID (`55123@s.whatsapp.net`),
+	 * or when the JID domain flipped between LID and PN — falls back to the `messageKeyIndex`
+	 * which maps bare message IDs to stored keys regardless of the `to` format.
 	 */
 	getRecentMessage(to: string, id: string): RecentMessage | undefined {
 		const key: RecentMessageKey = { to, id }
 		const keyStr = this.keyToString(key)
-		return this.recentMessagesMap.get(keyStr)
+		const exact = this.recentMessagesMap.get(keyStr)
+		if (exact) return exact
+
+		// Fallback: look up by message ID only to handle JID format mismatches
+		// (device suffix present/absent, LID vs PN, etc.)
+		const indexedKeyStr = this.messageKeyIndex.get(id)
+		if (indexedKeyStr) {
+			return this.recentMessagesMap.get(indexedKeyStr)
+		}
+
+		return undefined
 	}
 
 	/**
