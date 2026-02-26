@@ -14874,6 +14874,10 @@ export const proto = $root.proto = (() => {
             case 1:
                 m.useCase = 1;
                 break;
+            case "WA_TEE_BOT_MSG":
+            case 2:
+                m.useCase = 2;
+                break;
             }
             if (d.signature != null) {
                 if (typeof d.signature === "string")
@@ -14941,6 +14945,7 @@ export const proto = $root.proto = (() => {
             const valuesById = {}, values = Object.create(valuesById);
             values[valuesById[0] = "UNSPECIFIED"] = 0;
             values[valuesById[1] = "WA_BOT_MSG"] = 1;
+            values[valuesById[2] = "WA_TEE_BOT_MSG"] = 2;
             return values;
         })();
 
@@ -26517,6 +26522,10 @@ export const proto = $root.proto = (() => {
             case 3:
                 m.limitSharingTrigger = 3;
                 break;
+            case "DEPRECATION":
+            case 4:
+                m.limitSharingTrigger = 4;
+                break;
             }
             if (d.limitSharingInitiatedByMe != null) {
                 m.limitSharingInitiatedByMe = Boolean(d.limitSharingInitiatedByMe);
@@ -32625,6 +32634,7 @@ export const proto = $root.proto = (() => {
         HistorySync.prototype.companionMetaNonce = null;
         HistorySync.prototype.shareableChatIdentifierEncryptionKey = null;
         HistorySync.prototype.accounts = $util.emptyArray;
+        HistorySync.prototype.nctSalt = null;
 
         let $oneOfFields;
 
@@ -32679,6 +32689,12 @@ export const proto = $root.proto = (() => {
         // Virtual OneOf for proto3 optional field
         Object.defineProperty(HistorySync.prototype, "_shareableChatIdentifierEncryptionKey", {
             get: $util.oneOfGetter($oneOfFields = ["shareableChatIdentifierEncryptionKey"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(HistorySync.prototype, "_nctSalt", {
+            get: $util.oneOfGetter($oneOfFields = ["nctSalt"]),
             set: $util.oneOfSetter($oneOfFields)
         });
 
@@ -32739,6 +32755,8 @@ export const proto = $root.proto = (() => {
                 for (var i = 0; i < m.accounts.length; ++i)
                     $root.proto.Account.encode(m.accounts[i], w.uint32(146).fork()).ldelim();
             }
+            if (m.nctSalt != null && Object.hasOwnProperty.call(m, "nctSalt"))
+                w.uint32(154).bytes(m.nctSalt);
             return w;
         };
 
@@ -32833,6 +32851,10 @@ export const proto = $root.proto = (() => {
                         if (!(m.accounts && m.accounts.length))
                             m.accounts = [];
                         m.accounts.push($root.proto.Account.decode(r, r.uint32()));
+                        break;
+                    }
+                case 19: {
+                        m.nctSalt = r.bytes();
                         break;
                     }
                 default:
@@ -33008,6 +33030,12 @@ export const proto = $root.proto = (() => {
                     m.accounts[i] = $root.proto.Account.fromObject(d.accounts[i]);
                 }
             }
+            if (d.nctSalt != null) {
+                if (typeof d.nctSalt === "string")
+                    $util.base64.decode(d.nctSalt, m.nctSalt = $util.newBuffer($util.base64.length(d.nctSalt)), 0);
+                else if (d.nctSalt.length >= 0)
+                    m.nctSalt = d.nctSalt;
+            }
             return m;
         };
 
@@ -33117,6 +33145,11 @@ export const proto = $root.proto = (() => {
                 for (var j = 0; j < m.accounts.length; ++j) {
                     d.accounts[j] = $root.proto.Account.toObject(m.accounts[j], o);
                 }
+            }
+            if (m.nctSalt != null && m.hasOwnProperty("nctSalt")) {
+                d.nctSalt = o.bytes === String ? $util.base64.encode(m.nctSalt, 0, m.nctSalt.length) : o.bytes === Array ? Array.prototype.slice.call(m.nctSalt) : m.nctSalt;
+                if (o.oneofs)
+                    d._nctSalt = "nctSalt";
             }
             return d;
         };
@@ -36256,6 +36289,10 @@ export const proto = $root.proto = (() => {
             case 3:
                 m.trigger = 3;
                 break;
+            case "DEPRECATION":
+            case 4:
+                m.trigger = 4;
+                break;
             }
             if (d.limitSharingSettingTimestamp != null) {
                 if ($util.Long)
@@ -36320,6 +36357,7 @@ export const proto = $root.proto = (() => {
             values[valuesById[1] = "CHAT_SETTING"] = 1;
             values[valuesById[2] = "BIZ_SUPPORTS_FB_HOSTING"] = 2;
             values[valuesById[3] = "UNKNOWN_GROUP"] = 3;
+            values[valuesById[4] = "DEPRECATION"] = 4;
             return values;
         })();
 
@@ -37373,6 +37411,7 @@ export const proto = $root.proto = (() => {
         Message.prototype.newsletterAdminProfileMessageV2 = null;
         Message.prototype.spoilerMessage = null;
         Message.prototype.pollCreationMessageV6 = null;
+        Message.prototype.conditionalRevealMessage = null;
 
         let $oneOfFields;
 
@@ -37970,6 +38009,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(Message.prototype, "_conditionalRevealMessage", {
+            get: $util.oneOfGetter($oneOfFields = ["conditionalRevealMessage"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         Message.create = function create(properties) {
             return new Message(properties);
         };
@@ -38175,6 +38220,8 @@ export const proto = $root.proto = (() => {
                 $root.proto.Message.FutureProofMessage.encode(m.spoilerMessage, w.uint32(946).fork()).ldelim();
             if (m.pollCreationMessageV6 != null && Object.hasOwnProperty.call(m, "pollCreationMessageV6"))
                 $root.proto.Message.PollCreationMessage.encode(m.pollCreationMessageV6, w.uint32(954).fork()).ldelim();
+            if (m.conditionalRevealMessage != null && Object.hasOwnProperty.call(m, "conditionalRevealMessage"))
+                $root.proto.Message.ConditionalRevealMessage.encode(m.conditionalRevealMessage, w.uint32(962).fork()).ldelim();
             return w;
         };
 
@@ -38581,6 +38628,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 119: {
                         m.pollCreationMessageV6 = $root.proto.Message.PollCreationMessage.decode(r, r.uint32());
+                        break;
+                    }
+                case 120: {
+                        m.conditionalRevealMessage = $root.proto.Message.ConditionalRevealMessage.decode(r, r.uint32());
                         break;
                     }
                 default:
@@ -39088,6 +39139,11 @@ export const proto = $root.proto = (() => {
                     throw TypeError(".proto.Message.pollCreationMessageV6: object expected");
                 m.pollCreationMessageV6 = $root.proto.Message.PollCreationMessage.fromObject(d.pollCreationMessageV6);
             }
+            if (d.conditionalRevealMessage != null) {
+                if (typeof d.conditionalRevealMessage !== "object")
+                    throw TypeError(".proto.Message.conditionalRevealMessage: object expected");
+                m.conditionalRevealMessage = $root.proto.Message.ConditionalRevealMessage.fromObject(d.conditionalRevealMessage);
+            }
             return m;
         };
 
@@ -39589,6 +39645,11 @@ export const proto = $root.proto = (() => {
                 d.pollCreationMessageV6 = $root.proto.Message.PollCreationMessage.toObject(m.pollCreationMessageV6, o);
                 if (o.oneofs)
                     d._pollCreationMessageV6 = "pollCreationMessageV6";
+            }
+            if (m.conditionalRevealMessage != null && m.hasOwnProperty("conditionalRevealMessage")) {
+                d.conditionalRevealMessage = $root.proto.Message.ConditionalRevealMessage.toObject(m.conditionalRevealMessage, o);
+                if (o.oneofs)
+                    d._conditionalRevealMessage = "conditionalRevealMessage";
             }
             return d;
         };
@@ -43407,6 +43468,183 @@ export const proto = $root.proto = (() => {
             };
 
             return CommentMessage;
+        })();
+
+        Message.ConditionalRevealMessage = (function() {
+
+            function ConditionalRevealMessage(p) {
+                if (p)
+                    for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null)
+                            this[ks[i]] = p[ks[i]];
+            }
+
+            ConditionalRevealMessage.prototype.encPayload = null;
+            ConditionalRevealMessage.prototype.encIv = null;
+            ConditionalRevealMessage.prototype.conditionalRevealMessageType = null;
+            ConditionalRevealMessage.prototype.revealKeyId = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ConditionalRevealMessage.prototype, "_encPayload", {
+                get: $util.oneOfGetter($oneOfFields = ["encPayload"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ConditionalRevealMessage.prototype, "_encIv", {
+                get: $util.oneOfGetter($oneOfFields = ["encIv"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ConditionalRevealMessage.prototype, "_conditionalRevealMessageType", {
+                get: $util.oneOfGetter($oneOfFields = ["conditionalRevealMessageType"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ConditionalRevealMessage.prototype, "_revealKeyId", {
+                get: $util.oneOfGetter($oneOfFields = ["revealKeyId"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            ConditionalRevealMessage.create = function create(properties) {
+                return new ConditionalRevealMessage(properties);
+            };
+
+            ConditionalRevealMessage.encode = function encode(m, w) {
+                if (!w)
+                    w = $Writer.create();
+                if (m.encPayload != null && Object.hasOwnProperty.call(m, "encPayload"))
+                    w.uint32(10).bytes(m.encPayload);
+                if (m.encIv != null && Object.hasOwnProperty.call(m, "encIv"))
+                    w.uint32(18).bytes(m.encIv);
+                if (m.conditionalRevealMessageType != null && Object.hasOwnProperty.call(m, "conditionalRevealMessageType"))
+                    w.uint32(24).int32(m.conditionalRevealMessageType);
+                if (m.revealKeyId != null && Object.hasOwnProperty.call(m, "revealKeyId"))
+                    w.uint32(34).string(m.revealKeyId);
+                return w;
+            };
+
+            ConditionalRevealMessage.decode = function decode(r, l, e) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.Message.ConditionalRevealMessage();
+                while (r.pos < c) {
+                    var t = r.uint32();
+                    if (t === e)
+                        break;
+                    switch (t >>> 3) {
+                    case 1: {
+                            m.encPayload = r.bytes();
+                            break;
+                        }
+                    case 2: {
+                            m.encIv = r.bytes();
+                            break;
+                        }
+                    case 3: {
+                            m.conditionalRevealMessageType = r.int32();
+                            break;
+                        }
+                    case 4: {
+                            m.revealKeyId = r.string();
+                            break;
+                        }
+                    default:
+                        r.skipType(t & 7);
+                        break;
+                    }
+                }
+                return m;
+            };
+
+            ConditionalRevealMessage.fromObject = function fromObject(d) {
+                if (d instanceof $root.proto.Message.ConditionalRevealMessage)
+                    return d;
+                var m = new $root.proto.Message.ConditionalRevealMessage();
+                if (d.encPayload != null) {
+                    if (typeof d.encPayload === "string")
+                        $util.base64.decode(d.encPayload, m.encPayload = $util.newBuffer($util.base64.length(d.encPayload)), 0);
+                    else if (d.encPayload.length >= 0)
+                        m.encPayload = d.encPayload;
+                }
+                if (d.encIv != null) {
+                    if (typeof d.encIv === "string")
+                        $util.base64.decode(d.encIv, m.encIv = $util.newBuffer($util.base64.length(d.encIv)), 0);
+                    else if (d.encIv.length >= 0)
+                        m.encIv = d.encIv;
+                }
+                switch (d.conditionalRevealMessageType) {
+                default:
+                    if (typeof d.conditionalRevealMessageType === "number") {
+                        m.conditionalRevealMessageType = d.conditionalRevealMessageType;
+                        break;
+                    }
+                    break;
+                case "UNKNOWN":
+                case 0:
+                    m.conditionalRevealMessageType = 0;
+                    break;
+                case "SCHEDULED_MESSAGE":
+                case 1:
+                    m.conditionalRevealMessageType = 1;
+                    break;
+                }
+                if (d.revealKeyId != null) {
+                    m.revealKeyId = String(d.revealKeyId);
+                }
+                return m;
+            };
+
+            ConditionalRevealMessage.toObject = function toObject(m, o) {
+                if (!o)
+                    o = {};
+                var d = {};
+                if (m.encPayload != null && m.hasOwnProperty("encPayload")) {
+                    d.encPayload = o.bytes === String ? $util.base64.encode(m.encPayload, 0, m.encPayload.length) : o.bytes === Array ? Array.prototype.slice.call(m.encPayload) : m.encPayload;
+                    if (o.oneofs)
+                        d._encPayload = "encPayload";
+                }
+                if (m.encIv != null && m.hasOwnProperty("encIv")) {
+                    d.encIv = o.bytes === String ? $util.base64.encode(m.encIv, 0, m.encIv.length) : o.bytes === Array ? Array.prototype.slice.call(m.encIv) : m.encIv;
+                    if (o.oneofs)
+                        d._encIv = "encIv";
+                }
+                if (m.conditionalRevealMessageType != null && m.hasOwnProperty("conditionalRevealMessageType")) {
+                    d.conditionalRevealMessageType = o.enums === String ? $root.proto.Message.ConditionalRevealMessage.ConditionalRevealMessageType[m.conditionalRevealMessageType] === undefined ? m.conditionalRevealMessageType : $root.proto.Message.ConditionalRevealMessage.ConditionalRevealMessageType[m.conditionalRevealMessageType] : m.conditionalRevealMessageType;
+                    if (o.oneofs)
+                        d._conditionalRevealMessageType = "conditionalRevealMessageType";
+                }
+                if (m.revealKeyId != null && m.hasOwnProperty("revealKeyId")) {
+                    d.revealKeyId = m.revealKeyId;
+                    if (o.oneofs)
+                        d._revealKeyId = "revealKeyId";
+                }
+                return d;
+            };
+
+            ConditionalRevealMessage.prototype.toJSON = function toJSON() {
+                return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            ConditionalRevealMessage.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                if (typeUrlPrefix === undefined) {
+                    typeUrlPrefix = "type.googleapis.com";
+                }
+                return typeUrlPrefix + "/proto.Message.ConditionalRevealMessage";
+            };
+
+            ConditionalRevealMessage.ConditionalRevealMessageType = (function() {
+                const valuesById = {}, values = Object.create(valuesById);
+                values[valuesById[0] = "UNKNOWN"] = 0;
+                values[valuesById[1] = "SCHEDULED_MESSAGE"] = 1;
+                return values;
+            })();
+
+            return ConditionalRevealMessage;
         })();
 
         Message.ContactMessage = (function() {
@@ -92610,12 +92848,26 @@ export const proto = $root.proto = (() => {
 
             StatusPrivacyAction.prototype.mode = null;
             StatusPrivacyAction.prototype.userJid = $util.emptyArray;
+            StatusPrivacyAction.prototype.shareToFB = null;
+            StatusPrivacyAction.prototype.shareToIG = null;
 
             let $oneOfFields;
 
             // Virtual OneOf for proto3 optional field
             Object.defineProperty(StatusPrivacyAction.prototype, "_mode", {
                 get: $util.oneOfGetter($oneOfFields = ["mode"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(StatusPrivacyAction.prototype, "_shareToFB", {
+                get: $util.oneOfGetter($oneOfFields = ["shareToFB"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(StatusPrivacyAction.prototype, "_shareToIG", {
+                get: $util.oneOfGetter($oneOfFields = ["shareToIG"]),
                 set: $util.oneOfSetter($oneOfFields)
             });
 
@@ -92632,6 +92884,10 @@ export const proto = $root.proto = (() => {
                     for (var i = 0; i < m.userJid.length; ++i)
                         w.uint32(18).string(m.userJid[i]);
                 }
+                if (m.shareToFB != null && Object.hasOwnProperty.call(m, "shareToFB"))
+                    w.uint32(24).bool(m.shareToFB);
+                if (m.shareToIG != null && Object.hasOwnProperty.call(m, "shareToIG"))
+                    w.uint32(32).bool(m.shareToIG);
                 return w;
             };
 
@@ -92652,6 +92908,14 @@ export const proto = $root.proto = (() => {
                             if (!(m.userJid && m.userJid.length))
                                 m.userJid = [];
                             m.userJid.push(r.string());
+                            break;
+                        }
+                    case 3: {
+                            m.shareToFB = r.bool();
+                            break;
+                        }
+                    case 4: {
+                            m.shareToIG = r.bool();
                             break;
                         }
                     default:
@@ -92698,6 +92962,12 @@ export const proto = $root.proto = (() => {
                         m.userJid[i] = String(d.userJid[i]);
                     }
                 }
+                if (d.shareToFB != null) {
+                    m.shareToFB = Boolean(d.shareToFB);
+                }
+                if (d.shareToIG != null) {
+                    m.shareToIG = Boolean(d.shareToIG);
+                }
                 return m;
             };
 
@@ -92718,6 +92988,16 @@ export const proto = $root.proto = (() => {
                     for (var j = 0; j < m.userJid.length; ++j) {
                         d.userJid[j] = m.userJid[j];
                     }
+                }
+                if (m.shareToFB != null && m.hasOwnProperty("shareToFB")) {
+                    d.shareToFB = m.shareToFB;
+                    if (o.oneofs)
+                        d._shareToFB = "shareToFB";
+                }
+                if (m.shareToIG != null && m.hasOwnProperty("shareToIG")) {
+                    d.shareToIG = m.shareToIG;
+                    if (o.oneofs)
+                        d._shareToIG = "shareToIG";
                 }
                 return d;
             };

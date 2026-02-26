@@ -2326,7 +2326,8 @@ export namespace proto {
 
         enum BotSignatureUseCase {
             UNSPECIFIED = 0,
-            WA_BOT_MSG = 1
+            WA_BOT_MSG = 1,
+            WA_TEE_BOT_MSG = 2
         }
     }
 
@@ -4775,6 +4776,7 @@ export namespace proto {
         companionMetaNonce?: (string|null);
         shareableChatIdentifierEncryptionKey?: (Uint8Array|null);
         accounts?: (proto.IAccount[]|null);
+        nctSalt?: (Uint8Array|null);
     }
 
     class HistorySync implements IHistorySync {
@@ -4796,6 +4798,7 @@ export namespace proto {
         public companionMetaNonce?: (string|null);
         public shareableChatIdentifierEncryptionKey?: (Uint8Array|null);
         public accounts: proto.IAccount[];
+        public nctSalt?: (Uint8Array|null);
         public static create(properties?: proto.IHistorySync): proto.HistorySync;
         public static encode(m: proto.IHistorySync, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.HistorySync;
@@ -5291,7 +5294,8 @@ export namespace proto {
             UNKNOWN = 0,
             CHAT_SETTING = 1,
             BIZ_SUPPORTS_FB_HOSTING = 2,
-            UNKNOWN_GROUP = 3
+            UNKNOWN_GROUP = 3,
+            DEPRECATION = 4
         }
     }
 
@@ -5551,6 +5555,7 @@ export namespace proto {
         newsletterAdminProfileMessageV2?: (proto.Message.IFutureProofMessage|null);
         spoilerMessage?: (proto.Message.IFutureProofMessage|null);
         pollCreationMessageV6?: (proto.Message.IPollCreationMessage|null);
+        conditionalRevealMessage?: (proto.Message.IConditionalRevealMessage|null);
     }
 
     class Message implements IMessage {
@@ -5654,6 +5659,7 @@ export namespace proto {
         public newsletterAdminProfileMessageV2?: (proto.Message.IFutureProofMessage|null);
         public spoilerMessage?: (proto.Message.IFutureProofMessage|null);
         public pollCreationMessageV6?: (proto.Message.IPollCreationMessage|null);
+        public conditionalRevealMessage?: (proto.Message.IConditionalRevealMessage|null);
         public static create(properties?: proto.IMessage): proto.Message;
         public static encode(m: proto.IMessage, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Message;
@@ -6231,6 +6237,36 @@ export namespace proto {
             public static toObject(m: proto.Message.CommentMessage, o?: $protobuf.IConversionOptions): { [k: string]: any };
             public toJSON(): { [k: string]: any };
             public static getTypeUrl(typeUrlPrefix?: string): string;
+        }
+
+        interface IConditionalRevealMessage {
+            encPayload?: (Uint8Array|null);
+            encIv?: (Uint8Array|null);
+            conditionalRevealMessageType?: (proto.Message.ConditionalRevealMessage.ConditionalRevealMessageType|null);
+            revealKeyId?: (string|null);
+        }
+
+        class ConditionalRevealMessage implements IConditionalRevealMessage {
+            constructor(p?: proto.Message.IConditionalRevealMessage);
+            public encPayload?: (Uint8Array|null);
+            public encIv?: (Uint8Array|null);
+            public conditionalRevealMessageType?: (proto.Message.ConditionalRevealMessage.ConditionalRevealMessageType|null);
+            public revealKeyId?: (string|null);
+            public static create(properties?: proto.Message.IConditionalRevealMessage): proto.Message.ConditionalRevealMessage;
+            public static encode(m: proto.Message.IConditionalRevealMessage, w?: $protobuf.Writer): $protobuf.Writer;
+            public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Message.ConditionalRevealMessage;
+            public static fromObject(d: { [k: string]: any }): proto.Message.ConditionalRevealMessage;
+            public static toObject(m: proto.Message.ConditionalRevealMessage, o?: $protobuf.IConversionOptions): { [k: string]: any };
+            public toJSON(): { [k: string]: any };
+            public static getTypeUrl(typeUrlPrefix?: string): string;
+        }
+
+        namespace ConditionalRevealMessage {
+
+            enum ConditionalRevealMessageType {
+                UNKNOWN = 0,
+                SCHEDULED_MESSAGE = 1
+            }
         }
 
         interface IContactMessage {
@@ -13381,12 +13417,16 @@ export namespace proto {
         interface IStatusPrivacyAction {
             mode?: (proto.SyncActionValue.StatusPrivacyAction.StatusDistributionMode|null);
             userJid?: (string[]|null);
+            shareToFB?: (boolean|null);
+            shareToIG?: (boolean|null);
         }
 
         class StatusPrivacyAction implements IStatusPrivacyAction {
             constructor(p?: proto.SyncActionValue.IStatusPrivacyAction);
             public mode?: (proto.SyncActionValue.StatusPrivacyAction.StatusDistributionMode|null);
             public userJid: string[];
+            public shareToFB?: (boolean|null);
+            public shareToIG?: (boolean|null);
             public static create(properties?: proto.SyncActionValue.IStatusPrivacyAction): proto.SyncActionValue.StatusPrivacyAction;
             public static encode(m: proto.SyncActionValue.IStatusPrivacyAction, w?: $protobuf.Writer): $protobuf.Writer;
             public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue.StatusPrivacyAction;
