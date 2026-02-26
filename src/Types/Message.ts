@@ -1,4 +1,3 @@
-import Long from 'long'
 import type { Readable } from 'stream'
 import type { URL } from 'url'
 import { proto } from '../../WAProto/index.js'
