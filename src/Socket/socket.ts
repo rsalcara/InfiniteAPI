@@ -1263,8 +1263,13 @@ export const makeSocket = (config: SocketConfig) => {
 			if (diff > keepAliveIntervalMs + 5000) {
 				void end(new Boom('Connection was lost', { statusCode: DisconnectReason.connectionLost }))
 			} else if (ws.isOpen) {
-				// if its all good, send a keep alive request
-				query({
+				// Send keep-alive ping via sendNode() (fire-and-forget) instead of query().
+				// query() wraps the ping in the query circuit breaker — when that breaker is
+				// open or timing out, the ping is never sent, WA never responds, lastDateRecv
+				// goes stale, and the diff check above wrongly fires "Connection was lost".
+				// sendNode() bypasses the query circuit breaker entirely; WA's ping response
+				// still arrives as an incoming frame and updates lastDateRecv normally.
+				sendNode({
 					tag: 'iq',
 					attrs: {
 						id: generateMessageTag(),
