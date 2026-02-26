@@ -30,7 +30,7 @@ export type WAMessageKey = proto.IMessageKey & {
 export type PlaceholderMessageData = {
 	key: WAMessageKey
 	pushName?: string | null
-	messageTimestamp?: number | Long | null
+	messageTimestamp?: WAMessage['messageTimestamp']
 	participant?: string | null
 	participantAlt?: string | null
 }
