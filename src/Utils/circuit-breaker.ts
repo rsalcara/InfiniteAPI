@@ -709,6 +709,16 @@ export function createConnectionCircuitBreaker(customOptions?: Partial<CircuitBr
 		'network'
 	]
 
+	// Normal WS lifecycle status codes that must NEVER trip the query circuit breaker.
+	// These are transient events that happen on every reconnect and carry no information
+	// about persistent server-side failures.  The reconnection logic in makeSocket handles
+	// them independently.
+	const WS_LIFECYCLE_STATUS_CODES = new Set([
+		428, // connectionClosed
+		408, // connectionLost / timedOut
+		440, // connectionReplaced
+	])
+
 	return new CircuitBreaker({
 		name: 'connection-operations',
 		failureThreshold: 3,
@@ -720,6 +730,16 @@ export function createConnectionCircuitBreaker(customOptions?: Partial<CircuitBr
 			// accidentally matches the "socket" pattern below and causes a self-reinforcing loop
 			// where the breaker's own timeouts keep tripping the breaker. Exclude them explicitly.
 			if (error instanceof CircuitTimeoutError) return false
+
+			// Exclude normal WS reconnect events (Connection Closed, Connection Lost, Timed Out, etc.).
+			// These are not server-side failures — they happen on every restart/redeploy and should
+			// never cause the circuit to open.  If we counted them, 5 concurrent parallel
+			// post-login queries (sendPassiveIq, uploadPreKeys, digestKeyBundle, ...) could all
+			// fail simultaneously when the WS drops, instantly opening the circuit and blocking
+			// profile-picture fetches and message delivery for the next 30 s.
+			const statusCode = (error as { output?: { statusCode?: number } })?.output?.statusCode
+			if (statusCode !== undefined && WS_LIFECYCLE_STATUS_CODES.has(statusCode)) return false
+
 			const message = error.message.toLowerCase()
 			const code = (error as NodeJS.ErrnoException).code?.toLowerCase() || ''
 			return connectionErrorPatterns.some(pattern => message.includes(pattern) || code.includes(pattern))

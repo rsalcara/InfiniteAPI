@@ -1797,7 +1797,13 @@ export const makeSocket = (config: SocketConfig) => {
 		/** Update server time offset (call when receiving server timestamps) */
 		updateServerTimeOffset: (serverTime: string | number) => {
 			unifiedSessionManager?.updateServerTimeOffset(serverTime)
-		}
+		},
+		/**
+		 * Whether the offline-phase buffer was skipped for this connection.
+		 * true  → this is a reconnect of an existing session (skip all sync waits in chats.ts too)
+		 * false → fresh QR-scan or first connection (normal sync flow applies)
+		 */
+		skipOfflineBuffer
 	}
 }
 

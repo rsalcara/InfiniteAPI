@@ -89,7 +89,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		query,
 		signalRepository,
 		onUnexpectedError,
-		sendUnifiedSession
+		sendUnifiedSession,
+		skipOfflineBuffer: socketSkippedOfflineBuffer
 	} = sock
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
@@ -1436,15 +1437,21 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		logger.info('Connection is now AwaitingInitialSync, buffering events')
 		ev.buffer()
 
-		// On reconnections (accountSyncCounter > 0), app state was already synced in a previous
-		// session. Skip the 20s AwaitingInitialSync wait and go directly to Online so that
-		// live incoming messages are not held in the buffer for up to 20-60 seconds.
-		// History messages that arrive later are still processed via processMessage regardless
-		// of the state machine phase (see the Syncing → Online path below).
-		const isReconnection = (authState.creds.accountSyncCounter ?? 0) > 0
+		// On reconnections, app state was already synced in a previous session.
+		// Skip the AwaitingInitialSync wait and go directly to Online so that
+		// live incoming messages are not held in the buffer for up to 8 seconds.
+		//
+		// Two signals indicate a reconnect (either is sufficient):
+		// 1. accountSyncCounter > 0  — at least one full sync completed before
+		// 2. socketSkippedOfflineBuffer — socket.ts already determined this is a
+		//    reconnect (e.g. stale routingInfo was cleared) and skipped the offline
+		//    phase buffer. Keeping the second buffer active while the first was already
+		//    skipped would cause a mismatch: events flow immediately then stall for 8s.
+		const isReconnection = (authState.creds.accountSyncCounter ?? 0) > 0 || socketSkippedOfflineBuffer
 		if (isReconnection) {
 			logger.info(
-				'Reconnection detected (accountSyncCounter > 0), skipping AwaitingInitialSync wait. Transitioning to Online immediately.'
+				{ accountSyncCounter: authState.creds.accountSyncCounter, socketSkippedOfflineBuffer },
+				'Reconnection detected, skipping AwaitingInitialSync wait. Transitioning to Online immediately.'
 			)
 			blockedCollections.clear()
 			syncState = SyncState.Online
@@ -1472,12 +1479,14 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			return
 		}
 
-		// perf(inbound-latency): reduced from 20s → 8s. On first connection we wait for the
-		// history-sync notification so that doAppStateSync runs before live messages are emitted.
-		// If the notification does not arrive within 8s we stop waiting, go Online, and flush
-		// so that any live message arriving after connection is never held more than ~8s.
+		// perf(inbound-latency): reduced from 20s → 8s → 4s. On first connection we wait for
+		// the history-sync notification so that doAppStateSync runs before live messages are
+		// emitted.  If the notification does not arrive within 4s we stop waiting, go Online,
+		// and flush so that any live message arriving after connection is never held more than 4s.
 		// History that arrives late is still processed via processMessage regardless of state.
-		logger.info('First connection, awaiting history sync notification with an 8s timeout.')
+		// The event-buffer's own adaptive safety timer also fires at ≤4s (BAILEYS_BUFFER_TIMEOUT_MS),
+		// so the two are now aligned and the buffer cannot stall beyond ~4s on a first connect.
+		logger.info('First connection, awaiting history sync notification with a 4s timeout.')
 
 		if (awaitingSyncTimeout) {
 			clearTimeout(awaitingSyncTimeout)
@@ -1485,7 +1494,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		awaitingSyncTimeout = setTimeout(() => {
 			if (syncState === SyncState.AwaitingInitialSync) {
-				logger.warn('Timeout in AwaitingInitialSync (8s), forcing state to Online and flushing buffer')
+				logger.warn('Timeout in AwaitingInitialSync (4s), forcing state to Online and flushing buffer')
 				syncState = SyncState.Online
 				ev.flush()
 
@@ -1495,7 +1504,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
 				ev.emit('creds.update', { accountSyncCounter })
 			}
-		}, 8_000)
+		}, 4_000)
 	})
 
 	// When an app state sync key arrives (myAppStateKeyId is set) and there are
