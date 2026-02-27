@@ -1263,7 +1263,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 
 		if (shouldIgnoreJid(remoteJid!) && remoteJid !== S_WHATSAPP_NET) {
-			logger.debug({ remoteJid }, 'ignoring receipt from jid')
+			logger.trace({ remoteJid }, 'ignoring receipt from jid')
 			await sendMessageAck(node)
 			return
 		}
@@ -1343,7 +1343,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const handleNotification = async (node: BinaryNode) => {
 		const remoteJid = node.attrs.from
 		if (shouldIgnoreJid(remoteJid!) && remoteJid !== S_WHATSAPP_NET) {
-			logger.debug({ remoteJid, id: node.attrs.id }, 'ignored notification')
+			logger.trace({ remoteJid }, 'ignored notification')
 			await sendMessageAck(node)
 			return
 		}
@@ -1379,8 +1379,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const handleMessage = async (node: BinaryNode) => {
 		if (shouldIgnoreJid(node.attrs.from!) && node.attrs.from !== S_WHATSAPP_NET) {
-			logger.debug({ key: node.attrs.key }, 'ignored message')
-			await sendMessageAck(node, NACK_REASONS.UnhandledError)
+			logger.trace({ from: node.attrs.from }, 'ignored message')
+			// Send a clean ACK (no error code) so the server considers the
+			// message delivered. Using error 500 (UnhandledError) previously
+			// caused the server to retry delivery, generating duplicate traffic.
+			await sendMessageAck(node)
 			return
 		}
 

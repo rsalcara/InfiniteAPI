@@ -3,6 +3,28 @@
 // This MUST be at the very top to intercept console before libsignal loads
 // ============================================
 const _origConsoleError = console.error
+const _origConsoleLog = console.log
+const _origConsoleInfo = console.info
+
+// Suppress libsignal session lifecycle dumps from console.log / console.info.
+// libsignal's session_record.js uses console.info("Removing old closed session:", obj)
+// and console.log("Closing session:", obj) which dump full session objects (~500ms I/O each).
+const _SESSION_LIFECYCLE_RE = /^(Closing session|Removing old closed session)/
+console.log = function (...args: unknown[]) {
+	if (args.length > 0 && typeof args[0] === 'string' && _SESSION_LIFECYCLE_RE.test(args[0])) {
+		return
+	}
+
+	_origConsoleLog.apply(console, args)
+}
+
+console.info = function (...args: unknown[]) {
+	if (args.length > 0 && typeof args[0] === 'string' && _SESSION_LIFECYCLE_RE.test(args[0])) {
+		return
+	}
+
+	_origConsoleInfo.apply(console, args)
+}
 
 // Track errors by type + JID to avoid duplicates (using Map for better performance)
 const _errorTimestamps = new Map<string, number>()

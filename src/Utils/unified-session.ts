@@ -178,7 +178,6 @@ export class UnifiedSessionManager {
 		const serverTimeNum = typeof serverTime === 'string' ? parseInt(serverTime, 10) : serverTime
 
 		if (isNaN(serverTimeNum) || serverTimeNum <= 0) {
-			this.options.logger.debug?.({ serverTime }, 'Invalid server time received, ignoring')
 			return
 		}
 
@@ -187,12 +186,20 @@ export class UnifiedSessionManager {
 		const localTimeMs = Date.now()
 		const newOffset = serverTimeMs - localTimeMs
 
+		// Reject outliers: if the new offset differs from the current stable
+		// offset by more than 30 seconds, this timestamp is likely stale
+		// (e.g. replayed device notification with old 't' value).
+		// The first sample (offset === 0) is always accepted.
+		const MAX_DRIFT_MS = 30_000
+		if (this.state.serverTimeOffset !== 0 && Math.abs(newOffset - this.state.serverTimeOffset) > MAX_DRIFT_MS) {
+			return
+		}
+
 		// Only update if the offset changed significantly (>1 second)
 		if (Math.abs(newOffset - this.state.serverTimeOffset) > 1000) {
-			const oldOffset = this.state.serverTimeOffset
 			this.state.serverTimeOffset = newOffset
 
-			this.options.logger.debug?.({ oldOffset, newOffset, serverTime: serverTimeNum }, 'Server time offset updated')
+			this.options.logger.trace?.({ newOffset, serverTime: serverTimeNum }, 'Server time offset updated')
 
 			// Record metric
 			metrics.socketEvents?.inc({ event: 'server_time_sync' })

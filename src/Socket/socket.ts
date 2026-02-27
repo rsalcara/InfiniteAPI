@@ -321,7 +321,7 @@ export const makeSocket = (config: SocketConfig) => {
 		} catch (error) {
 			// Catch timeout and return undefined instead of throwing
 			if (error instanceof Boom && error.output?.statusCode === DisconnectReason.timedOut) {
-				logger?.warn?.({ msgId }, 'timed out waiting for message')
+				logger?.debug?.({ msgId }, 'timed out waiting for message')
 				return undefined
 			}
 
