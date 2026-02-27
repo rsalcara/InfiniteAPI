@@ -36,15 +36,11 @@ function makeState(): OfflineBufferState {
  * Mirrors the process.nextTick block that arms the offline-buffer timer.
  * Only called when creds.me?.id is set (reconnection path).
  */
-function startBuffer(
-	state: OfflineBufferState,
-	flush: () => void,
-	warn: () => void
-): void {
+function startBuffer(state: OfflineBufferState, flush: () => void, warn: () => void): void {
 	state.didStartBuffer = true
 	state.offlineBufferTimeout = setTimeout(() => {
 		state.offlineBufferTimeout = undefined
-		if(state.didStartBuffer) {
+		if (state.didStartBuffer) {
 			warn()
 			flush()
 			state.didStartBuffer = false
@@ -57,12 +53,12 @@ function startBuffer(
  * delivers all offline notifications before the safety timer fires.
  */
 function onOffline(state: OfflineBufferState, flush: () => void): void {
-	if(state.offlineBufferTimeout) {
+	if (state.offlineBufferTimeout) {
 		clearTimeout(state.offlineBufferTimeout)
 		state.offlineBufferTimeout = undefined
 	}
 
-	if(state.didStartBuffer) {
+	if (state.didStartBuffer) {
 		flush()
 		state.didStartBuffer = false
 	}
@@ -73,7 +69,7 @@ function onOffline(state: OfflineBufferState, flush: () => void): void {
  * flag so a closing socket cannot emit stale events after the fact.
  */
 function onClose(state: OfflineBufferState): void {
-	if(state.offlineBufferTimeout) {
+	if (state.offlineBufferTimeout) {
 		clearTimeout(state.offlineBufferTimeout)
 		state.offlineBufferTimeout = undefined
 	}
@@ -97,7 +93,7 @@ describe('offline-buffer safety timer (socket.ts)', () => {
 
 	afterEach(() => {
 		// Clean up any remaining timer to avoid cross-test interference
-		if(state.offlineBufferTimeout) {
+		if (state.offlineBufferTimeout) {
 			clearTimeout(state.offlineBufferTimeout)
 		}
 

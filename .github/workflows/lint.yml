@@ -24,9 +24,6 @@ jobs:
           corepack enable
           corepack prepare yarn@4.x --activate
 
-      - name: Fix Git config
-        run: git config --global core.autocrlf input
-
       - name: Configure Git for HTTPS
         run: |
           # Reescreve SSH -> HTTPS para repositórios públicos do GitHub (sem token, evita erros de autenticação)
@@ -48,6 +45,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GIT_TERMINAL_PROMPT: 0
+          YARN_HTTP_TIMEOUT: 600000
+          YARN_HTTP_RETRY: 10
         run: yarn install --immutable
 
       - name: Auto-fix formatting

@@ -180,6 +180,7 @@ export class MessageRetryManager {
 				// to prevent repeated futile lookups on subsequent retry receipts.
 				this.messageKeyIndex.delete(id)
 			}
+
 			return message
 		}
 

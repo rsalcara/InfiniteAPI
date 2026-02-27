@@ -596,8 +596,8 @@ describe('tctoken integration scenarios', () => {
 			const expiredJids: string[] = []
 			const validJids: string[] = []
 
-			for(const [jid, entry] of Object.entries(entries)) {
-				if(isTcTokenExpired(entry.timestamp)) {
+			for (const [jid, entry] of Object.entries(entries)) {
+				if (isTcTokenExpired(entry.timestamp)) {
 					expiredJids.push(jid)
 				} else {
 					validJids.push(jid)
@@ -617,8 +617,8 @@ describe('tctoken integration scenarios', () => {
 			}
 
 			const deletions: Record<string, null> = {}
-			for(const [jid, entry] of Object.entries(entries)) {
-				if(isTcTokenExpired(entry.timestamp)) {
+			for (const [jid, entry] of Object.entries(entries)) {
+				if (isTcTokenExpired(entry.timestamp)) {
 					deletions[jid] = null
 				}
 			}
@@ -635,8 +635,8 @@ describe('tctoken integration scenarios', () => {
 			}
 
 			const deletions: Record<string, null> = {}
-			for(const [jid, entry] of Object.entries(entries)) {
-				if(isTcTokenExpired(entry.timestamp)) {
+			for (const [jid, entry] of Object.entries(entries)) {
+				if (isTcTokenExpired(entry.timestamp)) {
 					deletions[jid] = null
 				}
 			}
@@ -652,8 +652,8 @@ describe('tctoken integration scenarios', () => {
 			}
 
 			const deletions: Record<string, null> = {}
-			for(const [jid, entry] of Object.entries(entries)) {
-				if(isTcTokenExpired(entry.timestamp)) {
+			for (const [jid, entry] of Object.entries(entries)) {
+				if (isTcTokenExpired(entry.timestamp)) {
 					deletions[jid] = null
 				}
 			}
@@ -669,8 +669,8 @@ describe('tctoken integration scenarios', () => {
 			}
 
 			const deletions: Record<string, null> = {}
-			for(const [jid, entry] of Object.entries(entries)) {
-				if(isTcTokenExpired((entry as any).timestamp)) {
+			for (const [jid, entry] of Object.entries(entries)) {
+				if (isTcTokenExpired((entry as any).timestamp)) {
 					deletions[jid] = null
 				}
 			}
@@ -769,8 +769,8 @@ describe('tctoken integration scenarios', () => {
 		it('index ignores sentinel key when loading', () => {
 			const jids = [JID_A, INDEX_KEY, JID_B, '', null as any]
 			const loaded = new Set<string>()
-			for(const jid of jids) {
-				if(jid && jid !== INDEX_KEY) {
+			for (const jid of jids) {
+				if (jid && jid !== INDEX_KEY) {
 					loaded.add(jid)
 				}
 			}
@@ -794,9 +794,9 @@ describe('tctoken integration scenarios', () => {
 			}
 
 			const expiredDeletions: Record<string, null> = {}
-			for(const jid of knownJids) {
+			for (const jid of knownJids) {
 				const entry = allTokens[jid]
-				if(!entry?.token || isTcTokenExpired(entry.timestamp)) {
+				if (!entry?.token || isTcTokenExpired(entry.timestamp)) {
 					expiredDeletions[jid] = null
 					knownJids.delete(jid)
 				}
@@ -823,7 +823,7 @@ describe('tctoken integration scenarios', () => {
 			}
 
 			// First add → triggers save
-			if(!knownJids.has(JID_A)) {
+			if (!knownJids.has(JID_A)) {
 				knownJids.add(JID_A)
 				scheduleSave()
 			}
@@ -831,7 +831,7 @@ describe('tctoken integration scenarios', () => {
 			expect(saveCount).toBe(1)
 
 			// Duplicate add → no save
-			if(!knownJids.has(JID_A)) {
+			if (!knownJids.has(JID_A)) {
 				knownJids.add(JID_A)
 				scheduleSave()
 			}
@@ -839,7 +839,7 @@ describe('tctoken integration scenarios', () => {
 			expect(saveCount).toBe(1)
 
 			// New JID → triggers save
-			if(!knownJids.has(JID_B)) {
+			if (!knownJids.has(JID_B)) {
 				knownJids.add(JID_B)
 				scheduleSave()
 			}

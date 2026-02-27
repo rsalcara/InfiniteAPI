@@ -18,9 +18,9 @@ const TC_TOKEN_NUM_BUCKETS = 4
  * If WA ever diverges these, add a `mode` parameter here.
  */
 export function isTcTokenExpired(timestamp: number | string | null | undefined): boolean {
-	if(timestamp === null || timestamp === undefined) return true
+	if (timestamp === null || timestamp === undefined) return true
 	const ts = typeof timestamp === 'string' ? Number(timestamp) : timestamp
-	if(isNaN(ts)) return true
+	if (isNaN(ts)) return true
 	const now = Math.floor(Date.now() / 1000)
 	const currentBucket = Math.floor(now / TC_TOKEN_BUCKET_DURATION)
 	const cutoffBucket = currentBucket - (TC_TOKEN_NUM_BUCKETS - 1)
@@ -35,7 +35,7 @@ export function isTcTokenExpired(timestamp: number | string | null | undefined):
  * Returns true if senderTimestamp is null/undefined or in a previous bucket.
  */
 export function shouldSendNewTcToken(senderTimestamp: number | undefined): boolean {
-	if(senderTimestamp === undefined) return true
+	if (senderTimestamp === undefined) return true
 	const now = Math.floor(Date.now() / 1000)
 	const currentBucket = Math.floor(now / TC_TOKEN_BUCKET_DURATION)
 	const senderBucket = Math.floor(senderTimestamp / TC_TOKEN_BUCKET_DURATION)
@@ -58,7 +58,7 @@ export async function resolveTcTokenJid(
 	getLIDForPN: (pn: string) => Promise<string | null>
 ): Promise<string> {
 	const normalized = jidNormalizedUser(jid)
-	if(isLidUser(normalized)) return normalized
+	if (isLidUser(normalized)) return normalized
 	const lid = await getLIDForPN(normalized)
 	return lid ?? normalized
 }
@@ -84,9 +84,9 @@ export async function buildTcTokenFromJid({
 		const entry = tcTokenData?.[storageJid]
 		const tcTokenBuffer = entry?.token
 
-		if(!tcTokenBuffer?.length || isTcTokenExpired(entry?.timestamp)) {
+		if (!tcTokenBuffer?.length || isTcTokenExpired(entry?.timestamp)) {
 			// Opportunistic cleanup: remove expired token from store
-			if(tcTokenBuffer) {
+			if (tcTokenBuffer) {
 				await authState.keys.set({ tctoken: { [storageJid]: null } })
 			}
 
@@ -100,7 +100,7 @@ export async function buildTcTokenFromJid({
 		})
 
 		return baseContent
-	} catch(error) {
+	} catch (error) {
 		return baseContent.length > 0 ? baseContent : undefined
 	}
 }
@@ -127,11 +127,11 @@ export async function storeTcTokensFromIqResult({
 	onNewJidStored
 }: StoreTcTokensParams) {
 	const tokensNode = getBinaryNodeChild(result, 'tokens')
-	if(!tokensNode) return
+	if (!tokensNode) return
 
 	const tokenNodes = getBinaryNodeChildren(tokensNode, 'token')
-	for(const tokenNode of tokenNodes) {
-		if(tokenNode.attrs.type !== 'trusted_contact' || !(tokenNode.content instanceof Uint8Array)) {
+	for (const tokenNode of tokenNodes) {
+		if (tokenNode.attrs.type !== 'trusted_contact' || !(tokenNode.content instanceof Uint8Array)) {
 			continue
 		}
 
@@ -144,13 +144,13 @@ export async function storeTcTokensFromIqResult({
 		// Matches WA Web handleIncomingTcToken
 		const existingTs = existingEntry?.timestamp ? Number(existingEntry.timestamp) : 0
 		const incomingTs = tokenNode.attrs.t ? Number(tokenNode.attrs.t) : 0
-		if(existingTs > 0 && incomingTs > 0 && existingTs > incomingTs) {
+		if (existingTs > 0 && incomingTs > 0 && existingTs > incomingTs) {
 			continue
 		}
 
 		// Don't store timestamp-less tokens at all — isTcTokenExpired treats them
 		// as immediately expired regardless of whether an existing entry is present
-		if(!incomingTs) {
+		if (!incomingTs) {
 			continue
 		}
 

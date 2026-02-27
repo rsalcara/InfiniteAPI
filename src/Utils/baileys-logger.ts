@@ -958,7 +958,19 @@ export function logLidMapping(
  * // Output: [BAILEYS] 🔑 TcToken expired → 5511999999999@s.whatsapp.net { age: 32d }
  */
 export function logTcToken(
-	event: 'stored' | 'expired' | 'fetch' | 'fetched' | 'reissue' | 'reissue_ok' | 'reissue_fail' | 'prune' | 'error_463' | 'error_479' | 'attached' | 'retry_463_ok',
+	event:
+		| 'stored'
+		| 'expired'
+		| 'fetch'
+		| 'fetched'
+		| 'reissue'
+		| 'reissue_ok'
+		| 'reissue_fail'
+		| 'prune'
+		| 'error_463'
+		| 'error_479'
+		| 'attached'
+		| 'retry_463_ok',
 	data?: Record<string, unknown>,
 	sessionName?: string
 ): void {

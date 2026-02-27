@@ -1539,6 +1539,7 @@ export const makeSocket = (config: SocketConfig) => {
 				if (passiveResult.status === 'rejected') {
 					logger.warn({ err: passiveResult.reason }, 'failed to send initial passive iq')
 				}
+
 				for (const result of results.slice(1)) {
 					if (result.status === 'rejected') {
 						logger.warn({ err: result.reason }, 'background key operation failed after login (non-critical)')
@@ -1559,8 +1560,8 @@ export const makeSocket = (config: SocketConfig) => {
 		// for the same storage locks while the offline-message backlog is draining.
 		// start() is idempotent (guarded by cleanupInterval check) so deferring is safe.
 		const _cleanupStartTimer = setTimeout(() => sessionCleanup.start(), 5_000)
-		if (typeof (_cleanupStartTimer as NodeJS.Timeout).unref === 'function') {
-			;(_cleanupStartTimer as NodeJS.Timeout).unref()
+		if (typeof _cleanupStartTimer.unref === 'function') {
+			_cleanupStartTimer.unref()
 		}
 
 		// Start session activity tracker immediately (lightweight, no DB scan)

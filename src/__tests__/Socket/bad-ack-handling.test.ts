@@ -25,7 +25,7 @@ interface MockMessageRetryManager {
 /** Mirrors jidNormalizedUser: strips device suffix from JID user part */
 function jidNormalizedUser(jid: string): string {
 	const atIdx = jid.indexOf('@')
-	if(atIdx < 0) return jid
+	if (atIdx < 0) return jid
 	const user = jid.slice(0, atIdx)
 	const server = jid.slice(atIdx + 1)
 	const normalizedUser = user.includes(':') ? user.split(':')[0] : user
@@ -46,9 +46,9 @@ async function handleBadAck463(
 	const jid = jidNormalizedUser(attrs.from)
 	const key: MockKey = { remoteJid: attrs.from, fromMe: true, id: msgId }
 
-	if(attrs.error === '463') {
+	if (attrs.error === '463') {
 		const retryKey = `${jid}:${msgId}`
-		if(msgId && jid && !tcTokenRetriedMsgIds.has(retryKey)) {
+		if (msgId && jid && !tcTokenRetriedMsgIds.has(retryKey)) {
 			tcTokenRetriedMsgIds.add(retryKey)
 			// Each entry auto-expires after 60s — naturally bounded under normal use
 			setTimeout(() => tcTokenRetriedMsgIds.delete(retryKey), 60_000)
@@ -57,7 +57,7 @@ async function handleBadAck463(
 				(await getMessage(key)) ??
 				// Fallback: ack can arrive <30ms after send, before store persists
 				messageRetryManager?.getRecentMessage(jid, msgId)?.message
-			if(msg) {
+			if (msg) {
 				try {
 					await delayFn(1500)
 					await relayMessage(jid, msg, {
@@ -190,7 +190,7 @@ describe('handleBadAck error 463 retry', () => {
 	})
 
 	it('should not retry for non-463 errors', async () => {
-		for(const errorCode of ['479', '421']) {
+		for (const errorCode of ['479', '421']) {
 			mockGetMessage.mockClear()
 			mockRelayMessage.mockClear()
 			mockEmit.mockClear()
@@ -274,7 +274,9 @@ describe('handleBadAck error 463 retry', () => {
 	it('should fall back to messageRetryManager when getMessage returns undefined', async () => {
 		const cachedMsg = { conversation: 'cached' }
 		const mockRetryManager: MockMessageRetryManager = {
-			getRecentMessage: jest.fn<(jid: string, msgId: string) => { message: any } | undefined>().mockReturnValue({ message: cachedMsg })
+			getRecentMessage: jest
+				.fn<(jid: string, msgId: string) => { message: any } | undefined>()
+				.mockReturnValue({ message: cachedMsg })
 		}
 		mockGetMessage.mockResolvedValue(undefined)
 		mockRelayMessage.mockResolvedValue(undefined)

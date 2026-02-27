@@ -138,6 +138,7 @@ export const ensureLTHashStateVersion = (state: LTHashState): LTHashState => {
 	if (typeof state.version !== 'number' || isNaN(state.version)) {
 		state.version = 0
 	}
+
 	return state
 }
 

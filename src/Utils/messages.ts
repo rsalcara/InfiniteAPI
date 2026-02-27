@@ -1241,7 +1241,7 @@ export const generateWAMessageContent = async (
 		const generated = await generateCarouselMessage(carouselOptions, options)
 		// Direct interactiveMessage — no viewOnceMessage wrapper, no root header/body/footer
 		m.interactiveMessage = generated.interactiveMessage
-		return m as proto.IMessage
+		return m
 	}
 	// Check for nativeList
 	else if (hasNonNullishProperty(message, 'nativeList')) {
@@ -1349,7 +1349,10 @@ export const generateWAMessageContent = async (
 		}))
 
 		m.listMessage = listMessage
-		options.logger?.info({ sections: listMessage.sections?.length || 0 }, '[Interactive] Sending listMessage (sections: ' + (listMessage.sections?.length || 0) + ')')
+		options.logger?.info(
+			{ sections: listMessage.sections?.length || 0 },
+			'[Interactive] Sending listMessage (sections: ' + (listMessage.sections?.length || 0) + ')'
+		)
 	} else if (hasNonNullishProperty(message, 'carousel')) {
 		// Process carousel/interactive messages with viewOnceMessage wrapper
 		const carousel = (message as any).carousel
@@ -1810,7 +1813,8 @@ export const generateWAMessageFromContent = (
 	}
 
 	// Skip ephemeral contextInfo for carousel messages
-	const isCarouselEphemeral = !!(message as any)?.interactiveMessage?.carouselMessage ||
+	const isCarouselEphemeral =
+		!!(message as any)?.interactiveMessage?.carouselMessage ||
 		!!(message as any)?.viewOnceMessage?.message?.interactiveMessage?.carouselMessage
 	if (
 		// if we want to send a disappearing message
@@ -1834,7 +1838,8 @@ export const generateWAMessageFromContent = (
 
 	// Skip Message.create() for carousel — InteractiveMessage has oneOf (fields 4-7)
 	// and create() may corrupt the carouselMessage/nativeFlowMessage oneOf resolution
-	const isCarouselMsg = !!(message as any)?.interactiveMessage?.carouselMessage ||
+	const isCarouselMsg =
+		!!(message as any)?.interactiveMessage?.carouselMessage ||
 		!!(message as any)?.viewOnceMessage?.message?.interactiveMessage?.carouselMessage
 	if (!isCarouselMsg) {
 		message = WAProto.Message.create(message)

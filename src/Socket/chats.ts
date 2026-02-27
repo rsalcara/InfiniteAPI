@@ -2,7 +2,12 @@ import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
 import { LRUCache } from 'lru-cache'
 import { proto } from '../../WAProto/index.js'
-import { DEFAULT_CACHE_MAX_KEYS, DEFAULT_CACHE_TTLS, HISTORY_SYNC_PAUSED_TIMEOUT_MS, PROCESSABLE_HISTORY_TYPES } from '../Defaults'
+import {
+	DEFAULT_CACHE_MAX_KEYS,
+	DEFAULT_CACHE_TTLS,
+	HISTORY_SYNC_PAUSED_TIMEOUT_MS,
+	PROCESSABLE_HISTORY_TYPES
+} from '../Defaults'
 import type {
 	BotListInfo,
 	CacheStore,
@@ -777,7 +782,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			me && (normalizedJid === jidNormalizedUser(me.id) || (me.lid && normalizedJid === jidNormalizedUser(me.lid)))
 		let content: BinaryNode[] | undefined = baseContent
 
-		if(isUserJid && !isSelf) {
+		if (isUserJid && !isSelf) {
 			content = await buildTcTokenFromJid({
 				authState,
 				jid: normalizedJid,
@@ -1438,7 +1443,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		// of the state machine phase (see the Syncing → Online path below).
 		const isReconnection = (authState.creds.accountSyncCounter ?? 0) > 0
 		if (isReconnection) {
-			logger.info('Reconnection detected (accountSyncCounter > 0), skipping AwaitingInitialSync wait. Transitioning to Online immediately.')
+			logger.info(
+				'Reconnection detected (accountSyncCounter > 0), skipping AwaitingInitialSync wait. Transitioning to Online immediately.'
+			)
 			blockedCollections.clear()
 			syncState = SyncState.Online
 			const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1

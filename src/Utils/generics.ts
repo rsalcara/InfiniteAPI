@@ -376,9 +376,9 @@ export const getErrorCodeFromStreamError = (node: BinaryNode) => {
 
 	// Conflict child: type attribute determines connectionReplaced vs loggedOut.
 	// WA Web default: any type other than 'replaced' is treated as device_removed (loggedOut).
-	if(reason === 'conflict') {
+	if (reason === 'conflict') {
 		const conflictType = reasonNode!.attrs?.type
-		if(conflictType === 'replaced') {
+		if (conflictType === 'replaced') {
 			return { reason: 'replaced', statusCode: DisconnectReason.connectionReplaced }
 		}
 
@@ -388,11 +388,11 @@ export const getErrorCodeFromStreamError = (node: BinaryNode) => {
 	// Child-level code parsing: parent code attr > child code attr > CODE_MAP from child tag > badSession
 	const statusCode = +(node.attrs.code || reasonNode?.attrs?.code || CODE_MAP[reason] || DisconnectReason.badSession)
 
-	if(statusCode === DisconnectReason.restartRequired) {
+	if (statusCode === DisconnectReason.restartRequired) {
 		reason = 'restart required'
-	} else if(statusCode === DisconnectReason.sessionInvalidated) {
+	} else if (statusCode === DisconnectReason.sessionInvalidated) {
 		reason = 'session invalidated'
-	} else if(node.attrs.code) {
+	} else if (node.attrs.code) {
 		reason = `code ${statusCode}`
 	}
 
