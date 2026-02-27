@@ -352,6 +352,11 @@ export const makeSocket = (config: SocketConfig) => {
 		// whose message contained "socket-query" → matched the circuit-breaker's
 		// "socket" pattern → incorrectly tripped the breaker after 5 timeouts.
 		const responsePromise = waitForMessage<any>(msgId, timeoutMs)
+		// Prevent unhandled-rejection if sendNode throws before we reach
+		// `await responsePromise` below. The error from sendNode still propagates
+		// to the caller; this only silences the secondary rejection from
+		// responsePromise (which waitForMessage will emit when ws closes).
+		responsePromise.catch(() => {})
 
 		// Await the send so that real sendNode failures (e.g. serialisation errors)
 		// are surfaced to the caller immediately rather than silently discarded.
