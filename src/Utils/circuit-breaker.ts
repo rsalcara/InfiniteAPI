@@ -733,8 +733,8 @@ export function createConnectionCircuitBreaker(customOptions?: Partial<CircuitBr
 
 			// Exclude normal WS reconnect events (Connection Closed, Connection Lost, Timed Out, etc.).
 			// These are not server-side failures — they happen on every restart/redeploy and should
-			// never cause the circuit to open.  If we counted them, 5 concurrent parallel
-			// post-login queries (sendPassiveIq, uploadPreKeys, digestKeyBundle, ...) could all
+			// never cause the circuit to open.  If we counted them, the 3 concurrent parallel
+			// post-login queries (sendPassiveIq, uploadPreKeysToServerIfRequired, digestKeyBundle) could all
 			// fail simultaneously when the WS drops, instantly opening the circuit and blocking
 			// profile-picture fetches and message delivery for the next 30 s.
 			const statusCode = (error as { output?: { statusCode?: number } })?.output?.statusCode

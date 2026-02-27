@@ -1439,14 +1439,14 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		// On reconnections, app state was already synced in a previous session.
 		// Skip the AwaitingInitialSync wait and go directly to Online so that
-		// live incoming messages are not held in the buffer for up to 8 seconds.
+		// live incoming messages are not held in the buffer for up to 4 seconds.
 		//
 		// Two signals indicate a reconnect (either is sufficient):
 		// 1. accountSyncCounter > 0  — at least one full sync completed before
 		// 2. socketSkippedOfflineBuffer — socket.ts already determined this is a
 		//    reconnect (e.g. stale routingInfo was cleared) and skipped the offline
 		//    phase buffer. Keeping the second buffer active while the first was already
-		//    skipped would cause a mismatch: events flow immediately then stall for 8s.
+		//    skipped would cause a mismatch: events flow immediately then stall for 4s.
 		const isReconnection = (authState.creds.accountSyncCounter ?? 0) > 0 || socketSkippedOfflineBuffer
 		if (isReconnection) {
 			logger.info(
@@ -1484,8 +1484,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		// emitted.  If the notification does not arrive within 4s we stop waiting, go Online,
 		// and flush so that any live message arriving after connection is never held more than 4s.
 		// History that arrives late is still processed via processMessage regardless of state.
-		// The event-buffer's own adaptive safety timer also fires at ≤4s (BAILEYS_BUFFER_TIMEOUT_MS),
-		// so the two are now aligned and the buffer cannot stall beyond ~4s on a first connect.
+		// This 4s timeout fires before the event-buffer's own adaptive safety timer
+		// (BAILEYS_BUFFER_TIMEOUT_MS defaults to 5s), ensuring the buffer cannot stall
+		// beyond 4s on a first connect regardless of event rate.
 		logger.info('First connection, awaiting history sync notification with a 4s timeout.')
 
 		if (awaitingSyncTimeout) {
