@@ -976,30 +976,6 @@ export namespace proto {
         }
     }
 
-    interface IBotAvatarMetadata {
-        sentiment?: (number|null);
-        behaviorGraph?: (string|null);
-        action?: (number|null);
-        intensity?: (number|null);
-        wordCount?: (number|null);
-    }
-
-    class BotAvatarMetadata implements IBotAvatarMetadata {
-        constructor(p?: proto.IBotAvatarMetadata);
-        public sentiment?: (number|null);
-        public behaviorGraph?: (string|null);
-        public action?: (number|null);
-        public intensity?: (number|null);
-        public wordCount?: (number|null);
-        public static create(properties?: proto.IBotAvatarMetadata): proto.BotAvatarMetadata;
-        public static encode(m: proto.IBotAvatarMetadata, w?: $protobuf.Writer): $protobuf.Writer;
-        public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.BotAvatarMetadata;
-        public static fromObject(d: { [k: string]: any }): proto.BotAvatarMetadata;
-        public static toObject(m: proto.BotAvatarMetadata, o?: $protobuf.IConversionOptions): { [k: string]: any };
-        public toJSON(): { [k: string]: any };
-        public static getTypeUrl(typeUrlPrefix?: string): string;
-    }
-
     interface IBotCapabilityMetadata {
         capabilities?: (proto.BotCapabilityMetadata.BotCapabilityType[]|null);
     }
@@ -1627,7 +1603,6 @@ export namespace proto {
     }
 
     interface IBotMetadata {
-        avatarMetadata?: (proto.IBotAvatarMetadata|null);
         personaId?: (string|null);
         pluginMetadata?: (proto.IBotPluginMetadata|null);
         suggestedPromptMetadata?: (proto.IBotSuggestedPromptMetadata|null);
@@ -1670,7 +1645,6 @@ export namespace proto {
 
     class BotMetadata implements IBotMetadata {
         constructor(p?: proto.IBotMetadata);
-        public avatarMetadata?: (proto.IBotAvatarMetadata|null);
         public personaId?: (string|null);
         public pluginMetadata?: (proto.IBotPluginMetadata|null);
         public suggestedPromptMetadata?: (proto.IBotSuggestedPromptMetadata|null);
@@ -3367,7 +3341,7 @@ export namespace proto {
         isSpoiler?: (boolean|null);
         mediaDomainInfo?: (proto.IMediaDomainInfo|null);
         partiallySelectedContent?: (proto.ContextInfo.IPartiallySelectedContent|null);
-        afterReadDurationMs?: (number|null);
+        afterReadDuration?: (number|null);
     }
 
     class ContextInfo implements IContextInfo {
@@ -3430,7 +3404,7 @@ export namespace proto {
         public isSpoiler?: (boolean|null);
         public mediaDomainInfo?: (proto.IMediaDomainInfo|null);
         public partiallySelectedContent?: (proto.ContextInfo.IPartiallySelectedContent|null);
-        public afterReadDurationMs?: (number|null);
+        public afterReadDuration?: (number|null);
         public static create(properties?: proto.IContextInfo): proto.ContextInfo;
         public static encode(m: proto.IContextInfo, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.ContextInfo;
@@ -3865,6 +3839,7 @@ export namespace proto {
         limitSharingTrigger?: (proto.LimitSharing.TriggerType|null);
         limitSharingInitiatedByMe?: (boolean|null);
         maibaAiThreadEnabled?: (boolean|null);
+        isMarketingMessageThread?: (boolean|null);
     }
 
     class Conversation implements IConversation {
@@ -3923,6 +3898,7 @@ export namespace proto {
         public limitSharingTrigger?: (proto.LimitSharing.TriggerType|null);
         public limitSharingInitiatedByMe?: (boolean|null);
         public maibaAiThreadEnabled?: (boolean|null);
+        public isMarketingMessageThread?: (boolean|null);
         public static create(properties?: proto.IConversation): proto.Conversation;
         public static encode(m: proto.IConversation, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Conversation;
@@ -5556,6 +5532,7 @@ export namespace proto {
         spoilerMessage?: (proto.Message.IFutureProofMessage|null);
         pollCreationMessageV6?: (proto.Message.IPollCreationMessage|null);
         conditionalRevealMessage?: (proto.Message.IConditionalRevealMessage|null);
+        pollAddOptionMessage?: (proto.Message.IPollAddOptionMessage|null);
     }
 
     class Message implements IMessage {
@@ -5660,6 +5637,7 @@ export namespace proto {
         public spoilerMessage?: (proto.Message.IFutureProofMessage|null);
         public pollCreationMessageV6?: (proto.Message.IPollCreationMessage|null);
         public conditionalRevealMessage?: (proto.Message.IConditionalRevealMessage|null);
+        public pollAddOptionMessage?: (proto.Message.IPollAddOptionMessage|null);
         public static create(properties?: proto.IMessage): proto.Message;
         public static encode(m: proto.IMessage, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Message;
@@ -8711,6 +8689,24 @@ export namespace proto {
             }
         }
 
+        interface IPollAddOptionMessage {
+            pollCreationMessageKey?: (proto.IMessageKey|null);
+            addOption?: (proto.Message.PollCreationMessage.IOption|null);
+        }
+
+        class PollAddOptionMessage implements IPollAddOptionMessage {
+            constructor(p?: proto.Message.IPollAddOptionMessage);
+            public pollCreationMessageKey?: (proto.IMessageKey|null);
+            public addOption?: (proto.Message.PollCreationMessage.IOption|null);
+            public static create(properties?: proto.Message.IPollAddOptionMessage): proto.Message.PollAddOptionMessage;
+            public static encode(m: proto.Message.IPollAddOptionMessage, w?: $protobuf.Writer): $protobuf.Writer;
+            public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Message.PollAddOptionMessage;
+            public static fromObject(d: { [k: string]: any }): proto.Message.PollAddOptionMessage;
+            public static toObject(m: proto.Message.PollAddOptionMessage, o?: $protobuf.IConversionOptions): { [k: string]: any };
+            public toJSON(): { [k: string]: any };
+            public static getTypeUrl(typeUrlPrefix?: string): string;
+        }
+
         enum PollContentType {
             UNKNOWN = 0,
             TEXT = 1,
@@ -8728,6 +8724,7 @@ export namespace proto {
             correctAnswer?: (proto.Message.PollCreationMessage.IOption|null);
             endTime?: (number|Long|null);
             hideParticipantName?: (boolean|null);
+            allowAddOption?: (boolean|null);
         }
 
         class PollCreationMessage implements IPollCreationMessage {
@@ -8742,6 +8739,7 @@ export namespace proto {
             public correctAnswer?: (proto.Message.PollCreationMessage.IOption|null);
             public endTime?: (number|Long|null);
             public hideParticipantName?: (boolean|null);
+            public allowAddOption?: (boolean|null);
             public static create(properties?: proto.Message.IPollCreationMessage): proto.Message.PollCreationMessage;
             public static encode(m: proto.Message.IPollCreationMessage, w?: $protobuf.Writer): $protobuf.Writer;
             public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Message.PollCreationMessage;
@@ -9003,7 +9001,7 @@ export namespace proto {
             aiQueryFanout?: (proto.IAIQueryFanout|null);
             memberLabel?: (proto.IMemberLabel|null);
             aiMediaCollectionMessage?: (proto.IAIMediaCollectionMessage|null);
-            afterReadDurationMs?: (number|null);
+            afterReadDuration?: (number|null);
         }
 
         class ProtocolMessage implements IProtocolMessage {
@@ -9033,7 +9031,7 @@ export namespace proto {
             public aiQueryFanout?: (proto.IAIQueryFanout|null);
             public memberLabel?: (proto.IMemberLabel|null);
             public aiMediaCollectionMessage?: (proto.IAIMediaCollectionMessage|null);
-            public afterReadDurationMs?: (number|null);
+            public afterReadDuration?: (number|null);
             public static create(properties?: proto.Message.IProtocolMessage): proto.Message.ProtocolMessage;
             public static encode(m: proto.Message.IProtocolMessage, w?: $protobuf.Writer): $protobuf.Writer;
             public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Message.ProtocolMessage;
@@ -9278,7 +9276,8 @@ export namespace proto {
                 EVENT_EDIT = 1,
                 MESSAGE_EDIT = 2,
                 MESSAGE_SCHEDULE = 3,
-                POLL_EDIT = 4
+                POLL_EDIT = 4,
+                POLL_ADD_OPTION = 5
             }
         }
 
@@ -9947,7 +9946,8 @@ export namespace proto {
             STATUS_QUESTION = 16,
             STATUS_ADD_YOURS_DIWALI = 17,
             STATUS_REACTION = 18,
-            HEVC_VIDEO_DUAL_UPLOAD = 19
+            HEVC_VIDEO_DUAL_UPLOAD = 19,
+            POLL_ADD_OPTION = 20
         }
     }
 
@@ -10359,6 +10359,7 @@ export namespace proto {
         OUT_CONTACT_ACTION = 79,
         NCT_SALT_SYNC_ACTION = 80,
         BUSINESS_BROADCAST_CAMPAIGN_ACTION = 81,
+        BUSINESS_BROADCAST_INSIGHTS_ACTION = 82,
         SHARE_OWN_PN = 10001,
         BUSINESS_BROADCAST_ACTION = 10002,
         AI_THREAD_DELETE_ACTION = 10003
@@ -11951,6 +11952,7 @@ export namespace proto {
         outContactAction?: (proto.SyncActionValue.IOutContactAction|null);
         nctSaltSyncAction?: (proto.SyncActionValue.INctSaltSyncAction|null);
         businessBroadcastCampaignAction?: (proto.SyncActionValue.IBusinessBroadcastCampaignAction|null);
+        businessBroadcastInsightsAction?: (proto.SyncActionValue.IBusinessBroadcastInsightsAction|null);
     }
 
     class SyncActionValue implements ISyncActionValue {
@@ -12027,6 +12029,7 @@ export namespace proto {
         public outContactAction?: (proto.SyncActionValue.IOutContactAction|null);
         public nctSaltSyncAction?: (proto.SyncActionValue.INctSaltSyncAction|null);
         public businessBroadcastCampaignAction?: (proto.SyncActionValue.IBusinessBroadcastCampaignAction|null);
+        public businessBroadcastInsightsAction?: (proto.SyncActionValue.IBusinessBroadcastInsightsAction|null);
         public static create(properties?: proto.ISyncActionValue): proto.SyncActionValue;
         public static encode(m: proto.ISyncActionValue, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue;
@@ -12195,10 +12198,6 @@ export namespace proto {
             scheduledTimestamp?: (number|Long|null);
             createTimestamp?: (number|Long|null);
             status?: (proto.SyncActionValue.BusinessBroadcastCampaignStatus|null);
-            messageBody?: (string|null);
-            mediaData?: (Uint8Array|null);
-            mediaMetadata?: (string|null);
-            ctaButtonJson?: (string|null);
         }
 
         class BusinessBroadcastCampaignAction implements IBusinessBroadcastCampaignAction {
@@ -12212,10 +12211,6 @@ export namespace proto {
             public scheduledTimestamp?: (number|Long|null);
             public createTimestamp?: (number|Long|null);
             public status?: (proto.SyncActionValue.BusinessBroadcastCampaignStatus|null);
-            public messageBody?: (string|null);
-            public mediaData?: (Uint8Array|null);
-            public mediaMetadata?: (string|null);
-            public ctaButtonJson?: (string|null);
             public static create(properties?: proto.SyncActionValue.IBusinessBroadcastCampaignAction): proto.SyncActionValue.BusinessBroadcastCampaignAction;
             public static encode(m: proto.SyncActionValue.IBusinessBroadcastCampaignAction, w?: $protobuf.Writer): $protobuf.Writer;
             public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue.BusinessBroadcastCampaignAction;
@@ -12231,6 +12226,30 @@ export namespace proto {
             PROCESSING = 3,
             FAILED = 4,
             SENT = 5
+        }
+
+        interface IBusinessBroadcastInsightsAction {
+            recipientCount?: (number|null);
+            deliveredCount?: (number|null);
+            readCount?: (number|null);
+            repliedCount?: (number|null);
+            quickReplyCount?: (number|null);
+        }
+
+        class BusinessBroadcastInsightsAction implements IBusinessBroadcastInsightsAction {
+            constructor(p?: proto.SyncActionValue.IBusinessBroadcastInsightsAction);
+            public recipientCount?: (number|null);
+            public deliveredCount?: (number|null);
+            public readCount?: (number|null);
+            public repliedCount?: (number|null);
+            public quickReplyCount?: (number|null);
+            public static create(properties?: proto.SyncActionValue.IBusinessBroadcastInsightsAction): proto.SyncActionValue.BusinessBroadcastInsightsAction;
+            public static encode(m: proto.SyncActionValue.IBusinessBroadcastInsightsAction, w?: $protobuf.Writer): $protobuf.Writer;
+            public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue.BusinessBroadcastInsightsAction;
+            public static fromObject(d: { [k: string]: any }): proto.SyncActionValue.BusinessBroadcastInsightsAction;
+            public static toObject(m: proto.SyncActionValue.BusinessBroadcastInsightsAction, o?: $protobuf.IConversionOptions): { [k: string]: any };
+            public toJSON(): { [k: string]: any };
+            public static getTypeUrl(typeUrlPrefix?: string): string;
         }
 
         interface IBusinessBroadcastListAction {
@@ -12637,7 +12656,8 @@ export namespace proto {
                 COMMUNITY = 6,
                 SERVER_ASSIGNED = 7,
                 DRAFTED = 8,
-                AI_HANDOFF = 9
+                AI_HANDOFF = 9,
+                CHANNELS = 10
             }
         }
 
@@ -13939,12 +13959,14 @@ export namespace proto {
     interface IThreadID {
         threadType?: (proto.ThreadID.ThreadType|null);
         threadKey?: (proto.IMessageKey|null);
+        sourceChatJid?: (string|null);
     }
 
     class ThreadID implements IThreadID {
         constructor(p?: proto.IThreadID);
         public threadType?: (proto.ThreadID.ThreadType|null);
         public threadKey?: (proto.IMessageKey|null);
+        public sourceChatJid?: (string|null);
         public static create(properties?: proto.IThreadID): proto.ThreadID;
         public static encode(m: proto.IThreadID, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.ThreadID;
@@ -14360,6 +14382,7 @@ export namespace proto {
         interactiveMessageAdditionalMetadata?: (proto.IInteractiveMessageAdditionalMetadata|null);
         quarantinedMessage?: (proto.IQuarantinedMessage|null);
         nonJidMentions?: (number|null);
+        hsmTag?: (string|null);
     }
 
     class WebMessageInfo implements IWebMessageInfo {
@@ -14431,6 +14454,7 @@ export namespace proto {
         public interactiveMessageAdditionalMetadata?: (proto.IInteractiveMessageAdditionalMetadata|null);
         public quarantinedMessage?: (proto.IQuarantinedMessage|null);
         public nonJidMentions?: (number|null);
+        public hsmTag?: (string|null);
         public static create(properties?: proto.IWebMessageInfo): proto.WebMessageInfo;
         public static encode(m: proto.IWebMessageInfo, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.WebMessageInfo;
