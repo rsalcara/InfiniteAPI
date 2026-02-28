@@ -102,14 +102,14 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	/** this mutex ensures that messages from the same chat are processed in order, while allowing parallel processing of messages from different chats */
 	const messageMutex = makeKeyedMutex()
 
-	/** this mutex ensures that receipts are processed in order */
-	const receiptMutex = makeMutex()
+	/** this mutex ensures that receipts from the same chat are processed in order, while allowing parallel processing across chats */
+	const receiptMutex = makeKeyedMutex()
 
 	/** this mutex ensures that app state patches are processed in order */
 	const appStatePatchMutex = makeMutex()
 
-	/** this mutex ensures that notifications are processed in order */
-	const notificationMutex = makeMutex()
+	/** this mutex ensures that notifications from the same chat are processed in order, while allowing parallel processing across chats */
+	const notificationMutex = makeKeyedMutex()
 
 	// Timeout for AwaitingInitialSync state
 	let awaitingSyncTimeout: NodeJS.Timeout | undefined
@@ -1495,7 +1495,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		awaitingSyncTimeout = setTimeout(() => {
 			if (syncState === SyncState.AwaitingInitialSync) {
-				logger.warn('Timeout in AwaitingInitialSync (4s), forcing state to Online and flushing buffer')
+				logger.warn('Timeout in AwaitingInitialSync (2s), forcing state to Online and flushing buffer')
 				syncState = SyncState.Online
 				ev.flush()
 
@@ -1505,7 +1505,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
 				ev.emit('creds.update', { accountSyncCounter })
 			}
-		}, 4_000)
+		}, 2_000)
 	})
 
 	// When an app state sync key arrives (myAppStateKeyId is set) and there are
