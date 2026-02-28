@@ -20,7 +20,7 @@ import { jest } from '@jest/globals'
  * bad-ack-handling.test.ts.
  */
 
-const OFFLINE_BUFFER_TIMEOUT_MS = 5_000
+const OFFLINE_BUFFER_TIMEOUT_MS = 2_000
 
 /** Mirrors the state variables declared at the top of makeSocket */
 interface OfflineBufferState {
@@ -101,10 +101,10 @@ describe('offline-buffer safety timer (socket.ts)', () => {
 	})
 
 	// -------------------------------------------------------------------------
-	// 1. Timeout path — CB:ib,,offline never arrives within 5 s
+	// 1. Timeout path — CB:ib,,offline never arrives within 2 s
 	// -------------------------------------------------------------------------
 
-	it('fires after 5 s and flushes when CB:ib,,offline is delayed', () => {
+	it('fires after 2 s and flushes when CB:ib,,offline is delayed', () => {
 		startBuffer(state, mockFlush, mockWarn)
 
 		expect(mockFlush).not.toHaveBeenCalled()
@@ -144,17 +144,17 @@ describe('offline-buffer safety timer (socket.ts)', () => {
 	})
 
 	// -------------------------------------------------------------------------
-	// 2. Happy path — CB:ib,,offline arrives before the 5 s timer fires
+	// 2. Happy path — CB:ib,,offline arrives before the 2 s timer fires
 	// -------------------------------------------------------------------------
 
 	it('CB:ib,,offline cancels the timer and flushes exactly once', () => {
 		startBuffer(state, mockFlush, mockWarn)
 
-		// Server responds before the 5 s timeout
+		// Server responds before the 2 s timeout
 		jest.advanceTimersByTime(1_000)
 		onOffline(state, mockFlush)
 
-		// Timer should be cancelled — advancing past 5 s must not cause a second flush
+		// Timer should be cancelled — advancing past 2 s must not cause a second flush
 		jest.advanceTimersByTime(OFFLINE_BUFFER_TIMEOUT_MS)
 
 		expect(mockFlush).toHaveBeenCalledTimes(1)
@@ -192,7 +192,7 @@ describe('offline-buffer safety timer (socket.ts)', () => {
 
 		onClose(state)
 
-		// Timer must be gone — advancing past 5 s must not trigger any flush
+		// Timer must be gone — advancing past 2 s must not trigger any flush
 		jest.advanceTimersByTime(OFFLINE_BUFFER_TIMEOUT_MS)
 
 		expect(mockFlush).not.toHaveBeenCalled()
@@ -236,7 +236,7 @@ describe('offline-buffer safety timer (socket.ts)', () => {
 	// 4. Boundary / timing edge cases
 	// -------------------------------------------------------------------------
 
-	it('does not flush before exactly 5 s have elapsed', () => {
+	it('does not flush before exactly 2 s have elapsed', () => {
 		startBuffer(state, mockFlush, mockWarn)
 
 		jest.advanceTimersByTime(OFFLINE_BUFFER_TIMEOUT_MS - 1)
@@ -244,7 +244,7 @@ describe('offline-buffer safety timer (socket.ts)', () => {
 		expect(mockFlush).not.toHaveBeenCalled()
 	})
 
-	it('flushes at exactly the 5 s boundary', () => {
+	it('flushes at exactly the 2 s boundary', () => {
 		startBuffer(state, mockFlush, mockWarn)
 
 		jest.advanceTimersByTime(OFFLINE_BUFFER_TIMEOUT_MS)

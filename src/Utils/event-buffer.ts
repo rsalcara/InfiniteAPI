@@ -54,7 +54,7 @@ export interface BufferConfig {
  */
 export function loadBufferConfig(): BufferConfig {
 	return {
-		// perf(inbound-latency): reduced from 15s → 5s so the safety auto-flush fires sooner.
+		// perf(inbound-latency): reduced from 15s → 3s so the safety auto-flush fires sooner.
 		// processNodeWithBuffer always calls ev.flush() explicitly (no-op for this timer),
 		// but socket.ts's offline-phase buffer and any stalled buffer benefit from the lower cap.
 		bufferTimeoutMs: parseInt(process.env.BAILEYS_BUFFER_TIMEOUT_MS || '3000', 10),

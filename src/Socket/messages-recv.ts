@@ -1282,7 +1282,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		try {
 			await Promise.all([
-				receiptMutex.mutex(remoteJid || 'unknown', async () => {
+				receiptMutex.mutex(jidNormalizedUser(remoteJid) || 'unknown', async () => {
 					const status = getStatusFromReceiptType(attrs.type)
 					if (
 						typeof status !== 'undefined' &&
@@ -1356,7 +1356,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		try {
 			await Promise.all([
-				notificationMutex.mutex(remoteJid || 'unknown', async () => {
+				notificationMutex.mutex(jidNormalizedUser(remoteJid) || 'unknown', async () => {
 					const msg = await processNotification(node)
 					if (msg) {
 						const fromMe = areJidsSameUser(node.attrs.participant || remoteJid, authState.creds.me!.id)
