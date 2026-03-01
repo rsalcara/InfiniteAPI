@@ -276,7 +276,6 @@ export const decryptMessageNode = (
 	meLid: string,
 	repository: SignalRepositoryWithLIDStore,
 	logger: ILogger,
-	autoCleanCorrupted = true
 ) => {
 	const { fullMessage, author, sender } = decodeMessageNode(stanza, meId, meLid)
 	return {

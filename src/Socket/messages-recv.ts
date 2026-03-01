@@ -1220,7 +1220,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// Per-JID deduplication: when multiple messages from the same contact
 		// fail with Bad MAC simultaneously, only send ONE retry request.
 		// The peer will resend all failed messages when it receives the retry receipt.
-		const retryDedupeJid = jidNormalizedUser(node.attrs.from!)
+		// For group messages, scope by participant (each participant has its own Signal session).
+		const retryDedupeJid = msgKey.participant
+			? jidNormalizedUser(msgKey.participant)
+			: jidNormalizedUser(node.attrs.from!)
 		if (retryRequestActiveJids.has(retryDedupeJid)) {
 			logger.debug(
 				{ fromJid: retryDedupeJid, msgId },
@@ -1228,9 +1231,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			)
 			return
 		}
-
-		retryRequestActiveJids.add(retryDedupeJid)
-		setTimeout(() => retryRequestActiveJids.delete(retryDedupeJid), 5_000)
 
 		if (messageRetryManager) {
 			// Check if we've exceeded max retries using the new system
@@ -1244,10 +1244,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				// on every Bad MAC in the hot path (decode-wa-message.ts).
 				// The Signal Protocol recovers naturally via retry+pkmsg for most cases;
 				// this cleanup only runs as a last resort.
+				// For group messages, use participant JID (Signal sessions are per-participant, not per-group).
 				if (autoCleanCorrupted) {
-					const fromJid = node.attrs.from!
+					const senderJid = msgKey.participant ? jidNormalizedUser(msgKey.participant) : jidNormalizedUser(node.attrs.from!)
 					try {
-						const decryptionJid = await getDecryptionJid(fromJid, signalRepository)
+						const decryptionJid = await getDecryptionJid(senderJid, signalRepository)
 						const deletedCount = await cleanupCorruptedSession(decryptionJid, signalRepository, logger)
 						if (deletedCount > 0) {
 							logger.info(
@@ -1256,7 +1257,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							)
 						}
 					} catch (cleanupErr) {
-						logger.warn({ msgId, fromJid, err: cleanupErr }, 'Failed to cleanup session after retry exhaustion')
+						logger.warn({ msgId, senderJid, err: cleanupErr }, 'Failed to cleanup session after retry exhaustion')
 					}
 				}
 
@@ -1281,12 +1282,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 				// Safety net cleanup (same as new system above)
 				if (autoCleanCorrupted) {
-					const fromJid = node.attrs.from!
+					const senderJid = msgKey.participant ? jidNormalizedUser(msgKey.participant) : jidNormalizedUser(node.attrs.from!)
 					try {
-						const decryptionJid = await getDecryptionJid(fromJid, signalRepository)
+						const decryptionJid = await getDecryptionJid(senderJid, signalRepository)
 						await cleanupCorruptedSession(decryptionJid, signalRepository, logger)
 					} catch (cleanupErr) {
-						logger.warn({ msgId, fromJid, err: cleanupErr }, 'Failed to cleanup session after retry exhaustion')
+						logger.warn({ msgId, senderJid, err: cleanupErr }, 'Failed to cleanup session after retry exhaustion')
 					}
 				}
 
@@ -1297,6 +1298,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			await msgRetryCache.set(key, retryCount)
 			recordMessageRetry('retry')
 		}
+
+		// Register dedup AFTER early-return checks so that max-retries paths
+		// don't block subsequent messages from the same JID for 5 seconds.
+		retryRequestActiveJids.add(retryDedupeJid)
+		setTimeout(() => retryRequestActiveJids.delete(retryDedupeJid), 5_000)
 
 		const key = `${msgId}:${msgKey?.participant}`
 		const retryCount = (await msgRetryCache.get<number>(key)) || 1
@@ -2228,7 +2234,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			authState.creds.me!.lid || '',
 			signalRepository,
 			logger,
-			autoCleanCorrupted
 		)
 
 		const alt = msg.key.participantAlt || msg.key.remoteJidAlt
