@@ -2719,14 +2719,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			if (resolvedChatId) call.chatId = resolvedChatId
 			if (resolvedFrom) call.from = resolvedFrom
 			if (resolvedLinkCreator) call.linkCreator = resolvedLinkCreator
-			// Resolve participant JIDs
+			// Resolve participant JIDs in parallel
 			if (call.participants) {
-				for (const p of call.participants) {
+				await Promise.all(call.participants.map(async (p) => {
 					if (p.jid) {
 						const resolved = p.userPn || await resolveLidToPn(p.jid, callLidMapping, logger)
 						if (resolved) p.jid = resolved
 					}
-				}
+				}))
 			}
 
 			ev.emit('call', [call])
@@ -2736,8 +2736,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleBadAck = async ({ attrs }: BinaryNode) => {
-		const resolvedFrom = await resolveLidToPn(attrs.from, signalRepository.lidMapping, logger) || attrs.from
-		const key: WAMessageKey = { remoteJid: resolvedFrom, fromMe: true, id: attrs.id }
+		const key: WAMessageKey = { remoteJid: attrs.from, fromMe: true, id: attrs.id }
+		await normalizeKeyLidToPn(key, signalRepository.lidMapping, logger)
 
 		// WARNING: REFRAIN FROM ENABLING THIS FOR NOW. IT WILL CAUSE A LOOP
 		// // current hypothesis is that if pash is sent in the ack

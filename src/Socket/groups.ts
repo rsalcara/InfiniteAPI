@@ -23,10 +23,11 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 	/** Normalize group metadata participant IDs from LID to PN */
 	const normalizeGroupMetadata = async (metadata: GroupMetadata): Promise<GroupMetadata> => {
 		const lidMapping = signalRepository.lidMapping
-		for (const p of metadata.participants) {
+
+		// Resolve all participant LIDs in parallel for better performance on large groups
+		await Promise.all(metadata.participants.map(async (p) => {
 			if (isLidUser(p.id)) {
 				if (p.phoneNumber) {
-					// Inline PN available — use it and preserve LID
 					p.lid = p.id
 					p.id = p.phoneNumber
 				} else {
@@ -37,18 +38,19 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 					}
 				}
 			}
-		}
+		}))
 
-		// Normalize owner/subjectOwner if LID
-		if (metadata.owner && isLidUser(metadata.owner)) {
-			const resolved = metadata.ownerPn || await resolveLidToPn(metadata.owner, lidMapping, logger)
-			if (resolved) metadata.owner = resolved
-		}
-
-		if (metadata.subjectOwner && isLidUser(metadata.subjectOwner)) {
-			const resolved = metadata.subjectOwnerPn || await resolveLidToPn(metadata.subjectOwner, lidMapping, logger)
-			if (resolved) metadata.subjectOwner = resolved
-		}
+		// Normalize owner/subjectOwner if LID (parallel)
+		const [resolvedOwner, resolvedSubjectOwner] = await Promise.all([
+			metadata.owner && isLidUser(metadata.owner)
+				? (metadata.ownerPn || resolveLidToPn(metadata.owner, lidMapping, logger))
+				: null,
+			metadata.subjectOwner && isLidUser(metadata.subjectOwner)
+				? (metadata.subjectOwnerPn || resolveLidToPn(metadata.subjectOwner, lidMapping, logger))
+				: null
+		])
+		if (resolvedOwner) metadata.owner = resolvedOwner
+		if (resolvedSubjectOwner) metadata.subjectOwner = resolvedSubjectOwner
 
 		return metadata
 	}
