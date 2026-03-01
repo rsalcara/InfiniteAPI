@@ -20,6 +20,7 @@ import type {
 	PlaceholderMessageData,
 	SocketConfig,
 	WACallEvent,
+	WACallParticipant,
 	WACallUpdateType,
 	WAMessage,
 	WAMessageKey,
@@ -1073,7 +1074,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	 * @param media - 'video' or 'audio'
 	 * @returns object with token, full URL, and raw server response
 	 */
-	const createCallLink = async (media: 'video' | 'audio' = 'video') => {
+	const createCallLink = async (
+		media: 'video' | 'audio' = 'video',
+		event?: { startTime: number },
+		timeoutMs?: number
+	) => {
 		const stanza: BinaryNode = {
 			tag: 'call',
 			attrs: {
@@ -1083,14 +1088,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			content: [{
 				tag: 'link_create',
 				attrs: { media },
-				content: undefined
+				content: event
+					? [{ tag: 'event', attrs: { start_time: String(event.startTime) }, content: undefined }]
+					: undefined
 			}]
 		}
 
-		const response = await query(stanza)
+		const response = await query(stanza, timeoutMs)
 
 		// Extract token from server response
-		// Response contains link_create child with token attribute
 		let token: string | undefined
 		const linkCreateResp = getBinaryNodeChild(response, 'link_create')
 		if (linkCreateResp) {
@@ -1112,8 +1118,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 		}
 
+		// URL format verified via Frida capture: https://call.whatsapp.com/<token>
 		const url = token
-			? `https://call.whatsapp.com/${media}/${token}`
+			? `https://call.whatsapp.com/${token}`
 			: undefined
 
 		return { token, url, response }
@@ -2470,6 +2477,18 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		return pn
 	}
 
+	/** Extract participants from a node containing <user> children */
+	const extractParticipants = (parentNode: BinaryNode): WACallParticipant[] | undefined => {
+		const userNodes = getBinaryNodeChildren(parentNode, 'user')
+		if (!userNodes.length) return undefined
+		return userNodes.map(u => ({
+			jid: u.attrs.jid,
+			state: u.attrs.state,
+			userPn: u.attrs.user_pn,
+			type: u.attrs.type,
+		}))
+	}
+
 	const handleCall = async (node: BinaryNode) => {
 		const { attrs } = node
 		const children = getAllBinaryNodeChildren(node)
@@ -2511,16 +2530,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					call.connectedLimit = groupInfo.attrs['connected-limit']
 						? Number(groupInfo.attrs['connected-limit'])
 						: undefined
-					// Extract participants from group_info
-					const userNodes = getBinaryNodeChildren(groupInfo, 'user')
-					if (userNodes.length) {
-						call.participants = userNodes.map(u => ({
-							jid: u.attrs.jid,
-							state: u.attrs.state,
-							userPn: u.attrs.user_pn,
-							type: u.attrs.type,
-						}))
-					}
+					call.participants = extractParticipants(groupInfo)
 				}
 
 				// Extract link_info (who created the link)
@@ -2543,15 +2553,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					call.connectedLimit = groupInfo.attrs['connected-limit']
 						? Number(groupInfo.attrs['connected-limit'])
 						: undefined
-					const userNodes = getBinaryNodeChildren(groupInfo, 'user')
-					if (userNodes.length) {
-						call.participants = userNodes.map(u => ({
-							jid: u.attrs.jid,
-							state: u.attrs.state,
-							userPn: u.attrs.user_pn,
-							type: u.attrs.type,
-						}))
-					}
+					call.participants = extractParticipants(groupInfo)
 				}
 			}
 
@@ -2574,15 +2576,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					call.duration = callSummary.attrs.call_duration
 						? Number(callSummary.attrs.call_duration)
 						: undefined
-					const userNodes = getBinaryNodeChildren(callSummary, 'user')
-					if (userNodes.length) {
-						call.participants = userNodes.map(u => ({
-							jid: u.attrs.jid,
-							state: u.attrs.state,
-							userPn: u.attrs.user_pn,
-							type: u.attrs.type,
-						}))
-					}
+					call.participants = extractParticipants(callSummary)
 				}
 			}
 
@@ -2809,19 +2803,26 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	ws.on('CB:relay', async (node: BinaryNode) => {
 		const callId = node.attrs['call-id']
 		const callCreator = node.attrs['call-creator']
-		if (callId) {
+		// Both callId and callCreator must be present to emit a valid event
+		// (call link relays may arrive without these attrs — just log them)
+		if (callId && callCreator) {
 			logger.debug(
 				{ callId, callCreator, uuid: node.attrs.uuid },
 				'received relay info'
 			)
 			ev.emit('call', [{
-				chatId: callCreator || '',
-				from: callCreator || '',
+				chatId: callCreator,
+				from: callCreator,
 				id: callId,
 				date: new Date(),
 				offline: false,
 				status: 'relay' as WACallUpdateType,
 			}])
+		} else {
+			logger.debug(
+				{ attrs: node.attrs },
+				'received relay stanza without call-id/call-creator'
+			)
 		}
 	})
 
