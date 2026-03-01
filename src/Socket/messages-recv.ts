@@ -1645,6 +1645,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				break
 			case 'mediaretry':
 				const event = decodeMediaRetryNode(node)
+				// Normalize LID→PN in media retry key before emitting
+				await normalizeKeyLidToPn(event.key, signalRepository.lidMapping, logger)
 				ev.emit('messages.media-update', [event])
 				break
 			case 'encrypt':
@@ -2734,7 +2736,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleBadAck = async ({ attrs }: BinaryNode) => {
-		const key: WAMessageKey = { remoteJid: attrs.from, fromMe: true, id: attrs.id }
+		const resolvedFrom = await resolveLidToPn(attrs.from, signalRepository.lidMapping, logger) || attrs.from
+		const key: WAMessageKey = { remoteJid: resolvedFrom, fromMe: true, id: attrs.id }
 
 		// WARNING: REFRAIN FROM ENABLING THIS FOR NOW. IT WILL CAUSE A LOOP
 		// // current hypothesis is that if pash is sent in the ack

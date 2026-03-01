@@ -589,6 +589,12 @@ const processMessage = async (
 								'CTWA: Successfully recovered message via placeholder resend'
 							)
 
+							// Normalize LID→PN in PDO-recovered message key before emitting
+							// eslint-disable-next-line max-depth
+							if (webMessageInfo.key && signalRepository) {
+								await normalizeKeyLidToPn(webMessageInfo.key as WAMessageKey, signalRepository.lidMapping, logger)
+							}
+
 							// wait till another upsert event is available, don't want it to be part of the PDO response message
 							// TODO: parse through proper message handling utilities (to add relevant key fields)
 							ev.emit('messages.upsert', {
