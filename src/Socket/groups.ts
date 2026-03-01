@@ -1,7 +1,7 @@
 import { proto } from '../../WAProto/index.js'
 import type { GroupMetadata, GroupParticipant, ParticipantAction, SocketConfig, WAMessageKey } from '../Types'
 import { WAMessageAddressingMode, WAMessageStubType } from '../Types'
-import { generateMessageIDV2, unixTimestampSeconds } from '../Utils'
+import { generateMessageIDV2, resolveLidToPn, unixTimestampSeconds } from '../Utils'
 import {
 	type BinaryNode,
 	getBinaryNodeChild,
@@ -17,6 +17,41 @@ import { makeChatsSocket } from './chats'
 export const makeGroupsSocket = (config: SocketConfig) => {
 	const sock = makeChatsSocket(config)
 	const { authState, ev, query, upsertMessage } = sock
+	const { signalRepository } = sock
+	const { logger } = config
+
+	/** Normalize group metadata participant IDs from LID to PN */
+	const normalizeGroupMetadata = async (metadata: GroupMetadata): Promise<GroupMetadata> => {
+		const lidMapping = signalRepository.lidMapping
+		for (const p of metadata.participants) {
+			if (isLidUser(p.id)) {
+				if (p.phoneNumber) {
+					// Inline PN available — use it and preserve LID
+					p.lid = p.id
+					p.id = p.phoneNumber
+				} else {
+					const resolved = await resolveLidToPn(p.id, lidMapping, logger)
+					if (resolved && resolved !== p.id) {
+						p.lid = p.id
+						p.id = resolved
+					}
+				}
+			}
+		}
+
+		// Normalize owner/subjectOwner if LID
+		if (metadata.owner && isLidUser(metadata.owner)) {
+			const resolved = metadata.ownerPn || await resolveLidToPn(metadata.owner, lidMapping, logger)
+			if (resolved) metadata.owner = resolved
+		}
+
+		if (metadata.subjectOwner && isLidUser(metadata.subjectOwner)) {
+			const resolved = metadata.subjectOwnerPn || await resolveLidToPn(metadata.subjectOwner, lidMapping, logger)
+			if (resolved) metadata.subjectOwner = resolved
+		}
+
+		return metadata
+	}
 
 	const groupQuery = async (jid: string, type: 'get' | 'set', content: BinaryNode[]) =>
 		query({
@@ -31,7 +66,7 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 
 	const groupMetadata = async (jid: string) => {
 		const result = await groupQuery(jid, 'get', [{ tag: 'query', attrs: { request: 'interactive' } }])
-		return extractGroupMetadata(result)
+		return normalizeGroupMetadata(extractGroupMetadata(result))
 	}
 
 	const groupFetchAllParticipating = async () => {
@@ -58,16 +93,15 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 		if (groupsChild) {
 			const groups = getBinaryNodeChildren(groupsChild, 'group')
 			for (const groupNode of groups) {
-				const meta = extractGroupMetadata({
+				const meta = await normalizeGroupMetadata(extractGroupMetadata({
 					tag: 'result',
 					attrs: {},
 					content: [groupNode]
-				})
+				}))
 				data[meta.id] = meta
 			}
 		}
 
-		// TODO: properly parse LID / PN DATA
 		sock.ev.emit('groups.update', Object.values(data))
 
 		return data
@@ -101,7 +135,7 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 					}))
 				}
 			])
-			return extractGroupMetadata(result)
+			return normalizeGroupMetadata(extractGroupMetadata(result))
 		},
 		groupLeave: async (id: string) => {
 			await groupQuery('@g.us', 'set', [
@@ -277,7 +311,7 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 		),
 		groupGetInviteInfo: async (code: string) => {
 			const results = await groupQuery('@g.us', 'get', [{ tag: 'invite', attrs: { code } }])
-			return extractGroupMetadata(results)
+			return normalizeGroupMetadata(extractGroupMetadata(results))
 		},
 		groupToggleEphemeral: async (jid: string, ephemeralExpiration: number) => {
 			const content: BinaryNode = ephemeralExpiration
