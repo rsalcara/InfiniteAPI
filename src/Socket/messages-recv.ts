@@ -20,6 +20,7 @@ import type {
 	PlaceholderMessageData,
 	SocketConfig,
 	WACallEvent,
+	WACallUpdateType,
 	WAMessage,
 	WAMessageKey,
 	WAPatchName
@@ -577,6 +578,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			{ tag: 'enc', attrs: { v: '2', type: isVideo ? 'msg' : 'pkmsg' }, content: undefined },
 			{ tag: 'encopt', attrs: { keygen: '2' }, content: undefined },
 		)
+
+		// Voice calls include device-identity (verified via Frida capture)
+		if (!isVideo) {
+			offerContent.push(
+				{ tag: 'device-identity', attrs: {}, content: undefined },
+			)
+		}
 
 		const stanza: BinaryNode = {
 			tag: 'call',
@@ -2464,144 +2472,149 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const handleCall = async (node: BinaryNode) => {
 		const { attrs } = node
-		const [infoChild] = getAllBinaryNodeChildren(node)
-		const status = getCallStatusFromNode(infoChild!)
+		const children = getAllBinaryNodeChildren(node)
 
-		if (!infoChild) {
+		if (!children.length) {
 			throw new Boom('Missing call info in call node')
 		}
 
-		const callId = infoChild.attrs['call-id']!
-		const from = infoChild.attrs.from! || infoChild.attrs['call-creator']!
+		// Process ALL children — a <call> node can carry multiple
+		// sibling stanzas (e.g. <transport> + <mute_v2>)
+		for (const infoChild of children) {
+			const status = getCallStatusFromNode(infoChild)
 
-		const call: WACallEvent = {
-			chatId: attrs.from!,
-			from,
-			id: callId,
-			date: new Date(+attrs.t! * 1000),
-			offline: !!attrs.offline,
-			status
-		}
+			const callId = infoChild.attrs['call-id']!
+			const from = infoChild.attrs.from! || infoChild.attrs['call-creator']!
 
-		if (status === 'offer') {
-			call.isVideo = !!getBinaryNodeChild(infoChild, 'video')
-			call.isGroup = infoChild.attrs.type === 'group' || !!infoChild.attrs['group-jid']
-			call.groupJid = infoChild.attrs['group-jid']
-			// Extract and sanitize caller phone number
-			call.callerPn = sanitizeCallerPn(infoChild.attrs['caller_pn'])
+			const call: WACallEvent = {
+				chatId: attrs.from!,
+				from,
+				id: callId,
+				date: new Date(+attrs.t! * 1000),
+				offline: !!attrs.offline,
+				status
+			}
 
-			// Extract call link info from group_info child
-			const groupInfo = getBinaryNodeChild(infoChild, 'group_info')
-			if (groupInfo) {
-				call.isGroup = true
-				call.linkToken = groupInfo.attrs['link-token']
-				call.media = groupInfo.attrs.media
-				call.connectedLimit = groupInfo.attrs['connected-limit']
-					? Number(groupInfo.attrs['connected-limit'])
-					: undefined
-				// Extract participants from group_info
-				const userNodes = getBinaryNodeChildren(groupInfo, 'user')
-				if (userNodes.length) {
-					call.participants = userNodes.map(u => ({
-						jid: u.attrs.jid,
-						state: u.attrs.state,
-						userPn: u.attrs.user_pn,
-						type: u.attrs.type,
-					}))
+			if (status === 'offer') {
+				call.isVideo = !!getBinaryNodeChild(infoChild, 'video')
+				call.isGroup = infoChild.attrs.type === 'group' || !!infoChild.attrs['group-jid']
+				call.groupJid = infoChild.attrs['group-jid']
+				// Extract and sanitize caller phone number
+				call.callerPn = sanitizeCallerPn(infoChild.attrs['caller_pn'])
+
+				// Extract call link info from group_info child
+				const groupInfo = getBinaryNodeChild(infoChild, 'group_info')
+				if (groupInfo) {
+					call.isGroup = true
+					call.linkToken = groupInfo.attrs['link-token']
+					call.media = groupInfo.attrs.media
+					call.connectedLimit = groupInfo.attrs['connected-limit']
+						? Number(groupInfo.attrs['connected-limit'])
+						: undefined
+					// Extract participants from group_info
+					const userNodes = getBinaryNodeChildren(groupInfo, 'user')
+					if (userNodes.length) {
+						call.participants = userNodes.map(u => ({
+							jid: u.attrs.jid,
+							state: u.attrs.state,
+							userPn: u.attrs.user_pn,
+							type: u.attrs.type,
+						}))
+					}
+				}
+
+				// Extract link_info (who created the link)
+				const linkInfo = getBinaryNodeChild(infoChild, 'link_info')
+				if (linkInfo) {
+					call.linkCreator = linkInfo.attrs.link_creator
+					call.linkCreatorPn = linkInfo.attrs.link_creator_pn
+				}
+
+				await callOfferCache.set(call.id, call)
+			}
+
+			// Extract call link data from group_update
+			if (status === 'group_update') {
+				const groupInfo = getBinaryNodeChild(infoChild, 'group_info')
+				if (groupInfo) {
+					call.isGroup = true
+					call.linkToken = groupInfo.attrs['link-token']
+					call.media = groupInfo.attrs.media
+					call.connectedLimit = groupInfo.attrs['connected-limit']
+						? Number(groupInfo.attrs['connected-limit'])
+						: undefined
+					const userNodes = getBinaryNodeChildren(groupInfo, 'user')
+					if (userNodes.length) {
+						call.participants = userNodes.map(u => ({
+							jid: u.attrs.jid,
+							state: u.attrs.state,
+							userPn: u.attrs.user_pn,
+							type: u.attrs.type,
+						}))
+					}
 				}
 			}
 
-			// Extract link_info (who created the link)
-			const linkInfo = getBinaryNodeChild(infoChild, 'link_info')
-			if (linkInfo) {
-				call.linkCreator = linkInfo.attrs.link_creator
-				call.linkCreatorPn = linkInfo.attrs.link_creator_pn
-			}
-
-			await callOfferCache.set(call.id, call)
-		}
-
-		// Extract call link data from group_update
-		if (status === 'group_update') {
-			const groupInfo = getBinaryNodeChild(infoChild, 'group_info')
-			if (groupInfo) {
-				call.isGroup = true
-				call.linkToken = groupInfo.attrs['link-token']
-				call.media = groupInfo.attrs.media
-				call.connectedLimit = groupInfo.attrs['connected-limit']
-					? Number(groupInfo.attrs['connected-limit'])
-					: undefined
-				const userNodes = getBinaryNodeChildren(groupInfo, 'user')
-				if (userNodes.length) {
-					call.participants = userNodes.map(u => ({
-						jid: u.attrs.jid,
-						state: u.attrs.state,
-						userPn: u.attrs.user_pn,
-						type: u.attrs.type,
-					}))
+			// Extract reminder data (e.g. link_creator_call_started)
+			if (status === 'reminder') {
+				const groupInfo = getBinaryNodeChild(infoChild, 'group_info')
+				if (groupInfo) {
+					call.isGroup = true
+					call.linkToken = groupInfo.attrs['link-token']
+					call.media = groupInfo.attrs.media
 				}
 			}
-		}
 
-		// Extract reminder data (e.g. link_creator_call_started)
-		if (status === 'reminder') {
-			const groupInfo = getBinaryNodeChild(infoChild, 'group_info')
-			if (groupInfo) {
-				call.isGroup = true
-				call.linkToken = groupInfo.attrs['link-token']
-				call.media = groupInfo.attrs.media
-			}
-		}
-
-		// Extract terminate data (reason, duration, call_summary)
-		if (status === 'terminate') {
-			call.terminateReason = infoChild.attrs.reason
-			const callSummary = getBinaryNodeChild(infoChild, 'call_summary')
-			if (callSummary) {
-				call.media = callSummary.attrs.media
-				call.duration = callSummary.attrs.call_duration
-					? Number(callSummary.attrs.call_duration)
-					: undefined
-				const userNodes = getBinaryNodeChildren(callSummary, 'user')
-				if (userNodes.length) {
-					call.participants = userNodes.map(u => ({
-						jid: u.attrs.jid,
-						state: u.attrs.state,
-						userPn: u.attrs.user_pn,
-						type: u.attrs.type,
-					}))
+			// Extract terminate data (reason, duration, call_summary)
+			if (status === 'terminate') {
+				call.terminateReason = infoChild.attrs.reason
+				const callSummary = getBinaryNodeChild(infoChild, 'call_summary')
+				if (callSummary) {
+					call.media = callSummary.attrs.media
+					call.duration = callSummary.attrs.call_duration
+						? Number(callSummary.attrs.call_duration)
+						: undefined
+					const userNodes = getBinaryNodeChildren(callSummary, 'user')
+					if (userNodes.length) {
+						call.participants = userNodes.map(u => ({
+							jid: u.attrs.jid,
+							state: u.attrs.state,
+							userPn: u.attrs.user_pn,
+							type: u.attrs.type,
+						}))
+					}
 				}
 			}
+
+			// Extract video info from accept/preaccept
+			if (status === 'accept' || status === 'preaccept') {
+				call.isVideo = !!getBinaryNodeChild(infoChild, 'video')
+			}
+
+			const existingCall = await callOfferCache.get<WACallEvent>(call.id)
+
+			// use existing call info to populate this event
+			if (existingCall) {
+				call.isVideo = call.isVideo ?? existingCall.isVideo
+				call.isGroup = call.isGroup ?? existingCall.isGroup
+				call.groupJid = call.groupJid ?? existingCall.groupJid
+				// Preserve callerPn across call state updates
+				call.callerPn = call.callerPn || existingCall.callerPn
+				// Preserve call link data across updates
+				call.linkToken = call.linkToken || existingCall.linkToken
+				call.linkCreator = call.linkCreator || existingCall.linkCreator
+				call.linkCreatorPn = call.linkCreatorPn || existingCall.linkCreatorPn
+				call.media = call.media || existingCall.media
+				call.connectedLimit = call.connectedLimit ?? existingCall.connectedLimit
+			}
+
+			// delete data once call has ended
+			if (status === 'reject' || status === 'accept' || status === 'timeout' || status === 'terminate') {
+				await callOfferCache.del(call.id)
+			}
+
+			ev.emit('call', [call])
 		}
-
-		// Extract video info from accept/preaccept
-		if (status === 'accept' || status === 'preaccept') {
-			call.isVideo = !!getBinaryNodeChild(infoChild, 'video')
-		}
-
-		const existingCall = await callOfferCache.get<WACallEvent>(call.id)
-
-		// use existing call info to populate this event
-		if (existingCall) {
-			call.isVideo = call.isVideo ?? existingCall.isVideo
-			call.isGroup = call.isGroup ?? existingCall.isGroup
-			call.groupJid = call.groupJid ?? existingCall.groupJid
-			// Preserve callerPn across call state updates
-			call.callerPn = call.callerPn || existingCall.callerPn
-			// Preserve call link data across updates
-			call.linkToken = call.linkToken || existingCall.linkToken
-			call.linkCreator = call.linkCreator || existingCall.linkCreator
-			call.linkCreatorPn = call.linkCreatorPn || existingCall.linkCreatorPn
-			call.media = call.media || existingCall.media
-			call.connectedLimit = call.connectedLimit ?? existingCall.connectedLimit
-		}
-
-		// delete data once call has ended
-		if (status === 'reject' || status === 'accept' || status === 'timeout' || status === 'terminate') {
-			await callOfferCache.del(call.id)
-		}
-
-		ev.emit('call', [call])
 
 		await sendMessageAck(node)
 	}
@@ -2790,6 +2803,26 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	ws.on('CB:call', async (node: BinaryNode) => {
 		await processNode('call', node, 'handling call', handleCall)
+	})
+
+	// Top-level <relay> stanzas carry TURN server info, tokens and crypto keys
+	ws.on('CB:relay', async (node: BinaryNode) => {
+		const callId = node.attrs['call-id']
+		const callCreator = node.attrs['call-creator']
+		if (callId) {
+			logger.debug(
+				{ callId, callCreator, uuid: node.attrs.uuid },
+				'received relay info'
+			)
+			ev.emit('call', [{
+				chatId: callCreator || '',
+				from: callCreator || '',
+				id: callId,
+				date: new Date(),
+				offline: false,
+				status: 'relay' as WACallUpdateType,
+			}])
+		}
 	})
 
 	ws.on('CB:receipt', async node => {

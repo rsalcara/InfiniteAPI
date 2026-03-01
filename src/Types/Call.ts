@@ -13,6 +13,8 @@ export type WACallUpdateType =
 	| 'heartbeat'
 	| 'mute_v2'
 	| 'enc_rekey'
+	| 'video'
+	| 'relay'
 
 export type WACallParticipant = {
 	jid?: string
