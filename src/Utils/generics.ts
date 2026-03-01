@@ -235,13 +235,17 @@ export const fetchLatestBaileysVersion = async (options: RequestInit & { timeout
 	try {
 		const controller = new AbortController()
 		const timeout = setTimeout(() => controller.abort(), options.timeout ?? 5000)
-		const response = await fetch(URL, {
-			dispatcher: options.dispatcher,
-			method: 'GET',
-			headers: options.headers,
-			signal: controller.signal
-		})
-		clearTimeout(timeout)
+		let response: Response
+		try {
+			response = await fetch(URL, {
+				dispatcher: options.dispatcher,
+				method: 'GET',
+				headers: options.headers,
+				signal: controller.signal
+			})
+		} finally {
+			clearTimeout(timeout)
+		}
 		if (!response.ok) {
 			throw new Boom(`Failed to fetch latest Baileys version: ${response.statusText}`, { statusCode: response.status })
 		}
