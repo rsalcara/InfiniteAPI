@@ -650,6 +650,415 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	/**
+	 * Accept (answer) an incoming call.
+	 * Structure verified via Frida capture on WhatsApp Android v2.26.
+	 *
+	 * @param callId - the call-id from the incoming offer
+	 * @param callFrom - JID of the caller (call-creator)
+	 * @param isVideo - true for video call
+	 */
+	const acceptCall = async (
+		callId: string,
+		callFrom: string,
+		isVideo?: boolean,
+	) => {
+		const meId = authState.creds.me?.id
+		if (!meId) throw new Boom('Not authenticated', { statusCode: 401 })
+
+		const acceptContent: BinaryNode[] = [
+			{ tag: 'audio', attrs: { rate: '16000', enc: 'opus' }, content: undefined },
+		]
+
+		if (isVideo) {
+			acceptContent.push({
+				tag: 'video',
+				attrs: {
+					dec: 'H264,AV1',
+					device_orientation: '1',
+				},
+				content: undefined
+			})
+		}
+
+		acceptContent.push(
+			{ tag: 'net', attrs: { medium: '2' }, content: undefined },
+			{ tag: 'encopt', attrs: { keygen: '2' }, content: undefined },
+		)
+
+		const stanza: BinaryNode = {
+			tag: 'call',
+			attrs: {
+				from: meId,
+				to: callFrom,
+				id: randomBytes(16).toString('hex').toUpperCase(),
+			},
+			content: [{
+				tag: 'accept',
+				attrs: {
+					'call-id': callId,
+					'call-creator': callFrom,
+				},
+				content: acceptContent
+			}]
+		}
+
+		await query(stanza)
+	}
+
+	/**
+	 * Send preaccept signal for an incoming call (indicates device capabilities).
+	 * Sent before accept to communicate supported codecs.
+	 * Structure verified via Frida capture on WhatsApp Android v2.26.
+	 *
+	 * @param callId - the call-id from the incoming offer
+	 * @param callCreator - JID of the caller
+	 * @param isVideo - true for video call
+	 */
+	const preacceptCall = async (
+		callId: string,
+		callCreator: string,
+		isVideo?: boolean,
+	) => {
+		const preacceptContent: BinaryNode[] = [
+			{ tag: 'audio', attrs: { rate: '16000', enc: 'opus' }, content: undefined },
+		]
+
+		if (isVideo) {
+			preacceptContent.push({
+				tag: 'video',
+				attrs: {
+					screen_width: '1080',
+					screen_height: '2400',
+					dec: 'H264,H265,AV1',
+					device_orientation: '0',
+				},
+				content: undefined
+			})
+		}
+
+		preacceptContent.push(
+			{ tag: 'encopt', attrs: { keygen: '2' }, content: undefined },
+			{ tag: 'capability', attrs: { ver: '1' }, content: undefined },
+		)
+
+		const stanza: BinaryNode = {
+			tag: 'call',
+			attrs: {
+				to: callCreator,
+				id: randomBytes(16).toString('hex').toUpperCase(),
+			},
+			content: [{
+				tag: 'preaccept',
+				attrs: {
+					'call-id': callId,
+					'call-creator': callCreator,
+				},
+				content: preacceptContent
+			}]
+		}
+
+		await query(stanza)
+	}
+
+	/**
+	 * Report relay latency measurements to the server.
+	 * Sent after receiving relay info to report measured latency per relay server.
+	 * Structure verified via Frida capture on WhatsApp Android v2.26.
+	 *
+	 * @param callId - the call-id
+	 * @param callCreator - JID of the call creator
+	 * @param relays - array of relay measurements
+	 * @param transactionId - optional transaction ID for group calls
+	 */
+	const sendRelayLatency = async (
+		callId: string,
+		callCreator: string,
+		relays: Array<{
+			relayName?: string
+			latency: number
+			relayId?: string
+			dlBw?: number
+			ulBw?: number
+		}>,
+		transactionId?: string,
+	) => {
+		const relayLatencyAttrs: Record<string, string> = {
+			'call-id': callId,
+			'call-creator': callCreator,
+		}
+
+		if (transactionId) {
+			relayLatencyAttrs['transaction-id'] = transactionId
+		}
+
+		const teChildren: BinaryNode[] = relays.map(r => {
+			const teAttrs: Record<string, string> = {}
+			if (r.relayName) {
+				teAttrs.relay_name = r.relayName
+			}
+
+			teAttrs.latency = String(r.latency)
+			if (r.relayId) {
+				teAttrs.relay_id = r.relayId
+			}
+
+			if (r.dlBw !== undefined) {
+				teAttrs.dl_bw = String(r.dlBw)
+			}
+
+			if (r.ulBw !== undefined) {
+				teAttrs.ul_bw = String(r.ulBw)
+			}
+
+			return { tag: 'te', attrs: teAttrs, content: undefined }
+		})
+
+		const stanza: BinaryNode = {
+			tag: 'call',
+			attrs: {
+				to: callCreator,
+				id: randomBytes(16).toString('hex').toUpperCase(),
+			},
+			content: [{
+				tag: 'relaylatency',
+				attrs: relayLatencyAttrs,
+				content: teChildren
+			}]
+		}
+
+		await sendNode(stanza)
+	}
+
+	/**
+	 * Send transport (p2p/ICE) candidates for a call.
+	 * Structure verified via Frida capture on WhatsApp Android v2.26.
+	 *
+	 * @param callId - the call-id
+	 * @param callCreator - JID of the call creator
+	 * @param to - destination JID
+	 * @param candidates - array of candidate entries with priority
+	 * @param round - p2p candidate round number
+	 */
+	const sendTransport = async (
+		callId: string,
+		callCreator: string,
+		to: string,
+		candidates: Array<{ priority: string; data?: Uint8Array }>,
+		round?: number,
+	) => {
+		const transportAttrs: Record<string, string> = {
+			'call-id': callId,
+			'call-creator': callCreator,
+			'transport-message-type': '1',
+		}
+
+		if (round !== undefined) {
+			transportAttrs['p2p-cand-round'] = String(round)
+		}
+
+		const teChildren: BinaryNode[] = candidates.map(c => ({
+			tag: 'te',
+			attrs: { priority: c.priority },
+			content: c.data,
+		}))
+
+		const stanza: BinaryNode = {
+			tag: 'call',
+			attrs: {
+				to,
+				id: randomBytes(16).toString('hex').toUpperCase(),
+			},
+			content: [{
+				tag: 'transport',
+				attrs: transportAttrs,
+				content: teChildren
+			}]
+		}
+
+		await sendNode(stanza)
+	}
+
+	/**
+	 * Send call duration log to the server after a call ends.
+	 * Structure verified via Frida capture on WhatsApp Android v2.26.
+	 *
+	 * @param callId - the call-id
+	 * @param callCreator - JID of the call creator
+	 * @param peer - JID of the other party
+	 * @param audioDuration - audio duration in ms
+	 * @param callType - call type, defaults to '1x1'
+	 */
+	const sendCallDuration = async (
+		callId: string,
+		callCreator: string,
+		peer: string,
+		audioDuration: number,
+		callType: string = '1x1',
+	) => {
+		const stanza: BinaryNode = {
+			tag: 'call',
+			attrs: {
+				to: 'call',
+				id: randomBytes(16).toString('hex').toUpperCase(),
+			},
+			content: [{
+				tag: 'duration',
+				attrs: {
+					'call-id': callId,
+					'call-creator': callCreator,
+					peer,
+					audio_duration: String(audioDuration),
+					type: callType,
+				},
+				content: undefined
+			}]
+		}
+
+		await sendNode(stanza)
+	}
+
+	/**
+	 * Mute or unmute during a call (MUTE_V2).
+	 * Structure verified via Frida capture on WhatsApp Android v2.26.
+	 *
+	 * @param callId - the call-id
+	 * @param callCreator - JID of the call creator
+	 * @param to - destination JID
+	 * @param muted - true to mute, false to unmute
+	 */
+	const muteCall = async (
+		callId: string,
+		callCreator: string,
+		to: string,
+		muted: boolean,
+	) => {
+		const stanza: BinaryNode = {
+			tag: 'call',
+			attrs: {
+				to,
+				id: randomBytes(16).toString('hex').toUpperCase(),
+			},
+			content: [{
+				tag: 'mute_v2',
+				attrs: {
+					'mute-state': muted ? '1' : '0',
+					'call-id': callId,
+					'call-creator': callCreator,
+				},
+				content: undefined
+			}]
+		}
+
+		await sendNode(stanza)
+	}
+
+	/**
+	 * Send heartbeat to keep a group call alive.
+	 * Structure verified via Frida capture on WhatsApp Android v2.26.
+	 *
+	 * @param callId - the call-id (also used as JID with @call)
+	 * @param callCreator - JID of the call creator
+	 */
+	const sendHeartbeat = async (
+		callId: string,
+		callCreator: string,
+	) => {
+		const stanza: BinaryNode = {
+			tag: 'call',
+			attrs: {
+				to: `${callId}@call`,
+				id: randomBytes(16).toString('hex').toUpperCase(),
+			},
+			content: [{
+				tag: 'heartbeat',
+				attrs: {
+					'call-id': callId,
+					'call-creator': callCreator,
+				},
+				content: undefined
+			}]
+		}
+
+		await sendNode(stanza)
+	}
+
+	/**
+	 * Send encryption re-key during a call.
+	 * Structure verified via Frida capture on WhatsApp Android v2.26.
+	 *
+	 * @param callId - the call-id
+	 * @param callCreator - JID of the call creator
+	 * @param to - destination JID
+	 * @param transactionId - transaction ID for the rekey
+	 */
+	const sendEncRekey = async (
+		callId: string,
+		callCreator: string,
+		to: string,
+		transactionId: string,
+	) => {
+		const stanza: BinaryNode = {
+			tag: 'call',
+			attrs: {
+				to,
+				id: randomBytes(16).toString('hex').toUpperCase(),
+			},
+			content: [{
+				tag: 'enc_rekey',
+				attrs: {
+					'transaction-id': transactionId,
+					'call-id': callId,
+					'call-creator': callCreator,
+				},
+				content: [
+					{ tag: 'encopt', attrs: { keygen: '2' }, content: undefined },
+					{ tag: 'enc', attrs: { v: '2', type: 'msg' }, content: undefined },
+				]
+			}]
+		}
+
+		await sendNode(stanza)
+	}
+
+	/**
+	 * Send video state change during a call.
+	 * Structure verified via Frida capture on WhatsApp Android v2.26.
+	 *
+	 * @param callId - the call-id
+	 * @param callCreator - JID of the call creator
+	 * @param to - destination JID
+	 * @param enabled - true = video on (state=1), false = video off (state=0)
+	 * @param orientation - device orientation (0=portrait, 1=landscape)
+	 */
+	const sendVideoState = async (
+		callId: string,
+		callCreator: string,
+		to: string,
+		enabled: boolean,
+		orientation: string = '1',
+	) => {
+		const stanza: BinaryNode = {
+			tag: 'call',
+			attrs: {
+				to,
+				id: randomBytes(16).toString('hex').toUpperCase(),
+			},
+			content: [{
+				tag: 'video',
+				attrs: {
+					'call-id': callId,
+					'call-creator': callCreator,
+					state: enabled ? '1' : '0',
+					device_orientation: orientation,
+				},
+				content: undefined
+			}]
+		}
+
+		await sendNode(stanza)
+	}
+
+	/**
 	 * Create a call link that others can join.
 	 * Structure verified via Frida capture on WhatsApp Android v2.26.
 	 *
@@ -2368,7 +2777,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		sendRetryRequest,
 		rejectCall,
 		offerCall,
+		acceptCall,
+		preacceptCall,
 		terminateCall,
+		sendRelayLatency,
+		sendTransport,
+		sendCallDuration,
+		muteCall,
+		sendHeartbeat,
+		sendEncRekey,
+		sendVideoState,
 		createCallLink,
 		queryCallLink,
 		joinCallLink,
