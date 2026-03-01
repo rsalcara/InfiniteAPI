@@ -113,6 +113,14 @@ export const cleanMessage = (message: WAMessage, meId: string, meLid: string) =>
 			msgKey.remoteJid = message.key.remoteJid
 			// set participant of the message
 			msgKey.participant = msgKey.participant || message.key.participant
+		} else {
+			// fromMe reactions/polls: normalise remoteJid to match the chat JID
+			// ensures DM reaction keys are consistent with group behavior
+			msgKey.remoteJid = message.key.remoteJid
+			// in groups, normalise participant for own messages too
+			if (message.key.participant) {
+				msgKey.participant = msgKey.participant || message.key.participant
+			}
 		}
 	}
 }
