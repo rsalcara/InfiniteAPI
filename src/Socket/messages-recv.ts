@@ -536,6 +536,119 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		await query(stanza)
 	}
 
+	/**
+	 * Offer (initiate) a call to a JID.
+	 * Structure verified via Frida capture on WhatsApp Android v2.26.
+	 *
+	 * @param jid - destination JID (e.g. "5511999999999@s.whatsapp.net" or LID)
+	 * @param isVideo - true for video call, false/undefined for voice
+	 * @returns callId (hex) and stanzaId used in the offer
+	 */
+	const offerCall = async (jid: string, isVideo?: boolean) => {
+		const meId = authState.creds.me?.id
+		if (!meId) throw new Boom('Not authenticated', { statusCode: 401 })
+
+		const callId = randomBytes(16).toString('hex').toUpperCase()
+		const stanzaId = randomBytes(16).toString('hex').toUpperCase()
+
+		const offerContent: BinaryNode[] = [
+			{ tag: 'privacy', attrs: {}, content: undefined },
+			{ tag: 'audio', attrs: { rate: '8000', enc: 'opus' }, content: undefined },
+			{ tag: 'audio', attrs: { rate: '16000', enc: 'opus' }, content: undefined },
+		]
+
+		if (isVideo) {
+			offerContent.push({
+				tag: 'video',
+				attrs: {
+					screen_width: '1080',
+					screen_height: '2400',
+					dec: 'H264,H265,AV1',
+					device_orientation: '0',
+					enc: 'h.264'
+				},
+				content: undefined
+			})
+		}
+
+		offerContent.push(
+			{ tag: 'net', attrs: { medium: '3' }, content: undefined },
+			{ tag: 'capability', attrs: { ver: '1' }, content: undefined },
+			{ tag: 'enc', attrs: { v: '2', type: isVideo ? 'msg' : 'pkmsg' }, content: undefined },
+			{ tag: 'encopt', attrs: { keygen: '2' }, content: undefined },
+		)
+
+		const stanza: BinaryNode = {
+			tag: 'call',
+			attrs: {
+				to: jid,
+				id: stanzaId,
+			},
+			content: [{
+				tag: 'offer',
+				attrs: {
+					'call-creator': meId,
+					'call-id': callId,
+					'device_class': '2013',
+				},
+				content: offerContent
+			}]
+		}
+
+		await query(stanza)
+		return { callId, stanzaId }
+	}
+
+	/**
+	 * Terminate (hang up) an active or ringing call.
+	 * Structure verified via Frida capture on WhatsApp Android v2.26.
+	 *
+	 * @param callId - the call-id from the offer
+	 * @param callTo - JID of the other party
+	 * @param callCreator - JID of who created the call (usually meId for outgoing)
+	 * @param reason - terminate reason (omit for normal hangup, or 'timeout', 'busy', etc.)
+	 * @param duration - call duration in ms (included when call was connected)
+	 */
+	const terminateCall = async (
+		callId: string,
+		callTo: string,
+		callCreator?: string,
+		reason?: string,
+		duration?: number
+	) => {
+		const meId = authState.creds.me?.id
+		if (!meId) throw new Boom('Not authenticated', { statusCode: 401 })
+
+		const terminateAttrs: Record<string, string> = {
+			'call-id': callId,
+			'call-creator': callCreator || meId,
+		}
+
+		if (reason) {
+			terminateAttrs.reason = reason
+		}
+
+		if (typeof duration === 'number') {
+			terminateAttrs.duration = String(duration)
+			terminateAttrs.audio_duration = String(duration)
+		}
+
+		const stanza: BinaryNode = {
+			tag: 'call',
+			attrs: {
+				to: callTo,
+				id: randomBytes(16).toString('hex').toUpperCase(),
+			},
+			content: [{
+				tag: 'terminate',
+				attrs: terminateAttrs,
+				content: undefined
+			}]
+		}
+
+		await query(stanza)
+	}
+
 	const sendRetryRequest = async (node: BinaryNode, forceIncludeKeys = false) => {
 		const { fullMessage } = decodeMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '')
 		const { key: msgKey } = fullMessage
@@ -2161,6 +2274,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		sendMessageAck,
 		sendRetryRequest,
 		rejectCall,
+		offerCall,
+		terminateCall,
 		fetchMessageHistory,
 		requestPlaceholderResend,
 		messageRetryManager
