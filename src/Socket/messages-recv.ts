@@ -649,6 +649,99 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		await query(stanza)
 	}
 
+	/**
+	 * Create a call link that others can join.
+	 * Structure verified via Frida capture on WhatsApp Android v2.26.
+	 *
+	 * @param media - 'video' or 'audio'
+	 * @returns the server response (contains the link token)
+	 */
+	const createCallLink = async (media: 'video' | 'audio' = 'video') => {
+		const stanza: BinaryNode = {
+			tag: 'call',
+			attrs: {
+				to: 'call',
+				id: randomBytes(16).toString('hex').toUpperCase(),
+			},
+			content: [{
+				tag: 'link_create',
+				attrs: { media },
+				content: undefined
+			}]
+		}
+
+		return await query(stanza)
+	}
+
+	/**
+	 * Query info about a call link before joining.
+	 * Structure verified via Frida capture on WhatsApp Android v2.26.
+	 *
+	 * @param token - the call link token (from URL: https://call.whatsapp.com/<token>)
+	 * @param media - 'video' or 'audio'
+	 * @returns server response with call info
+	 */
+	const queryCallLink = async (token: string, media: 'video' | 'audio' = 'video') => {
+		const stanza: BinaryNode = {
+			tag: 'call',
+			attrs: {
+				to: 'call',
+				id: randomBytes(16).toString('hex').toUpperCase(),
+			},
+			content: [{
+				tag: 'link_query',
+				attrs: { media, token },
+				content: undefined
+			}]
+		}
+
+		return await query(stanza)
+	}
+
+	/**
+	 * Join a call via its link token.
+	 * Structure verified via Frida capture on WhatsApp Android v2.26.
+	 *
+	 * @param token - the call link token
+	 * @param media - 'video' or 'audio'
+	 * @returns server response with relay/group info
+	 */
+	const joinCallLink = async (token: string, media: 'video' | 'audio' = 'video') => {
+		const joinContent: BinaryNode[] = [
+			{ tag: 'audio', attrs: { rate: '16000', enc: 'opus' }, content: undefined },
+			{ tag: 'net', attrs: { medium: '2' }, content: undefined },
+			{ tag: 'capability', attrs: { ver: '1' }, content: undefined },
+		]
+
+		if (media === 'video') {
+			joinContent.splice(1, 0, {
+				tag: 'video',
+				attrs: {
+					screen_width: '1080',
+					screen_height: '2400',
+					dec: 'H264,H265,AV1',
+					device_orientation: '0',
+				},
+				content: undefined
+			})
+		}
+
+		const stanza: BinaryNode = {
+			tag: 'call',
+			attrs: {
+				to: 'call',
+				id: randomBytes(16).toString('hex').toUpperCase(),
+			},
+			content: [{
+				tag: 'link_join',
+				attrs: { media, token },
+				content: joinContent
+			}]
+		}
+
+		return await query(stanza)
+	}
+
 	const sendRetryRequest = async (node: BinaryNode, forceIncludeKeys = false) => {
 		const { fullMessage } = decodeMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '')
 		const { key: msgKey } = fullMessage
@@ -2276,6 +2369,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		rejectCall,
 		offerCall,
 		terminateCall,
+		createCallLink,
+		queryCallLink,
+		joinCallLink,
 		fetchMessageHistory,
 		requestPlaceholderResend,
 		messageRetryManager
