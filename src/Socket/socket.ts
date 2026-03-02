@@ -634,7 +634,9 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 		helloMsg = proto.HandshakeMessage.fromObject(helloMsg)
 
-		logger.info({ browser, helloMsg }, 'connected to WA')
+		const isAndroid = isAndroidBrowser(browser)
+		const phoneId = authState.creds.me?.id?.split(':')[0]?.split('@')[0] || 'new session'
+		logger.info(`${isAndroid ? '\uD83D\uDCF1' : '\uD83D\uDDA5\uFE0F'} Connected to WA | ${phoneId} | platform: ${isAndroid ? 'SMB_ANDROID' : 'MACOS'} | device: ${isAndroid ? 'Android' : 'Desktop'} | type: ${isAndroid ? 'ANDROID_PHONE' : 'CHROME'}`)
 
 		const init = proto.HandshakeMessage.encode(helloMsg).finish()
 
@@ -1359,6 +1361,8 @@ export const makeSocket = (config: SocketConfig) => {
 		const isAndroid = isAndroidBrowser(browser)
 		const pairPlatformId = isAndroid ? getPlatformId('Chrome') : getPlatformId(browser[1])
 		const pairPlatformDisplay = isAndroid ? 'Chrome (Mac OS)' : `${browser[1]} (${browser[0]})`
+
+		logger.info(`\uD83D\uDD17 Pair code requested | companion: ${pairPlatformDisplay} | ${isAndroid ? 'android override \u2192 Chrome' : 'native platform'}`)
 
 		ev.emit('creds.update', authState.creds)
 		await sendNode({
