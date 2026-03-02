@@ -634,10 +634,6 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 		helloMsg = proto.HandshakeMessage.fromObject(helloMsg)
 
-		const isAndroid = isAndroidBrowser(browser)
-		const phoneId = authState.creds.me?.id?.split(':')[0]?.split('@')[0] || 'new session'
-		logger.info(`${isAndroid ? '\uD83D\uDCF1' : '\uD83D\uDDA5\uFE0F'} Connected to WA | ${phoneId} | platform: ${isAndroid ? 'SMB_ANDROID' : 'MACOS'} | device: ${isAndroid ? 'Android' : 'Desktop'} | type: ${isAndroid ? 'ANDROID_PHONE' : 'CHROME'}`)
-
 		const init = proto.HandshakeMessage.encode(helloMsg).finish()
 
 		const result = await awaitNextMessage<Uint8Array>(init)
@@ -1531,7 +1527,9 @@ export const makeSocket = (config: SocketConfig) => {
 	})
 	// login complete
 	ws.on('CB:success', async (node: BinaryNode) => {
-		logger.info('opened connection to WA')
+		const isAndroid = isAndroidBrowser(browser)
+		const phoneId = authState.creds.me?.id?.split(':')[0]?.split('@')[0] || 'new session'
+		logger.info(`${isAndroid ? '\uD83D\uDCF1' : '\uD83D\uDDA5\uFE0F'} Connected to WA | ${phoneId} | platform: ${isAndroid ? 'SMB_ANDROID' : 'MACOS'} | device: ${isAndroid ? 'Android' : 'Desktop'} | platformType: ${isAndroid ? 'ANDROID_PHONE' : 'CHROME'}`)
 		clearTimeout(qrTimer) // will never happen in all likelyhood -- but just in case WA sends success on first try
 
 		ev.emit('creds.update', { me: { ...authState.creds.me!, lid: node.attrs.lid } })
