@@ -385,7 +385,7 @@ export const getPlatformId = (browser: unknown): string => {
  * properties like 'toString' or 'constructor'.
  *
  * @param value - Value to check
- * @returns True if value is a valid browser preset key ('ubuntu', 'macOS', 'windows', 'baileys', 'appropriate')
+ * @returns True if value is a valid browser preset key ('ubuntu', 'macOS', 'windows', 'baileys', 'appropriate', 'android')
  *
  * @example
  * isValidBrowserPreset('ubuntu')      // true
