@@ -847,7 +847,11 @@ function signalStorage(
 			// Schedule deletion after grace period
 			const timer = setTimeout(async () => {
 				pendingPreKeyDeletions.delete(keyId)
-				await keys.set({ 'pre-key': { [id]: null } })
+				try {
+					await keys.set({ 'pre-key': { [id]: null } })
+				} catch {
+					// Keystore may be destroyed if connection closed — safe to ignore
+				}
 			}, PREKEY_GRACE_PERIOD_MS)
 
 			pendingPreKeyDeletions.set(keyId, timer)
