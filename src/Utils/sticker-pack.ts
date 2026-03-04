@@ -2,7 +2,7 @@ import { Boom } from '@hapi/boom'
 import { createHash } from 'crypto'
 import { zipSync } from 'fflate'
 import { promises as fs } from 'fs'
-import { gunzipSync } from 'zlib'
+import { gzipSync, gunzipSync } from 'zlib'
 import { proto } from '../../WAProto/index.js'
 import type { MediaType } from '../Defaults/index.js'
 import type { StickerPack, WAMediaUpload, WAMediaUploadFunction } from '../Types/Message.js'
@@ -123,7 +123,8 @@ export const isLottieBuffer = (buffer: Buffer): boolean => {
 	// Check if gzip-compressed (WAS format)
 	if (buffer[0] === 0x1f && buffer[1] === 0x8b) {
 		try {
-			jsonBuffer = gunzipSync(buffer) as Buffer
+			// SECURITY: Limit decompressed output to 50MB to prevent decompression bombs
+			jsonBuffer = gunzipSync(buffer, { maxOutputLength: 50 * 1024 * 1024 }) as Buffer
 		} catch {
 			return false
 		}
@@ -134,11 +135,11 @@ export const isLottieBuffer = (buffer: Buffer): boolean => {
 		return false
 	}
 
-	// Validate Lottie JSON structure: must have v, ip, op, layers
+	// Validate Lottie JSON structure: must have v, ip, op, AND layers
 	try {
 		const str = jsonBuffer.toString('utf8', 0, Math.min(jsonBuffer.length, 4096))
-		// Quick check for required Lottie fields
-		return str.includes('"v"') && str.includes('"layers"') && (str.includes('"ip"') || str.includes('"op"'))
+		// Quick check for ALL required Lottie fields
+		return str.includes('"v"') && str.includes('"layers"') && str.includes('"ip"') && str.includes('"op"')
 	} catch {
 		return false
 	}
@@ -158,10 +159,17 @@ const convertToWebP = async (
 	buffer: Buffer,
 	logger?: ILogger
 ): Promise<{ webpBuffer: Buffer; isAnimated: boolean; isLottie: boolean }> => {
-	// Lottie/WAS: passthrough sem converter (formato vetorial, mimetype=application/was)
+	// Lottie/WAS: ensure gzip-compressed format (WAS = gzip Lottie JSON)
 	if (isLottieBuffer(buffer)) {
-		logger?.trace('Input is Lottie/WAS format, preserving original buffer')
-		return { webpBuffer: buffer, isAnimated: true, isLottie: true }
+		let wasBuffer = buffer
+		// Raw Lottie JSON (starts with '{') must be gzipped to produce valid WAS
+		if (buffer[0] === 0x7b) {
+			logger?.trace('Raw Lottie JSON detected, gzip-compressing to WAS format')
+			wasBuffer = gzipSync(buffer) as Buffer
+		}
+
+		logger?.trace('Input is Lottie/WAS format')
+		return { webpBuffer: wasBuffer, isAnimated: true, isLottie: true }
 	}
 
 	// Se já é WebP, preserva o buffer original (mantém EXIF e animações)
@@ -387,9 +395,11 @@ export type PrepareStickerPackMessageOptions = {
  *
  * **Especificações WhatsApp:**
  * - 3-30 stickers por pack (oficial)
- * - WebP obrigatório
+ * - WebP ou Lottie/WAS (application/was)
+ * - Stickers: 512x512 pixels (auto-resize)
  * - Recomendado: 100KB por sticker estático, 500KB animado
- * - Tray icon: 252x252 pixels
+ * - Tray icon: 96x96 pixels (PNG no ZIP)
+ * - Thumbnail: 252x252 pixels (JPEG, upload separado)
  *
  * @param stickerPack - Sticker pack data with stickers, cover, name, publisher
  * @param options - Upload function and optional logger
@@ -517,9 +527,12 @@ export const prepareStickerPackMessage = async (
 				// eslint-disable-next-line prefer-const
 				let { webpBuffer, isAnimated, isLottie } = await convertToWebP(buffer, logger)
 
-				// Honor explicit isLottie flag from user input
-				if (sticker.isLottie !== undefined) {
-					isLottie = sticker.isLottie
+				// Validate explicit isLottie flag — must match detected format
+				if (sticker.isLottie !== undefined && sticker.isLottie !== isLottie) {
+					throw new Boom(
+						`Sticker ${i + 1}: explicit isLottie=${sticker.isLottie} does not match detected format (detected=${isLottie})`,
+						{ statusCode: 400 }
+					)
 				}
 
 				// WABA: Enforce 512x512 dimensions for WebP stickers (Lottie is vector, skip)
@@ -556,7 +569,7 @@ export const prepareStickerPackMessage = async (
 					if (lib?.sharp) {
 						// Try quality 70
 						try {
-							const compressed70 = await lib.sharp.default(buffer).webp({ quality: 70 }).toBuffer()
+							const compressed70 = await lib.sharp.default(webpBuffer).webp({ quality: 70 }).toBuffer()
 
 							// eslint-disable-next-line max-depth
 							if (compressed70.length <= MAX_STICKER_SIZE) {
@@ -571,7 +584,7 @@ export const prepareStickerPackMessage = async (
 								)
 							} else {
 								// Try quality 50
-								const compressed50 = await lib.sharp.default(buffer).webp({ quality: 50 }).toBuffer()
+								const compressed50 = await lib.sharp.default(webpBuffer).webp({ quality: 50 }).toBuffer()
 
 								// eslint-disable-next-line max-depth
 								if (compressed50.length <= MAX_STICKER_SIZE) {
@@ -712,20 +725,20 @@ export const prepareStickerPackMessage = async (
 		logger?.trace('Processing cover image')
 		coverBuffer = await mediaToBuffer(cover, 'cover image')
 
-		// WABA: Tray icon uses PNG format (installed_tray_image_id = .png)
+		// Tray icon uses PNG format, 96x96 pixels (official client standard)
 		const lib = await getImageProcessingLibrary()
-		if (lib?.sharp) {
-			// Convert cover to PNG and resize to 96x96 (WABA tray icon standard)
-			coverWebP = await lib.sharp
-				.default(coverBuffer)
-				.resize(96, 96, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
-				.png()
-				.toBuffer()
-		} else {
-			// Fallback: convert to WebP if Sharp not available
-			const result = await convertToWebP(coverBuffer, logger)
-			coverWebP = result.webpBuffer
+		if (!lib?.sharp) {
+			throw new Boom(
+				'Sharp library is required for cover/tray icon processing. Install with: yarn add sharp',
+				{ statusCode: 400 }
+			)
 		}
+
+		coverWebP = await lib.sharp
+			.default(coverBuffer)
+			.resize(96, 96, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+			.png()
+			.toBuffer()
 
 		coverFileName = `${stickerPackId}.png`
 		stickerData[coverFileName] = [new Uint8Array(coverWebP), { level: 0 as 0 }]
