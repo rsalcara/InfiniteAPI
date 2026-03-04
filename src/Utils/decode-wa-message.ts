@@ -14,7 +14,6 @@ import {
 	isJidStatusBroadcast,
 	isLidUser,
 	isPnUser,
-	jidDecode
 	//	transferDevice
 } from '../WABinary'
 import { unpadRandomMax16 } from './generics'
