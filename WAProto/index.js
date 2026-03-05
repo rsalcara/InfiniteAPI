@@ -70846,6 +70846,7 @@ export const proto = $root.proto = (() => {
         MsgOpaqueData.prototype.quarantineExtractedText = null;
         MsgOpaqueData.prototype.pollEndTime = null;
         MsgOpaqueData.prototype.pollHideVoterNames = null;
+        MsgOpaqueData.prototype.pollAllowAddOption = null;
 
         let $oneOfFields;
 
@@ -71119,6 +71120,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(MsgOpaqueData.prototype, "_pollAllowAddOption", {
+            get: $util.oneOfGetter($oneOfFields = ["pollAllowAddOption"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         MsgOpaqueData.create = function create(properties) {
             return new MsgOpaqueData(properties);
         };
@@ -71220,6 +71227,8 @@ export const proto = $root.proto = (() => {
                 w.uint32(400).bool(m.pollHideVoterNames);
             if (m.originalSelfAuthor != null && Object.hasOwnProperty.call(m, "originalSelfAuthor"))
                 w.uint32(410).string(m.originalSelfAuthor);
+            if (m.pollAllowAddOption != null && Object.hasOwnProperty.call(m, "pollAllowAddOption"))
+                w.uint32(416).bool(m.pollAllowAddOption);
             return w;
         };
 
@@ -71416,6 +71425,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 50: {
                         m.pollHideVoterNames = r.bool();
+                        break;
+                    }
+                case 52: {
+                        m.pollAllowAddOption = r.bool();
                         break;
                     }
                 default:
@@ -71662,6 +71675,9 @@ export const proto = $root.proto = (() => {
             }
             if (d.pollHideVoterNames != null) {
                 m.pollHideVoterNames = Boolean(d.pollHideVoterNames);
+            }
+            if (d.pollAllowAddOption != null) {
+                m.pollAllowAddOption = Boolean(d.pollAllowAddOption);
             }
             return m;
         };
@@ -71915,6 +71931,11 @@ export const proto = $root.proto = (() => {
                 d.originalSelfAuthor = m.originalSelfAuthor;
                 if (o.oneofs)
                     d._originalSelfAuthor = "originalSelfAuthor";
+            }
+            if (m.pollAllowAddOption != null && m.hasOwnProperty("pollAllowAddOption")) {
+                d.pollAllowAddOption = m.pollAllowAddOption;
+                if (o.oneofs)
+                    d._pollAllowAddOption = "pollAllowAddOption";
             }
             return d;
         };
