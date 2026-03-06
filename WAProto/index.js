@@ -1490,12 +1490,19 @@ export const proto = $root.proto = (() => {
         }
 
         AIMediaCollectionMetadata.prototype.collectionId = null;
+        AIMediaCollectionMetadata.prototype.uploadOrderIndex = null;
 
         let $oneOfFields;
 
         // Virtual OneOf for proto3 optional field
         Object.defineProperty(AIMediaCollectionMetadata.prototype, "_collectionId", {
             get: $util.oneOfGetter($oneOfFields = ["collectionId"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(AIMediaCollectionMetadata.prototype, "_uploadOrderIndex", {
+            get: $util.oneOfGetter($oneOfFields = ["uploadOrderIndex"]),
             set: $util.oneOfSetter($oneOfFields)
         });
 
@@ -1508,6 +1515,8 @@ export const proto = $root.proto = (() => {
                 w = $Writer.create();
             if (m.collectionId != null && Object.hasOwnProperty.call(m, "collectionId"))
                 w.uint32(10).string(m.collectionId);
+            if (m.uploadOrderIndex != null && Object.hasOwnProperty.call(m, "uploadOrderIndex"))
+                w.uint32(16).uint32(m.uploadOrderIndex);
             return w;
         };
 
@@ -1522,6 +1531,10 @@ export const proto = $root.proto = (() => {
                 switch (t >>> 3) {
                 case 1: {
                         m.collectionId = r.string();
+                        break;
+                    }
+                case 2: {
+                        m.uploadOrderIndex = r.uint32();
                         break;
                     }
                 default:
@@ -1539,6 +1552,9 @@ export const proto = $root.proto = (() => {
             if (d.collectionId != null) {
                 m.collectionId = String(d.collectionId);
             }
+            if (d.uploadOrderIndex != null) {
+                m.uploadOrderIndex = d.uploadOrderIndex >>> 0;
+            }
             return m;
         };
 
@@ -1550,6 +1566,11 @@ export const proto = $root.proto = (() => {
                 d.collectionId = m.collectionId;
                 if (o.oneofs)
                     d._collectionId = "collectionId";
+            }
+            if (m.uploadOrderIndex != null && m.hasOwnProperty("uploadOrderIndex")) {
+                d.uploadOrderIndex = m.uploadOrderIndex;
+                if (o.oneofs)
+                    d._uploadOrderIndex = "uploadOrderIndex";
             }
             return d;
         };
@@ -4830,12 +4851,19 @@ export const proto = $root.proto = (() => {
             }
 
             AIThreadClientInfo.prototype.type = null;
+            AIThreadClientInfo.prototype.sourceChatJid = null;
 
             let $oneOfFields;
 
             // Virtual OneOf for proto3 optional field
             Object.defineProperty(AIThreadClientInfo.prototype, "_type", {
                 get: $util.oneOfGetter($oneOfFields = ["type"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(AIThreadClientInfo.prototype, "_sourceChatJid", {
+                get: $util.oneOfGetter($oneOfFields = ["sourceChatJid"]),
                 set: $util.oneOfSetter($oneOfFields)
             });
 
@@ -4848,6 +4876,8 @@ export const proto = $root.proto = (() => {
                     w = $Writer.create();
                 if (m.type != null && Object.hasOwnProperty.call(m, "type"))
                     w.uint32(8).int32(m.type);
+                if (m.sourceChatJid != null && Object.hasOwnProperty.call(m, "sourceChatJid"))
+                    w.uint32(18).string(m.sourceChatJid);
                 return w;
             };
 
@@ -4862,6 +4892,10 @@ export const proto = $root.proto = (() => {
                     switch (t >>> 3) {
                     case 1: {
                             m.type = r.int32();
+                            break;
+                        }
+                    case 2: {
+                            m.sourceChatJid = r.string();
                             break;
                         }
                     default:
@@ -4895,6 +4929,13 @@ export const proto = $root.proto = (() => {
                 case 2:
                     m.type = 2;
                     break;
+                case "SIDE_CHAT":
+                case 3:
+                    m.type = 3;
+                    break;
+                }
+                if (d.sourceChatJid != null) {
+                    m.sourceChatJid = String(d.sourceChatJid);
                 }
                 return m;
             };
@@ -4907,6 +4948,11 @@ export const proto = $root.proto = (() => {
                     d.type = o.enums === String ? $root.proto.AIThreadInfo.AIThreadClientInfo.AIThreadType[m.type] === undefined ? m.type : $root.proto.AIThreadInfo.AIThreadClientInfo.AIThreadType[m.type] : m.type;
                     if (o.oneofs)
                         d._type = "type";
+                }
+                if (m.sourceChatJid != null && m.hasOwnProperty("sourceChatJid")) {
+                    d.sourceChatJid = m.sourceChatJid;
+                    if (o.oneofs)
+                        d._sourceChatJid = "sourceChatJid";
                 }
                 return d;
             };
@@ -4927,6 +4973,7 @@ export const proto = $root.proto = (() => {
                 values[valuesById[0] = "UNKNOWN"] = 0;
                 values[valuesById[1] = "DEFAULT"] = 1;
                 values[valuesById[2] = "INCOGNITO"] = 2;
+                values[valuesById[3] = "SIDE_CHAT"] = 3;
                 return values;
             })();
 
@@ -6660,6 +6707,10 @@ export const proto = $root.proto = (() => {
                     case 57:
                         m.capabilities[i] = 57;
                         break;
+                    case "JSON_PATCH_STREAMING":
+                    case 58:
+                        m.capabilities[i] = 58;
+                        break;
                     }
                 }
             }
@@ -6753,6 +6804,7 @@ export const proto = $root.proto = (() => {
             values[valuesById[55] = "RICH_RESPONSE_UR_BLOKS_ENABLED"] = 55;
             values[valuesById[56] = "RICH_RESPONSE_INLINE_LINKS_ENABLED"] = 56;
             values[valuesById[57] = "RICH_RESPONSE_UR_IMAGINE_VIDEO"] = 57;
+            values[valuesById[58] = "JSON_PATCH_STREAMING"] = 58;
             return values;
         })();
 
@@ -10133,6 +10185,10 @@ export const proto = $root.proto = (() => {
             case 54:
                 m.botEntryPointOrigin = 54;
                 break;
+            case "CHATLIST_SEARCH":
+            case 55:
+                m.botEntryPointOrigin = 55;
+                break;
             }
             if (d.forwardScore != null) {
                 m.forwardScore = d.forwardScore >>> 0;
@@ -11150,6 +11206,7 @@ export const proto = $root.proto = (() => {
         values[valuesById[46] = "WEB_INTRO_PANEL"] = 46;
         values[valuesById[47] = "WEB_NAVIGATION_BAR"] = 47;
         values[valuesById[54] = "GROUP_MEMBER"] = 54;
+        values[valuesById[55] = "CHATLIST_SEARCH"] = 55;
         return values;
     })();
 
@@ -11428,6 +11485,10 @@ export const proto = $root.proto = (() => {
             case "GROUP_MEMBER":
             case 54:
                 m.destinationEntryPoint = 54;
+                break;
+            case "CHATLIST_SEARCH":
+            case 55:
+                m.destinationEntryPoint = 55;
                 break;
             }
             switch (d.threadOrigin) {
@@ -17931,6 +17992,7 @@ export const proto = $root.proto = (() => {
 
         function ClientPayload(p) {
             this.shards = [];
+            this.pairedPeripherals = [];
             if (p)
                 for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
                     if (p[ks[i]] != null)
@@ -17971,6 +18033,7 @@ export const proto = $root.proto = (() => {
         ClientPayload.prototype.paaLink = null;
         ClientPayload.prototype.preacksCount = null;
         ClientPayload.prototype.processingQueueSize = null;
+        ClientPayload.prototype.pairedPeripherals = $util.emptyArray;
 
         let $oneOfFields;
 
@@ -18251,6 +18314,10 @@ export const proto = $root.proto = (() => {
                 w.uint32(360).int32(m.preacksCount);
             if (m.processingQueueSize != null && Object.hasOwnProperty.call(m, "processingQueueSize"))
                 w.uint32(368).int32(m.processingQueueSize);
+            if (m.pairedPeripherals != null && m.pairedPeripherals.length) {
+                for (var i = 0; i < m.pairedPeripherals.length; ++i)
+                    w.uint32(378).string(m.pairedPeripherals[i]);
+            }
             return w;
         };
 
@@ -18404,6 +18471,12 @@ export const proto = $root.proto = (() => {
                     }
                 case 46: {
                         m.processingQueueSize = r.int32();
+                        break;
+                    }
+                case 47: {
+                        if (!(m.pairedPeripherals && m.pairedPeripherals.length))
+                            m.pairedPeripherals = [];
+                        m.pairedPeripherals.push(r.string());
                         break;
                     }
                 default:
@@ -18727,6 +18800,14 @@ export const proto = $root.proto = (() => {
             if (d.processingQueueSize != null) {
                 m.processingQueueSize = d.processingQueueSize | 0;
             }
+            if (d.pairedPeripherals) {
+                if (!Array.isArray(d.pairedPeripherals))
+                    throw TypeError(".proto.ClientPayload.pairedPeripherals: array expected");
+                m.pairedPeripherals = [];
+                for (var i = 0; i < d.pairedPeripherals.length; ++i) {
+                    m.pairedPeripherals[i] = String(d.pairedPeripherals[i]);
+                }
+            }
             return m;
         };
 
@@ -18736,6 +18817,7 @@ export const proto = $root.proto = (() => {
             var d = {};
             if (o.arrays || o.defaults) {
                 d.shards = [];
+                d.pairedPeripherals = [];
             }
             if (m.username != null && m.hasOwnProperty("username")) {
                 if (typeof m.username === "number")
@@ -18913,6 +18995,12 @@ export const proto = $root.proto = (() => {
                 d.processingQueueSize = m.processingQueueSize;
                 if (o.oneofs)
                     d._processingQueueSize = "processingQueueSize";
+            }
+            if (m.pairedPeripherals && m.pairedPeripherals.length) {
+                d.pairedPeripherals = [];
+                for (var j = 0; j < m.pairedPeripherals.length; ++j) {
+                    d.pairedPeripherals[j] = m.pairedPeripherals[j];
+                }
             }
             return d;
         };
@@ -27047,12 +27135,19 @@ export const proto = $root.proto = (() => {
             }
 
             BusinessBroadcast.prototype.importListEnabled = null;
+            BusinessBroadcast.prototype.companionSupportEnabled = null;
 
             let $oneOfFields;
 
             // Virtual OneOf for proto3 optional field
             Object.defineProperty(BusinessBroadcast.prototype, "_importListEnabled", {
                 get: $util.oneOfGetter($oneOfFields = ["importListEnabled"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessBroadcast.prototype, "_companionSupportEnabled", {
+                get: $util.oneOfGetter($oneOfFields = ["companionSupportEnabled"]),
                 set: $util.oneOfSetter($oneOfFields)
             });
 
@@ -27065,6 +27160,8 @@ export const proto = $root.proto = (() => {
                     w = $Writer.create();
                 if (m.importListEnabled != null && Object.hasOwnProperty.call(m, "importListEnabled"))
                     w.uint32(8).bool(m.importListEnabled);
+                if (m.companionSupportEnabled != null && Object.hasOwnProperty.call(m, "companionSupportEnabled"))
+                    w.uint32(16).bool(m.companionSupportEnabled);
                 return w;
             };
 
@@ -27079,6 +27176,10 @@ export const proto = $root.proto = (() => {
                     switch (t >>> 3) {
                     case 1: {
                             m.importListEnabled = r.bool();
+                            break;
+                        }
+                    case 2: {
+                            m.companionSupportEnabled = r.bool();
                             break;
                         }
                     default:
@@ -27096,6 +27197,9 @@ export const proto = $root.proto = (() => {
                 if (d.importListEnabled != null) {
                     m.importListEnabled = Boolean(d.importListEnabled);
                 }
+                if (d.companionSupportEnabled != null) {
+                    m.companionSupportEnabled = Boolean(d.companionSupportEnabled);
+                }
                 return m;
             };
 
@@ -27107,6 +27211,11 @@ export const proto = $root.proto = (() => {
                     d.importListEnabled = m.importListEnabled;
                     if (o.oneofs)
                         d._importListEnabled = "importListEnabled";
+                }
+                if (m.companionSupportEnabled != null && m.hasOwnProperty("companionSupportEnabled")) {
+                    d.companionSupportEnabled = m.companionSupportEnabled;
+                    if (o.oneofs)
+                        d._companionSupportEnabled = "companionSupportEnabled";
                 }
                 return d;
             };
@@ -28237,6 +28346,7 @@ export const proto = $root.proto = (() => {
             HistorySyncConfig.prototype.thumbnailSyncDaysLimit = null;
             HistorySyncConfig.prototype.initialSyncMaxMessagesPerChat = null;
             HistorySyncConfig.prototype.supportManusHistory = null;
+            HistorySyncConfig.prototype.supportHatchHistory = null;
 
             let $oneOfFields;
 
@@ -28366,6 +28476,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(HistorySyncConfig.prototype, "_supportHatchHistory", {
+                get: $util.oneOfGetter($oneOfFields = ["supportHatchHistory"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             HistorySyncConfig.create = function create(properties) {
                 return new HistorySyncConfig(properties);
             };
@@ -28415,6 +28531,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(160).uint32(m.initialSyncMaxMessagesPerChat);
                 if (m.supportManusHistory != null && Object.hasOwnProperty.call(m, "supportManusHistory"))
                     w.uint32(168).bool(m.supportManusHistory);
+                if (m.supportHatchHistory != null && Object.hasOwnProperty.call(m, "supportHatchHistory"))
+                    w.uint32(176).bool(m.supportHatchHistory);
                 return w;
             };
 
@@ -28511,6 +28629,10 @@ export const proto = $root.proto = (() => {
                             m.supportManusHistory = r.bool();
                             break;
                         }
+                    case 22: {
+                            m.supportHatchHistory = r.bool();
+                            break;
+                        }
                     default:
                         r.skipType(t & 7);
                         break;
@@ -28585,6 +28707,9 @@ export const proto = $root.proto = (() => {
                 }
                 if (d.supportManusHistory != null) {
                     m.supportManusHistory = Boolean(d.supportManusHistory);
+                }
+                if (d.supportHatchHistory != null) {
+                    m.supportHatchHistory = Boolean(d.supportHatchHistory);
                 }
                 return m;
             };
@@ -28697,6 +28822,11 @@ export const proto = $root.proto = (() => {
                     d.supportManusHistory = m.supportManusHistory;
                     if (o.oneofs)
                         d._supportManusHistory = "supportManusHistory";
+                }
+                if (m.supportHatchHistory != null && m.hasOwnProperty("supportHatchHistory")) {
+                    d.supportHatchHistory = m.supportHatchHistory;
+                    if (o.oneofs)
+                        d._supportHatchHistory = "supportHatchHistory";
                 }
                 return d;
             };
@@ -49499,6 +49629,16 @@ export const proto = $root.proto = (() => {
             return InitialSecurityNotificationSettingSync;
         })();
 
+        Message.InsightDeliveryState = (function() {
+            const valuesById = {}, values = Object.create(valuesById);
+            values[valuesById[0] = "SENT"] = 0;
+            values[valuesById[1] = "DELIVERED"] = 1;
+            values[valuesById[2] = "READ"] = 2;
+            values[valuesById[3] = "REPLIED"] = 3;
+            values[valuesById[4] = "QUICK_REPLIED"] = 4;
+            return values;
+        })();
+
         Message.InteractiveMessage = (function() {
 
             function InteractiveMessage(p) {
@@ -56504,6 +56644,8 @@ export const proto = $root.proto = (() => {
             PeerDataOperationRequestMessage.prototype.historySyncChunkRetryRequest = null;
             PeerDataOperationRequestMessage.prototype.galaxyFlowAction = null;
             PeerDataOperationRequestMessage.prototype.companionCanonicalUserNonceFetchRequest = null;
+            PeerDataOperationRequestMessage.prototype.bizBroadcastInsightsContactListRequest = null;
+            PeerDataOperationRequestMessage.prototype.bizBroadcastInsightsRefreshRequest = null;
 
             let $oneOfFields;
 
@@ -56549,6 +56691,18 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(PeerDataOperationRequestMessage.prototype, "_bizBroadcastInsightsContactListRequest", {
+                get: $util.oneOfGetter($oneOfFields = ["bizBroadcastInsightsContactListRequest"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(PeerDataOperationRequestMessage.prototype, "_bizBroadcastInsightsRefreshRequest", {
+                get: $util.oneOfGetter($oneOfFields = ["bizBroadcastInsightsRefreshRequest"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             PeerDataOperationRequestMessage.create = function create(properties) {
                 return new PeerDataOperationRequestMessage(properties);
             };
@@ -56582,6 +56736,10 @@ export const proto = $root.proto = (() => {
                     $root.proto.Message.PeerDataOperationRequestMessage.GalaxyFlowAction.encode(m.galaxyFlowAction, w.uint32(74).fork()).ldelim();
                 if (m.companionCanonicalUserNonceFetchRequest != null && Object.hasOwnProperty.call(m, "companionCanonicalUserNonceFetchRequest"))
                     $root.proto.Message.PeerDataOperationRequestMessage.CompanionCanonicalUserNonceFetchRequest.encode(m.companionCanonicalUserNonceFetchRequest, w.uint32(82).fork()).ldelim();
+                if (m.bizBroadcastInsightsContactListRequest != null && Object.hasOwnProperty.call(m, "bizBroadcastInsightsContactListRequest"))
+                    $root.proto.Message.PeerDataOperationRequestMessage.BizBroadcastInsightsContactListRequest.encode(m.bizBroadcastInsightsContactListRequest, w.uint32(90).fork()).ldelim();
+                if (m.bizBroadcastInsightsRefreshRequest != null && Object.hasOwnProperty.call(m, "bizBroadcastInsightsRefreshRequest"))
+                    $root.proto.Message.PeerDataOperationRequestMessage.BizBroadcastInsightsRefreshRequest.encode(m.bizBroadcastInsightsRefreshRequest, w.uint32(98).fork()).ldelim();
                 return w;
             };
 
@@ -56638,6 +56796,14 @@ export const proto = $root.proto = (() => {
                         }
                     case 10: {
                             m.companionCanonicalUserNonceFetchRequest = $root.proto.Message.PeerDataOperationRequestMessage.CompanionCanonicalUserNonceFetchRequest.decode(r, r.uint32());
+                            break;
+                        }
+                    case 11: {
+                            m.bizBroadcastInsightsContactListRequest = $root.proto.Message.PeerDataOperationRequestMessage.BizBroadcastInsightsContactListRequest.decode(r, r.uint32());
+                            break;
+                        }
+                    case 12: {
+                            m.bizBroadcastInsightsRefreshRequest = $root.proto.Message.PeerDataOperationRequestMessage.BizBroadcastInsightsRefreshRequest.decode(r, r.uint32());
                             break;
                         }
                     default:
@@ -56707,6 +56873,14 @@ export const proto = $root.proto = (() => {
                 case 11:
                     m.peerDataOperationRequestType = 11;
                     break;
+                case "BUSINESS_BROADCAST_INSIGHTS_DELIVERED_TO":
+                case 12:
+                    m.peerDataOperationRequestType = 12;
+                    break;
+                case "BUSINESS_BROADCAST_INSIGHTS_REFRESH":
+                case 13:
+                    m.peerDataOperationRequestType = 13;
+                    break;
                 }
                 if (d.requestStickerReupload) {
                     if (!Array.isArray(d.requestStickerReupload))
@@ -56767,6 +56941,16 @@ export const proto = $root.proto = (() => {
                     if (typeof d.companionCanonicalUserNonceFetchRequest !== "object")
                         throw TypeError(".proto.Message.PeerDataOperationRequestMessage.companionCanonicalUserNonceFetchRequest: object expected");
                     m.companionCanonicalUserNonceFetchRequest = $root.proto.Message.PeerDataOperationRequestMessage.CompanionCanonicalUserNonceFetchRequest.fromObject(d.companionCanonicalUserNonceFetchRequest);
+                }
+                if (d.bizBroadcastInsightsContactListRequest != null) {
+                    if (typeof d.bizBroadcastInsightsContactListRequest !== "object")
+                        throw TypeError(".proto.Message.PeerDataOperationRequestMessage.bizBroadcastInsightsContactListRequest: object expected");
+                    m.bizBroadcastInsightsContactListRequest = $root.proto.Message.PeerDataOperationRequestMessage.BizBroadcastInsightsContactListRequest.fromObject(d.bizBroadcastInsightsContactListRequest);
+                }
+                if (d.bizBroadcastInsightsRefreshRequest != null) {
+                    if (typeof d.bizBroadcastInsightsRefreshRequest !== "object")
+                        throw TypeError(".proto.Message.PeerDataOperationRequestMessage.bizBroadcastInsightsRefreshRequest: object expected");
+                    m.bizBroadcastInsightsRefreshRequest = $root.proto.Message.PeerDataOperationRequestMessage.BizBroadcastInsightsRefreshRequest.fromObject(d.bizBroadcastInsightsRefreshRequest);
                 }
                 return m;
             };
@@ -56833,6 +57017,16 @@ export const proto = $root.proto = (() => {
                     if (o.oneofs)
                         d._companionCanonicalUserNonceFetchRequest = "companionCanonicalUserNonceFetchRequest";
                 }
+                if (m.bizBroadcastInsightsContactListRequest != null && m.hasOwnProperty("bizBroadcastInsightsContactListRequest")) {
+                    d.bizBroadcastInsightsContactListRequest = $root.proto.Message.PeerDataOperationRequestMessage.BizBroadcastInsightsContactListRequest.toObject(m.bizBroadcastInsightsContactListRequest, o);
+                    if (o.oneofs)
+                        d._bizBroadcastInsightsContactListRequest = "bizBroadcastInsightsContactListRequest";
+                }
+                if (m.bizBroadcastInsightsRefreshRequest != null && m.hasOwnProperty("bizBroadcastInsightsRefreshRequest")) {
+                    d.bizBroadcastInsightsRefreshRequest = $root.proto.Message.PeerDataOperationRequestMessage.BizBroadcastInsightsRefreshRequest.toObject(m.bizBroadcastInsightsRefreshRequest, o);
+                    if (o.oneofs)
+                        d._bizBroadcastInsightsRefreshRequest = "bizBroadcastInsightsRefreshRequest";
+                }
                 return d;
             };
 
@@ -56846,6 +57040,182 @@ export const proto = $root.proto = (() => {
                 }
                 return typeUrlPrefix + "/proto.Message.PeerDataOperationRequestMessage";
             };
+
+            PeerDataOperationRequestMessage.BizBroadcastInsightsContactListRequest = (function() {
+
+                function BizBroadcastInsightsContactListRequest(p) {
+                    if (p)
+                        for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                            if (p[ks[i]] != null)
+                                this[ks[i]] = p[ks[i]];
+                }
+
+                BizBroadcastInsightsContactListRequest.prototype.campaignId = null;
+
+                let $oneOfFields;
+
+                // Virtual OneOf for proto3 optional field
+                Object.defineProperty(BizBroadcastInsightsContactListRequest.prototype, "_campaignId", {
+                    get: $util.oneOfGetter($oneOfFields = ["campaignId"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+
+                BizBroadcastInsightsContactListRequest.create = function create(properties) {
+                    return new BizBroadcastInsightsContactListRequest(properties);
+                };
+
+                BizBroadcastInsightsContactListRequest.encode = function encode(m, w) {
+                    if (!w)
+                        w = $Writer.create();
+                    if (m.campaignId != null && Object.hasOwnProperty.call(m, "campaignId"))
+                        w.uint32(10).string(m.campaignId);
+                    return w;
+                };
+
+                BizBroadcastInsightsContactListRequest.decode = function decode(r, l, e) {
+                    if (!(r instanceof $Reader))
+                        r = $Reader.create(r);
+                    var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.Message.PeerDataOperationRequestMessage.BizBroadcastInsightsContactListRequest();
+                    while (r.pos < c) {
+                        var t = r.uint32();
+                        if (t === e)
+                            break;
+                        switch (t >>> 3) {
+                        case 1: {
+                                m.campaignId = r.string();
+                                break;
+                            }
+                        default:
+                            r.skipType(t & 7);
+                            break;
+                        }
+                    }
+                    return m;
+                };
+
+                BizBroadcastInsightsContactListRequest.fromObject = function fromObject(d) {
+                    if (d instanceof $root.proto.Message.PeerDataOperationRequestMessage.BizBroadcastInsightsContactListRequest)
+                        return d;
+                    var m = new $root.proto.Message.PeerDataOperationRequestMessage.BizBroadcastInsightsContactListRequest();
+                    if (d.campaignId != null) {
+                        m.campaignId = String(d.campaignId);
+                    }
+                    return m;
+                };
+
+                BizBroadcastInsightsContactListRequest.toObject = function toObject(m, o) {
+                    if (!o)
+                        o = {};
+                    var d = {};
+                    if (m.campaignId != null && m.hasOwnProperty("campaignId")) {
+                        d.campaignId = m.campaignId;
+                        if (o.oneofs)
+                            d._campaignId = "campaignId";
+                    }
+                    return d;
+                };
+
+                BizBroadcastInsightsContactListRequest.prototype.toJSON = function toJSON() {
+                    return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+                };
+
+                BizBroadcastInsightsContactListRequest.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                    if (typeUrlPrefix === undefined) {
+                        typeUrlPrefix = "type.googleapis.com";
+                    }
+                    return typeUrlPrefix + "/proto.Message.PeerDataOperationRequestMessage.BizBroadcastInsightsContactListRequest";
+                };
+
+                return BizBroadcastInsightsContactListRequest;
+            })();
+
+            PeerDataOperationRequestMessage.BizBroadcastInsightsRefreshRequest = (function() {
+
+                function BizBroadcastInsightsRefreshRequest(p) {
+                    if (p)
+                        for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                            if (p[ks[i]] != null)
+                                this[ks[i]] = p[ks[i]];
+                }
+
+                BizBroadcastInsightsRefreshRequest.prototype.campaignId = null;
+
+                let $oneOfFields;
+
+                // Virtual OneOf for proto3 optional field
+                Object.defineProperty(BizBroadcastInsightsRefreshRequest.prototype, "_campaignId", {
+                    get: $util.oneOfGetter($oneOfFields = ["campaignId"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+
+                BizBroadcastInsightsRefreshRequest.create = function create(properties) {
+                    return new BizBroadcastInsightsRefreshRequest(properties);
+                };
+
+                BizBroadcastInsightsRefreshRequest.encode = function encode(m, w) {
+                    if (!w)
+                        w = $Writer.create();
+                    if (m.campaignId != null && Object.hasOwnProperty.call(m, "campaignId"))
+                        w.uint32(10).string(m.campaignId);
+                    return w;
+                };
+
+                BizBroadcastInsightsRefreshRequest.decode = function decode(r, l, e) {
+                    if (!(r instanceof $Reader))
+                        r = $Reader.create(r);
+                    var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.Message.PeerDataOperationRequestMessage.BizBroadcastInsightsRefreshRequest();
+                    while (r.pos < c) {
+                        var t = r.uint32();
+                        if (t === e)
+                            break;
+                        switch (t >>> 3) {
+                        case 1: {
+                                m.campaignId = r.string();
+                                break;
+                            }
+                        default:
+                            r.skipType(t & 7);
+                            break;
+                        }
+                    }
+                    return m;
+                };
+
+                BizBroadcastInsightsRefreshRequest.fromObject = function fromObject(d) {
+                    if (d instanceof $root.proto.Message.PeerDataOperationRequestMessage.BizBroadcastInsightsRefreshRequest)
+                        return d;
+                    var m = new $root.proto.Message.PeerDataOperationRequestMessage.BizBroadcastInsightsRefreshRequest();
+                    if (d.campaignId != null) {
+                        m.campaignId = String(d.campaignId);
+                    }
+                    return m;
+                };
+
+                BizBroadcastInsightsRefreshRequest.toObject = function toObject(m, o) {
+                    if (!o)
+                        o = {};
+                    var d = {};
+                    if (m.campaignId != null && m.hasOwnProperty("campaignId")) {
+                        d.campaignId = m.campaignId;
+                        if (o.oneofs)
+                            d._campaignId = "campaignId";
+                    }
+                    return d;
+                };
+
+                BizBroadcastInsightsRefreshRequest.prototype.toJSON = function toJSON() {
+                    return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+                };
+
+                BizBroadcastInsightsRefreshRequest.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                    if (typeUrlPrefix === undefined) {
+                        typeUrlPrefix = "type.googleapis.com";
+                    }
+                    return typeUrlPrefix + "/proto.Message.PeerDataOperationRequestMessage.BizBroadcastInsightsRefreshRequest";
+                };
+
+                return BizBroadcastInsightsRefreshRequest;
+            })();
 
             PeerDataOperationRequestMessage.CompanionCanonicalUserNonceFetchRequest = (function() {
 
@@ -58203,6 +58573,14 @@ export const proto = $root.proto = (() => {
                 case 11:
                     m.peerDataOperationRequestType = 11;
                     break;
+                case "BUSINESS_BROADCAST_INSIGHTS_DELIVERED_TO":
+                case 12:
+                    m.peerDataOperationRequestType = 12;
+                    break;
+                case "BUSINESS_BROADCAST_INSIGHTS_REFRESH":
+                case 13:
+                    m.peerDataOperationRequestType = 13;
+                    break;
                 }
                 if (d.stanzaId != null) {
                     m.stanzaId = String(d.stanzaId);
@@ -58277,6 +58655,7 @@ export const proto = $root.proto = (() => {
                 PeerDataOperationResult.prototype.companionCanonicalUserNonceFetchRequestResponse = null;
                 PeerDataOperationResult.prototype.historySyncChunkRetryResponse = null;
                 PeerDataOperationResult.prototype.flowResponsesCsvBundle = null;
+                PeerDataOperationResult.prototype.bizBroadcastInsightsContactListResponse = null;
 
                 let $oneOfFields;
 
@@ -58346,6 +58725,12 @@ export const proto = $root.proto = (() => {
                     set: $util.oneOfSetter($oneOfFields)
                 });
 
+                // Virtual OneOf for proto3 optional field
+                Object.defineProperty(PeerDataOperationResult.prototype, "_bizBroadcastInsightsContactListResponse", {
+                    get: $util.oneOfGetter($oneOfFields = ["bizBroadcastInsightsContactListResponse"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+
                 PeerDataOperationResult.create = function create(properties) {
                     return new PeerDataOperationResult(properties);
                 };
@@ -58375,6 +58760,8 @@ export const proto = $root.proto = (() => {
                         $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.HistorySyncChunkRetryResponse.encode(m.historySyncChunkRetryResponse, w.uint32(82).fork()).ldelim();
                     if (m.flowResponsesCsvBundle != null && Object.hasOwnProperty.call(m, "flowResponsesCsvBundle"))
                         $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.FlowResponsesCsvBundle.encode(m.flowResponsesCsvBundle, w.uint32(90).fork()).ldelim();
+                    if (m.bizBroadcastInsightsContactListResponse != null && Object.hasOwnProperty.call(m, "bizBroadcastInsightsContactListResponse"))
+                        $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactListResponse.encode(m.bizBroadcastInsightsContactListResponse, w.uint32(98).fork()).ldelim();
                     return w;
                 };
 
@@ -58429,6 +58816,10 @@ export const proto = $root.proto = (() => {
                             }
                         case 11: {
                                 m.flowResponsesCsvBundle = $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.FlowResponsesCsvBundle.decode(r, r.uint32());
+                                break;
+                            }
+                        case 12: {
+                                m.bizBroadcastInsightsContactListResponse = $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactListResponse.decode(r, r.uint32());
                                 break;
                             }
                         default:
@@ -58517,6 +58908,11 @@ export const proto = $root.proto = (() => {
                             throw TypeError(".proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.flowResponsesCsvBundle: object expected");
                         m.flowResponsesCsvBundle = $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.FlowResponsesCsvBundle.fromObject(d.flowResponsesCsvBundle);
                     }
+                    if (d.bizBroadcastInsightsContactListResponse != null) {
+                        if (typeof d.bizBroadcastInsightsContactListResponse !== "object")
+                            throw TypeError(".proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.bizBroadcastInsightsContactListResponse: object expected");
+                        m.bizBroadcastInsightsContactListResponse = $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactListResponse.fromObject(d.bizBroadcastInsightsContactListResponse);
+                    }
                     return m;
                 };
 
@@ -58579,6 +58975,11 @@ export const proto = $root.proto = (() => {
                         if (o.oneofs)
                             d._flowResponsesCsvBundle = "flowResponsesCsvBundle";
                     }
+                    if (m.bizBroadcastInsightsContactListResponse != null && m.hasOwnProperty("bizBroadcastInsightsContactListResponse")) {
+                        d.bizBroadcastInsightsContactListResponse = $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactListResponse.toObject(m.bizBroadcastInsightsContactListResponse, o);
+                        if (o.oneofs)
+                            d._bizBroadcastInsightsContactListResponse = "bizBroadcastInsightsContactListResponse";
+                    }
                     return d;
                 };
 
@@ -58592,6 +58993,290 @@ export const proto = $root.proto = (() => {
                     }
                     return typeUrlPrefix + "/proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult";
                 };
+
+                PeerDataOperationResult.BizBroadcastInsightsContactListResponse = (function() {
+
+                    function BizBroadcastInsightsContactListResponse(p) {
+                        this.contacts = [];
+                        if (p)
+                            for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                                if (p[ks[i]] != null)
+                                    this[ks[i]] = p[ks[i]];
+                    }
+
+                    BizBroadcastInsightsContactListResponse.prototype.campaignId = null;
+                    BizBroadcastInsightsContactListResponse.prototype.timestampMs = null;
+                    BizBroadcastInsightsContactListResponse.prototype.contacts = $util.emptyArray;
+
+                    let $oneOfFields;
+
+                    // Virtual OneOf for proto3 optional field
+                    Object.defineProperty(BizBroadcastInsightsContactListResponse.prototype, "_campaignId", {
+                        get: $util.oneOfGetter($oneOfFields = ["campaignId"]),
+                        set: $util.oneOfSetter($oneOfFields)
+                    });
+
+                    // Virtual OneOf for proto3 optional field
+                    Object.defineProperty(BizBroadcastInsightsContactListResponse.prototype, "_timestampMs", {
+                        get: $util.oneOfGetter($oneOfFields = ["timestampMs"]),
+                        set: $util.oneOfSetter($oneOfFields)
+                    });
+
+                    BizBroadcastInsightsContactListResponse.create = function create(properties) {
+                        return new BizBroadcastInsightsContactListResponse(properties);
+                    };
+
+                    BizBroadcastInsightsContactListResponse.encode = function encode(m, w) {
+                        if (!w)
+                            w = $Writer.create();
+                        if (m.campaignId != null && Object.hasOwnProperty.call(m, "campaignId"))
+                            w.uint32(10).string(m.campaignId);
+                        if (m.timestampMs != null && Object.hasOwnProperty.call(m, "timestampMs"))
+                            w.uint32(16).int64(m.timestampMs);
+                        if (m.contacts != null && m.contacts.length) {
+                            for (var i = 0; i < m.contacts.length; ++i)
+                                $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactState.encode(m.contacts[i], w.uint32(26).fork()).ldelim();
+                        }
+                        return w;
+                    };
+
+                    BizBroadcastInsightsContactListResponse.decode = function decode(r, l, e) {
+                        if (!(r instanceof $Reader))
+                            r = $Reader.create(r);
+                        var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactListResponse();
+                        while (r.pos < c) {
+                            var t = r.uint32();
+                            if (t === e)
+                                break;
+                            switch (t >>> 3) {
+                            case 1: {
+                                    m.campaignId = r.string();
+                                    break;
+                                }
+                            case 2: {
+                                    m.timestampMs = r.int64();
+                                    break;
+                                }
+                            case 3: {
+                                    if (!(m.contacts && m.contacts.length))
+                                        m.contacts = [];
+                                    m.contacts.push($root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactState.decode(r, r.uint32()));
+                                    break;
+                                }
+                            default:
+                                r.skipType(t & 7);
+                                break;
+                            }
+                        }
+                        return m;
+                    };
+
+                    BizBroadcastInsightsContactListResponse.fromObject = function fromObject(d) {
+                        if (d instanceof $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactListResponse)
+                            return d;
+                        var m = new $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactListResponse();
+                        if (d.campaignId != null) {
+                            m.campaignId = String(d.campaignId);
+                        }
+                        if (d.timestampMs != null) {
+                            if ($util.Long)
+                                (m.timestampMs = $util.Long.fromValue(d.timestampMs)).unsigned = false;
+                            else if (typeof d.timestampMs === "string")
+                                m.timestampMs = parseInt(d.timestampMs, 10);
+                            else if (typeof d.timestampMs === "number")
+                                m.timestampMs = d.timestampMs;
+                            else if (typeof d.timestampMs === "object")
+                                m.timestampMs = new $util.LongBits(d.timestampMs.low >>> 0, d.timestampMs.high >>> 0).toNumber();
+                        }
+                        if (d.contacts) {
+                            if (!Array.isArray(d.contacts))
+                                throw TypeError(".proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactListResponse.contacts: array expected");
+                            m.contacts = [];
+                            for (var i = 0; i < d.contacts.length; ++i) {
+                                if (typeof d.contacts[i] !== "object")
+                                    throw TypeError(".proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactListResponse.contacts: object expected");
+                                m.contacts[i] = $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactState.fromObject(d.contacts[i]);
+                            }
+                        }
+                        return m;
+                    };
+
+                    BizBroadcastInsightsContactListResponse.toObject = function toObject(m, o) {
+                        if (!o)
+                            o = {};
+                        var d = {};
+                        if (o.arrays || o.defaults) {
+                            d.contacts = [];
+                        }
+                        if (m.campaignId != null && m.hasOwnProperty("campaignId")) {
+                            d.campaignId = m.campaignId;
+                            if (o.oneofs)
+                                d._campaignId = "campaignId";
+                        }
+                        if (m.timestampMs != null && m.hasOwnProperty("timestampMs")) {
+                            if (typeof m.timestampMs === "number")
+                                d.timestampMs = o.longs === String ? String(m.timestampMs) : m.timestampMs;
+                            else
+                                d.timestampMs = o.longs === String ? longToString(m.timestampMs) : o.longs === Number ? longToNumber(m.timestampMs) : m.timestampMs;
+                            if (o.oneofs)
+                                d._timestampMs = "timestampMs";
+                        }
+                        if (m.contacts && m.contacts.length) {
+                            d.contacts = [];
+                            for (var j = 0; j < m.contacts.length; ++j) {
+                                d.contacts[j] = $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactState.toObject(m.contacts[j], o);
+                            }
+                        }
+                        return d;
+                    };
+
+                    BizBroadcastInsightsContactListResponse.prototype.toJSON = function toJSON() {
+                        return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+                    };
+
+                    BizBroadcastInsightsContactListResponse.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                        if (typeUrlPrefix === undefined) {
+                            typeUrlPrefix = "type.googleapis.com";
+                        }
+                        return typeUrlPrefix + "/proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactListResponse";
+                    };
+
+                    return BizBroadcastInsightsContactListResponse;
+                })();
+
+                PeerDataOperationResult.BizBroadcastInsightsContactState = (function() {
+
+                    function BizBroadcastInsightsContactState(p) {
+                        if (p)
+                            for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                                if (p[ks[i]] != null)
+                                    this[ks[i]] = p[ks[i]];
+                    }
+
+                    BizBroadcastInsightsContactState.prototype.contactJid = null;
+                    BizBroadcastInsightsContactState.prototype.state = null;
+
+                    let $oneOfFields;
+
+                    // Virtual OneOf for proto3 optional field
+                    Object.defineProperty(BizBroadcastInsightsContactState.prototype, "_contactJid", {
+                        get: $util.oneOfGetter($oneOfFields = ["contactJid"]),
+                        set: $util.oneOfSetter($oneOfFields)
+                    });
+
+                    // Virtual OneOf for proto3 optional field
+                    Object.defineProperty(BizBroadcastInsightsContactState.prototype, "_state", {
+                        get: $util.oneOfGetter($oneOfFields = ["state"]),
+                        set: $util.oneOfSetter($oneOfFields)
+                    });
+
+                    BizBroadcastInsightsContactState.create = function create(properties) {
+                        return new BizBroadcastInsightsContactState(properties);
+                    };
+
+                    BizBroadcastInsightsContactState.encode = function encode(m, w) {
+                        if (!w)
+                            w = $Writer.create();
+                        if (m.contactJid != null && Object.hasOwnProperty.call(m, "contactJid"))
+                            w.uint32(10).string(m.contactJid);
+                        if (m.state != null && Object.hasOwnProperty.call(m, "state"))
+                            w.uint32(16).int32(m.state);
+                        return w;
+                    };
+
+                    BizBroadcastInsightsContactState.decode = function decode(r, l, e) {
+                        if (!(r instanceof $Reader))
+                            r = $Reader.create(r);
+                        var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactState();
+                        while (r.pos < c) {
+                            var t = r.uint32();
+                            if (t === e)
+                                break;
+                            switch (t >>> 3) {
+                            case 1: {
+                                    m.contactJid = r.string();
+                                    break;
+                                }
+                            case 2: {
+                                    m.state = r.int32();
+                                    break;
+                                }
+                            default:
+                                r.skipType(t & 7);
+                                break;
+                            }
+                        }
+                        return m;
+                    };
+
+                    BizBroadcastInsightsContactState.fromObject = function fromObject(d) {
+                        if (d instanceof $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactState)
+                            return d;
+                        var m = new $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactState();
+                        if (d.contactJid != null) {
+                            m.contactJid = String(d.contactJid);
+                        }
+                        switch (d.state) {
+                        default:
+                            if (typeof d.state === "number") {
+                                m.state = d.state;
+                                break;
+                            }
+                            break;
+                        case "SENT":
+                        case 0:
+                            m.state = 0;
+                            break;
+                        case "DELIVERED":
+                        case 1:
+                            m.state = 1;
+                            break;
+                        case "READ":
+                        case 2:
+                            m.state = 2;
+                            break;
+                        case "REPLIED":
+                        case 3:
+                            m.state = 3;
+                            break;
+                        case "QUICK_REPLIED":
+                        case 4:
+                            m.state = 4;
+                            break;
+                        }
+                        return m;
+                    };
+
+                    BizBroadcastInsightsContactState.toObject = function toObject(m, o) {
+                        if (!o)
+                            o = {};
+                        var d = {};
+                        if (m.contactJid != null && m.hasOwnProperty("contactJid")) {
+                            d.contactJid = m.contactJid;
+                            if (o.oneofs)
+                                d._contactJid = "contactJid";
+                        }
+                        if (m.state != null && m.hasOwnProperty("state")) {
+                            d.state = o.enums === String ? $root.proto.Message.InsightDeliveryState[m.state] === undefined ? m.state : $root.proto.Message.InsightDeliveryState[m.state] : m.state;
+                            if (o.oneofs)
+                                d._state = "state";
+                        }
+                        return d;
+                    };
+
+                    BizBroadcastInsightsContactState.prototype.toJSON = function toJSON() {
+                        return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+                    };
+
+                    BizBroadcastInsightsContactState.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                        if (typeUrlPrefix === undefined) {
+                            typeUrlPrefix = "type.googleapis.com";
+                        }
+                        return typeUrlPrefix + "/proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactState";
+                    };
+
+                    return BizBroadcastInsightsContactState;
+                })();
 
                 PeerDataOperationResult.CompanionCanonicalUserNonceFetchResponse = (function() {
 
@@ -60499,6 +61184,8 @@ export const proto = $root.proto = (() => {
             values[valuesById[9] = "COMPANION_CANONICAL_USER_NONCE_FETCH"] = 9;
             values[valuesById[10] = "HISTORY_SYNC_CHUNK_RETRY"] = 10;
             values[valuesById[11] = "GALAXY_FLOW_ACTION"] = 11;
+            values[valuesById[12] = "BUSINESS_BROADCAST_INSIGHTS_DELIVERED_TO"] = 12;
+            values[valuesById[13] = "BUSINESS_BROADCAST_INSIGHTS_REFRESH"] = 13;
             return values;
         })();
 
@@ -72672,6 +73359,7 @@ export const proto = $root.proto = (() => {
         values[valuesById[80] = "NCT_SALT_SYNC_ACTION"] = 80;
         values[valuesById[81] = "BUSINESS_BROADCAST_CAMPAIGN_ACTION"] = 81;
         values[valuesById[82] = "BUSINESS_BROADCAST_INSIGHTS_ACTION"] = 82;
+        values[valuesById[83] = "CUSTOMER_DATA_ACTION"] = 83;
         values[valuesById[10001] = "SHARE_OWN_PN"] = 10001;
         values[valuesById[10002] = "BUSINESS_BROADCAST_ACTION"] = 10002;
         values[valuesById[10003] = "AI_THREAD_DELETE_ACTION"] = 10003;
@@ -82919,6 +83607,7 @@ export const proto = $root.proto = (() => {
         SyncActionValue.prototype.nctSaltSyncAction = null;
         SyncActionValue.prototype.businessBroadcastCampaignAction = null;
         SyncActionValue.prototype.businessBroadcastInsightsAction = null;
+        SyncActionValue.prototype.customerDataAction = null;
 
         let $oneOfFields;
 
@@ -83360,6 +84049,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(SyncActionValue.prototype, "_customerDataAction", {
+            get: $util.oneOfGetter($oneOfFields = ["customerDataAction"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         SyncActionValue.create = function create(properties) {
             return new SyncActionValue(properties);
         };
@@ -83513,6 +84208,8 @@ export const proto = $root.proto = (() => {
                 $root.proto.SyncActionValue.BusinessBroadcastCampaignAction.encode(m.businessBroadcastCampaignAction, w.uint32(650).fork()).ldelim();
             if (m.businessBroadcastInsightsAction != null && Object.hasOwnProperty.call(m, "businessBroadcastInsightsAction"))
                 $root.proto.SyncActionValue.BusinessBroadcastInsightsAction.encode(m.businessBroadcastInsightsAction, w.uint32(658).fork()).ldelim();
+            if (m.customerDataAction != null && Object.hasOwnProperty.call(m, "customerDataAction"))
+                $root.proto.SyncActionValue.CustomerDataAction.encode(m.customerDataAction, w.uint32(666).fork()).ldelim();
             return w;
         };
 
@@ -83815,6 +84512,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 82: {
                         m.businessBroadcastInsightsAction = $root.proto.SyncActionValue.BusinessBroadcastInsightsAction.decode(r, r.uint32());
+                        break;
+                    }
+                case 83: {
+                        m.customerDataAction = $root.proto.SyncActionValue.CustomerDataAction.decode(r, r.uint32());
                         break;
                     }
                 default:
@@ -84199,6 +84900,11 @@ export const proto = $root.proto = (() => {
                     throw TypeError(".proto.SyncActionValue.businessBroadcastInsightsAction: object expected");
                 m.businessBroadcastInsightsAction = $root.proto.SyncActionValue.BusinessBroadcastInsightsAction.fromObject(d.businessBroadcastInsightsAction);
             }
+            if (d.customerDataAction != null) {
+                if (typeof d.customerDataAction !== "object")
+                    throw TypeError(".proto.SyncActionValue.customerDataAction: object expected");
+                m.customerDataAction = $root.proto.SyncActionValue.CustomerDataAction.fromObject(d.customerDataAction);
+            }
             return m;
         };
 
@@ -84573,6 +85279,11 @@ export const proto = $root.proto = (() => {
                 d.businessBroadcastInsightsAction = $root.proto.SyncActionValue.BusinessBroadcastInsightsAction.toObject(m.businessBroadcastInsightsAction, o);
                 if (o.oneofs)
                     d._businessBroadcastInsightsAction = "businessBroadcastInsightsAction";
+            }
+            if (m.customerDataAction != null && m.hasOwnProperty("customerDataAction")) {
+                d.customerDataAction = $root.proto.SyncActionValue.CustomerDataAction.toObject(m.customerDataAction, o);
+                if (o.oneofs)
+                    d._customerDataAction = "customerDataAction";
             }
             return d;
         };
@@ -87085,6 +87796,344 @@ export const proto = $root.proto = (() => {
             };
 
             return CustomPaymentMethodsAction;
+        })();
+
+        SyncActionValue.CustomerDataAction = (function() {
+
+            function CustomerDataAction(p) {
+                if (p)
+                    for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null)
+                            this[ks[i]] = p[ks[i]];
+            }
+
+            CustomerDataAction.prototype.chatJid = null;
+            CustomerDataAction.prototype.contactType = null;
+            CustomerDataAction.prototype.email = null;
+            CustomerDataAction.prototype.altPhoneNumbers = null;
+            CustomerDataAction.prototype.birthday = null;
+            CustomerDataAction.prototype.address = null;
+            CustomerDataAction.prototype.acquisitionSource = null;
+            CustomerDataAction.prototype.leadStage = null;
+            CustomerDataAction.prototype.lastOrder = null;
+            CustomerDataAction.prototype.createdAt = null;
+            CustomerDataAction.prototype.modifiedAt = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(CustomerDataAction.prototype, "_chatJid", {
+                get: $util.oneOfGetter($oneOfFields = ["chatJid"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(CustomerDataAction.prototype, "_contactType", {
+                get: $util.oneOfGetter($oneOfFields = ["contactType"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(CustomerDataAction.prototype, "_email", {
+                get: $util.oneOfGetter($oneOfFields = ["email"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(CustomerDataAction.prototype, "_altPhoneNumbers", {
+                get: $util.oneOfGetter($oneOfFields = ["altPhoneNumbers"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(CustomerDataAction.prototype, "_birthday", {
+                get: $util.oneOfGetter($oneOfFields = ["birthday"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(CustomerDataAction.prototype, "_address", {
+                get: $util.oneOfGetter($oneOfFields = ["address"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(CustomerDataAction.prototype, "_acquisitionSource", {
+                get: $util.oneOfGetter($oneOfFields = ["acquisitionSource"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(CustomerDataAction.prototype, "_leadStage", {
+                get: $util.oneOfGetter($oneOfFields = ["leadStage"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(CustomerDataAction.prototype, "_lastOrder", {
+                get: $util.oneOfGetter($oneOfFields = ["lastOrder"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(CustomerDataAction.prototype, "_createdAt", {
+                get: $util.oneOfGetter($oneOfFields = ["createdAt"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(CustomerDataAction.prototype, "_modifiedAt", {
+                get: $util.oneOfGetter($oneOfFields = ["modifiedAt"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            CustomerDataAction.create = function create(properties) {
+                return new CustomerDataAction(properties);
+            };
+
+            CustomerDataAction.encode = function encode(m, w) {
+                if (!w)
+                    w = $Writer.create();
+                if (m.chatJid != null && Object.hasOwnProperty.call(m, "chatJid"))
+                    w.uint32(10).string(m.chatJid);
+                if (m.contactType != null && Object.hasOwnProperty.call(m, "contactType"))
+                    w.uint32(16).int32(m.contactType);
+                if (m.email != null && Object.hasOwnProperty.call(m, "email"))
+                    w.uint32(26).string(m.email);
+                if (m.altPhoneNumbers != null && Object.hasOwnProperty.call(m, "altPhoneNumbers"))
+                    w.uint32(34).string(m.altPhoneNumbers);
+                if (m.birthday != null && Object.hasOwnProperty.call(m, "birthday"))
+                    w.uint32(40).int64(m.birthday);
+                if (m.address != null && Object.hasOwnProperty.call(m, "address"))
+                    w.uint32(50).string(m.address);
+                if (m.acquisitionSource != null && Object.hasOwnProperty.call(m, "acquisitionSource"))
+                    w.uint32(56).int32(m.acquisitionSource);
+                if (m.leadStage != null && Object.hasOwnProperty.call(m, "leadStage"))
+                    w.uint32(64).int32(m.leadStage);
+                if (m.lastOrder != null && Object.hasOwnProperty.call(m, "lastOrder"))
+                    w.uint32(72).int64(m.lastOrder);
+                if (m.createdAt != null && Object.hasOwnProperty.call(m, "createdAt"))
+                    w.uint32(80).int64(m.createdAt);
+                if (m.modifiedAt != null && Object.hasOwnProperty.call(m, "modifiedAt"))
+                    w.uint32(88).int64(m.modifiedAt);
+                return w;
+            };
+
+            CustomerDataAction.decode = function decode(r, l, e) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.SyncActionValue.CustomerDataAction();
+                while (r.pos < c) {
+                    var t = r.uint32();
+                    if (t === e)
+                        break;
+                    switch (t >>> 3) {
+                    case 1: {
+                            m.chatJid = r.string();
+                            break;
+                        }
+                    case 2: {
+                            m.contactType = r.int32();
+                            break;
+                        }
+                    case 3: {
+                            m.email = r.string();
+                            break;
+                        }
+                    case 4: {
+                            m.altPhoneNumbers = r.string();
+                            break;
+                        }
+                    case 5: {
+                            m.birthday = r.int64();
+                            break;
+                        }
+                    case 6: {
+                            m.address = r.string();
+                            break;
+                        }
+                    case 7: {
+                            m.acquisitionSource = r.int32();
+                            break;
+                        }
+                    case 8: {
+                            m.leadStage = r.int32();
+                            break;
+                        }
+                    case 9: {
+                            m.lastOrder = r.int64();
+                            break;
+                        }
+                    case 10: {
+                            m.createdAt = r.int64();
+                            break;
+                        }
+                    case 11: {
+                            m.modifiedAt = r.int64();
+                            break;
+                        }
+                    default:
+                        r.skipType(t & 7);
+                        break;
+                    }
+                }
+                return m;
+            };
+
+            CustomerDataAction.fromObject = function fromObject(d) {
+                if (d instanceof $root.proto.SyncActionValue.CustomerDataAction)
+                    return d;
+                var m = new $root.proto.SyncActionValue.CustomerDataAction();
+                if (d.chatJid != null) {
+                    m.chatJid = String(d.chatJid);
+                }
+                if (d.contactType != null) {
+                    m.contactType = d.contactType | 0;
+                }
+                if (d.email != null) {
+                    m.email = String(d.email);
+                }
+                if (d.altPhoneNumbers != null) {
+                    m.altPhoneNumbers = String(d.altPhoneNumbers);
+                }
+                if (d.birthday != null) {
+                    if ($util.Long)
+                        (m.birthday = $util.Long.fromValue(d.birthday)).unsigned = false;
+                    else if (typeof d.birthday === "string")
+                        m.birthday = parseInt(d.birthday, 10);
+                    else if (typeof d.birthday === "number")
+                        m.birthday = d.birthday;
+                    else if (typeof d.birthday === "object")
+                        m.birthday = new $util.LongBits(d.birthday.low >>> 0, d.birthday.high >>> 0).toNumber();
+                }
+                if (d.address != null) {
+                    m.address = String(d.address);
+                }
+                if (d.acquisitionSource != null) {
+                    m.acquisitionSource = d.acquisitionSource | 0;
+                }
+                if (d.leadStage != null) {
+                    m.leadStage = d.leadStage | 0;
+                }
+                if (d.lastOrder != null) {
+                    if ($util.Long)
+                        (m.lastOrder = $util.Long.fromValue(d.lastOrder)).unsigned = false;
+                    else if (typeof d.lastOrder === "string")
+                        m.lastOrder = parseInt(d.lastOrder, 10);
+                    else if (typeof d.lastOrder === "number")
+                        m.lastOrder = d.lastOrder;
+                    else if (typeof d.lastOrder === "object")
+                        m.lastOrder = new $util.LongBits(d.lastOrder.low >>> 0, d.lastOrder.high >>> 0).toNumber();
+                }
+                if (d.createdAt != null) {
+                    if ($util.Long)
+                        (m.createdAt = $util.Long.fromValue(d.createdAt)).unsigned = false;
+                    else if (typeof d.createdAt === "string")
+                        m.createdAt = parseInt(d.createdAt, 10);
+                    else if (typeof d.createdAt === "number")
+                        m.createdAt = d.createdAt;
+                    else if (typeof d.createdAt === "object")
+                        m.createdAt = new $util.LongBits(d.createdAt.low >>> 0, d.createdAt.high >>> 0).toNumber();
+                }
+                if (d.modifiedAt != null) {
+                    if ($util.Long)
+                        (m.modifiedAt = $util.Long.fromValue(d.modifiedAt)).unsigned = false;
+                    else if (typeof d.modifiedAt === "string")
+                        m.modifiedAt = parseInt(d.modifiedAt, 10);
+                    else if (typeof d.modifiedAt === "number")
+                        m.modifiedAt = d.modifiedAt;
+                    else if (typeof d.modifiedAt === "object")
+                        m.modifiedAt = new $util.LongBits(d.modifiedAt.low >>> 0, d.modifiedAt.high >>> 0).toNumber();
+                }
+                return m;
+            };
+
+            CustomerDataAction.toObject = function toObject(m, o) {
+                if (!o)
+                    o = {};
+                var d = {};
+                if (m.chatJid != null && m.hasOwnProperty("chatJid")) {
+                    d.chatJid = m.chatJid;
+                    if (o.oneofs)
+                        d._chatJid = "chatJid";
+                }
+                if (m.contactType != null && m.hasOwnProperty("contactType")) {
+                    d.contactType = m.contactType;
+                    if (o.oneofs)
+                        d._contactType = "contactType";
+                }
+                if (m.email != null && m.hasOwnProperty("email")) {
+                    d.email = m.email;
+                    if (o.oneofs)
+                        d._email = "email";
+                }
+                if (m.altPhoneNumbers != null && m.hasOwnProperty("altPhoneNumbers")) {
+                    d.altPhoneNumbers = m.altPhoneNumbers;
+                    if (o.oneofs)
+                        d._altPhoneNumbers = "altPhoneNumbers";
+                }
+                if (m.birthday != null && m.hasOwnProperty("birthday")) {
+                    if (typeof m.birthday === "number")
+                        d.birthday = o.longs === String ? String(m.birthday) : m.birthday;
+                    else
+                        d.birthday = o.longs === String ? longToString(m.birthday) : o.longs === Number ? longToNumber(m.birthday) : m.birthday;
+                    if (o.oneofs)
+                        d._birthday = "birthday";
+                }
+                if (m.address != null && m.hasOwnProperty("address")) {
+                    d.address = m.address;
+                    if (o.oneofs)
+                        d._address = "address";
+                }
+                if (m.acquisitionSource != null && m.hasOwnProperty("acquisitionSource")) {
+                    d.acquisitionSource = m.acquisitionSource;
+                    if (o.oneofs)
+                        d._acquisitionSource = "acquisitionSource";
+                }
+                if (m.leadStage != null && m.hasOwnProperty("leadStage")) {
+                    d.leadStage = m.leadStage;
+                    if (o.oneofs)
+                        d._leadStage = "leadStage";
+                }
+                if (m.lastOrder != null && m.hasOwnProperty("lastOrder")) {
+                    if (typeof m.lastOrder === "number")
+                        d.lastOrder = o.longs === String ? String(m.lastOrder) : m.lastOrder;
+                    else
+                        d.lastOrder = o.longs === String ? longToString(m.lastOrder) : o.longs === Number ? longToNumber(m.lastOrder) : m.lastOrder;
+                    if (o.oneofs)
+                        d._lastOrder = "lastOrder";
+                }
+                if (m.createdAt != null && m.hasOwnProperty("createdAt")) {
+                    if (typeof m.createdAt === "number")
+                        d.createdAt = o.longs === String ? String(m.createdAt) : m.createdAt;
+                    else
+                        d.createdAt = o.longs === String ? longToString(m.createdAt) : o.longs === Number ? longToNumber(m.createdAt) : m.createdAt;
+                    if (o.oneofs)
+                        d._createdAt = "createdAt";
+                }
+                if (m.modifiedAt != null && m.hasOwnProperty("modifiedAt")) {
+                    if (typeof m.modifiedAt === "number")
+                        d.modifiedAt = o.longs === String ? String(m.modifiedAt) : m.modifiedAt;
+                    else
+                        d.modifiedAt = o.longs === String ? longToString(m.modifiedAt) : o.longs === Number ? longToNumber(m.modifiedAt) : m.modifiedAt;
+                    if (o.oneofs)
+                        d._modifiedAt = "modifiedAt";
+                }
+                return d;
+            };
+
+            CustomerDataAction.prototype.toJSON = function toJSON() {
+                return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            CustomerDataAction.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                if (typeUrlPrefix === undefined) {
+                    typeUrlPrefix = "type.googleapis.com";
+                }
+                return typeUrlPrefix + "/proto.SyncActionValue.CustomerDataAction";
+            };
+
+            return CustomerDataAction;
         })();
 
         SyncActionValue.DeleteChatAction = (function() {
@@ -96292,7 +97341,6 @@ export const proto = $root.proto = (() => {
 
         ThreadID.prototype.threadType = null;
         ThreadID.prototype.threadKey = null;
-        ThreadID.prototype.sourceChatJid = null;
 
         let $oneOfFields;
 
@@ -96308,12 +97356,6 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
-        // Virtual OneOf for proto3 optional field
-        Object.defineProperty(ThreadID.prototype, "_sourceChatJid", {
-            get: $util.oneOfGetter($oneOfFields = ["sourceChatJid"]),
-            set: $util.oneOfSetter($oneOfFields)
-        });
-
         ThreadID.create = function create(properties) {
             return new ThreadID(properties);
         };
@@ -96325,8 +97367,6 @@ export const proto = $root.proto = (() => {
                 w.uint32(8).int32(m.threadType);
             if (m.threadKey != null && Object.hasOwnProperty.call(m, "threadKey"))
                 $root.proto.MessageKey.encode(m.threadKey, w.uint32(18).fork()).ldelim();
-            if (m.sourceChatJid != null && Object.hasOwnProperty.call(m, "sourceChatJid"))
-                w.uint32(26).string(m.sourceChatJid);
             return w;
         };
 
@@ -96345,10 +97385,6 @@ export const proto = $root.proto = (() => {
                     }
                 case 2: {
                         m.threadKey = $root.proto.MessageKey.decode(r, r.uint32());
-                        break;
-                    }
-                case 3: {
-                        m.sourceChatJid = r.string();
                         break;
                     }
                 default:
@@ -96388,9 +97424,6 @@ export const proto = $root.proto = (() => {
                     throw TypeError(".proto.ThreadID.threadKey: object expected");
                 m.threadKey = $root.proto.MessageKey.fromObject(d.threadKey);
             }
-            if (d.sourceChatJid != null) {
-                m.sourceChatJid = String(d.sourceChatJid);
-            }
             return m;
         };
 
@@ -96407,11 +97440,6 @@ export const proto = $root.proto = (() => {
                 d.threadKey = $root.proto.MessageKey.toObject(m.threadKey, o);
                 if (o.oneofs)
                     d._threadKey = "threadKey";
-            }
-            if (m.sourceChatJid != null && m.hasOwnProperty("sourceChatJid")) {
-                d.sourceChatJid = m.sourceChatJid;
-                if (o.oneofs)
-                    d._sourceChatJid = "sourceChatJid";
             }
             return d;
         };
