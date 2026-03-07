@@ -396,7 +396,56 @@ export const generateWAMessageContent = async (
 	options: MessageContentGenerationOptions
 ) => {
 	let m: WAMessageContent = {}
-	if (hasNonNullishProperty(message, 'text')) {
+	if (hasNonNullishProperty(message, 'nativeCarousel')) {
+		const carouselMsg = message as any
+		const cards = carouselMsg.nativeCarousel.cards || []
+		const title = carouselMsg.nativeCarousel.title || carouselMsg.title
+		const text = carouselMsg.text
+		const footer = carouselMsg.footer
+
+		const carouselCards = await Promise.all(
+			cards.map(async (card: any) => {
+				const hasMedia = !!(card.image || card.video)
+				const header: any = {
+					title: card.title || '',
+					subtitle: card.footer || '',
+					hasMediaAttachment: hasMedia
+				}
+				if (hasMedia && card.image) {
+					const { imageMessage } = await prepareWAMessageMedia({ image: card.image }, options)
+					if (imageMessage && !imageMessage.height) imageMessage.height = 500
+					if (imageMessage && !imageMessage.width) imageMessage.width = 500
+					header.imageMessage = imageMessage
+				}
+				return {
+					header,
+					body: { text: card.body || '' },
+					footer: card.footer ? { text: card.footer } : undefined,
+					nativeFlowMessage: {
+						buttons: (card.buttons || []).map((btn: any) => {
+							switch (btn.type) {
+								case 'url': return { name: 'cta_url', buttonParamsJson: JSON.stringify({ display_text: btn.text, url: btn.url, merchant_url: btn.url }) }
+								case 'copy': return { name: 'cta_copy', buttonParamsJson: JSON.stringify({ display_text: btn.text, copy_code: btn.copyText }) }
+								case 'call': return { name: 'cta_call', buttonParamsJson: JSON.stringify({ display_text: btn.text, phone_number: btn.phoneNumber }) }
+								default: return { name: 'quick_reply', buttonParamsJson: JSON.stringify({ display_text: btn.text, id: btn.id }) }
+							}
+						})
+					}
+				}
+			})
+		)
+
+		m.interactiveMessage = {
+			header: { title: title || ' ', hasMediaAttachment: false },
+			body: { text: text || '' },
+			footer: footer ? { text: footer } : undefined,
+			carouselMessage: {
+				cards: carouselCards,
+				messageVersion: 1
+			}
+		}
+		return m
+	} else if (hasNonNullishProperty(message, 'text')) {
 		const extContent = { text: message.text } as WATextMessage
 
 		let urlInfo = message.linkPreview
