@@ -6889,6 +6889,10 @@ export const proto = $root.proto = (() => {
                     case 58:
                         m.capabilities[i] = 58;
                         break;
+                    case "AI_TAB_FORCE_CLIPPY":
+                    case 59:
+                        m.capabilities[i] = 59;
+                        break;
                     }
                 }
             }
@@ -6983,6 +6987,7 @@ export const proto = $root.proto = (() => {
             values[valuesById[56] = "RICH_RESPONSE_INLINE_LINKS_ENABLED"] = 56;
             values[valuesById[57] = "RICH_RESPONSE_UR_IMAGINE_VIDEO"] = 57;
             values[valuesById[58] = "JSON_PATCH_STREAMING"] = 58;
+            values[valuesById[59] = "AI_TAB_FORCE_CLIPPY"] = 59;
             return values;
         })();
 
@@ -18028,6 +18033,7 @@ export const proto = $root.proto = (() => {
         ClientPairingProps.prototype.isSyncdPureLidSession = null;
         ClientPairingProps.prototype.isSyncdSnapshotRecoveryEnabled = null;
         ClientPairingProps.prototype.isHsThumbnailSyncEnabled = null;
+        ClientPairingProps.prototype.subscriptionSyncPayload = null;
 
         let $oneOfFields;
 
@@ -18055,6 +18061,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(ClientPairingProps.prototype, "_subscriptionSyncPayload", {
+            get: $util.oneOfGetter($oneOfFields = ["subscriptionSyncPayload"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         ClientPairingProps.create = function create(properties) {
             return new ClientPairingProps(properties);
         };
@@ -18070,6 +18082,8 @@ export const proto = $root.proto = (() => {
                 w.uint32(24).bool(m.isSyncdSnapshotRecoveryEnabled);
             if (m.isHsThumbnailSyncEnabled != null && Object.hasOwnProperty.call(m, "isHsThumbnailSyncEnabled"))
                 w.uint32(32).bool(m.isHsThumbnailSyncEnabled);
+            if (m.subscriptionSyncPayload != null && Object.hasOwnProperty.call(m, "subscriptionSyncPayload"))
+                w.uint32(42).bytes(m.subscriptionSyncPayload);
             return w;
         };
 
@@ -18098,6 +18112,10 @@ export const proto = $root.proto = (() => {
                         m.isHsThumbnailSyncEnabled = r.bool();
                         break;
                     }
+                case 5: {
+                        m.subscriptionSyncPayload = r.bytes();
+                        break;
+                    }
                 default:
                     r.skipType(t & 7);
                     break;
@@ -18121,6 +18139,12 @@ export const proto = $root.proto = (() => {
             }
             if (d.isHsThumbnailSyncEnabled != null) {
                 m.isHsThumbnailSyncEnabled = Boolean(d.isHsThumbnailSyncEnabled);
+            }
+            if (d.subscriptionSyncPayload != null) {
+                if (typeof d.subscriptionSyncPayload === "string")
+                    $util.base64.decode(d.subscriptionSyncPayload, m.subscriptionSyncPayload = $util.newBuffer($util.base64.length(d.subscriptionSyncPayload)), 0);
+                else if (d.subscriptionSyncPayload.length >= 0)
+                    m.subscriptionSyncPayload = d.subscriptionSyncPayload;
             }
             return m;
         };
@@ -18148,6 +18172,11 @@ export const proto = $root.proto = (() => {
                 d.isHsThumbnailSyncEnabled = m.isHsThumbnailSyncEnabled;
                 if (o.oneofs)
                     d._isHsThumbnailSyncEnabled = "isHsThumbnailSyncEnabled";
+            }
+            if (m.subscriptionSyncPayload != null && m.hasOwnProperty("subscriptionSyncPayload")) {
+                d.subscriptionSyncPayload = o.bytes === String ? $util.base64.encode(m.subscriptionSyncPayload, 0, m.subscriptionSyncPayload.length) : o.bytes === Array ? Array.prototype.slice.call(m.subscriptionSyncPayload) : m.subscriptionSyncPayload;
+                if (o.oneofs)
+                    d._subscriptionSyncPayload = "subscriptionSyncPayload";
             }
             return d;
         };
@@ -25605,6 +25634,7 @@ export const proto = $root.proto = (() => {
         Conversation.prototype.limitSharingInitiatedByMe = null;
         Conversation.prototype.maibaAiThreadEnabled = null;
         Conversation.prototype.isMarketingMessageThread = null;
+        Conversation.prototype.isSenderNewAccount = null;
 
         let $oneOfFields;
 
@@ -25926,6 +25956,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(Conversation.prototype, "_isSenderNewAccount", {
+            get: $util.oneOfGetter($oneOfFields = ["isSenderNewAccount"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         Conversation.create = function create(properties) {
             return new Conversation(properties);
         };
@@ -26047,6 +26083,8 @@ export const proto = $root.proto = (() => {
                 w.uint32(432).bool(m.maibaAiThreadEnabled);
             if (m.isMarketingMessageThread != null && Object.hasOwnProperty.call(m, "isMarketingMessageThread"))
                 w.uint32(440).bool(m.isMarketingMessageThread);
+            if (m.isSenderNewAccount != null && Object.hasOwnProperty.call(m, "isSenderNewAccount"))
+                w.uint32(448).bool(m.isSenderNewAccount);
             return w;
         };
 
@@ -26281,6 +26319,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 55: {
                         m.isMarketingMessageThread = r.bool();
+                        break;
+                    }
+                case 56: {
+                        m.isSenderNewAccount = r.bool();
                         break;
                     }
                 default:
@@ -26620,6 +26662,9 @@ export const proto = $root.proto = (() => {
             if (d.isMarketingMessageThread != null) {
                 m.isMarketingMessageThread = Boolean(d.isMarketingMessageThread);
             }
+            if (d.isSenderNewAccount != null) {
+                m.isSenderNewAccount = Boolean(d.isSenderNewAccount);
+            }
             return m;
         };
 
@@ -26931,6 +26976,11 @@ export const proto = $root.proto = (() => {
                 d.isMarketingMessageThread = m.isMarketingMessageThread;
                 if (o.oneofs)
                     d._isMarketingMessageThread = "isMarketingMessageThread";
+            }
+            if (m.isSenderNewAccount != null && m.hasOwnProperty("isSenderNewAccount")) {
+                d.isSenderNewAccount = m.isSenderNewAccount;
+                if (o.oneofs)
+                    d._isSenderNewAccount = "isSenderNewAccount";
             }
             return d;
         };
@@ -32299,6 +32349,8 @@ export const proto = $root.proto = (() => {
             ClientFinish.prototype["static"] = null;
             ClientFinish.prototype.payload = null;
             ClientFinish.prototype.extendedCiphertext = null;
+            ClientFinish.prototype.paddedBytes = null;
+            ClientFinish.prototype.simulateXxkemFs = null;
 
             let $oneOfFields;
 
@@ -32320,6 +32372,18 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ClientFinish.prototype, "_paddedBytes", {
+                get: $util.oneOfGetter($oneOfFields = ["paddedBytes"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ClientFinish.prototype, "_simulateXxkemFs", {
+                get: $util.oneOfGetter($oneOfFields = ["simulateXxkemFs"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             ClientFinish.create = function create(properties) {
                 return new ClientFinish(properties);
             };
@@ -32333,6 +32397,10 @@ export const proto = $root.proto = (() => {
                     w.uint32(18).bytes(m.payload);
                 if (m.extendedCiphertext != null && Object.hasOwnProperty.call(m, "extendedCiphertext"))
                     w.uint32(26).bytes(m.extendedCiphertext);
+                if (m.paddedBytes != null && Object.hasOwnProperty.call(m, "paddedBytes"))
+                    w.uint32(34).bytes(m.paddedBytes);
+                if (m.simulateXxkemFs != null && Object.hasOwnProperty.call(m, "simulateXxkemFs"))
+                    w.uint32(40).bool(m.simulateXxkemFs);
                 return w;
             };
 
@@ -32355,6 +32423,14 @@ export const proto = $root.proto = (() => {
                         }
                     case 3: {
                             m.extendedCiphertext = r.bytes();
+                            break;
+                        }
+                    case 4: {
+                            m.paddedBytes = r.bytes();
+                            break;
+                        }
+                    case 5: {
+                            m.simulateXxkemFs = r.bool();
                             break;
                         }
                     default:
@@ -32387,6 +32463,15 @@ export const proto = $root.proto = (() => {
                     else if (d.extendedCiphertext.length >= 0)
                         m.extendedCiphertext = d.extendedCiphertext;
                 }
+                if (d.paddedBytes != null) {
+                    if (typeof d.paddedBytes === "string")
+                        $util.base64.decode(d.paddedBytes, m.paddedBytes = $util.newBuffer($util.base64.length(d.paddedBytes)), 0);
+                    else if (d.paddedBytes.length >= 0)
+                        m.paddedBytes = d.paddedBytes;
+                }
+                if (d.simulateXxkemFs != null) {
+                    m.simulateXxkemFs = Boolean(d.simulateXxkemFs);
+                }
                 return m;
             };
 
@@ -32408,6 +32493,16 @@ export const proto = $root.proto = (() => {
                     d.extendedCiphertext = o.bytes === String ? $util.base64.encode(m.extendedCiphertext, 0, m.extendedCiphertext.length) : o.bytes === Array ? Array.prototype.slice.call(m.extendedCiphertext) : m.extendedCiphertext;
                     if (o.oneofs)
                         d._extendedCiphertext = "extendedCiphertext";
+                }
+                if (m.paddedBytes != null && m.hasOwnProperty("paddedBytes")) {
+                    d.paddedBytes = o.bytes === String ? $util.base64.encode(m.paddedBytes, 0, m.paddedBytes.length) : o.bytes === Array ? Array.prototype.slice.call(m.paddedBytes) : m.paddedBytes;
+                    if (o.oneofs)
+                        d._paddedBytes = "paddedBytes";
+                }
+                if (m.simulateXxkemFs != null && m.hasOwnProperty("simulateXxkemFs")) {
+                    d.simulateXxkemFs = m.simulateXxkemFs;
+                    if (o.oneofs)
+                        d._simulateXxkemFs = "simulateXxkemFs";
                 }
                 return d;
             };
@@ -32440,6 +32535,9 @@ export const proto = $root.proto = (() => {
             ClientHello.prototype.payload = null;
             ClientHello.prototype.useExtended = null;
             ClientHello.prototype.extendedCiphertext = null;
+            ClientHello.prototype.paddedBytes = null;
+            ClientHello.prototype.sendServerHelloPaddedBytes = null;
+            ClientHello.prototype.simulateXxkemFs = null;
 
             let $oneOfFields;
 
@@ -32473,6 +32571,24 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ClientHello.prototype, "_paddedBytes", {
+                get: $util.oneOfGetter($oneOfFields = ["paddedBytes"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ClientHello.prototype, "_sendServerHelloPaddedBytes", {
+                get: $util.oneOfGetter($oneOfFields = ["sendServerHelloPaddedBytes"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ClientHello.prototype, "_simulateXxkemFs", {
+                get: $util.oneOfGetter($oneOfFields = ["simulateXxkemFs"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             ClientHello.create = function create(properties) {
                 return new ClientHello(properties);
             };
@@ -32490,6 +32606,12 @@ export const proto = $root.proto = (() => {
                     w.uint32(32).bool(m.useExtended);
                 if (m.extendedCiphertext != null && Object.hasOwnProperty.call(m, "extendedCiphertext"))
                     w.uint32(42).bytes(m.extendedCiphertext);
+                if (m.paddedBytes != null && Object.hasOwnProperty.call(m, "paddedBytes"))
+                    w.uint32(50).bytes(m.paddedBytes);
+                if (m.sendServerHelloPaddedBytes != null && Object.hasOwnProperty.call(m, "sendServerHelloPaddedBytes"))
+                    w.uint32(56).bool(m.sendServerHelloPaddedBytes);
+                if (m.simulateXxkemFs != null && Object.hasOwnProperty.call(m, "simulateXxkemFs"))
+                    w.uint32(64).bool(m.simulateXxkemFs);
                 return w;
             };
 
@@ -32520,6 +32642,18 @@ export const proto = $root.proto = (() => {
                         }
                     case 5: {
                             m.extendedCiphertext = r.bytes();
+                            break;
+                        }
+                    case 6: {
+                            m.paddedBytes = r.bytes();
+                            break;
+                        }
+                    case 7: {
+                            m.sendServerHelloPaddedBytes = r.bool();
+                            break;
+                        }
+                    case 8: {
+                            m.simulateXxkemFs = r.bool();
                             break;
                         }
                     default:
@@ -32561,6 +32695,18 @@ export const proto = $root.proto = (() => {
                     else if (d.extendedCiphertext.length >= 0)
                         m.extendedCiphertext = d.extendedCiphertext;
                 }
+                if (d.paddedBytes != null) {
+                    if (typeof d.paddedBytes === "string")
+                        $util.base64.decode(d.paddedBytes, m.paddedBytes = $util.newBuffer($util.base64.length(d.paddedBytes)), 0);
+                    else if (d.paddedBytes.length >= 0)
+                        m.paddedBytes = d.paddedBytes;
+                }
+                if (d.sendServerHelloPaddedBytes != null) {
+                    m.sendServerHelloPaddedBytes = Boolean(d.sendServerHelloPaddedBytes);
+                }
+                if (d.simulateXxkemFs != null) {
+                    m.simulateXxkemFs = Boolean(d.simulateXxkemFs);
+                }
                 return m;
             };
 
@@ -32593,6 +32739,21 @@ export const proto = $root.proto = (() => {
                     if (o.oneofs)
                         d._extendedCiphertext = "extendedCiphertext";
                 }
+                if (m.paddedBytes != null && m.hasOwnProperty("paddedBytes")) {
+                    d.paddedBytes = o.bytes === String ? $util.base64.encode(m.paddedBytes, 0, m.paddedBytes.length) : o.bytes === Array ? Array.prototype.slice.call(m.paddedBytes) : m.paddedBytes;
+                    if (o.oneofs)
+                        d._paddedBytes = "paddedBytes";
+                }
+                if (m.sendServerHelloPaddedBytes != null && m.hasOwnProperty("sendServerHelloPaddedBytes")) {
+                    d.sendServerHelloPaddedBytes = m.sendServerHelloPaddedBytes;
+                    if (o.oneofs)
+                        d._sendServerHelloPaddedBytes = "sendServerHelloPaddedBytes";
+                }
+                if (m.simulateXxkemFs != null && m.hasOwnProperty("simulateXxkemFs")) {
+                    d.simulateXxkemFs = m.simulateXxkemFs;
+                    if (o.oneofs)
+                        d._simulateXxkemFs = "simulateXxkemFs";
+                }
                 return d;
             };
 
@@ -32623,6 +32784,7 @@ export const proto = $root.proto = (() => {
             ServerHello.prototype["static"] = null;
             ServerHello.prototype.payload = null;
             ServerHello.prototype.extendedStatic = null;
+            ServerHello.prototype.paddingBytes = null;
 
             let $oneOfFields;
 
@@ -32650,6 +32812,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ServerHello.prototype, "_paddingBytes", {
+                get: $util.oneOfGetter($oneOfFields = ["paddingBytes"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             ServerHello.create = function create(properties) {
                 return new ServerHello(properties);
             };
@@ -32665,6 +32833,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(26).bytes(m.payload);
                 if (m.extendedStatic != null && Object.hasOwnProperty.call(m, "extendedStatic"))
                     w.uint32(34).bytes(m.extendedStatic);
+                if (m.paddingBytes != null && Object.hasOwnProperty.call(m, "paddingBytes"))
+                    w.uint32(42).bytes(m.paddingBytes);
                 return w;
             };
 
@@ -32691,6 +32861,10 @@ export const proto = $root.proto = (() => {
                         }
                     case 4: {
                             m.extendedStatic = r.bytes();
+                            break;
+                        }
+                    case 5: {
+                            m.paddingBytes = r.bytes();
                             break;
                         }
                     default:
@@ -32729,6 +32903,12 @@ export const proto = $root.proto = (() => {
                     else if (d.extendedStatic.length >= 0)
                         m.extendedStatic = d.extendedStatic;
                 }
+                if (d.paddingBytes != null) {
+                    if (typeof d.paddingBytes === "string")
+                        $util.base64.decode(d.paddingBytes, m.paddingBytes = $util.newBuffer($util.base64.length(d.paddingBytes)), 0);
+                    else if (d.paddingBytes.length >= 0)
+                        m.paddingBytes = d.paddingBytes;
+                }
                 return m;
             };
 
@@ -32755,6 +32935,11 @@ export const proto = $root.proto = (() => {
                     d.extendedStatic = o.bytes === String ? $util.base64.encode(m.extendedStatic, 0, m.extendedStatic.length) : o.bytes === Array ? Array.prototype.slice.call(m.extendedStatic) : m.extendedStatic;
                     if (o.oneofs)
                         d._extendedStatic = "extendedStatic";
+                }
+                if (m.paddingBytes != null && m.hasOwnProperty("paddingBytes")) {
+                    d.paddingBytes = o.bytes === String ? $util.base64.encode(m.paddingBytes, 0, m.paddingBytes.length) : o.bytes === Array ? Array.prototype.slice.call(m.paddingBytes) : m.paddingBytes;
+                    if (o.oneofs)
+                        d._paddingBytes = "paddingBytes";
                 }
                 return d;
             };
@@ -56527,6 +56712,7 @@ export const proto = $root.proto = (() => {
             PaymentInviteMessage.prototype.expiryTimestamp = null;
             PaymentInviteMessage.prototype.incentiveEligible = null;
             PaymentInviteMessage.prototype.referralId = null;
+            PaymentInviteMessage.prototype.inviteType = null;
 
             let $oneOfFields;
 
@@ -56554,6 +56740,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(PaymentInviteMessage.prototype, "_inviteType", {
+                get: $util.oneOfGetter($oneOfFields = ["inviteType"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             PaymentInviteMessage.create = function create(properties) {
                 return new PaymentInviteMessage(properties);
             };
@@ -56569,6 +56761,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(24).bool(m.incentiveEligible);
                 if (m.referralId != null && Object.hasOwnProperty.call(m, "referralId"))
                     w.uint32(34).string(m.referralId);
+                if (m.inviteType != null && Object.hasOwnProperty.call(m, "inviteType"))
+                    w.uint32(40).int32(m.inviteType);
                 return w;
             };
 
@@ -56595,6 +56789,10 @@ export const proto = $root.proto = (() => {
                         }
                     case 4: {
                             m.referralId = r.string();
+                            break;
+                        }
+                    case 5: {
+                            m.inviteType = r.int32();
                             break;
                         }
                     default:
@@ -56649,6 +56847,22 @@ export const proto = $root.proto = (() => {
                 if (d.referralId != null) {
                     m.referralId = String(d.referralId);
                 }
+                switch (d.inviteType) {
+                default:
+                    if (typeof d.inviteType === "number") {
+                        m.inviteType = d.inviteType;
+                        break;
+                    }
+                    break;
+                case "DEFAULT":
+                case 0:
+                    m.inviteType = 0;
+                    break;
+                case "MAPPER":
+                case 1:
+                    m.inviteType = 1;
+                    break;
+                }
                 return m;
             };
 
@@ -56679,6 +56893,11 @@ export const proto = $root.proto = (() => {
                     if (o.oneofs)
                         d._referralId = "referralId";
                 }
+                if (m.inviteType != null && m.hasOwnProperty("inviteType")) {
+                    d.inviteType = o.enums === String ? $root.proto.Message.PaymentInviteMessage.InviteType[m.inviteType] === undefined ? m.inviteType : $root.proto.Message.PaymentInviteMessage.InviteType[m.inviteType] : m.inviteType;
+                    if (o.oneofs)
+                        d._inviteType = "inviteType";
+                }
                 return d;
             };
 
@@ -56692,6 +56911,13 @@ export const proto = $root.proto = (() => {
                 }
                 return typeUrlPrefix + "/proto.Message.PaymentInviteMessage";
             };
+
+            PaymentInviteMessage.InviteType = (function() {
+                const valuesById = {}, values = Object.create(valuesById);
+                values[valuesById[0] = "DEFAULT"] = 0;
+                values[valuesById[1] = "MAPPER"] = 1;
+                return values;
+            })();
 
             PaymentInviteMessage.ServiceType = (function() {
                 const valuesById = {}, values = Object.create(valuesById);
@@ -73887,6 +74113,7 @@ export const proto = $root.proto = (() => {
         values[valuesById[82] = "BUSINESS_BROADCAST_INSIGHTS_ACTION"] = 82;
         values[valuesById[83] = "CUSTOMER_DATA_ACTION"] = 83;
         values[valuesById[84] = "SUBSCRIPTIONS_SYNC_V2_ACTION"] = 84;
+        values[valuesById[85] = "THREAD_PIN_ACTION"] = 85;
         values[valuesById[10001] = "SHARE_OWN_PN"] = 10001;
         values[valuesById[10002] = "BUSINESS_BROADCAST_ACTION"] = 10002;
         values[valuesById[10003] = "AI_THREAD_DELETE_ACTION"] = 10003;
@@ -82502,6 +82729,10 @@ export const proto = $root.proto = (() => {
                 case 10:
                     m.source = 10;
                     break;
+                case "SOUNDCLOUD":
+                case 11:
+                    m.source = 11;
+                    break;
                 }
                 if (d.duration != null) {
                     m.duration = d.duration | 0;
@@ -82563,6 +82794,7 @@ export const proto = $root.proto = (() => {
                 values[valuesById[8] = "APPLE_MUSIC"] = 8;
                 values[valuesById[9] = "SHARECHAT"] = 9;
                 values[valuesById[10] = "GOOGLE_PHOTOS"] = 10;
+                values[valuesById[11] = "SOUNDCLOUD"] = 11;
                 return values;
             })();
 
@@ -84136,6 +84368,7 @@ export const proto = $root.proto = (() => {
         SyncActionValue.prototype.businessBroadcastInsightsAction = null;
         SyncActionValue.prototype.customerDataAction = null;
         SyncActionValue.prototype.subscriptionsSyncV2Action = null;
+        SyncActionValue.prototype.threadPinAction = null;
 
         let $oneOfFields;
 
@@ -84589,6 +84822,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(SyncActionValue.prototype, "_threadPinAction", {
+            get: $util.oneOfGetter($oneOfFields = ["threadPinAction"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         SyncActionValue.create = function create(properties) {
             return new SyncActionValue(properties);
         };
@@ -84746,6 +84985,8 @@ export const proto = $root.proto = (() => {
                 $root.proto.SyncActionValue.CustomerDataAction.encode(m.customerDataAction, w.uint32(666).fork()).ldelim();
             if (m.subscriptionsSyncV2Action != null && Object.hasOwnProperty.call(m, "subscriptionsSyncV2Action"))
                 $root.proto.SyncActionValue.SubscriptionsSyncV2Action.encode(m.subscriptionsSyncV2Action, w.uint32(674).fork()).ldelim();
+            if (m.threadPinAction != null && Object.hasOwnProperty.call(m, "threadPinAction"))
+                $root.proto.SyncActionValue.ThreadPinAction.encode(m.threadPinAction, w.uint32(682).fork()).ldelim();
             return w;
         };
 
@@ -85056,6 +85297,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 84: {
                         m.subscriptionsSyncV2Action = $root.proto.SyncActionValue.SubscriptionsSyncV2Action.decode(r, r.uint32());
+                        break;
+                    }
+                case 85: {
+                        m.threadPinAction = $root.proto.SyncActionValue.ThreadPinAction.decode(r, r.uint32());
                         break;
                     }
                 default:
@@ -85450,6 +85695,11 @@ export const proto = $root.proto = (() => {
                     throw TypeError(".proto.SyncActionValue.subscriptionsSyncV2Action: object expected");
                 m.subscriptionsSyncV2Action = $root.proto.SyncActionValue.SubscriptionsSyncV2Action.fromObject(d.subscriptionsSyncV2Action);
             }
+            if (d.threadPinAction != null) {
+                if (typeof d.threadPinAction !== "object")
+                    throw TypeError(".proto.SyncActionValue.threadPinAction: object expected");
+                m.threadPinAction = $root.proto.SyncActionValue.ThreadPinAction.fromObject(d.threadPinAction);
+            }
             return m;
         };
 
@@ -85834,6 +86084,11 @@ export const proto = $root.proto = (() => {
                 d.subscriptionsSyncV2Action = $root.proto.SyncActionValue.SubscriptionsSyncV2Action.toObject(m.subscriptionsSyncV2Action, o);
                 if (o.oneofs)
                     d._subscriptionsSyncV2Action = "subscriptionsSyncV2Action";
+            }
+            if (m.threadPinAction != null && m.hasOwnProperty("threadPinAction")) {
+                d.threadPinAction = $root.proto.SyncActionValue.ThreadPinAction.toObject(m.threadPinAction, o);
+                if (o.oneofs)
+                    d._threadPinAction = "threadPinAction";
             }
             return d;
         };
@@ -96078,6 +96333,94 @@ export const proto = $root.proto = (() => {
             };
 
             return SyncActionMessageRange;
+        })();
+
+        SyncActionValue.ThreadPinAction = (function() {
+
+            function ThreadPinAction(p) {
+                if (p)
+                    for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null)
+                            this[ks[i]] = p[ks[i]];
+            }
+
+            ThreadPinAction.prototype.pinned = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ThreadPinAction.prototype, "_pinned", {
+                get: $util.oneOfGetter($oneOfFields = ["pinned"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            ThreadPinAction.create = function create(properties) {
+                return new ThreadPinAction(properties);
+            };
+
+            ThreadPinAction.encode = function encode(m, w) {
+                if (!w)
+                    w = $Writer.create();
+                if (m.pinned != null && Object.hasOwnProperty.call(m, "pinned"))
+                    w.uint32(8).bool(m.pinned);
+                return w;
+            };
+
+            ThreadPinAction.decode = function decode(r, l, e) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.SyncActionValue.ThreadPinAction();
+                while (r.pos < c) {
+                    var t = r.uint32();
+                    if (t === e)
+                        break;
+                    switch (t >>> 3) {
+                    case 1: {
+                            m.pinned = r.bool();
+                            break;
+                        }
+                    default:
+                        r.skipType(t & 7);
+                        break;
+                    }
+                }
+                return m;
+            };
+
+            ThreadPinAction.fromObject = function fromObject(d) {
+                if (d instanceof $root.proto.SyncActionValue.ThreadPinAction)
+                    return d;
+                var m = new $root.proto.SyncActionValue.ThreadPinAction();
+                if (d.pinned != null) {
+                    m.pinned = Boolean(d.pinned);
+                }
+                return m;
+            };
+
+            ThreadPinAction.toObject = function toObject(m, o) {
+                if (!o)
+                    o = {};
+                var d = {};
+                if (m.pinned != null && m.hasOwnProperty("pinned")) {
+                    d.pinned = m.pinned;
+                    if (o.oneofs)
+                        d._pinned = "pinned";
+                }
+                return d;
+            };
+
+            ThreadPinAction.prototype.toJSON = function toJSON() {
+                return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            ThreadPinAction.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                if (typeUrlPrefix === undefined) {
+                    typeUrlPrefix = "type.googleapis.com";
+                }
+                return typeUrlPrefix + "/proto.SyncActionValue.ThreadPinAction";
+            };
+
+            return ThreadPinAction;
         })();
 
         SyncActionValue.TimeFormatAction = (function() {
