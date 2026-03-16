@@ -6893,6 +6893,10 @@ export const proto = $root.proto = (() => {
                     case 59:
                         m.capabilities[i] = 59;
                         break;
+                    case "UNIFIED_RESPONSE_EMBEDDED_SCREENS":
+                    case 60:
+                        m.capabilities[i] = 60;
+                        break;
                     }
                 }
             }
@@ -6988,6 +6992,7 @@ export const proto = $root.proto = (() => {
             values[valuesById[57] = "RICH_RESPONSE_UR_IMAGINE_VIDEO"] = 57;
             values[valuesById[58] = "JSON_PATCH_STREAMING"] = 58;
             values[valuesById[59] = "AI_TAB_FORCE_CLIPPY"] = 59;
+            values[valuesById[60] = "UNIFIED_RESPONSE_EMBEDDED_SCREENS"] = 60;
             return values;
         })();
 
@@ -23995,6 +24000,7 @@ export const proto = $root.proto = (() => {
             ExternalAdReplyInfo.prototype.adType = null;
             ExternalAdReplyInfo.prototype.wtwaWebsiteUrl = null;
             ExternalAdReplyInfo.prototype.adPreviewUrl = null;
+            ExternalAdReplyInfo.prototype.containsCtwaFlowsAutoReply = null;
 
             let $oneOfFields;
 
@@ -24160,6 +24166,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ExternalAdReplyInfo.prototype, "_containsCtwaFlowsAutoReply", {
+                get: $util.oneOfGetter($oneOfFields = ["containsCtwaFlowsAutoReply"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             ExternalAdReplyInfo.create = function create(properties) {
                 return new ExternalAdReplyInfo(properties);
             };
@@ -24221,6 +24233,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(210).string(m.wtwaWebsiteUrl);
                 if (m.adPreviewUrl != null && Object.hasOwnProperty.call(m, "adPreviewUrl"))
                     w.uint32(218).string(m.adPreviewUrl);
+                if (m.containsCtwaFlowsAutoReply != null && Object.hasOwnProperty.call(m, "containsCtwaFlowsAutoReply"))
+                    w.uint32(224).bool(m.containsCtwaFlowsAutoReply);
                 return w;
             };
 
@@ -24339,6 +24353,10 @@ export const proto = $root.proto = (() => {
                         }
                     case 27: {
                             m.adPreviewUrl = r.string();
+                            break;
+                        }
+                    case 28: {
+                            m.containsCtwaFlowsAutoReply = r.bool();
                             break;
                         }
                     default:
@@ -24466,6 +24484,9 @@ export const proto = $root.proto = (() => {
                 }
                 if (d.adPreviewUrl != null) {
                     m.adPreviewUrl = String(d.adPreviewUrl);
+                }
+                if (d.containsCtwaFlowsAutoReply != null) {
+                    m.containsCtwaFlowsAutoReply = Boolean(d.containsCtwaFlowsAutoReply);
                 }
                 return m;
             };
@@ -24608,6 +24629,11 @@ export const proto = $root.proto = (() => {
                     d.adPreviewUrl = m.adPreviewUrl;
                     if (o.oneofs)
                         d._adPreviewUrl = "adPreviewUrl";
+                }
+                if (m.containsCtwaFlowsAutoReply != null && m.hasOwnProperty("containsCtwaFlowsAutoReply")) {
+                    d.containsCtwaFlowsAutoReply = m.containsCtwaFlowsAutoReply;
+                    if (o.oneofs)
+                        d._containsCtwaFlowsAutoReply = "containsCtwaFlowsAutoReply";
                 }
                 return d;
             };
@@ -25635,6 +25661,7 @@ export const proto = $root.proto = (() => {
         Conversation.prototype.maibaAiThreadEnabled = null;
         Conversation.prototype.isMarketingMessageThread = null;
         Conversation.prototype.isSenderNewAccount = null;
+        Conversation.prototype.afterReadDuration = null;
 
         let $oneOfFields;
 
@@ -25962,6 +25989,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(Conversation.prototype, "_afterReadDuration", {
+            get: $util.oneOfGetter($oneOfFields = ["afterReadDuration"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         Conversation.create = function create(properties) {
             return new Conversation(properties);
         };
@@ -26085,6 +26118,8 @@ export const proto = $root.proto = (() => {
                 w.uint32(440).bool(m.isMarketingMessageThread);
             if (m.isSenderNewAccount != null && Object.hasOwnProperty.call(m, "isSenderNewAccount"))
                 w.uint32(448).bool(m.isSenderNewAccount);
+            if (m.afterReadDuration != null && Object.hasOwnProperty.call(m, "afterReadDuration"))
+                w.uint32(456).uint32(m.afterReadDuration);
             return w;
         };
 
@@ -26323,6 +26358,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 56: {
                         m.isSenderNewAccount = r.bool();
+                        break;
+                    }
+                case 57: {
+                        m.afterReadDuration = r.uint32();
                         break;
                     }
                 default:
@@ -26665,6 +26704,9 @@ export const proto = $root.proto = (() => {
             if (d.isSenderNewAccount != null) {
                 m.isSenderNewAccount = Boolean(d.isSenderNewAccount);
             }
+            if (d.afterReadDuration != null) {
+                m.afterReadDuration = d.afterReadDuration >>> 0;
+            }
             return m;
         };
 
@@ -26981,6 +27023,11 @@ export const proto = $root.proto = (() => {
                 d.isSenderNewAccount = m.isSenderNewAccount;
                 if (o.oneofs)
                     d._isSenderNewAccount = "isSenderNewAccount";
+            }
+            if (m.afterReadDuration != null && m.hasOwnProperty("afterReadDuration")) {
+                d.afterReadDuration = m.afterReadDuration;
+                if (o.oneofs)
+                    d._afterReadDuration = "afterReadDuration";
             }
             return d;
         };
@@ -64691,6 +64738,10 @@ export const proto = $root.proto = (() => {
                 case 32:
                     m.type = 32;
                     break;
+                case "BOT_UNLINK_MESSAGE":
+                case 33:
+                    m.type = 33;
+                    break;
                 }
                 if (d.ephemeralExpiration != null) {
                     m.ephemeralExpiration = d.ephemeralExpiration >>> 0;
@@ -65004,6 +65055,7 @@ export const proto = $root.proto = (() => {
                 values[valuesById[30] = "GROUP_MEMBER_LABEL_CHANGE"] = 30;
                 values[valuesById[31] = "AI_MEDIA_COLLECTION_MESSAGE"] = 31;
                 values[valuesById[32] = "MESSAGE_UNSCHEDULE"] = 32;
+                values[valuesById[33] = "BOT_UNLINK_MESSAGE"] = 33;
                 return values;
             })();
 
