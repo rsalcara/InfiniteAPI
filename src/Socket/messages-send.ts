@@ -617,6 +617,30 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return msgId
 	}
 
+	const resolveDsmMessageForRecipient = (
+		jid: string,
+		patchedMessage: proto.IMessage,
+		dsmMessage: proto.IMessage | undefined,
+		meId: string,
+		meLid: string | undefined,
+		meLidUser: string | null
+	) => {
+		if (!dsmMessage) {
+			return patchedMessage
+		}
+
+		const { user: targetUser } = jidDecode(jid)!
+		const { user: ownPnUser } = jidDecode(meId)!
+		const isOwnUser = targetUser === ownPnUser || (meLidUser && targetUser === meLidUser)
+		const isExactSenderDevice = jid === meId || (meLid && jid === meLid)
+
+		if (isOwnUser && !isExactSenderDevice) {
+			logger.debug({ jid, targetUser }, 'Using DSM for own device')
+			return dsmMessage
+		}
+
+		return patchedMessage
+	}
 	const createParticipantNodes = async (
 		recipientJids: string[],
 		message: proto.IMessage,
@@ -657,32 +681,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 		}
 
-		const resolveMessageForRecipient = (jid: string, patchedMessage: proto.IMessage) => {
-			if (!dsmMessage) {
-				return patchedMessage
-			}
-
-			const { user: targetUser } = jidDecode(jid)!
-			const { user: ownPnUser } = jidDecode(meId)!
-			const ownLidUser = meLidUser
-
-			const isOwnUser = targetUser === ownPnUser || (ownLidUser && targetUser === ownLidUser)
-			const isExactSenderDevice = jid === meId || (meLid && jid === meLid)
-
-			if (isOwnUser && !isExactSenderDevice) {
-				logger.debug({ jid, targetUser }, 'Using DSM for own device')
-				return dsmMessage
-			}
-
-			return patchedMessage
-		}
 
 		const encryptionPromises = (patchedMessages as { recipientJid: string; message: proto.IMessage }[]).map(
 			async ({ recipientJid: jid, message: patchedMessage }: { recipientJid: string; message: proto.IMessage }) => {
 				try {
 					if (!jid) return null
 
-					const msgToEncrypt = resolveMessageForRecipient(jid, patchedMessage)
+					const msgToEncrypt = resolveDsmMessageForRecipient(jid, patchedMessage, dsmMessage, meId, meLid, meLidUser)
 					const bytes = encodeWAMessage(msgToEncrypt)
 					const mutexKey = jid
 
