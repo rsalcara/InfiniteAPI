@@ -599,6 +599,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return patchedMessage
 	}
 
+	/* eslint-disable max-depth */
 	const createParticipantNodes = async (
 		recipientJids: string[],
 		message: proto.IMessage,
@@ -666,6 +667,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		return { nodes, shouldIncludeDeviceIdentity }
 	}
+	/* eslint-enable max-depth */
 
 	// Interactive message detection and binary node injection
 
