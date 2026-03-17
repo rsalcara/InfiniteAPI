@@ -638,6 +638,25 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const meLid = authState.creds.me?.lid
 		const meLidUser = meLid ? jidDecode(meLid)?.user : null
 
+		const encryptForRecipient = async (jid: string, bytes: Uint8Array) => {
+			const { type, ciphertext } = await signalRepository.encryptMessage({ jid, data: bytes })
+
+			return {
+				type,
+				node: {
+					tag: 'to',
+					attrs: { jid },
+					content: [
+						{
+							tag: 'enc',
+							attrs: { v: '2', type, ...(extraAttrs || {}) },
+							content: ciphertext
+						}
+					]
+				} as BinaryNode
+			}
+		}
+
 		const encryptionPromises = (patchedMessages as { recipientJid: string; message: proto.IMessage }[]).map(
 			async ({ recipientJid: jid, message: patchedMessage }: { recipientJid: string; message: proto.IMessage }) => {
 				try {
@@ -663,23 +682,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					const mutexKey = jid
 
 					const node = await encryptionMutex.mutex(mutexKey, async () => {
-						const { type, ciphertext } = await signalRepository.encryptMessage({ jid, data: bytes })
+						const { type, node } = await encryptForRecipient(jid, bytes)
 
 						if (type === 'pkmsg') {
 							shouldIncludeDeviceIdentity = true
 						}
 
-						return {
-							tag: 'to',
-							attrs: { jid },
-							content: [
-								{
-									tag: 'enc',
-									attrs: { v: '2', type, ...(extraAttrs || {}) },
-									content: ciphertext
-								}
-							]
-						}
+						return node
 					})
 
 					return node
@@ -1243,9 +1252,17 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 
 
+				const isCarouselRecipientFlow = isCarouselMessage(message)
+				const recipientsForMe = isCarouselRecipientFlow
+					? await canonicalizeCarouselRecipients(meRecipients)
+					: meRecipients
+				const recipientsForOthers = isCarouselRecipientFlow
+					? await canonicalizeCarouselRecipients(otherRecipients)
+					: otherRecipients
+
 				await assertSessions(allRecipients)
-				const effectiveMeRecipients = await canonicalizeSessionRecipients(meRecipients)
-				const effectiveOtherRecipients = await canonicalizeSessionRecipients(otherRecipients)
+				const effectiveMeRecipients = await canonicalizeSessionRecipients(recipientsForMe)
+				const effectiveOtherRecipients = await canonicalizeSessionRecipients(recipientsForOthers)
 				const effectiveAllRecipients = [...effectiveMeRecipients, ...effectiveOtherRecipients]
 
 				await assertSessions(effectiveAllRecipients)
