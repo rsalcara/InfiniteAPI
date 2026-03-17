@@ -660,7 +660,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const meId = authState.creds.me?.id
 		if (!meId) throw new Boom('Not authenticated', { statusCode: 401 })
 		const meLid = authState.creds.me?.lid
-		const meLidUser = meLid ? jidDecode(meLid)?.user : null
+		const meLidUser = meLid ? (jidDecode(meLid)?.user ?? null) : null
 
 		const encryptForRecipient = async (jid: string, bytes: Uint8Array) => {
 			const { type, ciphertext } = await signalRepository.encryptMessage({ jid, data: bytes })
