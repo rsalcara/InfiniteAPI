@@ -439,6 +439,39 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		)
 	}
 
+	const resolveSessionJid = async (jid: string) => {
+		if (isLidUser(jid) || isHostedLidUser(jid)) {
+			return jid
+		}
+
+		if (isPnUser(jid) || isHostedPnUser(jid)) {
+			return await signalRepository.lidMapping.getLIDForPN(jid) || jid
+		}
+
+		return jid
+	}
+
+	const canonicalizeSessionRecipients = async (recipientJids: string[]) => {
+		const uniqueRecipients = [...new Set(recipientJids)]
+		const canonicalRecipients: string[] = []
+
+		for (const jid of uniqueRecipients) {
+			const canonicalJid = await resolveSessionJid(jid)
+			if (!canonicalRecipients.includes(canonicalJid)) {
+				canonicalRecipients.push(canonicalJid)
+			}
+		}
+
+		if (canonicalRecipients.length !== uniqueRecipients.length || canonicalRecipients.some((jid, index) => jid !== uniqueRecipients[index])) {
+			logger.debug(
+				{ before: uniqueRecipients, after: canonicalRecipients },
+				'[SESSION] Canonicalized recipient addressing for session reuse'
+			)
+		}
+
+		return canonicalRecipients
+	}
+
 	const assertSessions = async (jids: string[], force?: boolean) => {
 		let didFetchNewSession = false
 		const uniqueJids = [...new Set(jids)] // Deduplicate JIDs
@@ -448,22 +481,32 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		// Check peerSessionsCache and validate sessions using libsignal loadSession
 		for (const jid of uniqueJids) {
-			const signalId = signalRepository.jidToSignalProtocolAddress(jid)
-			const cachedSession = peerSessionsCache.get(signalId)
+			const canonicalJid = await resolveSessionJid(jid)
+			const signalIds = [
+				signalRepository.jidToSignalProtocolAddress(jid),
+				signalRepository.jidToSignalProtocolAddress(canonicalJid)
+			]
+			const cachedSession = signalIds
+				.map(signalId => peerSessionsCache.get(signalId))
+				.find(session => session !== undefined)
+
 			if (cachedSession !== undefined) {
 				if (cachedSession && !force) {
 					continue // Session exists in cache
 				}
 			} else {
-				const sessionValidation = await signalRepository.validateSession(jid)
+				const sessionValidation = await signalRepository.validateSession(canonicalJid)
 				const hasSession = sessionValidation.exists
-				peerSessionsCache.set(signalId, hasSession)
+				for (const signalId of signalIds) {
+					peerSessionsCache.set(signalId, hasSession)
+				}
+
 				if (hasSession && !force) {
 					continue
 				}
 			}
 
-			jidsRequiringFetch.push(jid)
+			jidsRequiringFetch.push(canonicalJid)
 		}
 
 		if (jidsRequiringFetch.length) {
@@ -1199,13 +1242,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					allRecipients.push(jid)
 				}
 
-				const isCarouselFanout = isCarouselMessage(message)
-				const effectiveMeRecipients = isCarouselFanout
-					? await canonicalizeCarouselRecipients(meRecipients)
-					: meRecipients
-				const effectiveOtherRecipients = isCarouselFanout
-					? await canonicalizeCarouselRecipients(otherRecipients)
-					: otherRecipients
+
+				await assertSessions(allRecipients)
+				const effectiveMeRecipients = await canonicalizeSessionRecipients(meRecipients)
+				const effectiveOtherRecipients = await canonicalizeSessionRecipients(otherRecipients)
 				const effectiveAllRecipients = [...effectiveMeRecipients, ...effectiveOtherRecipients]
 
 				await assertSessions(effectiveAllRecipients)
