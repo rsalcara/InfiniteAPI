@@ -429,6 +429,27 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return jid
 	}
 
+	const canonicalizeSessionRecipients = async (recipientJids: string[]) => {
+		const uniqueRecipients = [...new Set(recipientJids)]
+		const canonicalRecipients: string[] = []
+
+		for (const jid of uniqueRecipients) {
+			const canonicalJid = await resolveSessionJid(jid)
+			if (!canonicalRecipients.includes(canonicalJid)) {
+				canonicalRecipients.push(canonicalJid)
+			}
+		}
+
+		if (canonicalRecipients.length !== uniqueRecipients.length || canonicalRecipients.some((jid, index) => jid !== uniqueRecipients[index])) {
+			logger.debug(
+				{ before: uniqueRecipients, after: canonicalRecipients },
+				'[SESSION] Canonicalized recipient addressing for session reuse'
+			)
+		}
+
+		return canonicalRecipients
+	}
+
 	const assertSessions = async (jids: string[], force?: boolean) => {
 		let didFetchNewSession = false
 		const uniqueJids = [...new Set(jids)] // Deduplicate JIDs
@@ -990,7 +1011,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					allRecipients.push(jid)
 				}
 
+
 				await assertSessions(allRecipients)
+				const effectiveMeRecipients = await canonicalizeSessionRecipients(meRecipients)
+				const effectiveOtherRecipients = await canonicalizeSessionRecipients(otherRecipients)
+				const effectiveAllRecipients = [...effectiveMeRecipients, ...effectiveOtherRecipients]
+
+				await assertSessions(effectiveAllRecipients)
 
 				const [
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
