@@ -429,27 +429,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return jid
 	}
 
-	const canonicalizeSessionRecipients = async (recipientJids: string[]) => {
-		const uniqueRecipients = [...new Set(recipientJids)]
-		const canonicalRecipients: string[] = []
-
-		for (const jid of uniqueRecipients) {
-			const canonicalJid = await resolveSessionJid(jid)
-			if (!canonicalRecipients.includes(canonicalJid)) {
-				canonicalRecipients.push(canonicalJid)
-			}
-		}
-
-		if (canonicalRecipients.length !== uniqueRecipients.length || canonicalRecipients.some((jid, index) => jid !== uniqueRecipients[index])) {
-			logger.debug(
-				{ before: uniqueRecipients, after: canonicalRecipients },
-				'[SESSION] Canonicalized recipient addressing for session reuse'
-			)
-		}
-
-		return canonicalRecipients
-	}
-
 	const assertSessions = async (jids: string[], force?: boolean) => {
 		let didFetchNewSession = false
 		const uniqueJids = [...new Set(jids)] // Deduplicate JIDs
@@ -1011,25 +990,21 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					allRecipients.push(jid)
 				}
 
-				const effectiveMeRecipients = await canonicalizeSessionRecipients(meRecipients)
-				const effectiveOtherRecipients = await canonicalizeSessionRecipients(otherRecipients)
-				const effectiveAllRecipients = [...effectiveMeRecipients, ...effectiveOtherRecipients]
-
-				await assertSessions(effectiveAllRecipients)
+				await assertSessions(allRecipients)
 
 				const [
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
 					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
 				] = await Promise.all([
 					// For own devices: use DSM if available (1:1 chats only)
-					createParticipantNodes(effectiveMeRecipients, meMsg || message, extraAttrs),
-					createParticipantNodes(effectiveOtherRecipients, message, extraAttrs, meMsg)
+					createParticipantNodes(meRecipients, meMsg || message, extraAttrs),
+					createParticipantNodes(otherRecipients, message, extraAttrs, meMsg)
 				])
 				participants.push(...meNodes)
 				participants.push(...otherNodes)
 
-				if (effectiveMeRecipients.length > 0 || effectiveOtherRecipients.length > 0) {
-					extraAttrs['phash'] = generateParticipantHashV2([...effectiveMeRecipients, ...effectiveOtherRecipients])
+				if (meRecipients.length > 0 || otherRecipients.length > 0) {
+					extraAttrs['phash'] = generateParticipantHashV2([...meRecipients, ...otherRecipients])
 				}
 
 				shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || s1 || s2
