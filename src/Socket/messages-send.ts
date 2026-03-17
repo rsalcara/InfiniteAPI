@@ -657,27 +657,32 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 		}
 
+		const resolveMessageForRecipient = (jid: string, patchedMessage: proto.IMessage) => {
+			if (!dsmMessage) {
+				return patchedMessage
+			}
+
+			const { user: targetUser } = jidDecode(jid)!
+			const { user: ownPnUser } = jidDecode(meId)!
+			const ownLidUser = meLidUser
+
+			const isOwnUser = targetUser === ownPnUser || (ownLidUser && targetUser === ownLidUser)
+			const isExactSenderDevice = jid === meId || (meLid && jid === meLid)
+
+			if (isOwnUser && !isExactSenderDevice) {
+				logger.debug({ jid, targetUser }, 'Using DSM for own device')
+				return dsmMessage
+			}
+
+			return patchedMessage
+		}
+
 		const encryptionPromises = (patchedMessages as { recipientJid: string; message: proto.IMessage }[]).map(
 			async ({ recipientJid: jid, message: patchedMessage }: { recipientJid: string; message: proto.IMessage }) => {
 				try {
 					if (!jid) return null
 
-					let msgToEncrypt = patchedMessage
-
-					if (dsmMessage) {
-						const { user: targetUser } = jidDecode(jid)!
-						const { user: ownPnUser } = jidDecode(meId)!
-						const ownLidUser = meLidUser
-
-						const isOwnUser = targetUser === ownPnUser || (ownLidUser && targetUser === ownLidUser)
-						const isExactSenderDevice = jid === meId || (meLid && jid === meLid)
-
-						if (isOwnUser && !isExactSenderDevice) {
-							msgToEncrypt = dsmMessage
-							logger.debug({ jid, targetUser }, 'Using DSM for own device')
-						}
-					}
-
+					const msgToEncrypt = resolveMessageForRecipient(jid, patchedMessage)
 					const bytes = encodeWAMessage(msgToEncrypt)
 					const mutexKey = jid
 
