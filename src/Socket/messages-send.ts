@@ -439,39 +439,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		)
 	}
 
-	const resolveSessionJid = async (jid: string) => {
-		if (isLidUser(jid) || isHostedLidUser(jid)) {
-			return jid
-		}
-
-		if (isPnUser(jid) || isHostedPnUser(jid)) {
-			return await signalRepository.lidMapping.getLIDForPN(jid) || jid
-		}
-
-		return jid
-	}
-
-	const canonicalizeSessionRecipients = async (recipientJids: string[]) => {
-		const uniqueRecipients = [...new Set(recipientJids)]
-		const canonicalRecipients: string[] = []
-
-		for (const jid of uniqueRecipients) {
-			const canonicalJid = await resolveSessionJid(jid)
-			if (!canonicalRecipients.includes(canonicalJid)) {
-				canonicalRecipients.push(canonicalJid)
-			}
-		}
-
-		if (canonicalRecipients.length !== uniqueRecipients.length || canonicalRecipients.some((jid, index) => jid !== uniqueRecipients[index])) {
-			logger.debug(
-				{ before: uniqueRecipients, after: canonicalRecipients },
-				'[SESSION] Canonicalized recipient addressing for session reuse'
-			)
-		}
-
-		return canonicalRecipients
-	}
-
 	const assertSessions = async (jids: string[], force?: boolean) => {
 		let didFetchNewSession = false
 		const uniqueJids = [...new Set(jids)] // Deduplicate JIDs
@@ -481,32 +448,22 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		// Check peerSessionsCache and validate sessions using libsignal loadSession
 		for (const jid of uniqueJids) {
-			const canonicalJid = await resolveSessionJid(jid)
-			const signalIds = [
-				signalRepository.jidToSignalProtocolAddress(jid),
-				signalRepository.jidToSignalProtocolAddress(canonicalJid)
-			]
-			const cachedSession = signalIds
-				.map(signalId => peerSessionsCache.get(signalId))
-				.find(session => session !== undefined)
-
+			const signalId = signalRepository.jidToSignalProtocolAddress(jid)
+			const cachedSession = peerSessionsCache.get(signalId)
 			if (cachedSession !== undefined) {
 				if (cachedSession && !force) {
 					continue // Session exists in cache
 				}
 			} else {
-				const sessionValidation = await signalRepository.validateSession(canonicalJid)
+				const sessionValidation = await signalRepository.validateSession(jid)
 				const hasSession = sessionValidation.exists
-				for (const signalId of signalIds) {
-					peerSessionsCache.set(signalId, hasSession)
-				}
-
+				peerSessionsCache.set(signalId, hasSession)
 				if (hasSession && !force) {
 					continue
 				}
 			}
 
-			jidsRequiringFetch.push(canonicalJid)
+			jidsRequiringFetch.push(jid)
 		}
 
 		if (jidsRequiringFetch.length) {
@@ -623,7 +580,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		dsmMessage: proto.IMessage | undefined,
 		meId: string,
 		meLid: string | undefined,
-		meLidUser: string | null
+		meLidUser: string | null | undefined
 	) => {
 		if (!dsmMessage) {
 			return patchedMessage
@@ -641,6 +598,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		return patchedMessage
 	}
+
 	const createParticipantNodes = async (
 		recipientJids: string[],
 		message: proto.IMessage,
@@ -662,26 +620,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const meLid = authState.creds.me?.lid
 		const meLidUser = meLid ? (jidDecode(meLid)?.user ?? null) : null
 
-		const encryptForRecipient = async (jid: string, bytes: Uint8Array) => {
-			const { type, ciphertext } = await signalRepository.encryptMessage({ jid, data: bytes })
-
-			return {
-				type,
-				node: {
-					tag: 'to',
-					attrs: { jid },
-					content: [
-						{
-							tag: 'enc',
-							attrs: { v: '2', type, ...(extraAttrs || {}) },
-							content: ciphertext
-						}
-					]
-				} as BinaryNode
-			}
-		}
-
-
 		const encryptionPromises = (patchedMessages as { recipientJid: string; message: proto.IMessage }[]).map(
 			async ({ recipientJid: jid, message: patchedMessage }: { recipientJid: string; message: proto.IMessage }) => {
 				try {
@@ -692,13 +630,23 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					const mutexKey = jid
 
 					const node = await encryptionMutex.mutex(mutexKey, async () => {
-						const { type, node } = await encryptForRecipient(jid, bytes)
+						const { type, ciphertext } = await signalRepository.encryptMessage({ jid, data: bytes })
 
 						if (type === 'pkmsg') {
 							shouldIncludeDeviceIdentity = true
 						}
 
-						return node
+						return {
+							tag: 'to',
+							attrs: { jid },
+							content: [
+								{
+									tag: 'enc',
+									attrs: { v: '2', type, ...(extraAttrs || {}) },
+									content: ciphertext
+								}
+							]
+						}
 					})
 
 					return node
@@ -1261,18 +1209,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					allRecipients.push(jid)
 				}
 
-
-				const isCarouselRecipientFlow = isCarouselMessage(message)
-				const recipientsForMe = isCarouselRecipientFlow
+				const isCarouselFanout = isCarouselMessage(message)
+				const effectiveMeRecipients = isCarouselFanout
 					? await canonicalizeCarouselRecipients(meRecipients)
 					: meRecipients
-				const recipientsForOthers = isCarouselRecipientFlow
+				const effectiveOtherRecipients = isCarouselFanout
 					? await canonicalizeCarouselRecipients(otherRecipients)
 					: otherRecipients
-
-				await assertSessions(allRecipients)
-				const effectiveMeRecipients = await canonicalizeSessionRecipients(recipientsForMe)
-				const effectiveOtherRecipients = await canonicalizeSessionRecipients(recipientsForOthers)
 				const effectiveAllRecipients = [...effectiveMeRecipients, ...effectiveOtherRecipients]
 
 				await assertSessions(effectiveAllRecipients)
