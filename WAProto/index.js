@@ -32585,6 +32585,7 @@ export const proto = $root.proto = (() => {
             ClientHello.prototype.paddedBytes = null;
             ClientHello.prototype.sendServerHelloPaddedBytes = null;
             ClientHello.prototype.simulateXxkemFs = null;
+            ClientHello.prototype.pqMode = null;
 
             let $oneOfFields;
 
@@ -32636,6 +32637,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ClientHello.prototype, "_pqMode", {
+                get: $util.oneOfGetter($oneOfFields = ["pqMode"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             ClientHello.create = function create(properties) {
                 return new ClientHello(properties);
             };
@@ -32659,6 +32666,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(56).bool(m.sendServerHelloPaddedBytes);
                 if (m.simulateXxkemFs != null && Object.hasOwnProperty.call(m, "simulateXxkemFs"))
                     w.uint32(64).bool(m.simulateXxkemFs);
+                if (m.pqMode != null && Object.hasOwnProperty.call(m, "pqMode"))
+                    w.uint32(72).int32(m.pqMode);
                 return w;
             };
 
@@ -32701,6 +32710,10 @@ export const proto = $root.proto = (() => {
                         }
                     case 8: {
                             m.simulateXxkemFs = r.bool();
+                            break;
+                        }
+                    case 9: {
+                            m.pqMode = r.int32();
                             break;
                         }
                     default:
@@ -32754,6 +32767,50 @@ export const proto = $root.proto = (() => {
                 if (d.simulateXxkemFs != null) {
                     m.simulateXxkemFs = Boolean(d.simulateXxkemFs);
                 }
+                switch (d.pqMode) {
+                default:
+                    if (typeof d.pqMode === "number") {
+                        m.pqMode = d.pqMode;
+                        break;
+                    }
+                    break;
+                case "HANDSHAKE_PQ_MODE_UNKNOWN":
+                case 0:
+                    m.pqMode = 0;
+                    break;
+                case "XXKEM":
+                case 1:
+                    m.pqMode = 1;
+                    break;
+                case "XXKEM_FS":
+                case 2:
+                    m.pqMode = 2;
+                    break;
+                case "WA_CLASSICAL":
+                case 3:
+                    m.pqMode = 3;
+                    break;
+                case "WA_PQ":
+                case 4:
+                    m.pqMode = 4;
+                    break;
+                case "IKKEM":
+                case 5:
+                    m.pqMode = 5;
+                    break;
+                case "IKKEM_FS":
+                case 6:
+                    m.pqMode = 6;
+                    break;
+                case "XXKEM_2":
+                case 7:
+                    m.pqMode = 7;
+                    break;
+                case "IKKEM_2":
+                case 8:
+                    m.pqMode = 8;
+                    break;
+                }
                 return m;
             };
 
@@ -32801,6 +32858,11 @@ export const proto = $root.proto = (() => {
                     if (o.oneofs)
                         d._simulateXxkemFs = "simulateXxkemFs";
                 }
+                if (m.pqMode != null && m.hasOwnProperty("pqMode")) {
+                    d.pqMode = o.enums === String ? $root.proto.HandshakeMessage.HandshakePqMode[m.pqMode] === undefined ? m.pqMode : $root.proto.HandshakeMessage.HandshakePqMode[m.pqMode] : m.pqMode;
+                    if (o.oneofs)
+                        d._pqMode = "pqMode";
+                }
                 return d;
             };
 
@@ -32816,6 +32878,20 @@ export const proto = $root.proto = (() => {
             };
 
             return ClientHello;
+        })();
+
+        HandshakeMessage.HandshakePqMode = (function() {
+            const valuesById = {}, values = Object.create(valuesById);
+            values[valuesById[0] = "HANDSHAKE_PQ_MODE_UNKNOWN"] = 0;
+            values[valuesById[1] = "XXKEM"] = 1;
+            values[valuesById[2] = "XXKEM_FS"] = 2;
+            values[valuesById[3] = "WA_CLASSICAL"] = 3;
+            values[valuesById[4] = "WA_PQ"] = 4;
+            values[valuesById[5] = "IKKEM"] = 5;
+            values[valuesById[6] = "IKKEM_FS"] = 6;
+            values[valuesById[7] = "XXKEM_2"] = 7;
+            values[valuesById[8] = "IKKEM_2"] = 8;
+            return values;
         })();
 
         HandshakeMessage.ServerHello = (function() {
