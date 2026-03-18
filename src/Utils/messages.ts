@@ -635,6 +635,59 @@ export const generateCarouselMessage = async (
 		)
 	}
 
+	const recoverCarouselImageMetadata = async (
+		imageMessage: proto.IImageMessage | null | undefined,
+		cardImage: WAMediaUpload,
+		cardTitle: string | undefined,
+		uploadOptions: MessageContentGenerationOptions
+	) => {
+		if (!imageMessage) {
+			return
+		}
+
+		const missingThumbnail = !imageMessage.jpegThumbnail
+		const missingWidth = !imageMessage.width
+		const missingHeight = !imageMessage.height
+		if (!missingThumbnail && !missingWidth && !missingHeight) {
+			return
+		}
+
+		try {
+			const { stream } = await getStream(cardImage, uploadOptions.options)
+			const { buffer, original } = await extractImageThumb(stream)
+
+			if (missingThumbnail) {
+				imageMessage.jpegThumbnail = buffer.toString('base64')
+			}
+
+			if (missingWidth && original.width) {
+				imageMessage.width = original.width
+			}
+
+			if (missingHeight && original.height) {
+				imageMessage.height = original.height
+			}
+
+			uploadOptions.logger?.info(
+				{
+					cardTitle,
+					recoveredThumbnail: !!imageMessage.jpegThumbnail,
+					width: imageMessage.width,
+					height: imageMessage.height
+				},
+				'[CAROUSEL] Recovered image metadata from source media'
+			)
+		} catch (error) {
+			uploadOptions.logger?.warn(
+				{
+					cardTitle,
+					trace: error instanceof Error ? error.stack : String(error)
+				},
+				'[CAROUSEL] Failed source-media thumbnail fallback'
+			)
+		}
+	}
+
 	// Map cards to the carousel format (processing media)
 	const carouselCards = await Promise.all(
 		cards.map(async card => {
@@ -653,42 +706,7 @@ export const generateCarouselMessage = async (
 
 					// Mirror the working Pastorini-style result: every carousel image card should
 					// carry a jpegThumbnail and dimensions before it reaches the Web live renderer.
-					if (imageMessage && (!imageMessage.jpegThumbnail || !imageMessage.height || !imageMessage.width)) {
-						try {
-							const { stream } = await getStream(card.image, mediaOptions.options)
-							const { buffer, original } = await extractImageThumb(stream)
-
-							if (!imageMessage.jpegThumbnail) {
-								imageMessage.jpegThumbnail = buffer.toString('base64')
-							}
-
-							if (!imageMessage.width && original.width) {
-								imageMessage.width = original.width
-							}
-
-							if (!imageMessage.height && original.height) {
-								imageMessage.height = original.height
-							}
-
-							mediaOptions.logger?.info(
-								{
-									cardTitle: card.title,
-									recoveredThumbnail: !!imageMessage.jpegThumbnail,
-									width: imageMessage.width,
-									height: imageMessage.height
-								},
-								'[CAROUSEL] Recovered image metadata from source media'
-							)
-						} catch (error) {
-							mediaOptions.logger?.warn(
-								{
-									cardTitle: card.title,
-									trace: error instanceof Error ? error.stack : String(error)
-								},
-								'[CAROUSEL] Failed source-media thumbnail fallback'
-							)
-						}
-					}
+					await recoverCarouselImageMetadata(imageMessage, card.image, card.title, mediaOptions)
 
 					// Validate image fields needed for WhatsApp rendering
 					if (imageMessage && !imageMessage.jpegThumbnail) {
