@@ -636,7 +636,7 @@ export const generateCarouselMessage = async (
 	}
 
 	const recoverCarouselImageMetadata = async (
-		imageMessage: AnyMediaMessageContent['imageMessage'],
+		imageMessage: proto.Message.IImageMessage | null | undefined,
 		cardImage: WAMediaUpload,
 		cardTitle: string | undefined,
 		uploadOptions: MessageContentGenerationOptions
