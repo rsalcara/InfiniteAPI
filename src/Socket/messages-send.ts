@@ -74,6 +74,8 @@ import {
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeNewsletterSocket } from './newsletter'
 
+/* eslint-disable max-depth */
+
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
 		logger,
