@@ -74,8 +74,6 @@ import {
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeNewsletterSocket } from './newsletter'
 
-/* eslint-disable max-depth */
-
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
 		logger,
@@ -601,7 +599,57 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return patchedMessage
 	}
 
-	/* eslint-disable max-depth */
+	const encryptPatchedMessageForRecipient = async ({
+		jid,
+		patchedMessage,
+		dsmMessage,
+		meId,
+		meLid,
+		meLidUser,
+		extraAttrs,
+		onPkmsg
+	}: {
+		jid: string
+		patchedMessage: proto.IMessage
+		dsmMessage: proto.IMessage | undefined
+		meId: string
+		meLid: string | undefined
+		meLidUser: string | null | undefined
+		extraAttrs: BinaryNode['attrs'] | undefined
+		onPkmsg: () => void
+	}) => {
+		if (!jid) return null
+
+		try {
+			const msgToEncrypt = resolveDsmMessageForRecipient(jid, patchedMessage, dsmMessage, meId, meLid, meLidUser)
+			const bytes = encodeWAMessage(msgToEncrypt)
+			const mutexKey = jid
+
+			return await encryptionMutex.mutex(mutexKey, async () => {
+				const { type, ciphertext } = await signalRepository.encryptMessage({ jid, data: bytes })
+
+				if (type === 'pkmsg') {
+					onPkmsg()
+				}
+
+				return {
+					tag: 'to',
+					attrs: { jid },
+					content: [
+						{
+							tag: 'enc',
+							attrs: { v: '2', type, ...(extraAttrs || {}) },
+							content: ciphertext
+						}
+					]
+				} as BinaryNode
+			})
+		} catch (err) {
+			logger.error({ jid, err }, 'Failed to encrypt for recipient')
+			return null
+		}
+	}
+
 	const createParticipantNodes = async (
 		recipientJids: string[],
 		message: proto.IMessage,
@@ -622,42 +670,22 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		if (!meId) throw new Boom('Not authenticated', { statusCode: 401 })
 		const meLid = authState.creds.me?.lid
 		const meLidUser = meLid ? (jidDecode(meLid)?.user ?? null) : null
+		const onPkmsg = () => {
+			shouldIncludeDeviceIdentity = true
+		}
 
 		const encryptionPromises = (patchedMessages as { recipientJid: string; message: proto.IMessage }[]).map(
-			async ({ recipientJid: jid, message: patchedMessage }: { recipientJid: string; message: proto.IMessage }) => {
-				try {
-					if (!jid) return null
-
-					const msgToEncrypt = resolveDsmMessageForRecipient(jid, patchedMessage, dsmMessage, meId, meLid, meLidUser)
-					const bytes = encodeWAMessage(msgToEncrypt)
-					const mutexKey = jid
-
-					const node = await encryptionMutex.mutex(mutexKey, async () => {
-						const { type, ciphertext } = await signalRepository.encryptMessage({ jid, data: bytes })
-
-						if (type === 'pkmsg') {
-							shouldIncludeDeviceIdentity = true
-						}
-
-						return {
-							tag: 'to',
-							attrs: { jid },
-							content: [
-								{
-									tag: 'enc',
-									attrs: { v: '2', type, ...(extraAttrs || {}) },
-									content: ciphertext
-								}
-							]
-						}
-					})
-
-					return node
-				} catch (err) {
-					logger.error({ jid, err }, 'Failed to encrypt for recipient')
-					return null
-				}
-			}
+			({ recipientJid: jid, message: patchedMessage }: { recipientJid: string; message: proto.IMessage }) =>
+				encryptPatchedMessageForRecipient({
+					jid,
+					patchedMessage,
+					dsmMessage,
+					meId,
+					meLid,
+					meLidUser,
+					extraAttrs,
+					onPkmsg
+				})
 		)
 
 		const nodes = (await Promise.all(encryptionPromises)).filter(node => node !== null) as BinaryNode[]
@@ -669,7 +697,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		return { nodes, shouldIncludeDeviceIdentity }
 	}
-	/* eslint-enable max-depth */
 
 	// Interactive message detection and binary node injection
 
