@@ -785,7 +785,7 @@ export const makeSocket = (config: SocketConfig) => {
 			let count = 0
 			const preKeyCount = await getAvailablePreKeysOnServer()
 			if (preKeyCount === 0) count = INITIAL_PREKEY_COUNT
-			else count = MIN_PREKEY_COUNT
+			else count = Math.max(0, INITIAL_PREKEY_COUNT - preKeyCount)
 			const { exists: currentPreKeyExists, currentPreKeyId } = await verifyCurrentPreKeyExists()
 
 			logger.info(`${preKeyCount} pre-keys found on server`)
