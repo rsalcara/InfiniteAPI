@@ -1283,6 +1283,7 @@ export const makeSocket = (config: SocketConfig) => {
 			*/
 			if (diff > keepAliveIntervalMs + 5000) {
 				void end(new Boom('Connection was lost', { statusCode: DisconnectReason.connectionLost }))
+				return // connection closing — do not reschedule
 			} else if (ws.isOpen) {
 				// Send keep-alive ping via sendNode() (fire-and-forget) instead of query().
 				// query() wraps the ping in the query circuit breaker — when that breaker is
