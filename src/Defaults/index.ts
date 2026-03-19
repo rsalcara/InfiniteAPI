@@ -191,8 +191,8 @@ export const HISTORY_SYNC_PAUSED_TIMEOUT_MS = 120_000
 // WA Business maintains ~812 prekeys; 25 gives adequate safety buffer before upload (was 5)
 export const MIN_PREKEY_COUNT = 25
 
-// Moderate prekey count (upstream uses 812, reduced to balance rate limiting and availability)
-export const INITIAL_PREKEY_COUNT = 200
+// Match WA Business exactly: 812 one-time prekeys on initial registration (confirmed via CDP IDB capture)
+export const INITIAL_PREKEY_COUNT = 812
 
 export const UPLOAD_TIMEOUT = 30000 // 30 seconds
 // Moderate upload interval to balance rate limiting and responsiveness (was 5000)
