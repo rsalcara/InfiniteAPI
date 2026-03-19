@@ -188,7 +188,8 @@ export const MEDIA_KEYS = Object.keys(MEDIA_PATH_MAP) as MediaType[]
 /** 120s timeout for history sync stall detection, same as WA Web's handleChunkProgress / restartPausedTimer (g = 120) */
 export const HISTORY_SYNC_PAUSED_TIMEOUT_MS = 120_000
 
-export const MIN_PREKEY_COUNT = 5
+// WA Business maintains ~812 prekeys; 25 gives adequate safety buffer before upload (was 5)
+export const MIN_PREKEY_COUNT = 25
 
 // Moderate prekey count (upstream uses 812, reduced to balance rate limiting and availability)
 export const INITIAL_PREKEY_COUNT = 200
