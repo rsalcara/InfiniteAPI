@@ -6897,6 +6897,10 @@ export const proto = $root.proto = (() => {
                     case 60:
                         m.capabilities[i] = 60;
                         break;
+                    case "AI_SUBSCRIPTION_ENABLED":
+                    case 61:
+                        m.capabilities[i] = 61;
+                        break;
                     }
                 }
             }
@@ -6993,6 +6997,7 @@ export const proto = $root.proto = (() => {
             values[valuesById[58] = "JSON_PATCH_STREAMING"] = 58;
             values[valuesById[59] = "AI_TAB_FORCE_CLIPPY"] = 59;
             values[valuesById[60] = "UNIFIED_RESPONSE_EMBEDDED_SCREENS"] = 60;
+            values[valuesById[61] = "AI_SUBSCRIPTION_ENABLED"] = 61;
             return values;
         })();
 
