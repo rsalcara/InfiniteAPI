@@ -407,7 +407,7 @@ export const decryptMessageNode = (
 							viewOnceInner?.videoMessage?.viewOnce ||
 							viewOnceInner?.audioMessage?.viewOnce
 						) {
-							fullMessage.key!.isViewOnce = true
+							fullMessage.key.isViewOnce = true
 						}
 					} catch (err: any) {
 						// Check if this is a final failure after all retries exhausted
