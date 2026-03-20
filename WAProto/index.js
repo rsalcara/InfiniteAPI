@@ -26692,10 +26692,6 @@ export const proto = $root.proto = (() => {
             case 3:
                 m.limitSharingTrigger = 3;
                 break;
-            case "DEPRECATION":
-            case 4:
-                m.limitSharingTrigger = 4;
-                break;
             }
             if (d.limitSharingInitiatedByMe != null) {
                 m.limitSharingInitiatedByMe = Boolean(d.limitSharingInitiatedByMe);
@@ -36778,10 +36774,6 @@ export const proto = $root.proto = (() => {
             case 3:
                 m.trigger = 3;
                 break;
-            case "DEPRECATION":
-            case 4:
-                m.trigger = 4;
-                break;
             }
             if (d.limitSharingSettingTimestamp != null) {
                 if ($util.Long)
@@ -36846,7 +36838,6 @@ export const proto = $root.proto = (() => {
             values[valuesById[1] = "CHAT_SETTING"] = 1;
             values[valuesById[2] = "BIZ_SUPPORTS_FB_HOSTING"] = 2;
             values[valuesById[3] = "UNKNOWN_GROUP"] = 3;
-            values[valuesById[4] = "DEPRECATION"] = 4;
             return values;
         })();
 
@@ -87581,6 +87572,7 @@ export const proto = $root.proto = (() => {
             BusinessBroadcastListAction.prototype.participants = $util.emptyArray;
             BusinessBroadcastListAction.prototype.listName = null;
             BusinessBroadcastListAction.prototype.labelIds = $util.emptyArray;
+            BusinessBroadcastListAction.prototype.audienceExpression = null;
 
             let $oneOfFields;
 
@@ -87593,6 +87585,12 @@ export const proto = $root.proto = (() => {
             // Virtual OneOf for proto3 optional field
             Object.defineProperty(BusinessBroadcastListAction.prototype, "_listName", {
                 get: $util.oneOfGetter($oneOfFields = ["listName"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessBroadcastListAction.prototype, "_audienceExpression", {
+                get: $util.oneOfGetter($oneOfFields = ["audienceExpression"]),
                 set: $util.oneOfSetter($oneOfFields)
             });
 
@@ -87615,6 +87613,8 @@ export const proto = $root.proto = (() => {
                     for (var i = 0; i < m.labelIds.length; ++i)
                         w.uint32(34).string(m.labelIds[i]);
                 }
+                if (m.audienceExpression != null && Object.hasOwnProperty.call(m, "audienceExpression"))
+                    w.uint32(42).string(m.audienceExpression);
                 return w;
             };
 
@@ -87645,6 +87645,10 @@ export const proto = $root.proto = (() => {
                             if (!(m.labelIds && m.labelIds.length))
                                 m.labelIds = [];
                             m.labelIds.push(r.string());
+                            break;
+                        }
+                    case 5: {
+                            m.audienceExpression = r.string();
                             break;
                         }
                     default:
@@ -87683,6 +87687,9 @@ export const proto = $root.proto = (() => {
                         m.labelIds[i] = String(d.labelIds[i]);
                     }
                 }
+                if (d.audienceExpression != null) {
+                    m.audienceExpression = String(d.audienceExpression);
+                }
                 return m;
             };
 
@@ -87715,6 +87722,11 @@ export const proto = $root.proto = (() => {
                     for (var j = 0; j < m.labelIds.length; ++j) {
                         d.labelIds[j] = m.labelIds[j];
                     }
+                }
+                if (m.audienceExpression != null && m.hasOwnProperty("audienceExpression")) {
+                    d.audienceExpression = m.audienceExpression;
+                    if (o.oneofs)
+                        d._audienceExpression = "audienceExpression";
                 }
                 return d;
             };
