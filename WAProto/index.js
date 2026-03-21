@@ -94967,6 +94967,7 @@ export const proto = $root.proto = (() => {
 
             function StatusPrivacyAction(p) {
                 this.userJid = [];
+                this.customLists = [];
                 if (p)
                     for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
                         if (p[ks[i]] != null)
@@ -94977,6 +94978,7 @@ export const proto = $root.proto = (() => {
             StatusPrivacyAction.prototype.userJid = $util.emptyArray;
             StatusPrivacyAction.prototype.shareToFB = null;
             StatusPrivacyAction.prototype.shareToIG = null;
+            StatusPrivacyAction.prototype.customLists = $util.emptyArray;
 
             let $oneOfFields;
 
@@ -95015,6 +95017,10 @@ export const proto = $root.proto = (() => {
                     w.uint32(24).bool(m.shareToFB);
                 if (m.shareToIG != null && Object.hasOwnProperty.call(m, "shareToIG"))
                     w.uint32(32).bool(m.shareToIG);
+                if (m.customLists != null && m.customLists.length) {
+                    for (var i = 0; i < m.customLists.length; ++i)
+                        $root.proto.SyncActionValue.StatusPrivacyAction.CustomList.encode(m.customLists[i], w.uint32(42).fork()).ldelim();
+                }
                 return w;
             };
 
@@ -95043,6 +95049,12 @@ export const proto = $root.proto = (() => {
                         }
                     case 4: {
                             m.shareToIG = r.bool();
+                            break;
+                        }
+                    case 5: {
+                            if (!(m.customLists && m.customLists.length))
+                                m.customLists = [];
+                            m.customLists.push($root.proto.SyncActionValue.StatusPrivacyAction.CustomList.decode(r, r.uint32()));
                             break;
                         }
                     default:
@@ -95080,6 +95092,10 @@ export const proto = $root.proto = (() => {
                 case 3:
                     m.mode = 3;
                     break;
+                case "CUSTOM_LIST":
+                case 4:
+                    m.mode = 4;
+                    break;
                 }
                 if (d.userJid) {
                     if (!Array.isArray(d.userJid))
@@ -95095,6 +95111,16 @@ export const proto = $root.proto = (() => {
                 if (d.shareToIG != null) {
                     m.shareToIG = Boolean(d.shareToIG);
                 }
+                if (d.customLists) {
+                    if (!Array.isArray(d.customLists))
+                        throw TypeError(".proto.SyncActionValue.StatusPrivacyAction.customLists: array expected");
+                    m.customLists = [];
+                    for (var i = 0; i < d.customLists.length; ++i) {
+                        if (typeof d.customLists[i] !== "object")
+                            throw TypeError(".proto.SyncActionValue.StatusPrivacyAction.customLists: object expected");
+                        m.customLists[i] = $root.proto.SyncActionValue.StatusPrivacyAction.CustomList.fromObject(d.customLists[i]);
+                    }
+                }
                 return m;
             };
 
@@ -95104,6 +95130,7 @@ export const proto = $root.proto = (() => {
                 var d = {};
                 if (o.arrays || o.defaults) {
                     d.userJid = [];
+                    d.customLists = [];
                 }
                 if (m.mode != null && m.hasOwnProperty("mode")) {
                     d.mode = o.enums === String ? $root.proto.SyncActionValue.StatusPrivacyAction.StatusDistributionMode[m.mode] === undefined ? m.mode : $root.proto.SyncActionValue.StatusPrivacyAction.StatusDistributionMode[m.mode] : m.mode;
@@ -95126,6 +95153,12 @@ export const proto = $root.proto = (() => {
                     if (o.oneofs)
                         d._shareToIG = "shareToIG";
                 }
+                if (m.customLists && m.customLists.length) {
+                    d.customLists = [];
+                    for (var j = 0; j < m.customLists.length; ++j) {
+                        d.customLists[j] = $root.proto.SyncActionValue.StatusPrivacyAction.CustomList.toObject(m.customLists[j], o);
+                    }
+                }
                 return d;
             };
 
@@ -95140,12 +95173,203 @@ export const proto = $root.proto = (() => {
                 return typeUrlPrefix + "/proto.SyncActionValue.StatusPrivacyAction";
             };
 
+            StatusPrivacyAction.CustomList = (function() {
+
+                function CustomList(p) {
+                    this.userJid = [];
+                    if (p)
+                        for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                            if (p[ks[i]] != null)
+                                this[ks[i]] = p[ks[i]];
+                }
+
+                CustomList.prototype.id = null;
+                CustomList.prototype.name = null;
+                CustomList.prototype.emoji = null;
+                CustomList.prototype.isSelected = null;
+                CustomList.prototype.userJid = $util.emptyArray;
+
+                let $oneOfFields;
+
+                // Virtual OneOf for proto3 optional field
+                Object.defineProperty(CustomList.prototype, "_id", {
+                    get: $util.oneOfGetter($oneOfFields = ["id"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+
+                // Virtual OneOf for proto3 optional field
+                Object.defineProperty(CustomList.prototype, "_name", {
+                    get: $util.oneOfGetter($oneOfFields = ["name"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+
+                // Virtual OneOf for proto3 optional field
+                Object.defineProperty(CustomList.prototype, "_emoji", {
+                    get: $util.oneOfGetter($oneOfFields = ["emoji"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+
+                // Virtual OneOf for proto3 optional field
+                Object.defineProperty(CustomList.prototype, "_isSelected", {
+                    get: $util.oneOfGetter($oneOfFields = ["isSelected"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+
+                CustomList.create = function create(properties) {
+                    return new CustomList(properties);
+                };
+
+                CustomList.encode = function encode(m, w) {
+                    if (!w)
+                        w = $Writer.create();
+                    if (m.id != null && Object.hasOwnProperty.call(m, "id"))
+                        w.uint32(8).int64(m.id);
+                    if (m.name != null && Object.hasOwnProperty.call(m, "name"))
+                        w.uint32(18).string(m.name);
+                    if (m.emoji != null && Object.hasOwnProperty.call(m, "emoji"))
+                        w.uint32(26).string(m.emoji);
+                    if (m.isSelected != null && Object.hasOwnProperty.call(m, "isSelected"))
+                        w.uint32(32).bool(m.isSelected);
+                    if (m.userJid != null && m.userJid.length) {
+                        for (var i = 0; i < m.userJid.length; ++i)
+                            w.uint32(42).string(m.userJid[i]);
+                    }
+                    return w;
+                };
+
+                CustomList.decode = function decode(r, l, e) {
+                    if (!(r instanceof $Reader))
+                        r = $Reader.create(r);
+                    var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.SyncActionValue.StatusPrivacyAction.CustomList();
+                    while (r.pos < c) {
+                        var t = r.uint32();
+                        if (t === e)
+                            break;
+                        switch (t >>> 3) {
+                        case 1: {
+                                m.id = r.int64();
+                                break;
+                            }
+                        case 2: {
+                                m.name = r.string();
+                                break;
+                            }
+                        case 3: {
+                                m.emoji = r.string();
+                                break;
+                            }
+                        case 4: {
+                                m.isSelected = r.bool();
+                                break;
+                            }
+                        case 5: {
+                                if (!(m.userJid && m.userJid.length))
+                                    m.userJid = [];
+                                m.userJid.push(r.string());
+                                break;
+                            }
+                        default:
+                            r.skipType(t & 7);
+                            break;
+                        }
+                    }
+                    return m;
+                };
+
+                CustomList.fromObject = function fromObject(d) {
+                    if (d instanceof $root.proto.SyncActionValue.StatusPrivacyAction.CustomList)
+                        return d;
+                    var m = new $root.proto.SyncActionValue.StatusPrivacyAction.CustomList();
+                    if (d.id != null) {
+                        if ($util.Long)
+                            (m.id = $util.Long.fromValue(d.id)).unsigned = false;
+                        else if (typeof d.id === "string")
+                            m.id = parseInt(d.id, 10);
+                        else if (typeof d.id === "number")
+                            m.id = d.id;
+                        else if (typeof d.id === "object")
+                            m.id = new $util.LongBits(d.id.low >>> 0, d.id.high >>> 0).toNumber();
+                    }
+                    if (d.name != null) {
+                        m.name = String(d.name);
+                    }
+                    if (d.emoji != null) {
+                        m.emoji = String(d.emoji);
+                    }
+                    if (d.isSelected != null) {
+                        m.isSelected = Boolean(d.isSelected);
+                    }
+                    if (d.userJid) {
+                        if (!Array.isArray(d.userJid))
+                            throw TypeError(".proto.SyncActionValue.StatusPrivacyAction.CustomList.userJid: array expected");
+                        m.userJid = [];
+                        for (var i = 0; i < d.userJid.length; ++i) {
+                            m.userJid[i] = String(d.userJid[i]);
+                        }
+                    }
+                    return m;
+                };
+
+                CustomList.toObject = function toObject(m, o) {
+                    if (!o)
+                        o = {};
+                    var d = {};
+                    if (o.arrays || o.defaults) {
+                        d.userJid = [];
+                    }
+                    if (m.id != null && m.hasOwnProperty("id")) {
+                        if (typeof m.id === "number")
+                            d.id = o.longs === String ? String(m.id) : m.id;
+                        else
+                            d.id = o.longs === String ? longToString(m.id) : o.longs === Number ? longToNumber(m.id) : m.id;
+                        if (o.oneofs)
+                            d._id = "id";
+                    }
+                    if (m.name != null && m.hasOwnProperty("name")) {
+                        d.name = m.name;
+                        if (o.oneofs)
+                            d._name = "name";
+                    }
+                    if (m.emoji != null && m.hasOwnProperty("emoji")) {
+                        d.emoji = m.emoji;
+                        if (o.oneofs)
+                            d._emoji = "emoji";
+                    }
+                    if (m.isSelected != null && m.hasOwnProperty("isSelected")) {
+                        d.isSelected = m.isSelected;
+                        if (o.oneofs)
+                            d._isSelected = "isSelected";
+                    }
+                    if (m.userJid && m.userJid.length) {
+                        d.userJid = [];
+                        for (var j = 0; j < m.userJid.length; ++j) {
+                            d.userJid[j] = m.userJid[j];
+                        }
+                    }
+                    return d;
+                };
+
+                CustomList.prototype.toJSON = function toJSON() {
+                    return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+                };
+
+                CustomList.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                    if (typeUrlPrefix === undefined) {
+                        typeUrlPrefix = "type.googleapis.com";
+                    }
+                    return typeUrlPrefix + "/proto.SyncActionValue.StatusPrivacyAction.CustomList";
+                };
+
+                return CustomList;
+            })();
+
             StatusPrivacyAction.StatusDistributionMode = (function() {
                 const valuesById = {}, values = Object.create(valuesById);
                 values[valuesById[0] = "ALLOW_LIST"] = 0;
                 values[valuesById[1] = "DENY_LIST"] = 1;
                 values[valuesById[2] = "CONTACTS"] = 2;
                 values[valuesById[3] = "CLOSE_FRIENDS"] = 3;
+                values[valuesById[4] = "CUSTOM_LIST"] = 4;
                 return values;
             })();
 
