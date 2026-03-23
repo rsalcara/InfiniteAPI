@@ -2258,17 +2258,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		// Handle view-once unavailable sync from primary device.
-		// When the primary device sends a view-once, linked companions receive
-		// <unavailable type="view_once"/> — no enc content, just a sync signal.
-		// Acknowledge and skip decryption (nothing to decrypt).
-		const unavailableNode = getBinaryNodeChild(node, 'unavailable')
-		if (unavailableNode?.attrs?.type === 'view_once') {
-			logger.debug({ id: node.attrs.id, from: node.attrs.from }, 'received view_once unavailable sync from primary device')
-			await sendMessageAck(node)
-			return
-		}
-
 		const {
 			fullMessage: msg,
 			category,
