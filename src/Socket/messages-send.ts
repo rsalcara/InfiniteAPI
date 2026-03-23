@@ -1279,19 +1279,35 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				await assertSessions(effectiveAllRecipients)
 
+				// For view-once: only send DSM to primary phone (device=0).
+				// Companion devices (device>0) are omitted — WA server generates
+				// <unavailable type="view_once"/> for them automatically.
+				// Sending explicit <unavailable> from a companion is rejected by the server.
+				const isViewOnceMsg = !!(
+					message.viewOnceMessageV2 ||
+					message.viewOnceMessage ||
+					message.viewOnceMessageV2Extension
+				)
+				const viewOnceMeRecipients = isViewOnceMsg
+					? effectiveMeRecipients.filter(jid => !jidDecode(jid)?.device)
+					: effectiveMeRecipients
+
 				const [
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
 					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
 				] = await Promise.all([
 					// For own devices: use DSM (deviceSentMessage) wrapper
-					createParticipantNodes(effectiveMeRecipients, meMsg || message, extraAttrs),
+					createParticipantNodes(viewOnceMeRecipients, meMsg || message, extraAttrs),
 					createParticipantNodes(effectiveOtherRecipients, message, extraAttrs)
 				])
 				participants.push(...meNodes)
 				participants.push(...otherNodes)
 
-				if (effectiveMeRecipients.length > 0 || effectiveOtherRecipients.length > 0) {
-					extraAttrs['phash'] = generateParticipantHashV2(effectiveAllRecipients)
+				const phashRecipients = isViewOnceMsg
+					? [...viewOnceMeRecipients, ...effectiveOtherRecipients]
+					: effectiveAllRecipients
+				if (phashRecipients.length > 0) {
+					extraAttrs['phash'] = generateParticipantHashV2(phashRecipients)
 				}
 
 				shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || s1 || s2
