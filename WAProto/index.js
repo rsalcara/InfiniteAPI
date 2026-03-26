@@ -95183,7 +95183,7 @@ export const proto = $root.proto = (() => {
                                 this[ks[i]] = p[ks[i]];
                 }
 
-                CustomList.prototype.id = null;
+                CustomList.prototype.listId = null;
                 CustomList.prototype.name = null;
                 CustomList.prototype.emoji = null;
                 CustomList.prototype.isSelected = null;
@@ -95192,8 +95192,8 @@ export const proto = $root.proto = (() => {
                 let $oneOfFields;
 
                 // Virtual OneOf for proto3 optional field
-                Object.defineProperty(CustomList.prototype, "_id", {
-                    get: $util.oneOfGetter($oneOfFields = ["id"]),
+                Object.defineProperty(CustomList.prototype, "_listId", {
+                    get: $util.oneOfGetter($oneOfFields = ["listId"]),
                     set: $util.oneOfSetter($oneOfFields)
                 });
 
@@ -95222,8 +95222,8 @@ export const proto = $root.proto = (() => {
                 CustomList.encode = function encode(m, w) {
                     if (!w)
                         w = $Writer.create();
-                    if (m.id != null && Object.hasOwnProperty.call(m, "id"))
-                        w.uint32(8).int64(m.id);
+                    if (m.listId != null && Object.hasOwnProperty.call(m, "listId"))
+                        w.uint32(10).string(m.listId);
                     if (m.name != null && Object.hasOwnProperty.call(m, "name"))
                         w.uint32(18).string(m.name);
                     if (m.emoji != null && Object.hasOwnProperty.call(m, "emoji"))
@@ -95247,7 +95247,7 @@ export const proto = $root.proto = (() => {
                             break;
                         switch (t >>> 3) {
                         case 1: {
-                                m.id = r.int64();
+                                m.listId = r.string();
                                 break;
                             }
                         case 2: {
@@ -95280,15 +95280,8 @@ export const proto = $root.proto = (() => {
                     if (d instanceof $root.proto.SyncActionValue.StatusPrivacyAction.CustomList)
                         return d;
                     var m = new $root.proto.SyncActionValue.StatusPrivacyAction.CustomList();
-                    if (d.id != null) {
-                        if ($util.Long)
-                            (m.id = $util.Long.fromValue(d.id)).unsigned = false;
-                        else if (typeof d.id === "string")
-                            m.id = parseInt(d.id, 10);
-                        else if (typeof d.id === "number")
-                            m.id = d.id;
-                        else if (typeof d.id === "object")
-                            m.id = new $util.LongBits(d.id.low >>> 0, d.id.high >>> 0).toNumber();
+                    if (d.listId != null) {
+                        m.listId = String(d.listId);
                     }
                     if (d.name != null) {
                         m.name = String(d.name);
@@ -95317,13 +95310,10 @@ export const proto = $root.proto = (() => {
                     if (o.arrays || o.defaults) {
                         d.userJid = [];
                     }
-                    if (m.id != null && m.hasOwnProperty("id")) {
-                        if (typeof m.id === "number")
-                            d.id = o.longs === String ? String(m.id) : m.id;
-                        else
-                            d.id = o.longs === String ? longToString(m.id) : o.longs === Number ? longToNumber(m.id) : m.id;
+                    if (m.listId != null && m.hasOwnProperty("listId")) {
+                        d.listId = m.listId;
                         if (o.oneofs)
-                            d._id = "id";
+                            d._listId = "listId";
                     }
                     if (m.name != null && m.hasOwnProperty("name")) {
                         d.name = m.name;
