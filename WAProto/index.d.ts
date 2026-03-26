@@ -13724,7 +13724,7 @@ export namespace proto {
         namespace StatusPrivacyAction {
 
             interface ICustomList {
-                id?: (number|Long|null);
+                listId?: (string|null);
                 name?: (string|null);
                 emoji?: (string|null);
                 isSelected?: (boolean|null);
@@ -13733,7 +13733,7 @@ export namespace proto {
 
             class CustomList implements ICustomList {
                 constructor(p?: proto.SyncActionValue.StatusPrivacyAction.ICustomList);
-                public id?: (number|Long|null);
+                public listId?: (string|null);
                 public name?: (string|null);
                 public emoji?: (string|null);
                 public isSelected?: (boolean|null);
