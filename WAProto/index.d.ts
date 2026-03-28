@@ -12920,7 +12920,8 @@ export namespace proto {
                 SERVER_ASSIGNED = 7,
                 DRAFTED = 8,
                 AI_HANDOFF = 9,
-                CHANNELS = 10
+                CHANNELS = 10,
+                AI_RESPONDING = 11
             }
         }
 
@@ -13562,6 +13563,8 @@ export namespace proto {
             isStatusNotificationEnabled?: (boolean|null);
             statusNotificationToneId?: (number|null);
             shouldPlaySoundForCallNotification?: (boolean|null);
+            chatThemeId?: (string|null);
+            colorSchemeId?: (string|null);
         }
 
         class SettingsSyncAction implements ISettingsSyncAction {
@@ -13597,6 +13600,8 @@ export namespace proto {
             public isStatusNotificationEnabled?: (boolean|null);
             public statusNotificationToneId?: (number|null);
             public shouldPlaySoundForCallNotification?: (boolean|null);
+            public chatThemeId?: (string|null);
+            public colorSchemeId?: (string|null);
             public static create(properties?: proto.SyncActionValue.ISettingsSyncAction): proto.SyncActionValue.SettingsSyncAction;
             public static encode(m: proto.SyncActionValue.ISettingsSyncAction, w?: $protobuf.Writer): $protobuf.Writer;
             public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue.SettingsSyncAction;
@@ -13653,7 +13658,9 @@ export namespace proto {
                 IS_GROUP_REACTIONS_NOTIFICATION_ENABLED = 28,
                 IS_STATUS_NOTIFICATION_ENABLED = 29,
                 STATUS_NOTIFICATION_TONE_ID = 30,
-                SHOULD_PLAY_SOUND_FOR_CALL_NOTIFICATION = 31
+                SHOULD_PLAY_SOUND_FOR_CALL_NOTIFICATION = 31,
+                CHAT_THEME_ID = 32,
+                COLOR_SCHEME_ID = 33
             }
 
             enum SettingPlatform {

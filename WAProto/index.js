@@ -90293,6 +90293,10 @@ export const proto = $root.proto = (() => {
                 case 10:
                     m.type = 10;
                     break;
+                case "AI_RESPONDING":
+                case 11:
+                    m.type = 11;
+                    break;
                 }
                 if (d.isImmutable != null) {
                     m.isImmutable = Boolean(d.isImmutable);
@@ -90389,6 +90393,7 @@ export const proto = $root.proto = (() => {
                 values[valuesById[8] = "DRAFTED"] = 8;
                 values[valuesById[9] = "AI_HANDOFF"] = 9;
                 values[valuesById[10] = "CHANNELS"] = 10;
+                values[valuesById[11] = "AI_RESPONDING"] = 11;
                 return values;
             })();
 
@@ -93986,6 +93991,8 @@ export const proto = $root.proto = (() => {
             SettingsSyncAction.prototype.isStatusNotificationEnabled = null;
             SettingsSyncAction.prototype.statusNotificationToneId = null;
             SettingsSyncAction.prototype.shouldPlaySoundForCallNotification = null;
+            SettingsSyncAction.prototype.chatThemeId = null;
+            SettingsSyncAction.prototype.colorSchemeId = null;
 
             let $oneOfFields;
 
@@ -94175,6 +94182,18 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(SettingsSyncAction.prototype, "_chatThemeId", {
+                get: $util.oneOfGetter($oneOfFields = ["chatThemeId"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(SettingsSyncAction.prototype, "_colorSchemeId", {
+                get: $util.oneOfGetter($oneOfFields = ["colorSchemeId"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             SettingsSyncAction.create = function create(properties) {
                 return new SettingsSyncAction(properties);
             };
@@ -94244,6 +94263,10 @@ export const proto = $root.proto = (() => {
                     w.uint32(240).int32(m.statusNotificationToneId);
                 if (m.shouldPlaySoundForCallNotification != null && Object.hasOwnProperty.call(m, "shouldPlaySoundForCallNotification"))
                     w.uint32(248).bool(m.shouldPlaySoundForCallNotification);
+                if (m.chatThemeId != null && Object.hasOwnProperty.call(m, "chatThemeId"))
+                    w.uint32(258).string(m.chatThemeId);
+                if (m.colorSchemeId != null && Object.hasOwnProperty.call(m, "colorSchemeId"))
+                    w.uint32(266).string(m.colorSchemeId);
                 return w;
             };
 
@@ -94378,6 +94401,14 @@ export const proto = $root.proto = (() => {
                         }
                     case 31: {
                             m.shouldPlaySoundForCallNotification = r.bool();
+                            break;
+                        }
+                    case 32: {
+                            m.chatThemeId = r.string();
+                            break;
+                        }
+                    case 33: {
+                            m.colorSchemeId = r.string();
                             break;
                         }
                     default:
@@ -94544,6 +94575,12 @@ export const proto = $root.proto = (() => {
                 if (d.shouldPlaySoundForCallNotification != null) {
                     m.shouldPlaySoundForCallNotification = Boolean(d.shouldPlaySoundForCallNotification);
                 }
+                if (d.chatThemeId != null) {
+                    m.chatThemeId = String(d.chatThemeId);
+                }
+                if (d.colorSchemeId != null) {
+                    m.colorSchemeId = String(d.colorSchemeId);
+                }
                 return m;
             };
 
@@ -94706,6 +94743,16 @@ export const proto = $root.proto = (() => {
                     if (o.oneofs)
                         d._shouldPlaySoundForCallNotification = "shouldPlaySoundForCallNotification";
                 }
+                if (m.chatThemeId != null && m.hasOwnProperty("chatThemeId")) {
+                    d.chatThemeId = m.chatThemeId;
+                    if (o.oneofs)
+                        d._chatThemeId = "chatThemeId";
+                }
+                if (m.colorSchemeId != null && m.hasOwnProperty("colorSchemeId")) {
+                    d.colorSchemeId = m.colorSchemeId;
+                    if (o.oneofs)
+                        d._colorSchemeId = "colorSchemeId";
+                }
                 return d;
             };
 
@@ -94771,6 +94818,8 @@ export const proto = $root.proto = (() => {
                 values[valuesById[29] = "IS_STATUS_NOTIFICATION_ENABLED"] = 29;
                 values[valuesById[30] = "STATUS_NOTIFICATION_TONE_ID"] = 30;
                 values[valuesById[31] = "SHOULD_PLAY_SOUND_FOR_CALL_NOTIFICATION"] = 31;
+                values[valuesById[32] = "CHAT_THEME_ID"] = 32;
+                values[valuesById[33] = "COLOR_SCHEME_ID"] = 33;
                 return values;
             })();
 
