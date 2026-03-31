@@ -7004,6 +7004,136 @@ export const proto = $root.proto = (() => {
         return BotCapabilityMetadata;
     })();
 
+    proto.BotCommandMetadata = (function() {
+
+        function BotCommandMetadata(p) {
+            if (p)
+                for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                    if (p[ks[i]] != null)
+                        this[ks[i]] = p[ks[i]];
+        }
+
+        BotCommandMetadata.prototype.commandName = null;
+        BotCommandMetadata.prototype.commandDescription = null;
+        BotCommandMetadata.prototype.commandPrompt = null;
+
+        let $oneOfFields;
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(BotCommandMetadata.prototype, "_commandName", {
+            get: $util.oneOfGetter($oneOfFields = ["commandName"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(BotCommandMetadata.prototype, "_commandDescription", {
+            get: $util.oneOfGetter($oneOfFields = ["commandDescription"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(BotCommandMetadata.prototype, "_commandPrompt", {
+            get: $util.oneOfGetter($oneOfFields = ["commandPrompt"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        BotCommandMetadata.create = function create(properties) {
+            return new BotCommandMetadata(properties);
+        };
+
+        BotCommandMetadata.encode = function encode(m, w) {
+            if (!w)
+                w = $Writer.create();
+            if (m.commandName != null && Object.hasOwnProperty.call(m, "commandName"))
+                w.uint32(10).string(m.commandName);
+            if (m.commandDescription != null && Object.hasOwnProperty.call(m, "commandDescription"))
+                w.uint32(18).string(m.commandDescription);
+            if (m.commandPrompt != null && Object.hasOwnProperty.call(m, "commandPrompt"))
+                w.uint32(26).string(m.commandPrompt);
+            return w;
+        };
+
+        BotCommandMetadata.decode = function decode(r, l, e) {
+            if (!(r instanceof $Reader))
+                r = $Reader.create(r);
+            var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.BotCommandMetadata();
+            while (r.pos < c) {
+                var t = r.uint32();
+                if (t === e)
+                    break;
+                switch (t >>> 3) {
+                case 1: {
+                        m.commandName = r.string();
+                        break;
+                    }
+                case 2: {
+                        m.commandDescription = r.string();
+                        break;
+                    }
+                case 3: {
+                        m.commandPrompt = r.string();
+                        break;
+                    }
+                default:
+                    r.skipType(t & 7);
+                    break;
+                }
+            }
+            return m;
+        };
+
+        BotCommandMetadata.fromObject = function fromObject(d) {
+            if (d instanceof $root.proto.BotCommandMetadata)
+                return d;
+            var m = new $root.proto.BotCommandMetadata();
+            if (d.commandName != null) {
+                m.commandName = String(d.commandName);
+            }
+            if (d.commandDescription != null) {
+                m.commandDescription = String(d.commandDescription);
+            }
+            if (d.commandPrompt != null) {
+                m.commandPrompt = String(d.commandPrompt);
+            }
+            return m;
+        };
+
+        BotCommandMetadata.toObject = function toObject(m, o) {
+            if (!o)
+                o = {};
+            var d = {};
+            if (m.commandName != null && m.hasOwnProperty("commandName")) {
+                d.commandName = m.commandName;
+                if (o.oneofs)
+                    d._commandName = "commandName";
+            }
+            if (m.commandDescription != null && m.hasOwnProperty("commandDescription")) {
+                d.commandDescription = m.commandDescription;
+                if (o.oneofs)
+                    d._commandDescription = "commandDescription";
+            }
+            if (m.commandPrompt != null && m.hasOwnProperty("commandPrompt")) {
+                d.commandPrompt = m.commandPrompt;
+                if (o.oneofs)
+                    d._commandPrompt = "commandPrompt";
+            }
+            return d;
+        };
+
+        BotCommandMetadata.prototype.toJSON = function toJSON() {
+            return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+        };
+
+        BotCommandMetadata.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+            if (typeUrlPrefix === undefined) {
+                typeUrlPrefix = "type.googleapis.com";
+            }
+            return typeUrlPrefix + "/proto.BotCommandMetadata";
+        };
+
+        return BotCommandMetadata;
+    })();
+
     proto.BotDocumentMessageMetadata = (function() {
 
         function BotDocumentMessageMetadata(p) {
@@ -10382,6 +10512,10 @@ export const proto = $root.proto = (() => {
             case 55:
                 m.botEntryPointOrigin = 55;
                 break;
+            case "NEW_CHAT_LIST":
+            case 56:
+                m.botEntryPointOrigin = 56;
+                break;
             }
             if (d.forwardScore != null) {
                 m.forwardScore = d.forwardScore >>> 0;
@@ -10466,6 +10600,7 @@ export const proto = $root.proto = (() => {
         BotMetadata.prototype.botRenderingConfigMetadata = null;
         BotMetadata.prototype.botInfrastructureDiagnostics = null;
         BotMetadata.prototype.aiMediaCollectionMetadata = null;
+        BotMetadata.prototype.commandMetadata = null;
         BotMetadata.prototype.internalMetadata = null;
 
         let $oneOfFields;
@@ -10693,6 +10828,12 @@ export const proto = $root.proto = (() => {
         });
 
         // Virtual OneOf for proto3 optional field
+        Object.defineProperty(BotMetadata.prototype, "_commandMetadata", {
+            get: $util.oneOfGetter($oneOfFields = ["commandMetadata"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
         Object.defineProperty(BotMetadata.prototype, "_internalMetadata", {
             get: $util.oneOfGetter($oneOfFields = ["internalMetadata"]),
             set: $util.oneOfSetter($oneOfFields)
@@ -10779,6 +10920,8 @@ export const proto = $root.proto = (() => {
                 $root.proto.BotInfrastructureDiagnostics.encode(m.botInfrastructureDiagnostics, w.uint32(298).fork()).ldelim();
             if (m.aiMediaCollectionMetadata != null && Object.hasOwnProperty.call(m, "aiMediaCollectionMetadata"))
                 $root.proto.AIMediaCollectionMetadata.encode(m.aiMediaCollectionMetadata, w.uint32(306).fork()).ldelim();
+            if (m.commandMetadata != null && Object.hasOwnProperty.call(m, "commandMetadata"))
+                $root.proto.BotCommandMetadata.encode(m.commandMetadata, w.uint32(314).fork()).ldelim();
             if (m.internalMetadata != null && Object.hasOwnProperty.call(m, "internalMetadata"))
                 w.uint32(7994).bytes(m.internalMetadata);
             return w;
@@ -10939,6 +11082,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 38: {
                         m.aiMediaCollectionMetadata = $root.proto.AIMediaCollectionMetadata.decode(r, r.uint32());
+                        break;
+                    }
+                case 39: {
+                        m.commandMetadata = $root.proto.BotCommandMetadata.decode(r, r.uint32());
                         break;
                     }
                 case 999: {
@@ -11130,6 +11277,11 @@ export const proto = $root.proto = (() => {
                 if (typeof d.aiMediaCollectionMetadata !== "object")
                     throw TypeError(".proto.BotMetadata.aiMediaCollectionMetadata: object expected");
                 m.aiMediaCollectionMetadata = $root.proto.AIMediaCollectionMetadata.fromObject(d.aiMediaCollectionMetadata);
+            }
+            if (d.commandMetadata != null) {
+                if (typeof d.commandMetadata !== "object")
+                    throw TypeError(".proto.BotMetadata.commandMetadata: object expected");
+                m.commandMetadata = $root.proto.BotCommandMetadata.fromObject(d.commandMetadata);
             }
             if (d.internalMetadata != null) {
                 if (typeof d.internalMetadata === "string")
@@ -11329,6 +11481,11 @@ export const proto = $root.proto = (() => {
                 if (o.oneofs)
                     d._aiMediaCollectionMetadata = "aiMediaCollectionMetadata";
             }
+            if (m.commandMetadata != null && m.hasOwnProperty("commandMetadata")) {
+                d.commandMetadata = $root.proto.BotCommandMetadata.toObject(m.commandMetadata, o);
+                if (o.oneofs)
+                    d._commandMetadata = "commandMetadata";
+            }
             if (m.internalMetadata != null && m.hasOwnProperty("internalMetadata")) {
                 d.internalMetadata = o.bytes === String ? $util.base64.encode(m.internalMetadata, 0, m.internalMetadata.length) : o.bytes === Array ? Array.prototype.slice.call(m.internalMetadata) : m.internalMetadata;
                 if (o.oneofs)
@@ -11400,6 +11557,7 @@ export const proto = $root.proto = (() => {
         values[valuesById[47] = "WEB_NAVIGATION_BAR"] = 47;
         values[valuesById[54] = "GROUP_MEMBER"] = 54;
         values[valuesById[55] = "CHATLIST_SEARCH"] = 55;
+        values[valuesById[56] = "NEW_CHAT_LIST"] = 56;
         return values;
     })();
 
@@ -11682,6 +11840,10 @@ export const proto = $root.proto = (() => {
             case "CHATLIST_SEARCH":
             case 55:
                 m.destinationEntryPoint = 55;
+                break;
+            case "NEW_CHAT_LIST":
+            case 56:
+                m.destinationEntryPoint = 56;
                 break;
             }
             switch (d.threadOrigin) {
@@ -24006,6 +24168,10 @@ export const proto = $root.proto = (() => {
             ExternalAdReplyInfo.prototype.wtwaWebsiteUrl = null;
             ExternalAdReplyInfo.prototype.adPreviewUrl = null;
             ExternalAdReplyInfo.prototype.containsCtwaFlowsAutoReply = null;
+            ExternalAdReplyInfo.prototype.agmThumbnailStrategy = null;
+            ExternalAdReplyInfo.prototype.agmTitleStrategy = null;
+            ExternalAdReplyInfo.prototype.agmSubtitleStrategy = null;
+            ExternalAdReplyInfo.prototype.agmHeaderInteractionStrategy = null;
 
             let $oneOfFields;
 
@@ -24177,6 +24343,30 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ExternalAdReplyInfo.prototype, "_agmThumbnailStrategy", {
+                get: $util.oneOfGetter($oneOfFields = ["agmThumbnailStrategy"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ExternalAdReplyInfo.prototype, "_agmTitleStrategy", {
+                get: $util.oneOfGetter($oneOfFields = ["agmTitleStrategy"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ExternalAdReplyInfo.prototype, "_agmSubtitleStrategy", {
+                get: $util.oneOfGetter($oneOfFields = ["agmSubtitleStrategy"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ExternalAdReplyInfo.prototype, "_agmHeaderInteractionStrategy", {
+                get: $util.oneOfGetter($oneOfFields = ["agmHeaderInteractionStrategy"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             ExternalAdReplyInfo.create = function create(properties) {
                 return new ExternalAdReplyInfo(properties);
             };
@@ -24240,6 +24430,14 @@ export const proto = $root.proto = (() => {
                     w.uint32(218).string(m.adPreviewUrl);
                 if (m.containsCtwaFlowsAutoReply != null && Object.hasOwnProperty.call(m, "containsCtwaFlowsAutoReply"))
                     w.uint32(224).bool(m.containsCtwaFlowsAutoReply);
+                if (m.agmThumbnailStrategy != null && Object.hasOwnProperty.call(m, "agmThumbnailStrategy"))
+                    w.uint32(232).int32(m.agmThumbnailStrategy);
+                if (m.agmTitleStrategy != null && Object.hasOwnProperty.call(m, "agmTitleStrategy"))
+                    w.uint32(240).int32(m.agmTitleStrategy);
+                if (m.agmSubtitleStrategy != null && Object.hasOwnProperty.call(m, "agmSubtitleStrategy"))
+                    w.uint32(248).int32(m.agmSubtitleStrategy);
+                if (m.agmHeaderInteractionStrategy != null && Object.hasOwnProperty.call(m, "agmHeaderInteractionStrategy"))
+                    w.uint32(256).int32(m.agmHeaderInteractionStrategy);
                 return w;
             };
 
@@ -24362,6 +24560,22 @@ export const proto = $root.proto = (() => {
                         }
                     case 28: {
                             m.containsCtwaFlowsAutoReply = r.bool();
+                            break;
+                        }
+                    case 29: {
+                            m.agmThumbnailStrategy = r.int32();
+                            break;
+                        }
+                    case 30: {
+                            m.agmTitleStrategy = r.int32();
+                            break;
+                        }
+                    case 31: {
+                            m.agmSubtitleStrategy = r.int32();
+                            break;
+                        }
+                    case 32: {
+                            m.agmHeaderInteractionStrategy = r.int32();
                             break;
                         }
                     default:
@@ -24492,6 +24706,18 @@ export const proto = $root.proto = (() => {
                 }
                 if (d.containsCtwaFlowsAutoReply != null) {
                     m.containsCtwaFlowsAutoReply = Boolean(d.containsCtwaFlowsAutoReply);
+                }
+                if (d.agmThumbnailStrategy != null) {
+                    m.agmThumbnailStrategy = d.agmThumbnailStrategy | 0;
+                }
+                if (d.agmTitleStrategy != null) {
+                    m.agmTitleStrategy = d.agmTitleStrategy | 0;
+                }
+                if (d.agmSubtitleStrategy != null) {
+                    m.agmSubtitleStrategy = d.agmSubtitleStrategy | 0;
+                }
+                if (d.agmHeaderInteractionStrategy != null) {
+                    m.agmHeaderInteractionStrategy = d.agmHeaderInteractionStrategy | 0;
                 }
                 return m;
             };
@@ -24639,6 +24865,26 @@ export const proto = $root.proto = (() => {
                     d.containsCtwaFlowsAutoReply = m.containsCtwaFlowsAutoReply;
                     if (o.oneofs)
                         d._containsCtwaFlowsAutoReply = "containsCtwaFlowsAutoReply";
+                }
+                if (m.agmThumbnailStrategy != null && m.hasOwnProperty("agmThumbnailStrategy")) {
+                    d.agmThumbnailStrategy = m.agmThumbnailStrategy;
+                    if (o.oneofs)
+                        d._agmThumbnailStrategy = "agmThumbnailStrategy";
+                }
+                if (m.agmTitleStrategy != null && m.hasOwnProperty("agmTitleStrategy")) {
+                    d.agmTitleStrategy = m.agmTitleStrategy;
+                    if (o.oneofs)
+                        d._agmTitleStrategy = "agmTitleStrategy";
+                }
+                if (m.agmSubtitleStrategy != null && m.hasOwnProperty("agmSubtitleStrategy")) {
+                    d.agmSubtitleStrategy = m.agmSubtitleStrategy;
+                    if (o.oneofs)
+                        d._agmSubtitleStrategy = "agmSubtitleStrategy";
+                }
+                if (m.agmHeaderInteractionStrategy != null && m.hasOwnProperty("agmHeaderInteractionStrategy")) {
+                    d.agmHeaderInteractionStrategy = m.agmHeaderInteractionStrategy;
+                    if (o.oneofs)
+                        d._agmHeaderInteractionStrategy = "agmHeaderInteractionStrategy";
                 }
                 return d;
             };
@@ -28637,6 +28883,7 @@ export const proto = $root.proto = (() => {
         DeviceProps.HistorySyncConfig = (function() {
 
             function HistorySyncConfig(p) {
+                this.supportedBotChannelFbids = [];
                 if (p)
                     for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
                         if (p[ks[i]] != null)
@@ -28665,6 +28912,8 @@ export const proto = $root.proto = (() => {
             HistorySyncConfig.prototype.initialSyncMaxMessagesPerChat = null;
             HistorySyncConfig.prototype.supportManusHistory = null;
             HistorySyncConfig.prototype.supportHatchHistory = null;
+            HistorySyncConfig.prototype.supportedBotChannelFbids = $util.emptyArray;
+            HistorySyncConfig.prototype.supportInlineContacts = null;
 
             let $oneOfFields;
 
@@ -28800,6 +29049,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(HistorySyncConfig.prototype, "_supportInlineContacts", {
+                get: $util.oneOfGetter($oneOfFields = ["supportInlineContacts"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             HistorySyncConfig.create = function create(properties) {
                 return new HistorySyncConfig(properties);
             };
@@ -28851,6 +29106,12 @@ export const proto = $root.proto = (() => {
                     w.uint32(168).bool(m.supportManusHistory);
                 if (m.supportHatchHistory != null && Object.hasOwnProperty.call(m, "supportHatchHistory"))
                     w.uint32(176).bool(m.supportHatchHistory);
+                if (m.supportedBotChannelFbids != null && m.supportedBotChannelFbids.length) {
+                    for (var i = 0; i < m.supportedBotChannelFbids.length; ++i)
+                        w.uint32(186).string(m.supportedBotChannelFbids[i]);
+                }
+                if (m.supportInlineContacts != null && Object.hasOwnProperty.call(m, "supportInlineContacts"))
+                    w.uint32(192).bool(m.supportInlineContacts);
                 return w;
             };
 
@@ -28951,6 +29212,16 @@ export const proto = $root.proto = (() => {
                             m.supportHatchHistory = r.bool();
                             break;
                         }
+                    case 23: {
+                            if (!(m.supportedBotChannelFbids && m.supportedBotChannelFbids.length))
+                                m.supportedBotChannelFbids = [];
+                            m.supportedBotChannelFbids.push(r.string());
+                            break;
+                        }
+                    case 24: {
+                            m.supportInlineContacts = r.bool();
+                            break;
+                        }
                     default:
                         r.skipType(t & 7);
                         break;
@@ -29029,6 +29300,17 @@ export const proto = $root.proto = (() => {
                 if (d.supportHatchHistory != null) {
                     m.supportHatchHistory = Boolean(d.supportHatchHistory);
                 }
+                if (d.supportedBotChannelFbids) {
+                    if (!Array.isArray(d.supportedBotChannelFbids))
+                        throw TypeError(".proto.DeviceProps.HistorySyncConfig.supportedBotChannelFbids: array expected");
+                    m.supportedBotChannelFbids = [];
+                    for (var i = 0; i < d.supportedBotChannelFbids.length; ++i) {
+                        m.supportedBotChannelFbids[i] = String(d.supportedBotChannelFbids[i]);
+                    }
+                }
+                if (d.supportInlineContacts != null) {
+                    m.supportInlineContacts = Boolean(d.supportInlineContacts);
+                }
                 return m;
             };
 
@@ -29036,6 +29318,9 @@ export const proto = $root.proto = (() => {
                 if (!o)
                     o = {};
                 var d = {};
+                if (o.arrays || o.defaults) {
+                    d.supportedBotChannelFbids = [];
+                }
                 if (m.fullSyncDaysLimit != null && m.hasOwnProperty("fullSyncDaysLimit")) {
                     d.fullSyncDaysLimit = m.fullSyncDaysLimit;
                     if (o.oneofs)
@@ -29145,6 +29430,17 @@ export const proto = $root.proto = (() => {
                     d.supportHatchHistory = m.supportHatchHistory;
                     if (o.oneofs)
                         d._supportHatchHistory = "supportHatchHistory";
+                }
+                if (m.supportedBotChannelFbids && m.supportedBotChannelFbids.length) {
+                    d.supportedBotChannelFbids = [];
+                    for (var j = 0; j < m.supportedBotChannelFbids.length; ++j) {
+                        d.supportedBotChannelFbids[j] = m.supportedBotChannelFbids[j];
+                    }
+                }
+                if (m.supportInlineContacts != null && m.hasOwnProperty("supportInlineContacts")) {
+                    d.supportInlineContacts = m.supportInlineContacts;
+                    if (o.oneofs)
+                        d._supportInlineContacts = "supportInlineContacts";
                 }
                 return d;
             };
@@ -32252,6 +32548,245 @@ export const proto = $root.proto = (() => {
         return GroupParticipant;
     })();
 
+    proto.GroupRootKeyShare = (function() {
+
+        function GroupRootKeyShare(p) {
+            this.keys = [];
+            if (p)
+                for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                    if (p[ks[i]] != null)
+                        this[ks[i]] = p[ks[i]];
+        }
+
+        GroupRootKeyShare.prototype.keys = $util.emptyArray;
+
+        GroupRootKeyShare.create = function create(properties) {
+            return new GroupRootKeyShare(properties);
+        };
+
+        GroupRootKeyShare.encode = function encode(m, w) {
+            if (!w)
+                w = $Writer.create();
+            if (m.keys != null && m.keys.length) {
+                for (var i = 0; i < m.keys.length; ++i)
+                    $root.proto.GroupRootKeyShareEntry.encode(m.keys[i], w.uint32(10).fork()).ldelim();
+            }
+            return w;
+        };
+
+        GroupRootKeyShare.decode = function decode(r, l, e) {
+            if (!(r instanceof $Reader))
+                r = $Reader.create(r);
+            var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.GroupRootKeyShare();
+            while (r.pos < c) {
+                var t = r.uint32();
+                if (t === e)
+                    break;
+                switch (t >>> 3) {
+                case 1: {
+                        if (!(m.keys && m.keys.length))
+                            m.keys = [];
+                        m.keys.push($root.proto.GroupRootKeyShareEntry.decode(r, r.uint32()));
+                        break;
+                    }
+                default:
+                    r.skipType(t & 7);
+                    break;
+                }
+            }
+            return m;
+        };
+
+        GroupRootKeyShare.fromObject = function fromObject(d) {
+            if (d instanceof $root.proto.GroupRootKeyShare)
+                return d;
+            var m = new $root.proto.GroupRootKeyShare();
+            if (d.keys) {
+                if (!Array.isArray(d.keys))
+                    throw TypeError(".proto.GroupRootKeyShare.keys: array expected");
+                m.keys = [];
+                for (var i = 0; i < d.keys.length; ++i) {
+                    if (typeof d.keys[i] !== "object")
+                        throw TypeError(".proto.GroupRootKeyShare.keys: object expected");
+                    m.keys[i] = $root.proto.GroupRootKeyShareEntry.fromObject(d.keys[i]);
+                }
+            }
+            return m;
+        };
+
+        GroupRootKeyShare.toObject = function toObject(m, o) {
+            if (!o)
+                o = {};
+            var d = {};
+            if (o.arrays || o.defaults) {
+                d.keys = [];
+            }
+            if (m.keys && m.keys.length) {
+                d.keys = [];
+                for (var j = 0; j < m.keys.length; ++j) {
+                    d.keys[j] = $root.proto.GroupRootKeyShareEntry.toObject(m.keys[j], o);
+                }
+            }
+            return d;
+        };
+
+        GroupRootKeyShare.prototype.toJSON = function toJSON() {
+            return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+        };
+
+        GroupRootKeyShare.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+            if (typeUrlPrefix === undefined) {
+                typeUrlPrefix = "type.googleapis.com";
+            }
+            return typeUrlPrefix + "/proto.GroupRootKeyShare";
+        };
+
+        return GroupRootKeyShare;
+    })();
+
+    proto.GroupRootKeyShareEntry = (function() {
+
+        function GroupRootKeyShareEntry(p) {
+            if (p)
+                for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                    if (p[ks[i]] != null)
+                        this[ks[i]] = p[ks[i]];
+        }
+
+        GroupRootKeyShareEntry.prototype.groupRootKey = null;
+        GroupRootKeyShareEntry.prototype.keyId = null;
+        GroupRootKeyShareEntry.prototype.expiryTimestampMs = null;
+
+        let $oneOfFields;
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(GroupRootKeyShareEntry.prototype, "_groupRootKey", {
+            get: $util.oneOfGetter($oneOfFields = ["groupRootKey"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(GroupRootKeyShareEntry.prototype, "_keyId", {
+            get: $util.oneOfGetter($oneOfFields = ["keyId"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(GroupRootKeyShareEntry.prototype, "_expiryTimestampMs", {
+            get: $util.oneOfGetter($oneOfFields = ["expiryTimestampMs"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        GroupRootKeyShareEntry.create = function create(properties) {
+            return new GroupRootKeyShareEntry(properties);
+        };
+
+        GroupRootKeyShareEntry.encode = function encode(m, w) {
+            if (!w)
+                w = $Writer.create();
+            if (m.groupRootKey != null && Object.hasOwnProperty.call(m, "groupRootKey"))
+                w.uint32(10).bytes(m.groupRootKey);
+            if (m.keyId != null && Object.hasOwnProperty.call(m, "keyId"))
+                w.uint32(18).string(m.keyId);
+            if (m.expiryTimestampMs != null && Object.hasOwnProperty.call(m, "expiryTimestampMs"))
+                w.uint32(24).int64(m.expiryTimestampMs);
+            return w;
+        };
+
+        GroupRootKeyShareEntry.decode = function decode(r, l, e) {
+            if (!(r instanceof $Reader))
+                r = $Reader.create(r);
+            var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.GroupRootKeyShareEntry();
+            while (r.pos < c) {
+                var t = r.uint32();
+                if (t === e)
+                    break;
+                switch (t >>> 3) {
+                case 1: {
+                        m.groupRootKey = r.bytes();
+                        break;
+                    }
+                case 2: {
+                        m.keyId = r.string();
+                        break;
+                    }
+                case 3: {
+                        m.expiryTimestampMs = r.int64();
+                        break;
+                    }
+                default:
+                    r.skipType(t & 7);
+                    break;
+                }
+            }
+            return m;
+        };
+
+        GroupRootKeyShareEntry.fromObject = function fromObject(d) {
+            if (d instanceof $root.proto.GroupRootKeyShareEntry)
+                return d;
+            var m = new $root.proto.GroupRootKeyShareEntry();
+            if (d.groupRootKey != null) {
+                if (typeof d.groupRootKey === "string")
+                    $util.base64.decode(d.groupRootKey, m.groupRootKey = $util.newBuffer($util.base64.length(d.groupRootKey)), 0);
+                else if (d.groupRootKey.length >= 0)
+                    m.groupRootKey = d.groupRootKey;
+            }
+            if (d.keyId != null) {
+                m.keyId = String(d.keyId);
+            }
+            if (d.expiryTimestampMs != null) {
+                if ($util.Long)
+                    (m.expiryTimestampMs = $util.Long.fromValue(d.expiryTimestampMs)).unsigned = false;
+                else if (typeof d.expiryTimestampMs === "string")
+                    m.expiryTimestampMs = parseInt(d.expiryTimestampMs, 10);
+                else if (typeof d.expiryTimestampMs === "number")
+                    m.expiryTimestampMs = d.expiryTimestampMs;
+                else if (typeof d.expiryTimestampMs === "object")
+                    m.expiryTimestampMs = new $util.LongBits(d.expiryTimestampMs.low >>> 0, d.expiryTimestampMs.high >>> 0).toNumber();
+            }
+            return m;
+        };
+
+        GroupRootKeyShareEntry.toObject = function toObject(m, o) {
+            if (!o)
+                o = {};
+            var d = {};
+            if (m.groupRootKey != null && m.hasOwnProperty("groupRootKey")) {
+                d.groupRootKey = o.bytes === String ? $util.base64.encode(m.groupRootKey, 0, m.groupRootKey.length) : o.bytes === Array ? Array.prototype.slice.call(m.groupRootKey) : m.groupRootKey;
+                if (o.oneofs)
+                    d._groupRootKey = "groupRootKey";
+            }
+            if (m.keyId != null && m.hasOwnProperty("keyId")) {
+                d.keyId = m.keyId;
+                if (o.oneofs)
+                    d._keyId = "keyId";
+            }
+            if (m.expiryTimestampMs != null && m.hasOwnProperty("expiryTimestampMs")) {
+                if (typeof m.expiryTimestampMs === "number")
+                    d.expiryTimestampMs = o.longs === String ? String(m.expiryTimestampMs) : m.expiryTimestampMs;
+                else
+                    d.expiryTimestampMs = o.longs === String ? longToString(m.expiryTimestampMs) : o.longs === Number ? longToNumber(m.expiryTimestampMs) : m.expiryTimestampMs;
+                if (o.oneofs)
+                    d._expiryTimestampMs = "expiryTimestampMs";
+            }
+            return d;
+        };
+
+        GroupRootKeyShareEntry.prototype.toJSON = function toJSON() {
+            return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+        };
+
+        GroupRootKeyShareEntry.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+            if (typeUrlPrefix === undefined) {
+                typeUrlPrefix = "type.googleapis.com";
+            }
+            return typeUrlPrefix + "/proto.GroupRootKeyShareEntry";
+        };
+
+        return GroupRootKeyShareEntry;
+    })();
+
     proto.HandshakeMessage = (function() {
 
         function HandshakeMessage(p) {
@@ -32587,6 +33122,7 @@ export const proto = $root.proto = (() => {
             ClientHello.prototype.sendServerHelloPaddedBytes = null;
             ClientHello.prototype.simulateXxkemFs = null;
             ClientHello.prototype.pqMode = null;
+            ClientHello.prototype.extendedEphemeral = null;
 
             let $oneOfFields;
 
@@ -32644,6 +33180,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ClientHello.prototype, "_extendedEphemeral", {
+                get: $util.oneOfGetter($oneOfFields = ["extendedEphemeral"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             ClientHello.create = function create(properties) {
                 return new ClientHello(properties);
             };
@@ -32669,6 +33211,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(64).bool(m.simulateXxkemFs);
                 if (m.pqMode != null && Object.hasOwnProperty.call(m, "pqMode"))
                     w.uint32(72).int32(m.pqMode);
+                if (m.extendedEphemeral != null && Object.hasOwnProperty.call(m, "extendedEphemeral"))
+                    w.uint32(82).bytes(m.extendedEphemeral);
                 return w;
             };
 
@@ -32715,6 +33259,10 @@ export const proto = $root.proto = (() => {
                         }
                     case 9: {
                             m.pqMode = r.int32();
+                            break;
+                        }
+                    case 10: {
+                            m.extendedEphemeral = r.bytes();
                             break;
                         }
                     default:
@@ -32812,6 +33360,12 @@ export const proto = $root.proto = (() => {
                     m.pqMode = 8;
                     break;
                 }
+                if (d.extendedEphemeral != null) {
+                    if (typeof d.extendedEphemeral === "string")
+                        $util.base64.decode(d.extendedEphemeral, m.extendedEphemeral = $util.newBuffer($util.base64.length(d.extendedEphemeral)), 0);
+                    else if (d.extendedEphemeral.length >= 0)
+                        m.extendedEphemeral = d.extendedEphemeral;
+                }
                 return m;
             };
 
@@ -32864,6 +33418,11 @@ export const proto = $root.proto = (() => {
                     if (o.oneofs)
                         d._pqMode = "pqMode";
                 }
+                if (m.extendedEphemeral != null && m.hasOwnProperty("extendedEphemeral")) {
+                    d.extendedEphemeral = o.bytes === String ? $util.base64.encode(m.extendedEphemeral, 0, m.extendedEphemeral.length) : o.bytes === Array ? Array.prototype.slice.call(m.extendedEphemeral) : m.extendedEphemeral;
+                    if (o.oneofs)
+                        d._extendedEphemeral = "extendedEphemeral";
+                }
                 return d;
             };
 
@@ -32909,6 +33468,7 @@ export const proto = $root.proto = (() => {
             ServerHello.prototype.payload = null;
             ServerHello.prototype.extendedStatic = null;
             ServerHello.prototype.paddingBytes = null;
+            ServerHello.prototype.extendedCiphertext = null;
 
             let $oneOfFields;
 
@@ -32942,6 +33502,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ServerHello.prototype, "_extendedCiphertext", {
+                get: $util.oneOfGetter($oneOfFields = ["extendedCiphertext"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             ServerHello.create = function create(properties) {
                 return new ServerHello(properties);
             };
@@ -32959,6 +33525,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(34).bytes(m.extendedStatic);
                 if (m.paddingBytes != null && Object.hasOwnProperty.call(m, "paddingBytes"))
                     w.uint32(42).bytes(m.paddingBytes);
+                if (m.extendedCiphertext != null && Object.hasOwnProperty.call(m, "extendedCiphertext"))
+                    w.uint32(50).bytes(m.extendedCiphertext);
                 return w;
             };
 
@@ -32989,6 +33557,10 @@ export const proto = $root.proto = (() => {
                         }
                     case 5: {
                             m.paddingBytes = r.bytes();
+                            break;
+                        }
+                    case 6: {
+                            m.extendedCiphertext = r.bytes();
                             break;
                         }
                     default:
@@ -33033,6 +33605,12 @@ export const proto = $root.proto = (() => {
                     else if (d.paddingBytes.length >= 0)
                         m.paddingBytes = d.paddingBytes;
                 }
+                if (d.extendedCiphertext != null) {
+                    if (typeof d.extendedCiphertext === "string")
+                        $util.base64.decode(d.extendedCiphertext, m.extendedCiphertext = $util.newBuffer($util.base64.length(d.extendedCiphertext)), 0);
+                    else if (d.extendedCiphertext.length >= 0)
+                        m.extendedCiphertext = d.extendedCiphertext;
+                }
                 return m;
             };
 
@@ -33065,6 +33643,11 @@ export const proto = $root.proto = (() => {
                     if (o.oneofs)
                         d._paddingBytes = "paddingBytes";
                 }
+                if (m.extendedCiphertext != null && m.hasOwnProperty("extendedCiphertext")) {
+                    d.extendedCiphertext = o.bytes === String ? $util.base64.encode(m.extendedCiphertext, 0, m.extendedCiphertext.length) : o.bytes === Array ? Array.prototype.slice.call(m.extendedCiphertext) : m.extendedCiphertext;
+                    if (o.oneofs)
+                        d._extendedCiphertext = "extendedCiphertext";
+                }
                 return d;
             };
 
@@ -33096,6 +33679,7 @@ export const proto = $root.proto = (() => {
             this.callLogRecords = [];
             this.phoneNumberToLidMappings = [];
             this.accounts = [];
+            this.inlineContacts = [];
             if (p)
                 for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
                     if (p[ks[i]] != null)
@@ -33120,6 +33704,8 @@ export const proto = $root.proto = (() => {
         HistorySync.prototype.shareableChatIdentifierEncryptionKey = null;
         HistorySync.prototype.accounts = $util.emptyArray;
         HistorySync.prototype.nctSalt = null;
+        HistorySync.prototype.inlineContacts = $util.emptyArray;
+        HistorySync.prototype.inlineContactsProvided = null;
 
         let $oneOfFields;
 
@@ -33183,6 +33769,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(HistorySync.prototype, "_inlineContactsProvided", {
+            get: $util.oneOfGetter($oneOfFields = ["inlineContactsProvided"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         HistorySync.create = function create(properties) {
             return new HistorySync(properties);
         };
@@ -33242,6 +33834,12 @@ export const proto = $root.proto = (() => {
             }
             if (m.nctSalt != null && Object.hasOwnProperty.call(m, "nctSalt"))
                 w.uint32(154).bytes(m.nctSalt);
+            if (m.inlineContacts != null && m.inlineContacts.length) {
+                for (var i = 0; i < m.inlineContacts.length; ++i)
+                    $root.proto.InlineContact.encode(m.inlineContacts[i], w.uint32(162).fork()).ldelim();
+            }
+            if (m.inlineContactsProvided != null && Object.hasOwnProperty.call(m, "inlineContactsProvided"))
+                w.uint32(168).bool(m.inlineContactsProvided);
             return w;
         };
 
@@ -33340,6 +33938,16 @@ export const proto = $root.proto = (() => {
                     }
                 case 19: {
                         m.nctSalt = r.bytes();
+                        break;
+                    }
+                case 20: {
+                        if (!(m.inlineContacts && m.inlineContacts.length))
+                            m.inlineContacts = [];
+                        m.inlineContacts.push($root.proto.InlineContact.decode(r, r.uint32()));
+                        break;
+                    }
+                case 21: {
+                        m.inlineContactsProvided = r.bool();
                         break;
                     }
                 default:
@@ -33521,6 +34129,19 @@ export const proto = $root.proto = (() => {
                 else if (d.nctSalt.length >= 0)
                     m.nctSalt = d.nctSalt;
             }
+            if (d.inlineContacts) {
+                if (!Array.isArray(d.inlineContacts))
+                    throw TypeError(".proto.HistorySync.inlineContacts: array expected");
+                m.inlineContacts = [];
+                for (var i = 0; i < d.inlineContacts.length; ++i) {
+                    if (typeof d.inlineContacts[i] !== "object")
+                        throw TypeError(".proto.HistorySync.inlineContacts: object expected");
+                    m.inlineContacts[i] = $root.proto.InlineContact.fromObject(d.inlineContacts[i]);
+                }
+            }
+            if (d.inlineContactsProvided != null) {
+                m.inlineContactsProvided = Boolean(d.inlineContactsProvided);
+            }
             return m;
         };
 
@@ -33537,6 +34158,7 @@ export const proto = $root.proto = (() => {
                 d.callLogRecords = [];
                 d.phoneNumberToLidMappings = [];
                 d.accounts = [];
+                d.inlineContacts = [];
             }
             if (m.syncType != null && m.hasOwnProperty("syncType")) {
                 d.syncType = o.enums === String ? $root.proto.HistorySync.HistorySyncType[m.syncType] === undefined ? m.syncType : $root.proto.HistorySync.HistorySyncType[m.syncType] : m.syncType;
@@ -33635,6 +34257,17 @@ export const proto = $root.proto = (() => {
                 d.nctSalt = o.bytes === String ? $util.base64.encode(m.nctSalt, 0, m.nctSalt.length) : o.bytes === Array ? Array.prototype.slice.call(m.nctSalt) : m.nctSalt;
                 if (o.oneofs)
                     d._nctSalt = "nctSalt";
+            }
+            if (m.inlineContacts && m.inlineContacts.length) {
+                d.inlineContacts = [];
+                for (var j = 0; j < m.inlineContacts.length; ++j) {
+                    d.inlineContacts[j] = $root.proto.InlineContact.toObject(m.inlineContacts[j], o);
+                }
+            }
+            if (m.inlineContactsProvided != null && m.hasOwnProperty("inlineContactsProvided")) {
+                d.inlineContactsProvided = m.inlineContactsProvided;
+                if (o.oneofs)
+                    d._inlineContactsProvided = "inlineContactsProvided";
             }
             return d;
         };
@@ -35286,6 +35919,178 @@ export const proto = $root.proto = (() => {
         })();
 
         return InThreadSurveyMetadata;
+    })();
+
+    proto.InlineContact = (function() {
+
+        function InlineContact(p) {
+            if (p)
+                for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                    if (p[ks[i]] != null)
+                        this[ks[i]] = p[ks[i]];
+        }
+
+        InlineContact.prototype.pnJid = null;
+        InlineContact.prototype.lidJid = null;
+        InlineContact.prototype.fullName = null;
+        InlineContact.prototype.firstName = null;
+        InlineContact.prototype.username = null;
+
+        let $oneOfFields;
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(InlineContact.prototype, "_pnJid", {
+            get: $util.oneOfGetter($oneOfFields = ["pnJid"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(InlineContact.prototype, "_lidJid", {
+            get: $util.oneOfGetter($oneOfFields = ["lidJid"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(InlineContact.prototype, "_fullName", {
+            get: $util.oneOfGetter($oneOfFields = ["fullName"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(InlineContact.prototype, "_firstName", {
+            get: $util.oneOfGetter($oneOfFields = ["firstName"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(InlineContact.prototype, "_username", {
+            get: $util.oneOfGetter($oneOfFields = ["username"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        InlineContact.create = function create(properties) {
+            return new InlineContact(properties);
+        };
+
+        InlineContact.encode = function encode(m, w) {
+            if (!w)
+                w = $Writer.create();
+            if (m.pnJid != null && Object.hasOwnProperty.call(m, "pnJid"))
+                w.uint32(10).string(m.pnJid);
+            if (m.lidJid != null && Object.hasOwnProperty.call(m, "lidJid"))
+                w.uint32(18).string(m.lidJid);
+            if (m.fullName != null && Object.hasOwnProperty.call(m, "fullName"))
+                w.uint32(26).string(m.fullName);
+            if (m.firstName != null && Object.hasOwnProperty.call(m, "firstName"))
+                w.uint32(34).string(m.firstName);
+            if (m.username != null && Object.hasOwnProperty.call(m, "username"))
+                w.uint32(42).string(m.username);
+            return w;
+        };
+
+        InlineContact.decode = function decode(r, l, e) {
+            if (!(r instanceof $Reader))
+                r = $Reader.create(r);
+            var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.InlineContact();
+            while (r.pos < c) {
+                var t = r.uint32();
+                if (t === e)
+                    break;
+                switch (t >>> 3) {
+                case 1: {
+                        m.pnJid = r.string();
+                        break;
+                    }
+                case 2: {
+                        m.lidJid = r.string();
+                        break;
+                    }
+                case 3: {
+                        m.fullName = r.string();
+                        break;
+                    }
+                case 4: {
+                        m.firstName = r.string();
+                        break;
+                    }
+                case 5: {
+                        m.username = r.string();
+                        break;
+                    }
+                default:
+                    r.skipType(t & 7);
+                    break;
+                }
+            }
+            return m;
+        };
+
+        InlineContact.fromObject = function fromObject(d) {
+            if (d instanceof $root.proto.InlineContact)
+                return d;
+            var m = new $root.proto.InlineContact();
+            if (d.pnJid != null) {
+                m.pnJid = String(d.pnJid);
+            }
+            if (d.lidJid != null) {
+                m.lidJid = String(d.lidJid);
+            }
+            if (d.fullName != null) {
+                m.fullName = String(d.fullName);
+            }
+            if (d.firstName != null) {
+                m.firstName = String(d.firstName);
+            }
+            if (d.username != null) {
+                m.username = String(d.username);
+            }
+            return m;
+        };
+
+        InlineContact.toObject = function toObject(m, o) {
+            if (!o)
+                o = {};
+            var d = {};
+            if (m.pnJid != null && m.hasOwnProperty("pnJid")) {
+                d.pnJid = m.pnJid;
+                if (o.oneofs)
+                    d._pnJid = "pnJid";
+            }
+            if (m.lidJid != null && m.hasOwnProperty("lidJid")) {
+                d.lidJid = m.lidJid;
+                if (o.oneofs)
+                    d._lidJid = "lidJid";
+            }
+            if (m.fullName != null && m.hasOwnProperty("fullName")) {
+                d.fullName = m.fullName;
+                if (o.oneofs)
+                    d._fullName = "fullName";
+            }
+            if (m.firstName != null && m.hasOwnProperty("firstName")) {
+                d.firstName = m.firstName;
+                if (o.oneofs)
+                    d._firstName = "firstName";
+            }
+            if (m.username != null && m.hasOwnProperty("username")) {
+                d.username = m.username;
+                if (o.oneofs)
+                    d._username = "username";
+            }
+            return d;
+        };
+
+        InlineContact.prototype.toJSON = function toJSON() {
+            return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+        };
+
+        InlineContact.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+            if (typeUrlPrefix === undefined) {
+                typeUrlPrefix = "type.googleapis.com";
+            }
+            return typeUrlPrefix + "/proto.InlineContact";
+        };
+
+        return InlineContact;
     })();
 
     proto.InteractiveAnnotation = (function() {
@@ -37894,6 +38699,7 @@ export const proto = $root.proto = (() => {
         Message.prototype.conditionalRevealMessage = null;
         Message.prototype.pollAddOptionMessage = null;
         Message.prototype.eventInviteMessage = null;
+        Message.prototype.groupRootKeyShare = null;
 
         let $oneOfFields;
 
@@ -38509,6 +39315,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(Message.prototype, "_groupRootKeyShare", {
+            get: $util.oneOfGetter($oneOfFields = ["groupRootKeyShare"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         Message.create = function create(properties) {
             return new Message(properties);
         };
@@ -38720,6 +39532,8 @@ export const proto = $root.proto = (() => {
                 $root.proto.Message.PollAddOptionMessage.encode(m.pollAddOptionMessage, w.uint32(970).fork()).ldelim();
             if (m.eventInviteMessage != null && Object.hasOwnProperty.call(m, "eventInviteMessage"))
                 $root.proto.Message.EventInviteMessage.encode(m.eventInviteMessage, w.uint32(978).fork()).ldelim();
+            if (m.groupRootKeyShare != null && Object.hasOwnProperty.call(m, "groupRootKeyShare"))
+                $root.proto.GroupRootKeyShare.encode(m.groupRootKeyShare, w.uint32(986).fork()).ldelim();
             return w;
         };
 
@@ -39138,6 +39952,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 122: {
                         m.eventInviteMessage = $root.proto.Message.EventInviteMessage.decode(r, r.uint32());
+                        break;
+                    }
+                case 123: {
+                        m.groupRootKeyShare = $root.proto.GroupRootKeyShare.decode(r, r.uint32());
                         break;
                     }
                 default:
@@ -39660,6 +40478,11 @@ export const proto = $root.proto = (() => {
                     throw TypeError(".proto.Message.eventInviteMessage: object expected");
                 m.eventInviteMessage = $root.proto.Message.EventInviteMessage.fromObject(d.eventInviteMessage);
             }
+            if (d.groupRootKeyShare != null) {
+                if (typeof d.groupRootKeyShare !== "object")
+                    throw TypeError(".proto.Message.groupRootKeyShare: object expected");
+                m.groupRootKeyShare = $root.proto.GroupRootKeyShare.fromObject(d.groupRootKeyShare);
+            }
             return m;
         };
 
@@ -40176,6 +40999,11 @@ export const proto = $root.proto = (() => {
                 d.eventInviteMessage = $root.proto.Message.EventInviteMessage.toObject(m.eventInviteMessage, o);
                 if (o.oneofs)
                     d._eventInviteMessage = "eventInviteMessage";
+            }
+            if (m.groupRootKeyShare != null && m.hasOwnProperty("groupRootKeyShare")) {
+                d.groupRootKeyShare = $root.proto.GroupRootKeyShare.toObject(m.groupRootKeyShare, o);
+                if (o.oneofs)
+                    d._groupRootKeyShare = "groupRootKeyShare";
             }
             return d;
         };
@@ -43684,6 +44512,10 @@ export const proto = $root.proto = (() => {
                 case 2:
                     m.status = 2;
                     break;
+                case "INFO":
+                case 3:
+                    m.status = 3;
+                    break;
                 }
                 if (d.senderNotificationTimestampMs != null) {
                     if ($util.Long)
@@ -43768,6 +44600,7 @@ export const proto = $root.proto = (() => {
                 values[valuesById[0] = "UNKNOWN"] = 0;
                 values[valuesById[1] = "CONTROL_PASSED"] = 1;
                 values[valuesById[2] = "CONTROL_TAKEN"] = 2;
+                values[valuesById[3] = "INFO"] = 3;
                 return values;
             })();
 
@@ -60759,6 +61592,10 @@ export const proto = $root.proto = (() => {
                         case 6:
                             m.responseCode = 6;
                             break;
+                        case "ERROR_MULTI_PROVIDER_NOT_CONFIGURED":
+                        case 7:
+                            m.responseCode = 7;
+                            break;
                         }
                         return m;
                     };
@@ -60803,6 +61640,7 @@ export const proto = $root.proto = (() => {
                     values[valuesById[4] = "ERROR_REQUEST_ON_NON_SMB_PRIMARY"] = 4;
                     values[valuesById[5] = "ERROR_HOSTED_DEVICE_NOT_CONNECTED"] = 5;
                     values[valuesById[6] = "ERROR_HOSTED_DEVICE_LOGIN_TIME_NOT_SET"] = 6;
+                    values[valuesById[7] = "ERROR_MULTI_PROVIDER_NOT_CONFIGURED"] = 7;
                     return values;
                 })();
 
@@ -64810,10 +65648,6 @@ export const proto = $root.proto = (() => {
                 case 32:
                     m.type = 32;
                     break;
-                case "BOT_UNLINK_MESSAGE":
-                case 33:
-                    m.type = 33;
-                    break;
                 }
                 if (d.ephemeralExpiration != null) {
                     m.ephemeralExpiration = d.ephemeralExpiration >>> 0;
@@ -65127,7 +65961,6 @@ export const proto = $root.proto = (() => {
                 values[valuesById[30] = "GROUP_MEMBER_LABEL_CHANGE"] = 30;
                 values[valuesById[31] = "AI_MEDIA_COLLECTION_MESSAGE"] = 31;
                 values[valuesById[32] = "MESSAGE_UNSCHEDULE"] = 32;
-                values[valuesById[33] = "BOT_UNLINK_MESSAGE"] = 33;
                 return values;
             })();
 
@@ -67323,6 +68156,7 @@ export const proto = $root.proto = (() => {
             StickerMessage.prototype.isLottie = null;
             StickerMessage.prototype.accessibilityLabel = null;
             StickerMessage.prototype.premium = null;
+            StickerMessage.prototype.emojis = null;
 
             let $oneOfFields;
 
@@ -67452,6 +68286,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(StickerMessage.prototype, "_emojis", {
+                get: $util.oneOfGetter($oneOfFields = ["emojis"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             StickerMessage.create = function create(properties) {
                 return new StickerMessage(properties);
             };
@@ -67501,6 +68341,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(178).string(m.accessibilityLabel);
                 if (m.premium != null && Object.hasOwnProperty.call(m, "premium"))
                     w.uint32(192).int32(m.premium);
+                if (m.emojis != null && Object.hasOwnProperty.call(m, "emojis"))
+                    w.uint32(202).string(m.emojis);
                 return w;
             };
 
@@ -67595,6 +68437,10 @@ export const proto = $root.proto = (() => {
                         }
                     case 24: {
                             m.premium = r.int32();
+                            break;
+                        }
+                    case 25: {
+                            m.emojis = r.string();
                             break;
                         }
                     default:
@@ -67709,6 +68555,9 @@ export const proto = $root.proto = (() => {
                 }
                 if (d.premium != null) {
                     m.premium = d.premium | 0;
+                }
+                if (d.emojis != null) {
+                    m.emojis = String(d.emojis);
                 }
                 return m;
             };
@@ -67830,6 +68679,11 @@ export const proto = $root.proto = (() => {
                     d.premium = m.premium;
                     if (o.oneofs)
                         d._premium = "premium";
+                }
+                if (m.emojis != null && m.hasOwnProperty("emojis")) {
+                    d.emojis = m.emojis;
+                    if (o.oneofs)
+                        d._emojis = "emojis";
                 }
                 return d;
             };
@@ -71487,6 +72341,7 @@ export const proto = $root.proto = (() => {
         MessageContextInfo.prototype.limitSharingV2 = null;
         MessageContextInfo.prototype.threadId = $util.emptyArray;
         MessageContextInfo.prototype.weblinkRenderConfig = null;
+        MessageContextInfo.prototype.teeBotMetadata = null;
 
         let $oneOfFields;
 
@@ -71580,6 +72435,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(MessageContextInfo.prototype, "_teeBotMetadata", {
+            get: $util.oneOfGetter($oneOfFields = ["teeBotMetadata"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         MessageContextInfo.create = function create(properties) {
             return new MessageContextInfo(properties);
         };
@@ -71621,6 +72482,8 @@ export const proto = $root.proto = (() => {
             }
             if (m.weblinkRenderConfig != null && Object.hasOwnProperty.call(m, "weblinkRenderConfig"))
                 w.uint32(128).int32(m.weblinkRenderConfig);
+            if (m.teeBotMetadata != null && Object.hasOwnProperty.call(m, "teeBotMetadata"))
+                w.uint32(138).bytes(m.teeBotMetadata);
             return w;
         };
 
@@ -71697,6 +72560,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 16: {
                         m.weblinkRenderConfig = r.int32();
+                        break;
+                    }
+                case 17: {
+                        m.teeBotMetadata = r.bytes();
                         break;
                     }
                 default:
@@ -71811,6 +72678,12 @@ export const proto = $root.proto = (() => {
                 m.weblinkRenderConfig = 1;
                 break;
             }
+            if (d.teeBotMetadata != null) {
+                if (typeof d.teeBotMetadata === "string")
+                    $util.base64.decode(d.teeBotMetadata, m.teeBotMetadata = $util.newBuffer($util.base64.length(d.teeBotMetadata)), 0);
+                else if (d.teeBotMetadata.length >= 0)
+                    m.teeBotMetadata = d.teeBotMetadata;
+            }
             return m;
         };
 
@@ -71901,6 +72774,11 @@ export const proto = $root.proto = (() => {
                 d.weblinkRenderConfig = o.enums === String ? $root.proto.WebLinkRenderConfig[m.weblinkRenderConfig] === undefined ? m.weblinkRenderConfig : $root.proto.WebLinkRenderConfig[m.weblinkRenderConfig] : m.weblinkRenderConfig;
                 if (o.oneofs)
                     d._weblinkRenderConfig = "weblinkRenderConfig";
+            }
+            if (m.teeBotMetadata != null && m.hasOwnProperty("teeBotMetadata")) {
+                d.teeBotMetadata = o.bytes === String ? $util.base64.encode(m.teeBotMetadata, 0, m.teeBotMetadata.length) : o.bytes === Array ? Array.prototype.slice.call(m.teeBotMetadata) : m.teeBotMetadata;
+                if (o.oneofs)
+                    d._teeBotMetadata = "teeBotMetadata";
             }
             return d;
         };
@@ -79682,6 +80560,149 @@ export const proto = $root.proto = (() => {
         };
 
         return ReportingTokenInfo;
+    })();
+
+    proto.ScheduledMessageMetadata = (function() {
+
+        function ScheduledMessageMetadata(p) {
+            if (p)
+                for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                    if (p[ks[i]] != null)
+                        this[ks[i]] = p[ks[i]];
+        }
+
+        ScheduledMessageMetadata.prototype.revealKeyId = null;
+        ScheduledMessageMetadata.prototype.revealKey = null;
+        ScheduledMessageMetadata.prototype.scheduledTime = null;
+
+        let $oneOfFields;
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(ScheduledMessageMetadata.prototype, "_revealKeyId", {
+            get: $util.oneOfGetter($oneOfFields = ["revealKeyId"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(ScheduledMessageMetadata.prototype, "_revealKey", {
+            get: $util.oneOfGetter($oneOfFields = ["revealKey"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(ScheduledMessageMetadata.prototype, "_scheduledTime", {
+            get: $util.oneOfGetter($oneOfFields = ["scheduledTime"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        ScheduledMessageMetadata.create = function create(properties) {
+            return new ScheduledMessageMetadata(properties);
+        };
+
+        ScheduledMessageMetadata.encode = function encode(m, w) {
+            if (!w)
+                w = $Writer.create();
+            if (m.revealKeyId != null && Object.hasOwnProperty.call(m, "revealKeyId"))
+                w.uint32(10).string(m.revealKeyId);
+            if (m.revealKey != null && Object.hasOwnProperty.call(m, "revealKey"))
+                w.uint32(18).bytes(m.revealKey);
+            if (m.scheduledTime != null && Object.hasOwnProperty.call(m, "scheduledTime"))
+                w.uint32(24).uint64(m.scheduledTime);
+            return w;
+        };
+
+        ScheduledMessageMetadata.decode = function decode(r, l, e) {
+            if (!(r instanceof $Reader))
+                r = $Reader.create(r);
+            var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.ScheduledMessageMetadata();
+            while (r.pos < c) {
+                var t = r.uint32();
+                if (t === e)
+                    break;
+                switch (t >>> 3) {
+                case 1: {
+                        m.revealKeyId = r.string();
+                        break;
+                    }
+                case 2: {
+                        m.revealKey = r.bytes();
+                        break;
+                    }
+                case 3: {
+                        m.scheduledTime = r.uint64();
+                        break;
+                    }
+                default:
+                    r.skipType(t & 7);
+                    break;
+                }
+            }
+            return m;
+        };
+
+        ScheduledMessageMetadata.fromObject = function fromObject(d) {
+            if (d instanceof $root.proto.ScheduledMessageMetadata)
+                return d;
+            var m = new $root.proto.ScheduledMessageMetadata();
+            if (d.revealKeyId != null) {
+                m.revealKeyId = String(d.revealKeyId);
+            }
+            if (d.revealKey != null) {
+                if (typeof d.revealKey === "string")
+                    $util.base64.decode(d.revealKey, m.revealKey = $util.newBuffer($util.base64.length(d.revealKey)), 0);
+                else if (d.revealKey.length >= 0)
+                    m.revealKey = d.revealKey;
+            }
+            if (d.scheduledTime != null) {
+                if ($util.Long)
+                    (m.scheduledTime = $util.Long.fromValue(d.scheduledTime)).unsigned = true;
+                else if (typeof d.scheduledTime === "string")
+                    m.scheduledTime = parseInt(d.scheduledTime, 10);
+                else if (typeof d.scheduledTime === "number")
+                    m.scheduledTime = d.scheduledTime;
+                else if (typeof d.scheduledTime === "object")
+                    m.scheduledTime = new $util.LongBits(d.scheduledTime.low >>> 0, d.scheduledTime.high >>> 0).toNumber(true);
+            }
+            return m;
+        };
+
+        ScheduledMessageMetadata.toObject = function toObject(m, o) {
+            if (!o)
+                o = {};
+            var d = {};
+            if (m.revealKeyId != null && m.hasOwnProperty("revealKeyId")) {
+                d.revealKeyId = m.revealKeyId;
+                if (o.oneofs)
+                    d._revealKeyId = "revealKeyId";
+            }
+            if (m.revealKey != null && m.hasOwnProperty("revealKey")) {
+                d.revealKey = o.bytes === String ? $util.base64.encode(m.revealKey, 0, m.revealKey.length) : o.bytes === Array ? Array.prototype.slice.call(m.revealKey) : m.revealKey;
+                if (o.oneofs)
+                    d._revealKey = "revealKey";
+            }
+            if (m.scheduledTime != null && m.hasOwnProperty("scheduledTime")) {
+                if (typeof m.scheduledTime === "number")
+                    d.scheduledTime = o.longs === String ? String(m.scheduledTime) : m.scheduledTime;
+                else
+                    d.scheduledTime = o.longs === String ? longToString(m.scheduledTime, true) : o.longs === Number ? longToNumber(m.scheduledTime, true) : m.scheduledTime;
+                if (o.oneofs)
+                    d._scheduledTime = "scheduledTime";
+            }
+            return d;
+        };
+
+        ScheduledMessageMetadata.prototype.toJSON = function toJSON() {
+            return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+        };
+
+        ScheduledMessageMetadata.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+            if (typeUrlPrefix === undefined) {
+                typeUrlPrefix = "type.googleapis.com";
+            }
+            return typeUrlPrefix + "/proto.ScheduledMessageMetadata";
+        };
+
+        return ScheduledMessageMetadata;
     })();
 
     proto.SenderKeyDistributionMessage = (function() {
@@ -102758,6 +103779,8 @@ export const proto = $root.proto = (() => {
         WebMessageInfo.prototype.quarantinedMessage = null;
         WebMessageInfo.prototype.nonJidMentions = null;
         WebMessageInfo.prototype.hsmTag = null;
+        WebMessageInfo.prototype.ephemeralExpirationTimestamp = null;
+        WebMessageInfo.prototype.scheduledMessageMetadata = null;
 
         let $oneOfFields;
 
@@ -103109,6 +104132,18 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(WebMessageInfo.prototype, "_ephemeralExpirationTimestamp", {
+            get: $util.oneOfGetter($oneOfFields = ["ephemeralExpirationTimestamp"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(WebMessageInfo.prototype, "_scheduledMessageMetadata", {
+            get: $util.oneOfGetter($oneOfFields = ["scheduledMessageMetadata"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         WebMessageInfo.create = function create(properties) {
             return new WebMessageInfo(properties);
         };
@@ -103272,6 +104307,10 @@ export const proto = $root.proto = (() => {
                 w.uint32(624).uint32(m.nonJidMentions);
             if (m.hsmTag != null && Object.hasOwnProperty.call(m, "hsmTag"))
                 w.uint32(634).string(m.hsmTag);
+            if (m.ephemeralExpirationTimestamp != null && Object.hasOwnProperty.call(m, "ephemeralExpirationTimestamp"))
+                w.uint32(640).uint64(m.ephemeralExpirationTimestamp);
+            if (m.scheduledMessageMetadata != null && Object.hasOwnProperty.call(m, "scheduledMessageMetadata"))
+                $root.proto.ScheduledMessageMetadata.encode(m.scheduledMessageMetadata, w.uint32(650).fork()).ldelim();
             return w;
         };
 
@@ -103574,6 +104613,14 @@ export const proto = $root.proto = (() => {
                     }
                 case 79: {
                         m.hsmTag = r.string();
+                        break;
+                    }
+                case 80: {
+                        m.ephemeralExpirationTimestamp = r.uint64();
+                        break;
+                    }
+                case 81: {
+                        m.scheduledMessageMetadata = $root.proto.ScheduledMessageMetadata.decode(r, r.uint32());
                         break;
                     }
                 default:
@@ -104583,6 +105630,10 @@ export const proto = $root.proto = (() => {
             case 223:
                 m.messageStubType = 223;
                 break;
+            case "CONTACT_INFO":
+            case 224:
+                m.messageStubType = 224;
+                break;
             }
             if (d.clearMedia != null) {
                 m.clearMedia = Boolean(d.clearMedia);
@@ -104892,6 +105943,21 @@ export const proto = $root.proto = (() => {
             }
             if (d.hsmTag != null) {
                 m.hsmTag = String(d.hsmTag);
+            }
+            if (d.ephemeralExpirationTimestamp != null) {
+                if ($util.Long)
+                    (m.ephemeralExpirationTimestamp = $util.Long.fromValue(d.ephemeralExpirationTimestamp)).unsigned = true;
+                else if (typeof d.ephemeralExpirationTimestamp === "string")
+                    m.ephemeralExpirationTimestamp = parseInt(d.ephemeralExpirationTimestamp, 10);
+                else if (typeof d.ephemeralExpirationTimestamp === "number")
+                    m.ephemeralExpirationTimestamp = d.ephemeralExpirationTimestamp;
+                else if (typeof d.ephemeralExpirationTimestamp === "object")
+                    m.ephemeralExpirationTimestamp = new $util.LongBits(d.ephemeralExpirationTimestamp.low >>> 0, d.ephemeralExpirationTimestamp.high >>> 0).toNumber(true);
+            }
+            if (d.scheduledMessageMetadata != null) {
+                if (typeof d.scheduledMessageMetadata !== "object")
+                    throw TypeError(".proto.WebMessageInfo.scheduledMessageMetadata: object expected");
+                m.scheduledMessageMetadata = $root.proto.ScheduledMessageMetadata.fromObject(d.scheduledMessageMetadata);
             }
             return m;
         };
@@ -105277,6 +106343,19 @@ export const proto = $root.proto = (() => {
                 if (o.oneofs)
                     d._hsmTag = "hsmTag";
             }
+            if (m.ephemeralExpirationTimestamp != null && m.hasOwnProperty("ephemeralExpirationTimestamp")) {
+                if (typeof m.ephemeralExpirationTimestamp === "number")
+                    d.ephemeralExpirationTimestamp = o.longs === String ? String(m.ephemeralExpirationTimestamp) : m.ephemeralExpirationTimestamp;
+                else
+                    d.ephemeralExpirationTimestamp = o.longs === String ? longToString(m.ephemeralExpirationTimestamp, true) : o.longs === Number ? longToNumber(m.ephemeralExpirationTimestamp, true) : m.ephemeralExpirationTimestamp;
+                if (o.oneofs)
+                    d._ephemeralExpirationTimestamp = "ephemeralExpirationTimestamp";
+            }
+            if (m.scheduledMessageMetadata != null && m.hasOwnProperty("scheduledMessageMetadata")) {
+                d.scheduledMessageMetadata = $root.proto.ScheduledMessageMetadata.toObject(m.scheduledMessageMetadata, o);
+                if (o.oneofs)
+                    d._scheduledMessageMetadata = "scheduledMessageMetadata";
+            }
             return d;
         };
 
@@ -105537,6 +106616,7 @@ export const proto = $root.proto = (() => {
             values[valuesById[221] = "GROUP_MEMBER_SHARE_GROUP_HISTORY_MODE"] = 221;
             values[valuesById[222] = "GROUP_OPEN_BOT_ADDED"] = 222;
             values[valuesById[223] = "GROUP_TEE_BOT_ADDED"] = 223;
+            values[valuesById[224] = "CONTACT_INFO"] = 224;
             return values;
         })();
 
