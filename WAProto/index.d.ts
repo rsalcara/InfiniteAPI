@@ -4059,6 +4059,7 @@ export namespace proto {
             companionSupportEnabled?: (boolean|null);
             campaignSyncEnabled?: (boolean|null);
             insightsSyncEnabled?: (boolean|null);
+            recipientLimit?: (number|null);
         }
 
         class BusinessBroadcast implements IBusinessBroadcast {
@@ -4067,6 +4068,7 @@ export namespace proto {
             public companionSupportEnabled?: (boolean|null);
             public campaignSyncEnabled?: (boolean|null);
             public insightsSyncEnabled?: (boolean|null);
+            public recipientLimit?: (number|null);
             public static create(properties?: proto.DeviceCapabilities.IBusinessBroadcast): proto.DeviceCapabilities.BusinessBroadcast;
             public static encode(m: proto.DeviceCapabilities.IBusinessBroadcast, w?: $protobuf.Writer): $protobuf.Writer;
             public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.DeviceCapabilities.BusinessBroadcast;
@@ -15225,7 +15227,8 @@ export namespace proto {
             GROUP_MEMBER_SHARE_GROUP_HISTORY_MODE = 221,
             GROUP_OPEN_BOT_ADDED = 222,
             GROUP_TEE_BOT_ADDED = 223,
-            CONTACT_INFO = 224
+            CONTACT_INFO = 224,
+            SCHEDULED_MESSAGE_CREATED = 225
         }
     }
 

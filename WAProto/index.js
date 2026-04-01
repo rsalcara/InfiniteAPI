@@ -27660,6 +27660,7 @@ export const proto = $root.proto = (() => {
             BusinessBroadcast.prototype.companionSupportEnabled = null;
             BusinessBroadcast.prototype.campaignSyncEnabled = null;
             BusinessBroadcast.prototype.insightsSyncEnabled = null;
+            BusinessBroadcast.prototype.recipientLimit = null;
 
             let $oneOfFields;
 
@@ -27687,6 +27688,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessBroadcast.prototype, "_recipientLimit", {
+                get: $util.oneOfGetter($oneOfFields = ["recipientLimit"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             BusinessBroadcast.create = function create(properties) {
                 return new BusinessBroadcast(properties);
             };
@@ -27702,6 +27709,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(24).bool(m.campaignSyncEnabled);
                 if (m.insightsSyncEnabled != null && Object.hasOwnProperty.call(m, "insightsSyncEnabled"))
                     w.uint32(32).bool(m.insightsSyncEnabled);
+                if (m.recipientLimit != null && Object.hasOwnProperty.call(m, "recipientLimit"))
+                    w.uint32(40).int32(m.recipientLimit);
                 return w;
             };
 
@@ -27730,6 +27739,10 @@ export const proto = $root.proto = (() => {
                             m.insightsSyncEnabled = r.bool();
                             break;
                         }
+                    case 5: {
+                            m.recipientLimit = r.int32();
+                            break;
+                        }
                     default:
                         r.skipType(t & 7);
                         break;
@@ -27753,6 +27766,9 @@ export const proto = $root.proto = (() => {
                 }
                 if (d.insightsSyncEnabled != null) {
                     m.insightsSyncEnabled = Boolean(d.insightsSyncEnabled);
+                }
+                if (d.recipientLimit != null) {
+                    m.recipientLimit = d.recipientLimit | 0;
                 }
                 return m;
             };
@@ -27780,6 +27796,11 @@ export const proto = $root.proto = (() => {
                     d.insightsSyncEnabled = m.insightsSyncEnabled;
                     if (o.oneofs)
                         d._insightsSyncEnabled = "insightsSyncEnabled";
+                }
+                if (m.recipientLimit != null && m.hasOwnProperty("recipientLimit")) {
+                    d.recipientLimit = m.recipientLimit;
+                    if (o.oneofs)
+                        d._recipientLimit = "recipientLimit";
                 }
                 return d;
             };
@@ -105634,6 +105655,10 @@ export const proto = $root.proto = (() => {
             case 224:
                 m.messageStubType = 224;
                 break;
+            case "SCHEDULED_MESSAGE_CREATED":
+            case 225:
+                m.messageStubType = 225;
+                break;
             }
             if (d.clearMedia != null) {
                 m.clearMedia = Boolean(d.clearMedia);
@@ -106617,6 +106642,7 @@ export const proto = $root.proto = (() => {
             values[valuesById[222] = "GROUP_OPEN_BOT_ADDED"] = 222;
             values[valuesById[223] = "GROUP_TEE_BOT_ADDED"] = 223;
             values[valuesById[224] = "CONTACT_INFO"] = 224;
+            values[valuesById[225] = "SCHEDULED_MESSAGE_CREATED"] = 225;
             return values;
         })();
 
