@@ -59542,6 +59542,7 @@ export const proto = $root.proto = (() => {
                 HistorySyncOnDemandRequest.prototype.onDemandMsgCount = null;
                 HistorySyncOnDemandRequest.prototype.oldestMsgTimestampMs = null;
                 HistorySyncOnDemandRequest.prototype.accountLid = null;
+                HistorySyncOnDemandRequest.prototype.supportInlineResponse = null;
 
                 let $oneOfFields;
 
@@ -59581,6 +59582,12 @@ export const proto = $root.proto = (() => {
                     set: $util.oneOfSetter($oneOfFields)
                 });
 
+                // Virtual OneOf for proto3 optional field
+                Object.defineProperty(HistorySyncOnDemandRequest.prototype, "_supportInlineResponse", {
+                    get: $util.oneOfGetter($oneOfFields = ["supportInlineResponse"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+
                 HistorySyncOnDemandRequest.create = function create(properties) {
                     return new HistorySyncOnDemandRequest(properties);
                 };
@@ -59600,6 +59607,8 @@ export const proto = $root.proto = (() => {
                         w.uint32(40).int64(m.oldestMsgTimestampMs);
                     if (m.accountLid != null && Object.hasOwnProperty.call(m, "accountLid"))
                         w.uint32(50).string(m.accountLid);
+                    if (m.supportInlineResponse != null && Object.hasOwnProperty.call(m, "supportInlineResponse"))
+                        w.uint32(56).bool(m.supportInlineResponse);
                     return w;
                 };
 
@@ -59634,6 +59643,10 @@ export const proto = $root.proto = (() => {
                             }
                         case 6: {
                                 m.accountLid = r.string();
+                                break;
+                            }
+                        case 7: {
+                                m.supportInlineResponse = r.bool();
                                 break;
                             }
                         default:
@@ -59672,6 +59685,9 @@ export const proto = $root.proto = (() => {
                     }
                     if (d.accountLid != null) {
                         m.accountLid = String(d.accountLid);
+                    }
+                    if (d.supportInlineResponse != null) {
+                        m.supportInlineResponse = Boolean(d.supportInlineResponse);
                     }
                     return m;
                 };
@@ -59712,6 +59728,11 @@ export const proto = $root.proto = (() => {
                         d.accountLid = m.accountLid;
                         if (o.oneofs)
                             d._accountLid = "accountLid";
+                    }
+                    if (m.supportInlineResponse != null && m.hasOwnProperty("supportInlineResponse")) {
+                        d.supportInlineResponse = m.supportInlineResponse;
+                        if (o.oneofs)
+                            d._supportInlineResponse = "supportInlineResponse";
                     }
                     return d;
                 };
