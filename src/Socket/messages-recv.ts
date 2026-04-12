@@ -2251,12 +2251,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 
 		const encNode = getBinaryNodeChild(node, 'enc')
-		// TODO: temporary fix for crashes and issues resulting of failed msmsg decryption
-		if (encNode?.attrs.type === 'msmsg') {
-			logger.debug({ key: node.attrs.key }, 'ignored msmsg')
-			await sendMessageAck(node, NACK_REASONS.MissingMessageSecret)
-			return
-		}
+		// msmsg block removed — allow msmsg decryption (required for view-once on linked devices)
 
 		// Handle view-once unavailable sync from primary device.
 		// When the primary device sends a view-once, linked companions receive
@@ -2382,6 +2377,23 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								{ msgId: msg.key?.id, messageType },
 								'CTWA: Skipping placeholder resend for unavailable fanout type'
 							)
+							// For view-once: emit the message with a viewOnceMessage placeholder
+							// so consumers (zpro, etc.) can detect and display it.
+							// Include a message wrapper so isValidMsg accepts it.
+							if (messageType === 'view_once_unavailable_fanout') {
+								msg.key.isViewOnce = true
+								msg.message = {
+									viewOnceMessage: {
+										message: {
+											imageMessage: {
+												viewOnce: true,
+											}
+										}
+									}
+								}
+								const upsertType = node.attrs.offline ? 'append' : 'notify'
+								await upsertMessage(msg, upsertType)
+							}
 							metrics.ctwaRecoveryFailures.inc({ reason: 'unavailable_fanout' })
 							return sendMessageAck(node)
 						}
