@@ -2255,11 +2255,30 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		// Handle view-once unavailable sync from primary device.
 		// When the primary device sends a view-once, linked companions receive
-		// <unavailable type="view_once"/> — no enc content, just a sync signal.
-		// Acknowledge and skip decryption (nothing to decrypt).
+		// Handle view-once unavailable sync from primary device.
+		// Emit a viewOnceMessage placeholder so consumers can display it.
 		const unavailableNode = getBinaryNodeChild(node, 'unavailable')
 		if (unavailableNode?.attrs?.type === 'view_once') {
-			logger.debug({ id: node.attrs.id, from: node.attrs.from }, 'received view_once unavailable sync from primary device')
+			logger.debug({ id: node.attrs.id, from: node.attrs.from }, 'received view_once unavailable — emitting placeholder')
+			const { fullMessage: voMsg } = decryptMessageNode(
+				node,
+				authState.creds.me!.id,
+				authState.creds.me!.lid || '',
+				signalRepository,
+				logger,
+			)
+			voMsg.key.isViewOnce = true
+			voMsg.message = {
+				viewOnceMessage: {
+					message: {
+						imageMessage: {
+							viewOnce: true,
+						}
+					}
+				}
+			}
+			const upsertType = node.attrs.offline ? 'append' : 'notify'
+			await upsertMessage(voMsg, upsertType)
 			await sendMessageAck(node)
 			return
 		}
