@@ -31,9 +31,26 @@ export const STATUS_EXPIRY_SECONDS = 24 * 60 * 60
 export const PLACEHOLDER_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 export const NOISE_MODE = 'Noise_XX_25519_AESGCM_SHA256\0\0\0\0'
-export const DICT_VERSION = 3
+
+/**
+ * Protocol mode: 'web' (default) or 'native' (experimental)
+ * - web: WA\x06\x03 — standard WhatsApp Web protocol
+ * - native: WAM\x05 — native Android protocol (may enable view-once media on companions)
+ *
+ * Set via BAILEYS_PROTOCOL env var:
+ *   BAILEYS_PROTOCOL=native
+ */
+const PROTOCOL_MODE = process.env.BAILEYS_PROTOCOL?.trim().toLowerCase() === 'native' ? 'native' : 'web'
+
+export const DICT_VERSION = PROTOCOL_MODE === 'native' ? 5 : 3
 export const KEY_BUNDLE_TYPE = Buffer.from([5])
-export const NOISE_WA_HEADER = Buffer.from([87, 65, 6, DICT_VERSION]) // last is "DICT_VERSION"
+
+// WA\x06\x03 = web protocol, WAM\x05 = native Android protocol
+export const NOISE_WA_HEADER = PROTOCOL_MODE === 'native'
+	? Buffer.from([87, 65, 77, DICT_VERSION]) // WAM\x05
+	: Buffer.from([87, 65, 6, DICT_VERSION])  // WA\x06\x03
+
+export { PROTOCOL_MODE }
 /** from: https://stackoverflow.com/questions/3809401/what-is-a-good-regular-expression-to-match-a-url */
 export const URL_REGEX = /https:\/\/(?![^:@\/\s]+:[^:@\/\s]+@)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(:\d+)?(\/[^\s]*)?/g
 

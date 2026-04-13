@@ -3,6 +3,7 @@ import { createHash } from 'crypto'
 import { proto } from '../../WAProto/index.js'
 import {
 	KEY_BUNDLE_TYPE,
+	PROTOCOL_MODE,
 	WA_ADV_ACCOUNT_SIG_PREFIX,
 	WA_ADV_DEVICE_SIG_PREFIX,
 	WA_ADV_HOSTED_ACCOUNT_SIG_PREFIX
@@ -58,7 +59,10 @@ const getClientPayload = (config: SocketConfig) => {
 		userAgent: getUserAgent(config)
 	}
 
-	payload.webInfo = getWebInfo(config)
+	// Native protocol (WAM\x05) does not use WebInfo — only web protocol does
+	if (PROTOCOL_MODE !== 'native') {
+		payload.webInfo = getWebInfo(config)
+	}
 
 	return payload
 }
