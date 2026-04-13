@@ -2241,25 +2241,34 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleMessage = async (node: BinaryNode) => {
+		const _encNode = getBinaryNodeChild(node, 'enc')
+		const _unavNode = getBinaryNodeChild(node, 'unavailable')
+		// VO_RAW: log BEFORE any filtering — captures every stanza that enters handleMessage
+		console.log(`[VO_RAW] id=${node.attrs.id} from=${node.attrs.from} type=${node.attrs.type} enc=${_encNode ? _encNode.attrs?.type : 'NO'} unavailable=${_unavNode ? _unavNode.attrs?.type : 'NO'} children=${Array.isArray(node.content) ? (node.content as BinaryNode[]).map(c => c.tag).join(',') : 'none'}`)
+
 		if (shouldIgnoreJid(node.attrs.from!) && node.attrs.from !== S_WHATSAPP_NET) {
+			console.log(`[VO_RAW] IGNORED by shouldIgnoreJid: ${node.attrs.from}`)
 			logger.trace({ from: node.attrs.from }, 'ignored message')
-			// Send a clean ACK (no error code) so the server considers the
-			// message delivered. Using error 500 (UnhandledError) previously
-			// caused the server to retry delivery, generating duplicate traffic.
 			await sendMessageAck(node)
 			return
 		}
 
 		const encNode = getBinaryNodeChild(node, 'enc')
-		// msmsg block removed — allow msmsg decryption (required for view-once on linked devices)
-
-		// Handle view-once unavailable sync from primary device.
-		// When the primary device sends a view-once, linked companions receive
-		// Handle view-once unavailable sync from primary device.
-		// Emit a viewOnceMessage placeholder so consumers can display it.
 		const unavailableNode = getBinaryNodeChild(node, 'unavailable')
+
+		// DEBUG: log every incoming message stanza to trace view-once delivery
+		logger.info({
+			id: node.attrs.id,
+			from: node.attrs.from,
+			type: node.attrs.type,
+			hasEnc: !!encNode,
+			encType: encNode?.attrs?.type,
+			hasUnavailable: !!unavailableNode,
+			unavailableType: unavailableNode?.attrs?.type,
+		}, 'VO_TRACE: incoming message stanza')
+
+		// msmsg block removed — allow msmsg decryption (required for view-once on linked devices)
 		if (unavailableNode?.attrs?.type === 'view_once') {
-			logger.debug({ id: node.attrs.id, from: node.attrs.from }, 'received view_once unavailable — emitting placeholder')
 			const { fullMessage: voMsg } = decryptMessageNode(
 				node,
 				authState.creds.me!.id,
@@ -2268,6 +2277,31 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				logger,
 			)
 			voMsg.key.isViewOnce = true
+
+			// Try to request the actual view-once content from the primary phone via PDO
+			// The phone may resend the full media (url, mediaKey, directPath, etc.)
+			console.log(`[VO_PDO] Requesting view-once content via PDO for ${voMsg.key.id} from ${voMsg.key.remoteJid}`)
+			try {
+				const requestId = await requestPlaceholderResend(voMsg.key, {
+					key: { ...voMsg.key },
+					pushName: voMsg.pushName,
+					messageTimestamp: voMsg.messageTimestamp,
+					participant: voMsg.key.participant,
+					participantAlt: voMsg.key.participantAlt
+				})
+				if (requestId && requestId !== 'RESOLVED') {
+					console.log(`[VO_PDO] PDO request sent! requestId=${requestId} — waiting for phone to resend`)
+				} else if (requestId === 'RESOLVED') {
+					console.log(`[VO_PDO] Message arrived during PDO delay!`)
+				} else {
+					console.log(`[VO_PDO] Already requested or no response`)
+				}
+			} catch (err: any) {
+				console.log(`[VO_PDO] PDO request failed: ${err.message} — falling back to placeholder`)
+			}
+
+			// Emit placeholder immediately so consumers see the notification
+			// If PDO succeeds, the real message will arrive via messages.upsert later
 			voMsg.message = {
 				viewOnceMessage: {
 					message: {
