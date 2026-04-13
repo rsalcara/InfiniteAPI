@@ -48,23 +48,7 @@ const getWebInfo = (config: SocketConfig): proto.ClientPayload.IWebInfo => {
 		webSubPlatform = PLATFORM_MAP[config.browser[0] as keyof typeof PLATFORM_MAP]
 	}
 
-	return {
-		webSubPlatform,
-		webdPayload: {
-			usesParticipantInKey: true,
-			supportsStarredMessages: true,
-			supportsDocumentMessages: true,
-			supportsUrlMessages: true,
-			supportsMediaRetry: true,
-			supportsE2EImage: true,
-			supportsE2EVideo: true,
-			supportsE2EAudio: true,
-			supportsE2EDocument: true,
-			documentTypes: 'application/pdf,image/*,video/*,audio/*',
-			// features bitmask — enables view-once media on companion
-			features: Buffer.from([0x02]),
-		}
-	}
+	return { webSubPlatform }
 }
 
 const getClientPayload = (config: SocketConfig) => {
