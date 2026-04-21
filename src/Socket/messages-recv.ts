@@ -2241,13 +2241,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleMessage = async (node: BinaryNode) => {
-		const _encNode = getBinaryNodeChild(node, 'enc')
-		const _unavNode = getBinaryNodeChild(node, 'unavailable')
-		// VO_RAW: log BEFORE any filtering — captures every stanza that enters handleMessage
-		console.log(`[VO_RAW] id=${node.attrs.id} from=${node.attrs.from} type=${node.attrs.type} enc=${_encNode ? _encNode.attrs?.type : 'NO'} unavailable=${_unavNode ? _unavNode.attrs?.type : 'NO'} children=${Array.isArray(node.content) ? (node.content as BinaryNode[]).map(c => c.tag).join(',') : 'none'}`)
-
 		if (shouldIgnoreJid(node.attrs.from!) && node.attrs.from !== S_WHATSAPP_NET) {
-			console.log(`[VO_RAW] IGNORED by shouldIgnoreJid: ${node.attrs.from}`)
 			logger.trace({ from: node.attrs.from }, 'ignored message')
 			await sendMessageAck(node)
 			return
