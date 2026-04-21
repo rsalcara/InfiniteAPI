@@ -2250,17 +2250,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const encNode = getBinaryNodeChild(node, 'enc')
 		const unavailableNode = getBinaryNodeChild(node, 'unavailable')
 
-		// DEBUG: log every incoming message stanza to trace view-once delivery
-		logger.info({
-			id: node.attrs.id,
-			from: node.attrs.from,
-			type: node.attrs.type,
-			hasEnc: !!encNode,
-			encType: encNode?.attrs?.type,
-			hasUnavailable: !!unavailableNode,
-			unavailableType: unavailableNode?.attrs?.type,
-		}, 'VO_TRACE: incoming message stanza')
-
 		// msmsg block removed — allow msmsg decryption (required for view-once on linked devices)
 		if (unavailableNode?.attrs?.type === 'view_once') {
 			const { fullMessage: voMsg } = decryptMessageNode(
