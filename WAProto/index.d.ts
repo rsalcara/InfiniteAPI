@@ -10692,6 +10692,8 @@ export namespace proto {
         CUSTOMER_DATA_ACTION = 83,
         SUBSCRIPTIONS_SYNC_V2_ACTION = 84,
         THREAD_PIN_ACTION = 85,
+        AUTO_ORGANIZE_BUSINESS_CHAT_SETTING = 86,
+        BIZ_AI_SETTINGS_NUDGE_ACTION = 87,
         SHARE_OWN_PN = 10001,
         BUSINESS_BROADCAST_ACTION = 10002,
         AI_THREAD_DELETE_ACTION = 10003
@@ -12309,6 +12311,8 @@ export namespace proto {
         customerDataAction?: (proto.SyncActionValue.ICustomerDataAction|null);
         subscriptionsSyncV2Action?: (proto.SyncActionValue.ISubscriptionsSyncV2Action|null);
         threadPinAction?: (proto.SyncActionValue.IThreadPinAction|null);
+        autoOrganizeBusinessChatSetting?: (proto.SyncActionValue.IAutoOrganizeBusinessChatSetting|null);
+        bizAiSettingsNudgeAction?: (proto.SyncActionValue.IBizAISettingsNudgeAction|null);
     }
 
     class SyncActionValue implements ISyncActionValue {
@@ -12389,6 +12393,8 @@ export namespace proto {
         public customerDataAction?: (proto.SyncActionValue.ICustomerDataAction|null);
         public subscriptionsSyncV2Action?: (proto.SyncActionValue.ISubscriptionsSyncV2Action|null);
         public threadPinAction?: (proto.SyncActionValue.IThreadPinAction|null);
+        public autoOrganizeBusinessChatSetting?: (proto.SyncActionValue.IAutoOrganizeBusinessChatSetting|null);
+        public bizAiSettingsNudgeAction?: (proto.SyncActionValue.IBizAISettingsNudgeAction|null);
         public static create(properties?: proto.ISyncActionValue): proto.SyncActionValue;
         public static encode(m: proto.ISyncActionValue, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue;
@@ -12470,6 +12476,22 @@ export namespace proto {
             public static getTypeUrl(typeUrlPrefix?: string): string;
         }
 
+        interface IAutoOrganizeBusinessChatSetting {
+            autoOrganize?: (boolean|null);
+        }
+
+        class AutoOrganizeBusinessChatSetting implements IAutoOrganizeBusinessChatSetting {
+            constructor(p?: proto.SyncActionValue.IAutoOrganizeBusinessChatSetting);
+            public autoOrganize?: (boolean|null);
+            public static create(properties?: proto.SyncActionValue.IAutoOrganizeBusinessChatSetting): proto.SyncActionValue.AutoOrganizeBusinessChatSetting;
+            public static encode(m: proto.SyncActionValue.IAutoOrganizeBusinessChatSetting, w?: $protobuf.Writer): $protobuf.Writer;
+            public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue.AutoOrganizeBusinessChatSetting;
+            public static fromObject(d: { [k: string]: any }): proto.SyncActionValue.AutoOrganizeBusinessChatSetting;
+            public static toObject(m: proto.SyncActionValue.AutoOrganizeBusinessChatSetting, o?: $protobuf.IConversionOptions): { [k: string]: any };
+            public toJSON(): { [k: string]: any };
+            public static getTypeUrl(typeUrlPrefix?: string): string;
+        }
+
         interface IAvatarUpdatedAction {
             eventType?: (proto.SyncActionValue.AvatarUpdatedAction.AvatarEventType|null);
             recentAvatarStickers?: (proto.SyncActionValue.IStickerAction[]|null);
@@ -12494,6 +12516,38 @@ export namespace proto {
                 UPDATED = 0,
                 CREATED = 1,
                 DELETED = 2
+            }
+        }
+
+        interface IBizAISettingsNudgeAction {
+            category?: (proto.SyncActionValue.BizAISettingsNudgeAction.BizAISettingsCategory|null);
+            version?: (number|Long|null);
+            updatedAtMs?: (number|Long|null);
+        }
+
+        class BizAISettingsNudgeAction implements IBizAISettingsNudgeAction {
+            constructor(p?: proto.SyncActionValue.IBizAISettingsNudgeAction);
+            public category?: (proto.SyncActionValue.BizAISettingsNudgeAction.BizAISettingsCategory|null);
+            public version?: (number|Long|null);
+            public updatedAtMs?: (number|Long|null);
+            public static create(properties?: proto.SyncActionValue.IBizAISettingsNudgeAction): proto.SyncActionValue.BizAISettingsNudgeAction;
+            public static encode(m: proto.SyncActionValue.IBizAISettingsNudgeAction, w?: $protobuf.Writer): $protobuf.Writer;
+            public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue.BizAISettingsNudgeAction;
+            public static fromObject(d: { [k: string]: any }): proto.SyncActionValue.BizAISettingsNudgeAction;
+            public static toObject(m: proto.SyncActionValue.BizAISettingsNudgeAction, o?: $protobuf.IConversionOptions): { [k: string]: any };
+            public toJSON(): { [k: string]: any };
+            public static getTypeUrl(typeUrlPrefix?: string): string;
+        }
+
+        namespace BizAISettingsNudgeAction {
+
+            enum BizAISettingsCategory {
+                UNKNOWN = 0,
+                INSTRUCTIONS = 1,
+                RESPONSE_SETTINGS = 2,
+                EXAMPLE_RESPONSES = 3,
+                KNOWLEDGE = 4,
+                LEAD_GEN = 5
             }
         }
 
@@ -13844,6 +13898,7 @@ export namespace proto {
             shareToFB?: (boolean|null);
             shareToIG?: (boolean|null);
             customLists?: (proto.SyncActionValue.StatusPrivacyAction.ICustomList[]|null);
+            modes?: (proto.SyncActionValue.StatusPrivacyAction.StatusDistributionMode[]|null);
         }
 
         class StatusPrivacyAction implements IStatusPrivacyAction {
@@ -13853,6 +13908,7 @@ export namespace proto {
             public shareToFB?: (boolean|null);
             public shareToIG?: (boolean|null);
             public customLists: proto.SyncActionValue.StatusPrivacyAction.ICustomList[];
+            public modes: proto.SyncActionValue.StatusPrivacyAction.StatusDistributionMode[];
             public static create(properties?: proto.SyncActionValue.IStatusPrivacyAction): proto.SyncActionValue.StatusPrivacyAction;
             public static encode(m: proto.SyncActionValue.IStatusPrivacyAction, w?: $protobuf.Writer): $protobuf.Writer;
             public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue.StatusPrivacyAction;
