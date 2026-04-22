@@ -75158,6 +75158,8 @@ export const proto = $root.proto = (() => {
         values[valuesById[83] = "CUSTOMER_DATA_ACTION"] = 83;
         values[valuesById[84] = "SUBSCRIPTIONS_SYNC_V2_ACTION"] = 84;
         values[valuesById[85] = "THREAD_PIN_ACTION"] = 85;
+        values[valuesById[86] = "AUTO_ORGANIZE_BUSINESS_CHAT_SETTING"] = 86;
+        values[valuesById[87] = "BIZ_AI_SETTINGS_NUDGE_ACTION"] = 87;
         values[valuesById[10001] = "SHARE_OWN_PN"] = 10001;
         values[valuesById[10002] = "BUSINESS_BROADCAST_ACTION"] = 10002;
         values[valuesById[10003] = "AI_THREAD_DELETE_ACTION"] = 10003;
@@ -85556,6 +85558,8 @@ export const proto = $root.proto = (() => {
         SyncActionValue.prototype.customerDataAction = null;
         SyncActionValue.prototype.subscriptionsSyncV2Action = null;
         SyncActionValue.prototype.threadPinAction = null;
+        SyncActionValue.prototype.autoOrganizeBusinessChatSetting = null;
+        SyncActionValue.prototype.bizAiSettingsNudgeAction = null;
 
         let $oneOfFields;
 
@@ -86015,6 +86019,18 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(SyncActionValue.prototype, "_autoOrganizeBusinessChatSetting", {
+            get: $util.oneOfGetter($oneOfFields = ["autoOrganizeBusinessChatSetting"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(SyncActionValue.prototype, "_bizAiSettingsNudgeAction", {
+            get: $util.oneOfGetter($oneOfFields = ["bizAiSettingsNudgeAction"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         SyncActionValue.create = function create(properties) {
             return new SyncActionValue(properties);
         };
@@ -86174,6 +86190,10 @@ export const proto = $root.proto = (() => {
                 $root.proto.SyncActionValue.SubscriptionsSyncV2Action.encode(m.subscriptionsSyncV2Action, w.uint32(674).fork()).ldelim();
             if (m.threadPinAction != null && Object.hasOwnProperty.call(m, "threadPinAction"))
                 $root.proto.SyncActionValue.ThreadPinAction.encode(m.threadPinAction, w.uint32(682).fork()).ldelim();
+            if (m.autoOrganizeBusinessChatSetting != null && Object.hasOwnProperty.call(m, "autoOrganizeBusinessChatSetting"))
+                $root.proto.SyncActionValue.AutoOrganizeBusinessChatSetting.encode(m.autoOrganizeBusinessChatSetting, w.uint32(690).fork()).ldelim();
+            if (m.bizAiSettingsNudgeAction != null && Object.hasOwnProperty.call(m, "bizAiSettingsNudgeAction"))
+                $root.proto.SyncActionValue.BizAISettingsNudgeAction.encode(m.bizAiSettingsNudgeAction, w.uint32(698).fork()).ldelim();
             return w;
         };
 
@@ -86488,6 +86508,14 @@ export const proto = $root.proto = (() => {
                     }
                 case 85: {
                         m.threadPinAction = $root.proto.SyncActionValue.ThreadPinAction.decode(r, r.uint32());
+                        break;
+                    }
+                case 86: {
+                        m.autoOrganizeBusinessChatSetting = $root.proto.SyncActionValue.AutoOrganizeBusinessChatSetting.decode(r, r.uint32());
+                        break;
+                    }
+                case 87: {
+                        m.bizAiSettingsNudgeAction = $root.proto.SyncActionValue.BizAISettingsNudgeAction.decode(r, r.uint32());
                         break;
                     }
                 default:
@@ -86887,6 +86915,16 @@ export const proto = $root.proto = (() => {
                     throw TypeError(".proto.SyncActionValue.threadPinAction: object expected");
                 m.threadPinAction = $root.proto.SyncActionValue.ThreadPinAction.fromObject(d.threadPinAction);
             }
+            if (d.autoOrganizeBusinessChatSetting != null) {
+                if (typeof d.autoOrganizeBusinessChatSetting !== "object")
+                    throw TypeError(".proto.SyncActionValue.autoOrganizeBusinessChatSetting: object expected");
+                m.autoOrganizeBusinessChatSetting = $root.proto.SyncActionValue.AutoOrganizeBusinessChatSetting.fromObject(d.autoOrganizeBusinessChatSetting);
+            }
+            if (d.bizAiSettingsNudgeAction != null) {
+                if (typeof d.bizAiSettingsNudgeAction !== "object")
+                    throw TypeError(".proto.SyncActionValue.bizAiSettingsNudgeAction: object expected");
+                m.bizAiSettingsNudgeAction = $root.proto.SyncActionValue.BizAISettingsNudgeAction.fromObject(d.bizAiSettingsNudgeAction);
+            }
             return m;
         };
 
@@ -87276,6 +87314,16 @@ export const proto = $root.proto = (() => {
                 d.threadPinAction = $root.proto.SyncActionValue.ThreadPinAction.toObject(m.threadPinAction, o);
                 if (o.oneofs)
                     d._threadPinAction = "threadPinAction";
+            }
+            if (m.autoOrganizeBusinessChatSetting != null && m.hasOwnProperty("autoOrganizeBusinessChatSetting")) {
+                d.autoOrganizeBusinessChatSetting = $root.proto.SyncActionValue.AutoOrganizeBusinessChatSetting.toObject(m.autoOrganizeBusinessChatSetting, o);
+                if (o.oneofs)
+                    d._autoOrganizeBusinessChatSetting = "autoOrganizeBusinessChatSetting";
+            }
+            if (m.bizAiSettingsNudgeAction != null && m.hasOwnProperty("bizAiSettingsNudgeAction")) {
+                d.bizAiSettingsNudgeAction = $root.proto.SyncActionValue.BizAISettingsNudgeAction.toObject(m.bizAiSettingsNudgeAction, o);
+                if (o.oneofs)
+                    d._bizAiSettingsNudgeAction = "bizAiSettingsNudgeAction";
             }
             return d;
         };
@@ -87708,6 +87756,94 @@ export const proto = $root.proto = (() => {
             return ArchiveChatAction;
         })();
 
+        SyncActionValue.AutoOrganizeBusinessChatSetting = (function() {
+
+            function AutoOrganizeBusinessChatSetting(p) {
+                if (p)
+                    for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null)
+                            this[ks[i]] = p[ks[i]];
+            }
+
+            AutoOrganizeBusinessChatSetting.prototype.autoOrganize = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(AutoOrganizeBusinessChatSetting.prototype, "_autoOrganize", {
+                get: $util.oneOfGetter($oneOfFields = ["autoOrganize"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            AutoOrganizeBusinessChatSetting.create = function create(properties) {
+                return new AutoOrganizeBusinessChatSetting(properties);
+            };
+
+            AutoOrganizeBusinessChatSetting.encode = function encode(m, w) {
+                if (!w)
+                    w = $Writer.create();
+                if (m.autoOrganize != null && Object.hasOwnProperty.call(m, "autoOrganize"))
+                    w.uint32(8).bool(m.autoOrganize);
+                return w;
+            };
+
+            AutoOrganizeBusinessChatSetting.decode = function decode(r, l, e) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.SyncActionValue.AutoOrganizeBusinessChatSetting();
+                while (r.pos < c) {
+                    var t = r.uint32();
+                    if (t === e)
+                        break;
+                    switch (t >>> 3) {
+                    case 1: {
+                            m.autoOrganize = r.bool();
+                            break;
+                        }
+                    default:
+                        r.skipType(t & 7);
+                        break;
+                    }
+                }
+                return m;
+            };
+
+            AutoOrganizeBusinessChatSetting.fromObject = function fromObject(d) {
+                if (d instanceof $root.proto.SyncActionValue.AutoOrganizeBusinessChatSetting)
+                    return d;
+                var m = new $root.proto.SyncActionValue.AutoOrganizeBusinessChatSetting();
+                if (d.autoOrganize != null) {
+                    m.autoOrganize = Boolean(d.autoOrganize);
+                }
+                return m;
+            };
+
+            AutoOrganizeBusinessChatSetting.toObject = function toObject(m, o) {
+                if (!o)
+                    o = {};
+                var d = {};
+                if (m.autoOrganize != null && m.hasOwnProperty("autoOrganize")) {
+                    d.autoOrganize = m.autoOrganize;
+                    if (o.oneofs)
+                        d._autoOrganize = "autoOrganize";
+                }
+                return d;
+            };
+
+            AutoOrganizeBusinessChatSetting.prototype.toJSON = function toJSON() {
+                return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            AutoOrganizeBusinessChatSetting.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                if (typeUrlPrefix === undefined) {
+                    typeUrlPrefix = "type.googleapis.com";
+                }
+                return typeUrlPrefix + "/proto.SyncActionValue.AutoOrganizeBusinessChatSetting";
+            };
+
+            return AutoOrganizeBusinessChatSetting;
+        })();
+
         SyncActionValue.AvatarUpdatedAction = (function() {
 
             function AvatarUpdatedAction(p) {
@@ -87850,6 +87986,196 @@ export const proto = $root.proto = (() => {
             })();
 
             return AvatarUpdatedAction;
+        })();
+
+        SyncActionValue.BizAISettingsNudgeAction = (function() {
+
+            function BizAISettingsNudgeAction(p) {
+                if (p)
+                    for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null)
+                            this[ks[i]] = p[ks[i]];
+            }
+
+            BizAISettingsNudgeAction.prototype.category = null;
+            BizAISettingsNudgeAction.prototype.version = null;
+            BizAISettingsNudgeAction.prototype.updatedAtMs = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BizAISettingsNudgeAction.prototype, "_category", {
+                get: $util.oneOfGetter($oneOfFields = ["category"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BizAISettingsNudgeAction.prototype, "_version", {
+                get: $util.oneOfGetter($oneOfFields = ["version"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BizAISettingsNudgeAction.prototype, "_updatedAtMs", {
+                get: $util.oneOfGetter($oneOfFields = ["updatedAtMs"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            BizAISettingsNudgeAction.create = function create(properties) {
+                return new BizAISettingsNudgeAction(properties);
+            };
+
+            BizAISettingsNudgeAction.encode = function encode(m, w) {
+                if (!w)
+                    w = $Writer.create();
+                if (m.category != null && Object.hasOwnProperty.call(m, "category"))
+                    w.uint32(8).int32(m.category);
+                if (m.version != null && Object.hasOwnProperty.call(m, "version"))
+                    w.uint32(16).int64(m.version);
+                if (m.updatedAtMs != null && Object.hasOwnProperty.call(m, "updatedAtMs"))
+                    w.uint32(24).int64(m.updatedAtMs);
+                return w;
+            };
+
+            BizAISettingsNudgeAction.decode = function decode(r, l, e) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.SyncActionValue.BizAISettingsNudgeAction();
+                while (r.pos < c) {
+                    var t = r.uint32();
+                    if (t === e)
+                        break;
+                    switch (t >>> 3) {
+                    case 1: {
+                            m.category = r.int32();
+                            break;
+                        }
+                    case 2: {
+                            m.version = r.int64();
+                            break;
+                        }
+                    case 3: {
+                            m.updatedAtMs = r.int64();
+                            break;
+                        }
+                    default:
+                        r.skipType(t & 7);
+                        break;
+                    }
+                }
+                return m;
+            };
+
+            BizAISettingsNudgeAction.fromObject = function fromObject(d) {
+                if (d instanceof $root.proto.SyncActionValue.BizAISettingsNudgeAction)
+                    return d;
+                var m = new $root.proto.SyncActionValue.BizAISettingsNudgeAction();
+                switch (d.category) {
+                default:
+                    if (typeof d.category === "number") {
+                        m.category = d.category;
+                        break;
+                    }
+                    break;
+                case "UNKNOWN":
+                case 0:
+                    m.category = 0;
+                    break;
+                case "INSTRUCTIONS":
+                case 1:
+                    m.category = 1;
+                    break;
+                case "RESPONSE_SETTINGS":
+                case 2:
+                    m.category = 2;
+                    break;
+                case "EXAMPLE_RESPONSES":
+                case 3:
+                    m.category = 3;
+                    break;
+                case "KNOWLEDGE":
+                case 4:
+                    m.category = 4;
+                    break;
+                case "LEAD_GEN":
+                case 5:
+                    m.category = 5;
+                    break;
+                }
+                if (d.version != null) {
+                    if ($util.Long)
+                        (m.version = $util.Long.fromValue(d.version)).unsigned = false;
+                    else if (typeof d.version === "string")
+                        m.version = parseInt(d.version, 10);
+                    else if (typeof d.version === "number")
+                        m.version = d.version;
+                    else if (typeof d.version === "object")
+                        m.version = new $util.LongBits(d.version.low >>> 0, d.version.high >>> 0).toNumber();
+                }
+                if (d.updatedAtMs != null) {
+                    if ($util.Long)
+                        (m.updatedAtMs = $util.Long.fromValue(d.updatedAtMs)).unsigned = false;
+                    else if (typeof d.updatedAtMs === "string")
+                        m.updatedAtMs = parseInt(d.updatedAtMs, 10);
+                    else if (typeof d.updatedAtMs === "number")
+                        m.updatedAtMs = d.updatedAtMs;
+                    else if (typeof d.updatedAtMs === "object")
+                        m.updatedAtMs = new $util.LongBits(d.updatedAtMs.low >>> 0, d.updatedAtMs.high >>> 0).toNumber();
+                }
+                return m;
+            };
+
+            BizAISettingsNudgeAction.toObject = function toObject(m, o) {
+                if (!o)
+                    o = {};
+                var d = {};
+                if (m.category != null && m.hasOwnProperty("category")) {
+                    d.category = o.enums === String ? $root.proto.SyncActionValue.BizAISettingsNudgeAction.BizAISettingsCategory[m.category] === undefined ? m.category : $root.proto.SyncActionValue.BizAISettingsNudgeAction.BizAISettingsCategory[m.category] : m.category;
+                    if (o.oneofs)
+                        d._category = "category";
+                }
+                if (m.version != null && m.hasOwnProperty("version")) {
+                    if (typeof m.version === "number")
+                        d.version = o.longs === String ? String(m.version) : m.version;
+                    else
+                        d.version = o.longs === String ? longToString(m.version) : o.longs === Number ? longToNumber(m.version) : m.version;
+                    if (o.oneofs)
+                        d._version = "version";
+                }
+                if (m.updatedAtMs != null && m.hasOwnProperty("updatedAtMs")) {
+                    if (typeof m.updatedAtMs === "number")
+                        d.updatedAtMs = o.longs === String ? String(m.updatedAtMs) : m.updatedAtMs;
+                    else
+                        d.updatedAtMs = o.longs === String ? longToString(m.updatedAtMs) : o.longs === Number ? longToNumber(m.updatedAtMs) : m.updatedAtMs;
+                    if (o.oneofs)
+                        d._updatedAtMs = "updatedAtMs";
+                }
+                return d;
+            };
+
+            BizAISettingsNudgeAction.prototype.toJSON = function toJSON() {
+                return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            BizAISettingsNudgeAction.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                if (typeUrlPrefix === undefined) {
+                    typeUrlPrefix = "type.googleapis.com";
+                }
+                return typeUrlPrefix + "/proto.SyncActionValue.BizAISettingsNudgeAction";
+            };
+
+            BizAISettingsNudgeAction.BizAISettingsCategory = (function() {
+                const valuesById = {}, values = Object.create(valuesById);
+                values[valuesById[0] = "UNKNOWN"] = 0;
+                values[valuesById[1] = "INSTRUCTIONS"] = 1;
+                values[valuesById[2] = "RESPONSE_SETTINGS"] = 2;
+                values[valuesById[3] = "EXAMPLE_RESPONSES"] = 3;
+                values[valuesById[4] = "KNOWLEDGE"] = 4;
+                values[valuesById[5] = "LEAD_GEN"] = 5;
+                return values;
+            })();
+
+            return BizAISettingsNudgeAction;
         })();
 
         SyncActionValue.BotWelcomeRequestAction = (function() {
@@ -96080,6 +96406,7 @@ export const proto = $root.proto = (() => {
             function StatusPrivacyAction(p) {
                 this.userJid = [];
                 this.customLists = [];
+                this.modes = [];
                 if (p)
                     for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
                         if (p[ks[i]] != null)
@@ -96091,6 +96418,7 @@ export const proto = $root.proto = (() => {
             StatusPrivacyAction.prototype.shareToFB = null;
             StatusPrivacyAction.prototype.shareToIG = null;
             StatusPrivacyAction.prototype.customLists = $util.emptyArray;
+            StatusPrivacyAction.prototype.modes = $util.emptyArray;
 
             let $oneOfFields;
 
@@ -96133,6 +96461,12 @@ export const proto = $root.proto = (() => {
                     for (var i = 0; i < m.customLists.length; ++i)
                         $root.proto.SyncActionValue.StatusPrivacyAction.CustomList.encode(m.customLists[i], w.uint32(42).fork()).ldelim();
                 }
+                if (m.modes != null && m.modes.length) {
+                    w.uint32(50).fork();
+                    for (var i = 0; i < m.modes.length; ++i)
+                        w.int32(m.modes[i]);
+                    w.ldelim();
+                }
                 return w;
             };
 
@@ -96167,6 +96501,17 @@ export const proto = $root.proto = (() => {
                             if (!(m.customLists && m.customLists.length))
                                 m.customLists = [];
                             m.customLists.push($root.proto.SyncActionValue.StatusPrivacyAction.CustomList.decode(r, r.uint32()));
+                            break;
+                        }
+                    case 6: {
+                            if (!(m.modes && m.modes.length))
+                                m.modes = [];
+                            if ((t & 7) === 2) {
+                                var c2 = r.uint32() + r.pos;
+                                while (r.pos < c2)
+                                    m.modes.push(r.int32());
+                            } else
+                                m.modes.push(r.int32());
                             break;
                         }
                     default:
@@ -96233,6 +96578,40 @@ export const proto = $root.proto = (() => {
                         m.customLists[i] = $root.proto.SyncActionValue.StatusPrivacyAction.CustomList.fromObject(d.customLists[i]);
                     }
                 }
+                if (d.modes) {
+                    if (!Array.isArray(d.modes))
+                        throw TypeError(".proto.SyncActionValue.StatusPrivacyAction.modes: array expected");
+                    m.modes = [];
+                    for (var i = 0; i < d.modes.length; ++i) {
+                        switch (d.modes[i]) {
+                        default:
+                            if (typeof d.modes[i] === "number") {
+                                m.modes[i] = d.modes[i];
+                                break;
+                            }
+                        case "ALLOW_LIST":
+                        case 0:
+                            m.modes[i] = 0;
+                            break;
+                        case "DENY_LIST":
+                        case 1:
+                            m.modes[i] = 1;
+                            break;
+                        case "CONTACTS":
+                        case 2:
+                            m.modes[i] = 2;
+                            break;
+                        case "CLOSE_FRIENDS":
+                        case 3:
+                            m.modes[i] = 3;
+                            break;
+                        case "CUSTOM_LIST":
+                        case 4:
+                            m.modes[i] = 4;
+                            break;
+                        }
+                    }
+                }
                 return m;
             };
 
@@ -96243,6 +96622,7 @@ export const proto = $root.proto = (() => {
                 if (o.arrays || o.defaults) {
                     d.userJid = [];
                     d.customLists = [];
+                    d.modes = [];
                 }
                 if (m.mode != null && m.hasOwnProperty("mode")) {
                     d.mode = o.enums === String ? $root.proto.SyncActionValue.StatusPrivacyAction.StatusDistributionMode[m.mode] === undefined ? m.mode : $root.proto.SyncActionValue.StatusPrivacyAction.StatusDistributionMode[m.mode] : m.mode;
@@ -96269,6 +96649,12 @@ export const proto = $root.proto = (() => {
                     d.customLists = [];
                     for (var j = 0; j < m.customLists.length; ++j) {
                         d.customLists[j] = $root.proto.SyncActionValue.StatusPrivacyAction.CustomList.toObject(m.customLists[j], o);
+                    }
+                }
+                if (m.modes && m.modes.length) {
+                    d.modes = [];
+                    for (var j = 0; j < m.modes.length; ++j) {
+                        d.modes[j] = o.enums === String ? $root.proto.SyncActionValue.StatusPrivacyAction.StatusDistributionMode[m.modes[j]] === undefined ? m.modes[j] : $root.proto.SyncActionValue.StatusPrivacyAction.StatusDistributionMode[m.modes[j]] : m.modes[j];
                     }
                 }
                 return d;
