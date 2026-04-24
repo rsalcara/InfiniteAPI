@@ -219,6 +219,13 @@ export type EventMessageOptions = {
 	messageSecret?: Uint8Array<ArrayBufferLike>
 }
 
+export type AlbumMessageOptions = {
+	/** Number of images expected in the album */
+	expectedImageCount?: number
+	/** Number of videos expected in the album */
+	expectedVideoCount?: number
+}
+
 type SharePhoneNumber = {
 	sharePhoneNumber: boolean
 }
@@ -264,7 +271,10 @@ export type AnyMediaMessageContent = (
 	  } & Contextable)
 ) & { mimetype?: string } & Editable &
 	Partial<Buttonable> &
-	Partial<Templatable>
+	Partial<Templatable> & {
+		/** key of the parent albumMessage to associate this media with */
+		albumParentKey?: WAMessageKey
+	}
 
 export type ButtonReplyInfo = {
 	displayText: string
@@ -739,6 +749,10 @@ export type AnyRegularMessageContent = (
 	  } & Mentionable &
 			Contextable &
 			Editable)
+	| ({
+			album: AlbumMessageOptions
+	  } & Contextable &
+			Mentionable)
 	| {
 			contacts: {
 				displayName?: string
