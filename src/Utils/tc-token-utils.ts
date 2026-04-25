@@ -3,6 +3,8 @@ import type { BinaryNode } from '../WABinary'
 import {
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
+	isAnyLidUser,
+	isAnyPnUser,
 	isHostedLidUser,
 	isHostedPnUser,
 	isJidMetaAI,
@@ -141,6 +143,11 @@ export async function resolveTcTokenJid(
  * the LID; when off, it goes to the PN. Returns the original JID if no
  * mapping is found in either direction.
  *
+ * Normalizes the JID upfront and uses the `isAny*` helpers so callers can pass
+ * `@c.us`, `@s.whatsapp.net`, `@hosted`, `@hosted.lid`, `@lid` or device-specific
+ * forms — `LIDMappingStore.getLIDForPN` early-returns unless `isAnyPnUser`,
+ * so unnormalized inputs would silently bypass routing.
+ *
  * Reference: WAWebTrustedContactsManager.issuePrivacyTokens
  */
 export async function resolveIssuanceJid(
@@ -149,19 +156,22 @@ export async function resolveIssuanceJid(
 	getLIDForPN: (pn: string) => Promise<string | null>,
 	getPNForLID?: (lid: string) => Promise<string | null>
 ): Promise<string> {
+	const normalized = jidNormalizedUser(jid)
+
 	if (issueToLid) {
-		if (isLidUser(jid)) return jid
-		const lid = await getLIDForPN(jid)
-		return lid ?? jid
+		if (isAnyLidUser(normalized)) return normalized
+		if (!isAnyPnUser(normalized)) return normalized
+		const lid = await getLIDForPN(normalized)
+		return lid ?? normalized
 	}
 
-	if (!isLidUser(jid)) return jid
+	if (!isAnyLidUser(normalized)) return normalized
 	if (getPNForLID) {
-		const pn = await getPNForLID(jid)
-		return pn ?? jid
+		const pn = await getPNForLID(normalized)
+		return pn ?? normalized
 	}
 
-	return jid
+	return normalized
 }
 
 type TcTokenParams = {

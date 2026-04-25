@@ -74,6 +74,7 @@ import {
 	recordMessageRetry
 } from '../Utils/prometheus-metrics.js'
 import {
+	buildMergedTcTokenIndexWrite,
 	isTcTokenExpired,
 	resolveIssuanceJid,
 	resolveTcTokenJid,
@@ -209,16 +210,25 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	})()
 
-	/** Debounced save of the tctoken JID index (5s) */
+	/**
+	 * Debounced save of the tctoken JID index (5s).
+	 *
+	 * Merges with the persisted index instead of overwriting — other layers
+	 * (messages-send fire-and-forget issuance, process-message history sync) may
+	 * write JIDs to the index via `buildMergedTcTokenIndexWrite` without updating
+	 * `tcTokenKnownJids`. Without the merge those JIDs would be silently dropped
+	 * the next time this debounced save fires.
+	 */
 	const scheduleTcTokenIndexSave = () => {
 		if (tcTokenIndexSaveTimer) clearTimeout(tcTokenIndexSaveTimer)
 		tcTokenIndexSaveTimer = setTimeout(async () => {
 			try {
-				const arr = Array.from(tcTokenKnownJids)
+				const merged = await buildMergedTcTokenIndexWrite(authState.keys, tcTokenKnownJids)
 				await authState.keys.set({
 					tctoken: {
+						...merged,
 						[TC_TOKEN_INDEX_KEY]: {
-							token: Buffer.from(JSON.stringify(arr), 'utf8'),
+							...merged[TC_TOKEN_INDEX_KEY],
 							timestamp: unixTimestampSeconds().toString()
 						}
 					}
@@ -1453,7 +1463,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	 * Why parallel and not sequential:
 	 *  - WA Web invokes this BEFORE assertSessions to maximise the chance the contact
 	 *    has a fresh tctoken by the time the next outbound send executes.
-	 *  - Running after assertSessions (the fork's previous behaviour) racets with the
+	 *  - Running after assertSessions (the fork's previous behaviour) races with the
 	 *    next send and risks error 463 when the contact reinstalls and the user replies
 	 *    immediately afterwards.
 	 *
@@ -3238,19 +3248,24 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// Await index load first — prevents overwriting a more complete persisted index
 			// if the connection closes before the initial load finishes.
 			tcTokenIndexLoaded
-				.then(() => {
-					Promise.resolve(
-						authState.keys.set({
+				.then(async () => {
+					try {
+						// Same merge-with-persisted invariant as scheduleTcTokenIndexSave —
+						// other layers may have written cross-layer JIDs to the index since
+						// our in-memory set was last updated.
+						const merged = await buildMergedTcTokenIndexWrite(authState.keys, tcTokenKnownJids)
+						await authState.keys.set({
 							tctoken: {
+								...merged,
 								[TC_TOKEN_INDEX_KEY]: {
-									token: Buffer.from(JSON.stringify([...tcTokenKnownJids]), 'utf8'),
+									...merged[TC_TOKEN_INDEX_KEY],
 									timestamp: unixTimestampSeconds().toString()
 								}
 							}
 						})
-					).catch(() => {
+					} catch {
 						/* non-critical */
-					})
+					}
 				})
 				.catch(() => {
 					/* non-critical */

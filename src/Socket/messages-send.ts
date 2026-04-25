@@ -47,6 +47,7 @@ import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prome
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import {
 	buildMergedTcTokenIndexWrite,
+	isRegularUser,
 	isTcTokenExpired,
 	resolveIssuanceJid,
 	resolveTcTokenJid,
@@ -66,14 +67,12 @@ import {
 	isHostedPnUser,
 	isJidBot,
 	isJidGroup,
-	isJidMetaAI,
 	isLidUser,
 	isPnUser,
 	jidDecode,
 	jidEncode,
 	jidNormalizedUser,
 	type JidWithDevice,
-	PSA_WID,
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
@@ -1845,7 +1844,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// rapid sends to the same contact only triggers a single IQ before senderTimestamp
 			// is persisted.
 			const isProtocolMsg = !!normalizeMessageContent(message)?.protocolMessage
-			const isBotOrPSA = destinationJid === PSA_WID || isJidBot(destinationJid) || isJidMetaAI(destinationJid)
+			// Use isRegularUser (the same Wid.isRegularUser() port that gates the store
+			// path) so we filter PSA/bot/MetaAI consistently regardless of JID server
+			// (@c.us vs @s.whatsapp.net) and device suffix. The previous PSA_WID/isJidBot
+			// checks only matched @c.us forms — destinationJid arrives normalized.
+			const isBotOrPSA = !isRegularUser(destinationJid)
 			if (
 				is1on1Send &&
 				!isProtocolMsg &&

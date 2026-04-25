@@ -956,6 +956,34 @@ describe('resolveIssuanceJid', () => {
 			expect(await resolveIssuanceJid(LID, false, getLIDForPN)).toBe(LID)
 		})
 	})
+
+	describe('JID normalization (handles @c.us and hosted forms)', () => {
+		const PN_CUS = '5511999999999@c.us'
+		const PN_NORMALIZED = '5511999999999@s.whatsapp.net'
+		const HOSTED_LID = '999999@hosted.lid'
+
+		it('normalizes @c.us before resolving (issueToLid=true)', async () => {
+			const fn = jest.fn<(pn: string) => Promise<string | null>>(async (pn: string) => {
+				if (pn === PN_NORMALIZED) return LID
+				return null
+			})
+			const result = await resolveIssuanceJid(PN_CUS, true, fn, getPNForLID)
+			expect(result).toBe(LID)
+			// Mapping store called with NORMALIZED form
+			expect(fn).toHaveBeenCalledWith(PN_NORMALIZED)
+		})
+
+		it('treats hosted LID as LID input (issueToLid=true returns it unchanged)', async () => {
+			expect(await resolveIssuanceJid(HOSTED_LID, true, getLIDForPN, getPNForLID)).toBe(HOSTED_LID)
+			expect(getLIDForPN).not.toHaveBeenCalled()
+		})
+
+		it('treats hosted LID as LID input (issueToLid=false converts via getPNForLID)', async () => {
+			const fn = jest.fn<(lid: string) => Promise<string | null>>(async () => null)
+			await resolveIssuanceJid(HOSTED_LID, false, getLIDForPN, fn)
+			expect(fn).toHaveBeenCalledWith(HOSTED_LID)
+		})
+	})
 })
 
 // ─── readTcTokenIndex / buildMergedTcTokenIndexWrite ───────────────────

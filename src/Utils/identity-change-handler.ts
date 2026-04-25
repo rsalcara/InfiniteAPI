@@ -183,7 +183,15 @@ export async function handleIdentityChange(
 	// Fire-and-forget side effects (e.g. tctoken re-issuance) BEFORE the session is
 	// re-established. WA Web runs these in parallel with the session refresh —
 	// running afterwards would race with the next outbound send and risk error 463.
-	ctx.onBeforeSessionRefresh?.(from)
+	//
+	// Wrapped in try/catch so a misbehaving consumer callback cannot abort identity
+	// change recovery. We log and continue — assertSessions still runs so the E2E
+	// session always gets refreshed.
+	try {
+		ctx.onBeforeSessionRefresh?.(from)
+	} catch (error) {
+		ctx.logger.warn({ error, jid: from }, 'onBeforeSessionRefresh callback threw — continuing with session refresh')
+	}
 
 	// Attempt session refresh/creation
 	try {

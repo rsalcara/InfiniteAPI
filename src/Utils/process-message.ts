@@ -114,7 +114,11 @@ async function storeTcTokensFromHistorySync(
 	const entries: Record<string, { token: Buffer; timestamp?: string; senderTimestamp?: number }> = {}
 
 	for (const c of candidates) {
-		const existingEntry = existing[c.storageJid]
+		// Same-batch dedup: when two chats resolve to the same storageJid (e.g. PN+LID
+		// aliases collapsing through resolveTcTokenJid, or duplicate chunks across
+		// retries), prefer the value already written by an earlier iteration so a
+		// lower-ts entry can't overwrite a higher-ts one captured from `existing`.
+		const existingEntry = entries[c.storageJid] ?? existing[c.storageJid]
 		const existingTs = existingEntry?.timestamp ? Number(existingEntry.timestamp) : 0
 		// Strict > guard: equal timestamps are skipped so we never clobber
 		// senderTimestamp written by other layers (issuance after send, etc).
@@ -496,13 +500,14 @@ const processMessage = async (
 
 					const data = await downloadAndProcessHistorySyncNotification(histNotification, options, logger)
 
-					// Persist tctokens carried by history-sync chats BEFORE emitting messaging-history.set
-					// — listeners may immediately fire outbound sends that need the tctoken, and the store
-					// has to be populated first to avoid an error 463 on the first multi-device send.
-					await storeTcTokensFromHistorySync(data.chats, signalRepository, keyStore, logger)
-
 					// Emit LID-PN mappings from history sync
 					// This is how WhatsApp Web learns mappings for chats with non-contacts
+					//
+					// MUST run BEFORE storeTcTokensFromHistorySync — otherwise resolveTcTokenJid()
+					// can't resolve PN→LID for fresh-device chats (mapping cache is empty), tokens
+					// get persisted under PN keys, and the send path (which resolves to LID first)
+					// misses them — exactly the error 463 scenario this whole change is meant to
+					// prevent. Catches Codex P1 review on PR #386.
 					if (data.lidPnMappings?.length) {
 						logger?.debug({ count: data.lidPnMappings.length }, 'processing LID-PN mappings from history sync')
 						// eslint-disable-next-line max-depth
@@ -526,6 +531,12 @@ const processMessage = async (
 							ev.emit('lid-mapping.update', data.lidPnMappings)
 						}
 					}
+
+					// Persist tctokens carried by history-sync chats BEFORE emitting messaging-history.set
+					// — listeners may immediately fire outbound sends that need the tctoken, and the store
+					// has to be populated first to avoid an error 463 on the first multi-device send.
+					// Runs AFTER storeLIDPNMappings (see comment above) so LID resolution works.
+					await storeTcTokensFromHistorySync(data.chats, signalRepository, keyStore, logger)
 
 					ev.emit('messaging-history.set', {
 						...data,
