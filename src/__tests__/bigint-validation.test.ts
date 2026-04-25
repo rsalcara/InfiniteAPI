@@ -19,10 +19,11 @@ function longToStringNew(value: any, unsigned?: boolean): string {
 	if (typeof value === 'string') return value
 	if (typeof value === 'number') return String(value)
 	if (value && typeof value.low === 'number' && typeof value.high === 'number') {
+		const high = value.high | 0
 		const lo = BigInt(value.low >>> 0)
 		const hi = BigInt(value.high >>> 0)
 		const combined = (hi << 32n) | lo
-		if (!unsigned && value.high < 0) {
+		if (!unsigned && high < 0) {
 			return (combined - (1n << 64n)).toString()
 		}
 
@@ -50,10 +51,11 @@ function longToNumberNew(value: any, unsigned?: boolean): number {
 	if (typeof value === 'number') return value
 	if (typeof value === 'string') return Number(value)
 	if (value && typeof value.low === 'number' && typeof value.high === 'number') {
+		const high = value.high | 0
 		const lo = BigInt(value.low >>> 0)
 		const hi = BigInt(value.high >>> 0)
 		const combined = (hi << 32n) | lo
-		if (!unsigned && value.high < 0) {
+		if (!unsigned && high < 0) {
 			return Number(combined - (1n << 64n))
 		}
 
@@ -157,6 +159,27 @@ describe('BigInt vs Long equivalence validation', () => {
 		})
 		it('object without low/high', () => {
 			expect(longToStringNew({ foo: 'bar' })).toBe('[object Object]')
+		})
+
+		// Defensive: a raw {low, high} JSON object can carry `high` as an
+		// unsigned 32-bit value (Long.fromBits would normalize via `| 0`,
+		// but plain JSON deserialization does not). Without `value.high | 0`
+		// the sign-bit check fails and the result is interpreted as unsigned.
+		// Upstream Baileys PR #2333 has this latent bug; InfiniteAPI fixes it.
+		it('signed sign-bit detection on raw unsigned high (-1 as {low: -1, high: 4294967295})', () => {
+			const raw = { low: -1, high: 0xffffffff }
+			// signed: -1
+			expect(longToStringNew(raw, false)).toBe('-1')
+			// unsigned: max uint64
+			expect(longToStringNew(raw, true)).toBe('18446744073709551615')
+		})
+
+		it('signed sign-bit detection on raw unsigned high (-4294967296 as {low: 0, high: 4294967295})', () => {
+			const raw = { low: 0, high: 0xffffffff }
+			// signed: -4294967296 (high word = -1 after normalization)
+			expect(longToStringNew(raw, false)).toBe('-4294967296')
+			// unsigned: 0xFFFFFFFF00000000 = 18446744069414584320
+			expect(longToStringNew(raw, true)).toBe('18446744069414584320')
 		})
 	})
 

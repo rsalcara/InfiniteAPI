@@ -90,17 +90,21 @@ describe('proto serialization', () => {
 		expect(json.message?.imageMessage?.fileLength).toBe('1')
 	})
 
-	it('roundtrips encode/decode with Long fields preserving values', () => {
+	it('roundtrips encode/decode with Long fields preserving values (> MAX_SAFE_INTEGER)', () => {
+		// Use uint64 values above Number.MAX_SAFE_INTEGER (2^53 - 1) so the
+		// roundtrip actually exercises the BigInt fast path on decode->toJSON.
+		// Safe integers would silently work even if longToString fell back to
+		// Number(value).
 		const original = proto.WebMessageInfo.fromObject({
 			key: {
 				remoteJid: '123@s.whatsapp.net',
 				id: 'ABC123',
 				fromMe: false
 			},
-			messageTimestamp: 1700000000,
+			messageTimestamp: Long.fromString('18446744073709551615', true),
 			message: {
 				imageMessage: {
-					fileLength: 123456789
+					fileLength: Long.fromString('9999999999999999999', true)
 				}
 			}
 		})
@@ -109,7 +113,7 @@ describe('proto serialization', () => {
 		const decoded = proto.WebMessageInfo.decode(encoded)
 		const json = decoded.toJSON()
 
-		expect(json.messageTimestamp).toBe('1700000000')
-		expect(json.message?.imageMessage?.fileLength).toBe('123456789')
+		expect(json.messageTimestamp).toBe('18446744073709551615')
+		expect(json.message?.imageMessage?.fileLength).toBe('9999999999999999999')
 	})
 })

@@ -21,10 +21,13 @@ try {
     '\t// Fast path: convert Long {low, high} directly via native BigInt\n' +
     '\t// BigInt.toString() is a native C++ operation, much faster than Long\'s pure JS division loops\n' +
     '\tif (value && typeof value.low === "number" && typeof value.high === "number") {\n' +
+    '\t\t// Normalize high to signed int32 so the sign-bit check works for inputs\n' +
+    '\t\t// where high is stored unsigned (e.g. raw {low, high} JSON).\n' +
+    '\t\tconst high = value.high | 0;\n' +
     '\t\tconst lo = BigInt(value.low >>> 0);\n' +
     '\t\tconst hi = BigInt(value.high >>> 0);\n' +
     '\t\tconst combined = (hi << 32n) | lo;\n' +
-    '\t\tif (!unsigned && value.high < 0) {\n' +
+    '\t\tif (!unsigned && high < 0) {\n' +
     '\t\t\treturn (combined - (1n << 64n)).toString();\n' +
     '\t\t}\n' +
     '\t\treturn combined.toString();\n' +
@@ -41,10 +44,11 @@ try {
     '\t}\n' +
     '\t// Fast path: convert Long {low, high} directly via native BigInt\n' +
     '\tif (value && typeof value.low === "number" && typeof value.high === "number") {\n' +
+    '\t\tconst high = value.high | 0;\n' +
     '\t\tconst lo = BigInt(value.low >>> 0);\n' +
     '\t\tconst hi = BigInt(value.high >>> 0);\n' +
     '\t\tconst combined = (hi << 32n) | lo;\n' +
-    '\t\tif (!unsigned && value.high < 0) {\n' +
+    '\t\tif (!unsigned && high < 0) {\n' +
     '\t\t\treturn Number(combined - (1n << 64n));\n' +
     '\t\t}\n' +
     '\t\treturn Number(combined);\n' +

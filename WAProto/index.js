@@ -15,10 +15,13 @@ function longToString(value, unsigned) {
 	// Fast path: convert Long {low, high} directly via native BigInt
 	// BigInt.toString() is a native C++ operation, much faster than Long's pure JS division loops
 	if (value && typeof value.low === "number" && typeof value.high === "number") {
+		// Normalize high to signed int32 so the sign-bit check works for inputs
+		// where high is stored unsigned (e.g. raw {low, high} JSON).
+		const high = value.high | 0;
 		const lo = BigInt(value.low >>> 0);
 		const hi = BigInt(value.high >>> 0);
 		const combined = (hi << 32n) | lo;
-		if (!unsigned && value.high < 0) {
+		if (!unsigned && high < 0) {
 			return (combined - (1n << 64n)).toString();
 		}
 		return combined.toString();
@@ -35,10 +38,11 @@ function longToNumber(value, unsigned) {
 	}
 	// Fast path: convert Long {low, high} directly via native BigInt
 	if (value && typeof value.low === "number" && typeof value.high === "number") {
+		const high = value.high | 0;
 		const lo = BigInt(value.low >>> 0);
 		const hi = BigInt(value.high >>> 0);
 		const combined = (hi << 32n) | lo;
-		if (!unsigned && value.high < 0) {
+		if (!unsigned && high < 0) {
 			return Number(combined - (1n << 64n));
 		}
 		return Number(combined);
