@@ -2223,6 +2223,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							fromMe,
 							participant: node.attrs.participant,
 							participantAlt,
+							participantUsername: node.attrs.participant_username,
 							addressingMode,
 							id: node.attrs.id,
 							...(msg.key || {})
