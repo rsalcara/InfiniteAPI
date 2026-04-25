@@ -81,6 +81,7 @@ export type BaileysEventMap = {
 		id: string
 		author: string
 		authorPn?: string
+		authorUsername?: string
 		participants: GroupParticipant[]
 		action: ParticipantAction
 	}
@@ -88,6 +89,7 @@ export type BaileysEventMap = {
 		id: string
 		author: string
 		authorPn?: string
+		authorUsername?: string
 		participant: string
 		participantPn?: string
 		action: RequestJoinAction

@@ -2223,6 +2223,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							fromMe,
 							participant: node.attrs.participant,
 							participantAlt,
+							participantUsername: node.attrs.participant_username,
 							addressingMode,
 							id: node.attrs.id,
 							...(msg.key || {})
@@ -2231,6 +2232,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						msg.messageTimestamp = +node.attrs.t!
 
 						const fullMsg = proto.WebMessageInfo.fromObject(msg) as WAMessage
+						// Preserve custom WAMessageKey fields (participantAlt, participantUsername,
+						// addressingMode) that proto.WebMessageInfo.fromObject strips because
+						// they aren't part of the proto.MessageKey schema.
+						fullMsg.key = msg.key
 						await upsertMessage(fullMsg, 'append')
 					}
 				})
