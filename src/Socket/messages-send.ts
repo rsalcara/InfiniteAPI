@@ -46,7 +46,9 @@ import { makeKeyedMutex } from '../Utils/make-mutex'
 import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prometheus-metrics'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import {
+	buildMergedTcTokenIndexWrite,
 	isTcTokenExpired,
+	resolveIssuanceJid,
 	resolveTcTokenJid,
 	shouldSendNewTcToken,
 	storeTcTokensFromIqResult
@@ -64,12 +66,14 @@ import {
 	isHostedPnUser,
 	isJidBot,
 	isJidGroup,
+	isJidMetaAI,
 	isLidUser,
 	isPnUser,
 	jidDecode,
 	jidEncode,
 	jidNormalizedUser,
 	type JidWithDevice,
+	PSA_WID,
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
@@ -124,6 +128,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 	// Tracks JIDs with an in-flight getPrivacyTokens IQ to avoid duplicate concurrent fetches
 	const tcTokenFetchingJids = new Set<string>()
+
+	/**
+	 * Set of tctoken storage JIDs with a fire-and-forget `issuePrivacyTokens` IQ in flight.
+	 * Distinct from `tcTokenFetchingJids` (which dedupes inbound *fetches* of the peer's
+	 * token). Prevents duplicate IQs when a caller fires several rapid back-to-back sends
+	 * to the same contact before `senderTimestamp` persists. Entries are always removed
+	 * in `.finally()`, so the set is bounded by current concurrency.
+	 */
+	const inFlightTcTokenIssuance = new Set<string>()
 
 	let mediaConn: Promise<MediaConnInfo>
 	const refreshMediaConn = async (forceGet = false) => {
@@ -1715,7 +1728,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 			}
 
-			if (tcTokenBuffer?.length) {
+			// Gate inclusion on AB prop 10518 (privacy_token_sending_on_all_1_on_1_messages).
+			// WA Web defaults to true; if the server flips it off we mirror that to avoid
+			// divergence with the spec-compliant client.
+			if (tcTokenBuffer?.length && sock.serverProps.privacyTokenOn1to1) {
 				;(stanza.content as BinaryNode[]).push({
 					tag: 'tctoken',
 					attrs: {},
@@ -1815,13 +1831,35 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// Gated only by shouldSendNewTcToken — removed tcTokenBuffer?.length guard so
 			// issuance fires even when we don't yet hold a token (bucket boundary crossed).
 			// IMPORTANT: must run AFTER sendNode — issuing before the message causes error 463.
-			if (is1on1Send && shouldSendNewTcToken(existingTokenEntry?.senderTimestamp)) {
+			//
+			// WA Web also skips issuance for:
+			//   - protocol messages (revoke, ephemeral settings, etc — see TcTokenChatAction)
+			//   - PSA, bots, MetaAI (isRegularUser filter)
+			// and dedupes back-to-back issuances with `inFlightTcTokenIssuance` so a burst of
+			// rapid sends to the same contact only triggers a single IQ before senderTimestamp
+			// is persisted.
+			const isProtocolMsg = !!normalizeMessageContent(message)?.protocolMessage
+			const isBotOrPSA = destinationJid === PSA_WID || isJidBot(destinationJid) || isJidMetaAI(destinationJid)
+			if (
+				is1on1Send &&
+				!isProtocolMsg &&
+				!isBotOrPSA &&
+				shouldSendNewTcToken(existingTokenEntry?.senderTimestamp) &&
+				!inFlightTcTokenIssuance.has(tcTokenJid)
+			) {
+				inFlightTcTokenIssuance.add(tcTokenJid)
 				const issueTimestamp = unixTimestampSeconds()
 				logTcToken('reissue', { jid: destinationJid })
-				getPrivacyTokens([destinationJid], issueTimestamp)
+				const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
+				resolveIssuanceJid(
+					destinationJid,
+					sock.serverProps.lidTrustedTokenIssueToLid,
+					getLIDForPN,
+					getPNForLID
+				)
+					.then(issueJid => getPrivacyTokens([issueJid], issueTimestamp))
 					.then(async result => {
 						// Store any tokens received in the IQ response.
-						// onNewJidStored not passed — pruning index lives in messages-recv (higher layer).
 						await storeTcTokensFromIqResult({
 							result,
 							fallbackJid: tcTokenJid,
@@ -1832,9 +1870,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						// Persist senderTimestamp unconditionally — WA Web stores it in the chat table
 						// regardless of whether a token exists. Spread preserves token+timestamp if present.
 						// WABA Android: INSERT INTO wa_trusted_contacts_send (jid, sent_tc_token_timestamp, real_issue_timestamp)
-						// VALUES (?, ?, 0) — realIssueTimestamp=0 means issued but not yet confirmed by server
+						// VALUES (?, ?, 0) — realIssueTimestamp=0 means issued but not yet confirmed by server.
+						// Also bump the cross-session prune index so this JID is tracked persistently.
 						const currentData = await authState.keys.get('tctoken', [tcTokenJid])
 						const currentEntry = currentData[tcTokenJid]
+						const indexWrite = await buildMergedTcTokenIndexWrite(authState.keys, [tcTokenJid])
 						await authState.keys.set({
 							tctoken: {
 								[tcTokenJid]: {
@@ -1842,7 +1882,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 									token: currentEntry?.token ?? Buffer.alloc(0),
 									senderTimestamp: issueTimestamp,
 									realIssueTimestamp: 0
-								}
+								},
+								...indexWrite
 							}
 						})
 
@@ -1850,6 +1891,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					})
 					.catch(err => {
 						logTcToken('reissue_fail', { jid: destinationJid, error: err?.message })
+					})
+					.finally(() => {
+						inFlightTcTokenIssuance.delete(tcTokenJid)
 					})
 			}
 

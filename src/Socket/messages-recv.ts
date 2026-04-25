@@ -73,7 +73,13 @@ import {
 	recordMessageReceived,
 	recordMessageRetry
 } from '../Utils/prometheus-metrics.js'
-import { isTcTokenExpired, resolveTcTokenJid, storeTcTokensFromIqResult } from '../Utils/tc-token-utils'
+import {
+	isTcTokenExpired,
+	resolveIssuanceJid,
+	resolveTcTokenJid,
+	storeTcTokensFromIqResult,
+	TC_TOKEN_INDEX_KEY
+} from '../Utils/tc-token-utils'
 import {
 	areJidsSameUser,
 	type BinaryNode,
@@ -164,7 +170,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	let sendActiveReceipts = false
 
 	// ======= tctoken index tracking for cross-session pruning =======
-	const TC_TOKEN_INDEX_KEY = '__index'
+	// TC_TOKEN_INDEX_KEY is imported from tc-token-utils so the value stays in sync
+	// with messages-send/process-message writes (avoids string drift on rename).
+	// Race note: this prune-driven index write may interleave with
+	// buildMergedTcTokenIndexWrite calls from issuance/history-sync paths. Worst
+	// case: a JID resurrected by a stale read gets pruned again on the next 24h
+	// sweep — no data loss, just one extra cycle.
 	const TC_TOKEN_PRUNE_TS_KEY = '__prune_ts'
 	const tcTokenKnownJids = new Set<string>()
 	const tcTokenRetriedMsgIds = new Set<string>()
@@ -1434,6 +1445,58 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}, authState?.creds?.me?.id || 'sendRetryRequest')
 	}
 
+	/**
+	 * Fire-and-forget tctoken re-issuance after a peer's device identity changed.
+	 * Mirrors WAWebSendTcTokenWhenDeviceIdentityChange — runs in PARALLEL with the
+	 * session refresh (not after it).
+	 *
+	 * Why parallel and not sequential:
+	 *  - WA Web invokes this BEFORE assertSessions to maximise the chance the contact
+	 *    has a fresh tctoken by the time the next outbound send executes.
+	 *  - Running after assertSessions (the fork's previous behaviour) racets with the
+	 *    next send and risks error 463 when the contact reinstalls and the user replies
+	 *    immediately afterwards.
+	 *
+	 * Gated on `entry.senderTimestamp` (we previously issued a token to this peer in the
+	 * current bucket window). Preserves the existing senderTimestamp instead of issuing
+	 * a fresh one — keeps WA Web's bucket coalescing semantics: same token, same window.
+	 */
+	const reissueTcTokenAfterIdentityChange = (from: string): void => {
+		void (async () => {
+			const normalizedJid = jidNormalizedUser(from)
+			const tcJid = await resolveTcTokenJid(normalizedJid, getLIDForPN)
+			const tcTokenData = await authState.keys.get('tctoken', [tcJid])
+			const senderTs = tcTokenData?.[tcJid]?.senderTimestamp
+
+			if (senderTs === null || senderTs === undefined || isTcTokenExpired(senderTs)) {
+				return
+			}
+
+			logTcToken('reissue', { jid: normalizedJid, reason: 'identity_changed', senderTimestamp: senderTs })
+			const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
+			const issueJid = await resolveIssuanceJid(
+				normalizedJid,
+				sock.serverProps.lidTrustedTokenIssueToLid,
+				getLIDForPN,
+				getPNForLID
+			)
+			const result = await getPrivacyTokens([issueJid], senderTs)
+			await storeTcTokensFromIqResult({
+				result,
+				fallbackJid: tcJid,
+				keys: authState.keys,
+				getLIDForPN,
+				onNewJidStored: storedJid => {
+					tcTokenKnownJids.add(storedJid)
+					scheduleTcTokenIndexSave()
+				}
+			})
+			logTcToken('reissue_ok', { jid: normalizedJid, reason: 'identity_changed' })
+		})().catch(err => {
+			logTcToken('reissue_fail', { jid: from, error: err?.message })
+		})
+	}
+
 	const handleEncryptNotification = async (node: BinaryNode) => {
 		const from = node.attrs.from
 		if (from === S_WHATSAPP_NET) {
@@ -1453,56 +1516,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				validateSession: signalRepository.validateSession,
 				assertSessions,
 				debounceCache: identityAssertDebounce,
-				logger
+				logger,
+				// Fire reissue in parallel with the session refresh, NOT after it.
+				// See reissueTcTokenAfterIdentityChange doc for the rationale.
+				onBeforeSessionRefresh: reissueTcTokenAfterIdentityChange
 			})
-
-			// When a session is refreshed (identity change), re-issue tctoken fire-and-forget
-			// WABA Android: reissue stores senderTimestamp + realIssueTimestamp after IQ success
-			if (result.action === 'session_refreshed') {
-				const normalizedJid = jidNormalizedUser(from)
-				resolveTcTokenJid(normalizedJid, getLIDForPN)
-					.then(async tcJid => {
-						const tcData = await authState.keys.get('tctoken', [tcJid])
-						const entry = tcData[tcJid]
-						if (entry?.token?.length && !isTcTokenExpired(entry.timestamp)) {
-							const senderTs = unixTimestampSeconds()
-							logTcToken('reissue', { jid: normalizedJid, reason: 'session_refreshed' })
-							getPrivacyTokens([normalizedJid], senderTs)
-								.then(async (iqResult) => {
-									await storeTcTokensFromIqResult({
-										result: iqResult,
-										fallbackJid: normalizedJid,
-										keys: authState.keys,
-										getLIDForPN,
-										onNewJidStored: (storedJid) => {
-											tcTokenKnownJids.add(storedJid)
-											scheduleTcTokenIndexSave()
-										}
-									})
-									// Persist senderTimestamp + realIssueTimestamp after IQ success
-									const currentData = await authState.keys.get('tctoken', [tcJid])
-									const currentEntry = currentData[tcJid]
-									await authState.keys.set({
-										tctoken: {
-											[tcJid]: {
-												...currentEntry,
-												token: currentEntry?.token ?? Buffer.alloc(0),
-												senderTimestamp: senderTs,
-												realIssueTimestamp: 0
-											}
-										}
-									})
-									logTcToken('reissue_ok', { jid: normalizedJid, reason: 'session_refreshed' })
-								})
-								.catch(err => {
-									logTcToken('reissue_fail', { jid: normalizedJid, error: err?.message })
-								})
-						}
-					})
-					.catch(() => {
-						/* ignore resolution errors */
-					})
-			}
 
 			if (result.action === 'no_identity_node') {
 				logger.info({ node }, 'unknown encrypt notification')

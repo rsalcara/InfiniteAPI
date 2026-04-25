@@ -40,6 +40,7 @@ import { getKeyAuthor, toNumber } from './generics'
 import { downloadAndProcessHistorySyncNotification } from './history'
 import type { ILogger } from './logger'
 import { metrics, recordHistorySyncMessages } from './prometheus-metrics.js'
+import { buildMergedTcTokenIndexWrite, resolveTcTokenJid } from './tc-token-utils'
 
 type ProcessMessageContext = {
 	shouldProcessHistoryMsg: boolean
@@ -61,6 +62,85 @@ const REAL_MSG_STUB_TYPES = new Set([
 ])
 
 const REAL_MSG_REQ_ME_STUB_TYPES = new Set([WAMessageStubType.GROUP_PARTICIPANT_ADD])
+
+/**
+ * Extract tctoken / tcTokenTimestamp / tcTokenSenderTimestamp from history-sync chats
+ * and persist them to the `tctoken` store. Mirrors WA Web's `bulkCreateOrMerge` pass
+ * over the chat table during history sync.
+ *
+ * Why this matters: when a user logs in on a new device, the multi-device history sync
+ * is the only way that device learns about tctokens issued/received on the original
+ * device. Without this pass, the new device sends 1:1 messages with no tctoken until
+ * the contact triggers a fresh notification — which surfaces as error 463 in production.
+ *
+ * Monotonicity: we only overwrite an existing entry if the incoming timestamp is
+ * STRICTLY newer (`incoming > existing`). Equal timestamps are skipped to avoid
+ * reverting senderTimestamp / realIssueTimestamp set by other layers (e.g. a
+ * reissue that fired between history-sync chunks).
+ *
+ * Index hygiene: every JID we write here is added to the persistent prune index
+ * (TC_TOKEN_INDEX_KEY) via buildMergedTcTokenIndexWrite, so the 24h prune sweep in
+ * messages-recv picks them up across sessions.
+ */
+async function storeTcTokensFromHistorySync(
+	chats: Chat[],
+	signalRepository: SignalRepositoryWithLIDStore,
+	keyStore: SignalKeyStoreWithTransaction,
+	logger?: ILogger
+) {
+	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+
+	const candidates: { storageJid: string; token: Buffer; ts: number; senderTs?: number }[] = []
+	for (const chat of chats) {
+		const ts = chat.tcTokenTimestamp ? toNumber(chat.tcTokenTimestamp) : 0
+		if (chat.tcToken?.length && ts > 0) {
+			const jid = jidNormalizedUser(chat.id!)
+			const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
+			candidates.push({
+				storageJid,
+				token: Buffer.from(chat.tcToken),
+				ts,
+				senderTs: chat.tcTokenSenderTimestamp ? toNumber(chat.tcTokenSenderTimestamp) : undefined
+			})
+		}
+	}
+
+	if (!candidates.length) {
+		return
+	}
+
+	const jids = candidates.map(c => c.storageJid)
+	const existing = await keyStore.get('tctoken', jids)
+	const entries: Record<string, { token: Buffer; timestamp?: string; senderTimestamp?: number }> = {}
+
+	for (const c of candidates) {
+		const existingEntry = existing[c.storageJid]
+		const existingTs = existingEntry?.timestamp ? Number(existingEntry.timestamp) : 0
+		// Strict > guard: equal timestamps are skipped so we never clobber
+		// senderTimestamp written by other layers (issuance after send, etc).
+		if (existingTs > 0 && existingTs >= c.ts) {
+			continue
+		}
+
+		entries[c.storageJid] = {
+			...existingEntry,
+			token: c.token,
+			timestamp: String(c.ts),
+			...(c.senderTs !== undefined ? { senderTimestamp: c.senderTs } : {})
+		}
+	}
+
+	if (Object.keys(entries).length) {
+		logger?.debug({ count: Object.keys(entries).length }, 'storing tctokens from history sync')
+		try {
+			// Include updated __index so cross-session pruning picks these JIDs up.
+			const indexWrite = await buildMergedTcTokenIndexWrite(keyStore, Object.keys(entries))
+			await keyStore.set({ tctoken: { ...entries, ...indexWrite } })
+		} catch (err) {
+			logger?.warn({ err }, 'failed to store tctokens from history sync')
+		}
+	}
+}
 
 /** Cleans a received message to further processing */
 export const cleanMessage = (message: WAMessage, meId: string, meLid: string) => {
@@ -415,6 +495,11 @@ const processMessage = async (
 					}
 
 					const data = await downloadAndProcessHistorySyncNotification(histNotification, options, logger)
+
+					// Persist tctokens carried by history-sync chats BEFORE emitting messaging-history.set
+					// — listeners may immediately fire outbound sends that need the tctoken, and the store
+					// has to be populated first to avoid an error 463 on the first multi-device send.
+					await storeTcTokensFromHistorySync(data.chats, signalRepository, keyStore, logger)
 
 					// Emit LID-PN mappings from history sync
 					// This is how WhatsApp Web learns mappings for chats with non-contacts
