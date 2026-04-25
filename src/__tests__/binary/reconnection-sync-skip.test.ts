@@ -13,7 +13,7 @@ mockWebSocket()
 //      (socket.ts already decided to skip the offline buffer, e.g. because
 //       routingInfo was stale and was discarded on startup)
 // On reconnection, AwaitingInitialSync is skipped and the buffer is flushed
-// immediately so live messages are not held for up to 4 seconds.
+// immediately so live messages are not held in the initial-sync window.
 describe('Reconnection Sync Skip', () => {
 	it('should skip the history sync wait on reconnection (accountSyncCounter > 0)', async () => {
 		const { state, clear } = await makeSession()
@@ -132,7 +132,15 @@ describe('Reconnection Sync Skip', () => {
 		// Message should be BUFFERED (not delivered) because we're waiting for history sync
 		expect(messageListener).toHaveBeenCalledTimes(0)
 
+		// Drain the 2s AwaitingInitialSync timeout (chats.ts:1522) so its callback
+		// doesn't fire after Jest considers the test done — otherwise we get a
+		// "Cannot log after tests are done" warning from the post-teardown flush
+		// and the suite is flagged with --detectOpenHandles. After the timer
+		// fires, syncState becomes Online and the buffer flushes; that delivery
+		// is post-assertion and irrelevant to the test goal.
+		await new Promise(resolve => setTimeout(resolve, 2_100))
+
 		await sock.end(new Error('Test completed'))
 		await clear()
-	})
+	}, 10_000)
 })
