@@ -3091,21 +3091,33 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// Fast path: ack and drop ignored JIDs before entering the buffer/queue.
 		// Skips type='call' so call events are never silently dropped via
 		// shouldIgnoreJid (preserves InfiniteAPI's pre-existing behavior).
+		// Wrapped in try/catch so a throw from shouldIgnoreJid (user callback)
+		// or sendMessageAck (e.g. websocket closed) is routed through
+		// onUnexpectedError instead of becoming an unhandled rejection —
+		// matches the protection processNodeWithBuffer provides.
 		if (type !== 'call') {
-			const from = node.attrs.from
-			let ignoreJid = from
-			if (type === 'receipt' && from) {
-				const attrs = node.attrs
-				const isLid = attrs.from!.includes('lid')
-				const isNodeFromMe = areJidsSameUser(
-					attrs.participant || attrs.from,
-					isLid ? authState.creds.me?.lid : authState.creds.me?.id
-				)
-				ignoreJid = !isNodeFromMe || isJidGroup(attrs.from) ? attrs.from : attrs.recipient
-			}
+			try {
+				const from = node.attrs.from
+				let ignoreJid = from
+				if (type === 'receipt' && from) {
+					const attrs = node.attrs
+					const isLid = attrs.from!.includes('lid')
+					const isNodeFromMe = areJidsSameUser(
+						attrs.participant || attrs.from,
+						isLid ? authState.creds.me?.lid : authState.creds.me?.id
+					)
+					ignoreJid = !isNodeFromMe || isJidGroup(attrs.from) ? attrs.from : attrs.recipient
+				}
 
-			if (ignoreJid && ignoreJid !== S_WHATSAPP_NET && shouldIgnoreJid(ignoreJid)) {
-				await sendMessageAck(node, type === 'message' ? NACK_REASONS.UnhandledError : undefined)
+				if (ignoreJid && ignoreJid !== S_WHATSAPP_NET && shouldIgnoreJid(ignoreJid)) {
+					// Plain ack (no NACK error code) preserves InfiniteAPI's prior
+					// behavior — ignored stanzas are an intentional drop, not a
+					// processing failure, so we don't want server-side retries.
+					await sendMessageAck(node)
+					return
+				}
+			} catch (error) {
+				onUnexpectedError(error as Error, identifier)
 				return
 			}
 		}
