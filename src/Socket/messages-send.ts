@@ -1731,7 +1731,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// Gate inclusion on AB prop 10518 (privacy_token_sending_on_all_1_on_1_messages).
 			// WA Web defaults to true; if the server flips it off we mirror that to avoid
 			// divergence with the spec-compliant client.
-			if (tcTokenBuffer?.length && sock.serverProps.privacyTokenOn1to1) {
+			//
+			// CARROUSEL EXCEPTION: Pastorini-validated carousel stanzas REQUIRE tctoken
+			// (CDP capture confirms it). If the AB prop ever flips off, dropping the
+			// tctoken from carousel would break rendering on Android. Carousel always
+			// includes the tctoken when one is available, regardless of the prop —
+			// matching the fork's existing behaviour pre-PR #2339.
+			if (tcTokenBuffer?.length && (sock.serverProps.privacyTokenOn1to1 || isCarousel)) {
 				;(stanza.content as BinaryNode[]).push({
 					tag: 'tctoken',
 					attrs: {},
