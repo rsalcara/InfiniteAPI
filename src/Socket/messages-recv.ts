@@ -2124,12 +2124,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		if (resolvedRemoteJid) key.remoteJid = resolvedRemoteJid
 		if (resolvedParticipant) key.participant = resolvedParticipant
 
-		if (shouldIgnoreJid(remoteJid!) && remoteJid !== S_WHATSAPP_NET) {
-			logger.trace({ remoteJid }, 'ignoring receipt from jid')
-			await sendMessageAck(node)
-			return
-		}
-
 		const ids = [attrs.id!]
 		if (Array.isArray(content)) {
 			const items = getBinaryNodeChildren(content[0], 'item')
@@ -2205,11 +2199,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const handleNotification = async (node: BinaryNode) => {
 		const remoteJid = node.attrs.from
-		if (shouldIgnoreJid(remoteJid!) && remoteJid !== S_WHATSAPP_NET) {
-			logger.trace({ remoteJid }, 'ignored notification')
-			await sendMessageAck(node)
-			return
-		}
 
 		try {
 			await Promise.all([
@@ -2246,12 +2235,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleMessage = async (node: BinaryNode) => {
-		if (shouldIgnoreJid(node.attrs.from!) && node.attrs.from !== S_WHATSAPP_NET) {
-			logger.trace({ from: node.attrs.from }, 'ignored message')
-			await sendMessageAck(node)
-			return
-		}
-
 		const encNode = getBinaryNodeChild(node, 'enc')
 		const unavailableNode = getBinaryNodeChild(node, 'unavailable')
 
@@ -3105,6 +3088,28 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		identifier: string,
 		exec: (node: BinaryNode) => Promise<void>
 	) => {
+		// Fast path: ack and drop ignored JIDs before entering the buffer/queue.
+		// Skips type='call' so call events are never silently dropped via
+		// shouldIgnoreJid (preserves InfiniteAPI's pre-existing behavior).
+		if (type !== 'call') {
+			const from = node.attrs.from
+			let ignoreJid = from
+			if (type === 'receipt' && from) {
+				const attrs = node.attrs
+				const isLid = attrs.from!.includes('lid')
+				const isNodeFromMe = areJidsSameUser(
+					attrs.participant || attrs.from,
+					isLid ? authState.creds.me?.lid : authState.creds.me?.id
+				)
+				ignoreJid = !isNodeFromMe || isJidGroup(attrs.from) ? attrs.from : attrs.recipient
+			}
+
+			if (ignoreJid && ignoreJid !== S_WHATSAPP_NET && shouldIgnoreJid(ignoreJid)) {
+				await sendMessageAck(node, type === 'message' ? NACK_REASONS.UnhandledError : undefined)
+				return
+			}
+		}
+
 		const isOffline = !!node.attrs.offline
 
 		if (isOffline) {
