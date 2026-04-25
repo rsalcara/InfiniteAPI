@@ -1,7 +1,17 @@
 import { jest } from '@jest/globals'
 import { DisconnectReason, type SignalKeyStoreWithTransaction } from '../../Types'
 import { getErrorCodeFromStreamError, SERVER_ERROR_CODES } from '../../Utils'
-import { buildTcTokenFromJid, isTcTokenExpired, shouldSendNewTcToken } from '../../Utils/tc-token-utils'
+import {
+	buildMergedTcTokenIndexWrite,
+	buildTcTokenFromJid,
+	isRegularUser,
+	isTcTokenExpired,
+	readTcTokenIndex,
+	resolveIssuanceJid,
+	shouldSendNewTcToken,
+	storeTcTokensFromIqResult,
+	TC_TOKEN_INDEX_KEY
+} from '../../Utils/tc-token-utils'
 import type { BinaryNode } from '../../WABinary'
 
 /** 7 days in seconds — matches WA Web tctoken_duration */
@@ -846,5 +856,342 @@ describe('tctoken integration scenarios', () => {
 
 			expect(saveCount).toBe(2)
 		})
+	})
+})
+
+// ─── isRegularUser (PSA / bot / MetaAI gating) ─────────────────────────
+
+describe('isRegularUser', () => {
+	it('rejects undefined / empty', () => {
+		expect(isRegularUser(undefined)).toBe(false)
+		expect(isRegularUser('')).toBe(false)
+	})
+
+	it('rejects PSA WID (user "0")', () => {
+		expect(isRegularUser('0@s.whatsapp.net')).toBe(false)
+		expect(isRegularUser('0@c.us')).toBe(false)
+	})
+
+	it('rejects bot phone numbers (1313555XXXX, 131655500XX)', () => {
+		expect(isRegularUser('13135550000@s.whatsapp.net')).toBe(false)
+		expect(isRegularUser('13135559999@s.whatsapp.net')).toBe(false)
+		// /^131655500\d{2}$/ — 11 digits: 131655500 + 2 trailing
+		expect(isRegularUser('13165550000@s.whatsapp.net')).toBe(false)
+		expect(isRegularUser('13165550099@s.whatsapp.net')).toBe(false)
+	})
+
+	it('rejects MetaAI (@bot server)', () => {
+		expect(isRegularUser('foo@bot')).toBe(false)
+	})
+
+	it('accepts regular PN users (@s.whatsapp.net, @c.us)', () => {
+		expect(isRegularUser('5511999999999@s.whatsapp.net')).toBe(true)
+		expect(isRegularUser('5511999999999@c.us')).toBe(true)
+	})
+
+	it('accepts LID users', () => {
+		expect(isRegularUser('123456@lid')).toBe(true)
+	})
+
+	it('accepts hosted PN/LID users', () => {
+		expect(isRegularUser('5511999999999@hosted')).toBe(true)
+		expect(isRegularUser('123456@hosted.lid')).toBe(true)
+	})
+})
+
+// ─── resolveIssuanceJid (AB prop 14303 routing) ────────────────────────
+
+describe('resolveIssuanceJid', () => {
+	const PN = '5511999999999@s.whatsapp.net'
+	const LID = '123456@lid'
+	const PN_NO_LID = '5511888888888@s.whatsapp.net'
+	const LID_NO_PN = '999999@lid'
+
+	const getLIDForPN = jest.fn<(pn: string) => Promise<string | null>>(async (pn: string) => {
+		if (pn === PN) return LID
+		return null
+	})
+	const getPNForLID = jest.fn<(lid: string) => Promise<string | null>>(async (lid: string) => {
+		if (lid === LID) return PN
+		return null
+	})
+
+	beforeEach(() => {
+		getLIDForPN.mockClear()
+		getPNForLID.mockClear()
+	})
+
+	describe('AB prop 14303 ON (issueToLid=true)', () => {
+		it('returns LID unchanged when input is LID', async () => {
+			expect(await resolveIssuanceJid(LID, true, getLIDForPN, getPNForLID)).toBe(LID)
+			expect(getLIDForPN).not.toHaveBeenCalled()
+		})
+
+		it('resolves PN to LID via lidMapping', async () => {
+			expect(await resolveIssuanceJid(PN, true, getLIDForPN, getPNForLID)).toBe(LID)
+			expect(getLIDForPN).toHaveBeenCalledWith(PN)
+		})
+
+		it('falls back to original PN when no LID mapping exists', async () => {
+			expect(await resolveIssuanceJid(PN_NO_LID, true, getLIDForPN, getPNForLID)).toBe(PN_NO_LID)
+		})
+	})
+
+	describe('AB prop 14303 OFF (issueToLid=false)', () => {
+		it('returns PN unchanged when input is PN', async () => {
+			expect(await resolveIssuanceJid(PN, false, getLIDForPN, getPNForLID)).toBe(PN)
+			expect(getPNForLID).not.toHaveBeenCalled()
+		})
+
+		it('resolves LID to PN via lidMapping', async () => {
+			expect(await resolveIssuanceJid(LID, false, getLIDForPN, getPNForLID)).toBe(PN)
+			expect(getPNForLID).toHaveBeenCalledWith(LID)
+		})
+
+		it('falls back to original LID when no PN mapping exists', async () => {
+			expect(await resolveIssuanceJid(LID_NO_PN, false, getLIDForPN, getPNForLID)).toBe(LID_NO_PN)
+		})
+
+		it('returns LID unchanged when getPNForLID is omitted', async () => {
+			expect(await resolveIssuanceJid(LID, false, getLIDForPN)).toBe(LID)
+		})
+	})
+
+	describe('JID normalization (handles @c.us and hosted forms)', () => {
+		const PN_CUS = '5511999999999@c.us'
+		const PN_NORMALIZED = '5511999999999@s.whatsapp.net'
+		const HOSTED_LID = '999999@hosted.lid'
+
+		it('normalizes @c.us before resolving (issueToLid=true)', async () => {
+			const fn = jest.fn<(pn: string) => Promise<string | null>>(async (pn: string) => {
+				if (pn === PN_NORMALIZED) return LID
+				return null
+			})
+			const result = await resolveIssuanceJid(PN_CUS, true, fn, getPNForLID)
+			expect(result).toBe(LID)
+			// Mapping store called with NORMALIZED form
+			expect(fn).toHaveBeenCalledWith(PN_NORMALIZED)
+		})
+
+		it('treats hosted LID as LID input (issueToLid=true returns it unchanged)', async () => {
+			expect(await resolveIssuanceJid(HOSTED_LID, true, getLIDForPN, getPNForLID)).toBe(HOSTED_LID)
+			expect(getLIDForPN).not.toHaveBeenCalled()
+		})
+
+		it('treats hosted LID as LID input (issueToLid=false converts via getPNForLID)', async () => {
+			const fn = jest.fn<(lid: string) => Promise<string | null>>(async () => null)
+			await resolveIssuanceJid(HOSTED_LID, false, getLIDForPN, fn)
+			expect(fn).toHaveBeenCalledWith(HOSTED_LID)
+		})
+	})
+})
+
+// ─── readTcTokenIndex / buildMergedTcTokenIndexWrite ───────────────────
+
+describe('tctoken cross-session prune index', () => {
+	it('exports the sentinel key as "__index"', () => {
+		// Persisted state compatibility — tests freeze the value to catch unintended renames.
+		expect(TC_TOKEN_INDEX_KEY).toBe('__index')
+	})
+
+	describe('readTcTokenIndex', () => {
+		it('returns [] when the index entry is absent', async () => {
+			const keys = createMockKeys()
+			;(keys.get as any).mockResolvedValue({})
+			expect(await readTcTokenIndex(keys)).toEqual([])
+		})
+
+		it('returns [] when the index token buffer is empty', async () => {
+			const keys = createMockKeys()
+			;(keys.get as any).mockResolvedValue({ [TC_TOKEN_INDEX_KEY]: { token: Buffer.alloc(0) } })
+			expect(await readTcTokenIndex(keys)).toEqual([])
+		})
+
+		it('returns [] when the JSON payload is corrupted', async () => {
+			const keys = createMockKeys()
+			;(keys.get as any).mockResolvedValue({ [TC_TOKEN_INDEX_KEY]: { token: Buffer.from('not-json') } })
+			expect(await readTcTokenIndex(keys)).toEqual([])
+		})
+
+		it('returns [] when the JSON payload is not an array', async () => {
+			const keys = createMockKeys()
+			;(keys.get as any).mockResolvedValue({ [TC_TOKEN_INDEX_KEY]: { token: Buffer.from('{"a":1}') } })
+			expect(await readTcTokenIndex(keys)).toEqual([])
+		})
+
+		it('returns the persisted JIDs', async () => {
+			const keys = createMockKeys()
+			const stored = ['a@lid', 'b@lid', 'c@s.whatsapp.net']
+			;(keys.get as any).mockResolvedValue({
+				[TC_TOKEN_INDEX_KEY]: { token: Buffer.from(JSON.stringify(stored)) }
+			})
+			expect(await readTcTokenIndex(keys)).toEqual(stored)
+		})
+
+		it('filters out the sentinel key itself, empty strings, and non-strings', async () => {
+			const keys = createMockKeys()
+			const stored = ['a@lid', '', TC_TOKEN_INDEX_KEY, 42, null, 'b@lid']
+			;(keys.get as any).mockResolvedValue({
+				[TC_TOKEN_INDEX_KEY]: { token: Buffer.from(JSON.stringify(stored)) }
+			})
+			expect(await readTcTokenIndex(keys)).toEqual(['a@lid', 'b@lid'])
+		})
+	})
+
+	describe('buildMergedTcTokenIndexWrite', () => {
+		it('merges added JIDs with the persisted set (de-duplicated)', async () => {
+			const keys = createMockKeys()
+			;(keys.get as any).mockResolvedValue({
+				[TC_TOKEN_INDEX_KEY]: { token: Buffer.from(JSON.stringify(['a@lid', 'b@lid'])) }
+			})
+			const write = await buildMergedTcTokenIndexWrite(keys, ['b@lid', 'c@lid'])
+			const decoded = JSON.parse(write[TC_TOKEN_INDEX_KEY].token.toString()) as string[]
+			expect(decoded.sort()).toEqual(['a@lid', 'b@lid', 'c@lid'])
+		})
+
+		it('drops the sentinel key from the added set', async () => {
+			const keys = createMockKeys()
+			;(keys.get as any).mockResolvedValue({})
+			const write = await buildMergedTcTokenIndexWrite(keys, [TC_TOKEN_INDEX_KEY, 'a@lid'])
+			const decoded = JSON.parse(write[TC_TOKEN_INDEX_KEY].token.toString()) as string[]
+			expect(decoded).toEqual(['a@lid'])
+		})
+
+		it('handles empty inputs', async () => {
+			const keys = createMockKeys()
+			;(keys.get as any).mockResolvedValue({})
+			const write = await buildMergedTcTokenIndexWrite(keys, [])
+			const decoded = JSON.parse(write[TC_TOKEN_INDEX_KEY].token.toString()) as string[]
+			expect(decoded).toEqual([])
+		})
+	})
+})
+
+// ─── storeTcTokensFromIqResult — isRegularUser gating + monotonicity ───
+
+describe('storeTcTokensFromIqResult — gating and monotonicity', () => {
+	const PEER_PN = '5511999999999@s.whatsapp.net'
+	const PEER_LID = '123456@lid'
+
+	const getLIDForPN = jest.fn<(pn: string) => Promise<string | null>>(async (pn: string) => {
+		if (pn === PEER_PN) return PEER_LID
+		return null
+	})
+
+	beforeEach(() => {
+		getLIDForPN.mockClear()
+	})
+
+	const buildIqResult = (jid: string, tokenBytes: Uint8Array, t: string): BinaryNode => ({
+		tag: 'iq',
+		attrs: {},
+		content: [
+			{
+				tag: 'tokens',
+				attrs: {},
+				content: [
+					{
+						tag: 'token',
+						attrs: { jid, type: 'trusted_contact', t },
+						content: tokenBytes
+					}
+				]
+			}
+		]
+	})
+
+	it('skips PSA WID (jid="0") even if returned in tokens block', async () => {
+		const keys = createMockKeys()
+		;(keys.get as any).mockResolvedValue({})
+		await storeTcTokensFromIqResult({
+			result: buildIqResult('myDeviceJid@s.whatsapp.net', Buffer.from([0x01, 0x02]), '1700000000'),
+			fallbackJid: '0@s.whatsapp.net',
+			keys,
+			getLIDForPN
+		})
+		expect(keys.set).not.toHaveBeenCalled()
+	})
+
+	it('skips bot phone numbers', async () => {
+		const keys = createMockKeys()
+		;(keys.get as any).mockResolvedValue({})
+		await storeTcTokensFromIqResult({
+			result: buildIqResult('myDeviceJid@s.whatsapp.net', Buffer.from([0x01, 0x02]), '1700000000'),
+			fallbackJid: '13135550000@s.whatsapp.net',
+			keys,
+			getLIDForPN
+		})
+		expect(keys.set).not.toHaveBeenCalled()
+	})
+
+	it('skips MetaAI (@bot server)', async () => {
+		const keys = createMockKeys()
+		;(keys.get as any).mockResolvedValue({})
+		await storeTcTokensFromIqResult({
+			result: buildIqResult('myDeviceJid@s.whatsapp.net', Buffer.from([0x01, 0x02]), '1700000000'),
+			fallbackJid: 'meta-ai@bot',
+			keys,
+			getLIDForPN
+		})
+		expect(keys.set).not.toHaveBeenCalled()
+	})
+
+	it('uses fallbackJid (NOT the token node jid which is own device) as storage source', async () => {
+		const keys = createMockKeys()
+		;(keys.get as any).mockResolvedValue({})
+		const onNewJidStored = jest.fn()
+		await storeTcTokensFromIqResult({
+			result: buildIqResult('myDeviceJid:1@s.whatsapp.net', Buffer.from([0xaa, 0xbb]), '1700000000'),
+			fallbackJid: PEER_PN,
+			keys,
+			getLIDForPN,
+			onNewJidStored
+		})
+		expect(keys.set).toHaveBeenCalled()
+		const setArgs = (keys.set.mock.calls[0]?.[0] as { tctoken: Record<string, unknown> }).tctoken
+		expect(Object.keys(setArgs)).toContain(PEER_LID)
+		expect(onNewJidStored).toHaveBeenCalledWith(PEER_LID)
+	})
+
+	it('skips when incoming timestamp is older than existing (monotonicity)', async () => {
+		const keys = createMockKeys()
+		;(keys.get as any).mockResolvedValue({
+			[PEER_LID]: { token: Buffer.from([0x99]), timestamp: '1800000000' }
+		})
+		await storeTcTokensFromIqResult({
+			result: buildIqResult('myDeviceJid@s.whatsapp.net', Buffer.from([0xaa]), '1700000000'),
+			fallbackJid: PEER_PN,
+			keys,
+			getLIDForPN
+		})
+		expect(keys.set).not.toHaveBeenCalled()
+	})
+
+	it('skips timestamp-less tokens (would be immediately expired)', async () => {
+		const keys = createMockKeys()
+		;(keys.get as any).mockResolvedValue({})
+		await storeTcTokensFromIqResult({
+			result: {
+				tag: 'iq',
+				attrs: {},
+				content: [
+					{
+						tag: 'tokens',
+						attrs: {},
+						content: [
+							{
+								tag: 'token',
+								attrs: { jid: 'd@s.whatsapp.net', type: 'trusted_contact' },
+								content: Buffer.from([0x01])
+							}
+						]
+					}
+				]
+			},
+			fallbackJid: PEER_PN,
+			keys,
+			getLIDForPN
+		})
+		expect(keys.set).not.toHaveBeenCalled()
 	})
 })

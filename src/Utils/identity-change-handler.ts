@@ -57,6 +57,16 @@ export type IdentityChangeContext = {
 	debounceCache: NodeCache<boolean>
 	/** Logger instance for debugging and monitoring */
 	logger: ILogger
+	/**
+	 * Invoked right before `assertSessions` is called for an existing-session identity
+	 * change. Used to kick off fire-and-forget side effects (e.g. tctoken re-issuance)
+	 * in the same order WA Web does — i.e. before the E2E session is re-established.
+	 * Must not throw; implementations are responsible for their own error handling.
+	 *
+	 * Skipped when the refresh itself is skipped (no_identity_node, invalid_notification,
+	 * skipped_companion_device, skipped_self_primary, debounced, skipped_offline).
+	 */
+	onBeforeSessionRefresh?: (jid: string) => void
 }
 
 // ============================================================================
@@ -169,6 +179,19 @@ export async function handleIdentityChange(
 	// FIX: Set debounce cache only immediately before the actual refresh attempt
 	// This ensures we don't incorrectly debounce when we exit early (offline, etc.)
 	ctx.debounceCache.set(from, true)
+
+	// Fire-and-forget side effects (e.g. tctoken re-issuance) BEFORE the session is
+	// re-established. WA Web runs these in parallel with the session refresh —
+	// running afterwards would race with the next outbound send and risk error 463.
+	//
+	// Wrapped in try/catch so a misbehaving consumer callback cannot abort identity
+	// change recovery. We log and continue — assertSessions still runs so the E2E
+	// session always gets refreshed.
+	try {
+		ctx.onBeforeSessionRefresh?.(from)
+	} catch (error) {
+		ctx.logger.warn({ error, jid: from }, 'onBeforeSessionRefresh callback threw — continuing with session refresh')
+	}
 
 	// Attempt session refresh/creation
 	try {
