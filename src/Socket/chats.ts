@@ -1411,20 +1411,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			}
 		}
 
-		// Fire-and-forget: post-upsert work (history app-state sync + processMessage)
-		// must NOT block the buffered function. Awaiting here keeps `messages.upsert`
-		// pinned in the event buffer (createBufferedFunction only schedules flush
-		// after work() resolves), delaying delivery to the consumer by the duration
-		// of processMessage.
-		//
-		// We wrap the work in `messageMutex.mutex(chatId, ...)` so per-chat ordering
-		// of processMessage side-effects (chat.unreadCount, LID/PN mapping, messages.update,
-		// history downloads) is preserved across messages of the same chat. The outer
-		// mutex acquired by messages-recv.ts releases as soon as upsertMessage returns
-		// (fast, since work is detached), then this inner mutex enqueues per-chat —
-		// no deadlock, strict per-chat ordering kept.
-		const postUpsertChatId = msg.key.remoteJid || msg.key.id || 'unknown'
-		const postUpsertWork = messageMutex.mutex(postUpsertChatId, () =>
+		// Post-upsert work: history app-state sync + processMessage side effects.
+		// Awaiting here keeps `messages.upsert` pinned in the event buffer
+		// (createBufferedFunction only schedules flush after work() resolves), so
+		// the hot path detaches this work to release the emit on the next debounce
+		// tick.
+		const postUpsertTasks = () =>
 			Promise.all([
 				shouldProcessHistoryMsg ? doAppStateSync() : Promise.resolve(),
 				processMessage(msg, {
@@ -1439,16 +1431,24 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					getMessage
 				})
 			])
-		)
 
-		// appStateSyncKeyShare path: processMessage persists the new app-state-sync key
-		// via keyStore.transaction. The follow-up doAppStateSync() needs that key to
-		// decrypt patches, so for this rare branch we MUST await postUpsertWork first.
-		// All other messages stay fire-and-forget (the latency win).
-		if (msg.message?.protocolMessage?.appStateSyncKeyShare && syncState === SyncState.Syncing) {
+		const isKeyShareDuringSync =
+			!!msg.message?.protocolMessage?.appStateSyncKeyShare && syncState === SyncState.Syncing
+
+		if (isKeyShareDuringSync) {
+			// appStateSyncKeyShare path: processMessage persists the new app-state-sync
+			// key via keyStore.transaction at process-message.ts:650. The follow-up
+			// doAppStateSync() needs that key to decrypt patches, so we MUST await
+			// processMessage first.
+			//
+			// IMPORTANT: do NOT wrap in messageMutex here. The inbound caller in
+			// messages-recv.ts:2416 already holds messageMutex.mutex(chatId, ...) for
+			// this chat; re-acquiring the same keyed mutex while awaiting it would
+			// deadlock (async-mutex is not re-entrant). Running inline preserves
+			// per-chat ordering via the caller's outer mutex.
 			logger.info('App state sync key arrived, awaiting persistence before triggering sync')
 			try {
-				await postUpsertWork
+				await postUpsertTasks()
 				await doAppStateSync()
 			} catch (err) {
 				logger?.warn(
@@ -1457,7 +1457,14 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				)
 			}
 		} else {
-			postUpsertWork.catch(err =>
+			// Fire-and-forget path: wrap in inner messageMutex(chatId) so per-chat
+			// ordering of processMessage side effects (chat.unreadCount, LID/PN mapping,
+			// messages.update, history downloads) is preserved across messages of the
+			// same chat. Reentrancy is safe here because the outer mutex acquired by
+			// messages-recv.ts releases as soon as upsertMessage returns (work is not
+			// awaited), then this inner mutex enqueues per-chat.
+			const postUpsertChatId = msg.key.remoteJid || msg.key.id || 'unknown'
+			messageMutex.mutex(postUpsertChatId, postUpsertTasks).catch(err =>
 				logger?.warn(
 					{
 						err,
