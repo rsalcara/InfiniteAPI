@@ -1429,21 +1429,19 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		// the hot path detaches this work to release the emit on the next debounce
 		// tick.
 		//
-		// Each task is wrapped in its own .catch so the combined promise only
-		// settles after BOTH tasks finish. With a plain Promise.all, an early
-		// rejection from one task would release the keyed mutex while the other
-		// task is still mutating chat state — letting the next message of the
-		// same chat overtake it and break per-chat ordering.
-		const postUpsertTasks = () =>
-			Promise.all([
-				shouldProcessHistoryMsg
-					? doAppStateSync().catch(err =>
-							logger?.warn(
-								{ err, messageId: msg.key?.id, remoteJid: msg.key?.remoteJid },
-								'history doAppStateSync failed'
-							)
-						)
-					: Promise.resolve(),
+		// Use Promise.allSettled so the combined promise only settles after BOTH
+		// tasks finish. With a plain Promise.all, an early rejection from one task
+		// would release the keyed mutex while the other task is still mutating
+		// chat state — letting the next message of the same chat overtake it and
+		// break per-chat ordering.
+		//
+		// Returns the per-task settle status so the keyShare branch can know
+		// whether processMessage actually persisted the new app-state-sync key
+		// before triggering doAppStateSync (otherwise the sync would hit
+		// isMissingKeyError and park collections in blockedCollections).
+		const postUpsertTasks = async (): Promise<{ processMessageOk: boolean }> => {
+			const [historyResult, processResult] = await Promise.allSettled([
+				shouldProcessHistoryMsg ? doAppStateSync() : Promise.resolve(),
 				processMessage(msg, {
 					signalRepository,
 					shouldProcessHistoryMsg,
@@ -1454,13 +1452,25 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					logger,
 					options: config.options,
 					getMessage
-				}).catch(err =>
-					logger?.warn(
-						{ err, messageId: msg.key?.id, remoteJid: msg.key?.remoteJid },
-						'processMessage failed'
-					)
-				)
+				})
 			])
+
+			if (historyResult.status === 'rejected') {
+				logger?.warn(
+					{ err: historyResult.reason, messageId: msg.key?.id, remoteJid: msg.key?.remoteJid },
+					'history doAppStateSync failed'
+				)
+			}
+
+			if (processResult.status === 'rejected') {
+				logger?.warn(
+					{ err: processResult.reason, messageId: msg.key?.id, remoteJid: msg.key?.remoteJid },
+					'processMessage failed'
+				)
+			}
+
+			return { processMessageOk: processResult.status === 'fulfilled' }
+		}
 
 		// Use getChatId + jidNormalizedUser so the mutex key matches the chat-id
 		// scheme processMessage uses for chat updates (broadcasts target the
@@ -1495,26 +1505,39 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		if (isKeyShareDuringSync) {
 			// appStateSyncKeyShare path: processMessage persists the new app-state-sync
 			// key in its APP_STATE_SYNC_KEY_SHARE handler (via keyStore.transaction).
-			// The follow-up doAppStateSync() needs that key to decrypt patches, so we
-			// MUST await postUpsertWork first. No deadlock with the inbound caller's
-			// messageMutex because postUpsertMutex is a different mutex instance.
+			// The follow-up doAppStateSync() needs that key to decrypt patches, so
+			// we MUST wait for processMessage to actually succeed before kicking off
+			// the sync — otherwise it would hit isMissingKeyError and park
+			// collections in blockedCollections, regressing the very issue this
+			// branch was added to fix.
+			//
+			// No deadlock with the inbound caller's messageMutex because
+			// postUpsertMutex is a different mutex instance.
 			logger.info('App state sync key arrived, awaiting persistence before triggering sync')
-			try {
-				await postUpsertWork
-				await doAppStateSync()
-			} catch (err) {
+			const { processMessageOk } = await postUpsertWork
+
+			if (!processMessageOk) {
 				logger?.warn(
-					{ err, messageId: msg.key?.id, remoteJid: msg.key?.remoteJid },
-					'app-state key-share post-upsert work failed'
+					{ messageId: msg.key?.id, remoteJid: msg.key?.remoteJid },
+					'processMessage failed during key-share — skipping doAppStateSync to avoid isMissingKeyError'
 				)
+			} else {
+				try {
+					await doAppStateSync()
+				} catch (err) {
+					logger?.warn(
+						{ err, messageId: msg.key?.id, remoteJid: msg.key?.remoteJid },
+						'doAppStateSync failed after key-share persistence'
+					)
+				}
 			}
 		} else {
-			// `postUpsertWork` cannot reject in practice — both tasks inside
-			// `postUpsertTasks` already swallow their rejections via `.catch`,
-			// so `Promise.all` never rejects. `void` marks the floating promise
-			// as intentional. If `postUpsertMutex` itself ever throws (e.g.
-			// runtime corruption), the resulting unhandled rejection is the
-			// signal we want — it's loud and points at a real bug.
+			// `postUpsertWork` cannot reject in practice — Promise.allSettled
+			// inside postUpsertTasks never rejects, and the per-task warnings
+			// already log any failures. `void` marks the floating promise as
+			// intentional. If `postUpsertMutex` itself ever throws (e.g. runtime
+			// corruption), the resulting unhandled rejection is the signal we
+			// want — it's loud and points at a real bug.
 			void postUpsertWork
 		}
 	})
