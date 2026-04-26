@@ -1415,31 +1415,59 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		// must NOT block the buffered function. Awaiting here keeps `messages.upsert`
 		// pinned in the event buffer (createBufferedFunction only schedules flush
 		// after work() resolves), delaying delivery to the consumer by the duration
-		// of processMessage. Detaching this work releases the emit on the next debounce
-		// tick while signal/store/tcToken side-effects continue in the background.
-		Promise.all([
-			(async () => {
-				if (shouldProcessHistoryMsg) {
-					await doAppStateSync()
-				}
-			})(),
-			processMessage(msg, {
-				signalRepository,
-				shouldProcessHistoryMsg,
-				placeholderResendCache,
-				ev,
-				creds: authState.creds,
-				keyStore: authState.keys,
-				logger,
-				options: config.options,
-				getMessage
-			})
-		]).catch(err => logger?.warn({ err }, 'background post-upsert work failed'))
+		// of processMessage.
+		//
+		// We wrap the work in `messageMutex.mutex(chatId, ...)` so per-chat ordering
+		// of processMessage side-effects (chat.unreadCount, LID/PN mapping, messages.update,
+		// history downloads) is preserved across messages of the same chat. The outer
+		// mutex acquired by messages-recv.ts releases as soon as upsertMessage returns
+		// (fast, since work is detached), then this inner mutex enqueues per-chat —
+		// no deadlock, strict per-chat ordering kept.
+		const postUpsertChatId = msg.key.remoteJid || msg.key.id || 'unknown'
+		const postUpsertWork = messageMutex.mutex(postUpsertChatId, () =>
+			Promise.all([
+				shouldProcessHistoryMsg ? doAppStateSync() : Promise.resolve(),
+				processMessage(msg, {
+					signalRepository,
+					shouldProcessHistoryMsg,
+					placeholderResendCache,
+					ev,
+					creds: authState.creds,
+					keyStore: authState.keys,
+					logger,
+					options: config.options,
+					getMessage
+				})
+			])
+		)
 
-		// If the app state key arrives and we are waiting to sync, trigger the sync now.
+		// appStateSyncKeyShare path: processMessage persists the new app-state-sync key
+		// via keyStore.transaction. The follow-up doAppStateSync() needs that key to
+		// decrypt patches, so for this rare branch we MUST await postUpsertWork first.
+		// All other messages stay fire-and-forget (the latency win).
 		if (msg.message?.protocolMessage?.appStateSyncKeyShare && syncState === SyncState.Syncing) {
-			logger.info('App state sync key arrived, triggering app state sync')
-			await doAppStateSync()
+			logger.info('App state sync key arrived, awaiting persistence before triggering sync')
+			try {
+				await postUpsertWork
+				await doAppStateSync()
+			} catch (err) {
+				logger?.warn(
+					{ err, messageId: msg.key?.id, remoteJid: msg.key?.remoteJid },
+					'app-state key-share post-upsert work failed'
+				)
+			}
+		} else {
+			postUpsertWork.catch(err =>
+				logger?.warn(
+					{
+						err,
+						messageId: msg.key?.id,
+						remoteJid: msg.key?.remoteJid,
+						shouldProcessHistoryMsg
+					},
+					'background post-upsert work failed'
+				)
+			)
 		}
 	})
 
