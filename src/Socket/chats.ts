@@ -1509,17 +1509,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				)
 			}
 		} else {
-			postUpsertWork.catch(err =>
-				logger?.warn(
-					{
-						err,
-						messageId: msg.key?.id,
-						remoteJid: msg.key?.remoteJid,
-						shouldProcessHistoryMsg
-					},
-					'background post-upsert work failed'
-				)
-			)
+			// `postUpsertWork` cannot reject in practice — both tasks inside
+			// `postUpsertTasks` already swallow their rejections via `.catch`,
+			// so `Promise.all` never rejects. `void` marks the floating promise
+			// as intentional. If `postUpsertMutex` itself ever throws (e.g.
+			// runtime corruption), the resulting unhandled rejection is the
+			// signal we want — it's loud and points at a real bug.
+			void postUpsertWork
 		}
 	})
 
