@@ -122,10 +122,10 @@ async function storeTcTokensFromHistorySync(
 	if (pnsToResolve.length) {
 		try {
 			const mappings = await signalRepository.lidMapping.getLIDsForPNs(pnsToResolve)
-			if (mappings) {
-				for (const { pn, lid } of mappings) {
-					if (pn && lid) pnToLid.set(jidNormalizedUser(pn), lid)
-				}
+			// Flat loop (continue-on-skip) keeps max nesting depth at 4 for lint.
+			for (const { pn, lid } of mappings ?? []) {
+				if (!pn || !lid) continue
+				pnToLid.set(jidNormalizedUser(pn), lid)
 			}
 		} catch (err) {
 			// Per-chat fallback below (storageJid := jid). Don't abort the chunk —
