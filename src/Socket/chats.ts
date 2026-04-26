@@ -1411,7 +1411,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			}
 		}
 
-		await Promise.all([
+		// Fire-and-forget: post-upsert work (history app-state sync + processMessage)
+		// must NOT block the buffered function. Awaiting here keeps `messages.upsert`
+		// pinned in the event buffer (createBufferedFunction only schedules flush
+		// after work() resolves), delaying delivery to the consumer by the duration
+		// of processMessage. Detaching this work releases the emit on the next debounce
+		// tick while signal/store/tcToken side-effects continue in the background.
+		Promise.all([
 			(async () => {
 				if (shouldProcessHistoryMsg) {
 					await doAppStateSync()
@@ -1428,7 +1434,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				options: config.options,
 				getMessage
 			})
-		])
+		]).catch(err => logger?.warn({ err }, 'background post-upsert work failed'))
 
 		// If the app state key arrives and we are waiting to sync, trigger the sync now.
 		if (msg.message?.protocolMessage?.appStateSyncKeyShare && syncState === SyncState.Syncing) {
