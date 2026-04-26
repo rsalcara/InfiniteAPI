@@ -2330,44 +2330,49 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		)
 
 		const alt = msg.key.participantAlt || msg.key.remoteJidAlt
-		// Handle LID/PN mappings with hybrid approach:
-		// - Store mapping operation runs in background (non-critical for decrypt)
-		// - Session migration MUST complete before decrypt() to avoid "No session record" errors
-		// This addresses Codex/Copilot review concerns about race conditions with decrypt()
+		// Handle LID/PN mappings with optimized hot-path:
+		// - storeLIDPNMappings is fire-and-forget (background) — does NOT block decrypt
+		// - migrateSession is SYNC (await) — REQUIRED for decrypt to find session
+		//
+		// SAFETY: normalizeMessageJids has a fast-path that uses key.*Alt directly without
+		// hitting the store, so the just-arrived message normalizes correctly even before
+		// the background store completes. Subsequent messages in the same chat hit the
+		// store after the background write is done (ms later).
+		//
+		// Pre-check (getPNForLID/getLIDForPN) was removed — storeLIDPNMappings has internal
+		// LRU cache + dedup, the pre-check was a redundant store round-trip per inbound
+		// message that added latency under load.
+		//
+		// HISTORICAL: this restores the intent of d73cd28d39 (2026-02-03) which was
+		// partially reverted by c3fc792351 the same day due to a race-condition concern
+		// with migrateSession (kept sync here). storeLIDPNMappings was over-protected.
+		//
+		// DO NOT make migrateSession async — decrypt() depends on it.
+		// See Downloads/InfiniteAPI-Inbound-Latency-Fix-Documentation.md for full context.
 		if (!!alt) {
 			const altServer = jidDecode(alt)?.server
 			const primaryJid = msg.key.participant || msg.key.remoteJid!
 
 			if (altServer === 'lid') {
-				// Check if mapping already exists to avoid unnecessary storage operations
-				const existingMapping = await signalRepository.lidMapping.getPNForLID(alt)
-				if (!existingMapping) {
-					// MUST await: normalizeMessageJids() runs after this and needs the mapping
-					// in the LIDMappingStore to resolve LID→PN for events delivered to consumers
-					await signalRepository.lidMapping
-						.storeLIDPNMappings([{ lid: alt, pn: primaryJid }])
-						.catch(error => logger.warn({ error, alt, primaryJid }, 'LID mapping storage failed'))
-				}
+				// Fire-and-forget: storeLIDPNMappings has internal cache+dedup,
+				// pre-check (getPNForLID) was redundant.
+				signalRepository.lidMapping
+					.storeLIDPNMappings([{ lid: alt, pn: primaryJid }])
+					.catch(error => logger.warn({ error, alt, primaryJid }, 'background LID mapping store failed'))
 
-				// CRITICAL: ALWAYS migrate session, even if mapping exists
-				// Other code paths (e.g., USync device lookup in messages-send.ts:310-319)
-				// may create mappings via storeLIDPNMappings() without calling migrateSession()
-				// This leaves sessions under PN format while decrypt() expects LID format
-				// Skipping migration based on mapping existence causes "No session record" errors
+				// CRITICAL: ALWAYS migrate session SYNC, even if mapping exists.
+				// Other code paths (e.g., USync device lookup in messages-send.ts) may create
+				// mappings via storeLIDPNMappings() without calling migrateSession(). This
+				// leaves sessions under PN format while decrypt() expects LID format.
+				// Skipping migration based on mapping existence causes "No session record" errors.
 				await signalRepository.migrateSession(primaryJid, alt)
 			} else {
-				// Check if reverse mapping exists
-				const existingMapping = await signalRepository.lidMapping.getLIDForPN(alt)
-				if (!existingMapping) {
-					// MUST await: normalizeMessageJids() runs after this and needs the mapping
-					// in the LIDMappingStore to resolve LID→PN for events delivered to consumers
-					await signalRepository.lidMapping
-						.storeLIDPNMappings([{ lid: primaryJid, pn: alt }])
-						.catch(error => logger.warn({ error, alt, primaryJid }, 'LID mapping storage failed'))
-				}
+				// Fire-and-forget: same rationale as above.
+				signalRepository.lidMapping
+					.storeLIDPNMappings([{ lid: primaryJid, pn: alt }])
+					.catch(error => logger.warn({ error, alt, primaryJid }, 'background LID mapping store failed'))
 
-				// CRITICAL: ALWAYS migrate session, even if mapping exists
-				// Same reasoning as above - mapping existence doesn't guarantee session migration
+				// CRITICAL: ALWAYS migrate session SYNC.
 				await signalRepository.migrateSession(alt, primaryJid)
 			}
 		}

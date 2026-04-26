@@ -565,11 +565,22 @@ const processMessage = async (
 						}
 					}
 
-					// Persist tctokens carried by history-sync chats BEFORE emitting messaging-history.set
-					// — listeners may immediately fire outbound sends that need the tctoken, and the store
-					// has to be populated first to avoid an error 463 on the first multi-device send.
-					// Runs AFTER storeLIDPNMappings (see comment above) so LID resolution works.
-					await storeTcTokensFromHistorySync(data.chats, signalRepository, keyStore, logger)
+					// Persist tctokens carried by history-sync chats in BACKGROUND.
+					// Originally awaited (PR #386) to avoid 463 on first multi-device send, but in
+					// production this drains the event buffer per-chunk and adds visible delivery
+					// latency (especially after restart / QR scan when many chunks arrive at once).
+					//
+					// TRADE-OFF: a listener that fires an outbound send IMMEDIATELY after the emit
+					// may race the background persistence and get a 463 on that specific send. The
+					// existing 463 handler in messages-recv.ts triggers a getPrivacyTokens() refetch
+					// that auto-recovers within seconds. Net result is much better UX than per-chunk
+					// stalls.
+					//
+					// DO NOT add `await` back here without re-evaluating production latency.
+					// See Downloads/InfiniteAPI-Inbound-Latency-Fix-Documentation.md for full context.
+					storeTcTokensFromHistorySync(data.chats, signalRepository, keyStore, logger).catch(err =>
+						logger?.warn({ err }, 'background tctoken history-sync persistence failed')
+					)
 
 					ev.emit('messaging-history.set', {
 						...data,
