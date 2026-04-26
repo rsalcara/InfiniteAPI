@@ -2345,10 +2345,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		//
 		// HISTORICAL: this restores the intent of d73cd28d39 (2026-02-03) which was
 		// partially reverted by c3fc792351 the same day due to a race-condition concern
-		// with migrateSession (kept sync here). storeLIDPNMappings was over-protected.
+		// with migrateSession (kept sync here). storeLIDPNMappings was over-protected:
+		// it persists a mapping that downstream consumers can re-derive from key.*Alt,
+		// while migrateSession actually moves the Signal session record that decrypt()
+		// will load microseconds later — those two have very different criticality.
 		//
-		// DO NOT make migrateSession async — decrypt() depends on it.
-		// See Downloads/InfiniteAPI-Inbound-Latency-Fix-Documentation.md for full context.
+		// DO NOT make migrateSession async — decrypt() depends on the session being at
+		// the correct identifier (LID vs PN) when it runs. Other code paths (USync
+		// device lookup in messages-send.ts) create LID/PN mappings without migrating
+		// the session, so we cannot skip migration even when the mapping already exists.
 		if (!!alt) {
 			const altServer = jidDecode(alt)?.server
 			const primaryJid = msg.key.participant || msg.key.remoteJid!
