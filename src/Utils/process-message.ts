@@ -40,7 +40,7 @@ import { getKeyAuthor, toNumber } from './generics'
 import { downloadAndProcessHistorySyncNotification } from './history'
 import type { ILogger } from './logger'
 import { metrics, recordHistorySyncMessages } from './prometheus-metrics.js'
-import { buildMergedTcTokenIndexWrite, resolveTcTokenJid } from './tc-token-utils'
+import { buildMergedTcTokenIndexWrite } from './tc-token-utils'
 
 type ProcessMessageContext = {
 	shouldProcessHistoryMsg: boolean
@@ -88,26 +88,59 @@ async function storeTcTokensFromHistorySync(
 	keyStore: SignalKeyStoreWithTransaction,
 	logger?: ILogger
 ) {
-	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
-
-	const candidates: { storageJid: string; token: Buffer; ts: number; senderTs?: number }[] = []
-	for (const chat of chats) {
+	// Cheap filter first — most chats in a sync chunk don't carry tcToken at all,
+	// and we want to avoid spinning up promises for them.
+	const tokenChats = chats.filter(chat => {
 		const ts = chat.tcTokenTimestamp ? toNumber(chat.tcTokenTimestamp) : 0
-		if (chat.tcToken?.length && ts > 0) {
-			const jid = jidNormalizedUser(chat.id!)
-			const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
-			candidates.push({
-				storageJid,
-				token: Buffer.from(chat.tcToken),
-				ts,
-				senderTs: chat.tcTokenSenderTimestamp ? toNumber(chat.tcTokenSenderTimestamp) : undefined
-			})
+		return !!chat.tcToken?.length && ts > 0
+	})
+
+	if (!tokenChats.length) {
+		return
+	}
+
+	// Pre-normalize so the rest of the pipeline is a synchronous join.
+	const normalized = tokenChats.map(chat => ({
+		chat,
+		ts: toNumber(chat.tcTokenTimestamp!),
+		jid: jidNormalizedUser(chat.id!)
+	}))
+
+	// BATCHED LID resolution. The previous shape called getLIDForPN once per
+	// chat (sequential await inside a for-of), which became the bottleneck
+	// during heavy history sync — every cold-cache hit was a DB round-trip,
+	// stalling messaging-history.set and spilling into the event-buffer.
+	// `getLIDsForPNs` resolves a deduped list in ONE batched query (and shares
+	// USync retry across PNs that miss cache), turning O(N) round-trips into 1.
+	//
+	// LID inputs (and `@hosted.lid`) skip the lookup entirely — they're already
+	// the storage form. Failures degrade gracefully: a missing mapping just
+	// stores under the original jid, matching `resolveTcTokenJid`'s null branch.
+	const pnsToResolve = [...new Set(normalized.filter(({ jid }) => !isLidUser(jid)).map(({ jid }) => jid))]
+	const pnToLid = new Map<string, string>()
+
+	if (pnsToResolve.length) {
+		try {
+			const mappings = await signalRepository.lidMapping.getLIDsForPNs(pnsToResolve)
+			// Flat loop (continue-on-skip) keeps max nesting depth at 4 for lint.
+			for (const { pn, lid } of mappings ?? []) {
+				if (!pn || !lid) continue
+				pnToLid.set(jidNormalizedUser(pn), lid)
+			}
+		} catch (err) {
+			// Per-chat fallback below (storageJid := jid). Don't abort the chunk —
+			// CodeRabbit noted that all-or-nothing rejection here would drop every
+			// tctoken in the batch AND prevent messaging-history.set from firing.
+			logger?.warn({ err }, 'storeTcTokensFromHistorySync: getLIDsForPNs batch failed; falling back to per-chat jid')
 		}
 	}
 
-	if (!candidates.length) {
-		return
-	}
+	const candidates = normalized.map(({ chat, ts, jid }) => ({
+		storageJid: pnToLid.get(jid) ?? jid,
+		token: Buffer.from(chat.tcToken!),
+		ts,
+		senderTs: chat.tcTokenSenderTimestamp ? toNumber(chat.tcTokenSenderTimestamp) : undefined
+	}))
 
 	const jids = candidates.map(c => c.storageJid)
 	const existing = await keyStore.get('tctoken', jids)
