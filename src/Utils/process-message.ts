@@ -82,6 +82,47 @@ const REAL_MSG_REQ_ME_STUB_TYPES = new Set([WAMessageStubType.GROUP_PARTICIPANT_
  * (TC_TOKEN_INDEX_KEY) via buildMergedTcTokenIndexWrite, so the 24h prune sweep in
  * messages-recv picks them up across sessions.
  */
+/**
+ * Single-concurrency queue for `storeTcTokensFromHistorySync` calls.
+ *
+ * Why: the function does read-then-write merges (`keyStore.get('tctoken', ...)` →
+ * compute → `keyStore.set(...)`) which are NOT atomic at the store level. If two
+ * history-sync chunks invoke this concurrently (common during reconnect / QR
+ * scan), an older chunk that started first can `keyStore.set` AFTER a newer
+ * chunk, overwriting the newer entry — and worse, the merged `__index` write
+ * can drop JIDs the other chunk just added. Result: stale tcTokens / repeat 463
+ * sends until the next opportunistic refetch.
+ *
+ * Serialising via a chained Promise keeps the runs ordered while still freeing
+ * the calling `processMessage` to emit `messaging-history.set` immediately
+ * (the chain is fire-and-forget at the call site). Errors don't break the chain
+ * — each `catch` resets it to `Promise.resolve()` so a single failure can't
+ * stall future runs.
+ *
+ * The chain is module-scoped (one per Node process). Multiple Baileys instances
+ * sharing this module will serialise across instances too, but their writes
+ * target different keyStores so there's no correctness gain — only a tiny loss
+ * of inter-instance parallelism for tcToken syncs, which is acceptable given
+ * how rarely this runs vs. how rare cross-instance contention is.
+ */
+let historyTcTokenChain: Promise<void> = Promise.resolve()
+
+function scheduleHistoryTcTokenSync(
+	chats: Chat[],
+	signalRepository: SignalRepositoryWithLIDStore,
+	keyStore: SignalKeyStoreWithTransaction,
+	logger?: ILogger
+): void {
+	historyTcTokenChain = historyTcTokenChain
+		.catch(() => {
+			/* swallow prior error so chain stays alive */
+		})
+		.then(() => storeTcTokensFromHistorySync(chats, signalRepository, keyStore, logger))
+		.catch(err => {
+			logger?.warn({ err }, 'background tctoken history-sync persistence failed')
+		})
+}
+
 async function storeTcTokensFromHistorySync(
 	chats: Chat[],
 	signalRepository: SignalRepositoryWithLIDStore,
@@ -565,11 +606,28 @@ const processMessage = async (
 						}
 					}
 
-					// Persist tctokens carried by history-sync chats BEFORE emitting messaging-history.set
-					// — listeners may immediately fire outbound sends that need the tctoken, and the store
-					// has to be populated first to avoid an error 463 on the first multi-device send.
-					// Runs AFTER storeLIDPNMappings (see comment above) so LID resolution works.
-					await storeTcTokensFromHistorySync(data.chats, signalRepository, keyStore, logger)
+					// Persist tctokens carried by history-sync chats in BACKGROUND, serialised.
+					//
+					// Originally awaited (PR #386) to avoid 463 on first multi-device send, but in
+					// production this drained the event buffer per-chunk and added visible delivery
+					// latency (especially after restart / QR scan when many chunks arrived at once).
+					//
+					// `scheduleHistoryTcTokenSync` enqueues onto a single-concurrency promise chain
+					// (see definition above) — chunks persist sequentially in the order they were
+					// emitted, preserving timestamp monotonicity AND keeping the `__index` write
+					// safe from concurrent merge clobbers. The call returns immediately so the
+					// `messaging-history.set` emit is not blocked.
+					//
+					// TRADE-OFF: a listener that fires an outbound send IMMEDIATELY after the emit
+					// may race the still-pending persistence and get a 463 on that specific send.
+					// The existing 463 handler in messages-recv.ts triggers a getPrivacyTokens()
+					// refetch that auto-recovers within seconds. Net result is much better UX than
+					// per-chunk stalls.
+					//
+					// DO NOT add `await` back here without re-evaluating production latency, AND
+					// DO NOT call storeTcTokensFromHistorySync directly — it must go through the
+					// chain to preserve write ordering across overlapping chunks.
+					scheduleHistoryTcTokenSync(data.chats, signalRepository, keyStore, logger)
 
 					ev.emit('messaging-history.set', {
 						...data,
