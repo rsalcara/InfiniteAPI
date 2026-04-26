@@ -54,7 +54,7 @@ import {
 	resolveLidToPn
 } from '../Utils'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
-import processMessage from '../Utils/process-message'
+import processMessage, { getChatId } from '../Utils/process-message'
 import { buildTcTokenFromJid } from '../Utils/tc-token-utils'
 import {
 	type BinaryNode,
@@ -129,6 +129,18 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	/** this mutex ensures that notifications from the same chat are processed in order, while allowing parallel processing across chats */
 	const notificationMutex = makeKeyedMutex()
+
+	/**
+	 * Per-chat mutex dedicated to post-upsert work (history app-state sync +
+	 * processMessage side effects). Kept separate from `messageMutex` because
+	 * the inbound caller already holds `messageMutex(chatId)` while running
+	 * decrypt + upsertMessage; sharing the same mutex would let a concurrently-
+	 * arrived message N+1 enqueue *between* msg N's outer callback and msg N's
+	 * post-upsert task, so msg N+1's processMessage could run before msg N's
+	 * (breaking per-chat ordering of side effects). With a separate mutex,
+	 * post-upsert tasks enqueue strictly in upsertMessage call order.
+	 */
+	const postUpsertMutex = makeKeyedMutex()
 
 	// Timeout for AwaitingInitialSync state
 	let awaitingSyncTimeout: NodeJS.Timeout | undefined
@@ -1399,7 +1411,19 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				blockedCollections.clear()
 
 				logger.info('Doing app state sync')
-				await resyncAppState(ALL_WA_PATCH_NAMES, true)
+				try {
+					await resyncAppState(ALL_WA_PATCH_NAMES, true)
+				} catch (err) {
+					// Failure recovery: without this, syncState would stay at Syncing
+					// and ev.flush() would never run, leaving the event buffer pinned
+					// until the buffer's own safety timeout expires. Force the state
+					// machine forward so live inbound events can flow even if the
+					// app-state resync failed (collections are already cleared, so
+					// blocked patches will be retried on the next creds.update tick).
+					syncState = SyncState.Online
+					ev.flush()
+					throw err
+				}
 
 				// Sync is complete, go online and flush everything
 				syncState = SyncState.Online
@@ -1411,29 +1435,131 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			}
 		}
 
-		await Promise.all([
-			(async () => {
-				if (shouldProcessHistoryMsg) {
-					await doAppStateSync()
-				}
-			})(),
-			processMessage(msg, {
-				signalRepository,
-				shouldProcessHistoryMsg,
-				placeholderResendCache,
-				ev,
-				creds: authState.creds,
-				keyStore: authState.keys,
-				logger,
-				options: config.options,
-				getMessage
-			})
-		])
+		// Post-upsert work: history app-state sync + processMessage side effects.
+		// Awaiting here keeps `messages.upsert` pinned in the event buffer
+		// (createBufferedFunction only schedules flush after work() resolves), so
+		// the hot path detaches this work to release the emit on the next debounce
+		// tick.
+		//
+		// Use Promise.allSettled so the combined promise only settles after BOTH
+		// tasks finish. With a plain Promise.all, an early rejection from one task
+		// would release the keyed mutex while the other task is still mutating
+		// chat state — letting the next message of the same chat overtake it and
+		// break per-chat ordering.
+		//
+		// Returns the per-task settle status so the keyShare branch can know
+		// whether processMessage actually persisted the new app-state-sync key
+		// before triggering doAppStateSync (otherwise the sync would hit
+		// isMissingKeyError and park collections in blockedCollections).
+		const postUpsertTasks = async (): Promise<{ processMessageOk: boolean }> => {
+			const [historyResult, processResult] = await Promise.allSettled([
+				shouldProcessHistoryMsg ? doAppStateSync() : Promise.resolve(),
+				processMessage(msg, {
+					signalRepository,
+					shouldProcessHistoryMsg,
+					placeholderResendCache,
+					ev,
+					creds: authState.creds,
+					keyStore: authState.keys,
+					logger,
+					options: config.options,
+					getMessage
+				})
+			])
 
-		// If the app state key arrives and we are waiting to sync, trigger the sync now.
-		if (msg.message?.protocolMessage?.appStateSyncKeyShare && syncState === SyncState.Syncing) {
-			logger.info('App state sync key arrived, triggering app state sync')
-			await doAppStateSync()
+			if (historyResult.status === 'rejected') {
+				logger?.warn(
+					{ err: historyResult.reason, messageId: msg.key?.id, remoteJid: msg.key?.remoteJid },
+					'history doAppStateSync failed'
+				)
+			}
+
+			if (processResult.status === 'rejected') {
+				logger?.warn(
+					{ err: processResult.reason, messageId: msg.key?.id, remoteJid: msg.key?.remoteJid },
+					'processMessage failed'
+				)
+			}
+
+			return { processMessageOk: processResult.status === 'fulfilled' }
+		}
+
+		// Use getChatId + jidNormalizedUser so the mutex key matches the chat-id
+		// scheme processMessage uses for chat updates (broadcasts target the
+		// participant). When getChatId/jidNormalizedUser yields nothing usable
+		// (missing or malformed JID), prefer a message-derived fallback over a
+		// single global 'unknown' bucket — that bucket would head-of-line block
+		// every malformed message behind a shared queue. msg.key.id is unique
+		// per message so unrelated malformed inputs no longer serialize together;
+		// for valid messages we still hit the normalized chat-id path, so the
+		// per-chat ordering guarantee is unchanged where it matters.
+		const rawChatId = getChatId(msg.key)
+		const normalizedChatId = rawChatId ? jidNormalizedUser(rawChatId) : ''
+		const postUpsertChatId = normalizedChatId || msg.key?.id || 'unknown'
+
+		// Wrap in `postUpsertMutex(chatId)` (a SEPARATE keyed mutex from the outer
+		// `messageMutex` held by the inbound caller) so per-chat ordering of
+		// processMessage side effects (chat.unreadCount, LID/PN mapping,
+		// messages.update, history downloads) is preserved across messages of the
+		// same chat.
+		//
+		// Why a separate mutex: if we re-used messageMutex, a concurrently-arrived
+		// message N+1 could enqueue on the outer mutex BEFORE msg N's post-upsert
+		// task gets enqueued (because N's outer callback yields on `await decrypt()`
+		// before reaching the inner enqueue site). The queue would then be
+		// [OuterN+1, InnerN, ...], so InnerN+1 would beat InnerN to processMessage.
+		// With its own mutex, post-upsert tasks enqueue strictly in upsertMessage
+		// call order (which IS message arrival order because the outer
+		// messageMutex serializes the upserts per-chat).
+		const postUpsertWork = postUpsertMutex.mutex(postUpsertChatId, postUpsertTasks)
+
+		const isKeyShareDuringSync =
+			!!msg.message?.protocolMessage?.appStateSyncKeyShare && syncState === SyncState.Syncing
+
+		if (isKeyShareDuringSync) {
+			// appStateSyncKeyShare path: processMessage persists the new app-state-sync
+			// key in its APP_STATE_SYNC_KEY_SHARE handler (via keyStore.transaction).
+			// The follow-up doAppStateSync() needs that key to decrypt patches, so
+			// we MUST wait for processMessage to actually succeed before kicking off
+			// the sync — otherwise it would hit isMissingKeyError and park
+			// collections in blockedCollections, regressing the very issue this
+			// branch was added to fix.
+			//
+			// No deadlock with the inbound caller's messageMutex because
+			// postUpsertMutex is a different mutex instance.
+			logger.info('App state sync key arrived, awaiting persistence before triggering sync')
+			const { processMessageOk } = await postUpsertWork
+
+			if (!processMessageOk) {
+				logger?.warn(
+					{ messageId: msg.key?.id, remoteJid: msg.key?.remoteJid },
+					'processMessage failed during key-share — skipping doAppStateSync to avoid isMissingKeyError'
+				)
+			} else {
+				try {
+					await doAppStateSync()
+				} catch (err) {
+					logger?.warn(
+						{ err, messageId: msg.key?.id, remoteJid: msg.key?.remoteJid },
+						'doAppStateSync failed after key-share persistence'
+					)
+				}
+			}
+		} else {
+			// `postUpsertWork` is not expected to reject — `Promise.allSettled`
+			// inside `postUpsertTasks` never rejects, and per-task failures are
+			// already logged inline. The defensive catch routes any truly
+			// unexpected rejection (e.g. `postUpsertMutex` internal corruption,
+			// future synchronous throws inside processMessage) through
+			// `onUnexpectedError` instead of letting it surface as an
+			// UnhandledPromiseRejection — which on Node ≥15 can terminate the
+			// long-running socket process.
+			postUpsertWork.catch(err =>
+				onUnexpectedError(
+					err,
+					`processing post-upsert work for message ${msg.key?.id || 'unknown'} on ${msg.key?.remoteJid || 'unknown chat'}`
+				)
+			)
 		}
 	})
 
