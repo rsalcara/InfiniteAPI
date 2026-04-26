@@ -130,6 +130,18 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	/** this mutex ensures that notifications from the same chat are processed in order, while allowing parallel processing across chats */
 	const notificationMutex = makeKeyedMutex()
 
+	/**
+	 * Per-chat mutex dedicated to post-upsert work (history app-state sync +
+	 * processMessage side effects). Kept separate from `messageMutex` because
+	 * the inbound caller already holds `messageMutex(chatId)` while running
+	 * decrypt + upsertMessage; sharing the same mutex would let a concurrently-
+	 * arrived message N+1 enqueue *between* msg N's outer callback and msg N's
+	 * post-upsert task, so msg N+1's processMessage could run before msg N's
+	 * (breaking per-chat ordering of side effects). With a separate mutex,
+	 * post-upsert tasks enqueue strictly in upsertMessage call order.
+	 */
+	const postUpsertMutex = makeKeyedMutex()
+
 	// Timeout for AwaitingInitialSync state
 	let awaitingSyncTimeout: NodeJS.Timeout | undefined
 
@@ -1450,6 +1462,29 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				)
 			])
 
+		// Use getChatId + jidNormalizedUser so the mutex key matches the chat-id
+		// scheme processMessage uses for chat updates (broadcasts target the
+		// participant). Falling back to a constant bucket avoids fragmenting the
+		// queue with per-message ids when the key is malformed.
+		const rawChatId = getChatId(msg.key)
+		const postUpsertChatId = rawChatId ? jidNormalizedUser(rawChatId) : 'unknown'
+
+		// Wrap in `postUpsertMutex(chatId)` (a SEPARATE keyed mutex from the outer
+		// `messageMutex` held by the inbound caller) so per-chat ordering of
+		// processMessage side effects (chat.unreadCount, LID/PN mapping,
+		// messages.update, history downloads) is preserved across messages of the
+		// same chat.
+		//
+		// Why a separate mutex: if we re-used messageMutex, a concurrently-arrived
+		// message N+1 could enqueue on the outer mutex BEFORE msg N's post-upsert
+		// task gets enqueued (because N's outer callback yields on `await decrypt()`
+		// before reaching the inner enqueue site). The queue would then be
+		// [OuterN+1, InnerN, ...], so InnerN+1 would beat InnerN to processMessage.
+		// With its own mutex, post-upsert tasks enqueue strictly in upsertMessage
+		// call order (which IS message arrival order because the outer
+		// messageMutex serializes the upserts per-chat).
+		const postUpsertWork = postUpsertMutex.mutex(postUpsertChatId, postUpsertTasks)
+
 		const isKeyShareDuringSync =
 			!!msg.message?.protocolMessage?.appStateSyncKeyShare && syncState === SyncState.Syncing
 
@@ -1457,16 +1492,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			// appStateSyncKeyShare path: processMessage persists the new app-state-sync
 			// key in its APP_STATE_SYNC_KEY_SHARE handler (via keyStore.transaction).
 			// The follow-up doAppStateSync() needs that key to decrypt patches, so we
-			// MUST await processMessage first.
-			//
-			// IMPORTANT: do NOT wrap in messageMutex here. The inbound caller in
-			// messages-recv.ts already holds messageMutex.mutex(chatId, ...) for this
-			// chat; re-acquiring the same keyed mutex while awaiting it would deadlock
-			// (async-mutex is not re-entrant). Running inline preserves per-chat
-			// ordering via the caller's outer mutex.
+			// MUST await postUpsertWork first. No deadlock with the inbound caller's
+			// messageMutex because postUpsertMutex is a different mutex instance.
 			logger.info('App state sync key arrived, awaiting persistence before triggering sync')
 			try {
-				await postUpsertTasks()
+				await postUpsertWork
 				await doAppStateSync()
 			} catch (err) {
 				logger?.warn(
@@ -1475,20 +1505,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				)
 			}
 		} else {
-			// Fire-and-forget path: wrap in inner messageMutex(chatId) so per-chat
-			// ordering of processMessage side effects (chat.unreadCount, LID/PN mapping,
-			// messages.update, history downloads) is preserved across messages of the
-			// same chat. Reentrancy is safe here because the outer mutex acquired by
-			// the inbound caller releases as soon as upsertMessage returns (work is
-			// not awaited), then this inner mutex enqueues per-chat.
-			//
-			// Use getChatId + jidNormalizedUser so the mutex key matches the chat-id
-			// scheme processMessage uses for chat updates (broadcasts target the
-			// participant). Falling back to a constant bucket avoids fragmenting the
-			// queue with per-message ids when the key is malformed.
-			const rawChatId = getChatId(msg.key)
-			const postUpsertChatId = rawChatId ? jidNormalizedUser(rawChatId) : 'unknown'
-			messageMutex.mutex(postUpsertChatId, postUpsertTasks).catch(err =>
+			postUpsertWork.catch(err =>
 				logger?.warn(
 					{
 						err,
