@@ -1416,9 +1416,22 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		// (createBufferedFunction only schedules flush after work() resolves), so
 		// the hot path detaches this work to release the emit on the next debounce
 		// tick.
+		//
+		// Each task is wrapped in its own .catch so the combined promise only
+		// settles after BOTH tasks finish. With a plain Promise.all, an early
+		// rejection from one task would release the keyed mutex while the other
+		// task is still mutating chat state — letting the next message of the
+		// same chat overtake it and break per-chat ordering.
 		const postUpsertTasks = () =>
 			Promise.all([
-				shouldProcessHistoryMsg ? doAppStateSync() : Promise.resolve(),
+				shouldProcessHistoryMsg
+					? doAppStateSync().catch(err =>
+							logger?.warn(
+								{ err, messageId: msg.key?.id, remoteJid: msg.key?.remoteJid },
+								'history doAppStateSync failed'
+							)
+						)
+					: Promise.resolve(),
 				processMessage(msg, {
 					signalRepository,
 					shouldProcessHistoryMsg,
@@ -1429,7 +1442,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					logger,
 					options: config.options,
 					getMessage
-				})
+				}).catch(err =>
+					logger?.warn(
+						{ err, messageId: msg.key?.id, remoteJid: msg.key?.remoteJid },
+						'processMessage failed'
+					)
+				)
 			])
 
 		const isKeyShareDuringSync =
