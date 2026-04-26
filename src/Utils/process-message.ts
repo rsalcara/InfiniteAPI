@@ -90,20 +90,38 @@ async function storeTcTokensFromHistorySync(
 ) {
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 
-	const candidates: { storageJid: string; token: Buffer; ts: number; senderTs?: number }[] = []
-	for (const chat of chats) {
+	// Cheap filter first — most chats in a sync chunk don't carry tcToken at all,
+	// and we want to avoid spinning up promises for them.
+	const tokenChats = chats.filter(chat => {
 		const ts = chat.tcTokenTimestamp ? toNumber(chat.tcTokenTimestamp) : 0
-		if (chat.tcToken?.length && ts > 0) {
-			const jid = jidNormalizedUser(chat.id!)
-			const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
-			candidates.push({
-				storageJid,
-				token: Buffer.from(chat.tcToken),
-				ts,
-				senderTs: chat.tcTokenSenderTimestamp ? toNumber(chat.tcTokenSenderTimestamp) : undefined
-			})
-		}
+		return !!chat.tcToken?.length && ts > 0
+	})
+
+	if (!tokenChats.length) {
+		return
 	}
+
+	// PARALLEL resolveTcTokenJid: each call hits getLIDForPN which can be a DB lookup.
+	// Sequential await inside a for-of (the previous shape) blocked history-sync chunks
+	// for O(N) round-trips per chunk, which under heavy sync stalled the event buffer
+	// and caused user-visible message-delivery latency. Promise.all parallelises the
+	// resolution while keeping the same semantics for the subsequent candidates loop
+	// (which is purely synchronous and does its own same-batch dedup).
+	const candidates = (
+		await Promise.all(
+			tokenChats.map(async chat => {
+				const ts = toNumber(chat.tcTokenTimestamp!)
+				const jid = jidNormalizedUser(chat.id!)
+				const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
+				return {
+					storageJid,
+					token: Buffer.from(chat.tcToken!),
+					ts,
+					senderTs: chat.tcTokenSenderTimestamp ? toNumber(chat.tcTokenSenderTimestamp) : undefined
+				}
+			})
+		)
+	) as { storageJid: string; token: Buffer; ts: number; senderTs?: number }[]
 
 	if (!candidates.length) {
 		return
