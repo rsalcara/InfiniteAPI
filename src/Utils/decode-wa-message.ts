@@ -58,7 +58,11 @@ export const BAD_MAC_ERROR_TEXT = 'Bad MAC'
 export const DECRYPTION_RETRY_CONFIG = {
 	maxRetries: 3,
 	baseDelayMs: 100,
-	sessionRecordErrors: ['No session record', 'SessionError: No session record'],
+	// 'No matching sessions found' is the libsignal error when decryptWithSessions exhausts
+	// all stored sessions for a JID. Same recovery flow (retry receipt → pkmsg → new session)
+	// — categorise it as session-record so the caller logs DEBUG on retry, ERROR only when
+	// retries are exhausted (instead of dumping the full stack as an unknown error).
+	sessionRecordErrors: ['No session record', 'SessionError: No session record', 'No matching sessions found'],
 	corruptedSessionErrors: ['Bad MAC', 'MessageCounterError', MISSING_KEYS_ERROR_TEXT]
 }
 
@@ -421,9 +425,21 @@ export const decryptMessageNode = (
 						const isCorrupted = isCorruptedSessionError(originalError)
 						const isSessionRecord = isSessionRecordError(originalError)
 
+						// Slim error projection — keep name/message/type for diagnosis,
+						// drop `stack` which adds 4-5 lines of node_modules paths per log
+						// for known-recoverable libsignal errors. Full stack is still
+						// available via originalError if needed in custom handlers.
+						const slimErr = originalError
+							? {
+									name: (originalError as { name?: string }).name,
+									message: (originalError as { message?: string }).message,
+									type: (originalError as { type?: string }).type
+								}
+							: undefined
+
 						const errorContext = {
 							key: fullMessage.key,
-							err: originalError,
+							err: slimErr,
 							messageType: tag === 'plaintext' ? 'plaintext' : attrs.type,
 							sender,
 							author,

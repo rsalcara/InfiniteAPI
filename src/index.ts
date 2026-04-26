@@ -28,7 +28,11 @@ console.info = function (...args: unknown[]) {
 
 // Track errors by type + JID to avoid duplicates (using Map for better performance)
 const _errorTimestamps = new Map<string, number>()
-const DEDUP_WINDOW_MS = 150
+// Dedup window for repeated decrypt-error console lines (Bad MAC / Counter / etc).
+// Was 150ms, but retry attempts of the SAME message are typically ~300-1000ms apart,
+// so the second attempt fell outside the window and double-printed. 5s comfortably
+// covers a retry pair without suppressing genuinely new errors for the same JID.
+const DEDUP_WINDOW_MS = 5000
 
 console.error = function (...args: unknown[]) {
 	if (args.length > 0 && typeof args[0] === 'string') {
@@ -70,7 +74,7 @@ console.error = function (...args: unknown[]) {
 				const lastTime = _errorTimestamps.get(dedupeKey)
 
 				if (lastTime && now - lastTime < DEDUP_WINDOW_MS) {
-					return // Skip duplicate within 150ms window
+					return // Skip duplicate within DEDUP_WINDOW_MS window
 				}
 
 				_errorTimestamps.set(dedupeKey, now)

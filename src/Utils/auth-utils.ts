@@ -341,7 +341,18 @@ export const addTransactionCapability = (
 
 						return result
 					} catch (error) {
-						logger.error({ error }, 'transaction failed, rolling back')
+						// SessionError is part of the normal Bad MAC recovery flow
+						// (retry receipt → sender resends as pkmsg → new session within ~1.3s).
+						// Logging it as ERROR creates 2 noise lines per recoverable Bad MAC cycle.
+						// Downgrade to debug for SessionError; keep ERROR for everything else.
+						// The error is still re-thrown — recovery behavior is unchanged.
+						const errName = (error as { name?: string })?.name
+						if (errName === 'SessionError') {
+							logger.debug({ error }, 'transaction failed (SessionError — recoverable via retry receipt)')
+						} else {
+							logger.error({ error }, 'transaction failed, rolling back')
+						}
+
 						throw error
 					}
 				})
