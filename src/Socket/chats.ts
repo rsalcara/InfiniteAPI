@@ -1411,7 +1411,19 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				blockedCollections.clear()
 
 				logger.info('Doing app state sync')
-				await resyncAppState(ALL_WA_PATCH_NAMES, true)
+				try {
+					await resyncAppState(ALL_WA_PATCH_NAMES, true)
+				} catch (err) {
+					// Failure recovery: without this, syncState would stay at Syncing
+					// and ev.flush() would never run, leaving the event buffer pinned
+					// until the buffer's own safety timeout expires. Force the state
+					// machine forward so live inbound events can flow even if the
+					// app-state resync failed (collections are already cleared, so
+					// blocked patches will be retried on the next creds.update tick).
+					syncState = SyncState.Online
+					ev.flush()
+					throw err
+				}
 
 				// Sync is complete, go online and flush everything
 				syncState = SyncState.Online
@@ -1532,13 +1544,20 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				}
 			}
 		} else {
-			// `postUpsertWork` cannot reject in practice — Promise.allSettled
-			// inside postUpsertTasks never rejects, and the per-task warnings
-			// already log any failures. `void` marks the floating promise as
-			// intentional. If `postUpsertMutex` itself ever throws (e.g. runtime
-			// corruption), the resulting unhandled rejection is the signal we
-			// want — it's loud and points at a real bug.
-			void postUpsertWork
+			// `postUpsertWork` is not expected to reject — `Promise.allSettled`
+			// inside `postUpsertTasks` never rejects, and per-task failures are
+			// already logged inline. The defensive catch routes any truly
+			// unexpected rejection (e.g. `postUpsertMutex` internal corruption,
+			// future synchronous throws inside processMessage) through
+			// `onUnexpectedError` instead of letting it surface as an
+			// UnhandledPromiseRejection — which on Node ≥15 can terminate the
+			// long-running socket process.
+			postUpsertWork.catch(err =>
+				onUnexpectedError(
+					err,
+					`processing post-upsert work for message ${msg.key?.id || 'unknown'} on ${msg.key?.remoteJid || 'unknown chat'}`
+				)
+			)
 		}
 	})
 
