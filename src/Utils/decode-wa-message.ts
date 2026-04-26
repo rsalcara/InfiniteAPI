@@ -427,8 +427,12 @@ export const decryptMessageNode = (
 
 						// Slim error projection — keep name/message/type for diagnosis,
 						// drop `stack` which adds 4-5 lines of node_modules paths per log
-						// for known-recoverable libsignal errors. Full stack is still
-						// available via originalError if needed in custom handlers.
+						// for known-recoverable libsignal errors.
+						//
+						// CRITICAL: only slim for KNOWN-RECOVERABLE categories (corrupted /
+						// session-record). The unknown-error branch keeps the full Error so
+						// protobuf/parsing/runtime bugs still emit a stack trace where it
+						// matters most. Catches Copilot/Codex P2 review on PR #391.
 						const slimErr = originalError
 							? {
 									name: (originalError as { name?: string }).name,
@@ -436,10 +440,11 @@ export const decryptMessageNode = (
 									type: (originalError as { type?: string }).type
 								}
 							: undefined
+						const isRecoverableCategory = isCorrupted || isSessionRecord
 
 						const errorContext = {
 							key: fullMessage.key,
-							err: slimErr,
+							err: isRecoverableCategory ? slimErr : originalError,
 							messageType: tag === 'plaintext' ? 'plaintext' : attrs.type,
 							sender,
 							author,

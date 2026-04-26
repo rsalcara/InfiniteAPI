@@ -30,8 +30,13 @@ console.info = function (...args: unknown[]) {
 const _errorTimestamps = new Map<string, number>()
 // Dedup window for repeated decrypt-error console lines (Bad MAC / Counter / etc).
 // Was 150ms, but retry attempts of the SAME message are typically ~300-1000ms apart,
-// so the second attempt fell outside the window and double-printed. 5s comfortably
-// covers a retry pair without suppressing genuinely new errors for the same JID.
+// so the second attempt fell outside the window and double-printed.
+//
+// TRADE-OFF: dedup key is `errorType + JID` (no message-id). With 5s, a burst of
+// errors for the SAME JID — even of slightly different categories or different
+// messages — collapses to one log line every 5s. This is intentional for a noisy
+// production stream; if you need per-message visibility, set BAILEYS_LOG_LEVEL=debug
+// to bypass this console-side dedup and see the structured pino logs in full.
 const DEDUP_WINDOW_MS = 5000
 
 console.error = function (...args: unknown[]) {
