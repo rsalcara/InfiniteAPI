@@ -54,7 +54,7 @@ import {
 	resolveLidToPn
 } from '../Utils'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
-import processMessage from '../Utils/process-message'
+import processMessage, { getChatId } from '../Utils/process-message'
 import { buildTcTokenFromJid } from '../Utils/tc-token-utils'
 import {
 	type BinaryNode,
@@ -1437,15 +1437,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		if (isKeyShareDuringSync) {
 			// appStateSyncKeyShare path: processMessage persists the new app-state-sync
-			// key via keyStore.transaction at process-message.ts:650. The follow-up
-			// doAppStateSync() needs that key to decrypt patches, so we MUST await
-			// processMessage first.
+			// key in its APP_STATE_SYNC_KEY_SHARE handler (via keyStore.transaction).
+			// The follow-up doAppStateSync() needs that key to decrypt patches, so we
+			// MUST await processMessage first.
 			//
 			// IMPORTANT: do NOT wrap in messageMutex here. The inbound caller in
-			// messages-recv.ts:2416 already holds messageMutex.mutex(chatId, ...) for
-			// this chat; re-acquiring the same keyed mutex while awaiting it would
-			// deadlock (async-mutex is not re-entrant). Running inline preserves
-			// per-chat ordering via the caller's outer mutex.
+			// messages-recv.ts already holds messageMutex.mutex(chatId, ...) for this
+			// chat; re-acquiring the same keyed mutex while awaiting it would deadlock
+			// (async-mutex is not re-entrant). Running inline preserves per-chat
+			// ordering via the caller's outer mutex.
 			logger.info('App state sync key arrived, awaiting persistence before triggering sync')
 			try {
 				await postUpsertTasks()
@@ -1461,9 +1461,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			// ordering of processMessage side effects (chat.unreadCount, LID/PN mapping,
 			// messages.update, history downloads) is preserved across messages of the
 			// same chat. Reentrancy is safe here because the outer mutex acquired by
-			// messages-recv.ts releases as soon as upsertMessage returns (work is not
-			// awaited), then this inner mutex enqueues per-chat.
-			const postUpsertChatId = msg.key.remoteJid || msg.key.id || 'unknown'
+			// the inbound caller releases as soon as upsertMessage returns (work is
+			// not awaited), then this inner mutex enqueues per-chat.
+			//
+			// Use getChatId + jidNormalizedUser so the mutex key matches the chat-id
+			// scheme processMessage uses for chat updates (broadcasts target the
+			// participant). Falling back to a constant bucket avoids fragmenting the
+			// queue with per-message ids when the key is malformed.
+			const rawChatId = getChatId(msg.key)
+			const postUpsertChatId = rawChatId ? jidNormalizedUser(rawChatId) : 'unknown'
 			messageMutex.mutex(postUpsertChatId, postUpsertTasks).catch(err =>
 				logger?.warn(
 					{
