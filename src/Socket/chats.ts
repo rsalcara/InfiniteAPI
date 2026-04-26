@@ -1486,14 +1486,16 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		// Use getChatId + jidNormalizedUser so the mutex key matches the chat-id
 		// scheme processMessage uses for chat updates (broadcasts target the
-		// participant). Falling back to a constant bucket avoids fragmenting the
-		// queue when the key is malformed.
-		// Compute the normalized value first then apply the fallback: a malformed
-		// but truthy rawChatId (e.g. missing `@`) makes jidNormalizedUser return
-		// '', which would otherwise pass through as an empty mutex key.
+		// participant). When getChatId/jidNormalizedUser yields nothing usable
+		// (missing or malformed JID), prefer a message-derived fallback over a
+		// single global 'unknown' bucket — that bucket would head-of-line block
+		// every malformed message behind a shared queue. msg.key.id is unique
+		// per message so unrelated malformed inputs no longer serialize together;
+		// for valid messages we still hit the normalized chat-id path, so the
+		// per-chat ordering guarantee is unchanged where it matters.
 		const rawChatId = getChatId(msg.key)
 		const normalizedChatId = rawChatId ? jidNormalizedUser(rawChatId) : ''
-		const postUpsertChatId = normalizedChatId || 'unknown'
+		const postUpsertChatId = normalizedChatId || msg.key?.id || 'unknown'
 
 		// Wrap in `postUpsertMutex(chatId)` (a SEPARATE keyed mutex from the outer
 		// `messageMutex` held by the inbound caller) so per-chat ordering of
