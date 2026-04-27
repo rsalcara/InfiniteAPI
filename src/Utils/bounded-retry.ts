@@ -1,22 +1,71 @@
 /**
  * Bounded retry — WhatsApp-aligned per-operation retry without global state.
  *
- * Replaces the circuit breaker pattern, which was causing cascading failures
- * (5 timeouts in 60s -> all queries blocked for 30s). Empirical capture of
- * WhatsApp Android's behavior shows it uses per-operation exponential backoff
- * with a delay cap, not a state-machine circuit breaker:
+ * # Why this exists
  *
- *   delays observed (Frida trace): 3000 -> 10000 -> 60000 -> ~64000 -> 120000 ms
- *   memory profile during 5min disconnect: dropped 53MB and stabilised
- *   FDs during disconnect: closed (305 -> 295), did not accumulate
- *   recovery on reconnect: ~10s, no retry storm
+ * Replaces the circuit breaker pattern that was causing cascading failures
+ * in production: 5 timeouts in 60s would trip the global breaker, blocking
+ * EVERY socket query (typing indicators, profile pic fetches, contact
+ * validation, presence updates) for 30s — even queries to peers that were
+ * perfectly healthy.
  *
- * Design:
- * - Each operation has its own independent retry timer
- * - Failures in one operation do NOT block other operations
- * - Bounded by maxAttempts + ttlMs (eventual give-up to prevent unbounded
- *   accumulation under prolonged outages)
- * - Per-attempt timeout (independent of total ttl)
+ * # Empirical justification
+ *
+ * Captured WhatsApp Android's actual retry behavior via Frida hooks
+ * (`hook-circuit-breaker-re-v2.js`, `hook-retry-bounds.js`) on a real
+ * device under controlled WiFi off/on cycles. Findings:
+ *
+ *   1. Delay sequence (per-operation): 3s -> 10s -> 60s -> ~64s -> 120s
+ *      (cap at 2 min). Last value reused for further attempts.
+ *   2. Memory profile during 5-min network outage: PSS dropped 53MB and
+ *      stabilised. FDs closed (305 -> 295). NO unbounded accumulation.
+ *   3. Recovery on reconnect: ~10s. No retry storm.
+ *   4. NO global state machine observed. Each operation has its own timer.
+ *      Failures of operation A do NOT block operation B.
+ *
+ * The default delays in WHATSAPP_BACKOFF_DELAYS below match the captured
+ * sequence directly. The default 10-min TTL is empirical 3-5 min stability
+ * + safety buffer.
+ *
+ * # Design properties
+ *
+ * - Per-operation isolation: each call to `withBoundedRetry` has its own
+ *   timer. No shared state. Operation A failing has zero effect on B.
+ * - Bounded by `maxAttempts + ttlMs`: prevents unbounded retry accumulation
+ *   under prolonged outages. Eventually throws BoundedRetryGiveUpError.
+ * - Per-attempt timeout: each attempt has its own deadline (default 30s),
+ *   so a single hung call cannot consume the entire TTL budget.
+ * - AbortSignal cancellation: external cancellation supported.
+ * - Memory bound: at most one outstanding retry timer per call. Once the
+ *   call resolves/rejects/aborts, all state is freed.
+ *
+ * # When to use this vs. plain query()
+ *
+ * - Use plain `query()` when you want fast-fail semantics (caller decides
+ *   what to do on failure). Most call sites in InfiniteAPI use this.
+ * - Use `withBoundedRetry(() => query(...), { name: 'X' })` when the
+ *   operation is "must-eventually-succeed" with no upstream retry — e.g.
+ *   `uploadPreKeys`, `assertSessions(force=true)`, or other write paths
+ *   where the alternative is data loss.
+ *
+ * # Examples
+ *
+ * ```ts
+ * // Single attempt with 5-min TTL, give up after that:
+ * await withBoundedRetry(
+ *   () => assertSessions([jid], true),
+ *   { name: 'assertSessions', ttlMs: 5 * 60_000 }
+ * )
+ *
+ * // Tight deadline, fast give-up:
+ * await withBoundedRetry(
+ *   () => sendNode(node),
+ *   { name: 'send', ttlMs: 30_000, perAttemptTimeoutMs: 5_000 }
+ * )
+ *
+ * // Custom delay sequence (for testing):
+ * await withBoundedRetry(op, { delays: [10, 20, 40], jitter: 0, ttlMs: 200 })
+ * ```
  *
  * @module Utils/bounded-retry
  */
