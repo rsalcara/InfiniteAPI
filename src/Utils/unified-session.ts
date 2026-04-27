@@ -90,7 +90,9 @@ export type UnifiedSessionTrigger = 'login' | 'pairing' | 'presence' | 'manual'
  * Manages the unified_session telemetry feature with:
  * - Server time synchronization
  * - Rate limiting (prevents spam)
- * - Circuit breaker protection
+ * - Best-effort send semantics (failures are swallowed and counted —
+ *   telemetry is non-critical so a single attempt with the underlying
+ *   sendNode timeout is enough; no retry, no circuit breaker)
  * - Prometheus metrics integration
  * - Structured logging
  *
