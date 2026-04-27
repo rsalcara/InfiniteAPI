@@ -100,7 +100,7 @@ export const DEFAULT_TTL_MS = 10 * 60 * 1000
  */
 export const DEFAULT_PER_ATTEMPT_TIMEOUT_MS = 30000
 
-export interface BoundedRetryOptions<T> {
+export interface BoundedRetryOptions {
 	/** Operation name for logging/metrics */
 	name?: string
 	/** Sequence of delays (ms). Last value is used as cap. */
@@ -217,7 +217,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  */
 export async function withBoundedRetry<T>(
 	operation: () => Promise<T>,
-	options: BoundedRetryOptions<T> = {}
+	options: BoundedRetryOptions = {}
 ): Promise<T> {
 	const name = options.name ?? 'bounded-retry'
 	const delays = options.delays ?? WHATSAPP_BACKOFF_DELAYS

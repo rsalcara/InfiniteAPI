@@ -2,7 +2,7 @@
  * Testes unitários para retry-utils.ts
  */
 
-import { beforeEach, describe, expect, it, jest } from '@jest/globals'
+import { describe, expect, it, jest } from '@jest/globals'
 import {
 	calculateDelay,
 	createRetrier,
