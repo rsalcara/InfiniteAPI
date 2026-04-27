@@ -14,7 +14,6 @@
  */
 
 import { EventEmitter } from 'events'
-import type { CircuitBreaker } from './circuit-breaker.js'
 import { metrics } from './prometheus-metrics.js'
 
 /**
@@ -59,8 +58,6 @@ export interface RetryOptions {
 	operationName?: string
 	/** Collect metrics */
 	collectMetrics?: boolean
-	/** Circuit breaker for integration */
-	circuitBreaker?: CircuitBreaker
 	/** Callback before each retry */
 	onRetry?: (error: Error, attempt: number, delay: number) => void | Promise<void>
 	/** Callback on success */
@@ -283,7 +280,6 @@ export async function retry<T>(
 		timeout: options.timeout,
 		operationName: options.operationName ?? 'operation',
 		collectMetrics: options.collectMetrics ?? true,
-		circuitBreaker: options.circuitBreaker,
 		onRetry: options.onRetry ?? (() => {}),
 		onSuccess: options.onSuccess ?? (() => {}),
 		onFailure: options.onFailure ?? (() => {}),
@@ -311,11 +307,6 @@ export async function retry<T>(
 		if (config.abortSignal?.aborted) {
 			context.aborted = true
 			throw new RetryAbortedError(attempt)
-		}
-
-		// Check circuit breaker
-		if (config.circuitBreaker?.isOpen()) {
-			throw new Error(`Circuit breaker "${config.circuitBreaker.getName()}" is open`)
 		}
 
 		try {
