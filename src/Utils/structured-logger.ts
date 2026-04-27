@@ -6,7 +6,9 @@
  * - Configurable log levels (trace, debug, info, warn, error, fatal)
  * - JSON formatting for log analysis
  * - Hierarchical context with child loggers
- * - External system integration via hooks with circuit breaker
+ * - External system integration via fire-and-forget hooks (failures
+ *   counted in hookFailures metric; no per-hook circuit breaker — chronic
+ *   breakage is visible to operators via the metric)
  * - Logging metrics with Prometheus integration
  * - Sensitive data sanitization
  * - Log buffering for batch writes

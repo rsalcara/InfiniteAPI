@@ -526,9 +526,8 @@ export const retryConfigs = {
 	 * Uses fixed delay array: 1s, 2s, 5s, 10s, 20s (with ±15% jitter)
 	 *
 	 * NOTE: Values are hardcoded instead of referencing RETRY_BACKOFF_DELAYS/RETRY_JITTER_FACTOR
-	 * to prevent "Cannot access before initialization" errors in ESM environments.
-	 * This occurs when modules are loaded in specific orders due to indirect circular imports
-	 * (e.g., via prometheus-metrics.ts -> circuit-breaker.ts chain).
+	 * to prevent "Cannot access before initialization" errors in ESM environments
+	 * caused by indirect circular imports through prometheus-metrics.ts.
 	 * Keep these values in sync with the constants above (lines 25, 31).
 	 */
 	rsocket: {
