@@ -129,7 +129,18 @@ export interface BoundedRetryOptions {
 	shouldRetry?: (err: Error, attempt: number) => boolean
 	/** Hook fired before each retry */
 	onRetry?: (err: Error, attempt: number, delayMs: number) => void
-	/** AbortSignal — if aborted, give up immediately */
+	/**
+	 * AbortSignal — when fired, the loop stops at the next observation point:
+	 *   - If the loop is sleeping between retries, the sleep rejects immediately.
+	 *   - If an attempt is in flight, the abort is forwarded to the operation
+	 *     via the per-attempt signal. The operation must ITSELF observe the
+	 *     signal (e.g. `(signal) => fetch({ signal })`) for cancellation to
+	 *     be truly immediate; otherwise it cancels at the next per-attempt
+	 *     timeout boundary.
+	 *   - Either way, on the next loop iteration BoundedRetryAbortedError is
+	 *     thrown, so the caller never sees more than one trailing attempt
+	 *     after the abort.
+	 */
 	signal?: AbortSignal
 	/** Optional logger for structured retry/give-up/recovery logs */
 	logger?: ILogger

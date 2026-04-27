@@ -6,9 +6,17 @@
  * - Jitter to avoid thundering herd
  * - Configurable max attempts
  * - Customizable retry predicates
- * - Circuit breaker integration
- * - Event hooks
- * - Cancellation support
+ * - Cancellation support (AbortSignal)
+ *
+ * Used by `decode-wa-message.ts` for Bad MAC retry recovery on the decrypt
+ * path. For socket-operation retries (uploadPreKeys etc.) prefer
+ * `withBoundedRetry` from `./bounded-retry.ts`, which is empirically
+ * aligned with WhatsApp Android's per-operation backoff.
+ *
+ * NOTE: the previous `circuitBreaker` integration option, the `withRetry`
+ * decorator, the `retryable` wrapper and the `RetryManager` class were
+ * removed when the socket-level circuit breaker was retired — see PR #393
+ * for the rationale.
  *
  * @module Utils/retry-utils
  */
