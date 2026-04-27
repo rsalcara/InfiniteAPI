@@ -341,6 +341,14 @@ export function makeLibSignalRepository(
 		},
 		async decryptMessage({ jid, type, ciphertext }) {
 			const addr = jidToSignalProtocolAddress(jid)
+			// Wire address = the EXACT key that signalStorage's loadSession/storeSession
+			// uses internally (it canonicalizes PN→LID via resolveLIDSignalAddress).
+			// We MUST lock on this same key — locking on the raw `jid` lets two
+			// concurrent ops for the same logical contact (one arriving as PN, one as
+			// LID) acquire DIFFERENT mutex slots and interleave on the same session
+			// record, corrupting the ratchet → perpetual `Bad MAC` on own DSM after
+			// the WhatsApp PN→LID DSM rollout.
+			const wireAddr = await resolveLIDSignalAddress(addr.toString(), lidMapping)
 			const session = new libsignal.SessionCipher(storage, addr)
 
 			async function doDecrypt() {
@@ -389,29 +397,23 @@ export function makeLibSignalRepository(
 				return result
 			}
 
-			// Lock on the raw JID — same string libsignal uses to derive the
-			// SessionCipher address (line above). Locking on a *resolved* canonical
-			// JID would mean the lock key and the session storage key drift apart,
-			// letting concurrent ops on the same session interleave and corrupt the
-			// ratchet (observed as a perpetual Bad MAC loop on own DSM after the
-			// PN→LID rollout). PN/LID race protection lives upstream in
-			// migrateSession + storeLIDPNMappings, not here.
 			return parsedKeys.transaction(async () => {
 				return await doDecrypt()
-			}, jid)
+			}, wireAddr)
 		},
 
 		async encryptMessage({ jid, data }) {
 			const addr = jidToSignalProtocolAddress(jid)
+			// See decryptMessage above for the rationale: lock on the wire address,
+			// not the raw JID, so concurrent PN/LID ops on the same session serialize.
+			const wireAddr = await resolveLIDSignalAddress(addr.toString(), lidMapping)
 			const cipher = new libsignal.SessionCipher(storage, addr)
 
-			// Lock on raw JID — same string used to derive `addr` above. See comment
-			// in decryptMessage for the rationale (lock key must match session storage key).
 			return parsedKeys.transaction(async () => {
 				const { type: sigType, body } = await cipher.encrypt(data)
 				const type = sigType === 3 ? 'pkmsg' : 'msg'
 				return { type, ciphertext: Buffer.from(body, 'binary') }
-			}, jid)
+			}, wireAddr)
 		},
 
 		async encryptGroupMessage({ group, meId, data }) {
@@ -720,6 +722,48 @@ const jidToSignalSenderKeyName = (group: string, user: string): SenderKeyName =>
 }
 
 /**
+ * Resolve a Signal protocol address (string form `userDomain.device`) to its
+ * canonical *wire* address — the exact key that `loadSession`/`storeSession`
+ * uses when reading/writing `keys.get('session', [...])`.
+ *
+ * This is the SAME key the storage layer uses internally, so callers that need
+ * a transaction lock around session mutations MUST lock on this resolved
+ * address (not the raw JID), otherwise the lock key and storage key drift
+ * apart and concurrent ops on the same session interleave → ratchet
+ * corruption → perpetual `Bad MAC` errors.
+ *
+ * Behavior: if the input already targets a LID domain, returns it unchanged.
+ * Otherwise looks up the PN→LID mapping; if found, returns the LID-form
+ * Signal address. If no mapping exists, returns the input unchanged.
+ *
+ * Top-level (not inside `signalStorage`) so `makeLibSignalRepository` can
+ * compute the same wire address for transaction locking.
+ */
+const resolveLIDSignalAddress = async (id: string, lidMapping: LIDMappingStore): Promise<string> => {
+	if (id.includes('.')) {
+		const [deviceId, device] = id.split('.')
+		if (!deviceId) {
+			throw new Error('Missing device ID')
+		}
+
+		const [user, domainType_] = deviceId.split('_')
+		const domainType = parseInt(domainType_ || '0')
+
+		if (domainType === WAJIDDomains.LID || domainType === WAJIDDomains.HOSTED_LID) return id
+
+		const pnJid = `${user!}${device !== '0' ? `:${device}` : ''}@${domainType === WAJIDDomains.HOSTED ? 'hosted' : 's.whatsapp.net'}`
+
+		const lidForPN = await lidMapping.getLIDForPN(pnJid)
+		if (lidForPN) {
+			const lidAddr = jidToSignalProtocolAddress(lidForPN)
+			return lidAddr.toString()
+		}
+	}
+
+	return id
+}
+
+/**
  * Extended SignalStorage with identity key management
  * This type adds identity key operations to the standard Signal storage
  */
@@ -750,30 +794,9 @@ function signalStorage(
 	ev?: BaileysEventEmitter,
 	logger?: ILogger
 ): ExtendedSignalStorage {
-	// Shared function to resolve PN signal address to LID if mapping exists
-	const resolveLIDSignalAddress = async (id: string): Promise<string> => {
-		if (id.includes('.')) {
-			const [deviceId, device] = id.split('.')
-			if (!deviceId) {
-				throw new Error('Missing device ID')
-			}
-
-			const [user, domainType_] = deviceId.split('_')
-			const domainType = parseInt(domainType_ || '0')
-
-			if (domainType === WAJIDDomains.LID || domainType === WAJIDDomains.HOSTED_LID) return id
-
-			const pnJid = `${user!}${device !== '0' ? `:${device}` : ''}@${domainType === WAJIDDomains.HOSTED ? 'hosted' : 's.whatsapp.net'}`
-
-			const lidForPN = await lidMapping.getLIDForPN(pnJid)
-			if (lidForPN) {
-				const lidAddr = jidToSignalProtocolAddress(lidForPN)
-				return lidAddr.toString()
-			}
-		}
-
-		return id
-	}
+	// Bind the top-level `resolveLIDSignalAddress` to this instance's lidMapping
+	// so call sites below stay readable.
+	const resolveAddr = (id: string) => resolveLIDSignalAddress(id, lidMapping)
 
 	// Delayed PreKey deletion: grace period to handle race conditions
 	// where two pkmsg with the same preKeyId arrive nearly simultaneously.
@@ -785,7 +808,7 @@ function signalStorage(
 	return {
 		loadSession: async (id: string) => {
 			try {
-				const wireJid = await resolveLIDSignalAddress(id)
+				const wireJid = await resolveAddr(id)
 				const { [wireJid]: sess } = await keys.get('session', [wireJid])
 
 				if (sess) {
@@ -798,7 +821,7 @@ function signalStorage(
 			return null
 		},
 		storeSession: async (id: string, session: libsignal.SessionRecord) => {
-			const wireJid = await resolveLIDSignalAddress(id)
+			const wireJid = await resolveAddr(id)
 			await keys.set({ session: { [wireJid]: session.serialize() } })
 		},
 		isTrustedIdentity: () => {
@@ -875,7 +898,7 @@ function signalStorage(
 			const timer = metrics.signalIdentityKeyOperations?.startTimer({ operation: 'load' })
 
 			try {
-				const wireJid = await resolveLIDSignalAddress(id)
+				const wireJid = await resolveAddr(id)
 
 				// Check cache first
 				const cached = identityKeyCache.get(wireJid)
@@ -909,7 +932,7 @@ function signalStorage(
 			const timer = metrics.signalIdentityKeyOperations?.startTimer({ operation: 'save' })
 
 			try {
-				const wireJid = await resolveLIDSignalAddress(id)
+				const wireJid = await resolveAddr(id)
 				const currentFingerprint = generateKeyFingerprint(identityKey)
 
 				// Load existing key (from cache or storage)
