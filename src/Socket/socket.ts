@@ -645,7 +645,14 @@ export const makeSocket = (config: SocketConfig) => {
 			// Upload to server. Bounded-retry handles backoff (replaces both
 			// the previous circuit breaker AND the manual exponential backoff
 			// retry loop with maxRetries=3).
-			const PER_ATTEMPT_TIMEOUT_MS = 20_000
+			//
+			// IMPORTANT: bounded-retry's ttlMs MUST be < UPLOAD_TIMEOUT (the
+			// outer Promise.race below). Otherwise the outer race fires first
+			// and bounded-retry never reaches its natural give-up — losing
+			// structured logs / metrics. Use UPLOAD_TIMEOUT - 2s as a safety
+			// margin so bounded-retry always wins.
+			const PER_ATTEMPT_TIMEOUT_MS = 8_000
+			const RETRY_TTL_MS = UPLOAD_TIMEOUT - 2_000
 			// Pass the matching timeoutMs to query() so a stale attempt does
 			// not keep an iq listener registered after bounded-retry has moved
 			// on to the next attempt (Copilot review on PR #393).
@@ -658,9 +665,10 @@ export const makeSocket = (config: SocketConfig) => {
 			try {
 				await withBoundedRetry(uploadToServer, {
 					name: 'uploadPreKeys',
-					// 1s -> 2s -> 4s -> 8s -> 10s (cap matches old MAX backoff)
-					delays: [1000, 2000, 4000, 8000, 10000],
-					ttlMs: 60_000,
+					// 1s -> 2s -> 4s -> 8s (cap). Max 4 attempts fit comfortably
+					// within RETRY_TTL_MS (28s) given perAttemptTimeoutMs=8s.
+					delays: [1000, 2000, 4000, 8000],
+					ttlMs: RETRY_TTL_MS,
 					perAttemptTimeoutMs: PER_ATTEMPT_TIMEOUT_MS,
 					logger
 				})
