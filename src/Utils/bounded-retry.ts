@@ -325,11 +325,8 @@ export async function withBoundedRetry<T>(
 			lastError = err as Error
 			attempt++
 
-			// Detach outer-abort listener as soon as the attempt settles so
-			// it cannot fire after the controller is no longer in scope.
-			if (options.signal && onOuterAbort) {
-				options.signal.removeEventListener('abort', onOuterAbort)
-			}
+			// (outer-abort listener detachment happens in the finally below —
+			// avoiding a double-remove that breaks listener-count assertions.)
 
 			// If the outer signal aborted us mid-attempt, surface that explicitly
 			// rather than as a generic operation failure.

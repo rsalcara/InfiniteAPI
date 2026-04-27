@@ -285,7 +285,23 @@ describe('bounded-retry — WhatsApp-aligned per-operation retry', () => {
 		// Regression: sleep used signal.addEventListener with { once: true } but
 		// never removed the listener on timer-resolve. With many retries on a
 		// shared signal, listeners would accumulate.
+		//
+		// Make the failure mode observable by spying on add/removeEventListener
+		// directly so the assertion fails if cleanup is removed.
 		const ctrl = new AbortController()
+		const realAdd = ctrl.signal.addEventListener.bind(ctrl.signal)
+		const realRemove = ctrl.signal.removeEventListener.bind(ctrl.signal)
+		let addCount = 0
+		let removeCount = 0
+		ctrl.signal.addEventListener = ((type: string, listener: never, opts?: never) => {
+			if (type === 'abort') addCount++
+			return realAdd(type, listener, opts)
+		}) as typeof ctrl.signal.addEventListener
+		ctrl.signal.removeEventListener = ((type: string, listener: never, opts?: never) => {
+			if (type === 'abort') removeCount++
+			return realRemove(type, listener, opts)
+		}) as typeof ctrl.signal.removeEventListener
+
 		const op = jest
 			.fn<() => Promise<string>>()
 			.mockRejectedValueOnce(new Error('1'))
@@ -293,23 +309,21 @@ describe('bounded-retry — WhatsApp-aligned per-operation retry', () => {
 			.mockRejectedValueOnce(new Error('3'))
 			.mockResolvedValueOnce('ok')
 
-		// Track listener count via getMaxListeners-style check is not portable
-		// across runtimes, so we instead verify completion proceeds without
-		// MaxListenersExceededWarning being raised. The implementation must
-		// remove the listener on each successful sleep.
 		const result = await withBoundedRetry(op, {
 			name: 'no-leak',
 			delays: [5],
 			jitter: 0,
-			ttlMs: 200,
+			ttlMs: 500,
 			signal: ctrl.signal
 		})
 
 		expect(result).toBe('ok')
 		expect(op).toHaveBeenCalledTimes(4)
-		// If listeners leaked, we would see them by counting. AbortSignal does
-		// not expose listenerCount publicly; the regression manifests as a
-		// runtime warning. Test passes if no warning + result is correct.
+		// If sleep() leaks listeners, addCount > removeCount. Each retry adds
+		// listeners (1 sleep + 1 outer-abort forwarding) and must remove the
+		// same number on settlement.
+		expect(addCount).toBeGreaterThan(0)
+		expect(addCount).toBe(removeCount)
 	})
 
 	test('logger receives structured logs for retry, give-up, and recovery', async () => {

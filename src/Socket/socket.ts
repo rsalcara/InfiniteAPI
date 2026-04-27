@@ -630,6 +630,13 @@ export const makeSocket = (config: SocketConfig) => {
 			return
 		}
 
+		// Shared abort controller so the outer Promise.race can cancel the
+		// in-flight bounded-retry loop if its own timeout fires first.
+		// Without this, the outer race rejects but the bounded-retry loop
+		// keeps running in the background, mutating lastUploadTime / logs
+		// after the caller has given up (CodeRabbit + Copilot reviews).
+		const uploadAbort = new AbortController()
+
 		const uploadLogic = async () => {
 			logger.info({ count }, 'uploading pre-keys')
 
@@ -646,18 +653,33 @@ export const makeSocket = (config: SocketConfig) => {
 			// the previous circuit breaker AND the manual exponential backoff
 			// retry loop with maxRetries=3).
 			//
-			// IMPORTANT: bounded-retry's ttlMs MUST be < UPLOAD_TIMEOUT (the
-			// outer Promise.race below). Otherwise the outer race fires first
-			// and bounded-retry never reaches its natural give-up — losing
-			// structured logs / metrics. Use UPLOAD_TIMEOUT - 2s as a safety
-			// margin so bounded-retry always wins.
+			// CRITICAL: query() returns `undefined` on timeout (it does NOT
+			// throw — see waitForMessage). If we just `await query(node)`,
+			// a timed-out upload would resolve with undefined and bounded-retry
+			// would treat it as success. Validate the response shape so a
+			// timeout actually triggers a retry (CodeRabbit review on PR #393).
+			//
+			// bounded-retry's ttlMs MUST be < UPLOAD_TIMEOUT (the outer
+			// Promise.race below). With margin (28s vs 30s) bounded-retry
+			// always reaches its natural give-up first. We additionally pass
+			// an AbortController signal so that if the outer race ever fires
+			// first, the bounded-retry loop is aborted and does not keep
+			// running in the background (CodeRabbit + Copilot reviews).
 			const PER_ATTEMPT_TIMEOUT_MS = 8_000
 			const RETRY_TTL_MS = UPLOAD_TIMEOUT - 2_000
-			// Pass the matching timeoutMs to query() so a stale attempt does
-			// not keep an iq listener registered after bounded-retry has moved
-			// on to the next attempt (Copilot review on PR #393).
-			const uploadToServer = async () => {
-				await query(node, PER_ATTEMPT_TIMEOUT_MS)
+
+			const uploadToServer = async (signal?: AbortSignal) => {
+				const result = await query(node, PER_ATTEMPT_TIMEOUT_MS)
+				if (signal?.aborted) {
+					throw new Error('aborted')
+				}
+
+				if (!result) {
+					// query() returned undefined → underlying iq response
+					// timed out. Throw so bounded-retry retries.
+					throw new Boom('Pre-key upload query timed out (no response)', { statusCode: 408 })
+				}
+
 				logger.info({ count }, 'uploaded pre-keys successfully')
 				lastUploadTime = Date.now()
 			}
@@ -670,6 +692,7 @@ export const makeSocket = (config: SocketConfig) => {
 					delays: [1000, 2000, 4000, 8000],
 					ttlMs: RETRY_TTL_MS,
 					perAttemptTimeoutMs: PER_ATTEMPT_TIMEOUT_MS,
+					signal: uploadAbort.signal,
 					logger
 				})
 			} catch (uploadError) {
@@ -678,11 +701,17 @@ export const makeSocket = (config: SocketConfig) => {
 			}
 		}
 
-		// Add timeout protection
+		// Outer timeout protection. With ttlMs=28s vs UPLOAD_TIMEOUT=30s,
+		// bounded-retry should always win — but if anything ever blocks
+		// uploadLogic outside bounded-retry's reach, this race aborts the
+		// whole thing cleanly via uploadAbort.
 		uploadPreKeysPromise = Promise.race([
 			uploadLogic(),
 			new Promise<void>((_, reject) =>
-				setTimeout(() => reject(new Boom('Pre-key upload timeout', { statusCode: 408 })), UPLOAD_TIMEOUT)
+				setTimeout(() => {
+					uploadAbort.abort()
+					reject(new Boom('Pre-key upload timeout', { statusCode: 408 }))
+				}, UPLOAD_TIMEOUT)
 			)
 		])
 

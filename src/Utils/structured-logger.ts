@@ -497,8 +497,12 @@ export class StructuredLogger implements ILogger {
 			if (externalHook) {
 				try {
 					const hookResult = externalHook(entry) as unknown
-					if (hookResult && typeof (hookResult as Promise<unknown>).then === 'function') {
-						;(hookResult as Promise<unknown>).catch(() => {
+					// Use Promise.resolve().catch() so any thenable (including
+					// Promise-likes that only implement .then) is handled
+					// safely — calling .catch directly would throw on such
+					// objects (Copilot review on PR #393).
+					if (hookResult && typeof (hookResult as PromiseLike<unknown>).then === 'function') {
+						void Promise.resolve(hookResult as PromiseLike<unknown>).catch(() => {
 							this.metrics.hookFailures++
 						})
 					}
