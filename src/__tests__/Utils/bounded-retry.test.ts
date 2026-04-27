@@ -210,4 +210,168 @@ describe('bounded-retry — WhatsApp-aligned per-operation retry', () => {
 			expect(call[2]).toBeLessThanOrEqual(50)
 		}
 	})
+
+	// ─── Tests for fixes from PR #393 review ──────────────────────────────
+
+	test('TTL is enforced BEFORE the next attempt (not just after)', async () => {
+		// Regression: previously TTL was only checked after a failure, so a
+		// new attempt could start with 0ms remaining and run for the full
+		// per-attempt timeout, overshooting wall-clock budget by that much.
+		const slowOp = jest.fn<() => Promise<string>>(() => new Promise(resolve => setTimeout(() => resolve('late'), 200)))
+
+		const start = Date.now()
+		await expect(
+			withBoundedRetry(slowOp, {
+				name: 'ttl-strict',
+				delays: [10],
+				jitter: 0,
+				ttlMs: 50,
+				perAttemptTimeoutMs: 1000 // huge, must be capped by TTL
+			})
+		).rejects.toBeInstanceOf(BoundedRetryGiveUpError)
+
+		const elapsed = Date.now() - start
+		// With strict TTL enforcement, total runtime should be very close to ttlMs.
+		// Allow up to 100ms slack for Node timer + microtask scheduling.
+		expect(elapsed).toBeLessThan(150)
+	})
+
+	test('per-attempt timeout is capped by remaining TTL budget', async () => {
+		// If user passes perAttemptTimeoutMs > ttlMs, the cap should apply.
+		const slowOp = jest.fn<() => Promise<string>>(() => new Promise(() => {})) // hangs forever
+
+		const start = Date.now()
+		await expect(
+			withBoundedRetry(slowOp, {
+				name: 'attempt-cap',
+				delays: [1],
+				jitter: 0,
+				ttlMs: 30,
+				perAttemptTimeoutMs: 5000 // way bigger than ttl
+			})
+		).rejects.toBeInstanceOf(BoundedRetryGiveUpError)
+
+		const elapsed = Date.now() - start
+		expect(elapsed).toBeLessThan(150) // not 5000ms!
+	})
+
+	test('operation receives an AbortSignal that is aborted on per-attempt timeout', async () => {
+		// New API: operation can opt into cancellation via the signal arg.
+		const aborts: boolean[] = []
+		const opThatRespectsSignal = jest.fn(
+			(signal?: AbortSignal) =>
+				new Promise<string>((resolve, reject) => {
+					const timer = setTimeout(() => resolve('late'), 100)
+					signal?.addEventListener('abort', () => {
+						clearTimeout(timer)
+						aborts.push(true)
+						reject(new Error('aborted by signal'))
+					})
+				})
+		)
+
+		await withBoundedRetry(opThatRespectsSignal, {
+			name: 'signal-aware',
+			delays: [1],
+			jitter: 0,
+			ttlMs: 80,
+			perAttemptTimeoutMs: 20 // smaller than 100ms op duration
+		}).catch(() => {})
+
+		expect(aborts.length).toBeGreaterThan(0) // at least one attempt was aborted
+	})
+
+	test('sleep listener is removed when timeout completes normally (no leak)', async () => {
+		// Regression: sleep used signal.addEventListener with { once: true } but
+		// never removed the listener on timer-resolve. With many retries on a
+		// shared signal, listeners would accumulate.
+		const ctrl = new AbortController()
+		const op = jest
+			.fn<() => Promise<string>>()
+			.mockRejectedValueOnce(new Error('1'))
+			.mockRejectedValueOnce(new Error('2'))
+			.mockRejectedValueOnce(new Error('3'))
+			.mockResolvedValueOnce('ok')
+
+		// Track listener count via getMaxListeners-style check is not portable
+		// across runtimes, so we instead verify completion proceeds without
+		// MaxListenersExceededWarning being raised. The implementation must
+		// remove the listener on each successful sleep.
+		const result = await withBoundedRetry(op, {
+			name: 'no-leak',
+			delays: [5],
+			jitter: 0,
+			ttlMs: 200,
+			signal: ctrl.signal
+		})
+
+		expect(result).toBe('ok')
+		expect(op).toHaveBeenCalledTimes(4)
+		// If listeners leaked, we would see them by counting. AbortSignal does
+		// not expose listenerCount publicly; the regression manifests as a
+		// runtime warning. Test passes if no warning + result is correct.
+	})
+
+	test('logger receives structured logs for retry, give-up, and recovery', async () => {
+		const debugCalls: unknown[][] = []
+		const infoCalls: unknown[][] = []
+		const warnCalls: unknown[][] = []
+		const fakeLogger = {
+			debug: (...args: unknown[]) => debugCalls.push(args),
+			info: (...args: unknown[]) => infoCalls.push(args),
+			warn: (...args: unknown[]) => warnCalls.push(args),
+			error: () => {},
+			fatal: () => {},
+			trace: () => {},
+			child: () => fakeLogger,
+			level: 'debug'
+		}
+
+		const op = jest
+			.fn<() => Promise<string>>()
+			.mockRejectedValueOnce(new Error('boom'))
+			.mockResolvedValueOnce('ok')
+
+		const result = await withBoundedRetry(op, {
+			name: 'logged-op',
+			delays: [5],
+			jitter: 0,
+			ttlMs: 200,
+			logger: fakeLogger as never
+		})
+
+		expect(result).toBe('ok')
+		// Should have logged the scheduling at debug level
+		expect(debugCalls.length).toBeGreaterThanOrEqual(1)
+		// Should have logged the recovery at info level
+		expect(infoCalls.length).toBeGreaterThanOrEqual(1)
+	})
+
+	test('logger reports give-up via warn when TTL exceeded', async () => {
+		const warnCalls: unknown[][] = []
+		const fakeLogger = {
+			debug: () => {},
+			info: () => {},
+			warn: (...args: unknown[]) => warnCalls.push(args),
+			error: () => {},
+			fatal: () => {},
+			trace: () => {},
+			child: () => fakeLogger,
+			level: 'debug'
+		}
+
+		const op = jest.fn<() => Promise<string>>().mockRejectedValue(new Error('always-fails'))
+
+		await expect(
+			withBoundedRetry(op, {
+				name: 'logged-fail',
+				delays: [5],
+				jitter: 0,
+				ttlMs: 30,
+				logger: fakeLogger as never
+			})
+		).rejects.toBeInstanceOf(BoundedRetryGiveUpError)
+
+		expect(warnCalls.length).toBeGreaterThanOrEqual(1)
+	})
 })

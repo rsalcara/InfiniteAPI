@@ -31,13 +31,24 @@
  *
  * - Per-operation isolation: each call to `withBoundedRetry` has its own
  *   timer. No shared state. Operation A failing has zero effect on B.
- * - Bounded by `maxAttempts + ttlMs`: prevents unbounded retry accumulation
- *   under prolonged outages. Eventually throws BoundedRetryGiveUpError.
+ * - Bounded by `ttlMs` (wall-clock budget). The TTL is enforced strictly
+ *   at three points: (a) before each attempt, (b) cap on per-attempt
+ *   timeout, (c) cap on retry delay.
  * - Per-attempt timeout: each attempt has its own deadline (default 30s),
- *   so a single hung call cannot consume the entire TTL budget.
- * - AbortSignal cancellation: external cancellation supported.
- * - Memory bound: at most one outstanding retry timer per call. Once the
- *   call resolves/rejects/aborts, all state is freed.
+ *   automatically capped to remaining TTL budget so total runtime never
+ *   exceeds ttlMs.
+ * - AbortSignal cancellation: external cancellation supported, both for
+ *   the sleep between retries AND (optionally) the in-flight operation
+ *   when the operation accepts a signal parameter.
+ * - Memory bound: at most one outstanding retry timer per call. Listeners
+ *   are explicitly removed when timers settle. Once the call resolves /
+ *   rejects / aborts, all state is freed.
+ *
+ * # Logging
+ *
+ * Pass `logger` in options to get structured logs at each retry attempt,
+ * give-up, and post-failure recovery. The module emits Prometheus metrics
+ * regardless of whether a logger is provided.
  *
  * # When to use this vs. plain query()
  *
@@ -45,8 +56,7 @@
  *   what to do on failure). Most call sites in InfiniteAPI use this.
  * - Use `withBoundedRetry(() => query(...), { name: 'X' })` when the
  *   operation is "must-eventually-succeed" with no upstream retry — e.g.
- *   `uploadPreKeys`, `assertSessions(force=true)`, or other write paths
- *   where the alternative is data loss.
+ *   `uploadPreKeys` or other write paths where the alternative is data loss.
  *
  * # Examples
  *
@@ -54,7 +64,7 @@
  * // Single attempt with 5-min TTL, give up after that:
  * await withBoundedRetry(
  *   () => assertSessions([jid], true),
- *   { name: 'assertSessions', ttlMs: 5 * 60_000 }
+ *   { name: 'assertSessions', ttlMs: 5 * 60_000, logger }
  * )
  *
  * // Tight deadline, fast give-up:
@@ -63,13 +73,17 @@
  *   { name: 'send', ttlMs: 30_000, perAttemptTimeoutMs: 5_000 }
  * )
  *
- * // Custom delay sequence (for testing):
- * await withBoundedRetry(op, { delays: [10, 20, 40], jitter: 0, ttlMs: 200 })
+ * // Operation that respects abort signal (best practice):
+ * await withBoundedRetry(
+ *   (signal) => fetchSomething({ signal }),
+ *   { name: 'fetch', logger }
+ * )
  * ```
  *
  * @module Utils/bounded-retry
  */
 
+import type { ILogger } from './logger'
 import { metrics } from './prometheus-metrics.js'
 
 /**
@@ -109,7 +123,7 @@ export interface BoundedRetryOptions {
 	jitter?: number
 	/** Total wall-clock budget — gives up after this. Default 10 min. */
 	ttlMs?: number
-	/** Per-attempt timeout (ms). Default 30s. */
+	/** Per-attempt timeout (ms). Default 30s. Capped by remaining TTL. */
 	perAttemptTimeoutMs?: number
 	/** Predicate: should we retry on this error? Default: always */
 	shouldRetry?: (err: Error, attempt: number) => boolean
@@ -117,6 +131,8 @@ export interface BoundedRetryOptions {
 	onRetry?: (err: Error, attempt: number, delayMs: number) => void
 	/** AbortSignal — if aborted, give up immediately */
 	signal?: AbortSignal
+	/** Optional logger for structured retry/give-up/recovery logs */
+	logger?: ILogger
 }
 
 export class BoundedRetryGiveUpError extends Error {
@@ -161,12 +177,19 @@ function pickDelay(attempt: number, delays: readonly number[]): number {
 }
 
 /**
- * Wrap a promise with a per-attempt timeout. Rejects if the promise does
- * not settle before timeoutMs elapses.
+ * Wrap a promise with a per-attempt timeout. Aborts the supplied controller
+ * when the timeout fires so the caller can cancel any in-flight work
+ * (operations that accept the signal). Always clears the timer on settlement.
  */
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, name: string): Promise<T> {
+function withTimeout<T>(
+	promise: Promise<T>,
+	timeoutMs: number,
+	name: string,
+	abortOnTimeout: AbortController
+): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
 		const timer = setTimeout(() => {
+			abortOnTimeout.abort()
 			reject(new Error(`bounded-retry "${name}" attempt timed out after ${timeoutMs}ms`))
 		}, timeoutMs)
 		promise
@@ -176,13 +199,14 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, name: string): P
 			})
 			.catch(err => {
 				clearTimeout(timer)
-				reject(err)
+				reject(err as Error)
 			})
 	})
 }
 
 /**
- * Sleep with abort support.
+ * Sleep with abort support. Always removes the abort listener on settlement
+ * so listeners do not accumulate on long-lived signals.
  */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 	return new Promise((resolve, reject) => {
@@ -190,12 +214,26 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 			reject(new Error('aborted'))
 			return
 		}
-		const timer = setTimeout(resolve, ms)
+
+		let onAbort: (() => void) | undefined
+		const cleanup = () => {
+			if (onAbort && signal) {
+				signal.removeEventListener('abort', onAbort)
+			}
+		}
+
+		const timer = setTimeout(() => {
+			cleanup()
+			resolve()
+		}, ms)
+
 		if (signal) {
-			const onAbort = () => {
+			onAbort = () => {
 				clearTimeout(timer)
+				cleanup()
 				reject(new Error('aborted'))
 			}
+
 			signal.addEventListener('abort', onAbort, { once: true })
 		}
 	})
@@ -207,16 +245,20 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * Independent per-call: no global state, no cross-operation interaction.
  * Memory bound: at most one outstanding retry timer per call.
  *
+ * The operation may optionally accept an `AbortSignal` parameter — when the
+ * per-attempt timeout fires (or the outer signal is aborted), the inner
+ * signal is aborted so the operation can stop in-flight work cleanly.
+ *
  * @example
  * ```ts
  * const result = await withBoundedRetry(
- *     () => assertSessions([jid], true),
- *     { name: 'assertSessions', ttlMs: 5 * 60_000 }
+ *     (signal) => assertSessions([jid], true, { signal }),
+ *     { name: 'assertSessions', ttlMs: 5 * 60_000, logger }
  * )
  * ```
  */
 export async function withBoundedRetry<T>(
-	operation: () => Promise<T>,
+	operation: (signal?: AbortSignal) => Promise<T>,
 	options: BoundedRetryOptions = {}
 ): Promise<T> {
 	const name = options.name ?? 'bounded-retry'
@@ -225,49 +267,118 @@ export async function withBoundedRetry<T>(
 	const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS
 	const perAttemptTimeoutMs = options.perAttemptTimeoutMs ?? DEFAULT_PER_ATTEMPT_TIMEOUT_MS
 	const shouldRetry = options.shouldRetry ?? (() => true)
+	const logger = options.logger
 
 	const start = Date.now()
 	let lastError: Error = new Error('unknown')
 	let attempt = 0
 
 	while (true) {
+		// Check abort + TTL BEFORE starting an attempt — strict wall-clock
+		// budget. Without this check the loop could begin a new attempt with
+		// 0ms remaining and then run for up to `perAttemptTimeoutMs`.
 		if (options.signal?.aborted) {
 			throw new BoundedRetryAbortedError(name)
 		}
 
-		try {
-			const result = await withTimeout(operation(), perAttemptTimeoutMs, name)
-			if (attempt > 0) {
-				metrics.socketEvents.inc({ event: 'bounded_retry_recovered' })
+		const elapsedBeforeAttempt = Date.now() - start
+		const remainingBudget = ttlMs - elapsedBeforeAttempt
+		if (remainingBudget <= 0) {
+			metrics.errors?.inc({ category: 'bounded_retry', code: 'ttl_exceeded' })
+			logger?.warn?.(
+				{ op: name, attempts: attempt, elapsedMs: elapsedBeforeAttempt, ttlMs, lastError: lastError.message },
+				'bounded-retry: TTL exceeded before next attempt — giving up'
+			)
+			throw new BoundedRetryGiveUpError(name, attempt, elapsedBeforeAttempt, lastError)
+		}
+
+		// Cap the per-attempt timeout to the remaining TTL budget so a single
+		// attempt cannot run past the wall-clock deadline.
+		const attemptTimeoutMs = Math.min(perAttemptTimeoutMs, remainingBudget)
+		const attemptAbort = new AbortController()
+
+		// Forward outer abort to the per-attempt controller so the in-flight
+		// operation is cancelled when the user aborts. Cleaned up below.
+		let onOuterAbort: (() => void) | undefined
+		if (options.signal) {
+			onOuterAbort = () => attemptAbort.abort()
+			if (options.signal.aborted) {
+				attemptAbort.abort()
+			} else {
+				options.signal.addEventListener('abort', onOuterAbort, { once: true })
 			}
+		}
+
+		try {
+			const result = await withTimeout(operation(attemptAbort.signal), attemptTimeoutMs, name, attemptAbort)
+
+			if (attempt > 0) {
+				metrics.socketEvents?.inc({ event: 'bounded_retry_recovered' })
+				logger?.info?.(
+					{ op: name, attempts: attempt + 1, elapsedMs: Date.now() - start },
+					'bounded-retry: operation succeeded after retries'
+				)
+			}
+
 			return result
 		} catch (err) {
 			lastError = err as Error
 			attempt++
 
-			const elapsed = Date.now() - start
-			if (elapsed >= ttlMs) {
-				metrics.errors.inc({ category: 'bounded_retry', code: 'ttl_exceeded' })
-				throw new BoundedRetryGiveUpError(name, attempt, elapsed, lastError)
+			// Detach outer-abort listener as soon as the attempt settles so
+			// it cannot fire after the controller is no longer in scope.
+			if (options.signal && onOuterAbort) {
+				options.signal.removeEventListener('abort', onOuterAbort)
 			}
 
+			// If the outer signal aborted us mid-attempt, surface that explicitly
+			// rather than as a generic operation failure.
+			if (options.signal?.aborted) {
+				throw new BoundedRetryAbortedError(name)
+			}
+
+			const elapsed = Date.now() - start
+
 			if (!shouldRetry(lastError, attempt)) {
-				metrics.errors.inc({ category: 'bounded_retry', code: 'predicate_no_retry' })
+				metrics.errors?.inc({ category: 'bounded_retry', code: 'predicate_no_retry' })
+				logger?.warn?.(
+					{ op: name, attempts: attempt, elapsedMs: elapsed, error: lastError.message },
+					'bounded-retry: shouldRetry returned false — giving up'
+				)
 				throw lastError
 			}
 
+			// Re-check budget after the failure so we do not sleep past TTL.
+			const remainingAfterFailure = ttlMs - elapsed
+			if (remainingAfterFailure <= 0) {
+				metrics.errors?.inc({ category: 'bounded_retry', code: 'ttl_exceeded' })
+				logger?.warn?.(
+					{ op: name, attempts: attempt, elapsedMs: elapsed, ttlMs, lastError: lastError.message },
+					'bounded-retry: TTL exceeded after attempt — giving up'
+				)
+				throw new BoundedRetryGiveUpError(name, attempt, elapsed, lastError)
+			}
+
 			const baseDelay = pickDelay(attempt - 1, delays)
-			// Cap remaining delay so we do not blow past ttlMs
-			const remainingBudget = Math.max(0, ttlMs - elapsed)
-			const delayMs = Math.min(withJitter(baseDelay, jitter), remainingBudget)
+			const delayMs = Math.min(withJitter(baseDelay, jitter), remainingAfterFailure)
 
 			options.onRetry?.(lastError, attempt, delayMs)
-			metrics.socketEvents.inc({ event: 'bounded_retry_attempt' })
+			metrics.socketEvents?.inc({ event: 'bounded_retry_attempt' })
+			logger?.debug?.(
+				{ op: name, attempt, delayMs, elapsedMs: elapsed, error: lastError.message },
+				'bounded-retry: scheduling next attempt'
+			)
 
 			try {
 				await sleep(delayMs, options.signal)
 			} catch {
 				throw new BoundedRetryAbortedError(name)
+			}
+		} finally {
+			// Belt-and-suspenders: ensure the outer-abort listener is always
+			// removed even on early throws.
+			if (options.signal && onOuterAbort) {
+				options.signal.removeEventListener('abort', onOuterAbort)
 			}
 		}
 	}

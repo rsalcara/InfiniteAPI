@@ -645,8 +645,12 @@ export const makeSocket = (config: SocketConfig) => {
 			// Upload to server. Bounded-retry handles backoff (replaces both
 			// the previous circuit breaker AND the manual exponential backoff
 			// retry loop with maxRetries=3).
+			const PER_ATTEMPT_TIMEOUT_MS = 20_000
+			// Pass the matching timeoutMs to query() so a stale attempt does
+			// not keep an iq listener registered after bounded-retry has moved
+			// on to the next attempt (Copilot review on PR #393).
 			const uploadToServer = async () => {
-				await query(node)
+				await query(node, PER_ATTEMPT_TIMEOUT_MS)
 				logger.info({ count }, 'uploaded pre-keys successfully')
 				lastUploadTime = Date.now()
 			}
@@ -657,7 +661,8 @@ export const makeSocket = (config: SocketConfig) => {
 					// 1s -> 2s -> 4s -> 8s -> 10s (cap matches old MAX backoff)
 					delays: [1000, 2000, 4000, 8000, 10000],
 					ttlMs: 60_000,
-					perAttemptTimeoutMs: 20_000
+					perAttemptTimeoutMs: PER_ATTEMPT_TIMEOUT_MS,
+					logger
 				})
 			} catch (uploadError) {
 				logger.error({ uploadError: (uploadError as Error).toString(), count }, 'Failed to upload pre-keys to server')
