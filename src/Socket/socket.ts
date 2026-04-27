@@ -203,7 +203,7 @@ export const makeSocket = (config: SocketConfig) => {
 	}
 
 	// Initialize Unified Session Manager now that sendNode is defined
-	// (single initialization to avoid duplicating circuit breakers and state)
+	// (single initialization to avoid duplicating manager state)
 	if (enableUnifiedSession) {
 		const sendNodeForSession = async (node: BinaryNode): Promise<void> => {
 			await sendNode(node)
@@ -282,11 +282,8 @@ export const makeSocket = (config: SocketConfig) => {
 		// Register the response listener BEFORE sending — avoids a race where the server
 		// responds before we start listening.  waitForMessage already handles its own
 		// timeout (returns undefined) and connection-close errors (throws), so we do NOT
-		// wrap it in a second promiseTimeout.  The outer wrapper caused a race condition
-		// where both timers fired at ~the same deadline: the outer one threw
-		// Boom('Timed Out') while sendNode was still pending, producing a spurious error
-		// whose message contained "socket-query" → matched the circuit-breaker's
-		// "socket" pattern → incorrectly tripped the breaker after 5 timeouts.
+		// wrap it in a second promiseTimeout.  The outer wrapper would race the inner
+		// timeout near the deadline and throw a spurious Boom('Timed Out').
 		const responsePromise = waitForMessage<any>(msgId, timeoutMs)
 		// Prevent unhandled-rejection if sendNode throws before we reach
 		// `await responsePromise` below. The error from sendNode still propagates
@@ -1196,11 +1193,12 @@ export const makeSocket = (config: SocketConfig) => {
 				return // connection closing — do not reschedule
 			} else if (ws.isOpen) {
 				// Send keep-alive ping via sendNode() (fire-and-forget) instead of query().
-				// query() wraps the ping in the query circuit breaker — when that breaker is
-				// open or timing out, the ping is never sent, WA never responds, lastDateRecv
-				// goes stale, and the diff check above wrongly fires "Connection was lost".
-				// sendNode() bypasses the query circuit breaker entirely; WA's ping response
-				// still arrives as an incoming frame and updates lastDateRecv normally.
+				// We don't need the response correlator overhead — WA's pong arrives as an
+				// incoming frame and updates lastDateRecv via the standard receive path.
+				// (Historical context: this used to bypass the query circuit breaker,
+				// which would block pings during cascade failures. Circuit breaker has
+				// since been replaced by per-operation bounded-retry — but the
+				// fire-and-forget pattern stays correct on its own merits.)
 				sendNode({
 					tag: 'iq',
 					attrs: {
