@@ -39,12 +39,7 @@ import {
 	xmppSignedPreKey
 } from '../Utils'
 import { getPlatformId, isAndroidBrowser } from '../Utils/browser-utils'
-import {
-	CircuitBreaker,
-	CircuitOpenError,
-	createConnectionCircuitBreaker,
-	createPreKeyCircuitBreaker
-} from '../Utils/circuit-breaker'
+import { withBoundedRetry } from '../Utils/bounded-retry'
 import {
 	decrementActiveConnections,
 	incrementActiveConnections,
@@ -94,10 +89,6 @@ export const makeSocket = (config: SocketConfig) => {
 		transactionOpts,
 		qrTimeout,
 		makeSignalRepository,
-		enableCircuitBreaker = true,
-		queryCircuitBreaker: queryCircuitBreakerConfig,
-		connectionCircuitBreaker: connectionCircuitBreakerConfig,
-		preKeyCircuitBreaker: preKeyCircuitBreakerConfig,
 		// If enableUnifiedSession is explicitly set (true/false), use it
 		// Otherwise (undefined), check env var, then default to true
 		enableUnifiedSession: enableUnifiedSessionConfig
@@ -106,57 +97,6 @@ export const makeSocket = (config: SocketConfig) => {
 	// Resolve enableUnifiedSession: explicit config > env var > default (true)
 	const enableUnifiedSession =
 		enableUnifiedSessionConfig !== undefined ? enableUnifiedSessionConfig : shouldEnableUnifiedSession()
-
-	// Initialize circuit breakers if enabled
-	let queryCircuitBreaker: CircuitBreaker | undefined
-	let connectionCircuitBreaker: CircuitBreaker | undefined
-	let preKeyCircuitBreaker: CircuitBreaker | undefined
-
-	if (enableCircuitBreaker) {
-		// Circuit breaker for query operations (most critical)
-		queryCircuitBreaker = createConnectionCircuitBreaker({
-			name: 'socket-query',
-			failureThreshold: 5,
-			failureWindow: 60000,
-			resetTimeout: 30000,
-			successThreshold: 2,
-			timeout: defaultQueryTimeoutMs || 60000,
-			onStateChange: (from, to) => {
-				logger.info({ from, to }, 'Query circuit breaker state changed')
-			},
-			onOpen: () => {
-				logger.warn('Query circuit breaker OPENED - blocking requests')
-			},
-			onClose: () => {
-				logger.info('Query circuit breaker CLOSED - resuming normal operation')
-			},
-			...queryCircuitBreakerConfig
-		})
-
-		// Circuit breaker for connection operations
-		connectionCircuitBreaker = createConnectionCircuitBreaker({
-			name: 'socket-connection',
-			failureThreshold: 3,
-			failureWindow: 30000,
-			resetTimeout: 60000,
-			successThreshold: 1,
-			onStateChange: (from, to) => {
-				logger.info({ from, to }, 'Connection circuit breaker state changed')
-			},
-			...connectionCircuitBreakerConfig
-		})
-
-		// Circuit breaker for pre-key operations
-		preKeyCircuitBreaker = createPreKeyCircuitBreaker({
-			name: 'socket-prekey',
-			onStateChange: (from, to) => {
-				logger.info({ from, to }, 'PreKey circuit breaker state changed')
-			},
-			...preKeyCircuitBreakerConfig
-		})
-
-		logger.info('Circuit breakers initialized for socket operations')
-	}
 
 	// Unified Session Manager will be initialized after sendNode is defined
 	let unifiedSessionManager: UnifiedSessionManager | undefined
@@ -238,20 +178,17 @@ export const makeSocket = (config: SocketConfig) => {
 		})
 	}
 
-	/** send a raw buffer with circuit breaker protection */
+	/**
+	 * Send a raw buffer over the WebSocket.
+	 *
+	 * Replaces the previous connectionCircuitBreaker wrapping. WebSocket
+	 * lifecycle errors (Connection Closed / Lost / Replaced) were already
+	 * filtered out of the circuit's failure count, so the only failures it
+	 * tripped on were rare native send() errors — for which a state-machine
+	 * gate adds no value over a fast propagated error. Reconnection logic
+	 * in makeSocket already handles WS recovery independently.
+	 */
 	const sendRawMessage = async (data: Uint8Array | Buffer) => {
-		if (connectionCircuitBreaker) {
-			try {
-				return await connectionCircuitBreaker.execute(() => sendRawMessageInternal(data))
-			} catch (error) {
-				if (error instanceof CircuitOpenError) {
-					logger.warn({ circuitName: error.circuitName }, 'Send blocked by connection circuit breaker')
-				}
-
-				throw error
-			}
-		}
-
 		return sendRawMessageInternal(data)
 	}
 
@@ -275,7 +212,6 @@ export const makeSocket = (config: SocketConfig) => {
 		unifiedSessionManager = createUnifiedSessionManager({
 			enabled: true,
 			logger,
-			enableCircuitBreaker,
 			sendNode: sendNodeForSession
 		})
 		logger.info('Unified session manager initialized')
@@ -372,23 +308,17 @@ export const makeSocket = (config: SocketConfig) => {
 		return result
 	}
 
-	/** send a query with circuit breaker protection */
+	/**
+	 * Send a query (iq stanza) and wait for its response.
+	 *
+	 * Replaces the previous queryCircuitBreaker wrapping (state-machine that
+	 * blocked ALL queries for 30s after 5 failures). The cascade behavior
+	 * was incompatible with WhatsApp Android's empirical retry pattern:
+	 * each operation retries independently with exponential backoff, no
+	 * global state. Callers that need retry semantics wrap query() with
+	 * withBoundedRetry() at their level (assertSessions, etc.).
+	 */
 	const query = async (node: BinaryNode, timeoutMs?: number) => {
-		// If circuit breaker is enabled, wrap the query
-		if (queryCircuitBreaker) {
-			try {
-				return await queryCircuitBreaker.execute(() => queryInternal(node, timeoutMs))
-			} catch (error) {
-				// If circuit is open, log and rethrow with context
-				if (error instanceof CircuitOpenError) {
-					logger.warn({ circuitName: error.circuitName, state: error.state }, 'Query blocked by circuit breaker')
-				}
-
-				throw error
-			}
-		}
-
-		// Fallback to direct query if circuit breaker is disabled
 		return queryInternal(node, timeoutMs)
 	}
 
@@ -686,12 +616,6 @@ export const makeSocket = (config: SocketConfig) => {
 
 	/** generates and uploads a set of pre-keys to the server */
 	const uploadPreKeys = async (count = MIN_PREKEY_COUNT, retryCount = 0) => {
-		// Check if pre-key circuit breaker is open
-		if (preKeyCircuitBreaker?.isOpen()) {
-			logger.warn('PreKey circuit breaker is open, skipping upload')
-			throw new CircuitOpenError('socket-prekey', 'open')
-		}
-
 		// Check minimum interval (except for retries)
 		if (retryCount === 0) {
 			const timeSinceLastUpload = Date.now() - lastUploadTime
@@ -721,7 +645,9 @@ export const makeSocket = (config: SocketConfig) => {
 				return node // Only return node since update is already used
 			}, creds?.me?.id || 'upload-pre-keys')
 
-			// Upload to server with circuit breaker protection
+			// Upload to server. Bounded-retry handles backoff (replaces both
+			// the previous circuit breaker AND the manual exponential backoff
+			// retry loop with maxRetries=3).
 			const uploadToServer = async () => {
 				await query(node)
 				logger.info({ count }, 'uploaded pre-keys successfully')
@@ -729,28 +655,15 @@ export const makeSocket = (config: SocketConfig) => {
 			}
 
 			try {
-				// Use circuit breaker if available
-				if (preKeyCircuitBreaker) {
-					await preKeyCircuitBreaker.execute(uploadToServer)
-				} else {
-					await uploadToServer()
-				}
+				await withBoundedRetry(uploadToServer, {
+					name: 'uploadPreKeys',
+					// 1s -> 2s -> 4s -> 8s -> 10s (cap matches old MAX backoff)
+					delays: [1000, 2000, 4000, 8000, 10000],
+					ttlMs: 60_000,
+					perAttemptTimeoutMs: 20_000
+				})
 			} catch (uploadError) {
 				logger.error({ uploadError: (uploadError as Error).toString(), count }, 'Failed to upload pre-keys to server')
-
-				// Don't retry if circuit breaker is open
-				if (uploadError instanceof CircuitOpenError) {
-					throw uploadError
-				}
-
-				// Exponential backoff retry (max 3 retries)
-				if (retryCount < 3) {
-					const backoffDelay = Math.min(1000 * Math.pow(2, retryCount), 10000)
-					logger.info(`Retrying pre-key upload in ${backoffDelay}ms`)
-					await new Promise(resolve => setTimeout(resolve, backoffDelay))
-					return uploadPreKeys(count, retryCount + 1)
-				}
-
 				throw uploadError
 			}
 		}
@@ -1230,12 +1143,6 @@ export const makeSocket = (config: SocketConfig) => {
 		// NOW clean up our internal listeners (after they've received the close event)
 		cleanupPreKeyAutoSync()
 		cleanupSessionTTL()
-
-		// CRITICAL: Destroy circuit breakers AFTER cleanup functions complete
-		// This ensures cleanup functions can still use circuit breakers if needed
-		queryCircuitBreaker?.destroy()
-		connectionCircuitBreaker?.destroy()
-		preKeyCircuitBreaker?.destroy()
 
 		// IMPORTANT: Do NOT use removeAllListeners('connection.update')
 		// It would remove consumer listeners, breaking their reconnection logic
@@ -1809,25 +1716,6 @@ export const makeSocket = (config: SocketConfig) => {
 		sendWAMBuffer,
 		executeUSyncQuery,
 		onWhatsApp,
-		// Circuit breaker utilities
-		circuitBreakers: {
-			query: queryCircuitBreaker,
-			connection: connectionCircuitBreaker,
-			preKey: preKeyCircuitBreaker
-		},
-		/** Get circuit breaker statistics */
-		getCircuitBreakerStats: () => ({
-			query: queryCircuitBreaker?.getStats(),
-			connection: connectionCircuitBreaker?.getStats(),
-			preKey: preKeyCircuitBreaker?.getStats()
-		}),
-		/** Reset all circuit breakers to closed state */
-		resetCircuitBreakers: () => {
-			queryCircuitBreaker?.reset()
-			connectionCircuitBreaker?.reset()
-			preKeyCircuitBreaker?.reset()
-			logger.info('All circuit breakers reset to closed state')
-		},
 		// Unified Session Telemetry
 		/** Send unified_session telemetry manually */
 		sendUnifiedSession,
