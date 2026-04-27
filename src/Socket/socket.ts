@@ -612,14 +612,14 @@ export const makeSocket = (config: SocketConfig) => {
 	let lastUploadTime = 0
 
 	/** generates and uploads a set of pre-keys to the server */
-	const uploadPreKeys = async (count = MIN_PREKEY_COUNT, retryCount = 0) => {
-		// Check minimum interval (except for retries)
-		if (retryCount === 0) {
-			const timeSinceLastUpload = Date.now() - lastUploadTime
-			if (timeSinceLastUpload < MIN_UPLOAD_INTERVAL) {
-				logger.debug(`Skipping upload, only ${timeSinceLastUpload}ms since last upload`)
-				return
-			}
+	const uploadPreKeys = async (count = MIN_PREKEY_COUNT) => {
+		// Check minimum interval. (Previously this was guarded by `retryCount === 0`
+		// because the function recursed on retry; with bounded-retry handling
+		// retries internally there is no recursion and the guard is implicit.)
+		const timeSinceLastUpload = Date.now() - lastUploadTime
+		if (timeSinceLastUpload < MIN_UPLOAD_INTERVAL) {
+			logger.debug(`Skipping upload, only ${timeSinceLastUpload}ms since last upload`)
+			return
 		}
 
 		// Prevent multiple concurrent uploads — if one is already running, wait for it and return:
@@ -631,7 +631,7 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 
 		const uploadLogic = async () => {
-			logger.info({ count, retryCount }, 'uploading pre-keys')
+			logger.info({ count }, 'uploading pre-keys')
 
 			// Generate and save pre-keys atomically (prevents ID collisions on retry)
 			const node = await keys.transaction(async () => {
