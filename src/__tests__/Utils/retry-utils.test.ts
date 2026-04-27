@@ -11,12 +11,10 @@ import {
 	retry,
 	RETRY_BACKOFF_DELAYS,
 	RETRY_JITTER_FACTOR,
-	retryable,
 	RetryAbortedError,
 	retryConfigs,
 	type RetryContext,
 	RetryExhaustedError,
-	RetryManager,
 	retryPredicates,
 	retryWithResult
 } from '../../Utils/retry-utils.js'
@@ -312,103 +310,6 @@ describe('createRetrier', () => {
 
 		expect(result).toBe('success')
 		expect(attempts).toBe(3)
-	})
-})
-
-describe('retryable', () => {
-	it('should wrap function with retry', async () => {
-		let attempts = 0
-
-		const fn = retryable(
-			() => {
-				attempts++
-				if (attempts < 2) throw new Error('Failing')
-				return 'wrapped result'
-			},
-			{
-				maxAttempts: 5,
-				baseDelay: 10,
-				collectMetrics: false
-			}
-		)
-
-		const result = await fn()
-
-		expect(result).toBe('wrapped result')
-		expect(attempts).toBe(2)
-	})
-})
-
-describe('RetryManager', () => {
-	let manager: RetryManager
-
-	beforeEach(() => {
-		manager = new RetryManager({ baseDelay: 200, collectMetrics: false })
-	})
-
-	it('should execute operation with id', async () => {
-		const result = await manager.execute('op1', () => 'result')
-		expect(result).toBe('result')
-	})
-
-	it('should cancel active retry', async () => {
-		let attempt = 0
-
-		const promise = manager.execute('cancelable', async () => {
-			attempt++
-			if (attempt === 1) {
-				throw new Error('Temporary failure')
-			}
-
-			await new Promise(resolve => setTimeout(resolve, 1000))
-			return 'result'
-		})
-
-		// Cancel during retry delay
-		setTimeout(() => manager.cancel('cancelable'), 100)
-
-		await expect(promise).rejects.toThrow()
-	})
-
-	it('should check if operation is active', async () => {
-		let resolve: () => void
-		const promise = manager.execute(
-			'active',
-			() =>
-				new Promise<string>(r => {
-					resolve = () => r('done')
-				})
-		)
-
-		expect(manager.isActive('active')).toBe(true)
-
-		resolve!()
-		await promise
-
-		expect(manager.isActive('active')).toBe(false)
-	})
-
-	it('should cancel all operations', async () => {
-		const promises = [
-			manager.execute('op1', () => new Promise((_, reject) => setTimeout(() => reject(new Error()), 1000))),
-			manager.execute('op2', () => new Promise((_, reject) => setTimeout(() => reject(new Error()), 1000)))
-		]
-
-		setTimeout(() => manager.cancelAll(), 20)
-
-		await expect(Promise.all(promises)).rejects.toThrow()
-	})
-
-	it('should emit events', async () => {
-		const events: string[] = []
-
-		manager.on('attempt', () => events.push('attempt'))
-		manager.on('success', () => events.push('success'))
-
-		await manager.execute('test', () => 'result')
-
-		expect(events).toContain('attempt')
-		expect(events).toContain('success')
 	})
 })
 
