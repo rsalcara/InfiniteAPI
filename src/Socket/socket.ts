@@ -39,12 +39,7 @@ import {
 	xmppSignedPreKey
 } from '../Utils'
 import { getPlatformId, isAndroidBrowser } from '../Utils/browser-utils'
-import {
-	CircuitBreaker,
-	CircuitOpenError,
-	createConnectionCircuitBreaker,
-	createPreKeyCircuitBreaker
-} from '../Utils/circuit-breaker'
+import { withBoundedRetry } from '../Utils/bounded-retry'
 import {
 	decrementActiveConnections,
 	incrementActiveConnections,
@@ -94,10 +89,6 @@ export const makeSocket = (config: SocketConfig) => {
 		transactionOpts,
 		qrTimeout,
 		makeSignalRepository,
-		enableCircuitBreaker = true,
-		queryCircuitBreaker: queryCircuitBreakerConfig,
-		connectionCircuitBreaker: connectionCircuitBreakerConfig,
-		preKeyCircuitBreaker: preKeyCircuitBreakerConfig,
 		// If enableUnifiedSession is explicitly set (true/false), use it
 		// Otherwise (undefined), check env var, then default to true
 		enableUnifiedSession: enableUnifiedSessionConfig
@@ -106,57 +97,6 @@ export const makeSocket = (config: SocketConfig) => {
 	// Resolve enableUnifiedSession: explicit config > env var > default (true)
 	const enableUnifiedSession =
 		enableUnifiedSessionConfig !== undefined ? enableUnifiedSessionConfig : shouldEnableUnifiedSession()
-
-	// Initialize circuit breakers if enabled
-	let queryCircuitBreaker: CircuitBreaker | undefined
-	let connectionCircuitBreaker: CircuitBreaker | undefined
-	let preKeyCircuitBreaker: CircuitBreaker | undefined
-
-	if (enableCircuitBreaker) {
-		// Circuit breaker for query operations (most critical)
-		queryCircuitBreaker = createConnectionCircuitBreaker({
-			name: 'socket-query',
-			failureThreshold: 5,
-			failureWindow: 60000,
-			resetTimeout: 30000,
-			successThreshold: 2,
-			timeout: defaultQueryTimeoutMs || 60000,
-			onStateChange: (from, to) => {
-				logger.info({ from, to }, 'Query circuit breaker state changed')
-			},
-			onOpen: () => {
-				logger.warn('Query circuit breaker OPENED - blocking requests')
-			},
-			onClose: () => {
-				logger.info('Query circuit breaker CLOSED - resuming normal operation')
-			},
-			...queryCircuitBreakerConfig
-		})
-
-		// Circuit breaker for connection operations
-		connectionCircuitBreaker = createConnectionCircuitBreaker({
-			name: 'socket-connection',
-			failureThreshold: 3,
-			failureWindow: 30000,
-			resetTimeout: 60000,
-			successThreshold: 1,
-			onStateChange: (from, to) => {
-				logger.info({ from, to }, 'Connection circuit breaker state changed')
-			},
-			...connectionCircuitBreakerConfig
-		})
-
-		// Circuit breaker for pre-key operations
-		preKeyCircuitBreaker = createPreKeyCircuitBreaker({
-			name: 'socket-prekey',
-			onStateChange: (from, to) => {
-				logger.info({ from, to }, 'PreKey circuit breaker state changed')
-			},
-			...preKeyCircuitBreakerConfig
-		})
-
-		logger.info('Circuit breakers initialized for socket operations')
-	}
 
 	// Unified Session Manager will be initialized after sendNode is defined
 	let unifiedSessionManager: UnifiedSessionManager | undefined
@@ -238,20 +178,17 @@ export const makeSocket = (config: SocketConfig) => {
 		})
 	}
 
-	/** send a raw buffer with circuit breaker protection */
+	/**
+	 * Send a raw buffer over the WebSocket.
+	 *
+	 * Replaces the previous connectionCircuitBreaker wrapping. WebSocket
+	 * lifecycle errors (Connection Closed / Lost / Replaced) were already
+	 * filtered out of the circuit's failure count, so the only failures it
+	 * tripped on were rare native send() errors — for which a state-machine
+	 * gate adds no value over a fast propagated error. Reconnection logic
+	 * in makeSocket already handles WS recovery independently.
+	 */
 	const sendRawMessage = async (data: Uint8Array | Buffer) => {
-		if (connectionCircuitBreaker) {
-			try {
-				return await connectionCircuitBreaker.execute(() => sendRawMessageInternal(data))
-			} catch (error) {
-				if (error instanceof CircuitOpenError) {
-					logger.warn({ circuitName: error.circuitName }, 'Send blocked by connection circuit breaker')
-				}
-
-				throw error
-			}
-		}
-
 		return sendRawMessageInternal(data)
 	}
 
@@ -266,7 +203,7 @@ export const makeSocket = (config: SocketConfig) => {
 	}
 
 	// Initialize Unified Session Manager now that sendNode is defined
-	// (single initialization to avoid duplicating circuit breakers and state)
+	// (single initialization to avoid duplicating manager state)
 	if (enableUnifiedSession) {
 		const sendNodeForSession = async (node: BinaryNode): Promise<void> => {
 			await sendNode(node)
@@ -275,7 +212,6 @@ export const makeSocket = (config: SocketConfig) => {
 		unifiedSessionManager = createUnifiedSessionManager({
 			enabled: true,
 			logger,
-			enableCircuitBreaker,
 			sendNode: sendNodeForSession
 		})
 		logger.info('Unified session manager initialized')
@@ -346,11 +282,8 @@ export const makeSocket = (config: SocketConfig) => {
 		// Register the response listener BEFORE sending — avoids a race where the server
 		// responds before we start listening.  waitForMessage already handles its own
 		// timeout (returns undefined) and connection-close errors (throws), so we do NOT
-		// wrap it in a second promiseTimeout.  The outer wrapper caused a race condition
-		// where both timers fired at ~the same deadline: the outer one threw
-		// Boom('Timed Out') while sendNode was still pending, producing a spurious error
-		// whose message contained "socket-query" → matched the circuit-breaker's
-		// "socket" pattern → incorrectly tripped the breaker after 5 timeouts.
+		// wrap it in a second promiseTimeout.  The outer wrapper would race the inner
+		// timeout near the deadline and throw a spurious Boom('Timed Out').
 		const responsePromise = waitForMessage<any>(msgId, timeoutMs)
 		// Prevent unhandled-rejection if sendNode throws before we reach
 		// `await responsePromise` below. The error from sendNode still propagates
@@ -372,23 +305,17 @@ export const makeSocket = (config: SocketConfig) => {
 		return result
 	}
 
-	/** send a query with circuit breaker protection */
+	/**
+	 * Send a query (iq stanza) and wait for its response.
+	 *
+	 * Replaces the previous queryCircuitBreaker wrapping (state-machine that
+	 * blocked ALL queries for 30s after 5 failures). The cascade behavior
+	 * was incompatible with WhatsApp Android's empirical retry pattern:
+	 * each operation retries independently with exponential backoff, no
+	 * global state. Callers that need retry semantics wrap query() with
+	 * withBoundedRetry() at their level (assertSessions, etc.).
+	 */
 	const query = async (node: BinaryNode, timeoutMs?: number) => {
-		// If circuit breaker is enabled, wrap the query
-		if (queryCircuitBreaker) {
-			try {
-				return await queryCircuitBreaker.execute(() => queryInternal(node, timeoutMs))
-			} catch (error) {
-				// If circuit is open, log and rethrow with context
-				if (error instanceof CircuitOpenError) {
-					logger.warn({ circuitName: error.circuitName, state: error.state }, 'Query blocked by circuit breaker')
-				}
-
-				throw error
-			}
-		}
-
-		// Fallback to direct query if circuit breaker is disabled
 		return queryInternal(node, timeoutMs)
 	}
 
@@ -685,20 +612,14 @@ export const makeSocket = (config: SocketConfig) => {
 	let lastUploadTime = 0
 
 	/** generates and uploads a set of pre-keys to the server */
-	const uploadPreKeys = async (count = MIN_PREKEY_COUNT, retryCount = 0) => {
-		// Check if pre-key circuit breaker is open
-		if (preKeyCircuitBreaker?.isOpen()) {
-			logger.warn('PreKey circuit breaker is open, skipping upload')
-			throw new CircuitOpenError('socket-prekey', 'open')
-		}
-
-		// Check minimum interval (except for retries)
-		if (retryCount === 0) {
-			const timeSinceLastUpload = Date.now() - lastUploadTime
-			if (timeSinceLastUpload < MIN_UPLOAD_INTERVAL) {
-				logger.debug(`Skipping upload, only ${timeSinceLastUpload}ms since last upload`)
-				return
-			}
+	const uploadPreKeys = async (count = MIN_PREKEY_COUNT) => {
+		// Check minimum interval. (Previously this was guarded by `retryCount === 0`
+		// because the function recursed on retry; with bounded-retry handling
+		// retries internally there is no recursion and the guard is implicit.)
+		const timeSinceLastUpload = Date.now() - lastUploadTime
+		if (timeSinceLastUpload < MIN_UPLOAD_INTERVAL) {
+			logger.debug(`Skipping upload, only ${timeSinceLastUpload}ms since last upload`)
+			return
 		}
 
 		// Prevent multiple concurrent uploads — if one is already running, wait for it and return:
@@ -709,8 +630,15 @@ export const makeSocket = (config: SocketConfig) => {
 			return
 		}
 
+		// Shared abort controller so the outer Promise.race can cancel the
+		// in-flight bounded-retry loop if its own timeout fires first.
+		// Without this, the outer race rejects but the bounded-retry loop
+		// keeps running in the background, mutating lastUploadTime / logs
+		// after the caller has given up (CodeRabbit + Copilot reviews).
+		const uploadAbort = new AbortController()
+
 		const uploadLogic = async () => {
-			logger.info({ count, retryCount }, 'uploading pre-keys')
+			logger.info({ count }, 'uploading pre-keys')
 
 			// Generate and save pre-keys atomically (prevents ID collisions on retry)
 			const node = await keys.transaction(async () => {
@@ -721,45 +649,69 @@ export const makeSocket = (config: SocketConfig) => {
 				return node // Only return node since update is already used
 			}, creds?.me?.id || 'upload-pre-keys')
 
-			// Upload to server with circuit breaker protection
-			const uploadToServer = async () => {
-				await query(node)
+			// Upload to server. Bounded-retry handles backoff (replaces both
+			// the previous circuit breaker AND the manual exponential backoff
+			// retry loop with maxRetries=3).
+			//
+			// CRITICAL: query() returns `undefined` on timeout (it does NOT
+			// throw — see waitForMessage). If we just `await query(node)`,
+			// a timed-out upload would resolve with undefined and bounded-retry
+			// would treat it as success. Validate the response shape so a
+			// timeout actually triggers a retry (CodeRabbit review on PR #393).
+			//
+			// bounded-retry's ttlMs MUST be < UPLOAD_TIMEOUT (the outer
+			// Promise.race below). With margin (28s vs 30s) bounded-retry
+			// always reaches its natural give-up first. We additionally pass
+			// an AbortController signal so that if the outer race ever fires
+			// first, the bounded-retry loop is aborted and does not keep
+			// running in the background (CodeRabbit + Copilot reviews).
+			const PER_ATTEMPT_TIMEOUT_MS = 8_000
+			const RETRY_TTL_MS = UPLOAD_TIMEOUT - 2_000
+
+			const uploadToServer = async (signal?: AbortSignal) => {
+				const result = await query(node, PER_ATTEMPT_TIMEOUT_MS)
+				if (signal?.aborted) {
+					throw new Error('aborted')
+				}
+
+				if (!result) {
+					// query() returned undefined → underlying iq response
+					// timed out. Throw so bounded-retry retries.
+					throw new Boom('Pre-key upload query timed out (no response)', { statusCode: 408 })
+				}
+
 				logger.info({ count }, 'uploaded pre-keys successfully')
 				lastUploadTime = Date.now()
 			}
 
 			try {
-				// Use circuit breaker if available
-				if (preKeyCircuitBreaker) {
-					await preKeyCircuitBreaker.execute(uploadToServer)
-				} else {
-					await uploadToServer()
-				}
+				await withBoundedRetry(uploadToServer, {
+					name: 'uploadPreKeys',
+					// 1s -> 2s -> 4s -> 8s (cap). Max 4 attempts fit comfortably
+					// within RETRY_TTL_MS (28s) given perAttemptTimeoutMs=8s.
+					delays: [1000, 2000, 4000, 8000],
+					ttlMs: RETRY_TTL_MS,
+					perAttemptTimeoutMs: PER_ATTEMPT_TIMEOUT_MS,
+					signal: uploadAbort.signal,
+					logger
+				})
 			} catch (uploadError) {
 				logger.error({ uploadError: (uploadError as Error).toString(), count }, 'Failed to upload pre-keys to server')
-
-				// Don't retry if circuit breaker is open
-				if (uploadError instanceof CircuitOpenError) {
-					throw uploadError
-				}
-
-				// Exponential backoff retry (max 3 retries)
-				if (retryCount < 3) {
-					const backoffDelay = Math.min(1000 * Math.pow(2, retryCount), 10000)
-					logger.info(`Retrying pre-key upload in ${backoffDelay}ms`)
-					await new Promise(resolve => setTimeout(resolve, backoffDelay))
-					return uploadPreKeys(count, retryCount + 1)
-				}
-
 				throw uploadError
 			}
 		}
 
-		// Add timeout protection
+		// Outer timeout protection. With ttlMs=28s vs UPLOAD_TIMEOUT=30s,
+		// bounded-retry should always win — but if anything ever blocks
+		// uploadLogic outside bounded-retry's reach, this race aborts the
+		// whole thing cleanly via uploadAbort.
 		uploadPreKeysPromise = Promise.race([
 			uploadLogic(),
 			new Promise<void>((_, reject) =>
-				setTimeout(() => reject(new Boom('Pre-key upload timeout', { statusCode: 408 })), UPLOAD_TIMEOUT)
+				setTimeout(() => {
+					uploadAbort.abort()
+					reject(new Boom('Pre-key upload timeout', { statusCode: 408 }))
+				}, UPLOAD_TIMEOUT)
 			)
 		])
 
@@ -1231,12 +1183,6 @@ export const makeSocket = (config: SocketConfig) => {
 		cleanupPreKeyAutoSync()
 		cleanupSessionTTL()
 
-		// CRITICAL: Destroy circuit breakers AFTER cleanup functions complete
-		// This ensures cleanup functions can still use circuit breakers if needed
-		queryCircuitBreaker?.destroy()
-		connectionCircuitBreaker?.destroy()
-		preKeyCircuitBreaker?.destroy()
-
 		// IMPORTANT: Do NOT use removeAllListeners('connection.update')
 		// It would remove consumer listeners, breaking their reconnection logic
 	}
@@ -1289,11 +1235,12 @@ export const makeSocket = (config: SocketConfig) => {
 				return // connection closing — do not reschedule
 			} else if (ws.isOpen) {
 				// Send keep-alive ping via sendNode() (fire-and-forget) instead of query().
-				// query() wraps the ping in the query circuit breaker — when that breaker is
-				// open or timing out, the ping is never sent, WA never responds, lastDateRecv
-				// goes stale, and the diff check above wrongly fires "Connection was lost".
-				// sendNode() bypasses the query circuit breaker entirely; WA's ping response
-				// still arrives as an incoming frame and updates lastDateRecv normally.
+				// We don't need the response correlator overhead — WA's pong arrives as an
+				// incoming frame and updates lastDateRecv via the standard receive path.
+				// (Historical context: this used to bypass the query circuit breaker,
+				// which would block pings during cascade failures. Circuit breaker has
+				// since been replaced by per-operation bounded-retry — but the
+				// fire-and-forget pattern stays correct on its own merits.)
 				sendNode({
 					tag: 'iq',
 					attrs: {
@@ -1809,25 +1756,6 @@ export const makeSocket = (config: SocketConfig) => {
 		sendWAMBuffer,
 		executeUSyncQuery,
 		onWhatsApp,
-		// Circuit breaker utilities
-		circuitBreakers: {
-			query: queryCircuitBreaker,
-			connection: connectionCircuitBreaker,
-			preKey: preKeyCircuitBreaker
-		},
-		/** Get circuit breaker statistics */
-		getCircuitBreakerStats: () => ({
-			query: queryCircuitBreaker?.getStats(),
-			connection: connectionCircuitBreaker?.getStats(),
-			preKey: preKeyCircuitBreaker?.getStats()
-		}),
-		/** Reset all circuit breakers to closed state */
-		resetCircuitBreakers: () => {
-			queryCircuitBreaker?.reset()
-			connectionCircuitBreaker?.reset()
-			preKeyCircuitBreaker?.reset()
-			logger.info('All circuit breakers reset to closed state')
-		},
 		// Unified Session Telemetry
 		/** Send unified_session telemetry manually */
 		sendUnifiedSession,

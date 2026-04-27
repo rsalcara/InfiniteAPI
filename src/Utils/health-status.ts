@@ -6,11 +6,12 @@
  * @module Utils/health-status
  */
 
-import { globalCircuitRegistry } from './circuit-breaker.js'
 import { getVersionCacheStatus } from './version-cache.js'
 
 /**
- * Circuit breaker health information
+ * Circuit breaker health information (kept for k8s probe schema stability —
+ * always reports an empty list now that circuit breakers were removed in
+ * favour of bounded-retry).
  */
 export interface CircuitBreakerHealth {
 	name: string
@@ -105,44 +106,10 @@ export function getHealthStatus(): HealthStatus {
 		})
 	}
 
-	// 2. Check circuit breakers
+	// 2. Circuit breakers were removed in favour of bounded-retry.
+	// Keep the field for backward-compat with k8s probe schema, always empty.
 	const circuitBreakers: CircuitBreakerHealth[] = []
-	let openCircuits = 0
-
-	for (const [name, breaker] of globalCircuitRegistry.getAll()) {
-		const stats = breaker.getStats()
-		const state = breaker.getState()
-
-		circuitBreakers.push({
-			name,
-			state,
-			failures: stats.totalFailures,
-			successes: stats.totalSuccesses,
-			totalCalls: stats.totalCalls
-		})
-
-		if (state === 'open') {
-			openCircuits++
-		}
-	}
-
-	if (openCircuits > 0) {
-		checks.push({
-			name: 'circuit_breakers',
-			status: openCircuits > 2 ? 'fail' : 'warn',
-			message: `${openCircuits} circuit breaker(s) are open`
-		})
-		if (openCircuits > 2) {
-			overallStatus = 'unhealthy'
-		} else if (overallStatus === 'healthy') {
-			overallStatus = 'degraded'
-		}
-	} else {
-		checks.push({
-			name: 'circuit_breakers',
-			status: 'pass'
-		})
-	}
+	checks.push({ name: 'circuit_breakers', status: 'pass' })
 
 	// 3. Check memory usage (warn if > 90%)
 	const memUsage = process.memoryUsage()

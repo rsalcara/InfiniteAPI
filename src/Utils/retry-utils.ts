@@ -6,15 +6,21 @@
  * - Jitter to avoid thundering herd
  * - Configurable max attempts
  * - Customizable retry predicates
- * - Circuit breaker integration
- * - Event hooks
- * - Cancellation support
+ * - Cancellation support (AbortSignal)
+ *
+ * Used by `decode-wa-message.ts` for Bad MAC retry recovery on the decrypt
+ * path. For socket-operation retries (uploadPreKeys etc.) prefer
+ * `withBoundedRetry` from `./bounded-retry.ts`, which is empirically
+ * aligned with WhatsApp Android's per-operation backoff.
+ *
+ * NOTE: the previous `circuitBreaker` integration option, the `withRetry`
+ * decorator, the `retryable` wrapper and the `RetryManager` class were
+ * removed when the socket-level circuit breaker was retired — see PR #393
+ * for the rationale.
  *
  * @module Utils/retry-utils
  */
 
-import { EventEmitter } from 'events'
-import type { CircuitBreaker } from './circuit-breaker.js'
 import { metrics } from './prometheus-metrics.js'
 
 /**
@@ -59,8 +65,6 @@ export interface RetryOptions {
 	operationName?: string
 	/** Collect metrics */
 	collectMetrics?: boolean
-	/** Circuit breaker for integration */
-	circuitBreaker?: CircuitBreaker
 	/** Callback before each retry */
 	onRetry?: (error: Error, attempt: number, delay: number) => void | Promise<void>
 	/** Callback on success */
@@ -283,7 +287,6 @@ export async function retry<T>(
 		timeout: options.timeout,
 		operationName: options.operationName ?? 'operation',
 		collectMetrics: options.collectMetrics ?? true,
-		circuitBreaker: options.circuitBreaker,
 		onRetry: options.onRetry ?? (() => {}),
 		onSuccess: options.onSuccess ?? (() => {}),
 		onFailure: options.onFailure ?? (() => {}),
@@ -311,11 +314,6 @@ export async function retry<T>(
 		if (config.abortSignal?.aborted) {
 			context.aborted = true
 			throw new RetryAbortedError(attempt)
-		}
-
-		// Check circuit breaker
-		if (config.circuitBreaker?.isOpen()) {
-			throw new Error(`Circuit breaker "${config.circuitBreaker.getName()}" is open`)
 		}
 
 		try {
@@ -426,138 +424,6 @@ export function createRetrier(defaultOptions: RetryOptions = {}) {
 }
 
 /**
- * Decorator to add retry to method
- */
-export function withRetry(options: RetryOptions = {}) {
-	return function (
-		_target: unknown,
-		propertyKey: string,
-		descriptor: TypedPropertyDescriptor<(...args: unknown[]) => unknown>
-	) {
-		const originalMethod = descriptor.value
-		if (!originalMethod) return descriptor
-
-		descriptor.value = async function (...args: unknown[]): Promise<unknown> {
-			return retry(() => originalMethod.apply(this, args), {
-				...options,
-				operationName: options.operationName || propertyKey
-			})
-		}
-
-		return descriptor
-	}
-}
-
-/**
- * Wrapper for function with retry
- */
-// eslint-disable-next-line space-before-function-paren
-export function retryable<T extends (...args: unknown[]) => unknown>(
-	fn: T,
-	options: RetryOptions = {}
-): (...args: Parameters<T>) => Promise<ReturnType<T>> {
-	return async (...args: Parameters<T>): Promise<ReturnType<T>> => {
-		return retry(() => fn(...args), options) as Promise<ReturnType<T>>
-	}
-}
-
-/**
- * Class to manage retries with state
- */
-export class RetryManager extends EventEmitter {
-	private activeRetries: Map<string, { cancel: () => void; context: RetryContext }> = new Map()
-	private defaultOptions: RetryOptions
-
-	constructor(defaultOptions: RetryOptions = {}) {
-		super()
-		this.defaultOptions = defaultOptions
-	}
-
-	/**
-	 * Execute operation with retry
-	 */
-	async execute<T>(
-		id: string,
-		operation: (context: RetryContext) => T | Promise<T>,
-		options?: RetryOptions
-	): Promise<T> {
-		// Cancel previous retry with same ID
-		this.cancel(id)
-
-		const abortController = new AbortController()
-		const mergedOptions = { ...this.defaultOptions, ...options, abortSignal: abortController.signal }
-
-		const retryPromise = retry(context => {
-			this.activeRetries.set(id, {
-				cancel: () => abortController.abort(),
-				context
-			})
-			this.emit('attempt', { id, attempt: context.attempt })
-			return operation(context)
-		}, mergedOptions)
-
-		try {
-			const result = await retryPromise
-			this.emit('success', { id })
-			return result
-		} catch (error) {
-			this.emit('failure', { id, error })
-			throw error
-		} finally {
-			this.activeRetries.delete(id)
-		}
-	}
-
-	/**
-	 * Cancel in-progress retry
-	 */
-	cancel(id: string): boolean {
-		const active = this.activeRetries.get(id)
-		if (active) {
-			active.cancel()
-			this.activeRetries.delete(id)
-			this.emit('cancelled', { id })
-			return true
-		}
-
-		return false
-	}
-
-	/**
-	 * Cancel all retries
-	 */
-	cancelAll(): void {
-		for (const [id, active] of this.activeRetries) {
-			active.cancel()
-			this.emit('cancelled', { id })
-		}
-
-		this.activeRetries.clear()
-	}
-
-	/**
-	 * Check if there is an active retry
-	 */
-	isActive(id: string): boolean {
-		return this.activeRetries.has(id)
-	}
-
-	/**
-	 * Return active retry context
-	 */
-	getContext(id: string): RetryContext | undefined {
-		return this.activeRetries.get(id)?.context
-	}
-
-	/**
-	 * Return active retry IDs
-	 */
-	getActiveIds(): string[] {
-		return Array.from(this.activeRetries.keys())
-	}
-}
-
-/**
  * Common predicates for shouldRetry
  */
 export const retryPredicates = {
@@ -660,9 +526,8 @@ export const retryConfigs = {
 	 * Uses fixed delay array: 1s, 2s, 5s, 10s, 20s (with ±15% jitter)
 	 *
 	 * NOTE: Values are hardcoded instead of referencing RETRY_BACKOFF_DELAYS/RETRY_JITTER_FACTOR
-	 * to prevent "Cannot access before initialization" errors in ESM environments.
-	 * This occurs when modules are loaded in specific orders due to indirect circular imports
-	 * (e.g., via prometheus-metrics.ts -> circuit-breaker.ts chain).
+	 * to prevent "Cannot access before initialization" errors in ESM environments
+	 * caused by indirect circular imports through prometheus-metrics.ts.
 	 * Keep these values in sync with the constants above (lines 25, 31).
 	 */
 	rsocket: {

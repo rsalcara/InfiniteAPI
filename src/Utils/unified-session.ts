@@ -15,7 +15,6 @@
  */
 
 import type { BinaryNode } from '../WABinary/types.js'
-import { CircuitBreaker, CircuitOpenError, createConnectionCircuitBreaker } from './circuit-breaker.js'
 import type { ILogger } from './logger.js'
 import { metrics } from './prometheus-metrics.js'
 
@@ -58,8 +57,6 @@ export interface UnifiedSessionOptions {
 	enabled?: boolean
 	/** Logger instance for debugging */
 	logger?: ILogger
-	/** Enable circuit breaker protection for send operations */
-	enableCircuitBreaker?: boolean
 	/** Function to send binary nodes to WhatsApp */
 	sendNode?: (node: BinaryNode) => Promise<void>
 }
@@ -93,7 +90,9 @@ export type UnifiedSessionTrigger = 'login' | 'pairing' | 'presence' | 'manual'
  * Manages the unified_session telemetry feature with:
  * - Server time synchronization
  * - Rate limiting (prevents spam)
- * - Circuit breaker protection
+ * - Best-effort send semantics (failures are swallowed and counted —
+ *   telemetry is non-critical so a single attempt with the underlying
+ *   sendNode timeout is enough; no retry, no circuit breaker)
  * - Prometheus metrics integration
  * - Structured logging
  *
@@ -121,7 +120,6 @@ export class UnifiedSessionManager {
 	}
 
 	private readonly options: Required<UnifiedSessionOptions>
-	private circuitBreaker: CircuitBreaker | null = null
 
 	/** Minimum interval between unified_session sends (1 minute) */
 	private static readonly MIN_SEND_INTERVAL_MS = TimeMs.Minute
@@ -130,31 +128,11 @@ export class UnifiedSessionManager {
 		this.options = {
 			enabled: options.enabled ?? true,
 			logger: options.logger ?? (console as unknown as ILogger),
-			enableCircuitBreaker: options.enableCircuitBreaker ?? true,
 			sendNode:
 				options.sendNode ??
 				(async () => {
 					throw new Error('sendNode function not configured')
 				})
-		}
-
-		// Initialize circuit breaker if enabled
-		if (this.options.enableCircuitBreaker) {
-			this.circuitBreaker = createConnectionCircuitBreaker({
-				name: 'unified-session',
-				failureThreshold: 3,
-				failureWindow: 60000,
-				resetTimeout: 30000,
-				successThreshold: 1,
-				timeout: 10000,
-				onStateChange: (from, to) => {
-					this.options.logger.debug?.({ from, to }, 'Unified session circuit breaker state changed')
-				},
-				onOpen: () => {
-					this.options.logger.warn?.('Unified session circuit breaker OPENED')
-					metrics.circuitBreakerTrips?.inc({ name: 'unified-session' })
-				}
-			})
 		}
 
 		this.state.isInitialized = true
@@ -292,20 +270,12 @@ export class UnifiedSessionManager {
 		}
 
 		try {
-			// Execute with circuit breaker if available
-			if (this.circuitBreaker) {
-				await this.circuitBreaker.execute(sendOperation)
-			} else {
-				await sendOperation()
-			}
+			// Telemetry is non-critical: a single send attempt with the
+			// underlying sendNode timeout is enough. No retry/circuit needed.
+			await sendOperation()
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : String(error)
-
-			if (error instanceof CircuitOpenError) {
-				this.options.logger.warn?.({ trigger, circuitState: error.state }, 'Unified session blocked by circuit breaker')
-			} else {
-				this.options.logger.warn?.({ trigger, error: errorMessage }, 'Failed to send unified session telemetry')
-			}
+			this.options.logger.warn?.({ trigger, error: errorMessage }, 'Failed to send unified session telemetry')
 
 			// Record failure metric
 			metrics.errors?.inc({ category: 'unified_session', code: 'send_failed' })
@@ -331,7 +301,6 @@ export class UnifiedSessionManager {
 			sendCount: 0,
 			isInitialized: true
 		}
-		this.circuitBreaker?.reset()
 		this.options.logger.debug?.('UnifiedSessionManager reset')
 	}
 
@@ -339,7 +308,6 @@ export class UnifiedSessionManager {
 	 * Destroy the manager and clean up resources.
 	 */
 	destroy(): void {
-		this.circuitBreaker?.destroy()
 		this.state.isInitialized = false
 		this.options.logger.debug?.('UnifiedSessionManager destroyed')
 	}
