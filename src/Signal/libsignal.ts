@@ -299,25 +299,6 @@ export function makeLibSignalRepository(
 	// Promise instead of each spawning their own DB transactions.
 	const migrationInFlight = new Map<string, Promise<{ migrated: number; skipped: number; total: number }>>()
 
-	// Resolve PN JID to its canonical LID JID for transaction locking.
-	// This prevents PN/LID race conditions where concurrent operations for the
-	// same logical contact acquire different mutex locks because one uses PN
-	// and the other uses LID. (Aligned with WABA behavior — all operations use LID internally.)
-	const resolveCanonicalJid = async(jid: string): Promise<string> => {
-		if (isAnyLidUser(jid)) {
-			return jid
-		}
-
-		if (isAnyPnUser(jid)) {
-			const lid = await lidMapping.getLIDForPN(jid)
-			if (lid) {
-				return lid
-			}
-		}
-
-		return jid
-	}
-
 	const repository: SignalRepositoryWithLIDStore = {
 		decryptGroupMessage({ group, authorJid, msg }) {
 			const senderName = jidToSignalSenderKeyName(group, authorJid)
@@ -408,24 +389,29 @@ export function makeLibSignalRepository(
 				return result
 			}
 
-			// Use canonical JID (PN→LID resolved) as transaction key to prevent
-			// PN/LID race conditions on the same logical session.
-			const canonicalJid = await resolveCanonicalJid(jid)
+			// Lock on the raw JID — same string libsignal uses to derive the
+			// SessionCipher address (line above). Locking on a *resolved* canonical
+			// JID would mean the lock key and the session storage key drift apart,
+			// letting concurrent ops on the same session interleave and corrupt the
+			// ratchet (observed as a perpetual Bad MAC loop on own DSM after the
+			// PN→LID rollout). PN/LID race protection lives upstream in
+			// migrateSession + storeLIDPNMappings, not here.
 			return parsedKeys.transaction(async () => {
 				return await doDecrypt()
-			}, canonicalJid)
+			}, jid)
 		},
 
 		async encryptMessage({ jid, data }) {
 			const addr = jidToSignalProtocolAddress(jid)
 			const cipher = new libsignal.SessionCipher(storage, addr)
 
-			const canonicalJid = await resolveCanonicalJid(jid)
+			// Lock on raw JID — same string used to derive `addr` above. See comment
+			// in decryptMessage for the rationale (lock key must match session storage key).
 			return parsedKeys.transaction(async () => {
 				const { type: sigType, body } = await cipher.encrypt(data)
 				const type = sigType === 3 ? 'pkmsg' : 'msg'
 				return { type, ciphertext: Buffer.from(body, 'binary') }
-			}, canonicalJid)
+			}, jid)
 		},
 
 		async encryptGroupMessage({ group, meId, data }) {
