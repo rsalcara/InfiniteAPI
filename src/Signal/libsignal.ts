@@ -441,10 +441,16 @@ export function makeLibSignalRepository(
 
 		async injectE2ESession({ jid, session }) {
 			logger.trace({ jid }, 'injecting E2EE session')
-			const cipher = new libsignal.SessionBuilder(storage, jidToSignalProtocolAddress(jid))
+			const addr = jidToSignalProtocolAddress(jid)
+			// Same wire-address locking as encrypt/decrypt — `SessionBuilder.initOutgoing`
+			// writes via `storeSession` which canonicalizes, so the lock key must be
+			// the wire address for the mutex to actually serialize concurrent ops on
+			// the same logical session.
+			const wireAddr = await resolveLIDSignalAddress(addr.toString(), lidMapping)
+			const cipher = new libsignal.SessionBuilder(storage, addr)
 			return parsedKeys.transaction(async () => {
 				await cipher.initOutgoing(session)
-			}, jid)
+			}, wireAddr)
 		},
 		jidToSignalProtocolAddress(jid) {
 			return jidToSignalProtocolAddress(jid).toString()
@@ -722,9 +728,11 @@ const jidToSignalSenderKeyName = (group: string, user: string): SenderKeyName =>
 }
 
 /**
- * Resolve a Signal protocol address (string form `userDomain.device`) to its
- * canonical *wire* address — the exact key that `loadSession`/`storeSession`
- * uses when reading/writing `keys.get('session', [...])`.
+ * Resolve a Signal protocol address (string form `signalUser.device`, where
+ * `signalUser` is `user` for the WhatsApp domain or `user_domainType` for any
+ * other domain — e.g. `12345_1.0` for a LID device 0) to its canonical *wire*
+ * address — the exact key that `loadSession`/`storeSession` uses when
+ * reading/writing `keys.get('session', [...])`.
  *
  * This is the SAME key the storage layer uses internally, so callers that need
  * a transaction lock around session mutations MUST lock on this resolved
@@ -732,9 +740,20 @@ const jidToSignalSenderKeyName = (group: string, user: string): SenderKeyName =>
  * apart and concurrent ops on the same session interleave → ratchet
  * corruption → perpetual `Bad MAC` errors.
  *
- * Behavior: if the input already targets a LID domain, returns it unchanged.
- * Otherwise looks up the PN→LID mapping; if found, returns the LID-form
- * Signal address. If no mapping exists, returns the input unchanged.
+ * Behavior: if the input already targets a LID domain, returns it unchanged
+ * (cheap fast path — no awaits). Otherwise looks up the PN→LID mapping; if
+ * found, returns the LID-form Signal address. If no mapping exists, returns
+ * the input unchanged.
+ *
+ * Residual race window: the lock and the storage's internal re-resolution
+ * each call this function once. If a PN→LID mapping is added between those
+ * two calls (microsecond window), the lock could be on the PN address while
+ * storage canonicalizes to LID. In production this is mitigated upstream:
+ * `messages-recv.ts` runs `migrateSession()` synchronously BEFORE
+ * `decryptMessage()` is called, so the mapping is already populated by the
+ * time we lock. Eliminating the residual race entirely would require storage
+ * to NOT re-resolve, which is a bigger refactor (other call sites depend on
+ * the current contract).
  *
  * Top-level (not inside `signalStorage`) so `makeLibSignalRepository` can
  * compute the same wire address for transaction locking.
@@ -743,7 +762,11 @@ const resolveLIDSignalAddress = async (id: string, lidMapping: LIDMappingStore):
 	if (id.includes('.')) {
 		const [deviceId, device] = id.split('.')
 		if (!deviceId) {
-			throw new Error('Missing device ID')
+			throw new Error(`Malformed signal address (empty user portion before '.'): "${id}"`)
+		}
+
+		if (device === undefined || device === '') {
+			throw new Error(`Malformed signal address (empty device portion after '.'): "${id}"`)
 		}
 
 		const [user, domainType_] = deviceId.split('_')
