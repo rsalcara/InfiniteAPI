@@ -67,33 +67,59 @@ export const DECRYPTION_RETRY_CONFIG = {
 }
 
 /**
- * Retry options for decryption operations
- * Uses exponential backoff with jitter to handle transient failures
+ * Retry options for decryption operations.
+ *
+ * IMPORTANT — fail-fast policy for decryption:
+ * Both `sessionRecordErrors` ('No matching sessions found', etc.) and
+ * `corruptedSessionErrors` ('Bad MAC', 'MessageCounterError', missing keys)
+ * return `false` from `shouldRetry`. Rationale:
+ *
+ *   1. libsignal already scanned ALL stored sessions for the JID before
+ *      throwing — retrying immediately gives the SAME result (no new session
+ *      record materialises in the 200-800ms backoff window).
+ *   2. The real recovery flow is upstream: failed decrypt → retry receipt to
+ *      WA → phone re-sends as `pkmsg` → libsignal builds a fresh session →
+ *      next message decrypts cleanly. That handshake takes ~300ms total.
+ *   3. Wrapping decrypt in 3 attempts × exponential backoff (200ms→400ms→800ms
+ *      ≈ 1.4 s per failed message) just blocks the inbound buffer pipeline. At
+ *      the rate own DSM messages flood in after a LID/PN mismatch, this
+ *      compounds to tens of seconds of accumulated delay before live messages
+ *      from real contacts can even reach the consumer.
+ *
+ * Only truly *unknown* errors get a single retry — those might be transient
+ * (network blip, unexpected exception) and a quick 200ms retry is cheap.
+ *
+ * If we ever need transient-error retries again (e.g. the storage layer adds
+ * an async race that benefits from re-reading), set `sessionRecordErrors` to
+ * `attempt < 1` here, NOT `attempt < 3` — one extra read at most.
  */
 export const DECRYPTION_RETRY_OPTIONS: RetryOptions = {
-	maxAttempts: 3,
-	baseDelay: 200, // 200ms base delay
-	maxDelay: 2000, // 2s max delay
+	maxAttempts: 2,
+	baseDelay: 200, // 200ms base delay (only used for unknown errors below)
+	maxDelay: 2000,
 	backoffStrategy: 'exponential',
 	backoffMultiplier: 2,
-	jitter: 0.2, // 20% jitter
-	collectMetrics: false, // No Prometheus metrics
+	jitter: 0.2,
+	collectMetrics: false,
 	operationName: 'message_decryption',
 	shouldRetry: (error: Error, attempt: number) => {
 		const errorMsg = error?.message || ''
 
-		// Always retry on session record errors (session might be syncing)
+		// Session record errors: libsignal already exhausted all stored sessions.
+		// Retrying immediately gives the same result; the real recovery path
+		// is the upstream retry-receipt → pkmsg flow. Fail fast.
 		if (DECRYPTION_RETRY_CONFIG.sessionRecordErrors.some(err => errorMsg.includes(err))) {
-			return attempt < 3 // Retry up to 3 times
+			return false
 		}
 
-		// Don't retry on corrupted session errors (need cleanup first)
+		// Corrupted session errors: Bad MAC / counter errors. Same reasoning —
+		// the keys are wrong and won't right themselves on retry.
 		if (DECRYPTION_RETRY_CONFIG.corruptedSessionErrors.some(err => errorMsg.includes(err))) {
 			return false
 		}
 
-		// Retry other transient errors
-		return attempt < 2 // Retry up to 2 times for unknown errors
+		// Unknown errors: one retry in case it was a transient blip.
+		return attempt < 1
 	}
 }
 
