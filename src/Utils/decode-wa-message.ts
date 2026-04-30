@@ -119,7 +119,9 @@ export const DECRYPTION_RETRY_OPTIONS: RetryOptions = {
 		}
 
 		// Unknown errors: one retry in case it was a transient blip.
-		return attempt < 1
+		// `attempt` is 1-based (retry-utils starts the loop at 1), so `attempt < 2`
+		// allows the second pass and returns false on the third.
+		return attempt < 2
 	}
 }
 
