@@ -18,5 +18,9 @@ Proxy
 test.ts
 TestData
 wa-logs*
+<<<<<<< HEAD
 coverage
 AUDIT_REPORT_*.md
+=======
+coverage
+>>>>>>> eab00d78 (feat: Add support for `pastParticipants` in history sync (#2426))
