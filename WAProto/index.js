@@ -26728,6 +26728,10 @@ export const proto = $root.proto = (() => {
         Conversation.prototype.isSenderNewAccount = null;
         Conversation.prototype.afterReadDuration = null;
         Conversation.prototype.isSenderSuspicious = null;
+        Conversation.prototype.appealStatus = null;
+        Conversation.prototype.appealUpdateTime = null;
+        Conversation.prototype.authAgentParentCompanyName = null;
+        Conversation.prototype.authAgentObaPhoneNumber = null;
 
         let $oneOfFields;
 
@@ -27067,6 +27071,30 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(Conversation.prototype, "_appealStatus", {
+            get: $util.oneOfGetter($oneOfFields = ["appealStatus"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(Conversation.prototype, "_appealUpdateTime", {
+            get: $util.oneOfGetter($oneOfFields = ["appealUpdateTime"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(Conversation.prototype, "_authAgentParentCompanyName", {
+            get: $util.oneOfGetter($oneOfFields = ["authAgentParentCompanyName"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(Conversation.prototype, "_authAgentObaPhoneNumber", {
+            get: $util.oneOfGetter($oneOfFields = ["authAgentObaPhoneNumber"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         Conversation.create = function create(properties) {
             return new Conversation(properties);
         };
@@ -27194,6 +27222,14 @@ export const proto = $root.proto = (() => {
                 w.uint32(456).uint32(m.afterReadDuration);
             if (m.isSenderSuspicious != null && Object.hasOwnProperty.call(m, "isSenderSuspicious"))
                 w.uint32(464).bool(m.isSenderSuspicious);
+            if (m.appealStatus != null && Object.hasOwnProperty.call(m, "appealStatus"))
+                w.uint32(472).int32(m.appealStatus);
+            if (m.appealUpdateTime != null && Object.hasOwnProperty.call(m, "appealUpdateTime"))
+                w.uint32(480).uint64(m.appealUpdateTime);
+            if (m.authAgentParentCompanyName != null && Object.hasOwnProperty.call(m, "authAgentParentCompanyName"))
+                w.uint32(490).string(m.authAgentParentCompanyName);
+            if (m.authAgentObaPhoneNumber != null && Object.hasOwnProperty.call(m, "authAgentObaPhoneNumber"))
+                w.uint32(498).string(m.authAgentObaPhoneNumber);
             return w;
         };
 
@@ -27440,6 +27476,22 @@ export const proto = $root.proto = (() => {
                     }
                 case 58: {
                         m.isSenderSuspicious = r.bool();
+                        break;
+                    }
+                case 59: {
+                        m.appealStatus = r.int32();
+                        break;
+                    }
+                case 60: {
+                        m.appealUpdateTime = r.uint64();
+                        break;
+                    }
+                case 61: {
+                        m.authAgentParentCompanyName = r.string();
+                        break;
+                    }
+                case 62: {
+                        m.authAgentObaPhoneNumber = r.string();
                         break;
                     }
                 default:
@@ -27784,6 +27836,46 @@ export const proto = $root.proto = (() => {
             if (d.isSenderSuspicious != null) {
                 m.isSenderSuspicious = Boolean(d.isSenderSuspicious);
             }
+            switch (d.appealStatus) {
+            default:
+                if (typeof d.appealStatus === "number") {
+                    m.appealStatus = d.appealStatus;
+                    break;
+                }
+                break;
+            case "NO_APPEAL":
+            case 0:
+                m.appealStatus = 0;
+                break;
+            case "APPEAL_IN_REVIEW":
+            case 1:
+                m.appealStatus = 1;
+                break;
+            case "APPEAL_APPROVED":
+            case 2:
+                m.appealStatus = 2;
+                break;
+            case "APPEAL_REJECTED":
+            case 3:
+                m.appealStatus = 3;
+                break;
+            }
+            if (d.appealUpdateTime != null) {
+                if ($util.Long)
+                    (m.appealUpdateTime = $util.Long.fromValue(d.appealUpdateTime)).unsigned = true;
+                else if (typeof d.appealUpdateTime === "string")
+                    m.appealUpdateTime = parseInt(d.appealUpdateTime, 10);
+                else if (typeof d.appealUpdateTime === "number")
+                    m.appealUpdateTime = d.appealUpdateTime;
+                else if (typeof d.appealUpdateTime === "object")
+                    m.appealUpdateTime = new $util.LongBits(d.appealUpdateTime.low >>> 0, d.appealUpdateTime.high >>> 0).toNumber(true);
+            }
+            if (d.authAgentParentCompanyName != null) {
+                m.authAgentParentCompanyName = String(d.authAgentParentCompanyName);
+            }
+            if (d.authAgentObaPhoneNumber != null) {
+                m.authAgentObaPhoneNumber = String(d.authAgentObaPhoneNumber);
+            }
             return m;
         };
 
@@ -28111,6 +28203,29 @@ export const proto = $root.proto = (() => {
                 if (o.oneofs)
                     d._isSenderSuspicious = "isSenderSuspicious";
             }
+            if (m.appealStatus != null && m.hasOwnProperty("appealStatus")) {
+                d.appealStatus = o.enums === String ? $root.proto.Conversation.GroupAppealStatus[m.appealStatus] === undefined ? m.appealStatus : $root.proto.Conversation.GroupAppealStatus[m.appealStatus] : m.appealStatus;
+                if (o.oneofs)
+                    d._appealStatus = "appealStatus";
+            }
+            if (m.appealUpdateTime != null && m.hasOwnProperty("appealUpdateTime")) {
+                if (typeof m.appealUpdateTime === "number")
+                    d.appealUpdateTime = o.longs === String ? String(m.appealUpdateTime) : m.appealUpdateTime;
+                else
+                    d.appealUpdateTime = o.longs === String ? longToString(m.appealUpdateTime, true) : o.longs === Number ? longToNumber(m.appealUpdateTime, true) : m.appealUpdateTime;
+                if (o.oneofs)
+                    d._appealUpdateTime = "appealUpdateTime";
+            }
+            if (m.authAgentParentCompanyName != null && m.hasOwnProperty("authAgentParentCompanyName")) {
+                d.authAgentParentCompanyName = m.authAgentParentCompanyName;
+                if (o.oneofs)
+                    d._authAgentParentCompanyName = "authAgentParentCompanyName";
+            }
+            if (m.authAgentObaPhoneNumber != null && m.hasOwnProperty("authAgentObaPhoneNumber")) {
+                d.authAgentObaPhoneNumber = m.authAgentObaPhoneNumber;
+                if (o.oneofs)
+                    d._authAgentObaPhoneNumber = "authAgentObaPhoneNumber";
+            }
             return d;
         };
 
@@ -28131,6 +28246,15 @@ export const proto = $root.proto = (() => {
             values[valuesById[1] = "COMPLETE_AND_NO_MORE_MESSAGE_REMAIN_ON_PRIMARY"] = 1;
             values[valuesById[2] = "COMPLETE_ON_DEMAND_SYNC_BUT_MORE_MSG_REMAIN_ON_PRIMARY"] = 2;
             values[valuesById[3] = "COMPLETE_ON_DEMAND_SYNC_WITH_MORE_MSG_ON_PRIMARY_BUT_NO_ACCESS"] = 3;
+            return values;
+        })();
+
+        Conversation.GroupAppealStatus = (function() {
+            const valuesById = {}, values = Object.create(valuesById);
+            values[valuesById[0] = "NO_APPEAL"] = 0;
+            values[valuesById[1] = "APPEAL_IN_REVIEW"] = 1;
+            values[valuesById[2] = "APPEAL_APPROVED"] = 2;
+            values[valuesById[3] = "APPEAL_REJECTED"] = 3;
             return values;
         })();
 
