@@ -93966,6 +93966,7 @@ export const proto = $root.proto = (() => {
         SyncActionValue.LabelAssociationAction = (function() {
 
             function LabelAssociationAction(p) {
+                this.modelMetaData = [];
                 if (p)
                     for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
                         if (p[ks[i]] != null)
@@ -93973,6 +93974,7 @@ export const proto = $root.proto = (() => {
             }
 
             LabelAssociationAction.prototype.labeled = null;
+            LabelAssociationAction.prototype.modelMetaData = $util.emptyArray;
 
             let $oneOfFields;
 
@@ -93991,6 +93993,10 @@ export const proto = $root.proto = (() => {
                     w = $Writer.create();
                 if (m.labeled != null && Object.hasOwnProperty.call(m, "labeled"))
                     w.uint32(8).bool(m.labeled);
+                if (m.modelMetaData != null && m.modelMetaData.length) {
+                    for (var i = 0; i < m.modelMetaData.length; ++i)
+                        $root.proto.SyncActionValue.ModelMetadata.encode(m.modelMetaData[i], w.uint32(18).fork()).ldelim();
+                }
                 return w;
             };
 
@@ -94005,6 +94011,12 @@ export const proto = $root.proto = (() => {
                     switch (t >>> 3) {
                     case 1: {
                             m.labeled = r.bool();
+                            break;
+                        }
+                    case 2: {
+                            if (!(m.modelMetaData && m.modelMetaData.length))
+                                m.modelMetaData = [];
+                            m.modelMetaData.push($root.proto.SyncActionValue.ModelMetadata.decode(r, r.uint32()));
                             break;
                         }
                     default:
@@ -94022,6 +94034,16 @@ export const proto = $root.proto = (() => {
                 if (d.labeled != null) {
                     m.labeled = Boolean(d.labeled);
                 }
+                if (d.modelMetaData) {
+                    if (!Array.isArray(d.modelMetaData))
+                        throw TypeError(".proto.SyncActionValue.LabelAssociationAction.modelMetaData: array expected");
+                    m.modelMetaData = [];
+                    for (var i = 0; i < d.modelMetaData.length; ++i) {
+                        if (typeof d.modelMetaData[i] !== "object")
+                            throw TypeError(".proto.SyncActionValue.LabelAssociationAction.modelMetaData: object expected");
+                        m.modelMetaData[i] = $root.proto.SyncActionValue.ModelMetadata.fromObject(d.modelMetaData[i]);
+                    }
+                }
                 return m;
             };
 
@@ -94029,10 +94051,19 @@ export const proto = $root.proto = (() => {
                 if (!o)
                     o = {};
                 var d = {};
+                if (o.arrays || o.defaults) {
+                    d.modelMetaData = [];
+                }
                 if (m.labeled != null && m.hasOwnProperty("labeled")) {
                     d.labeled = m.labeled;
                     if (o.oneofs)
                         d._labeled = "labeled";
+                }
+                if (m.modelMetaData && m.modelMetaData.length) {
+                    d.modelMetaData = [];
+                    for (var j = 0; j < m.modelMetaData.length; ++j) {
+                        d.modelMetaData[j] = $root.proto.SyncActionValue.ModelMetadata.toObject(m.modelMetaData[j], o);
+                    }
                 }
                 return d;
             };
@@ -95524,6 +95555,136 @@ export const proto = $root.proto = (() => {
             })();
 
             return MerchantPaymentPartnerAction;
+        })();
+
+        SyncActionValue.ModelMetadata = (function() {
+
+            function ModelMetadata(p) {
+                if (p)
+                    for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null)
+                            this[ks[i]] = p[ks[i]];
+            }
+
+            ModelMetadata.prototype.modelName = null;
+            ModelMetadata.prototype.isLatestModel = null;
+            ModelMetadata.prototype.isDetected = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ModelMetadata.prototype, "_modelName", {
+                get: $util.oneOfGetter($oneOfFields = ["modelName"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ModelMetadata.prototype, "_isLatestModel", {
+                get: $util.oneOfGetter($oneOfFields = ["isLatestModel"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ModelMetadata.prototype, "_isDetected", {
+                get: $util.oneOfGetter($oneOfFields = ["isDetected"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            ModelMetadata.create = function create(properties) {
+                return new ModelMetadata(properties);
+            };
+
+            ModelMetadata.encode = function encode(m, w) {
+                if (!w)
+                    w = $Writer.create();
+                if (m.modelName != null && Object.hasOwnProperty.call(m, "modelName"))
+                    w.uint32(10).string(m.modelName);
+                if (m.isLatestModel != null && Object.hasOwnProperty.call(m, "isLatestModel"))
+                    w.uint32(16).bool(m.isLatestModel);
+                if (m.isDetected != null && Object.hasOwnProperty.call(m, "isDetected"))
+                    w.uint32(24).bool(m.isDetected);
+                return w;
+            };
+
+            ModelMetadata.decode = function decode(r, l, e) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.SyncActionValue.ModelMetadata();
+                while (r.pos < c) {
+                    var t = r.uint32();
+                    if (t === e)
+                        break;
+                    switch (t >>> 3) {
+                    case 1: {
+                            m.modelName = r.string();
+                            break;
+                        }
+                    case 2: {
+                            m.isLatestModel = r.bool();
+                            break;
+                        }
+                    case 3: {
+                            m.isDetected = r.bool();
+                            break;
+                        }
+                    default:
+                        r.skipType(t & 7);
+                        break;
+                    }
+                }
+                return m;
+            };
+
+            ModelMetadata.fromObject = function fromObject(d) {
+                if (d instanceof $root.proto.SyncActionValue.ModelMetadata)
+                    return d;
+                var m = new $root.proto.SyncActionValue.ModelMetadata();
+                if (d.modelName != null) {
+                    m.modelName = String(d.modelName);
+                }
+                if (d.isLatestModel != null) {
+                    m.isLatestModel = Boolean(d.isLatestModel);
+                }
+                if (d.isDetected != null) {
+                    m.isDetected = Boolean(d.isDetected);
+                }
+                return m;
+            };
+
+            ModelMetadata.toObject = function toObject(m, o) {
+                if (!o)
+                    o = {};
+                var d = {};
+                if (m.modelName != null && m.hasOwnProperty("modelName")) {
+                    d.modelName = m.modelName;
+                    if (o.oneofs)
+                        d._modelName = "modelName";
+                }
+                if (m.isLatestModel != null && m.hasOwnProperty("isLatestModel")) {
+                    d.isLatestModel = m.isLatestModel;
+                    if (o.oneofs)
+                        d._isLatestModel = "isLatestModel";
+                }
+                if (m.isDetected != null && m.hasOwnProperty("isDetected")) {
+                    d.isDetected = m.isDetected;
+                    if (o.oneofs)
+                        d._isDetected = "isDetected";
+                }
+                return d;
+            };
+
+            ModelMetadata.prototype.toJSON = function toJSON() {
+                return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            ModelMetadata.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                if (typeUrlPrefix === undefined) {
+                    typeUrlPrefix = "type.googleapis.com";
+                }
+                return typeUrlPrefix + "/proto.SyncActionValue.ModelMetadata";
+            };
+
+            return ModelMetadata;
         })();
 
         SyncActionValue.MusicUserIdAction = (function() {
