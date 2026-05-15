@@ -30,9 +30,14 @@ export const getCompanionWebClientType = ([os, browserName]: WABrowserDescriptio
 		return os === 'Windows' ? CompanionWebClientType.UWP : CompanionWebClientType.ELECTRON
 	}
 
-	// Case-insensitive browser name lookup (mirrors getPlatformId behavior so
-	// `Browsers.macOS('chrome')` resolves to CHROME, not OTHER_WEB_CLIENT).
-	const normalized = browserName?.charAt(0).toUpperCase() + browserName?.slice(1).toLowerCase()
+	// Try exact match first (preserves uppercase abbreviations like `IE`),
+	// then fall back to Title-Case normalization so `Browsers.macOS('chrome')`
+	// still resolves to CHROME instead of OTHER_WEB_CLIENT.
+	if (BROWSER_TO_COMPANION_WEB_CLIENT[browserName]) {
+		return BROWSER_TO_COMPANION_WEB_CLIENT[browserName]
+	}
+
+	const normalized = (browserName?.charAt(0).toUpperCase() ?? '') + (browserName?.slice(1).toLowerCase() ?? '')
 	return BROWSER_TO_COMPANION_WEB_CLIENT[normalized] || CompanionWebClientType.OTHER_WEB_CLIENT
 }
 

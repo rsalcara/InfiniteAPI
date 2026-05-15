@@ -24,9 +24,11 @@ export class USyncUsernameProtocol implements USyncQueryProtocol {
 				return node.content
 			}
 
-			// Username may arrive as Uint8Array/Buffer — decode like other text fields do
-			if (node.content && typeof (node.content as { toString?: () => string }).toString === 'function') {
-				const decoded = (node.content as Uint8Array | Buffer).toString()
+			// Username may arrive as Uint8Array/Buffer — decode as UTF-8.
+			// (Plain Uint8Array.prototype.toString() returns comma-separated byte
+			// values like "97,98", not the actual text — use Buffer or TextDecoder.)
+			if (node.content instanceof Uint8Array) {
+				const decoded = Buffer.from(node.content).toString('utf8')
 				return decoded.length > 0 ? decoded : null
 			}
 		}
