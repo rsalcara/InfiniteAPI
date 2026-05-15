@@ -1519,7 +1519,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		const actingParticipantLid = fullNode.attrs.participant
 		const actingParticipantPn = fullNode.attrs.participant_pn
-		const actingParticipantUsername = fullNode.attrs.participant_username
+		const actingParticipantUsername = fullNode.attrs.participant_username || fullNode.attrs.username
 
 		const affectedParticipantLid = getBinaryNodeChild(child, 'participant')?.attrs?.jid || actingParticipantLid!
 		const affectedParticipantPn = getBinaryNodeChild(child, 'participant')?.attrs?.phone_number || actingParticipantPn!
@@ -2231,7 +2231,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							fromMe,
 							participant: node.attrs.participant,
 							participantAlt,
-							participantUsername: node.attrs.participant_username,
+							participantUsername: node.attrs.participant_username || node.attrs.username,
 							addressingMode,
 							id: node.attrs.id,
 							...(msg.key || {})

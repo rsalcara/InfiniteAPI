@@ -39,14 +39,14 @@ export const buildPairingQRData = (
 	noiseKeyB64: string,
 	identityKeyB64: string,
 	advB64: string,
-	browser: WABrowserDescription
+	_browser: WABrowserDescription
 ): string => {
-	return [
-		'https://wa.me/settings/linked_devices#',
-		ref,
-		noiseKeyB64,
-		identityKeyB64,
-		advB64,
-		getCompanionPlatformId(browser)
-	].join(',')
+	// InfiniteAPI keeps the legacy 4-field QR payload (`<ref>,<noise>,<identity>,<adv>`)
+	// because:
+	// 1. The WhatsApp app QR scanner accepts the bare comma-joined form without the URL prefix.
+	// 2. The upstream `URL#<...>,<platformId>` format produced `linked_devices#,<ref>` (extra
+	//    leading comma after the fragment) and emitted platform 9 for `Browsers.android()`,
+	//    breaking pair-code companions that must declare Chrome (1).
+	// The browser argument is preserved for API parity with upstream.
+	return [ref, noiseKeyB64, identityKeyB64, advB64].join(',')
 }

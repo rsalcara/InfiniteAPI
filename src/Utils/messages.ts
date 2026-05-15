@@ -239,7 +239,8 @@ export const prepareWAMessageMedia = async (
 	const requiresWaveformProcessing =
 		mediaType === 'audio' && uploadData.ptt === true && typeof uploadData.waveform === 'undefined'
 	const requiresAudioBackground = options.backgroundColor && mediaType === 'audio' && uploadData.ptt === true
-	const requiresOriginalForSomeProcessing = requiresDurationComputation || requiresThumbnailComputation
+	const requiresOriginalForSomeProcessing =
+		requiresDurationComputation || requiresThumbnailComputation || requiresWaveformProcessing
 	const { mediaKey, encFilePath, originalFilePath, fileEncSha256, fileSha256, fileLength } = await encryptedStream(
 		uploadData.media,
 		options.mediaTypeOverride || mediaType,
@@ -1721,11 +1722,6 @@ export const generateWAMessageContent = async (
 				m.pollCreationMessage = pollCreationMessage
 			}
 		}
-	} else if (hasNonNullishProperty(message, 'album')) {
-		m.albumMessage = {
-			expectedImageCount: message.album.expectedImageCount,
-			expectedVideoCount: message.album.expectedVideoCount
-		}
 	} else if (hasNonNullishProperty(message, 'sharePhoneNumber')) {
 		m.protocolMessage = {
 			type: proto.Message.ProtocolMessage.Type.SHARE_PHONE_NUMBER
@@ -1764,18 +1760,24 @@ export const generateWAMessageContent = async (
 		(hasOptionalProperty(message, 'mentions') && message.mentions?.length) ||
 		(hasOptionalProperty(message, 'mentionAll') && message.mentionAll)
 	) {
-		const messageType = Object.keys(m)[0] as Extract<keyof proto.IMessage, MessageWithContextInfo>
+		// Unwrap viewOnceMessage to reach the actual content node that carries contextInfo
+		// (Object.keys(m)[0] would resolve to 'viewOnceMessage' otherwise and mentions would be lost)
+		const target =
+			'viewOnceMessage' in m && m.viewOnceMessage?.message ? m.viewOnceMessage.message : m
+		const messageType = Object.keys(target)[0] as Extract<keyof proto.IMessage, MessageWithContextInfo>
 		if (messageType) {
-			const key = m[messageType]
-			if (key && 'contextInfo' in key) {
-				key.contextInfo = key.contextInfo || {}
+			const key = target[messageType]
+			if (key) {
+				const contextInfo = ('contextInfo' in key && key.contextInfo) || {}
 				if (message.mentions?.length) {
-					key.contextInfo.mentionedJid = message.mentions
+					contextInfo.mentionedJid = message.mentions
 				}
 
 				if (message.mentionAll) {
-					key.contextInfo.nonJidMentions = 1
+					contextInfo.nonJidMentions = 1
 				}
+
+				;(key as { contextInfo?: proto.IContextInfo }).contextInfo = contextInfo
 			}
 		}
 	}

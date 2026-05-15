@@ -748,10 +748,6 @@ export type AnyRegularMessageContent = (
 	  } & Mentionable &
 			Contextable &
 			Editable)
-	| ({
-			album: AlbumMessageOptions
-	  } & Contextable &
-			Mentionable)
 	| {
 			contacts: {
 				displayName?: string
