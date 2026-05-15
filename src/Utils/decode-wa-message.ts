@@ -249,7 +249,9 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 		id: msgId,
 		participant,
 		participantAlt: isJidGroup(chatId) ? addressingContext.senderAlt : undefined,
-		participantUsername: stanza.attrs.participant ? stanza.attrs.participant_username : undefined,
+		participantUsername: stanza.attrs.participant
+			? stanza.attrs.participant_username || stanza.attrs.username
+			: undefined,
 		addressingMode: addressingContext.addressingMode,
 		...(msgType === 'newsletter' && stanza.attrs.server_id ? { server_id: stanza.attrs.server_id } : {})
 	}

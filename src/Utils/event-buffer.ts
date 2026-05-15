@@ -970,11 +970,13 @@ function append<E extends BufferableEvent>(
 
 			data.historySets.empty = false
 			data.historySets.syncType = eventData.syncType
-			// Preserve the pastParticipants distinction between "absent" (undefined)
+			// Preserve the pastParticipants distinction between "absent" (undefined/null)
 			// and "explicitly empty" ([]). The previous `?.length` guard collapsed
 			// an explicitly empty array into undefined after buffering, while
 			// processHistoryMessage still emits it unbuffered.
-			if (eventData.pastParticipants !== undefined) {
+			// Array.isArray also handles the `null` case that the messaging-history.set
+			// event allows (a non-undefined non-array value would otherwise throw on `for…of`).
+			if (Array.isArray(eventData.pastParticipants)) {
 				const merged = new Map<string, proto.IPastParticipants>()
 				const sigOf = (p: proto.IPastParticipant) => `${p.userJid || ''}:${p.leaveTs || ''}:${p.leaveReason || ''}`
 				const ingest = (entry: proto.IPastParticipants) => {

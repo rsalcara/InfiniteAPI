@@ -253,6 +253,12 @@ export type AnyMediaMessageContent = (
 			ptt?: boolean
 			/** optionally tell the duration of the audio */
 			seconds?: number
+			/**
+			 * Optional pre-computed PTT waveform (64 bytes, values 0-100).
+			 * When provided, the library skips waveform extraction; otherwise it
+			 * extracts the waveform from the source audio automatically.
+			 */
+			waveform?: Uint8Array
 	  }
 	| ({
 			sticker: WAMediaUpload
