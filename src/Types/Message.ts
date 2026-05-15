@@ -221,13 +221,6 @@ export type EventMessageOptions = {
 	messageSecret?: Uint8Array<ArrayBufferLike>
 }
 
-export type AlbumMessageOptions = {
-	/** Number of images expected in the album */
-	expectedImageCount?: number
-	/** Number of videos expected in the album */
-	expectedVideoCount?: number
-}
-
 type SharePhoneNumber = {
 	sharePhoneNumber: boolean
 }
@@ -648,6 +641,10 @@ export type AlbumMessageOptions = {
 	 * @default true
 	 */
 	continueOnFailure?: boolean
+	/** Number of images expected in the album (sent in the album header proto) */
+	expectedImageCount?: number
+	/** Number of videos expected in the album (sent in the album header proto) */
+	expectedVideoCount?: number
 }
 
 /**
