@@ -13,32 +13,31 @@ export enum CompanionWebClientType {
 	OTHER_WEB_CLIENT = 9
 }
 
-const BROWSER_TO_COMPANION_WEB_CLIENT: Record<string, CompanionWebClientType> = {
-	Chrome: CompanionWebClientType.CHROME,
-	Edge: CompanionWebClientType.EDGE,
-	Firefox: CompanionWebClientType.FIREFOX,
-	IE: CompanionWebClientType.IE,
-	Opera: CompanionWebClientType.OPERA,
-	Safari: CompanionWebClientType.SAFARI,
+// Use a Map (not a plain object) to avoid prototype-pollution lookups
+// where browser names like `toString` or `constructor` would return inherited
+// function values instead of CompanionWebClientType. Keys are lowercased and
+// the input is lowercased on lookup to handle every casing (Chrome/chrome/CHROME,
+// IE/ie/Ie/iE) consistently — matching the normalize-then-lookup pattern used by
+// the existing browser-utils helper `getPlatformId`.
+const BROWSER_TO_COMPANION_WEB_CLIENT = new Map<string, CompanionWebClientType>([
+	['chrome', CompanionWebClientType.CHROME],
+	['edge', CompanionWebClientType.EDGE],
+	['firefox', CompanionWebClientType.FIREFOX],
+	['ie', CompanionWebClientType.IE],
+	['opera', CompanionWebClientType.OPERA],
+	['safari', CompanionWebClientType.SAFARI],
 	// Android must declare Chrome (1) for pair-code companions; see the matching
 	// `pairPlatformId` override in src/Socket/socket.ts.
-	Android: CompanionWebClientType.CHROME
-}
+	['android', CompanionWebClientType.CHROME]
+])
 
 export const getCompanionWebClientType = ([os, browserName]: WABrowserDescription): CompanionWebClientType => {
 	if (browserName === 'Desktop') {
 		return os === 'Windows' ? CompanionWebClientType.UWP : CompanionWebClientType.ELECTRON
 	}
 
-	// Try exact match first (preserves uppercase abbreviations like `IE`),
-	// then fall back to Title-Case normalization so `Browsers.macOS('chrome')`
-	// still resolves to CHROME instead of OTHER_WEB_CLIENT.
-	if (BROWSER_TO_COMPANION_WEB_CLIENT[browserName]) {
-		return BROWSER_TO_COMPANION_WEB_CLIENT[browserName]
-	}
-
-	const normalized = (browserName?.charAt(0).toUpperCase() ?? '') + (browserName?.slice(1).toLowerCase() ?? '')
-	return BROWSER_TO_COMPANION_WEB_CLIENT[normalized] || CompanionWebClientType.OTHER_WEB_CLIENT
+	const key = typeof browserName === 'string' ? browserName.trim().toLowerCase() : ''
+	return BROWSER_TO_COMPANION_WEB_CLIENT.get(key) ?? CompanionWebClientType.OTHER_WEB_CLIENT
 }
 
 export const getCompanionPlatformId = (browser: WABrowserDescription): string => {

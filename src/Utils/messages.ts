@@ -236,8 +236,23 @@ export const prepareWAMessageMedia = async (
 	const requiresDurationComputation = mediaType === 'audio' && typeof uploadData.seconds === 'undefined'
 	const requiresThumbnailComputation =
 		(mediaType === 'image' || mediaType === 'video') && typeof uploadData['jpegThumbnail'] === 'undefined'
+	// WhatsApp PTT waveforms are 64 unsigned bytes (0-100 each). When the caller
+	// provides a malformed waveform (wrong length or out-of-range values), we
+	// regenerate it from the original audio instead of sending bogus metadata.
+	const isValidWaveform = (w: unknown): boolean => {
+		if (!(w instanceof Uint8Array) || w.length !== 64) return false
+		for (let i = 0; i < 64; i++) {
+			const v = w[i]!
+			if (v > 100) return false
+		}
+
+		return true
+	}
+
 	const requiresWaveformProcessing =
-		mediaType === 'audio' && uploadData.ptt === true && typeof uploadData.waveform === 'undefined'
+		mediaType === 'audio' &&
+		uploadData.ptt === true &&
+		(typeof uploadData.waveform === 'undefined' || !isValidWaveform(uploadData.waveform))
 	const requiresAudioBackground = options.backgroundColor && mediaType === 'audio' && uploadData.ptt === true
 	const requiresOriginalForSomeProcessing =
 		requiresDurationComputation || requiresThumbnailComputation || requiresWaveformProcessing

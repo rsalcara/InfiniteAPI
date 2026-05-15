@@ -2226,7 +2226,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					if (msg) {
 						const fromMe = areJidsSameUser(node.attrs.participant || remoteJid, authState.creds.me!.id)
 						const { senderAlt: participantAlt, addressingMode } = extractAddressingContext(node)
-						msg.key = {
+						const extendedKey: WAMessageKey = {
 							remoteJid,
 							fromMe,
 							participant: node.attrs.participant,
@@ -2236,10 +2236,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							id: node.attrs.id,
 							...(msg.key || {})
 						}
+						msg.key = extendedKey
 						msg.participant ??= node.attrs.participant
 						msg.messageTimestamp = +node.attrs.t!
 
+						// proto.WebMessageInfo.fromObject only copies the WAProto schema
+						// fields (remoteJid, fromMe, id, participant) and drops our TS-only
+						// extensions (participantAlt, participantUsername, addressingMode,
+						// remoteJidUsername, etc.). Reattach the full key after conversion.
 						const fullMsg = proto.WebMessageInfo.fromObject(msg) as WAMessage
+						fullMsg.key = { ...fullMsg.key, ...extendedKey }
 						await upsertMessage(fullMsg, 'append')
 					}
 				})

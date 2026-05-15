@@ -21,29 +21,18 @@ export class USyncContactProtocol implements USyncQueryProtocol {
 			}
 		}
 
-		if (user.username) {
-			return {
-				tag: 'contact',
-				attrs: {
-					username: user.username,
-					...(user.usernameKey ? { pin: user.usernameKey } : {}),
-					...(user.lid ? { lid: user.lid } : {})
-				}
-			}
-		}
-
-		if (user.type) {
-			return {
-				tag: 'contact',
-				attrs: {
-					type: user.type
-				}
-			}
-		}
+		// username/type/lid are combinable: a username lookup may also require a
+		// contact `type` (e.g. INBOUND). Merging keeps all advertised fields on a
+		// single contact stanza instead of letting username silently drop `type`.
+		const attrs: BinaryNode['attrs'] = {}
+		if (user.username) attrs.username = user.username
+		if (user.usernameKey) attrs.pin = user.usernameKey
+		if (user.lid) attrs.lid = user.lid
+		if (user.type) attrs.type = user.type
 
 		return {
 			tag: 'contact',
-			attrs: {}
+			attrs
 		}
 	}
 
