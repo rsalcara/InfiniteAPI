@@ -19,7 +19,10 @@ const BROWSER_TO_COMPANION_WEB_CLIENT: Record<string, CompanionWebClientType> = 
 	Firefox: CompanionWebClientType.FIREFOX,
 	IE: CompanionWebClientType.IE,
 	Opera: CompanionWebClientType.OPERA,
-	Safari: CompanionWebClientType.SAFARI
+	Safari: CompanionWebClientType.SAFARI,
+	// Android must declare Chrome (1) for pair-code companions; see the matching
+	// `pairPlatformId` override in src/Socket/socket.ts.
+	Android: CompanionWebClientType.CHROME
 }
 
 export const getCompanionWebClientType = ([os, browserName]: WABrowserDescription): CompanionWebClientType => {
@@ -27,7 +30,10 @@ export const getCompanionWebClientType = ([os, browserName]: WABrowserDescriptio
 		return os === 'Windows' ? CompanionWebClientType.UWP : CompanionWebClientType.ELECTRON
 	}
 
-	return BROWSER_TO_COMPANION_WEB_CLIENT[browserName] || CompanionWebClientType.OTHER_WEB_CLIENT
+	// Case-insensitive browser name lookup (mirrors getPlatformId behavior so
+	// `Browsers.macOS('chrome')` resolves to CHROME, not OTHER_WEB_CLIENT).
+	const normalized = browserName?.charAt(0).toUpperCase() + browserName?.slice(1).toLowerCase()
+	return BROWSER_TO_COMPANION_WEB_CLIENT[normalized] || CompanionWebClientType.OTHER_WEB_CLIENT
 }
 
 export const getCompanionPlatformId = (browser: WABrowserDescription): string => {
@@ -39,7 +45,7 @@ export const buildPairingQRData = (
 	noiseKeyB64: string,
 	identityKeyB64: string,
 	advB64: string,
-	_browser: WABrowserDescription
+	browser: WABrowserDescription
 ): string => {
 	// InfiniteAPI keeps the legacy 4-field QR payload (`<ref>,<noise>,<identity>,<adv>`)
 	// because:
@@ -48,5 +54,6 @@ export const buildPairingQRData = (
 	//    leading comma after the fragment) and emitted platform 9 for `Browsers.android()`,
 	//    breaking pair-code companions that must declare Chrome (1).
 	// The browser argument is preserved for API parity with upstream.
+	void browser
 	return [ref, noiseKeyB64, identityKeyB64, advB64].join(',')
 }

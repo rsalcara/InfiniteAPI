@@ -1760,11 +1760,14 @@ export const generateWAMessageContent = async (
 		(hasOptionalProperty(message, 'mentions') && message.mentions?.length) ||
 		(hasOptionalProperty(message, 'mentionAll') && message.mentionAll)
 	) {
-		// Unwrap viewOnceMessage to reach the actual content node that carries contextInfo
-		// (Object.keys(m)[0] would resolve to 'viewOnceMessage' otherwise and mentions would be lost)
+		// Unwrap viewOnceMessage to reach the actual content node that carries contextInfo.
+		// Object.keys(m)[0] would otherwise resolve to 'viewOnceMessage' (or 'messageContextInfo'
+		// if reporting tokens were attached first), and mentions would be lost on the wrapper.
 		const target =
 			'viewOnceMessage' in m && m.viewOnceMessage?.message ? m.viewOnceMessage.message : m
-		const messageType = Object.keys(target)[0] as Extract<keyof proto.IMessage, MessageWithContextInfo>
+		const messageType = (Object.keys(target).find(
+			k => k !== 'messageContextInfo'
+		) || Object.keys(target)[0]) as Extract<keyof proto.IMessage, MessageWithContextInfo>
 		if (messageType) {
 			const key = target[messageType]
 			if (key) {

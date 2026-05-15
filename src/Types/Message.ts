@@ -641,10 +641,6 @@ export type AlbumMessageOptions = {
 	 * @default true
 	 */
 	continueOnFailure?: boolean
-	/** Number of images expected in the album (sent in the album header proto) */
-	expectedImageCount?: number
-	/** Number of videos expected in the album (sent in the album header proto) */
-	expectedVideoCount?: number
 }
 
 /**
