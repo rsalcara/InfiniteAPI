@@ -675,7 +675,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 									snapshot,
 									getCachedAppStateSyncKey,
 									initialVersionMap[name],
-									appStateMacVerification.snapshot
+									appStateMacVerification.snapshot,
+									logger
 								)
 								states[name] = newState
 								Object.assign(globalMutationMap, mutationMap)

@@ -270,18 +270,37 @@ export const decodeSyncdMutations = async (
 			throw new Boom('Missing index blob in record', { statusCode: 500 })
 		}
 
-		const key = await getKey(keyIdBuf)
+		let key: ReturnType<typeof mutationKeys>
+		try {
+			key = await getKey(keyIdBuf)
+		} catch (err) {
+			// Missing-key errors must propagate so the orchestrator can park the
+			// collection (Blocked) and retry when APP_STATE_SYNC_KEY_SHARE arrives.
+			// Any other failure is treated as record-level corruption — skip it
+			// instead of aborting the whole batch.
+			if (isMissingKeyError(err)) throw err
+			continue
+		}
+
 		const content = Buffer.from(recordBlob)
 		const encContent = content.slice(0, -32)
 		const ogValueMac = content.slice(-32)
 		if (validateMacs) {
 			const contentHmac = generateMac(operation, encContent, keyIdBuf, key.valueMacKey)
 			if (Buffer.compare(contentHmac, ogValueMac) !== 0) {
-				throw new Boom('HMAC content verification failed')
+				// HMAC verification failed — skip this record instead of aborting
+				continue
 			}
 		}
 
-		const result = aesDecrypt(encContent, key.valueEncryptionKey)
+		let result: Buffer
+		try {
+			result = aesDecrypt(encContent, key.valueEncryptionKey)
+		} catch {
+			// AES decrypt failed — skip this record instead of aborting
+			continue
+		}
+
 		const syncAction = proto.SyncActionData.decode(result)
 
 		const syncActionIndex = syncAction.index
@@ -471,7 +490,8 @@ export const decodeSyncdSnapshot = async (
 	snapshot: proto.ISyncdSnapshot,
 	getAppStateSyncKey: FetchAppStateSyncKey,
 	minimumVersionNumber: number | undefined,
-	validateMacs = true
+	validateMacs = true,
+	logger?: ILogger
 ) => {
 	const newState = newLTHashState()
 
@@ -532,7 +552,15 @@ export const decodeSyncdSnapshot = async (
 		}
 
 		if (Buffer.compare(snapshotMac, computedSnapshotMac) !== 0) {
-			throw new Boom(`failed to verify LTHash at ${newState.version} of ${name} from snapshot`)
+			// LTHash verification may fail when decodeSyncdMutations skipped undecryptable
+			// records (poisoned server-side snapshot); the aggregate client hash diverges
+			// from the server-computed mac. Fall through with a warning so the session stays
+			// alive with partial state, symmetric to how decodePatches handles its own
+			// LTHash mismatch a few lines below.
+			logger?.warn(
+				{ name, version: newState.version },
+				'LTHash verification failed on snapshot, continuing with partial state'
+			)
 		}
 	}
 
@@ -578,19 +606,29 @@ export const decodePatches = async (
 		newState.version = patchVersion
 		const shouldMutate = typeof minimumVersionNumber === 'undefined' || patchVersion > minimumVersionNumber
 
-		const decodeResult = await decodeSyncdPatch(
-			syncd,
-			name,
-			newState,
-			getAppStateSyncKey,
-			shouldMutate
-				? mutation => {
-						const index = mutation.syncAction.index?.toString()
-						mutationMap[index!] = mutation
-					}
-				: () => {},
-			true
-		)
+		let decodeResult: { hash: Buffer; indexValueMap: LTHashState['indexValueMap'] }
+		try {
+			decodeResult = await decodeSyncdPatch(
+				syncd,
+				name,
+				newState,
+				getAppStateSyncKey,
+				shouldMutate
+					? mutation => {
+							const index = mutation.syncAction.index?.toString()
+							mutationMap[index!] = mutation
+						}
+					: () => {},
+				validateMacs
+			)
+		} catch (err) {
+			// Missing-key errors must surface so the orchestrator can park the
+			// collection (Blocked) and retry when APP_STATE_SYNC_KEY_SHARE arrives.
+			// Other patch-level failures are treated as recoverable: skip and continue.
+			if (isMissingKeyError(err)) throw err
+			logger?.warn({ name, version: patchVersion, error: (err as Error).message }, 'failed to decode patch, skipping')
+			continue
+		}
 
 		newState.hash = decodeResult.hash
 		newState.indexValueMap = decodeResult.indexValueMap
@@ -620,7 +658,10 @@ export const decodePatches = async (
 			}
 
 			if (Buffer.compare(snapshotMac, computedSnapshotMac) !== 0) {
-				throw new Boom(`failed to verify LTHash at ${newState.version} of ${name}`)
+				// LTHash mismatch on this patch — likely cascading from earlier skipped
+				// records. Stop processing further patches and return partial state.
+				logger?.warn({ name, version: newState.version }, 'LTHash verification failed, skipping remaining patches')
+				break
 			}
 		}
 
