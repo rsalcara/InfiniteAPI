@@ -344,27 +344,31 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		let data: any
 		try {
-			// Narrow payload content type before Buffer/JSON.parse:
-			// content can be string, Uint8Array, Buffer, or (defensively) an unexpected
-			// array of BinaryNodes. Plain .toString() would silently produce garbage on
-			// some shapes; this guards each case explicitly.
+			// Narrow payload content type before JSON.parse:
+			// content can be string (UTF-16 internally), Uint8Array, Buffer, or
+			// (defensively) an unexpected array of BinaryNodes.
+			//
+			// IMPORTANT: when content is already a JS string, parse it directly.
+			// `Buffer.from(str, 'binary')` would treat it as latin1, corrupting any
+			// non-ASCII payload (newsletter names with accents/emojis, etc.).
 			const payloadContent = mexNode.content
 			if (Array.isArray(payloadContent)) {
 				logger.warn({ mexNode }, 'Invalid mex newsletter notification payload format')
 				return
 			}
 
-			const contentBuf =
-				typeof payloadContent === 'string'
-					? Buffer.from(payloadContent, 'binary')
-					: Buffer.from(payloadContent)
-			data = JSON.parse(contentBuf.toString())
+			const jsonText =
+				typeof payloadContent === 'string' ? payloadContent : Buffer.from(payloadContent).toString('utf8')
+			data = JSON.parse(jsonText)
 		} catch (error) {
 			logger.error({ err: error, node }, 'Failed to parse mex newsletter notification')
 			return
 		}
 
-		const operation = data?.operation
+		// Some mex payloads (e.g. xwa2_notify_linked_profiles) declare the operation
+		// in the node `op_name` attribute rather than inside the JSON body. Without
+		// this fallback the `!operation` guard below would silently drop them.
+		const operation = data?.operation ?? mexNode.attrs?.op_name
 		let updates = data?.updates
 		// xwa2_notify_linked_profiles payloads arrive with a different shape; normalize
 		// into the same `updates` array consumed by the switch below.
