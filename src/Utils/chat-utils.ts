@@ -292,8 +292,14 @@ export const decodeSyncdMutations = async (
 		let result: Buffer
 		try {
 			result = aesDecrypt(encContent, key.valueEncryptionKey)
-		} catch {
-			// AES decrypt failed — skip this record instead of aborting
+		} catch (err) {
+			// AES decrypt failed. Skipping is only safe when validateMacs is on:
+			// the outer LTHash MAC verify (decodeSyncdSnapshot / decodePatches)
+			// will then catch the aggregate divergence and trigger orchestrator
+			// recovery. With validateMacs=false (InfiniteAPI default), no outer
+			// verify runs — silently skipping would persist a divergent state
+			// that cannot be recovered, so rethrow.
+			if (!validateMacs) throw err
 			continue
 		}
 
@@ -486,8 +492,7 @@ export const decodeSyncdSnapshot = async (
 	snapshot: proto.ISyncdSnapshot,
 	getAppStateSyncKey: FetchAppStateSyncKey,
 	minimumVersionNumber: number | undefined,
-	validateMacs = true,
-	logger?: ILogger
+	validateMacs = true
 ) => {
 	const newState = newLTHashState()
 
