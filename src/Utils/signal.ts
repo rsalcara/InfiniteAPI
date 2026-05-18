@@ -87,6 +87,62 @@ export const xmppPreKey = (pair: KeyPair, id: number): BinaryNode => ({
 	]
 })
 
+const isValidUInt = (n: number | undefined): n is number => typeof n === 'number' && Number.isInteger(n)
+
+/**
+ * Extract a Signal E2E session bundle from a `<receipt type="retry">` stanza.
+ *
+ * When WhatsApp asks us to resend a message it can attach a fresh `<keys>` prekey
+ * bundle so the recipient is sure to have a matching session. Returning `null`
+ * means "no usable bundle" — the caller should fall back to the usual prekey
+ * IQ fetch path. Every nested field is validated (type byte, expected lengths,
+ * registration id) so a malformed receipt never reaches the SessionBuilder.
+ */
+export const extractE2ESessionFromRetryReceipt = (receipt: BinaryNode) => {
+	const keysNode = getBinaryNodeChild(receipt, 'keys')
+	if (!keysNode) return null
+
+	const typeBuf = getBinaryNodeChildBuffer(keysNode, 'type')
+	if (!typeBuf || typeBuf.length !== 1 || typeBuf[0] !== KEY_BUNDLE_TYPE[0]) return null
+
+	const identity = getBinaryNodeChildBuffer(keysNode, 'identity')
+	const skey = getBinaryNodeChild(keysNode, 'skey')
+	if (!identity || identity.length !== 32 || !skey) return null
+
+	const registrationId = getBinaryNodeChildUInt(receipt, 'registration', 4)
+	if (!isValidUInt(registrationId)) return null
+
+	const signedPubKey = getBinaryNodeChildBuffer(skey, 'value')
+	const signedSig = getBinaryNodeChildBuffer(skey, 'signature')
+	const signedKeyId = getBinaryNodeChildUInt(skey, 'id', 3)
+	if (!signedPubKey || signedPubKey.length !== 32 || !signedSig || !isValidUInt(signedKeyId)) {
+		return null
+	}
+
+	const preKeyNode = getBinaryNodeChild(keysNode, 'key')
+	let preKey: { keyId: number; publicKey: Uint8Array } | undefined
+	if (preKeyNode) {
+		const preKeyPub = getBinaryNodeChildBuffer(preKeyNode, 'value')
+		const preKeyId = getBinaryNodeChildUInt(preKeyNode, 'id', 3)
+		if (!preKeyPub || preKeyPub.length !== 32 || !isValidUInt(preKeyId)) {
+			return null
+		}
+
+		preKey = { keyId: preKeyId, publicKey: generateSignalPubKey(preKeyPub) }
+	}
+
+	return {
+		registrationId,
+		identityKey: generateSignalPubKey(identity),
+		signedPreKey: {
+			keyId: signedKeyId,
+			publicKey: generateSignalPubKey(signedPubKey),
+			signature: signedSig
+		},
+		preKey
+	}
+}
+
 export const parseAndInjectE2ESessions = async (node: BinaryNode, repository: SignalRepositoryWithLIDStore) => {
 	const extractKey = (key: BinaryNode) =>
 		key
