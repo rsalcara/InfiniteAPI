@@ -270,17 +270,13 @@ export const decodeSyncdMutations = async (
 			throw new Boom('Missing index blob in record', { statusCode: 500 })
 		}
 
-		let key: ReturnType<typeof mutationKeys>
-		try {
-			key = await getKey(keyIdBuf)
-		} catch (err) {
-			// Missing-key errors must propagate so the orchestrator can park the
-			// collection (Blocked) and retry when APP_STATE_SYNC_KEY_SHARE arrives.
-			// Any other failure is treated as record-level corruption — skip it
-			// instead of aborting the whole batch.
-			if (isMissingKeyError(err)) throw err
-			continue
-		}
+		// Let getKey() errors propagate normally. The two expected throws are:
+		//   1. `isMissingKey: true` — orchestrator parks the collection (Blocked)
+		//      and retries when APP_STATE_SYNC_KEY_SHARE arrives.
+		//   2. Anything else (auth-store I/O, malformed keyData) — must NOT be
+		//      silently swallowed as record corruption; the orchestrator's
+		//      MAX_SYNC_ATTEMPTS + reset-to-null path handles persistent failures.
+		const key = await getKey(keyIdBuf)
 
 		const content = Buffer.from(recordBlob)
 		const encContent = content.slice(0, -32)
@@ -552,15 +548,12 @@ export const decodeSyncdSnapshot = async (
 		}
 
 		if (Buffer.compare(snapshotMac, computedSnapshotMac) !== 0) {
-			// LTHash verification may fail when decodeSyncdMutations skipped undecryptable
-			// records (poisoned server-side snapshot); the aggregate client hash diverges
-			// from the server-computed mac. Fall through with a warning so the session stays
-			// alive with partial state, symmetric to how decodePatches handles its own
-			// LTHash mismatch a few lines below.
-			logger?.warn(
-				{ name, version: newState.version },
-				'LTHash verification failed on snapshot, continuing with partial state'
-			)
+			// Throw so the resyncAppState orchestrator catches this, treats it as
+			// `isAppStateSyncIrrecoverable` (after MAX_SYNC_ATTEMPTS), and either
+			// forces a fresh snapshot retry or resets the persisted version to
+			// null. Returning partial state with a diverged hash would silently
+			// persist an unverifiable high-water mark and break subsequent patches.
+			throw new Boom(`failed to verify LTHash at ${newState.version} of ${name} from snapshot`)
 		}
 	}
 
@@ -606,29 +599,26 @@ export const decodePatches = async (
 		newState.version = patchVersion
 		const shouldMutate = typeof minimumVersionNumber === 'undefined' || patchVersion > minimumVersionNumber
 
-		let decodeResult: { hash: Buffer; indexValueMap: LTHashState['indexValueMap'] }
-		try {
-			decodeResult = await decodeSyncdPatch(
-				syncd,
-				name,
-				newState,
-				getAppStateSyncKey,
-				shouldMutate
-					? mutation => {
-							const index = mutation.syncAction.index?.toString()
-							mutationMap[index!] = mutation
-						}
-					: () => {},
-				validateMacs
-			)
-		} catch (err) {
-			// Missing-key errors must surface so the orchestrator can park the
-			// collection (Blocked) and retry when APP_STATE_SYNC_KEY_SHARE arrives.
-			// Other patch-level failures are treated as recoverable: skip and continue.
-			if (isMissingKeyError(err)) throw err
-			logger?.warn({ name, version: patchVersion, error: (err as Error).message }, 'failed to decode patch, skipping')
-			continue
-		}
+		// Let decodeSyncdPatch errors propagate. The outer resyncAppState
+		// orchestrator (Socket/chats.ts) catches them and routes to:
+		//   - isMissingKeyError → forceSnapshot retry (or Blocked after MAX attempts)
+		//   - isAppStateSyncIrrecoverable → reset version to null + give up
+		//   - else → forceSnapshot retry
+		// Soft-failing here would advance newState.version and persist a state
+		// the orchestrator never gets to retry from.
+		const decodeResult = await decodeSyncdPatch(
+			syncd,
+			name,
+			newState,
+			getAppStateSyncKey,
+			shouldMutate
+				? mutation => {
+						const index = mutation.syncAction.index?.toString()
+						mutationMap[index!] = mutation
+					}
+				: () => {},
+			validateMacs
+		)
 
 		newState.hash = decodeResult.hash
 		newState.indexValueMap = decodeResult.indexValueMap
@@ -658,10 +648,10 @@ export const decodePatches = async (
 			}
 
 			if (Buffer.compare(snapshotMac, computedSnapshotMac) !== 0) {
-				// LTHash mismatch on this patch — likely cascading from earlier skipped
-				// records. Stop processing further patches and return partial state.
-				logger?.warn({ name, version: newState.version }, 'LTHash verification failed, skipping remaining patches')
-				break
+				// Same rationale as the snapshot MAC verify above — throw so the
+				// orchestrator triggers forceSnapshot retry instead of persisting
+				// a known-divergent hash.
+				throw new Boom(`failed to verify LTHash at ${newState.version} of ${name}`)
 			}
 		}
 
