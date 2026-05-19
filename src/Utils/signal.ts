@@ -107,7 +107,11 @@ export const extractE2ESessionFromRetryReceipt = (receipt: BinaryNode) => {
 
 	const identity = getBinaryNodeChildBuffer(keysNode, 'identity')
 	const skey = getBinaryNodeChild(keysNode, 'skey')
-	if (!identity || identity.length !== 32 || !skey) return null
+	// Identity / signed pre-key value / pre-key value may arrive as raw 32 bytes
+	// or already-prefixed 33 bytes (`generateSignalPubKey` handles both forms —
+	// see Utils/crypto.ts:9-11, and the parseAndInjectE2ESessions test uses 33).
+	// Reject only when neither length matches.
+	if (!identity || (identity.length !== 32 && identity.length !== 33) || !skey) return null
 
 	// Strict length check: <registration> must be exactly 4 bytes. Without this,
 	// `getBinaryNodeChildUInt` happily decodes the first 4 bytes of an overlong
@@ -120,9 +124,16 @@ export const extractE2ESessionFromRetryReceipt = (receipt: BinaryNode) => {
 
 	const signedPubKey = getBinaryNodeChildBuffer(skey, 'value')
 	const signedSig = getBinaryNodeChildBuffer(skey, 'signature')
-	// Ed25519/Curve25519 signatures are 64 bytes; reject anything else (including
-	// the empty buffer that `getBinaryNodeChildBuffer` would otherwise pass through).
-	if (!signedPubKey || signedPubKey.length !== 32 || !signedSig || signedSig.length !== 64) {
+	// Accept both 32-byte raw and 33-byte already-prefixed pub keys (see above).
+	// Signatures are always exactly 64 bytes (Ed25519/Curve25519) — reject anything
+	// else, including the empty buffer that `getBinaryNodeChildBuffer` would
+	// otherwise pass through as truthy.
+	if (
+		!signedPubKey ||
+		(signedPubKey.length !== 32 && signedPubKey.length !== 33) ||
+		!signedSig ||
+		signedSig.length !== 64
+	) {
 		return null
 	}
 
@@ -136,7 +147,13 @@ export const extractE2ESessionFromRetryReceipt = (receipt: BinaryNode) => {
 	if (preKeyNode) {
 		const preKeyPub = getBinaryNodeChildBuffer(preKeyNode, 'value')
 		const preKeyIdBuf = getBinaryNodeChildBuffer(preKeyNode, 'id')
-		if (!preKeyPub || preKeyPub.length !== 32 || !preKeyIdBuf || preKeyIdBuf.length !== 3) {
+		// Same 32-or-33 acceptance as identity / signed pub key.
+		if (
+			!preKeyPub ||
+			(preKeyPub.length !== 32 && preKeyPub.length !== 33) ||
+			!preKeyIdBuf ||
+			preKeyIdBuf.length !== 3
+		) {
 			return null
 		}
 

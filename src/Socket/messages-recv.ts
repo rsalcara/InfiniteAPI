@@ -2156,7 +2156,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// stored session's, the peer rotated their identity. Delete the stale session
 			// so the next encryptMessage forces a fresh pkmsg. Use deleteCanonicalSession
 			// so both PN and LID-keyed copies are cleared (signal storage resolves PN→LID).
-			const receivedRegId = getBinaryNodeChildUInt(receiptNode, 'registration', 4)
+			// Validate `<registration>` is exactly 4 bytes (same strictness as the bundle
+			// parser) before trusting the decoded uint — overlong buffers would otherwise
+			// silently pass the first-4-bytes decode.
+			const regBuf = getBinaryNodeChildBuffer(receiptNode, 'registration')
+			const receivedRegId =
+				regBuf && regBuf.length === 4 ? getBinaryNodeChildUInt(receiptNode, 'registration', 4) : undefined
 			if (typeof receivedRegId === 'number' && Number.isInteger(receivedRegId)) {
 				const info = await signalRepository.getSessionInfo(participant)
 				if (info && info.registrationId !== 0 && info.registrationId !== receivedRegId) {
