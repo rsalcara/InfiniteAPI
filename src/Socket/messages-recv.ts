@@ -2131,9 +2131,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const bundle = extractE2ESessionFromRetryReceipt(receiptNode)
 		if (bundle) {
 			try {
-				await signalRepository.injectE2ESession({ jid: participant, session: bundle })
+				// Pass the CANONICAL JID (LID when PN has a mapping) so the SessionBuilder
+				// transaction locks on the same key that `encryptMessage` uses. Without this,
+				// a concurrent retry-inject and send/encrypt for the same logical peer would
+				// hold different `parsedKeys.transaction` mutex keys (`PN` vs the resolved
+				// LID), letting them mutate the same canonical session record concurrently.
+				const lid = !isLidUser(participant)
+					? await signalRepository.lidMapping.getLIDForPN(participant)
+					: null
+				const canonicalJid = lid || participant
+				await signalRepository.injectE2ESession({ jid: canonicalJid, session: bundle })
 				injectedFromBundle = true
-				logger.debug({ participant, retryCount }, 'injected session from retry receipt key bundle')
+				logger.debug(
+					{ participant, canonicalJid, retryCount },
+					'injected session from retry receipt key bundle'
+				)
 			} catch (error) {
 				logger.warn({ error, participant }, 'failed to inject session from retry receipt')
 			}
@@ -2202,11 +2214,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						{ participant, retryCount, reason: recreateReason, errorCode },
 						'recreating session for outgoing retry'
 					)
-					// CRITICAL: Use same transaction key as encrypt/decrypt operations to prevent race
-					// Using meId ensures this delete serializes with sendMessage() and other session operations
-					await authState.keys.transaction(async () => {
-						await authState.keys.set({ session: { [sessionId]: null } })
-					}, authState.creds.me?.id || 'session-operation')
+					// Use deleteCanonicalSession so the LID-keyed copy is also cleared
+					// (signalStorage.loadSession resolves PN→LID — see helper above).
+					// The race-prevention via me?.id transaction key is preserved inside
+					// the helper, matching the original a3dd21c9 / 52aa6402 contract.
+					await deleteCanonicalSession()
 				}
 			} catch (error) {
 				logger.warn({ error, participant }, 'failed to check session recreation for outgoing retry')

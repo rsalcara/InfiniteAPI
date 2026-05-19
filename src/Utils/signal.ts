@@ -109,24 +109,39 @@ export const extractE2ESessionFromRetryReceipt = (receipt: BinaryNode) => {
 	const skey = getBinaryNodeChild(keysNode, 'skey')
 	if (!identity || identity.length !== 32 || !skey) return null
 
+	// Strict length check: <registration> must be exactly 4 bytes. Without this,
+	// `getBinaryNodeChildUInt` happily decodes the first 4 bytes of an overlong
+	// buffer and accepts trailing garbage — the parser must reject malformed
+	// receipts before any payload reaches `SessionBuilder.initOutgoing`.
+	const regBuf = getBinaryNodeChildBuffer(receipt, 'registration')
+	if (!regBuf || regBuf.length !== 4) return null
 	const registrationId = getBinaryNodeChildUInt(receipt, 'registration', 4)
 	if (!isValidUInt(registrationId)) return null
 
 	const signedPubKey = getBinaryNodeChildBuffer(skey, 'value')
 	const signedSig = getBinaryNodeChildBuffer(skey, 'signature')
-	const signedKeyId = getBinaryNodeChildUInt(skey, 'id', 3)
-	if (!signedPubKey || signedPubKey.length !== 32 || !signedSig || !isValidUInt(signedKeyId)) {
+	// Ed25519/Curve25519 signatures are 64 bytes; reject anything else (including
+	// the empty buffer that `getBinaryNodeChildBuffer` would otherwise pass through).
+	if (!signedPubKey || signedPubKey.length !== 32 || !signedSig || signedSig.length !== 64) {
 		return null
 	}
+
+	const signedKeyIdBuf = getBinaryNodeChildBuffer(skey, 'id')
+	if (!signedKeyIdBuf || signedKeyIdBuf.length !== 3) return null
+	const signedKeyId = getBinaryNodeChildUInt(skey, 'id', 3)
+	if (!isValidUInt(signedKeyId)) return null
 
 	const preKeyNode = getBinaryNodeChild(keysNode, 'key')
 	let preKey: { keyId: number; publicKey: Uint8Array } | undefined
 	if (preKeyNode) {
 		const preKeyPub = getBinaryNodeChildBuffer(preKeyNode, 'value')
-		const preKeyId = getBinaryNodeChildUInt(preKeyNode, 'id', 3)
-		if (!preKeyPub || preKeyPub.length !== 32 || !isValidUInt(preKeyId)) {
+		const preKeyIdBuf = getBinaryNodeChildBuffer(preKeyNode, 'id')
+		if (!preKeyPub || preKeyPub.length !== 32 || !preKeyIdBuf || preKeyIdBuf.length !== 3) {
 			return null
 		}
+
+		const preKeyId = getBinaryNodeChildUInt(preKeyNode, 'id', 3)
+		if (!isValidUInt(preKeyId)) return null
 
 		preKey = { keyId: preKeyId, publicKey: generateSignalPubKey(preKeyPub) }
 	}

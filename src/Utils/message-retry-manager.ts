@@ -417,7 +417,13 @@ export class MessageRetryManager {
 		this.baseKeys.set(`${addr}:${msgId}`, baseKey)
 	}
 
-	/** Constant-time-ish byte comparison of the stored base key vs `baseKey`. */
+	/**
+	 * Plain byte-by-byte equality check of the stored base key vs `baseKey`.
+	 * Early-exits on length mismatch and on the first differing byte — this is
+	 * not constant-time, but timing resistance isn't required for these base
+	 * keys (they live in-memory only, used to detect retry-cycle collisions,
+	 * and are not high-value secrets like identity/signed-pre keys).
+	 */
 	hasSameBaseKey(addr: string, msgId: string, baseKey: Uint8Array): boolean {
 		const stored = this.baseKeys.get(`${addr}:${msgId}`)
 		if (!stored || stored.length !== baseKey.length) {
