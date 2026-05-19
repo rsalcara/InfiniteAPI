@@ -7041,6 +7041,18 @@ export const proto = $root.proto = (() => {
                     case 61:
                         m.capabilities[i] = 61;
                         break;
+                    case "UNIFIED_RESPONSE_AI_CONTENT_SEARCH_ENABLED":
+                    case 62:
+                        m.capabilities[i] = 62;
+                        break;
+                    case "UNIFIED_RESPONSE_MARKDOWN_LINKS_ENABLED":
+                    case 63:
+                        m.capabilities[i] = 63;
+                        break;
+                    case "AI_RICH_RESPONSE_MAPS_V2_ENABLED":
+                    case 64:
+                        m.capabilities[i] = 64;
+                        break;
                     }
                 }
             }
@@ -7138,6 +7150,9 @@ export const proto = $root.proto = (() => {
             values[valuesById[59] = "AI_TAB_FORCE_CLIPPY"] = 59;
             values[valuesById[60] = "UNIFIED_RESPONSE_EMBEDDED_SCREENS"] = 60;
             values[valuesById[61] = "AI_SUBSCRIPTION_ENABLED"] = 61;
+            values[valuesById[62] = "UNIFIED_RESPONSE_AI_CONTENT_SEARCH_ENABLED"] = 62;
+            values[valuesById[63] = "UNIFIED_RESPONSE_MARKDOWN_LINKS_ENABLED"] = 63;
+            values[valuesById[64] = "AI_RICH_RESPONSE_MAPS_V2_ENABLED"] = 64;
             return values;
         })();
 
@@ -24440,6 +24455,14 @@ export const proto = $root.proto = (() => {
                     case 10:
                         m.pillType = 10;
                         break;
+                    case "SHOP":
+                    case 11:
+                        m.pillType = 11;
+                        break;
+                    case "ORDER":
+                    case 12:
+                        m.pillType = 12;
+                        break;
                     }
                     if (d.actionUrl != null) {
                         m.actionUrl = String(d.actionUrl);
@@ -24491,6 +24514,8 @@ export const proto = $root.proto = (() => {
                 values[valuesById[8] = "BESTSELLERS"] = 8;
                 values[valuesById[9] = "MENU"] = 9;
                 values[valuesById[10] = "ABOUT"] = 10;
+                values[valuesById[11] = "SHOP"] = 11;
+                values[valuesById[12] = "ORDER"] = 12;
                 return values;
             })();
 
@@ -33114,6 +33139,10 @@ export const proto = $root.proto = (() => {
             case 4:
                 m.processState = 4;
                 break;
+            case "DEDUPED":
+            case 5:
+                m.processState = 5;
+                break;
             }
             return m;
         };
@@ -33153,6 +33182,7 @@ export const proto = $root.proto = (() => {
             values[valuesById[2] = "INJECTED_PARTIAL"] = 2;
             values[valuesById[3] = "INJECTION_FAILED"] = 3;
             values[valuesById[4] = "INJECTION_FAILED_NO_RETRY"] = 4;
+            values[valuesById[5] = "DEDUPED"] = 5;
             return values;
         })();
 
@@ -39688,8 +39718,9 @@ export const proto = $root.proto = (() => {
         Message.prototype.pollAddOptionMessage = null;
         Message.prototype.eventInviteMessage = null;
         Message.prototype.groupRootKeyShare = null;
-        Message.prototype.p2PPaymentReminderNotification = null;
+        Message.prototype.paymentReminderMessage = null;
         Message.prototype.splitPaymentMessage = null;
+        Message.prototype.newsletterAdminProfileStatusMessage = null;
 
         let $oneOfFields;
 
@@ -40312,14 +40343,20 @@ export const proto = $root.proto = (() => {
         });
 
         // Virtual OneOf for proto3 optional field
-        Object.defineProperty(Message.prototype, "_p2PPaymentReminderNotification", {
-            get: $util.oneOfGetter($oneOfFields = ["p2PPaymentReminderNotification"]),
+        Object.defineProperty(Message.prototype, "_paymentReminderMessage", {
+            get: $util.oneOfGetter($oneOfFields = ["paymentReminderMessage"]),
             set: $util.oneOfSetter($oneOfFields)
         });
 
         // Virtual OneOf for proto3 optional field
         Object.defineProperty(Message.prototype, "_splitPaymentMessage", {
             get: $util.oneOfGetter($oneOfFields = ["splitPaymentMessage"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(Message.prototype, "_newsletterAdminProfileStatusMessage", {
+            get: $util.oneOfGetter($oneOfFields = ["newsletterAdminProfileStatusMessage"]),
             set: $util.oneOfSetter($oneOfFields)
         });
 
@@ -40536,10 +40573,12 @@ export const proto = $root.proto = (() => {
                 $root.proto.Message.EventInviteMessage.encode(m.eventInviteMessage, w.uint32(978).fork()).ldelim();
             if (m.groupRootKeyShare != null && Object.hasOwnProperty.call(m, "groupRootKeyShare"))
                 $root.proto.GroupRootKeyShare.encode(m.groupRootKeyShare, w.uint32(986).fork()).ldelim();
-            if (m.p2PPaymentReminderNotification != null && Object.hasOwnProperty.call(m, "p2PPaymentReminderNotification"))
-                $root.proto.Message.P2PPaymentReminderNotification.encode(m.p2PPaymentReminderNotification, w.uint32(994).fork()).ldelim();
+            if (m.paymentReminderMessage != null && Object.hasOwnProperty.call(m, "paymentReminderMessage"))
+                $root.proto.Message.PaymentReminderMessage.encode(m.paymentReminderMessage, w.uint32(994).fork()).ldelim();
             if (m.splitPaymentMessage != null && Object.hasOwnProperty.call(m, "splitPaymentMessage"))
                 $root.proto.Message.SplitPaymentMessage.encode(m.splitPaymentMessage, w.uint32(1002).fork()).ldelim();
+            if (m.newsletterAdminProfileStatusMessage != null && Object.hasOwnProperty.call(m, "newsletterAdminProfileStatusMessage"))
+                $root.proto.Message.FutureProofMessage.encode(m.newsletterAdminProfileStatusMessage, w.uint32(1010).fork()).ldelim();
             return w;
         };
 
@@ -40965,11 +41004,15 @@ export const proto = $root.proto = (() => {
                         break;
                     }
                 case 124: {
-                        m.p2PPaymentReminderNotification = $root.proto.Message.P2PPaymentReminderNotification.decode(r, r.uint32());
+                        m.paymentReminderMessage = $root.proto.Message.PaymentReminderMessage.decode(r, r.uint32());
                         break;
                     }
                 case 125: {
                         m.splitPaymentMessage = $root.proto.Message.SplitPaymentMessage.decode(r, r.uint32());
+                        break;
+                    }
+                case 126: {
+                        m.newsletterAdminProfileStatusMessage = $root.proto.Message.FutureProofMessage.decode(r, r.uint32());
                         break;
                     }
                 default:
@@ -41497,15 +41540,20 @@ export const proto = $root.proto = (() => {
                     throw TypeError(".proto.Message.groupRootKeyShare: object expected");
                 m.groupRootKeyShare = $root.proto.GroupRootKeyShare.fromObject(d.groupRootKeyShare);
             }
-            if (d.p2PPaymentReminderNotification != null) {
-                if (typeof d.p2PPaymentReminderNotification !== "object")
-                    throw TypeError(".proto.Message.p2PPaymentReminderNotification: object expected");
-                m.p2PPaymentReminderNotification = $root.proto.Message.P2PPaymentReminderNotification.fromObject(d.p2PPaymentReminderNotification);
+            if (d.paymentReminderMessage != null) {
+                if (typeof d.paymentReminderMessage !== "object")
+                    throw TypeError(".proto.Message.paymentReminderMessage: object expected");
+                m.paymentReminderMessage = $root.proto.Message.PaymentReminderMessage.fromObject(d.paymentReminderMessage);
             }
             if (d.splitPaymentMessage != null) {
                 if (typeof d.splitPaymentMessage !== "object")
                     throw TypeError(".proto.Message.splitPaymentMessage: object expected");
                 m.splitPaymentMessage = $root.proto.Message.SplitPaymentMessage.fromObject(d.splitPaymentMessage);
+            }
+            if (d.newsletterAdminProfileStatusMessage != null) {
+                if (typeof d.newsletterAdminProfileStatusMessage !== "object")
+                    throw TypeError(".proto.Message.newsletterAdminProfileStatusMessage: object expected");
+                m.newsletterAdminProfileStatusMessage = $root.proto.Message.FutureProofMessage.fromObject(d.newsletterAdminProfileStatusMessage);
             }
             return m;
         };
@@ -42029,15 +42077,20 @@ export const proto = $root.proto = (() => {
                 if (o.oneofs)
                     d._groupRootKeyShare = "groupRootKeyShare";
             }
-            if (m.p2PPaymentReminderNotification != null && m.hasOwnProperty("p2PPaymentReminderNotification")) {
-                d.p2PPaymentReminderNotification = $root.proto.Message.P2PPaymentReminderNotification.toObject(m.p2PPaymentReminderNotification, o);
+            if (m.paymentReminderMessage != null && m.hasOwnProperty("paymentReminderMessage")) {
+                d.paymentReminderMessage = $root.proto.Message.PaymentReminderMessage.toObject(m.paymentReminderMessage, o);
                 if (o.oneofs)
-                    d._p2PPaymentReminderNotification = "p2PPaymentReminderNotification";
+                    d._paymentReminderMessage = "paymentReminderMessage";
             }
             if (m.splitPaymentMessage != null && m.hasOwnProperty("splitPaymentMessage")) {
                 d.splitPaymentMessage = $root.proto.Message.SplitPaymentMessage.toObject(m.splitPaymentMessage, o);
                 if (o.oneofs)
                     d._splitPaymentMessage = "splitPaymentMessage";
+            }
+            if (m.newsletterAdminProfileStatusMessage != null && m.hasOwnProperty("newsletterAdminProfileStatusMessage")) {
+                d.newsletterAdminProfileStatusMessage = $root.proto.Message.FutureProofMessage.toObject(m.newsletterAdminProfileStatusMessage, o);
+                if (o.oneofs)
+                    d._newsletterAdminProfileStatusMessage = "newsletterAdminProfileStatusMessage";
             }
             return d;
         };
@@ -48257,6 +48310,7 @@ export const proto = $root.proto = (() => {
             EventInviteMessage.prototype.caption = null;
             EventInviteMessage.prototype.isCanceled = null;
             EventInviteMessage.prototype.endTime = null;
+            EventInviteMessage.prototype.callLink = null;
 
             let $oneOfFields;
 
@@ -48308,6 +48362,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(EventInviteMessage.prototype, "_callLink", {
+                get: $util.oneOfGetter($oneOfFields = ["callLink"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             EventInviteMessage.create = function create(properties) {
                 return new EventInviteMessage(properties);
             };
@@ -48331,6 +48391,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(56).bool(m.isCanceled);
                 if (m.endTime != null && Object.hasOwnProperty.call(m, "endTime"))
                     w.uint32(64).int64(m.endTime);
+                if (m.callLink != null && Object.hasOwnProperty.call(m, "callLink"))
+                    w.uint32(74).string(m.callLink);
                 return w;
             };
 
@@ -48373,6 +48435,10 @@ export const proto = $root.proto = (() => {
                         }
                     case 8: {
                             m.endTime = r.int64();
+                            break;
+                        }
+                    case 9: {
+                            m.callLink = r.string();
                             break;
                         }
                     default:
@@ -48430,6 +48496,9 @@ export const proto = $root.proto = (() => {
                     else if (typeof d.endTime === "object")
                         m.endTime = new $util.LongBits(d.endTime.low >>> 0, d.endTime.high >>> 0).toNumber();
                 }
+                if (d.callLink != null) {
+                    m.callLink = String(d.callLink);
+                }
                 return m;
             };
 
@@ -48482,6 +48551,11 @@ export const proto = $root.proto = (() => {
                         d.endTime = o.longs === String ? longToString(m.endTime) : o.longs === Number ? longToNumber(m.endTime) : m.endTime;
                     if (o.oneofs)
                         d._endTime = "endTime";
+                }
+                if (m.callLink != null && m.hasOwnProperty("callLink")) {
+                    d.callLink = m.callLink;
+                    if (o.oneofs)
+                        d._callLink = "callLink";
                 }
                 return d;
             };
@@ -59328,411 +59402,6 @@ export const proto = $root.proto = (() => {
             return OrderMessage;
         })();
 
-        Message.P2PPaymentReminderNotification = (function() {
-
-            function P2PPaymentReminderNotification(p) {
-                if (p)
-                    for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
-                        if (p[ks[i]] != null)
-                            this[ks[i]] = p[ks[i]];
-            }
-
-            P2PPaymentReminderNotification.prototype.reminderId = null;
-            P2PPaymentReminderNotification.prototype.amount = null;
-            P2PPaymentReminderNotification.prototype.frequency = null;
-            P2PPaymentReminderNotification.prototype.nextReminderTimestamp = null;
-            P2PPaymentReminderNotification.prototype.expiryTimestamp = null;
-            P2PPaymentReminderNotification.prototype.state = null;
-            P2PPaymentReminderNotification.prototype.description = null;
-            P2PPaymentReminderNotification.prototype.creatorJid = null;
-            P2PPaymentReminderNotification.prototype.receiverJid = null;
-            P2PPaymentReminderNotification.prototype.upiId = null;
-            P2PPaymentReminderNotification.prototype.createdTimestamp = null;
-
-            let $oneOfFields;
-
-            // Virtual OneOf for proto3 optional field
-            Object.defineProperty(P2PPaymentReminderNotification.prototype, "_reminderId", {
-                get: $util.oneOfGetter($oneOfFields = ["reminderId"]),
-                set: $util.oneOfSetter($oneOfFields)
-            });
-
-            // Virtual OneOf for proto3 optional field
-            Object.defineProperty(P2PPaymentReminderNotification.prototype, "_amount", {
-                get: $util.oneOfGetter($oneOfFields = ["amount"]),
-                set: $util.oneOfSetter($oneOfFields)
-            });
-
-            // Virtual OneOf for proto3 optional field
-            Object.defineProperty(P2PPaymentReminderNotification.prototype, "_frequency", {
-                get: $util.oneOfGetter($oneOfFields = ["frequency"]),
-                set: $util.oneOfSetter($oneOfFields)
-            });
-
-            // Virtual OneOf for proto3 optional field
-            Object.defineProperty(P2PPaymentReminderNotification.prototype, "_nextReminderTimestamp", {
-                get: $util.oneOfGetter($oneOfFields = ["nextReminderTimestamp"]),
-                set: $util.oneOfSetter($oneOfFields)
-            });
-
-            // Virtual OneOf for proto3 optional field
-            Object.defineProperty(P2PPaymentReminderNotification.prototype, "_expiryTimestamp", {
-                get: $util.oneOfGetter($oneOfFields = ["expiryTimestamp"]),
-                set: $util.oneOfSetter($oneOfFields)
-            });
-
-            // Virtual OneOf for proto3 optional field
-            Object.defineProperty(P2PPaymentReminderNotification.prototype, "_state", {
-                get: $util.oneOfGetter($oneOfFields = ["state"]),
-                set: $util.oneOfSetter($oneOfFields)
-            });
-
-            // Virtual OneOf for proto3 optional field
-            Object.defineProperty(P2PPaymentReminderNotification.prototype, "_description", {
-                get: $util.oneOfGetter($oneOfFields = ["description"]),
-                set: $util.oneOfSetter($oneOfFields)
-            });
-
-            // Virtual OneOf for proto3 optional field
-            Object.defineProperty(P2PPaymentReminderNotification.prototype, "_creatorJid", {
-                get: $util.oneOfGetter($oneOfFields = ["creatorJid"]),
-                set: $util.oneOfSetter($oneOfFields)
-            });
-
-            // Virtual OneOf for proto3 optional field
-            Object.defineProperty(P2PPaymentReminderNotification.prototype, "_receiverJid", {
-                get: $util.oneOfGetter($oneOfFields = ["receiverJid"]),
-                set: $util.oneOfSetter($oneOfFields)
-            });
-
-            // Virtual OneOf for proto3 optional field
-            Object.defineProperty(P2PPaymentReminderNotification.prototype, "_upiId", {
-                get: $util.oneOfGetter($oneOfFields = ["upiId"]),
-                set: $util.oneOfSetter($oneOfFields)
-            });
-
-            // Virtual OneOf for proto3 optional field
-            Object.defineProperty(P2PPaymentReminderNotification.prototype, "_createdTimestamp", {
-                get: $util.oneOfGetter($oneOfFields = ["createdTimestamp"]),
-                set: $util.oneOfSetter($oneOfFields)
-            });
-
-            P2PPaymentReminderNotification.create = function create(properties) {
-                return new P2PPaymentReminderNotification(properties);
-            };
-
-            P2PPaymentReminderNotification.encode = function encode(m, w) {
-                if (!w)
-                    w = $Writer.create();
-                if (m.reminderId != null && Object.hasOwnProperty.call(m, "reminderId"))
-                    w.uint32(10).string(m.reminderId);
-                if (m.amount != null && Object.hasOwnProperty.call(m, "amount"))
-                    $root.proto.Money.encode(m.amount, w.uint32(18).fork()).ldelim();
-                if (m.frequency != null && Object.hasOwnProperty.call(m, "frequency"))
-                    w.uint32(24).int32(m.frequency);
-                if (m.nextReminderTimestamp != null && Object.hasOwnProperty.call(m, "nextReminderTimestamp"))
-                    w.uint32(32).int64(m.nextReminderTimestamp);
-                if (m.expiryTimestamp != null && Object.hasOwnProperty.call(m, "expiryTimestamp"))
-                    w.uint32(40).int64(m.expiryTimestamp);
-                if (m.state != null && Object.hasOwnProperty.call(m, "state"))
-                    w.uint32(48).int32(m.state);
-                if (m.description != null && Object.hasOwnProperty.call(m, "description"))
-                    w.uint32(58).string(m.description);
-                if (m.creatorJid != null && Object.hasOwnProperty.call(m, "creatorJid"))
-                    w.uint32(66).string(m.creatorJid);
-                if (m.receiverJid != null && Object.hasOwnProperty.call(m, "receiverJid"))
-                    w.uint32(74).string(m.receiverJid);
-                if (m.upiId != null && Object.hasOwnProperty.call(m, "upiId"))
-                    w.uint32(82).string(m.upiId);
-                if (m.createdTimestamp != null && Object.hasOwnProperty.call(m, "createdTimestamp"))
-                    w.uint32(88).int64(m.createdTimestamp);
-                return w;
-            };
-
-            P2PPaymentReminderNotification.decode = function decode(r, l, e) {
-                if (!(r instanceof $Reader))
-                    r = $Reader.create(r);
-                var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.Message.P2PPaymentReminderNotification();
-                while (r.pos < c) {
-                    var t = r.uint32();
-                    if (t === e)
-                        break;
-                    switch (t >>> 3) {
-                    case 1: {
-                            m.reminderId = r.string();
-                            break;
-                        }
-                    case 2: {
-                            m.amount = $root.proto.Money.decode(r, r.uint32());
-                            break;
-                        }
-                    case 3: {
-                            m.frequency = r.int32();
-                            break;
-                        }
-                    case 4: {
-                            m.nextReminderTimestamp = r.int64();
-                            break;
-                        }
-                    case 5: {
-                            m.expiryTimestamp = r.int64();
-                            break;
-                        }
-                    case 6: {
-                            m.state = r.int32();
-                            break;
-                        }
-                    case 7: {
-                            m.description = r.string();
-                            break;
-                        }
-                    case 8: {
-                            m.creatorJid = r.string();
-                            break;
-                        }
-                    case 9: {
-                            m.receiverJid = r.string();
-                            break;
-                        }
-                    case 10: {
-                            m.upiId = r.string();
-                            break;
-                        }
-                    case 11: {
-                            m.createdTimestamp = r.int64();
-                            break;
-                        }
-                    default:
-                        r.skipType(t & 7);
-                        break;
-                    }
-                }
-                return m;
-            };
-
-            P2PPaymentReminderNotification.fromObject = function fromObject(d) {
-                if (d instanceof $root.proto.Message.P2PPaymentReminderNotification)
-                    return d;
-                var m = new $root.proto.Message.P2PPaymentReminderNotification();
-                if (d.reminderId != null) {
-                    m.reminderId = String(d.reminderId);
-                }
-                if (d.amount != null) {
-                    if (typeof d.amount !== "object")
-                        throw TypeError(".proto.Message.P2PPaymentReminderNotification.amount: object expected");
-                    m.amount = $root.proto.Money.fromObject(d.amount);
-                }
-                switch (d.frequency) {
-                default:
-                    if (typeof d.frequency === "number") {
-                        m.frequency = d.frequency;
-                        break;
-                    }
-                    break;
-                case "UNKNOWN_FREQUENCY":
-                case 0:
-                    m.frequency = 0;
-                    break;
-                case "WEEKLY":
-                case 1:
-                    m.frequency = 1;
-                    break;
-                case "BIWEEKLY":
-                case 2:
-                    m.frequency = 2;
-                    break;
-                case "MONTHLY":
-                case 3:
-                    m.frequency = 3;
-                    break;
-                case "CUSTOM":
-                case 4:
-                    m.frequency = 4;
-                    break;
-                }
-                if (d.nextReminderTimestamp != null) {
-                    if ($util.Long)
-                        (m.nextReminderTimestamp = $util.Long.fromValue(d.nextReminderTimestamp)).unsigned = false;
-                    else if (typeof d.nextReminderTimestamp === "string")
-                        m.nextReminderTimestamp = parseInt(d.nextReminderTimestamp, 10);
-                    else if (typeof d.nextReminderTimestamp === "number")
-                        m.nextReminderTimestamp = d.nextReminderTimestamp;
-                    else if (typeof d.nextReminderTimestamp === "object")
-                        m.nextReminderTimestamp = new $util.LongBits(d.nextReminderTimestamp.low >>> 0, d.nextReminderTimestamp.high >>> 0).toNumber();
-                }
-                if (d.expiryTimestamp != null) {
-                    if ($util.Long)
-                        (m.expiryTimestamp = $util.Long.fromValue(d.expiryTimestamp)).unsigned = false;
-                    else if (typeof d.expiryTimestamp === "string")
-                        m.expiryTimestamp = parseInt(d.expiryTimestamp, 10);
-                    else if (typeof d.expiryTimestamp === "number")
-                        m.expiryTimestamp = d.expiryTimestamp;
-                    else if (typeof d.expiryTimestamp === "object")
-                        m.expiryTimestamp = new $util.LongBits(d.expiryTimestamp.low >>> 0, d.expiryTimestamp.high >>> 0).toNumber();
-                }
-                switch (d.state) {
-                default:
-                    if (typeof d.state === "number") {
-                        m.state = d.state;
-                        break;
-                    }
-                    break;
-                case "UNKNOWN_STATE":
-                case 0:
-                    m.state = 0;
-                    break;
-                case "ACTIVE":
-                case 1:
-                    m.state = 1;
-                    break;
-                case "PAUSED":
-                case 2:
-                    m.state = 2;
-                    break;
-                case "STOPPED":
-                case 3:
-                    m.state = 3;
-                    break;
-                case "EXPIRED":
-                case 4:
-                    m.state = 4;
-                    break;
-                case "CANCELLED":
-                case 5:
-                    m.state = 5;
-                    break;
-                }
-                if (d.description != null) {
-                    m.description = String(d.description);
-                }
-                if (d.creatorJid != null) {
-                    m.creatorJid = String(d.creatorJid);
-                }
-                if (d.receiverJid != null) {
-                    m.receiverJid = String(d.receiverJid);
-                }
-                if (d.upiId != null) {
-                    m.upiId = String(d.upiId);
-                }
-                if (d.createdTimestamp != null) {
-                    if ($util.Long)
-                        (m.createdTimestamp = $util.Long.fromValue(d.createdTimestamp)).unsigned = false;
-                    else if (typeof d.createdTimestamp === "string")
-                        m.createdTimestamp = parseInt(d.createdTimestamp, 10);
-                    else if (typeof d.createdTimestamp === "number")
-                        m.createdTimestamp = d.createdTimestamp;
-                    else if (typeof d.createdTimestamp === "object")
-                        m.createdTimestamp = new $util.LongBits(d.createdTimestamp.low >>> 0, d.createdTimestamp.high >>> 0).toNumber();
-                }
-                return m;
-            };
-
-            P2PPaymentReminderNotification.toObject = function toObject(m, o) {
-                if (!o)
-                    o = {};
-                var d = {};
-                if (m.reminderId != null && m.hasOwnProperty("reminderId")) {
-                    d.reminderId = m.reminderId;
-                    if (o.oneofs)
-                        d._reminderId = "reminderId";
-                }
-                if (m.amount != null && m.hasOwnProperty("amount")) {
-                    d.amount = $root.proto.Money.toObject(m.amount, o);
-                    if (o.oneofs)
-                        d._amount = "amount";
-                }
-                if (m.frequency != null && m.hasOwnProperty("frequency")) {
-                    d.frequency = o.enums === String ? $root.proto.Message.P2PPaymentReminderNotification.ReminderFrequency[m.frequency] === undefined ? m.frequency : $root.proto.Message.P2PPaymentReminderNotification.ReminderFrequency[m.frequency] : m.frequency;
-                    if (o.oneofs)
-                        d._frequency = "frequency";
-                }
-                if (m.nextReminderTimestamp != null && m.hasOwnProperty("nextReminderTimestamp")) {
-                    if (typeof m.nextReminderTimestamp === "number")
-                        d.nextReminderTimestamp = o.longs === String ? String(m.nextReminderTimestamp) : m.nextReminderTimestamp;
-                    else
-                        d.nextReminderTimestamp = o.longs === String ? longToString(m.nextReminderTimestamp) : o.longs === Number ? longToNumber(m.nextReminderTimestamp) : m.nextReminderTimestamp;
-                    if (o.oneofs)
-                        d._nextReminderTimestamp = "nextReminderTimestamp";
-                }
-                if (m.expiryTimestamp != null && m.hasOwnProperty("expiryTimestamp")) {
-                    if (typeof m.expiryTimestamp === "number")
-                        d.expiryTimestamp = o.longs === String ? String(m.expiryTimestamp) : m.expiryTimestamp;
-                    else
-                        d.expiryTimestamp = o.longs === String ? longToString(m.expiryTimestamp) : o.longs === Number ? longToNumber(m.expiryTimestamp) : m.expiryTimestamp;
-                    if (o.oneofs)
-                        d._expiryTimestamp = "expiryTimestamp";
-                }
-                if (m.state != null && m.hasOwnProperty("state")) {
-                    d.state = o.enums === String ? $root.proto.Message.P2PPaymentReminderNotification.ReminderState[m.state] === undefined ? m.state : $root.proto.Message.P2PPaymentReminderNotification.ReminderState[m.state] : m.state;
-                    if (o.oneofs)
-                        d._state = "state";
-                }
-                if (m.description != null && m.hasOwnProperty("description")) {
-                    d.description = m.description;
-                    if (o.oneofs)
-                        d._description = "description";
-                }
-                if (m.creatorJid != null && m.hasOwnProperty("creatorJid")) {
-                    d.creatorJid = m.creatorJid;
-                    if (o.oneofs)
-                        d._creatorJid = "creatorJid";
-                }
-                if (m.receiverJid != null && m.hasOwnProperty("receiverJid")) {
-                    d.receiverJid = m.receiverJid;
-                    if (o.oneofs)
-                        d._receiverJid = "receiverJid";
-                }
-                if (m.upiId != null && m.hasOwnProperty("upiId")) {
-                    d.upiId = m.upiId;
-                    if (o.oneofs)
-                        d._upiId = "upiId";
-                }
-                if (m.createdTimestamp != null && m.hasOwnProperty("createdTimestamp")) {
-                    if (typeof m.createdTimestamp === "number")
-                        d.createdTimestamp = o.longs === String ? String(m.createdTimestamp) : m.createdTimestamp;
-                    else
-                        d.createdTimestamp = o.longs === String ? longToString(m.createdTimestamp) : o.longs === Number ? longToNumber(m.createdTimestamp) : m.createdTimestamp;
-                    if (o.oneofs)
-                        d._createdTimestamp = "createdTimestamp";
-                }
-                return d;
-            };
-
-            P2PPaymentReminderNotification.prototype.toJSON = function toJSON() {
-                return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
-            };
-
-            P2PPaymentReminderNotification.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
-                if (typeUrlPrefix === undefined) {
-                    typeUrlPrefix = "type.googleapis.com";
-                }
-                return typeUrlPrefix + "/proto.Message.P2PPaymentReminderNotification";
-            };
-
-            P2PPaymentReminderNotification.ReminderFrequency = (function() {
-                const valuesById = {}, values = Object.create(valuesById);
-                values[valuesById[0] = "UNKNOWN_FREQUENCY"] = 0;
-                values[valuesById[1] = "WEEKLY"] = 1;
-                values[valuesById[2] = "BIWEEKLY"] = 2;
-                values[valuesById[3] = "MONTHLY"] = 3;
-                values[valuesById[4] = "CUSTOM"] = 4;
-                return values;
-            })();
-
-            P2PPaymentReminderNotification.ReminderState = (function() {
-                const valuesById = {}, values = Object.create(valuesById);
-                values[valuesById[0] = "UNKNOWN_STATE"] = 0;
-                values[valuesById[1] = "ACTIVE"] = 1;
-                values[valuesById[2] = "PAUSED"] = 2;
-                values[valuesById[3] = "STOPPED"] = 3;
-                values[valuesById[4] = "EXPIRED"] = 4;
-                values[valuesById[5] = "CANCELLED"] = 5;
-                return values;
-            })();
-
-            return P2PPaymentReminderNotification;
-        })();
-
         Message.PaymentExtendedMetadata = (function() {
 
             function PaymentExtendedMetadata(p) {
@@ -60492,6 +60161,339 @@ export const proto = $root.proto = (() => {
             })();
 
             return PaymentLinkMetadata;
+        })();
+
+        Message.PaymentReminderMessage = (function() {
+
+            function PaymentReminderMessage(p) {
+                if (p)
+                    for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null)
+                            this[ks[i]] = p[ks[i]];
+            }
+
+            PaymentReminderMessage.prototype.reminderId = null;
+            PaymentReminderMessage.prototype.instanceId = null;
+            PaymentReminderMessage.prototype.description = null;
+            PaymentReminderMessage.prototype.frequency = null;
+            PaymentReminderMessage.prototype.status = null;
+            PaymentReminderMessage.prototype.payeeVpa = null;
+            PaymentReminderMessage.prototype.payeeJid = null;
+            PaymentReminderMessage.prototype.payerJid = null;
+            PaymentReminderMessage.prototype.amount = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(PaymentReminderMessage.prototype, "_reminderId", {
+                get: $util.oneOfGetter($oneOfFields = ["reminderId"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(PaymentReminderMessage.prototype, "_instanceId", {
+                get: $util.oneOfGetter($oneOfFields = ["instanceId"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(PaymentReminderMessage.prototype, "_description", {
+                get: $util.oneOfGetter($oneOfFields = ["description"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(PaymentReminderMessage.prototype, "_frequency", {
+                get: $util.oneOfGetter($oneOfFields = ["frequency"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(PaymentReminderMessage.prototype, "_status", {
+                get: $util.oneOfGetter($oneOfFields = ["status"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(PaymentReminderMessage.prototype, "_payeeVpa", {
+                get: $util.oneOfGetter($oneOfFields = ["payeeVpa"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(PaymentReminderMessage.prototype, "_payeeJid", {
+                get: $util.oneOfGetter($oneOfFields = ["payeeJid"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(PaymentReminderMessage.prototype, "_payerJid", {
+                get: $util.oneOfGetter($oneOfFields = ["payerJid"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(PaymentReminderMessage.prototype, "_amount", {
+                get: $util.oneOfGetter($oneOfFields = ["amount"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            PaymentReminderMessage.create = function create(properties) {
+                return new PaymentReminderMessage(properties);
+            };
+
+            PaymentReminderMessage.encode = function encode(m, w) {
+                if (!w)
+                    w = $Writer.create();
+                if (m.reminderId != null && Object.hasOwnProperty.call(m, "reminderId"))
+                    w.uint32(10).string(m.reminderId);
+                if (m.instanceId != null && Object.hasOwnProperty.call(m, "instanceId"))
+                    w.uint32(18).string(m.instanceId);
+                if (m.description != null && Object.hasOwnProperty.call(m, "description"))
+                    w.uint32(26).string(m.description);
+                if (m.frequency != null && Object.hasOwnProperty.call(m, "frequency"))
+                    w.uint32(32).int32(m.frequency);
+                if (m.status != null && Object.hasOwnProperty.call(m, "status"))
+                    w.uint32(40).int32(m.status);
+                if (m.payeeVpa != null && Object.hasOwnProperty.call(m, "payeeVpa"))
+                    w.uint32(50).string(m.payeeVpa);
+                if (m.payeeJid != null && Object.hasOwnProperty.call(m, "payeeJid"))
+                    w.uint32(58).string(m.payeeJid);
+                if (m.payerJid != null && Object.hasOwnProperty.call(m, "payerJid"))
+                    w.uint32(66).string(m.payerJid);
+                if (m.amount != null && Object.hasOwnProperty.call(m, "amount"))
+                    $root.proto.Money.encode(m.amount, w.uint32(74).fork()).ldelim();
+                return w;
+            };
+
+            PaymentReminderMessage.decode = function decode(r, l, e) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.Message.PaymentReminderMessage();
+                while (r.pos < c) {
+                    var t = r.uint32();
+                    if (t === e)
+                        break;
+                    switch (t >>> 3) {
+                    case 1: {
+                            m.reminderId = r.string();
+                            break;
+                        }
+                    case 2: {
+                            m.instanceId = r.string();
+                            break;
+                        }
+                    case 3: {
+                            m.description = r.string();
+                            break;
+                        }
+                    case 4: {
+                            m.frequency = r.int32();
+                            break;
+                        }
+                    case 5: {
+                            m.status = r.int32();
+                            break;
+                        }
+                    case 6: {
+                            m.payeeVpa = r.string();
+                            break;
+                        }
+                    case 7: {
+                            m.payeeJid = r.string();
+                            break;
+                        }
+                    case 8: {
+                            m.payerJid = r.string();
+                            break;
+                        }
+                    case 9: {
+                            m.amount = $root.proto.Money.decode(r, r.uint32());
+                            break;
+                        }
+                    default:
+                        r.skipType(t & 7);
+                        break;
+                    }
+                }
+                return m;
+            };
+
+            PaymentReminderMessage.fromObject = function fromObject(d) {
+                if (d instanceof $root.proto.Message.PaymentReminderMessage)
+                    return d;
+                var m = new $root.proto.Message.PaymentReminderMessage();
+                if (d.reminderId != null) {
+                    m.reminderId = String(d.reminderId);
+                }
+                if (d.instanceId != null) {
+                    m.instanceId = String(d.instanceId);
+                }
+                if (d.description != null) {
+                    m.description = String(d.description);
+                }
+                switch (d.frequency) {
+                default:
+                    if (typeof d.frequency === "number") {
+                        m.frequency = d.frequency;
+                        break;
+                    }
+                    break;
+                case "REMINDER_FREQUENCY_UNKNOWN":
+                case 0:
+                    m.frequency = 0;
+                    break;
+                case "WEEKLY":
+                case 1:
+                    m.frequency = 1;
+                    break;
+                case "BI_WEEKLY":
+                case 2:
+                    m.frequency = 2;
+                    break;
+                case "MONTHLY":
+                case 3:
+                    m.frequency = 3;
+                    break;
+                case "QUARTERLY":
+                case 4:
+                    m.frequency = 4;
+                    break;
+                }
+                switch (d.status) {
+                default:
+                    if (typeof d.status === "number") {
+                        m.status = d.status;
+                        break;
+                    }
+                    break;
+                case "REMINDER_STATUS_UNKNOWN":
+                case 0:
+                    m.status = 0;
+                    break;
+                case "ACTIVE":
+                case 1:
+                    m.status = 1;
+                    break;
+                case "CANCELLED_BY_CREATOR":
+                case 2:
+                    m.status = 2;
+                    break;
+                case "STOPPED_BY_RECEIVER":
+                case 3:
+                    m.status = 3;
+                    break;
+                case "EXPIRED":
+                case 4:
+                    m.status = 4;
+                    break;
+                case "PAID":
+                case 5:
+                    m.status = 5;
+                    break;
+                }
+                if (d.payeeVpa != null) {
+                    m.payeeVpa = String(d.payeeVpa);
+                }
+                if (d.payeeJid != null) {
+                    m.payeeJid = String(d.payeeJid);
+                }
+                if (d.payerJid != null) {
+                    m.payerJid = String(d.payerJid);
+                }
+                if (d.amount != null) {
+                    if (typeof d.amount !== "object")
+                        throw TypeError(".proto.Message.PaymentReminderMessage.amount: object expected");
+                    m.amount = $root.proto.Money.fromObject(d.amount);
+                }
+                return m;
+            };
+
+            PaymentReminderMessage.toObject = function toObject(m, o) {
+                if (!o)
+                    o = {};
+                var d = {};
+                if (m.reminderId != null && m.hasOwnProperty("reminderId")) {
+                    d.reminderId = m.reminderId;
+                    if (o.oneofs)
+                        d._reminderId = "reminderId";
+                }
+                if (m.instanceId != null && m.hasOwnProperty("instanceId")) {
+                    d.instanceId = m.instanceId;
+                    if (o.oneofs)
+                        d._instanceId = "instanceId";
+                }
+                if (m.description != null && m.hasOwnProperty("description")) {
+                    d.description = m.description;
+                    if (o.oneofs)
+                        d._description = "description";
+                }
+                if (m.frequency != null && m.hasOwnProperty("frequency")) {
+                    d.frequency = o.enums === String ? $root.proto.Message.PaymentReminderMessage.ReminderFrequency[m.frequency] === undefined ? m.frequency : $root.proto.Message.PaymentReminderMessage.ReminderFrequency[m.frequency] : m.frequency;
+                    if (o.oneofs)
+                        d._frequency = "frequency";
+                }
+                if (m.status != null && m.hasOwnProperty("status")) {
+                    d.status = o.enums === String ? $root.proto.Message.PaymentReminderMessage.ReminderStatus[m.status] === undefined ? m.status : $root.proto.Message.PaymentReminderMessage.ReminderStatus[m.status] : m.status;
+                    if (o.oneofs)
+                        d._status = "status";
+                }
+                if (m.payeeVpa != null && m.hasOwnProperty("payeeVpa")) {
+                    d.payeeVpa = m.payeeVpa;
+                    if (o.oneofs)
+                        d._payeeVpa = "payeeVpa";
+                }
+                if (m.payeeJid != null && m.hasOwnProperty("payeeJid")) {
+                    d.payeeJid = m.payeeJid;
+                    if (o.oneofs)
+                        d._payeeJid = "payeeJid";
+                }
+                if (m.payerJid != null && m.hasOwnProperty("payerJid")) {
+                    d.payerJid = m.payerJid;
+                    if (o.oneofs)
+                        d._payerJid = "payerJid";
+                }
+                if (m.amount != null && m.hasOwnProperty("amount")) {
+                    d.amount = $root.proto.Money.toObject(m.amount, o);
+                    if (o.oneofs)
+                        d._amount = "amount";
+                }
+                return d;
+            };
+
+            PaymentReminderMessage.prototype.toJSON = function toJSON() {
+                return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            PaymentReminderMessage.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                if (typeUrlPrefix === undefined) {
+                    typeUrlPrefix = "type.googleapis.com";
+                }
+                return typeUrlPrefix + "/proto.Message.PaymentReminderMessage";
+            };
+
+            PaymentReminderMessage.ReminderFrequency = (function() {
+                const valuesById = {}, values = Object.create(valuesById);
+                values[valuesById[0] = "REMINDER_FREQUENCY_UNKNOWN"] = 0;
+                values[valuesById[1] = "WEEKLY"] = 1;
+                values[valuesById[2] = "BI_WEEKLY"] = 2;
+                values[valuesById[3] = "MONTHLY"] = 3;
+                values[valuesById[4] = "QUARTERLY"] = 4;
+                return values;
+            })();
+
+            PaymentReminderMessage.ReminderStatus = (function() {
+                const valuesById = {}, values = Object.create(valuesById);
+                values[valuesById[0] = "REMINDER_STATUS_UNKNOWN"] = 0;
+                values[valuesById[1] = "ACTIVE"] = 1;
+                values[valuesById[2] = "CANCELLED_BY_CREATOR"] = 2;
+                values[valuesById[3] = "STOPPED_BY_RECEIVER"] = 3;
+                values[valuesById[4] = "EXPIRED"] = 4;
+                values[valuesById[5] = "PAID"] = 5;
+                return values;
+            })();
+
+            return PaymentReminderMessage;
         })();
 
         Message.PeerDataOperationRequestMessage = (function() {
