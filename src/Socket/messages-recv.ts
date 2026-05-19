@@ -2063,6 +2063,28 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const msgId = ids[0]
 		const sessionId = signalRepository.jidToSignalProtocolAddress(participant)
 
+		// Helper: delete the session at BOTH the PN- and LID-addressed keys.
+		// InfiniteAPI's signal storage (`signalStorage.loadSession`) canonicalizes
+		// a PN signal-address to its LID counterpart when a `lidMapping` entry
+		// exists — so the session that `getSessionInfo()` reads can live under
+		// the LID key while `sessionId` is computed from the PN participant.
+		// Clearing only `sessionId` would leave the canonical session intact.
+		// Always clear both, wrap in the same transaction (meId) used elsewhere
+		// to keep ordering vs sendMessage's session ops (race-prevention from a3dd21c9).
+		const deleteCanonicalSession = async () => {
+			const updates: { [key: string]: null } = { [sessionId]: null }
+			if (!isLidUser(participant)) {
+				const lid = await signalRepository.lidMapping.getLIDForPN(participant)
+				if (lid) {
+					updates[signalRepository.jidToSignalProtocolAddress(lid)] = null
+				}
+			}
+
+			await authState.keys.transaction(async () => {
+				await authState.keys.set({ session: updates })
+			}, authState.creds.me?.id || 'session-operation')
+		}
+
 		// Try to get messages from cache first, then fallback to getMessage
 		const msgs: (proto.IMessage | undefined)[] = []
 		for (const id of ids) {
@@ -2120,8 +2142,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		if (!injectedFromBundle) {
 			// No usable bundle — if the receipt's registration id no longer matches our
 			// stored session's, the peer rotated their identity. Delete the stale session
-			// so the next encryptMessage forces a fresh pkmsg. We wrap in the same
-			// transaction key used by other session ops to keep ordering vs sendMessage.
+			// so the next encryptMessage forces a fresh pkmsg. Use deleteCanonicalSession
+			// so both PN and LID-keyed copies are cleared (signal storage resolves PN→LID).
 			const receivedRegId = getBinaryNodeChildUInt(receiptNode, 'registration', 4)
 			if (typeof receivedRegId === 'number' && Number.isInteger(receivedRegId)) {
 				const info = await signalRepository.getSessionInfo(participant)
@@ -2130,9 +2152,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						{ participant, stored: info.registrationId, received: receivedRegId },
 						'reg id mismatch on retry without bundle, deleting session'
 					)
-					await authState.keys.transaction(async () => {
-						await authState.keys.set({ session: { [sessionId]: null } })
-					}, authState.creds.me?.id || 'session-operation')
+					await deleteCanonicalSession()
 				}
 			}
 		}
@@ -2150,9 +2170,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				} else if (retryCount > BASE_KEY_CHECK_RETRY) {
 					if (messageRetryManager.hasSameBaseKey(sessionId, msgId, info.baseKey)) {
 						logger.warn({ participant, retryCount }, 'base key collision on retry, forcing fresh session')
-						await authState.keys.transaction(async () => {
-							await authState.keys.set({ session: { [sessionId]: null } })
-						}, authState.creds.me?.id || 'session-operation')
+						await deleteCanonicalSession()
 					}
 
 					messageRetryManager.deleteBaseKey(sessionId, msgId)
