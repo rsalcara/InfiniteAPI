@@ -36,43 +36,6 @@ const TC_TOKEN_BUCKET_DURATION = 604800
 const TC_TOKEN_NUM_BUCKETS = 4
 
 /**
- * Sentinel key under the `tctoken` store holding a JSON array of tracked storage JIDs
- * for cross-session pruning. Must stay in sync with the `TC_TOKEN_INDEX_KEY` constant
- * in Socket/messages-recv.ts (same string value, same JSON-array-in-`token` layout).
- */
-export const TC_TOKEN_INDEX_KEY = '__index'
-
-/** Read the persisted tctoken JID index (never includes the sentinel key itself). */
-export async function readTcTokenIndex(keys: SignalKeyStoreWithTransaction): Promise<string[]> {
-	const data = await keys.get('tctoken', [TC_TOKEN_INDEX_KEY])
-	const entry = data[TC_TOKEN_INDEX_KEY]
-	if (!entry?.token?.length) return []
-	try {
-		const parsed = JSON.parse(Buffer.from(entry.token).toString())
-		if (!Array.isArray(parsed)) return []
-		return parsed.filter((j): j is string => typeof j === 'string' && j.length > 0 && j !== TC_TOKEN_INDEX_KEY)
-	} catch {
-		return []
-	}
-}
-
-/** Build a tctoken-store fragment writing the merged index (persisted ∪ added) under the sentinel key. */
-export async function buildMergedTcTokenIndexWrite(
-	keys: SignalKeyStoreWithTransaction,
-	addedJids: Iterable<string>
-): Promise<{ [TC_TOKEN_INDEX_KEY]: { token: Buffer } }> {
-	const persisted = await readTcTokenIndex(keys)
-	const merged = new Set(persisted)
-	for (const jid of addedJids) {
-		if (jid && jid !== TC_TOKEN_INDEX_KEY) merged.add(jid)
-	}
-
-	return {
-		[TC_TOKEN_INDEX_KEY]: { token: Buffer.from(JSON.stringify([...merged])) }
-	}
-}
-
-/**
  * Check if a received token is expired using WA Web's rolling bucket algorithm.
  * Reference: WAWebTrustedContactsUtils.isTokenExpired
  *
