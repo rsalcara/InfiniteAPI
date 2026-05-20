@@ -1611,9 +1611,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			if (tcTokenBuffer?.length && isTcTokenExpired(existingTokenEntry?.timestamp)) {
 				logTcToken('expired', { jid: destinationJid, timestamp: existingTokenEntry?.timestamp })
 				tcTokenBuffer = undefined
-				// Opportunistic cleanup: remove expired token from store
+				// Opportunistic cleanup: drop the expired token but preserve senderTimestamp so the
+				// fire-and-forget issuance dedupe (shouldSendNewTcToken) survives the cleanup.
+				const cleared =
+					existingTokenEntry?.senderTimestamp !== undefined
+						? { token: Buffer.alloc(0), senderTimestamp: existingTokenEntry.senderTimestamp }
+						: null
 				try {
-					await authState.keys.set({ tctoken: { [tcTokenJid]: null } })
+					await authState.keys.set({ tctoken: { [tcTokenJid]: cleared } })
 				} catch {
 					/* ignore cleanup errors */
 				}

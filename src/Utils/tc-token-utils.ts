@@ -1,11 +1,76 @@
 import type { SignalKeyStoreWithTransaction } from '../Types'
 import type { BinaryNode } from '../WABinary'
-import { getBinaryNodeChild, getBinaryNodeChildren, isLidUser, jidNormalizedUser } from '../WABinary'
+import {
+	getBinaryNodeChild,
+	getBinaryNodeChildren,
+	isHostedLidUser,
+	isHostedPnUser,
+	isJidMetaAI,
+	isLidUser,
+	isPnUser,
+	jidNormalizedUser
+} from '../WABinary'
+
+// Same phone-number pattern as WABinary's isJidBot, applied against the user
+// part so the check is invariant to @c.us ↔ @s.whatsapp.net normalization.
+const BOT_PHONE_REGEX = /^1313555\d{4}$|^131655500\d{2}$/
+
+/**
+ * Mirrors WA Web's `Wid.isRegularUser()` (user ∧ ¬PSA ∧ ¬Bot). Used to gate tctoken
+ * storage against malformed notifications — WA Web filters server-side but we
+ * defend here for parity with `WAWebSetTcTokenChatAction.handleIncomingTcToken`.
+ * Works for both pre- and post-normalized JIDs (`@c.us` vs `@s.whatsapp.net`).
+ */
+function isRegularUser(jid: string | undefined): boolean {
+	if (!jid) return false
+	const user = jid.split('@')[0] ?? ''
+	if (user === '0') return false // PSA
+	if (BOT_PHONE_REGEX.test(user)) return false // Bot by phone pattern
+	if (isJidMetaAI(jid)) return false // MetaAI (@bot server)
+	return !!(isPnUser(jid) || isLidUser(jid) || isHostedPnUser(jid) || isHostedLidUser(jid) || jid.endsWith('@c.us'))
+}
 
 /** 7 days in seconds — matches WA Web AB prop tctoken_duration */
 const TC_TOKEN_BUCKET_DURATION = 604800
 /** 4 buckets → ~28-day rolling window — matches WA Web AB prop tctoken_num_buckets */
 const TC_TOKEN_NUM_BUCKETS = 4
+
+/**
+ * Sentinel key under the `tctoken` store holding a JSON array of tracked storage JIDs
+ * for cross-session pruning. Must stay in sync with the `TC_TOKEN_INDEX_KEY` constant
+ * in Socket/messages-recv.ts (same string value, same JSON-array-in-`token` layout).
+ */
+export const TC_TOKEN_INDEX_KEY = '__index'
+
+/** Read the persisted tctoken JID index (never includes the sentinel key itself). */
+export async function readTcTokenIndex(keys: SignalKeyStoreWithTransaction): Promise<string[]> {
+	const data = await keys.get('tctoken', [TC_TOKEN_INDEX_KEY])
+	const entry = data[TC_TOKEN_INDEX_KEY]
+	if (!entry?.token?.length) return []
+	try {
+		const parsed = JSON.parse(Buffer.from(entry.token).toString())
+		if (!Array.isArray(parsed)) return []
+		return parsed.filter((j): j is string => typeof j === 'string' && j.length > 0 && j !== TC_TOKEN_INDEX_KEY)
+	} catch {
+		return []
+	}
+}
+
+/** Build a tctoken-store fragment writing the merged index (persisted ∪ added) under the sentinel key. */
+export async function buildMergedTcTokenIndexWrite(
+	keys: SignalKeyStoreWithTransaction,
+	addedJids: Iterable<string>
+): Promise<{ [TC_TOKEN_INDEX_KEY]: { token: Buffer } }> {
+	const persisted = await readTcTokenIndex(keys)
+	const merged = new Set(persisted)
+	for (const jid of addedJids) {
+		if (jid && jid !== TC_TOKEN_INDEX_KEY) merged.add(jid)
+	}
+
+	return {
+		[TC_TOKEN_INDEX_KEY]: { token: Buffer.from(JSON.stringify([...merged])) }
+	}
+}
 
 /**
  * Check if a received token is expired using WA Web's rolling bucket algorithm.
@@ -136,6 +201,12 @@ export async function storeTcTokensFromIqResult({
 		}
 
 		const rawJid = jidNormalizedUser(tokenNode.attrs.jid || fallbackJid)
+		// Defensive parity with WA Web: never store tokens under PSA/bot/MetaAI JIDs,
+		// which a malformed notification could otherwise smuggle in.
+		if (!isRegularUser(rawJid)) {
+			continue
+		}
+
 		const storageJid = await resolveTcTokenJid(rawJid, getLIDForPN)
 		const existingTcData = await keys.get('tctoken', [storageJid])
 		const existingEntry = existingTcData[storageJid]
