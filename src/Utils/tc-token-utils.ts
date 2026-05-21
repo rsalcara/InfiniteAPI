@@ -21,7 +21,7 @@ const BOT_PHONE_REGEX = /^1313555\d{4}$|^131655500\d{2}$/
  * defend here for parity with `WAWebSetTcTokenChatAction.handleIncomingTcToken`.
  * Works for both pre- and post-normalized JIDs (`@c.us` vs `@s.whatsapp.net`).
  */
-export function isRegularUser(jid: string | undefined): boolean {
+function isRegularUser(jid: string | undefined): boolean {
 	if (!jid) return false
 	const user = jid.split('@')[0] ?? ''
 	if (!user) return false // empty user part (e.g. malformed `@s.whatsapp.net`)
@@ -35,43 +35,6 @@ export function isRegularUser(jid: string | undefined): boolean {
 const TC_TOKEN_BUCKET_DURATION = 604800
 /** 4 buckets → ~28-day rolling window — matches WA Web AB prop tctoken_num_buckets */
 const TC_TOKEN_NUM_BUCKETS = 4
-
-/**
- * Sentinel key under the `tctoken` store holding a JSON array of tracked storage JIDs
- * for cross-session pruning. Same string value / layout as the `TC_TOKEN_INDEX_KEY`
- * constant in Socket/messages-recv.ts.
- */
-export const TC_TOKEN_INDEX_KEY = '__index'
-
-/** Read the persisted tctoken JID index (never includes the sentinel key itself). */
-export async function readTcTokenIndex(keys: SignalKeyStoreWithTransaction): Promise<string[]> {
-	const data = await keys.get('tctoken', [TC_TOKEN_INDEX_KEY])
-	const entry = data[TC_TOKEN_INDEX_KEY]
-	if (!entry?.token?.length) return []
-	try {
-		const parsed = JSON.parse(Buffer.from(entry.token).toString())
-		if (!Array.isArray(parsed)) return []
-		return parsed.filter((j): j is string => typeof j === 'string' && j.length > 0 && j !== TC_TOKEN_INDEX_KEY)
-	} catch {
-		return []
-	}
-}
-
-/** Build a tctoken-store fragment writing the merged index (persisted ∪ added) under the sentinel key. */
-export async function buildMergedTcTokenIndexWrite(
-	keys: SignalKeyStoreWithTransaction,
-	addedJids: Iterable<string>
-): Promise<{ [TC_TOKEN_INDEX_KEY]: { token: Buffer } }> {
-	const persisted = await readTcTokenIndex(keys)
-	const merged = new Set(persisted)
-	for (const jid of addedJids) {
-		if (jid && jid !== TC_TOKEN_INDEX_KEY) merged.add(jid)
-	}
-
-	return {
-		[TC_TOKEN_INDEX_KEY]: { token: Buffer.from(JSON.stringify([...merged])) }
-	}
-}
 
 /**
  * Check if a received token is expired using WA Web's rolling bucket algorithm.
