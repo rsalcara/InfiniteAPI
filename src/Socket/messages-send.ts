@@ -1557,6 +1557,21 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				} else {
 					stanza.attrs.to = participant.jid
 				}
+			} else if (isCarousel && isAnyPnUser(destinationJid)) {
+				// CARROUSEL FIX (Option B): keep the envelope `to` consistent with the
+				// LID-canonicalized participants. canonicalizeCarouselRecipients converts the
+				// participant/enc nodes to LID, but the envelope stayed PN — and a PN envelope
+				// wrapping LID participant enc nodes is a mismatch the server rejects with
+				// error 400. Resolve the envelope to the same LID; fall back to PN when no
+				// mapping exists (in which case participants also stayed PN, so still consistent).
+				const carouselLid = await getLIDForPN(destinationJid)
+				stanza.attrs.to = carouselLid || destinationJid
+				if (carouselLid) {
+					logger.info(
+						{ msgId, from: destinationJid, to: carouselLid },
+						'[CAROUSEL] Envelope addressing canonicalized to LID (match participants)'
+					)
+				}
 			} else {
 				stanza.attrs.to = destinationJid
 			}
