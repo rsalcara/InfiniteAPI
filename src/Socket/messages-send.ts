@@ -1748,14 +1748,46 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				;(stanza.content as BinaryNode[]).push(...deferredNodes)
 			}
 
-			// Log stanza structure for interactive messages — shows EXACTLY what is sent so it's
-			// easy to validate: the REAL envelope `to` (after LID canonicalization), the addressing
-			// mode, and which top-level nodes are present.
-			if (buttonType || isCarousel) {
+			// Unified send-summary log — shows EXACTLY what is sent for EVERY message type so it's
+			// easy to validate (same style first added for the carousel): the REAL envelope `to`
+			// (after any LID canonicalization), the addressing mode, the detected message kind,
+			// and which top-level stanza nodes are present.
+			{
 				const contentTags = Array.isArray(stanza.content) ? stanza.content.map((n: BinaryNode) => n.tag) : []
 				const envelopeTo = stanza.attrs.to || destinationJid
 				const addressing = isAnyLidUser(envelopeTo) ? 'LID' : 'PN'
-				const kind = isCarousel ? 'carousel' : buttonType === 'list' ? 'list' : `buttons(${buttonType})`
+
+				const isViewOnce = !!(message.viewOnceMessage || message.viewOnceMessageV2)
+				const core = message.viewOnceMessage?.message || message.viewOnceMessageV2?.message || message
+				const kind = ((): string => {
+					if (isCarousel) return 'carousel'
+					if (buttonType === 'list') return 'list'
+					if (buttonType) {
+						if (message.buttonsMessage || core.buttonsMessage) return 'buttons:reply'
+						const names = (core.interactiveMessage?.nativeFlowMessage?.buttons || []).map((b: any) => b?.name)
+						const hasCTA = names.some((n: string) => n === 'cta_url' || n === 'cta_copy' || n === 'cta_call')
+						const hasQR = names.some((n: string) => n === 'quick_reply')
+						if (hasCTA && hasQR) return 'buttons:mixed'
+						if (hasCTA) return 'buttons:cta'
+						if (hasQR) return 'buttons:reply'
+						return `buttons:${buttonType}`
+					}
+
+					if (core.pollCreationMessage || (core as any).pollCreationMessageV2 || (core as any).pollCreationMessageV3) {
+						return 'poll'
+					}
+
+					if (core.imageMessage) return isViewOnce ? 'image(viewOnce)' : 'image'
+					if (core.videoMessage) return isViewOnce ? 'video(viewOnce)' : 'video'
+					if (core.audioMessage) return isViewOnce ? 'audio(viewOnce)' : 'audio'
+					if (core.documentMessage) return 'document'
+					if (core.stickerMessage) return 'sticker'
+					if (core.locationMessage) return 'location'
+					if (core.contactMessage || core.contactsArrayMessage) return 'contact'
+					if (core.extendedTextMessage || core.conversation) return 'text'
+					return 'other'
+				})()
+
 				logger.info(
 					{
 						msgId,
@@ -1763,6 +1795,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						envelopeTo,
 						addressing,
 						originalJid: destinationJid,
+						viewOnce: isViewOnce,
 						contentTags,
 						nodes: {
 							tctoken: contentTags.includes('tctoken'),
