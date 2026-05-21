@@ -1568,9 +1568,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// reject raw `@c.us`, which sendMessage() can pass directly (Codex P1).
 				const normalizedDest = jidNormalizedUser(destinationJid)
 				const carouselLid = isAnyPnUser(normalizedDest) ? await getLIDForPN(normalizedDest) : null
-				// Fall back to the NORMALIZED jid (not the raw input) so an `@c.us` envelope still
-				// matches the normalized participant addressing when no LID mapping exists.
-				stanza.attrs.to = carouselLid || normalizedDest
+				// Prefer the LID, then the normalized jid (so an `@c.us` envelope matches the
+				// normalized participants), and finally the raw input — never an empty `to`, since
+				// jidNormalizedUser returns '' for a malformed JID (would yield a 400) (Copilot #440).
+				stanza.attrs.to = carouselLid || normalizedDest || destinationJid
 				if (carouselLid) {
 					logger.info(
 						{ msgId, from: destinationJid, to: carouselLid },

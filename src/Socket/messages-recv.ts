@@ -555,12 +555,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const sendMessageAck = async (node: BinaryNode, errorCode?: number) => {
-		// buildAckStanza mirrors WA Web exactly: always emit `type` when present
-		// and always emit `from=meId` for message-class ACKs (the previous gated
-		// version diverged from WA Web and could omit those attrs on plain message
-		// acks). Pure function — see Utils/stanza-ack.ts.
+		// buildAckStanza mirrors WA Web: always emit `type` when present, and `from=meId` for
+		// message-class ACKs WHEN we know our id. We intentionally do NOT hard-fail when `me` is
+		// momentarily unset (reconnect/pairing edge): buildAckStanza simply omits `from`, so the
+		// ACK still goes out instead of throwing and letting the server retry forever (Codex #440).
 		const meId = authState.creds.me?.id
-		if (node.tag === 'message' && !meId) throw new Boom('Not authenticated', { statusCode: 401 })
 		const stanza = buildAckStanza(node, errorCode, meId)
 		logger.debug({ recv: { tag: node.tag, attrs: node.attrs }, sent: stanza.attrs }, 'sent ack')
 		await sendNode(stanza)
