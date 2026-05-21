@@ -1733,10 +1733,33 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				;(stanza.content as BinaryNode[]).push(...deferredNodes)
 			}
 
-			// Log stanza structure for interactive messages
+			// Log stanza structure for interactive messages — shows EXACTLY what is sent so it's
+			// easy to validate: the REAL envelope `to` (after LID canonicalization), the addressing
+			// mode, and which top-level nodes are present.
 			if (buttonType || isCarousel) {
 				const contentTags = Array.isArray(stanza.content) ? stanza.content.map((n: BinaryNode) => n.tag) : []
-				logger.info({ msgId, to: destinationJid, contentTags }, '[STANZA] Content tags: ' + JSON.stringify(contentTags))
+				const envelopeTo = stanza.attrs.to || destinationJid
+				const addressing = isLidUser(envelopeTo) ? 'LID' : 'PN'
+				const kind = isCarousel ? 'carousel' : buttonType === 'list' ? 'list' : `buttons(${buttonType})`
+				logger.info(
+					{
+						msgId,
+						kind,
+						envelopeTo,
+						addressing,
+						originalJid: destinationJid,
+						contentTags,
+						nodes: {
+							tctoken: contentTags.includes('tctoken'),
+							biz: contentTags.includes('biz'),
+							bot: contentTags.includes('bot'),
+							deviceIdentity: contentTags.includes('device-identity'),
+							qualityControl: isCarousel
+						},
+						participantDevices: participants.length
+					},
+					`[STANZA] Sending ${kind} → ${envelopeTo} (${addressing}) | nodes: [${contentTags.join(', ')}]`
+				)
 			}
 
 			logger.debug({ msgId }, `sending message to ${participants.length} devices`)
