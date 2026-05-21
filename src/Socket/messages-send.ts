@@ -1790,28 +1790,31 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					return 'other'
 				})()
 
-				// debug level: one line per outbound message would be high-volume + leak recipient
-				// metadata at info in production. Run staging with log level=debug to validate sends.
-				logger.debug(
-					{
-						msgId,
-						kind,
-						envelopeTo,
-						addressing,
-						originalJid: destinationJid,
-						viewOnce: isViewOnce,
-						contentTags,
-						nodes: {
-							tctoken: contentTags.includes('tctoken'),
-							biz: contentTags.includes('biz'),
-							bot: contentTags.includes('bot'),
-							deviceIdentity: contentTags.includes('device-identity'),
-							qualityControl: isCarousel
+				// INFO only for interactive / poll / view-once — these are low-volume and the ones
+				// worth validating. Plain text and regular (non-view-once) media are skipped so we
+				// don't emit a per-message info log (volume + recipient metadata) in production.
+				if (!!buttonType || isCarousel || isViewOnce || kind === 'poll') {
+					logger.info(
+						{
+							msgId,
+							kind,
+							envelopeTo,
+							addressing,
+							originalJid: destinationJid,
+							viewOnce: isViewOnce,
+							contentTags,
+							nodes: {
+								tctoken: contentTags.includes('tctoken'),
+								biz: contentTags.includes('biz'),
+								bot: contentTags.includes('bot'),
+								deviceIdentity: contentTags.includes('device-identity'),
+								qualityControl: isCarousel
+							},
+							participantDevices: participants.length
 						},
-						participantDevices: participants.length
-					},
-					`[STANZA] Sending ${kind} → ${envelopeTo} (${addressing}) | nodes: [${contentTags.join(', ')}]`
-				)
+						`[STANZA] Sending ${kind} → ${envelopeTo} (${addressing}) | nodes: [${contentTags.join(', ')}]`
+					)
+				}
 			}
 
 			logger.debug({ msgId }, `sending message to ${participants.length} devices`)

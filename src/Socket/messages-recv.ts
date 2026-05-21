@@ -2509,8 +2509,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					// Handle "Missing keys" - standard decryption failure
 					// Return NACK with parsing error to signal the issue
 					if (msg?.messageStubParameters?.[0] === MISSING_KEYS_ERROR_TEXT) {
+						await sendMessageAck(node, NACK_REASONS.ParsingError)
 						acked = true
-						return sendMessageAck(node, NACK_REASONS.ParsingError)
+						return
 					}
 
 					// Handle "Message absent from node" - likely a CTWA (Click-to-WhatsApp) ads message
@@ -2530,8 +2531,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								'CTWA: Skipping placeholder resend for unavailable fanout type'
 							)
 							metrics.ctwaRecoveryFailures.inc({ reason: 'unavailable_fanout' })
+							await sendMessageAck(node)
 							acked = true
-							return sendMessageAck(node)
+							return
 						}
 
 						// Skip old messages - don't request resend for messages older than 7 days
@@ -2543,8 +2545,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								'CTWA: Skipping placeholder resend for old message'
 							)
 							metrics.ctwaRecoveryFailures.inc({ reason: 'message_too_old' })
+							await sendMessageAck(node)
 							acked = true
-							return sendMessageAck(node)
+							return
 						}
 
 						if (enableCTWARecovery && msg.key) {
@@ -2626,8 +2629,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							)
 						}
 
+						await sendMessageAck(node)
 						acked = true
-						return sendMessageAck(node)
+						return
 					}
 
 					// Skip retry for expired status messages (>24h old)
@@ -2638,8 +2642,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								{ msgId: msg.key.id, messageAge, remoteJid: msg.key.remoteJid },
 								'skipping retry for expired status message'
 							)
+							await sendMessageAck(node)
 							acked = true
-							return sendMessageAck(node)
+							return
 						}
 					}
 
@@ -2686,8 +2691,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							}
 						}
 
-						acked = true
 						await sendMessageAck(node, NACK_REASONS.UnhandledError)
+						acked = true
 					})
 				} else {
 					if (messageRetryManager && msg.key.id) {
@@ -2713,8 +2718,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							type = 'inactive'
 						}
 
-						acked = true
 						await sendReceipt(msg.key.remoteJid!, participant!, [msg.key.id!], type)
+						acked = true
 
 						// send ack for history message
 						const isAnyHistoryMsg = getHistoryMsg(msg.message!)
@@ -2723,8 +2728,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							await sendReceipt(jid, undefined, [msg.key.id!], 'hist_sync') // TODO: investigate
 						}
 					} else {
-						acked = true
 						await sendMessageAck(node)
+						acked = true
 						logger.debug({ key: msg.key }, 'processed newsletter message without receipts')
 					}
 				}
