@@ -40,6 +40,7 @@ import { getKeyAuthor, toNumber } from './generics'
 import { downloadAndProcessHistorySyncNotification } from './history'
 import type { ILogger } from './logger'
 import { metrics, recordHistorySyncMessages } from './prometheus-metrics.js'
+import { buildMergedTcTokenIndexWrite, isRegularUser, resolveTcTokenJid } from './tc-token-utils'
 
 type ProcessMessageContext = {
 	shouldProcessHistoryMsg: boolean
@@ -61,6 +62,90 @@ const REAL_MSG_STUB_TYPES = new Set([
 ])
 
 const REAL_MSG_REQ_ME_STUB_TYPES = new Set([WAMessageStubType.GROUP_PARTICIPANT_ADD])
+
+/**
+ * Persist tctokens carried inside history-sync `Chat` records (upstream PR #2339, "E3").
+ *
+ * Seeds the tctoken store from the real tokens WhatsApp already had for these chats so a
+ * freshly-synced device doesn't hit the fetch→issue path (and error 463) on the first send
+ * to every contact. NOTE: this does NOT change the carousel — the carousel renders tokenless;
+ * a seeded token is just attached like any other 1:1 send. Defensive per the PR #440 review:
+ * each chat is gated by isRegularUser (skips PSA/bot/MetaAI/groups/broadcast/malformed) and
+ * wrapped in try/catch so one bad chat can't abort the whole HISTORY_SYNC flow; the pruning
+ * `__index` is backfilled for ALL eligible candidates, not only the ones whose token changed.
+ */
+async function storeTcTokensFromHistorySync(
+	chats: Chat[],
+	signalRepository: SignalRepositoryWithLIDStore,
+	keyStore: SignalKeyStoreWithTransaction,
+	logger?: ILogger
+) {
+	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+
+	const candidates: { storageJid: string; token: Buffer; ts: number; senderTs?: number }[] = []
+	for (const chat of chats) {
+		try {
+			const ts = chat.tcTokenTimestamp ? toNumber(chat.tcTokenTimestamp) : 0
+			if (!chat.tcToken?.length || ts <= 0) {
+				continue
+			}
+
+			const jid = jidNormalizedUser(chat.id!)
+			// Skip non-regular chats (PSA/bot/MetaAI/group/broadcast/malformed) — never store
+			// a tctoken under those keys.
+			if (!isRegularUser(jid)) {
+				continue
+			}
+
+			const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
+			candidates.push({
+				storageJid,
+				token: Buffer.from(chat.tcToken),
+				ts,
+				senderTs: chat.tcTokenSenderTimestamp ? toNumber(chat.tcTokenSenderTimestamp) : undefined
+			})
+		} catch (err) {
+			logger?.debug({ err, chatId: chat.id }, 'skipping malformed chat in tctoken history seeding')
+		}
+	}
+
+	if (!candidates.length) {
+		return
+	}
+
+	const jids = candidates.map(c => c.storageJid)
+	const existing = await keyStore.get('tctoken', jids)
+	const entries: Record<string, { token: Buffer; timestamp?: string; senderTimestamp?: number }> = {}
+
+	for (const c of candidates) {
+		const existingEntry = existing[c.storageJid]
+		const existingTs = existingEntry?.timestamp ? Number(existingEntry.timestamp) : 0
+		// Don't overwrite a newer/equal token already in the store.
+		if (existingTs > 0 && existingTs >= c.ts) {
+			continue
+		}
+
+		entries[c.storageJid] = {
+			...existingEntry,
+			token: c.token,
+			timestamp: String(c.ts),
+			...(c.senderTs !== undefined ? { senderTimestamp: c.senderTs } : {})
+		}
+	}
+
+	try {
+		// Backfill __index for ALL eligible candidate JIDs (not only changed tokens) so
+		// cross-session pruning tracks every history-seeded contact.
+		const indexWrite = await buildMergedTcTokenIndexWrite(keyStore, jids)
+		if (Object.keys(entries).length) {
+			logger?.debug({ count: Object.keys(entries).length }, 'storing tctokens from history sync')
+		}
+
+		await keyStore.set({ tctoken: { ...entries, ...indexWrite } })
+	} catch (err) {
+		logger?.warn({ err }, 'failed to store tctokens from history sync')
+	}
+}
 
 /** Cleans a received message to further processing */
 export const cleanMessage = (message: WAMessage, meId: string, meLid: string) => {
@@ -441,6 +526,9 @@ const processMessage = async (
 							ev.emit('lid-mapping.update', data.lidPnMappings)
 						}
 					}
+
+					// Seed tctokens carried in the history payload (upstream E3) to avoid a cold-start 463 storm.
+					await storeTcTokensFromHistorySync(data.chats, signalRepository, keyStore, logger)
 
 					ev.emit('messaging-history.set', {
 						...data,
