@@ -2407,27 +2407,30 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		const {
-			fullMessage: msg,
-			category,
-			author,
-			decrypt
-		} = decryptMessageNode(
-			node,
-			authState.creds.me!.id,
-			authState.creds.me!.lid || '',
-			signalRepository,
-			logger,
-		)
-
 		// `acked` tracks whether ANY ack/receipt was already sent for this node.
 		// The outer catch below uses it to send a single NACK on unexpected errors
-		// (matching upstream c4e5d126) — closing the window where a throw in
-		// alt-mapping / migrateSession / normalizeMessageJids / the mutex body
+		// (matching upstream c4e5d126) — closing the window where a throw in decode/decrypt
+		// setup / alt-mapping / migrateSession / normalizeMessageJids / the mutex body
 		// previously left the message un-acked and the server retrying forever.
 		let acked = false
 
 		try {
+			// decryptMessageNode runs decodeMessageNode, which can throw synchronously on a
+			// malformed stanza (missing participant / unknown type). Keep it INSIDE the try so
+			// such failures are NACKed by the guard below instead of escaping the handler un-acked.
+			const {
+				fullMessage: msg,
+				category,
+				author,
+				decrypt
+			} = decryptMessageNode(
+				node,
+				authState.creds.me!.id,
+				authState.creds.me!.lid || '',
+				signalRepository,
+				logger,
+			)
+
 			const alt = msg.key.participantAlt || msg.key.remoteJidAlt
 			// Handle LID/PN mappings with hybrid approach:
 			// - Store mapping operation runs in background (non-critical for decrypt)
