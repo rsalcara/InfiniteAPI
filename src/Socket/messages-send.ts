@@ -1642,14 +1642,26 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 			}
 
-			// If tctoken is missing for a 1:1 send, fetch it
-			// CDP capture confirms Pastorini stanza includes tctoken for carousel
+			// If tctoken is missing for a 1:1 send, fetch it.
+			//
+			// CAROUSEL DELIVERY NOTE (validated in staging 2026-05-20): the carousel
+			// DELIVERS and RENDERS on phone+Web *without* a tctoken. What the server
+			// actually requires for the carousel is CONSISTENT addressing (envelope `to`
+			// in LID matching the LID-canonicalized participants — see the envelope fix
+			// below). The tctoken below is best-effort: an empty IQ result on a fresh
+			// session is NON-FATAL, so we do not block delivery on it.
+			//
+			// We deliberately do NOT seed tctokens from history sync here (upstream PR
+			// #2339's storeTcTokensFromHistorySync / "E3"): a stale seeded token makes the
+			// server answer 479 (smax-invalid), which our ack handler marks as ERROR — and
+			// it adds NO rendering benefit, since the carousel renders tokenless. Only the
+			// full tctoken lifecycle (fetch+validate+reissue) would make seeding safe.
 			if (!tcTokenBuffer?.length && is1on1Send && !tcTokenFetchingJids.has(tcTokenJid)) {
 				tcTokenFetchingJids.add(tcTokenJid)
 				logTcToken('fetch', { jid: destinationJid })
 
 				if (isCarousel) {
-					// BLOCKING fetch for carousel — tctoken is required (Pastorini stanza has it)
+					// BLOCKING fetch for carousel — best-effort (see CAROUSEL DELIVERY NOTE above)
 					try {
 						const fetchResult = await getPrivacyTokens([destinationJid])
 
