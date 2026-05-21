@@ -43,33 +43,41 @@ export function makeOfflineNodeProcessor(
 		const promise = async () => {
 			let processedInBatch = 0
 
-			while (nodes.length && deps.isWsOpen()) {
-				const { type, node } = nodes.shift()!
+			try {
+				while (nodes.length && deps.isWsOpen()) {
+					const { type, node } = nodes.shift()!
 
-				const nodeProcessor = nodeProcessorMap.get(type)
+					const nodeProcessor = nodeProcessorMap.get(type)
 
-				if (!nodeProcessor) {
-					deps.onUnexpectedError(new Error(`unknown offline node type: ${type}`), 'processing offline node')
-					continue
+					if (!nodeProcessor) {
+						deps.onUnexpectedError(new Error(`unknown offline node type: ${type}`), 'processing offline node')
+						continue
+					}
+
+					// Catch per-node so a single handler failure doesn't kill the whole
+					// offline drain loop (the crash window this extraction fixes).
+					await nodeProcessor(node).catch(err =>
+						deps.onUnexpectedError(err instanceof Error ? err : new Error(String(err)), `processing offline ${type}`)
+					)
+					processedInBatch++
+
+					// Yield to event loop after processing a batch
+					// This prevents blocking the event loop for too long when there are many offline nodes
+					if (processedInBatch >= batchSize) {
+						processedInBatch = 0
+						await deps.yieldToEventLoop()
+					}
 				}
-
-				// Catch per-node so a single handler failure doesn't kill the whole
-				// offline drain loop (the crash window this extraction fixes).
-				await nodeProcessor(node).catch(err => deps.onUnexpectedError(err, `processing offline ${type}`))
-				processedInBatch++
-
-				// Yield to event loop after processing a batch
-				// This prevents blocking the event loop for too long when there are many offline nodes
-				if (processedInBatch >= batchSize) {
-					processedInBatch = 0
-					await deps.yieldToEventLoop()
-				}
+			} finally {
+				// Always release the flag — even if the loop throws — otherwise the queue would
+				// stall, since draining only restarts (in enqueue) while isProcessing is false.
+				isProcessing = false
 			}
-
-			isProcessing = false
 		}
 
-		promise().catch(error => deps.onUnexpectedError(error, 'processing offline nodes'))
+		promise().catch(error =>
+			deps.onUnexpectedError(error instanceof Error ? error : new Error(String(error)), 'processing offline nodes')
+		)
 	}
 
 	return { enqueue }

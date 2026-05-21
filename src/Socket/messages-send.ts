@@ -1568,7 +1568,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// reject raw `@c.us`, which sendMessage() can pass directly (Codex P1).
 				const normalizedDest = jidNormalizedUser(destinationJid)
 				const carouselLid = isAnyPnUser(normalizedDest) ? await getLIDForPN(normalizedDest) : null
-				stanza.attrs.to = carouselLid || destinationJid
+				// Fall back to the NORMALIZED jid (not the raw input) so an `@c.us` envelope still
+				// matches the normalized participant addressing when no LID mapping exists.
+				stanza.attrs.to = carouselLid || normalizedDest
 				if (carouselLid) {
 					logger.info(
 						{ msgId, from: destinationJid, to: carouselLid },
@@ -1788,7 +1790,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					return 'other'
 				})()
 
-				logger.info(
+				// debug level: one line per outbound message would be high-volume + leak recipient
+				// metadata at info in production. Run staging with log level=debug to validate sends.
+				logger.debug(
 					{
 						msgId,
 						kind,
