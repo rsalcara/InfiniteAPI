@@ -24,6 +24,7 @@ const BOT_PHONE_REGEX = /^1313555\d{4}$|^131655500\d{2}$/
 function isRegularUser(jid: string | undefined): boolean {
 	if (!jid) return false
 	const user = jid.split('@')[0] ?? ''
+	if (!user) return false // empty user part (e.g. malformed `@s.whatsapp.net`)
 	if (user === '0') return false // PSA
 	if (BOT_PHONE_REGEX.test(user)) return false // Bot by phone pattern
 	if (isJidMetaAI(jid)) return false // MetaAI (@bot server)
@@ -113,9 +114,15 @@ export async function buildTcTokenFromJid({
 		const tcTokenBuffer = entry?.token
 
 		if (!tcTokenBuffer?.length || isTcTokenExpired(entry?.timestamp)) {
-			// Opportunistic cleanup: remove expired token from store
-			if (tcTokenBuffer) {
-				await authState.keys.set({ tctoken: { [storageJid]: null } })
+			// Opportunistic cleanup: drop the expired token but preserve senderTimestamp so the
+			// fire-and-forget issuance dedupe survives — same shape used in messages-send, so this
+			// path no longer wipes that placeholder (only clears a real, non-empty expired token).
+			if (tcTokenBuffer?.length) {
+				const cleared =
+					entry?.senderTimestamp !== undefined
+						? { token: Buffer.alloc(0), senderTimestamp: entry.senderTimestamp }
+						: null
+				await authState.keys.set({ tctoken: { [storageJid]: cleared } })
 			}
 
 			return baseContent.length > 0 ? baseContent : undefined

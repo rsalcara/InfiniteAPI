@@ -1557,14 +1557,17 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				} else {
 					stanza.attrs.to = participant.jid
 				}
-			} else if (isCarousel && isAnyPnUser(destinationJid)) {
+			} else if (isCarousel) {
 				// CARROUSEL FIX (Option B): keep the envelope `to` consistent with the
 				// LID-canonicalized participants. canonicalizeCarouselRecipients converts the
 				// participant/enc nodes to LID, but the envelope stayed PN — and a PN envelope
 				// wrapping LID participant enc nodes is a mismatch the server rejects with
 				// error 400. Resolve the envelope to the same LID; fall back to PN when no
 				// mapping exists (in which case participants also stayed PN, so still consistent).
-				const carouselLid = await getLIDForPN(destinationJid)
+				// Normalize first so `@c.us` inputs also resolve — isAnyPnUser/getLIDForPN
+				// reject raw `@c.us`, which sendMessage() can pass directly (Codex P1).
+				const normalizedDest = jidNormalizedUser(destinationJid)
+				const carouselLid = isAnyPnUser(normalizedDest) ? await getLIDForPN(normalizedDest) : null
 				stanza.attrs.to = carouselLid || destinationJid
 				if (carouselLid) {
 					logger.info(
@@ -1739,7 +1742,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			if (buttonType || isCarousel) {
 				const contentTags = Array.isArray(stanza.content) ? stanza.content.map((n: BinaryNode) => n.tag) : []
 				const envelopeTo = stanza.attrs.to || destinationJid
-				const addressing = isLidUser(envelopeTo) ? 'LID' : 'PN'
+				const addressing = isAnyLidUser(envelopeTo) ? 'LID' : 'PN'
 				const kind = isCarousel ? 'carousel' : buttonType === 'list' ? 'list' : `buttons(${buttonType})`
 				logger.info(
 					{
