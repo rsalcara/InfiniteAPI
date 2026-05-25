@@ -1315,15 +1315,20 @@ function signalStorage(
 		saveIdentity: async (id: string, identityKey: Uint8Array): Promise<IdentitySaveResult> => {
 			const timer = metrics.signalIdentityKeyOperations?.startTimer({ operation: 'save' })
 
-			const wireJid = await resolveLIDSignalAddress(id)
-			const parsedKeys = keys as SignalKeyStoreWithRecordTransaction
-
-			const records: RecordRef[] = [
-				{ type: 'session', id: wireJid },
-				{ type: 'identity-key', id: wireJid }
-			]
-
 			try {
+				// PR #459 Copilot round-3: keep ALL awaits that can throw inside
+				// the try block so the Prometheus timer is always closed in
+				// `finally`. Previously `resolveLIDSignalAddress` and its inner
+				// `lidMapping.getLIDForPN` ran before the try — a throw there
+				// would leak the timer.
+				const wireJid = await resolveLIDSignalAddress(id)
+				const parsedKeys = keys as SignalKeyStoreWithRecordTransaction
+
+				const records: RecordRef[] = [
+					{ type: 'session', id: wireJid },
+					{ type: 'identity-key', id: wireJid }
+				]
+
 				return await parsedKeys.transactWith({ records }, async () => {
 					const currentFingerprint = generateKeyFingerprint(identityKey)
 
