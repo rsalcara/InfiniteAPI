@@ -68,11 +68,16 @@ export type IdentityChangeContext = {
 	 * Marker MUST be released in `finally` so a failed assertSessions doesn't
 	 * leak a permanently-stuck jid.
 	 *
-	 * The Set MUST be the same instance for every invocation in a socket
-	 * lifetime — otherwise the guard is moot. Wire it once in the socket
-	 * factory and pass on every call.
+	 * **Optional** to preserve backward compatibility — `IdentityChangeContext`
+	 * is exported via `Utils/index.ts` so adding a required field would break
+	 * external consumers that construct the context object themselves
+	 * (Copilot review on PR #459). When omitted, the in-flight guard is
+	 * silently skipped (graceful degradation) — the `debounceCache` continues
+	 * to provide the TTL-based dedup. To get the strong M11 guarantee, callers
+	 * SHOULD pass a Set instance reused across invocations for the same socket
+	 * lifetime — `messages-recv.ts` does this via `identityInFlightRefreshes`.
 	 */
-	inFlightRefreshes: Set<string>
+	inFlightRefreshes?: Set<string>
 	/** Logger instance for debugging and monitoring */
 	logger: ILogger
 }
@@ -170,7 +175,9 @@ export async function handleIdentityChange(
 	// racing it. This catches the case where assertSessions takes longer than
 	// the debounce TTL (e.g. slow network, retry storms) and would otherwise
 	// overlap with a new identity-change notification for the same jid.
-	if (ctx.inFlightRefreshes.has(from)) {
+	// Optional Set (see IdentityChangeContext JSDoc) — if absent, this guard
+	// degrades gracefully and only the debounceCache TTL provides dedup.
+	if (ctx.inFlightRefreshes?.has(from)) {
 		ctx.logger.debug({ jid: from }, 'skipping identity assert (refresh already in flight)')
 		return { action: 'skipped_in_flight' }
 	}
@@ -201,7 +208,9 @@ export async function handleIdentityChange(
 
 	// Stage 3 M11: mark in-flight BEFORE assertSessions, release in finally.
 	// If assertSessions throws, the finally still runs — no stuck marker.
-	ctx.inFlightRefreshes.add(from)
+	// Optional chaining: if no Set was provided (backward-compat path), the
+	// add/delete become no-ops and the in-flight guard above is also skipped.
+	ctx.inFlightRefreshes?.add(from)
 
 	// Attempt session refresh/creation
 	try {
@@ -211,6 +220,6 @@ export async function handleIdentityChange(
 		ctx.logger.warn({ error, jid: from }, 'failed to assert sessions after identity change')
 		return { action: 'session_refresh_failed', error }
 	} finally {
-		ctx.inFlightRefreshes.delete(from)
+		ctx.inFlightRefreshes?.delete(from)
 	}
 }

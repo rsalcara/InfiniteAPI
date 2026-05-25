@@ -1325,113 +1325,114 @@ function signalStorage(
 
 			try {
 				return await parsedKeys.transactWith({ records }, async () => {
-				const currentFingerprint = generateKeyFingerprint(identityKey)
+					const currentFingerprint = generateKeyFingerprint(identityKey)
 
-				// Load existing key (from cache or storage)
-				const { [wireJid]: existingKey } = await keys.get('identity-key', [wireJid])
+					// Load existing key (from cache or storage)
+					const { [wireJid]: existingKey } = await keys.get('identity-key', [wireJid])
 
-				// Check if keys match
-				const keysMatch =
-					existingKey?.length === identityKey.length && existingKey.every((byte, i) => byte === identityKey[i])
+					// Check if keys match
+					const keysMatch =
+						existingKey?.length === identityKey.length &&
+						existingKey.every((byte, i) => byte === identityKey[i])
 
-				if (existingKey && !keysMatch) {
-					// IDENTITY KEY CHANGED - contact reinstalled WhatsApp or switched devices
-					const previousFingerprint = generateKeyFingerprint(existingKey)
+					if (existingKey && !keysMatch) {
+						// IDENTITY KEY CHANGED - contact reinstalled WhatsApp or switched devices
+						const previousFingerprint = generateKeyFingerprint(existingKey)
 
-					// Delete old session and save new identity key atomically.
-					// Store identity in BOTH LID and PN addresses (WABA stores in both
-					// recipient_account_type=0 and type=1 with CONFLICT_REPLACE).
-					const identityUpdates: Record<string, Uint8Array> = { [wireJid]: identityKey }
-					if (wireJid !== id) {
-						identityUpdates[id] = identityKey
-					}
+						// Delete old session and save new identity key atomically.
+						// Store identity in BOTH LID and PN addresses (WABA stores in both
+						// recipient_account_type=0 and type=1 with CONFLICT_REPLACE).
+						const identityUpdates: Record<string, Uint8Array> = { [wireJid]: identityKey }
+						if (wireJid !== id) {
+							identityUpdates[id] = identityKey
+						}
 
-					await keys.set({
-						session: { [wireJid]: null },
-						'identity-key': identityUpdates
-					})
-
-					// Update cache for both addresses
-					identityKeyCache.set(wireJid, identityKey)
-					if (wireJid !== id) {
-						identityKeyCache.set(id, identityKey)
-					}
-
-					// Record metrics
-					metrics.signalIdentityChanges?.inc({ type: 'changed' })
-
-					// Emit event for application to notify user
-					if (ev) {
-						ev.emit('identity.changed', {
-							jid: wireJid,
-							previousKeyFingerprint: previousFingerprint,
-							newKeyFingerprint: currentFingerprint,
-							timestamp: Date.now(),
-							isNewContact: false
+						await keys.set({
+							session: { [wireJid]: null },
+							'identity-key': identityUpdates
 						})
-					}
 
-					logger?.warn(
-						{
-							event: 'identity_key_changed',
-							jid: wireJid,
+						// Update cache for both addresses
+						identityKeyCache.set(wireJid, identityKey)
+						if (wireJid !== id) {
+							identityKeyCache.set(id, identityKey)
+						}
+
+						// Record metrics
+						metrics.signalIdentityChanges?.inc({ type: 'changed' })
+
+						// Emit event for application to notify user
+						if (ev) {
+							ev.emit('identity.changed', {
+								jid: wireJid,
+								previousKeyFingerprint: previousFingerprint,
+								newKeyFingerprint: currentFingerprint,
+								timestamp: Date.now(),
+								isNewContact: false
+							})
+						}
+
+						logger?.warn(
+							{
+								event: 'identity_key_changed',
+								jid: wireJid,
+								previousFingerprint,
+								newFingerprint: currentFingerprint
+							},
+							'Contact identity key changed - security code changed'
+						)
+
+						return {
+							changed: true,
+							isNew: false,
 							previousFingerprint,
-							newFingerprint: currentFingerprint
-						},
-						'Contact identity key changed - security code changed'
-					)
-
-					return {
-						changed: true,
-						isNew: false,
-						previousFingerprint,
-						currentFingerprint
-					}
-				}
-
-				if (!existingKey) {
-					// NEW CONTACT - Trust On First Use (TOFU)
-					// Store in both LID and PN addresses (aligned with WABA dual identity storage)
-					const identityUpdates: Record<string, Uint8Array> = { [wireJid]: identityKey }
-					if (wireJid !== id) {
-						identityUpdates[id] = identityKey
+							currentFingerprint
+						}
 					}
 
-					await keys.set({ 'identity-key': identityUpdates })
+					if (!existingKey) {
+						// NEW CONTACT - Trust On First Use (TOFU)
+						// Store in both LID and PN addresses (aligned with WABA dual identity storage)
+						const identityUpdates: Record<string, Uint8Array> = { [wireJid]: identityKey }
+						if (wireJid !== id) {
+							identityUpdates[id] = identityKey
+						}
 
-					// Update cache for both addresses
-					identityKeyCache.set(wireJid, identityKey)
-					if (wireJid !== id) {
-						identityKeyCache.set(id, identityKey)
+						await keys.set({ 'identity-key': identityUpdates })
+
+						// Update cache for both addresses
+						identityKeyCache.set(wireJid, identityKey)
+						if (wireJid !== id) {
+							identityKeyCache.set(id, identityKey)
+						}
+
+						// Record metrics
+						metrics.signalIdentityChanges?.inc({ type: 'new' })
+
+						// Emit event for new contact
+						if (ev) {
+							ev.emit('identity.changed', {
+								jid: wireJid,
+								previousKeyFingerprint: null,
+								newKeyFingerprint: currentFingerprint,
+								timestamp: Date.now(),
+								isNewContact: true
+							})
+						}
+
+						return {
+							changed: false,
+							isNew: true,
+							currentFingerprint
+						}
 					}
 
-					// Record metrics
-					metrics.signalIdentityChanges?.inc({ type: 'new' })
-
-					// Emit event for new contact
-					if (ev) {
-						ev.emit('identity.changed', {
-							jid: wireJid,
-							previousKeyFingerprint: null,
-							newKeyFingerprint: currentFingerprint,
-							timestamp: Date.now(),
-							isNewContact: true
-						})
-					}
-
+					// Key unchanged
 					return {
 						changed: false,
-						isNew: true,
+						isNew: false,
 						currentFingerprint
 					}
-				}
-
-				// Key unchanged
-				return {
-					changed: false,
-					isNew: false,
-					currentFingerprint
-				}
 				})
 			} finally {
 				timer?.()
