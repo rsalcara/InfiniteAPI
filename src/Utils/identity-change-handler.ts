@@ -110,6 +110,7 @@ export type IdentityChangeContext = {
  *   validateSession: async (jid) => authState.keys.get('session', [jid]),
  *   assertSessions: async (jids, force) => assertSession(jids, force),
  *   debounceCache: new NodeCache({ stdTTL: 5 }),
+ *   inFlightRefreshes: new Set<string>(),
  *   logger: pino()
  * })
  *

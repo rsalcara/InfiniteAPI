@@ -481,13 +481,12 @@ export function makeLibSignalRepository(
 			// our pre-resolve (for the lock) and any of those internal calls,
 			// the actual row can drift away from the locked record.
 			//
-			// InfiniteAPI hybrid (Stage 2 PN/LID race fix preserved):
-			// `resolveCanonicalJid` is the JID-level resolver, then we convert
-			// to canonical signal address — same value as upstream's
-			// `resolveSignalAddressId(addrStr, lidMapping)` for the typical
-			// PN→LID case. Both name `wireJid` here for the Stage 3 vocabulary.
-			const canonicalJid = await resolveCanonicalJid(jid)
-			const wireJid = jidToSignalProtocolAddress(canonicalJid).toString()
+			// Uses the module-scope `resolveSignalAddressId` (Stage 3 vocabulary)
+			// directly on the signal address string — same end result as upstream
+			// and as our older `resolveCanonicalJid(jid)` + `jidToSignalProtocolAddress`
+			// pipeline, but expressed as a single signal-level call so the same
+			// helper is reused inside `pinResolutionForStorage` below.
+			const wireJid = await resolveSignalAddressId(addrStr, lidMapping)
 
 			// Pin the resolver for every internal storage call so they all hit `wireJid`.
 			const pinnedStorage = pinResolutionForStorage(addrStr, wireJid)
