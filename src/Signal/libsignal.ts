@@ -21,6 +21,41 @@ import { SenderKeyRecord } from './Group/sender-key-record'
 import { GroupCipher, GroupSessionBuilder, SenderKeyDistributionMessage } from './Group'
 import { LIDMappingStore } from './lid-mapping'
 
+/**
+ * Stage 3 (upstream #2573): module-scope PN→LID resolver for signal-protocol
+ * address strings (`user[_domainType].device` form).
+ *
+ * Lifted from `signalStorage()`'s closure so the repository methods can
+ * pre-resolve BEFORE acquiring `transactWith` locks. Without pre-resolution
+ * `transactWith` would lock the raw PN id while `loadSession` /
+ * `storeSession` / `saveIdentity` internally re-resolve to the LID form —
+ * two callers would each think they're touching different records while
+ * actually mutating the same underlying row.
+ *
+ * Identical PN→LID logic to the closure-bound `resolveLIDSignalAddress`
+ * inside `signalStorage()` (kept for backward compat with internal callers).
+ */
+async function resolveSignalAddressId(id: string, lidMapping: LIDMappingStore): Promise<string> {
+	if (!id.includes('.')) return id
+
+	const [deviceId, device] = id.split('.')
+	if (!deviceId) return id
+
+	const [user, domainType_] = deviceId.split('_')
+	const domainType = parseInt(domainType_ || '0')
+
+	if (domainType === WAJIDDomains.LID || domainType === WAJIDDomains.HOSTED_LID) return id
+
+	const pnJid = `${user!}${device !== '0' ? `:${device}` : ''}@${domainType === WAJIDDomains.HOSTED ? 'hosted' : 's.whatsapp.net'}`
+	const lidForPN = await lidMapping.getLIDForPN(pnJid)
+	if (lidForPN) {
+		const lidAddr = jidToSignalProtocolAddress(lidForPN)
+		return lidAddr.toString()
+	}
+
+	return id
+}
+
 // NOTE: Console.log suppression has been moved to src/index.ts
 // to ensure it runs BEFORE libsignal is loaded
 
@@ -304,6 +339,32 @@ export function makeLibSignalRepository(
 
 	const storage = signalStorage(auth, lidMapping, identityKeyCache, ev, logger)
 
+	/**
+	 * Stage 3 (upstream #2573): wrap the shared `storage` adapter with a
+	 * pinned resolver. The wrapper intercepts `loadSession` / `storeSession` /
+	 * `saveIdentity` calls — when the caller-passed `id` matches `rawAddr`,
+	 * we substitute `wireJid` instead of letting the inner adapter re-resolve.
+	 *
+	 * Closes the TOCTOU on resolved-address divergence: `decryptMessage`
+	 * pre-resolves `wireJid` ONCE, acquires `transactWith` locks on it,
+	 * then uses the pinned storage so all subsequent reads/writes for that
+	 * `addr` land on the locked row even if a parallel migration mutates
+	 * the underlying PN→LID mapping mid-flight.
+	 *
+	 * Wrapper approach (vs. upstream's per-call `signalStorage()` instance):
+	 * we preserve InfiniteAPI's pendingPreKeyDeletions Map + identityKeyCache
+	 * shared state across all callers (they live in the outer `storage`
+	 * closure). Recreating signalStorage per call would split that state.
+	 */
+	const pinResolutionForStorage = (rawAddr: string, wireJid: string): ExtendedSignalStorage => ({
+		...storage,
+		loadSession: (id: string) => storage.loadSession(id === rawAddr ? wireJid : id),
+		storeSession: (id: string, sess: libsignal.SessionRecord) =>
+			storage.storeSession(id === rawAddr ? wireJid : id, sess),
+		saveIdentity: (id: string, identityKey: Uint8Array) =>
+			storage.saveIdentity(id === rawAddr ? wireJid : id, identityKey)
+	})
+
 	const parsedKeys = auth.keys as SignalKeyStoreWithRecordTransaction
 	const migratedSessionCache = new LRUCache<string, true>({
 		ttl: 3 * 24 * 60 * 60 * 1000, // 3 days
@@ -410,17 +471,46 @@ export function makeLibSignalRepository(
 		},
 		async decryptMessage({ jid, type, ciphertext }) {
 			const addr = jidToSignalProtocolAddress(jid)
-			const session = new libsignal.SessionCipher(storage, addr)
+			const addrStr = addr.toString()
 
-			async function doDecrypt() {
-				// For PreKeyWhisperMessage, extract and verify identity key BEFORE decryption
-				// This handles the case where a contact reinstalled WhatsApp (new identity key)
+			// Stage 3 (upstream #2573 H1): pre-resolve wire JID ONCE so the
+			// identity save AND the decrypt itself land on the SAME storage row,
+			// and the lock scope below pins both. Without pre-resolution
+			// `loadSession`/`storeSession`/`saveIdentity` each independently
+			// re-resolve via lidMapping — if a mapping change lands between
+			// our pre-resolve (for the lock) and any of those internal calls,
+			// the actual row can drift away from the locked record.
+			//
+			// InfiniteAPI hybrid (Stage 2 PN/LID race fix preserved):
+			// `resolveCanonicalJid` is the JID-level resolver, then we convert
+			// to canonical signal address — same value as upstream's
+			// `resolveSignalAddressId(addrStr, lidMapping)` for the typical
+			// PN→LID case. Both name `wireJid` here for the Stage 3 vocabulary.
+			const canonicalJid = await resolveCanonicalJid(jid)
+			const wireJid = jidToSignalProtocolAddress(canonicalJid).toString()
+
+			// Pin the resolver for every internal storage call so they all hit `wireJid`.
+			const pinnedStorage = pinResolutionForStorage(addrStr, wireJid)
+			const session = new libsignal.SessionCipher(pinnedStorage, addr)
+
+			// Stage 3 H1: include `identity-key:wireJid` in the lock scope so the
+			// pkmsg identity-save (now folded INSIDE the same transactWith) and
+			// the decrypt share both session AND identity-key locks. Previously
+			// the identity save ran BEFORE the per-jid transaction opened — a
+			// concurrent encrypt for the same jid could load the stale session
+			// under its own meId-keyed lock and commit it back over the cleared
+			// one (H1 race).
+			const records: RecordRef[] = [
+				{ type: 'session', id: wireJid },
+				{ type: 'identity-key', id: wireJid }
+			]
+			return parsedKeys.transactWith({ records }, async () => {
+				// H1: identity save now happens INSIDE the tx scope.
 				if (type === 'pkmsg') {
 					const identityKey = extractIdentityFromPkmsg(ciphertext, logger)
 					if (identityKey) {
-						const addrStr = addr.toString()
 						try {
-							const saveResult = await storage.saveIdentity(addrStr, identityKey)
+							const saveResult = await pinnedStorage.saveIdentity(addrStr, identityKey)
 							if (saveResult.changed) {
 								logger.info(
 									{
@@ -438,8 +528,11 @@ export function makeLibSignalRepository(
 								)
 							}
 						} catch (error) {
-							// Log but don't fail decryption - identity tracking is best-effort
-							logger.warn({ jid, error: (error as Error).message }, 'Failed to save identity key during decryption')
+							// Log but don't fail decryption — identity tracking is best-effort.
+							logger.warn(
+								{ jid, error: (error as Error).message },
+								'Failed to save identity key during decryption'
+							)
 						}
 					}
 				}
@@ -452,19 +545,6 @@ export function makeLibSignalRepository(
 				}
 
 				return result
-			}
-
-			// InfiniteAPI hybrid (Stage 2 #2572 + nosso PN/LID race fix):
-			// resolve PN→LID FIRST, then build the record id from the canonical
-			// address. Upstream Stage 2 used `addr.toString()` direct, which loses
-			// our PN→LID resolution and reintroduces the race where parallel
-			// decrypts of the same logical contact via PN vs LID acquire DIFFERENT
-			// session locks. We feed the canonical addr to transactWith so all
-			// variants of the same logical session serialize under one record lock.
-			const canonicalJid = await resolveCanonicalJid(jid)
-			const canonicalAddr = jidToSignalProtocolAddress(canonicalJid).toString()
-			return parsedKeys.transactWith({ records: [{ type: 'session', id: canonicalAddr }] }, async () => {
-				return await doDecrypt()
 			})
 		},
 
@@ -1224,12 +1304,28 @@ function signalStorage(
 		/**
 		 * Save identity key for a contact with change detection
 		 * Implements Trust On First Use (TOFU) and emits events on changes
+		 *
+		 * Stage 3 (upstream #2573 H3 local): the read+compare+write below is
+		 * now wrapped in `transactWith({ records: [session, identity-key] })`
+		 * so the whole sequence is atomic w.r.t. concurrent decrypts /
+		 * identity-saves for the same `wireJid`. Re-entry is safe: when
+		 * called from inside `decryptMessage`'s outer transactWith (which
+		 * already holds these same record locks), `transactWith` detects the
+		 * locks in `existing.heldLocks` and bypasses re-acquisition.
 		 */
 		saveIdentity: async (id: string, identityKey: Uint8Array): Promise<IdentitySaveResult> => {
 			const timer = metrics.signalIdentityKeyOperations?.startTimer({ operation: 'save' })
 
+			const wireJid = await resolveLIDSignalAddress(id)
+			const parsedKeys = keys as SignalKeyStoreWithRecordTransaction
+
+			const records: RecordRef[] = [
+				{ type: 'session', id: wireJid },
+				{ type: 'identity-key', id: wireJid }
+			]
+
 			try {
-				const wireJid = await resolveLIDSignalAddress(id)
+				return await parsedKeys.transactWith({ records }, async () => {
 				const currentFingerprint = generateKeyFingerprint(identityKey)
 
 				// Load existing key (from cache or storage)
@@ -1337,6 +1433,7 @@ function signalStorage(
 					isNew: false,
 					currentFingerprint
 				}
+				})
 			} finally {
 				timer?.()
 			}

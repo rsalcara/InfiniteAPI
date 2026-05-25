@@ -36,6 +36,7 @@ export type IdentityChangeResult =
 	| { action: 'skipped_companion_device'; device: number }
 	| { action: 'skipped_self_primary' }
 	| { action: 'debounced' }
+	| { action: 'skipped_in_flight' }
 	| { action: 'skipped_offline' }
 	| { action: 'session_refreshed'; hadExistingSession: boolean }
 	| { action: 'session_refresh_failed'; error: unknown }
@@ -55,6 +56,23 @@ export type IdentityChangeContext = {
 	assertSessions: (jids: string[], force?: boolean) => Promise<boolean>
 	/** Cache for debouncing identity change processing */
 	debounceCache: NodeCache<boolean>
+	/**
+	 * Stage 3 (upstream #2573 M11): tracks identity-change refreshes currently
+	 * in flight, keyed by jid. A long-running `assertSessions` previously
+	 * outlived the debounce TTL — a second identity change for the same jid
+	 * could race a parallel refresh and overwrite each other.
+	 *
+	 * Two-level dedup (InfiniteAPI hybrid): `debounceCache` continues to gate
+	 * rapid successive notifications within the TTL window; `inFlightRefreshes`
+	 * additionally gates async-bound concurrent refreshes that outlive the TTL.
+	 * Marker MUST be released in `finally` so a failed assertSessions doesn't
+	 * leak a permanently-stuck jid.
+	 *
+	 * The Set MUST be the same instance for every invocation in a socket
+	 * lifetime — otherwise the guard is moot. Wire it once in the socket
+	 * factory and pass on every call.
+	 */
+	inFlightRefreshes: Set<string>
 	/** Logger instance for debugging and monitoring */
 	logger: ILogger
 }
@@ -146,6 +164,16 @@ export async function handleIdentityChange(
 		return { action: 'debounced' }
 	}
 
+	// Stage 3 (upstream #2573 M11): even if the debounce TTL has elapsed, a
+	// previous refresh for this jid may still be running. Skip rather than
+	// racing it. This catches the case where assertSessions takes longer than
+	// the debounce TTL (e.g. slow network, retry storms) and would otherwise
+	// overlap with a new identity-change notification for the same jid.
+	if (ctx.inFlightRefreshes.has(from)) {
+		ctx.logger.debug({ jid: from }, 'skipping identity assert (refresh already in flight)')
+		return { action: 'skipped_in_flight' }
+	}
+
 	// Skip refresh during offline notification processing
 	// Offline notifications are processed in batch and shouldn't trigger immediate refreshes
 	// FIX: Check this BEFORE setting debounce cache to avoid incorrect debouncing
@@ -170,6 +198,10 @@ export async function handleIdentityChange(
 	// This ensures we don't incorrectly debounce when we exit early (offline, etc.)
 	ctx.debounceCache.set(from, true)
 
+	// Stage 3 M11: mark in-flight BEFORE assertSessions, release in finally.
+	// If assertSessions throws, the finally still runs — no stuck marker.
+	ctx.inFlightRefreshes.add(from)
+
 	// Attempt session refresh/creation
 	try {
 		await ctx.assertSessions([from], true)
@@ -177,5 +209,7 @@ export async function handleIdentityChange(
 	} catch (error) {
 		ctx.logger.warn({ error, jid: from }, 'failed to assert sessions after identity change')
 		return { action: 'session_refresh_failed', error }
+	} finally {
+		ctx.inFlightRefreshes.delete(from)
 	}
 }
