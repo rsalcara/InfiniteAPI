@@ -78,6 +78,27 @@ describe('useSqliteAuthState', () => {
 		close()
 	})
 
+	it('treats undefined as delete sentinel (cross-adapter consistency, round-6)', async () => {
+		// Regression guard for Copilot's round-6 finding: the multi-file
+		// adapter and `makeCacheableSignalKeyStore` defensively accept
+		// `undefined` as a delete sentinel alongside `null`. The SQLite
+		// store must do the same — otherwise `JSON.stringify(undefined)`
+		// would bind as NULL and violate the `value TEXT NOT NULL` schema
+		// constraint at the database boundary.
+		const { state, close } = await useSqliteAuthState({ dbPath: ':memory:' })
+		const jid = 'peer@s.whatsapp.net'
+
+		await state.keys.set({ session: { [jid]: sampleSession(0x22) } })
+		let got = await state.keys.get('session', [jid])
+		expect(Buffer.from(got[jid] as Uint8Array)).toEqual(Buffer.from([0x22]))
+
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		await state.keys.set({ session: { [jid]: undefined as any } })
+		got = await state.keys.get('session', [jid])
+		expect(got[jid]).toBeUndefined()
+		close()
+	})
+
 	it('multi-type set commits atomically (BEGIN IMMEDIATE)', async () => {
 		const { state, close } = await useSqliteAuthState({ dbPath: ':memory:' })
 		const jid = 'peer@s.whatsapp.net'

@@ -241,7 +241,27 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 		const loadCreds = (): AuthenticationCreds => {
 			const row = stmts.credsSelect.get(CREDS_ROW_KEY) as { value: string } | undefined
 			if (!row) return initAuthCreds()
-			return JSON.parse(row.value, BufferJSON.reviver) as AuthenticationCreds
+			try {
+				return JSON.parse(row.value, BufferJSON.reviver) as AuthenticationCreds
+			} catch (cause) {
+				// Copilot round-6 fix: wrap the raw `SyntaxError` so operators
+				// get the same diagnostic context as the multi-file adapter's
+				// `AuthFileCorruptError`. Without this, a torn write to the
+				// SQLite `creds` row surfaces as a bare "Unexpected token ..."
+				// stack with no indication of WHICH database / row failed.
+				// `cause` preserves the original parse exception so any
+				// existing handler chain still sees it.
+				const error = new Error(
+					`Auth state SQLite creds row is corrupt or unreadable (dbPath=${opts.dbPath}, key=${CREDS_ROW_KEY})`
+				)
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				;(error as any).cause = cause
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				;(error as any).dbPath = opts.dbPath
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				;(error as any).rowKey = CREDS_ROW_KEY
+				throw error
+			}
 		}
 
 		const persistCreds = (creds: AuthenticationCreds): void => {
@@ -265,7 +285,16 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 				if (!bucket) continue
 				for (const id in bucket) {
 					const value = bucket[id]
-					if (value === null) {
+					// Copilot round-6 fix: treat BOTH `null` and `undefined` as the
+					// delete sentinel, matching the multi-file adapter and the
+					// cache layer (`makeCacheableSignalKeyStore`). The previous
+					// `if (value === null)` would fall through to upsert when
+					// `value === undefined`; `JSON.stringify(undefined, ...)`
+					// returns the literal `undefined` (not a string), which
+					// better-sqlite3 binds as NULL, violating the schema's
+					// `value TEXT NOT NULL` constraint and surfacing as a
+					// confusing SQLITE_CONSTRAINT_NOTNULL error to the caller.
+					if (value === null || value === undefined) {
 						stmts.keyDelete.run(type, id)
 					} else {
 						stmts.keyUpsert.run(type, id, JSON.stringify(value, BufferJSON.replacer))
