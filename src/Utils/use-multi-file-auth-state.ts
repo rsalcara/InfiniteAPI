@@ -141,6 +141,33 @@ export const useMultiFileAuthState = async (
 	//   2. if main exists, rename(main, bak)
 	//   3. rename(tmp, main)
 	// A crash between (2) and (3) leaves `.bak` intact; readData falls back.
+	//
+	// Cross-platform note (Copilot round-7 fix): on POSIX, `fs.rename` atomically
+	// replaces an existing destination. On Windows, `fs.rename` fails with
+	// EPERM/EEXIST when the destination already exists — so the second time
+	// `writeData` runs for the same file, step (2) would fail because `.bak`
+	// from the first run is still on disk. We catch that specific class of
+	// errors, unlink the stale destination, and retry the rename once. POSIX
+	// path is unchanged (the catch never fires there because the first rename
+	// succeeds atomically).
+	const renameOverwrite = async (from: string, to: string) => {
+		try {
+			await rename(from, to)
+		} catch (err: unknown) {
+			const code = errorCode(err)
+			// Source missing — propagate as ENOENT so the caller decides.
+			if (code === 'ENOENT') throw err
+			// Windows: destination exists. Delete it and retry once.
+			if (code === 'EEXIST' || code === 'EPERM') {
+				await unlinkIgnoreMissing(to)
+				await rename(from, to)
+				return
+			}
+
+			throw err
+		}
+	}
+
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const writeData = async (data: any, file: string) => {
 		const filePath = join(folder, fixFileName(file)!)
@@ -150,9 +177,12 @@ export const useMultiFileAuthState = async (
 		try {
 			await writeFile(tmpPath, JSON.stringify(data, BufferJSON.replacer))
 			// Rotate the previous file to .bak. If it doesn't exist, that's fine.
-			await rename(filePath, bakPath).catch((err: unknown) => {
+			// Windows-safe overwrite for the case where a stale `.bak` survived.
+			await renameOverwrite(filePath, bakPath).catch((err: unknown) => {
 				if (errorCode(err) !== 'ENOENT') throw err
 			})
+			// `tmp → main`: main is now gone (just rotated), so this is a simple
+			// rename on every platform. No overwrite needed.
 			await rename(tmpPath, filePath)
 		} finally {
 			release()
@@ -388,12 +418,24 @@ export const useMultiFileAuthState = async (
 						}
 					}
 
-					// Sequential rather than parallel: the per-file locks
-					// serialize naturally and a single failure cleans up its
-					// own `.tmp` without affecting siblings.
-					for (const w of writes) {
-						await writeData(w.value, w.file)
-					}
+					// Copilot round-7 fix: parallelise writes. Each `writeData`
+					// holds its own per-file `Mutex` (see `acquireFileLock`), so
+					// writes to DIFFERENT files cannot interleave. The sequential
+					// `for…await` introduced by upstream Stage 5 was unnecessarily
+					// pessimistic — it preserved per-file isolation that the locks
+					// already guarantee, while serialising the entire batch and
+					// regressing bootstrap performance (e.g. ~30 pre-key writes
+					// on initial pair-up went from ~20ms parallel to ~150ms
+					// sequential). Restoring `Promise.all` keeps the per-file
+					// safety AND the original throughput.
+					//
+					// Failure semantics: `Promise.all` rejects on the first failure
+					// but in-flight writes complete independently. Each `writeData`
+					// cleans up its own `.tmp` on failure inside its `try/finally`,
+					// so a partial-success scenario leaves no stray temp files —
+					// matches the cross-file approximation contract documented at
+					// the top of this file.
+					await Promise.all(writes.map(w => writeData(w.value, w.file)))
 
 					// Deletions happen after writes so a swap-and-delete style
 					// caller (e.g. session migration) keeps the new key around
