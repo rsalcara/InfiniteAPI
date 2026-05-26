@@ -280,19 +280,63 @@ export const useMultiFileAuthState = async (
 	/**
 	 * Iterate every file in the folder that belongs to `type`. Yields the
 	 * decoded id (the same logical id callers passed to `get`/`set` originally)
-	 * via {@link decodeIdForType}, plus the on-disk filename for read access.
+	 * via {@link decodeIdForType}, plus the on-disk filename to pass to
+	 * `readData`.
+	 *
+	 * Hardening on top of upstream Stage 5:
+	 *
+	 *   1. Prefix collision (`sender-key-` vs `sender-key-memory-`):
+	 *      iterating `sender-key` with a naive `startsWith('sender-key-')`
+	 *      ALSO matches every `sender-key-memory-*` file. In migration that
+	 *      would yield `sender-key-memory` records under the `sender-key`
+	 *      bucket and corrupt group-cipher state on the destination. We
+	 *      explicitly exclude the longer-prefix collision when iterating the
+	 *      shorter type. This is the only such collision in `SignalDataType`
+	 *      today; if more types are added with overlapping prefixes, extend
+	 *      this exclusion list rather than relying on prefix alone.
+	 *
+	 *   2. `.bak`-only records (crash between `rename(main → bak)` and
+	 *      `rename(tmp → main)`): the primary `*.json` is gone but `*.json.bak`
+	 *      holds the previous good content. `readData` already falls back to
+	 *      `.bak` for known keys, but enumeration was missing these — making
+	 *      `migrateAuthState` and `verifyMigration` silently drop records.
+	 *      We do a two-pass walk: every primary `*.json` first (tracking
+	 *      encoded ids), then any `*.json.bak` whose primary was missing,
+	 *      yielding the LOGICAL filename (`<prefix><id>.json`) so `readData`
+	 *      runs its standard `.bak` recovery path.
 	 */
 	async function* iterateType<T extends keyof SignalDataTypeMap>(
 		type: T
 	): AsyncGenerator<{ id: string; filename: string }> {
 		const entries = await readdir(folder)
 		const prefix = `${fixFileName(type)}-`
+		// Codex P1 fix: prevent `sender-key` enumeration from absorbing
+		// `sender-key-memory-*` files.
+		const collidingPrefix =
+			type === 'sender-key' ? `${fixFileName('sender-key-memory' as keyof SignalDataTypeMap)}-` : null
+
+		const seenEncodedIds = new Set<string>()
+
+		// Pass 1 — primary `*.json` files.
 		for (const filename of entries) {
 			if (!filename.startsWith(prefix) || !filename.endsWith('.json')) continue
-			// Skip `.tmp` (in-flight writes) and `.bak` (rotated backups) artifacts.
-			if (filename.endsWith('.tmp') || filename.endsWith('.bak')) continue
+			if (collidingPrefix && filename.startsWith(collidingPrefix)) continue
 			const encodedId = filename.slice(prefix.length, -'.json'.length)
+			seenEncodedIds.add(encodedId)
 			yield { id: decodeIdForType(type, encodedId), filename }
+		}
+
+		// Pass 2 — Copilot fix: orphan `*.json.bak` files whose `.json`
+		// was rotated away by a crashed write. Yield using the LOGICAL
+		// `.json` filename so `readData` reaches the `.bak` recovery path.
+		const BAK_SUFFIX = '.json.bak'
+		for (const filename of entries) {
+			if (!filename.startsWith(prefix) || !filename.endsWith(BAK_SUFFIX)) continue
+			if (collidingPrefix && filename.startsWith(collidingPrefix)) continue
+			const encodedId = filename.slice(prefix.length, -BAK_SUFFIX.length)
+			if (seenEncodedIds.has(encodedId)) continue
+			seenEncodedIds.add(encodedId)
+			yield { id: decodeIdForType(type, encodedId), filename: `${prefix}${encodedId}.json` }
 		}
 	}
 
@@ -357,7 +401,23 @@ export const useMultiFileAuthState = async (
 					// Each unlink swallows ONLY ENOENT (concurrent delete or
 					// already gone); real I/O errors propagate so the caller
 					// sees the failure.
-					const entries = await readdir(folder).catch(() => [])
+					//
+					// Cubic P2 fix: only swallow ENOENT from `readdir`. A real
+					// I/O failure (EACCES, EIO, etc.) must propagate — otherwise
+					// `clear()` returns success without deleting anything and the
+					// caller treats the auth state as cleared when it is not.
+					let entries: string[]
+					try {
+						entries = await readdir(folder)
+					} catch (err: unknown) {
+						if (errorCode(err) === 'ENOENT') {
+							// Folder doesn't exist — nothing to clear is a valid no-op.
+							return
+						}
+
+						throw err
+					}
+
 					await Promise.all(
 						entries
 							.filter(

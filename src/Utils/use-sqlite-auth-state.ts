@@ -9,8 +9,16 @@ import type { ILogger } from './logger'
 
 /** A live `better-sqlite3` database handle (the instance type, not the constructor). */
 type Database = BetterSqlite3Module.Database
-/** The constructor exposed by `better-sqlite3`'s `export =` default. */
-type DatabaseConstructor = typeof BetterSqlite3Module
+/**
+ * The constructor exposed by `better-sqlite3`'s `export =` default.
+ *
+ * Copilot fix: with `verbatimModuleSyntax: true`, `typeof BetterSqlite3Module`
+ * is illegal because `BetterSqlite3Module` is imported with `import type` and
+ * lives in the type namespace only. Use a `typeof import(...)` type query
+ * directly so TypeScript resolves the constructor type without ever needing
+ * the value identifier.
+ */
+type DatabaseConstructor = typeof import('better-sqlite3')
 
 /**
  * Lazy load `better-sqlite3` so the dependency is only required when this
@@ -66,8 +74,18 @@ const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
 	'busy_timeout = 5000'
 ]
 
-/** Retry budget for SQLITE_BUSY on the per-call BEGIN IMMEDIATE write. */
-const MAX_BUSY_RETRIES = 5
+/**
+ * Total attempts (NOT additional retries) for SQLITE_BUSY on the per-call
+ * BEGIN IMMEDIATE write. A value of `5` means up to 5 calls into
+ * `applySetTx.immediate(...)` before propagating the error.
+ *
+ * Copilot fix: previous name was `MAX_BUSY_RETRIES` paired with
+ * `attempt <= MAX_BUSY_RETRIES`, which gave 6 total attempts when the
+ * caller intuition was 5. Renamed to `MAX_BUSY_ATTEMPTS` + `attempt < ...`
+ * so the loop bound matches the constant's meaning and the
+ * `attempts: attempt + 1` log field reads consistently.
+ */
+const MAX_BUSY_ATTEMPTS = 5
 /** Backoff floor between retry attempts (jittered 0.5× – 1.5×). */
 const BUSY_RETRY_BASE_MS = 25
 
@@ -240,7 +258,7 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 		 */
 		const runSetWithBusyRetry = async (data: SignalDataSet) => {
 			let lastError: unknown
-			for (let attempt = 0; attempt <= MAX_BUSY_RETRIES; attempt++) {
+			for (let attempt = 0; attempt < MAX_BUSY_ATTEMPTS; attempt++) {
 				try {
 					applySetTx.immediate(data)
 					if (attempt > 0) {
@@ -253,7 +271,7 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 					// eslint-disable-next-line @typescript-eslint/no-explicit-any
 					const code = (err as any)?.code as string | undefined
 					const isBusy = code === 'SQLITE_BUSY' || code === 'SQLITE_BUSY_SNAPSHOT'
-					if (!isBusy || attempt === MAX_BUSY_RETRIES) {
+					if (!isBusy || attempt === MAX_BUSY_ATTEMPTS - 1) {
 						throw err
 					}
 
@@ -271,6 +289,12 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 		// `db` is captured by `close` below; the non-null narrowing inside this
 		// successful-init branch is local.
 		const handle = db
+		// Cubic/Codex P2 fix: close() must NOT tear down a caller-owned
+		// `opts.database` handle. The caller passed an already-open instance
+		// and may be reusing it elsewhere (e.g. shared connection pool,
+		// inspector sidecar). Capture ownership at init time so `close()`
+		// only acts on handles we opened ourselves.
+		const closeOwnsDb = ownsDb
 		return {
 			state: {
 				creds,
@@ -321,8 +345,13 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 				persistCreds(creds)
 			},
 			close: () => {
-				handle.close()
-				opts.logger?.debug({ dbPath: opts.dbPath }, 'sqlite auth state closed')
+				if (closeOwnsDb) {
+					handle.close()
+					opts.logger?.debug({ dbPath: opts.dbPath }, 'sqlite auth state closed')
+				} else {
+					// Caller injected the handle — lifecycle belongs to them.
+					opts.logger?.debug({ dbPath: opts.dbPath }, 'sqlite auth state released (injected handle, not closed)')
+				}
 			}
 		}
 	} catch (err) {

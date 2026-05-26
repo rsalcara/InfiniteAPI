@@ -157,30 +157,52 @@ export async function migrateAuthState({
 		// Drain the source iterator and stage records in `batch`. Source-side
 		// errors are recoverable (we record a warning per type, then continue
 		// to the next type so a partially-listable source doesn't lose every
-		// other type's records). Destination-side errors are NOT — they're
-		// surfaced by letting the `flush` outside this try propagate.
-		try {
-			for await (const [id, value] of from.keys.list(type)) {
-				if (existingIds?.has(id)) continue
-				batch[id] = value
-				batchCount++
-				if (batchCount >= batchSize) {
-					// In-loop flush: keep destination errors outside this
-					// catch by exiting the for-await first if the upstream
-					// iterator is also still streaming. Simplest path: just
-					// call flush, accept that an in-loop flush failure
-					// short-circuits this type — the throw lands at the
-					// outer flush below (and we never reach it).
-					await flush()
+		// other type's records). Destination-side errors are NOT — they MUST
+		// propagate so the operator notices and can re-run the migration.
+		//
+		// Cubic P1 fix: previous structure used `for await ... { await flush() }`
+		// inside ONE try/catch. A destination throw from the in-loop `flush()`
+		// got caught by the outer source-listing catch and downgraded to a
+		// warning — the migration then either silently dropped remaining
+		// records for that type or attempted to flush the same broken batch
+		// twice. Manual iteration lets us catch source `.next()` errors at
+		// the call site only, while in-loop `flush()` throws propagate up to
+		// the caller untouched.
+		//
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const sourceIter = (from.keys.list(type) as AsyncIterable<readonly [string, any]>)[Symbol.asyncIterator]()
+		while (true) {
+			let next: IteratorResult<readonly [string, SignalDataTypeMap[typeof type] | null]>
+			try {
+				next = await sourceIter.next()
+			} catch (e) {
+				result.warnings.push(`failed to enumerate source records for ${type}: ${String(e)}`)
+				// Ensure the iterator is cleaned up so the source store can
+				// release any cursor/lock it was holding for this type.
+				try {
+					await sourceIter.return?.()
+				} catch {
+					// best-effort cleanup
 				}
+
+				break
 			}
-		} catch (e) {
-			result.warnings.push(`failed to enumerate source records for ${type}: ${String(e)}`)
+
+			if (next.done) break
+			const [id, value] = next.value
+			if (existingIds?.has(id)) continue
+			batch[id] = value
+			batchCount++
+			if (batchCount >= batchSize) {
+				// Flush throws propagate — destination errors must NOT be
+				// swallowed as source warnings.
+				await flush()
+			}
 		}
 
-		// Final flush: outside the listing try/catch so a destination
-		// `to.keys.set` failure aborts the migration. The caller's `await`
-		// rejects with the underlying store error.
+		// Final flush: a destination `to.keys.set` failure aborts the
+		// migration. The caller's `await` rejects with the underlying store
+		// error.
 		await flush()
 
 		result.counts[type] = total
