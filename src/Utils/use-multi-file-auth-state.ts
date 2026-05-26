@@ -374,10 +374,16 @@ export const useMultiFileAuthState = async (
 						for (const id in data[type]) {
 							const value = data[type]![id]
 							const file = `${type}-${id}.json`
-							if (value) {
-								writes.push({ file, value })
-							} else {
+							// Copilot round-5 fix: `null` is the SignalDataSet delete
+							// sentinel — use an explicit comparison rather than
+							// truthiness. A falsy-but-valid value (e.g. an empty
+							// `lid-mapping` string, theoretically) would otherwise
+							// be incorrectly routed to `deletions`. Matches the
+							// SignalDataSet contract documented in Types/Auth.ts.
+							if (value === null || value === undefined) {
 								deletions.push(file)
+							} else {
+								writes.push({ file, value })
 							}
 						}
 					}

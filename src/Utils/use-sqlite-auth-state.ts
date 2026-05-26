@@ -172,8 +172,8 @@ function sleep(ms: number) {
  *   - point reads via prepared statements (constant-time, no transaction);
  *   - each `set()` runs as a single `BEGIN IMMEDIATE` ... `COMMIT` so the
  *     entire multi-type payload commits atomically or rolls back; under
- *     SQLITE_BUSY the call retries up to MAX_BUSY_RETRIES with jittered
- *     backoff before propagating;
+ *     SQLITE_BUSY the call retries up to `MAX_BUSY_ATTEMPTS` times with
+ *     jittered backoff before propagating;
  *   - `clear()` is a single statement and serializes naturally;
  *   - `list`/`listIds` use streaming iterators — readers do not block the
  *     single writer under WAL mode.

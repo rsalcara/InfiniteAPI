@@ -38,9 +38,17 @@ describe('useSqliteAuthState', () => {
 	})
 
 	it('persists creds across open/close on a file-backed db', async () => {
-		const tmp = await import('os').then(o => o.tmpdir())
-		const path = await import('path').then(p => p.join(tmp, `baileys-sqlite-test-${Date.now()}.db`))
+		// Copilot round-5 fix: `Date.now()` alone can collide between Jest
+		// parallel workers landing in the same millisecond. `mkdtemp` gives
+		// a process-unique directory; the DB filename inside it is fixed
+		// so we can predictably target the WAL/SHM companions on cleanup.
 		const { promises: fs } = await import('fs')
+		const { mkdtemp } = await import('fs/promises')
+		const { tmpdir } = await import('os')
+		const { join } = await import('path')
+
+		const dir = await mkdtemp(join(tmpdir(), 'baileys-sqlite-test-'))
+		const path = join(dir, 'auth.db')
 
 		try {
 			const a = await useSqliteAuthState({ dbPath: path })
@@ -52,9 +60,7 @@ describe('useSqliteAuthState', () => {
 			expect(b.state.creds.advSecretKey).toBe('persistent-sentinel')
 			b.close()
 		} finally {
-			await fs.rm(path, { force: true })
-			await fs.rm(`${path}-wal`, { force: true })
-			await fs.rm(`${path}-shm`, { force: true })
+			await fs.rm(dir, { recursive: true, force: true })
 		}
 	})
 
