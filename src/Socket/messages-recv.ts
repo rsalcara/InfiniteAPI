@@ -194,8 +194,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	 * pre-key error recovery logic depends on that broader serialization.
 	 */
 	const retryLocks = makeLockManager()
+	// PR #462 review (Copilot): double-underscore prefix on the namespace
+	// avoids future collisions with any real `SignalDataType` value.
+	// LockManager docs (lock-manager.ts:9) require this convention for
+	// namespaces that aren't backed by a record type. Matches the convention
+	// already used by `__lid_migration__` (Stage 3 H8) and
+	// `__placeholder_resend__` (Stage 9 — see above).
 	const retryLockRef = (msgId: string, participant: string) => ({
-		namespace: 'msg-retry',
+		namespace: '__msg_retry__',
 		id: `${msgId}:${participant}`
 	})
 	const incrementRetryAndGet = async (msgId: string, participant: string): Promise<number> => {
