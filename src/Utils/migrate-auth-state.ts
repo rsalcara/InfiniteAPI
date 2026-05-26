@@ -171,32 +171,46 @@ export async function migrateAuthState({
 		//
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const sourceIter = (from.keys.list(type) as AsyncIterable<readonly [string, any]>)[Symbol.asyncIterator]()
-		while (true) {
-			let next: IteratorResult<readonly [string, SignalDataTypeMap[typeof type] | null]>
-			try {
-				next = await sourceIter.next()
-			} catch (e) {
-				result.warnings.push(`failed to enumerate source records for ${type}: ${String(e)}`)
-				// Ensure the iterator is cleaned up so the source store can
-				// release any cursor/lock it was holding for this type.
+
+		// Cubic P2 fix (round-3): wrap the whole iteration in try/finally so
+		// the source iterator is ALWAYS released, regardless of how we exit.
+		// Round-1 only called `sourceIter.return?.()` in the source-error
+		// branch; an in-loop `flush()` throw (destination error) bypassed
+		// cleanup entirely and leaked the source cursor / prepared statement.
+		// The `try { return await ... }` in `flush()` already lets the throw
+		// reach this finally — we just need to make the cleanup unconditional.
+		try {
+			while (true) {
+				let next: IteratorResult<readonly [string, SignalDataTypeMap[typeof type] | null]>
 				try {
-					await sourceIter.return?.()
-				} catch {
-					// best-effort cleanup
+					next = await sourceIter.next()
+				} catch (e) {
+					result.warnings.push(`failed to enumerate source records for ${type}: ${String(e)}`)
+					break
 				}
 
-				break
+				if (next.done) break
+				const [id, value] = next.value
+				if (existingIds?.has(id)) continue
+				batch[id] = value
+				batchCount++
+				if (batchCount >= batchSize) {
+					// Flush throws propagate — destination errors must NOT be
+					// swallowed as source warnings. The outer try/finally
+					// guarantees iterator cleanup before the throw reaches
+					// the caller.
+					await flush()
+				}
 			}
-
-			if (next.done) break
-			const [id, value] = next.value
-			if (existingIds?.has(id)) continue
-			batch[id] = value
-			batchCount++
-			if (batchCount >= batchSize) {
-				// Flush throws propagate — destination errors must NOT be
-				// swallowed as source warnings.
-				await flush()
+		} finally {
+			// Best-effort iterator cleanup. Source stores typically release
+			// the cursor/statement here (e.g. better-sqlite3 finalises the
+			// prepared SELECT iteration). Swallow any error — the original
+			// throw (if any) takes precedence.
+			try {
+				await sourceIter.return?.()
+			} catch {
+				// best-effort cleanup; ignore.
 			}
 		}
 

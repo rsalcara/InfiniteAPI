@@ -1,5 +1,13 @@
 // Type-only import so we don't pull better-sqlite3 into the bundle
 // unconditionally. The runtime `import('better-sqlite3')` below remains lazy.
+//
+// Codex P1 fix (round-3): both this `import type` and the `typeof import(...)`
+// below resolve to internal aliases ONLY. Nothing from `better-sqlite3`
+// appears in the public `SqliteAuthStateOptions` surface — see the
+// `database?: unknown` field below. The .d.ts emitted for downstream
+// consumers therefore does NOT require `better-sqlite3` types to resolve,
+// preserving the optional-peer-dep contract for non-SQLite users (no
+// `TS2307` under `skipLibCheck: false`).
 import type BetterSqlite3Module from 'better-sqlite3'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDataTypeMap } from '../Types'
@@ -7,16 +15,19 @@ import { initAuthCreds } from './auth-utils'
 import { BufferJSON } from './generics'
 import type { ILogger } from './logger'
 
-/** A live `better-sqlite3` database handle (the instance type, not the constructor). */
+/**
+ * A live `better-sqlite3` database handle. INTERNAL alias — used for type
+ * safety inside this module; NOT exposed via any exported type. Consumers
+ * who want to inject a pre-opened handle pass `unknown` through the public
+ * `SqliteAuthStateOptions.database` field and we cast at the boundary.
+ */
 type Database = BetterSqlite3Module.Database
 /**
- * The constructor exposed by `better-sqlite3`'s `export =` default.
+ * The constructor exposed by `better-sqlite3`'s `export =` default. INTERNAL.
  *
- * Copilot fix: with `verbatimModuleSyntax: true`, `typeof BetterSqlite3Module`
- * is illegal because `BetterSqlite3Module` is imported with `import type` and
- * lives in the type namespace only. Use a `typeof import(...)` type query
- * directly so TypeScript resolves the constructor type without ever needing
- * the value identifier.
+ * With `verbatimModuleSyntax: true`, `typeof BetterSqlite3Module` is illegal
+ * because `BetterSqlite3Module` is imported with `import type` and lives in
+ * the type namespace only. Use a `typeof import(...)` type query directly.
  */
 type DatabaseConstructor = typeof import('better-sqlite3')
 
@@ -89,7 +100,17 @@ const MAX_BUSY_ATTEMPTS = 5
 /** Backoff floor between retry attempts (jittered 0.5× – 1.5×). */
 const BUSY_RETRY_BASE_MS = 25
 
-type SqliteAuthStateOptions = {
+/**
+ * Public configuration shape for {@link useSqliteAuthState}.
+ *
+ * Codex P1 fix (round-3): `database` is typed `unknown` rather than the
+ * internal `Database` alias so this exported type does NOT carry a hard
+ * dependency on `better-sqlite3`'s declarations. Consumers who never use
+ * SQLite can import baileys' public types without needing
+ * `@types/better-sqlite3` resolvable in their project. The runtime
+ * expectation is unchanged: pass a `better-sqlite3` `Database` instance.
+ */
+export type SqliteAuthStateOptions = {
 	/**
 	 * Filesystem path to the SQLite database file. The file will be created if
 	 * it does not exist. Use `':memory:'` for an in-process ephemeral store
@@ -99,9 +120,14 @@ type SqliteAuthStateOptions = {
 	/**
 	 * If supplied, overrides the default `better-sqlite3` import — primarily
 	 * for tests / advanced consumers that want to inject a pre-opened
-	 * `Database` handle.
+	 * handle.
+	 *
+	 * **Runtime contract**: must be a `better-sqlite3` `Database` instance.
+	 * Typed as `unknown` here so consumers who don't use SQLite never need
+	 * to resolve `better-sqlite3` types (the field is cast at the boundary
+	 * inside the implementation).
 	 */
-	database?: Database
+	database?: unknown
 	/**
 	 * Additional `PRAGMA` statements to apply after the defaults. Use this for
 	 * ops tuning (e.g. `'cache_size = -8000'`, `'mmap_size = 268435456'`)
@@ -173,7 +199,10 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 	const ownsDb = !opts.database
 	try {
 		if (opts.database) {
-			db = opts.database
+			// Boundary cast: public type is `unknown` to avoid leaking
+			// `better-sqlite3` types into our .d.ts (Codex P1 round-3).
+			// Runtime contract: must be a `better-sqlite3` Database instance.
+			db = opts.database as Database
 		} else {
 			const Database = await loadBetterSqlite3()
 			db = new Database(opts.dbPath)
