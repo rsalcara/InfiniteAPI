@@ -32,3 +32,9 @@ export {
 	type CollectionVersionRow,
 	type SyncdMutationRow
 } from './app-state-backend'
+export {
+	SignalTypedBackend,
+	type SignalSessionKey,
+	type SignalIdentityKey,
+	type SignalSenderKeyKey
+} from './signal-typed-backend'
