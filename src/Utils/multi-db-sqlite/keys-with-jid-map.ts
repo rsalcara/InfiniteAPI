@@ -52,15 +52,40 @@ export function wrapKeysWithJidMap(
 				return inner.get(type, ids)
 			}
 
+			// Split the input batch into PN-direction (no suffix) and
+			// LID-direction (`_reverse` suffix) lookups, then do ONE batched
+			// SQL query per direction. `LIDMappingStore` defaults
+			// batchSize=100 here, so without batching this was N point
+			// selects per call — undoing the whole point of the batch read.
 			const out: { [id: string]: SignalDataTypeMap[T] } = {}
+			const forwardIds: string[] = []
+			const reverseLids: string[] = []
+			const reverseLookup = new Map<string, string>() // lidUser → original id
 			for (const id of ids) {
 				const { lidUser, isReverse } = stripReverse(id)
 				if (isReverse) {
-					const pn = jidMap.getPnForLid(lidUser)
-					if (pn !== null) out[id] = pn as unknown as SignalDataTypeMap[T]
+					reverseLids.push(lidUser)
+					reverseLookup.set(lidUser, id)
 				} else {
-					const lid = jidMap.getLidForPn(id)
-					if (lid !== null) out[id] = lid as unknown as SignalDataTypeMap[T]
+					forwardIds.push(id)
+				}
+			}
+
+			if (forwardIds.length > 0) {
+				const forwardHits = jidMap.batchGetLidForPn(forwardIds)
+				for (const pn of forwardIds) {
+					const lid = forwardHits[pn]
+					if (lid !== undefined) out[pn] = lid as unknown as SignalDataTypeMap[T]
+				}
+			}
+
+			if (reverseLids.length > 0) {
+				const reverseHits = jidMap.batchGetPnForLid(reverseLids)
+				for (const lid of reverseLids) {
+					const pn = reverseHits[lid]
+					if (pn === undefined) continue
+					const originalId = reverseLookup.get(lid)
+					if (originalId) out[originalId] = pn as unknown as SignalDataTypeMap[T]
 				}
 			}
 

@@ -168,6 +168,14 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			},
 			clear: async () => {
 				signalStmts.clear.run()
+				// LID mappings now live in msgstore.db.jid_map (phase 9.1),
+				// not in signal_kv. A reset/wipe that only nukes signal_kv
+				// would leave the LID↔PN mappings behind, which can cause
+				// the LIDMappingStore (in-RAM LRU + retry) to surface
+				// stale resolutions for previously-known contacts after a
+				// "clear all keys" event.
+				const msgstoreDb = store.handle('msgstore.db')
+				msgstoreDb.exec('DELETE FROM jid_map; DELETE FROM jid;')
 			},
 			list: async function* <T extends keyof SignalDataTypeMap>(
 				type: T

@@ -163,18 +163,28 @@ export class MultiDbSqliteStore {
 	 * Closes every opened handle. Safe to call multiple times; subsequent
 	 * calls are no-ops. After close, the same `sessionDir` can be re-opened
 	 * via a fresh store instance.
+	 *
+	 * If `close()` is invoked while an `open()` is still in flight, the
+	 * `openInFlight` promise has already added handles to `this.handles`
+	 * one by one — we still walk the map and close whatever is there. Then
+	 * `opened` is set false so the still-pending open() resolves into a
+	 * closed store: subsequent `handle()` lookups will throw with the
+	 * "not opened" message, which is the correct postcondition for a
+	 * caller that explicitly tore the store down.
 	 */
 	close(): void {
-		if (!this.opened) return
-		for (const [file, db] of this.handles) {
+		// Snapshot the current handles regardless of `opened` state — an
+		// open() in flight may have populated the Map even though `opened`
+		// is still false at this instant.
+		const handlesToClose = Array.from(this.handles.entries())
+		this.handles.clear()
+		this.opened = false
+		for (const [file, db] of handlesToClose) {
 			try {
 				db.close()
 			} catch (err) {
 				this.opts.logger?.warn?.({ file, err }, 'multi-db-sqlite: close failed')
 			}
 		}
-
-		this.handles.clear()
-		this.opened = false
 	}
 }

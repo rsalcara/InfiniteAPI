@@ -13,7 +13,7 @@
  *
  * Uses on-disk DBs in a tmp directory because the multi-file layout
  * requires real files (`:memory:` is per-connection and doesn't apply
- * across the 5 handles).
+ * across the 13 handles).
  */
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'

@@ -31,6 +31,11 @@ import type { SqliteDbLike } from './types'
 
 type Database = BetterSqlite3Module.Database
 
+// Year-9999 epoch ms — NodeCache `ttl=0` means "never expire", which we
+// encode as a fixed far-future `expires_at` so the read path stays NULL-
+// free and the column stays NOT NULL.
+const NO_EXPIRY_SENTINEL = 253_402_300_799_000
+
 const CREATE_AUX_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS msg_retry_counter (
   key_id TEXT PRIMARY KEY,
@@ -107,11 +112,18 @@ export class MsgRetryCounterSqliteAdapter implements CacheStoreShape {
 	}
 
 	set(key: string, value: unknown, ttl?: number | string): boolean {
-		const ttlMs = typeof ttl === 'number' ? ttl * 1000 : this.defaultTtlMs
 		const now = Date.now()
 		const count = Number(value)
 		if (!Number.isFinite(count)) return false
-		this.stmts.upsert.run(key, count, now, now + ttlMs)
+		let expiresAt: number
+		if (typeof ttl === 'number') {
+			// NodeCache compat: ttl === 0 means "never expire".
+			expiresAt = ttl === 0 ? NO_EXPIRY_SENTINEL : now + ttl * 1000
+		} else {
+			expiresAt = now + this.defaultTtlMs
+		}
+
+		this.stmts.upsert.run(key, count, now, expiresAt)
 		return true
 	}
 

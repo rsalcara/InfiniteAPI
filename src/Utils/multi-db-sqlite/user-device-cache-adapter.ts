@@ -69,6 +69,13 @@ CREATE INDEX IF NOT EXISTS user_device_cache_json_expires_idx
 
 const FLUSH_ALL_SQL = 'DELETE FROM user_device_cache_json'
 
+// Year-9999 in epoch milliseconds. Used as `expires_at` for entries
+// written with `ttl=0` (NodeCache convention for "never expire"). Picking
+// a fixed huge value keeps the column NOT NULL and the read path simple:
+// `expires_at <= Date.now()` returns false until well past any realistic
+// runtime, while bookkeeping (pruneExpired) still treats it as live.
+const NO_EXPIRY_SENTINEL = 253_402_300_799_000
+
 export type UserDeviceCacheAdapterOptions = {
 	/** Default TTL applied to entries written without an explicit TTL (seconds). */
 	defaultTtlSeconds?: number
@@ -146,8 +153,16 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 	}
 
 	set(key: string, value: NodeCacheCompatibleEntry, ttl?: number | string): boolean {
-		const ttlMs = typeof ttl === 'number' ? ttl * 1000 : this.defaultTtlMs
-		const expiresAt = Date.now() + ttlMs
+		let expiresAt: number
+		if (typeof ttl === 'number') {
+			// NodeCache compat: ttl === 0 means "never expire". Encode that
+			// as a far-future timestamp so we don't need a nullable column
+			// and a NULL-aware check on every get/mget hot-path read.
+			expiresAt = ttl === 0 ? NO_EXPIRY_SENTINEL : Date.now() + ttl * 1000
+		} else {
+			expiresAt = Date.now() + this.defaultTtlMs
+		}
+
 		this.stmts.upsert.run(key, JSON.stringify(value), expiresAt)
 		return true
 	}
@@ -169,39 +184,46 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 		const out: { [key: string]: T } = {}
 		if (keys.length === 0) return out
 
-		// One batched SELECT replaces N point selects on the hot path
+		// Batched SELECT replaces N point selects on the hot path
 		// (`messages-send.ts` calls `mget` with every recipient of a fan-out
-		// at once). `IN (...)` placeholder list is generated dynamically;
-		// `better-sqlite3` does not cache prepared SQL with variable-length
-		// IN lists, so we prepare ad-hoc here.
-		const placeholders = keys.map(() => '?').join(',')
+		// at once). SQLite's default `SQLITE_LIMIT_VARIABLE_NUMBER` is 999;
+		// large fan-outs would otherwise hit "too many SQL variables". We
+		// chunk `keys` into safe batches and stitch the results in memory.
+		// 500 leaves headroom for any DELETE-side IN list reused below.
+		const CHUNK = 500
 		const now = Date.now()
-		const rows = this.db
-			.prepare(
-				`SELECT user_jid, devices_json, expires_at FROM user_device_cache_json WHERE user_jid IN (${placeholders})`
-			)
-			.all(...keys) as Array<{ user_jid: string; devices_json: string; expires_at: number }>
-
 		const staleKeys: string[] = []
-		for (const r of rows) {
-			if (r.expires_at <= now) {
-				staleKeys.push(r.user_jid)
-				continue
-			}
+		for (let i = 0; i < keys.length; i += CHUNK) {
+			const chunk = keys.slice(i, i + CHUNK)
+			const placeholders = chunk.map(() => '?').join(',')
+			const rows = this.db
+				.prepare(
+					`SELECT user_jid, devices_json, expires_at FROM user_device_cache_json WHERE user_jid IN (${placeholders})`
+				)
+				.all(...chunk) as Array<{ user_jid: string; devices_json: string; expires_at: number }>
+			for (const r of rows) {
+				if (r.expires_at <= now) {
+					staleKeys.push(r.user_jid)
+					continue
+				}
 
-			try {
-				out[r.user_jid] = JSON.parse(r.devices_json) as T
-			} catch {
-				// Corrupted JSON — drop the row, report a miss for this key.
-				staleKeys.push(r.user_jid)
+				try {
+					out[r.user_jid] = JSON.parse(r.devices_json) as T
+				} catch {
+					// Corrupted JSON — drop the row, report a miss for this key.
+					staleKeys.push(r.user_jid)
+				}
 			}
 		}
 
-		if (staleKeys.length > 0) {
-			const stalePlaceholders = staleKeys.map(() => '?').join(',')
+		// Delete stale/corrupt rows in the same chunked manner so the
+		// cleanup statement never exceeds the variable limit either.
+		for (let i = 0; i < staleKeys.length; i += CHUNK) {
+			const chunk = staleKeys.slice(i, i + CHUNK)
+			const stalePlaceholders = chunk.map(() => '?').join(',')
 			this.db
 				.prepare(`DELETE FROM user_device_cache_json WHERE user_jid IN (${stalePlaceholders})`)
-				.run(...staleKeys)
+				.run(...chunk)
 		}
 
 		return out

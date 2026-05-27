@@ -119,12 +119,31 @@ export class JidMapBackend {
 		return row?.raw ?? null
 	}
 
-	/** Batch lookup: input list of PNs → record of those that resolved. */
+	/**
+	 * Batch lookup: input list of PNs → record of those that resolved. Uses
+	 * a single `IN (?, ?, ...)` SELECT per chunk so the LIDMappingStore's
+	 * default batchSize=100 call from `keys.get('lid-mapping', batch)` lands
+	 * as one DB round-trip instead of N. Chunked at 500 to stay well below
+	 * SQLite's default 999-variable limit.
+	 */
 	batchGetLidForPn(pnUsers: string[]): Record<string, string> {
 		const out: Record<string, string> = {}
-		for (const pn of pnUsers) {
-			const lid = this.getLidForPn(pn)
-			if (lid !== null) out[pn] = lid
+		if (pnUsers.length === 0) return out
+
+		const CHUNK = 500
+		for (let i = 0; i < pnUsers.length; i += CHUNK) {
+			const chunk = pnUsers.slice(i, i + CHUNK)
+			const placeholders = chunk.map(() => '?').join(',')
+			// For each PN, surface the most-recent LID (highest lid_row_id);
+			// matches the single-row `selectLidByPn` semantics.
+			const sql =
+				'SELECT j_pn.raw_string AS pn, j.raw_string AS lid FROM jid_map m ' +
+				'JOIN jid j ON j._id = m.lid_row_id ' +
+				'JOIN jid j_pn ON j_pn._id = m.jid_row_id ' +
+				`WHERE j_pn.raw_string IN (${placeholders}) ` +
+				'AND m.lid_row_id = (SELECT MAX(m2.lid_row_id) FROM jid_map m2 WHERE m2.jid_row_id = m.jid_row_id)'
+			const rows = this.db.prepare(sql).all(...chunk) as Array<{ pn: string; lid: string }>
+			for (const r of rows) out[r.pn] = r.lid
 		}
 
 		return out
@@ -133,9 +152,19 @@ export class JidMapBackend {
 	/** Batch lookup: input list of LIDs → record of those that resolved. */
 	batchGetPnForLid(lidUsers: string[]): Record<string, string> {
 		const out: Record<string, string> = {}
-		for (const lid of lidUsers) {
-			const pn = this.getPnForLid(lid)
-			if (pn !== null) out[lid] = pn
+		if (lidUsers.length === 0) return out
+
+		const CHUNK = 500
+		for (let i = 0; i < lidUsers.length; i += CHUNK) {
+			const chunk = lidUsers.slice(i, i + CHUNK)
+			const placeholders = chunk.map(() => '?').join(',')
+			const sql =
+				'SELECT j_lid.raw_string AS lid, j_pn.raw_string AS pn FROM jid_map m ' +
+				'JOIN jid j_lid ON j_lid._id = m.lid_row_id ' +
+				'JOIN jid j_pn ON j_pn._id = m.jid_row_id ' +
+				`WHERE j_lid.raw_string IN (${placeholders})`
+			const rows = this.db.prepare(sql).all(...chunk) as Array<{ lid: string; pn: string }>
+			for (const r of rows) out[r.lid] = r.pn
 		}
 
 		return out
