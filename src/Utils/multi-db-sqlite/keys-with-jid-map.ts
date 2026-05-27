@@ -1,0 +1,125 @@
+/**
+ * Phase 9.1 — `wrapKeysWithJidMap` plugs the typed {@link JidMapBackend}
+ * into any `SignalKeyStoreWithTransaction`-shaped store by intercepting
+ * the `'lid-mapping'` type.
+ *
+ * Behavior:
+ *   - `get('lid-mapping', ids)` is answered from `jid_map` directly. IDs
+ *     ending in `_reverse` are treated as LID-to-PN lookups; others as
+ *     PN-to-LID lookups. Other types fall through to the inner store.
+ *   - `set({ 'lid-mapping': { ... } })` pairs each `pnUser`/`lidUser_reverse`
+ *     entry and writes a single `jid_map` row per pair. Other types fall
+ *     through unchanged.
+ *   - `clear`, `list`, `listIds`, `transaction`, `transactWith`, `destroy`,
+ *     and `isInTransaction` delegate to the inner store unchanged.
+ *
+ * Why a wrapper and not a fork of `LIDMappingStore`?
+ *   The existing `LIDMappingStore` carries InfiniteAPI-specific cache
+ *   coalescing, retry logic, statistics, and metrics that we want to keep
+ *   intact. Swapping persistence behind it via this wrapper preserves all
+ *   of that and lets us introduce typed-table storage without altering
+ *   message-routing code paths.
+ */
+import type { SignalDataSet, SignalDataTypeMap, SignalKeyStoreWithTransaction } from '../../Types'
+import { JidMapBackend, REVERSE_SUFFIX, stripReverse } from './lid-mapping-backend'
+
+/**
+ * Returns a new store that proxies `inner`, intercepting only the
+ * `'lid-mapping'` type.
+ *
+ * The returned object satisfies the same `SignalKeyStoreWithTransaction`
+ * surface as `inner` so it can be used wherever the existing
+ * {@link LIDMappingStore} expects a key store.
+ */
+export function wrapKeysWithJidMap(
+	inner: SignalKeyStoreWithTransaction,
+	jidMap: JidMapBackend
+): SignalKeyStoreWithTransaction {
+	return {
+		isInTransaction: () => inner.isInTransaction(),
+		transaction: (exec, key) => inner.transaction(exec, key),
+		transactWith: inner.transactWith ? (scope, work) => inner.transactWith!(scope, work) : undefined,
+		destroy: inner.destroy ? () => inner.destroy!() : undefined,
+		clear: inner.clear ? () => inner.clear!() : undefined,
+		list: inner.list ? inner.list.bind(inner) : undefined,
+		listIds: inner.listIds ? inner.listIds.bind(inner) : undefined,
+
+		async get<T extends keyof SignalDataTypeMap>(
+			type: T,
+			ids: string[]
+		): Promise<{ [id: string]: SignalDataTypeMap[T] }> {
+			if (type !== 'lid-mapping') {
+				return inner.get(type, ids)
+			}
+
+			const out: { [id: string]: SignalDataTypeMap[T] } = {}
+			for (const id of ids) {
+				const { lidUser, isReverse } = stripReverse(id)
+				if (isReverse) {
+					const pn = jidMap.getPnForLid(lidUser)
+					if (pn !== null) out[id] = pn as unknown as SignalDataTypeMap[T]
+				} else {
+					const lid = jidMap.getLidForPn(id)
+					if (lid !== null) out[id] = lid as unknown as SignalDataTypeMap[T]
+				}
+			}
+
+			return out
+		},
+
+		async set(data: SignalDataSet): Promise<void> {
+			const lidMappingBucket = data['lid-mapping']
+			if (!lidMappingBucket) {
+				return inner.set(data)
+			}
+
+			// Pair forward + reverse entries by stripping the `_reverse`
+			// suffix and matching against the unsuffixed entry. Anything
+			// unpaired is stored as a single direction (forward implies
+			// inserting only the PN→LID side; reverse implies the LID→PN
+			// side without a confirmed forward pair).
+			const pairs: Array<{ pnUser: string; lidUser: string }> = []
+			const forwardOnly: Array<{ pnUser: string; lidUser: string }> = []
+			const reverseOnly: Array<{ pnUser: string; lidUser: string }> = []
+
+			const seenReverse = new Set<string>()
+			for (const key of Object.keys(lidMappingBucket)) {
+				if (key.endsWith(REVERSE_SUFFIX)) continue
+				const pnUser = key
+				const lidUser = lidMappingBucket[key] as unknown as string | null
+				if (!lidUser) continue
+				const reverseKey = lidUser + REVERSE_SUFFIX
+				const reverseVal = lidMappingBucket[reverseKey] as unknown as string | null
+				if (reverseVal === pnUser) {
+					pairs.push({ pnUser, lidUser })
+					seenReverse.add(reverseKey)
+				} else {
+					forwardOnly.push({ pnUser, lidUser })
+				}
+			}
+
+			for (const key of Object.keys(lidMappingBucket)) {
+				if (!key.endsWith(REVERSE_SUFFIX) || seenReverse.has(key)) continue
+				const lidUser = key.slice(0, -REVERSE_SUFFIX.length)
+				const pnUser = lidMappingBucket[key] as unknown as string | null
+				if (!pnUser) continue
+				reverseOnly.push({ pnUser, lidUser })
+			}
+
+			if (pairs.length > 0) jidMap.storeMappingsBatch(pairs)
+			for (const m of forwardOnly) jidMap.storeMapping(m.pnUser, m.lidUser)
+			for (const m of reverseOnly) jidMap.storeMapping(m.pnUser, m.lidUser)
+
+			// Forward any non-lid-mapping types still present
+			const rest: SignalDataSet = {}
+			let hasRest = false
+			for (const t in data) {
+				if (t === 'lid-mapping') continue
+				;(rest as Record<string, unknown>)[t] = (data as Record<string, unknown>)[t]
+				hasRest = true
+			}
+
+			if (hasRest) await inner.set(rest)
+		}
+	} as SignalKeyStoreWithTransaction
+}

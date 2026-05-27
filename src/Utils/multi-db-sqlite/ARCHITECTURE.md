@@ -21,15 +21,28 @@ Three operational wins under load:
    contacts/biz state, app-state sync). This makes the schema diffable and
    navigable.
 
-## The five files
+## The 13 files
 
 ```
 sessionDir/
-├── creds.db        (auth credentials root + app-state sync keys)
-├── axolotl.db      (Signal Protocol — sessions, prekeys, identities, sender_keys)
-├── msgstore.db     (JID routing, device cache, quarantine, retry counters)
-├── wa.db           (contacts + Trusted Contact tokens)
-└── sync.db         (app-state sync — collection_versions, mutations)
+├── creds.db             (auth credentials root + app-state sync keys)
+├── axolotl.db           (Signal Protocol — sessions, prekeys, identities,
+│                         sender_keys, stanza queues, base keys, kyber
+│                         prekeys, preacks)
+├── msgstore.db          (JID routing, device cache, quarantine, retry counters)
+├── wa.db                (contacts + Trusted Contact tokens)
+├── sync.db              (app-state sync mutations + collection versions
+│                         + placeholder retries + peer messages)
+├── media.db             (media metadata + transfer / Express Path state)
+├── companion_devices.db (Multi-Device companion registry)
+├── chatsettings.db      (per-chat preferences + notification state)
+├── location.db          (live location share state)
+├── payments.db          (payment state — consumer + merchant)
+├── stickers.db          (sticker pack catalog and recent state)
+├── smb.db               (Small Business / Marketing Messages state)
+└── prometheus.db        (observability — metric samples with retention
+                          policies; isolated so high-frequency writes never
+                          contend with the message-send hot path)
 ```
 
 Each file carries:

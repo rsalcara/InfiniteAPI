@@ -33,11 +33,27 @@ describe('useMultiDbSqliteAuthState', () => {
 		await rm(dir, { recursive: true, force: true })
 	})
 
-	it('opens all 5 physical .db files on first open', async () => {
+	it('opens all 13 physical .db files on first open', async () => {
 		const { close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		const { promises: fs } = await import('fs')
 		const files = await fs.readdir(dir)
-		expect(files).toEqual(expect.arrayContaining(['creds.db', 'axolotl.db', 'msgstore.db', 'wa.db', 'sync.db']))
+		expect(files).toEqual(
+			expect.arrayContaining([
+				'creds.db',
+				'axolotl.db',
+				'msgstore.db',
+				'wa.db',
+				'sync.db',
+				'media.db',
+				'companion_devices.db',
+				'chatsettings.db',
+				'location.db',
+				'payments.db',
+				'stickers.db',
+				'smb.db',
+				'prometheus.db'
+			])
+		)
 		close()
 	})
 
@@ -51,13 +67,19 @@ describe('useMultiDbSqliteAuthState', () => {
 		).map(r => r.name)
 		expect(axolotlTables).toEqual(
 			expect.arrayContaining([
-				'signal_sessions',
-				'signal_prekeys',
-				'signal_signed_prekeys',
-				'signal_kyber_prekeys',
-				'signal_identities',
-				'signal_sender_keys',
+				'sessions',
+				'prekeys',
+				'signed_prekeys',
+				'kyber_prekeys',
+				'identities',
+				'sender_keys',
+				'fast_ratchet_sender_keys',
+				'message_base_key',
+				'preacks',
+				'prekey_uploads',
+				'chat_stanza_queue',
 				'e2ee_stanza_queue',
+				'unordered_stanza_queue',
 				'signal_kv'
 			])
 		)
@@ -93,7 +115,26 @@ describe('useMultiDbSqliteAuthState', () => {
 				name: string
 			}>
 		).map(r => r.name)
-		expect(syncTables).toEqual(expect.arrayContaining(['collection_versions', 'syncd_mutations', 'pending_mutations']))
+		expect(syncTables).toEqual(
+			expect.arrayContaining([
+				'collection_versions',
+				'syncd_mutations',
+				'pending_mutations',
+				'crypto_info',
+				'missing_keys',
+				'placeholder_retry_message',
+				'peer_messages'
+			])
+		)
+
+		const prometheusTables = (
+			store.handle('prometheus.db').prepare('SELECT name FROM sqlite_master WHERE type="table"').all() as Array<{
+				name: string
+			}>
+		).map(r => r.name)
+		expect(prometheusTables).toEqual(
+			expect.arrayContaining(['metric_samples', 'metric_descriptors', 'retention_policies', 'pruning_log'])
+		)
 
 		close()
 	})

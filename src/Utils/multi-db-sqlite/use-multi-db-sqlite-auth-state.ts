@@ -19,17 +19,19 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions
  * Multi-DB authentication state for Baileys.
  *
  * Same API as `useMultiFileAuthState` / `useSqliteAuthState`, but the
- * underlying persistence is split across 5 physical SQLite files, one per
+ * underlying persistence is split across 6 physical SQLite files, one per
  * concern:
  *
  *   sessionDir/
- *     creds.db       — auth credentials + app_state_sync_keys
- *     axolotl.db     — Signal Protocol (opaque `signal_kv` in v1; typed
- *                      tables reserved for phase 9.5 integration)
- *     msgstore.db    — JID routing, device cache, quarantine, retry counters
- *                      (schemas reserved for phases 9.1–9.4)
- *     wa.db          — contacts + TC tokens (schemas reserved for phase 9.6)
- *     sync.db        — app-state sync (schemas reserved for phase 9.7)
+ *     creds.db        — auth credentials + app_state_sync_keys
+ *     axolotl.db      — Signal Protocol (opaque `signal_kv` in v1; typed
+ *                       tables reserved for phase 9.5 integration)
+ *     msgstore.db     — JID routing, device cache, quarantine, retry counters
+ *                       (schemas reserved for phases 9.1–9.4)
+ *     wa.db           — contacts + TC tokens (schemas reserved for phase 9.6)
+ *     sync.db         — app-state sync (schemas reserved for phase 9.7)
+ *     prometheus.db   — metrics history; isolated so high-frequency writes
+ *                       never contend with the message-send hot path
  *
  * **v1 contract:** behaves exactly like `useSqliteAuthState` — auth creds
  * in `creds.db`, signal data in `axolotl.db.signal_kv` (opaque, JSON-encoded
