@@ -118,8 +118,15 @@ export class SignalTypedBackend {
 			),
 			selectSignedPrekey: this.db.prepare('SELECT record, timestamp FROM signed_prekeys WHERE prekey_id = ?'),
 			upsertKyberPrekey: this.db.prepare(
+				// Conflict update covers BOTH `record` AND `last_resort_key` so a
+				// caller re-saving the same prekey id with a flipped flag (e.g.
+				// promoting a one-time key into the last-resort slot) gets that
+				// change reflected on the next `getKyberPrekey()` call. Earlier
+				// versions only updated `record`, which let the stored flag
+				// drift from the latest caller input.
 				'INSERT INTO kyber_prekeys (prekey_id, record, last_resort_key) VALUES (?, ?, ?) ' +
-					'ON CONFLICT(prekey_id) DO UPDATE SET record = excluded.record'
+					'ON CONFLICT(prekey_id) DO UPDATE SET ' +
+					'  record = excluded.record, last_resort_key = excluded.last_resort_key'
 			),
 			selectKyberPrekey: this.db.prepare('SELECT record, last_resort_key FROM kyber_prekeys WHERE prekey_id = ?'),
 			upsertIdentity: this.db.prepare(

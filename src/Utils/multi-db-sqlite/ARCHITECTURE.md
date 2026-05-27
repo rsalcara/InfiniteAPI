@@ -89,12 +89,34 @@ forms become rows in `jid`, with `jid_map` as the lookup table.
   The `expected_timestamp` column gives a native TTL — no application-level
   eviction loop needed.
 
-### Phase 9.3 — `msgRetryCounterCache` → `message_orphaned_edit`
+### Phase 9.3 — `msgRetryCounterCache` → `msg_retry_counter` (aux)
 
 **Replaces:** the in-RAM retry counter.
-**Schema target:** `message_orphaned_edit(message_row_id, key_id, from_me,
-chat_id, sender_id, retry_count, last_attempt)` with `UNIQUE (key_id, from_me,
-chat_id, sender_id)` matching the natural retry-dedup key.
+
+**Current schema target (shipped in this PR):** `MsgRetryCounterSqliteAdapter`
+creates and uses a dedicated auxiliary table on `msgstore.db`:
+
+```sql
+CREATE TABLE msg_retry_counter (
+  key_id TEXT PRIMARY KEY,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  last_attempt INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+```
+
+The auxiliary table is used because the call sites in `messages-recv.ts`
+address the counter by a single string key (`NodeCache<number>` shape) — so
+storing it in the typed `message_orphaned_edit` table would force a
+parser at the boundary.
+
+**Typed schema target (reserved for phase 9.3.1 fully-typed integration):**
+`msgstore.db.message_orphaned_edit(_id, key_id, from_me, chat_row_id,
+sender_jid_row_id, timestamp, message_type, revoked_key_id, retry_count,
+admin_jid_row_id, orphan_message_data, reporting_token, reporting_tag,
+reporting_version)` — the canonical mobile-aligned schema with the full
+natural retry-dedup key. Reached once the recv path is reshaped to pass
+the structured key directly.
 
 ### Phase 9.4 — Bad MAC quarantine → `message_quarantine`
 
@@ -106,19 +128,23 @@ out-of-order retry don't vanish on gateway crash.
 
 ### Phase 9.5 — `signal_kv` → typed Signal Protocol tables
 
-**Migrates** the opaque `signal_kv(type, id, value)` row set into typed tables:
+**Migrates** the opaque `signal_kv(type, id, value)` row set into typed tables.
+Names match `schemas/axolotl.ts` exactly (no `signal_` prefix — `SignalTypedBackend`
+queries these names directly):
 
-- `signal_sessions(recipient_id, device_id, recipient_account_type, record BLOB)`
-- `signal_prekeys(prekey_id PK, record BLOB, consumed_at)`
-- `signal_signed_prekeys(prekey_id PK, record BLOB, created_at)`
-- `signal_kyber_prekeys(prekey_id PK, record BLOB, created_at, is_one_time)`
-- `signal_identities(recipient_id, recipient_account_type, public_key BLOB, trust_level, first_seen)`
-- `signal_sender_keys(group_id, sender_id, device_id, record BLOB)`
+- `sessions(_id, device_id, record, timestamp, recipient_account_id, recipient_account_type, session_type, session_scope)`
+- `prekeys(_id, prekey_id UNIQUE, sent_to_server, record, direct_distribution, upload_timestamp, key_type)`
+- `signed_prekeys(_id, prekey_id UNIQUE, timestamp, record, key_type)`
+- `kyber_prekeys(_id, prekey_id UNIQUE, sent_to_server, record, direct_distribution, upload_timestamp, last_resort_key)`
+- `identities(_id, recipient_id, recipient_type, device_id, registration_id, public_key, private_key, next_prekey_id, next_kyber_prekey_id, timestamp)`
+- `sender_keys(_id, group_id, device_id, record, timestamp, sender_account_id, sender_account_type)`
 
 **Identity dual-storage:** each contact's identity is stored TWICE — once as
-LID (`recipient_account_type=1`) and once as PN (`recipient_account_type=0`).
-This lets identity lookups by either addressing form land in a single row
-without a join.
+LID (`recipient_type=1`) and once as PN (`recipient_type=0`). This lets
+identity lookups by either addressing form land in a single row without a
+join. `device_id` defaults to a sentinel (`IDENTITY_DEVICE_ID_SENTINEL = 0`)
+on insert to keep the UNIQUE index on `(recipient_id, recipient_type, device_id)`
+truly unique even when callers omit the device.
 
 **InfiniteAPI's PreKey 5-minute grace remains in effect** — the typed schema
 preserves this gateway-specific behavior and does not force a change.
