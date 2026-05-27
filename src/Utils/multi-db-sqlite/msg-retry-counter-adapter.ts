@@ -27,6 +27,8 @@
  */
 import type BetterSqlite3Module from 'better-sqlite3'
 
+import type { SqliteDbLike } from './types'
+
 type Database = BetterSqlite3Module.Database
 
 const CREATE_AUX_TABLE_SQL = `
@@ -65,23 +67,23 @@ export class MsgRetryCounterSqliteAdapter implements CacheStoreShape {
 	private readonly defaultTtlMs: number
 	private pruneTicker?: NodeJS.Timeout
 
-	constructor(
-		private readonly db: Database,
-		opts: MsgRetryCounterAdapterOptions = {}
-	) {
+	private readonly db: Database
+
+	constructor(db: SqliteDbLike, opts: MsgRetryCounterAdapterOptions = {}) {
+		this.db = db as unknown as Database
 		this.defaultTtlMs = (opts.defaultTtlSeconds ?? 60 * 60) * 1000 // 1 hour default
 
-		db.exec(CREATE_AUX_TABLE_SQL)
+		this.db.exec(CREATE_AUX_TABLE_SQL)
 		this.stmts = {
-			select: db.prepare('SELECT retry_count, expires_at FROM msg_retry_counter WHERE key_id = ?'),
-			upsert: db.prepare(
+			select: this.db.prepare('SELECT retry_count, expires_at FROM msg_retry_counter WHERE key_id = ?'),
+			upsert: this.db.prepare(
 				'INSERT INTO msg_retry_counter (key_id, retry_count, last_attempt, expires_at) VALUES (?, ?, ?, ?) ' +
 					'ON CONFLICT(key_id) DO UPDATE SET ' +
 					'  retry_count = excluded.retry_count, last_attempt = excluded.last_attempt, expires_at = excluded.expires_at'
 			),
-			del: db.prepare('DELETE FROM msg_retry_counter WHERE key_id = ?'),
-			prune: db.prepare('DELETE FROM msg_retry_counter WHERE expires_at <= ?'),
-			flushAll: db.prepare('DELETE FROM msg_retry_counter')
+			del: this.db.prepare('DELETE FROM msg_retry_counter WHERE key_id = ?'),
+			prune: this.db.prepare('DELETE FROM msg_retry_counter WHERE expires_at <= ?'),
+			flushAll: this.db.prepare('DELETE FROM msg_retry_counter')
 		}
 
 		if (opts.runPruneTickerEverySeconds && opts.runPruneTickerEverySeconds > 0) {

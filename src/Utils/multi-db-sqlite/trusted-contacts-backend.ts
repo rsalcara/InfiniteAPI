@@ -19,6 +19,8 @@
  */
 import type BetterSqlite3Module from 'better-sqlite3'
 
+import type { SqliteDbLike } from './types'
+
 type Database = BetterSqlite3Module.Database
 
 export type TrustedContactsBackendStats = {
@@ -38,30 +40,33 @@ export class TrustedContactsBackend {
 		countSent: BetterSqlite3Module.Statement
 	}
 
-	constructor(private readonly db: Database) {
+	private readonly db: Database
+
+	constructor(db: SqliteDbLike) {
+		this.db = db as unknown as Database
 		this.stmts = {
-			upsertIncoming: db.prepare(
+			upsertIncoming: this.db.prepare(
 				'INSERT INTO wa_trusted_contacts (jid, incoming_tc_token, incoming_tc_token_timestamp) VALUES (?, ?, ?) ' +
 					'ON CONFLICT(jid) DO UPDATE SET ' +
 					'  incoming_tc_token = excluded.incoming_tc_token, ' +
 					'  incoming_tc_token_timestamp = excluded.incoming_tc_token_timestamp'
 			),
-			selectIncoming: db.prepare(
+			selectIncoming: this.db.prepare(
 				'SELECT incoming_tc_token, incoming_tc_token_timestamp FROM wa_trusted_contacts WHERE jid = ?'
 			),
-			delIncoming: db.prepare('DELETE FROM wa_trusted_contacts WHERE jid = ?'),
-			upsertSent: db.prepare(
+			delIncoming: this.db.prepare('DELETE FROM wa_trusted_contacts WHERE jid = ?'),
+			upsertSent: this.db.prepare(
 				'INSERT INTO wa_trusted_contacts_send (jid, sent_tc_token_timestamp, real_issue_timestamp) VALUES (?, ?, ?) ' +
 					'ON CONFLICT(jid) DO UPDATE SET ' +
 					'  sent_tc_token_timestamp = excluded.sent_tc_token_timestamp, ' +
 					'  real_issue_timestamp = excluded.real_issue_timestamp'
 			),
-			selectSent: db.prepare(
+			selectSent: this.db.prepare(
 				'SELECT sent_tc_token_timestamp, real_issue_timestamp FROM wa_trusted_contacts_send WHERE jid = ?'
 			),
-			delSent: db.prepare('DELETE FROM wa_trusted_contacts_send WHERE jid = ?'),
-			countIncoming: db.prepare('SELECT COUNT(*) AS n FROM wa_trusted_contacts'),
-			countSent: db.prepare('SELECT COUNT(*) AS n FROM wa_trusted_contacts_send')
+			delSent: this.db.prepare('DELETE FROM wa_trusted_contacts_send WHERE jid = ?'),
+			countIncoming: this.db.prepare('SELECT COUNT(*) AS n FROM wa_trusted_contacts'),
+			countSent: this.db.prepare('SELECT COUNT(*) AS n FROM wa_trusted_contacts_send')
 		}
 	}
 

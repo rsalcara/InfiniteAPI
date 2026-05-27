@@ -25,6 +25,8 @@
  */
 import type BetterSqlite3Module from 'better-sqlite3'
 
+import type { SqliteDbLike } from './types'
+
 type Database = BetterSqlite3Module.Database
 
 export type QuarantineRecord = {
@@ -55,38 +57,41 @@ export class MessageQuarantineBackend {
 		pruneOlderThan: BetterSqlite3Module.Statement
 	}
 
-	constructor(private readonly db: Database) {
+	private readonly db: Database
+
+	constructor(db: SqliteDbLike) {
+		this.db = db as unknown as Database
 		this.stmts = {
-			insert: db.prepare(
+			insert: this.db.prepare(
 				'INSERT INTO message_quarantine ' +
 					'(key_id, from_me, chat_row_id, sender_jid_row_id, original_protobuf, serialized_stanza, ' +
 					'failure_reason, quarantined_at, retry_count) ' +
 					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
 			),
-			incrementOnConflict: db.prepare(
+			incrementOnConflict: this.db.prepare(
 				'UPDATE message_quarantine SET retry_count = retry_count + 1, quarantined_at = ?, failure_reason = ? ' +
 					'WHERE key_id = ? AND from_me = ? AND chat_row_id = ? AND sender_jid_row_id = ?'
 			),
-			selectByKey: db.prepare(
+			selectByKey: this.db.prepare(
 				'SELECT _id, key_id, from_me, chat_row_id, sender_jid_row_id, original_protobuf, ' +
 					'serialized_stanza, failure_reason, quarantined_at, retry_count ' +
 					'FROM message_quarantine WHERE key_id = ? AND from_me = ? AND chat_row_id = ? AND sender_jid_row_id IS ?'
 			),
-			selectByChat: db.prepare(
+			selectByChat: this.db.prepare(
 				'SELECT _id, key_id, from_me, chat_row_id, sender_jid_row_id, original_protobuf, ' +
 					'serialized_stanza, failure_reason, quarantined_at, retry_count ' +
 					'FROM message_quarantine WHERE chat_row_id = ? ORDER BY quarantined_at DESC'
 			),
-			selectSince: db.prepare(
+			selectSince: this.db.prepare(
 				'SELECT _id, key_id, from_me, chat_row_id, sender_jid_row_id, original_protobuf, ' +
 					'serialized_stanza, failure_reason, quarantined_at, retry_count ' +
 					'FROM message_quarantine WHERE quarantined_at >= ? ORDER BY quarantined_at DESC'
 			),
-			delByKey: db.prepare(
+			delByKey: this.db.prepare(
 				'DELETE FROM message_quarantine ' +
 					'WHERE key_id = ? AND from_me = ? AND chat_row_id = ? AND sender_jid_row_id = ?'
 			),
-			pruneOlderThan: db.prepare('DELETE FROM message_quarantine WHERE quarantined_at < ?')
+			pruneOlderThan: this.db.prepare('DELETE FROM message_quarantine WHERE quarantined_at < ?')
 		}
 	}
 

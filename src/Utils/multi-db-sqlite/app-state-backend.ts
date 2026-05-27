@@ -16,6 +16,8 @@
  */
 import type BetterSqlite3Module from 'better-sqlite3'
 
+import type { SqliteDbLike } from './types'
+
 type Database = BetterSqlite3Module.Database
 
 export type CollectionVersionRow = {
@@ -50,38 +52,41 @@ export class AppStateBackend {
 		deleteMutationsByCollection: BetterSqlite3Module.Statement
 	}
 
-	constructor(private readonly db: Database) {
+	private readonly db: Database
+
+	constructor(db: SqliteDbLike) {
+		this.db = db as unknown as Database
 		this.stmts = {
-			upsertCollectionVersion: db.prepare(
+			upsertCollectionVersion: this.db.prepare(
 				'INSERT INTO collection_versions (collection_name, version, lt_hash, dirty_version) ' +
 					'VALUES (?, ?, ?, ?) ' +
 					'ON CONFLICT(collection_name) DO UPDATE SET ' +
 					'  version = excluded.version, lt_hash = excluded.lt_hash, dirty_version = excluded.dirty_version'
 			),
-			selectCollectionVersion: db.prepare(
+			selectCollectionVersion: this.db.prepare(
 				'SELECT collection_name, version, lt_hash, dirty_version FROM collection_versions ' +
 					'WHERE collection_name = ?'
 			),
-			listCollectionVersions: db.prepare(
+			listCollectionVersions: this.db.prepare(
 				'SELECT collection_name, version, lt_hash, dirty_version FROM collection_versions'
 			),
-			insertSyncdMutation: db.prepare(
+			insertSyncdMutation: this.db.prepare(
 				'INSERT INTO syncd_mutations (mutation_index, mutation_value, mutation_version, collection_name, ' +
 					'are_dependencies_missing, mutation_mac, device_id, epoch, chat_jid, mutation_name) ' +
 					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 			),
-			selectMutationsByCollection: db.prepare(
+			selectMutationsByCollection: this.db.prepare(
 				'SELECT _id, mutation_index, mutation_value, mutation_version, collection_name, ' +
 					'are_dependencies_missing, mutation_mac, device_id, epoch, chat_jid, mutation_name ' +
 					'FROM syncd_mutations WHERE collection_name = ? ORDER BY _id ASC'
 			),
-			selectMutationsByVersionRange: db.prepare(
+			selectMutationsByVersionRange: this.db.prepare(
 				'SELECT _id, mutation_index, mutation_value, mutation_version, collection_name, ' +
 					'are_dependencies_missing, mutation_mac, device_id, epoch, chat_jid, mutation_name ' +
 					'FROM syncd_mutations WHERE collection_name = ? AND mutation_version > ? ' +
 					'ORDER BY mutation_version ASC'
 			),
-			deleteMutationsByCollection: db.prepare('DELETE FROM syncd_mutations WHERE collection_name = ?')
+			deleteMutationsByCollection: this.db.prepare('DELETE FROM syncd_mutations WHERE collection_name = ?')
 		}
 	}
 

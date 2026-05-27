@@ -15,10 +15,13 @@
  * eventual full typed split (phase 9.2.1).
  *
  * Behavior preserved:
- *   - 5-minute default TTL via the `expected_timestamp` column
+ *   - 5-minute default TTL via the auxiliary table's `expires_at` column
+ *     (the typed `user_device_info.expected_timestamp` column stays
+ *     reserved for the typed split in phase 9.2.1)
  *   - `set` replaces previous entry atomically
  *   - `del` removes the entry
  *   - `mget` returns a `Record<user, devices>` for the requested users
+ *     using a single batched `SELECT ... WHERE user_jid IN (...)`
  *
  * Behavior NOT preserved (intentional):
  *   - keyspace size limit / LRU eviction. SQLite WAL grows as needed;
@@ -27,6 +30,8 @@
  *     this automatically).
  */
 import type BetterSqlite3Module from 'better-sqlite3'
+
+import type { SqliteDbLike } from './types'
 
 type Database = BetterSqlite3Module.Database
 
@@ -92,22 +97,22 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 	private readonly defaultTtlMs: number
 	private pruneTicker?: NodeJS.Timeout
 
-	constructor(
-		private readonly db: Database,
-		opts: UserDeviceCacheAdapterOptions = {}
-	) {
+	private readonly db: Database
+
+	constructor(db: SqliteDbLike, opts: UserDeviceCacheAdapterOptions = {}) {
+		this.db = db as unknown as Database
 		this.defaultTtlMs = (opts.defaultTtlSeconds ?? 5 * 60) * 1000
 
-		db.exec(CREATE_AUX_TABLE_SQL)
+		this.db.exec(CREATE_AUX_TABLE_SQL)
 		this.stmts = {
-			select: db.prepare('SELECT devices_json, expires_at FROM user_device_cache_json WHERE user_jid = ?'),
-			upsert: db.prepare(
+			select: this.db.prepare('SELECT devices_json, expires_at FROM user_device_cache_json WHERE user_jid = ?'),
+			upsert: this.db.prepare(
 				'INSERT INTO user_device_cache_json (user_jid, devices_json, expires_at) VALUES (?, ?, ?) ' +
 					'ON CONFLICT(user_jid) DO UPDATE SET devices_json = excluded.devices_json, expires_at = excluded.expires_at'
 			),
-			del: db.prepare('DELETE FROM user_device_cache_json WHERE user_jid = ?'),
-			prune: db.prepare('DELETE FROM user_device_cache_json WHERE expires_at <= ?'),
-			flushAll: db.prepare(FLUSH_ALL_SQL)
+			del: this.db.prepare('DELETE FROM user_device_cache_json WHERE user_jid = ?'),
+			prune: this.db.prepare('DELETE FROM user_device_cache_json WHERE expires_at <= ?'),
+			flushAll: this.db.prepare(FLUSH_ALL_SQL)
 		}
 
 		if (opts.runPruneTickerEverySeconds && opts.runPruneTickerEverySeconds > 0) {
@@ -162,9 +167,41 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 
 	mget<T = NodeCacheCompatibleEntry>(keys: string[]): { [key: string]: T } {
 		const out: { [key: string]: T } = {}
-		for (const k of keys) {
-			const v = this.get<T>(k)
-			if (v !== undefined) out[k] = v
+		if (keys.length === 0) return out
+
+		// One batched SELECT replaces N point selects on the hot path
+		// (`messages-send.ts` calls `mget` with every recipient of a fan-out
+		// at once). `IN (...)` placeholder list is generated dynamically;
+		// `better-sqlite3` does not cache prepared SQL with variable-length
+		// IN lists, so we prepare ad-hoc here.
+		const placeholders = keys.map(() => '?').join(',')
+		const now = Date.now()
+		const rows = this.db
+			.prepare(
+				`SELECT user_jid, devices_json, expires_at FROM user_device_cache_json WHERE user_jid IN (${placeholders})`
+			)
+			.all(...keys) as Array<{ user_jid: string; devices_json: string; expires_at: number }>
+
+		const staleKeys: string[] = []
+		for (const r of rows) {
+			if (r.expires_at <= now) {
+				staleKeys.push(r.user_jid)
+				continue
+			}
+
+			try {
+				out[r.user_jid] = JSON.parse(r.devices_json) as T
+			} catch {
+				// Corrupted JSON — drop the row, report a miss for this key.
+				staleKeys.push(r.user_jid)
+			}
+		}
+
+		if (staleKeys.length > 0) {
+			const stalePlaceholders = staleKeys.map(() => '?').join(',')
+			this.db
+				.prepare(`DELETE FROM user_device_cache_json WHERE user_jid IN (${stalePlaceholders})`)
+				.run(...staleKeys)
 		}
 
 		return out

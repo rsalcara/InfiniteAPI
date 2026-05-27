@@ -18,6 +18,8 @@
  */
 import type BetterSqlite3Module from 'better-sqlite3'
 
+import type { SqliteDbLike } from './types'
+
 type Database = BetterSqlite3Module.Database
 
 const REVERSE_SUFFIX = '_reverse'
@@ -37,34 +39,45 @@ export class JidMapBackend {
 		selectLidByPn: BetterSqlite3Module.Statement
 	}
 
-	constructor(private readonly db: Database) {
+	private readonly db: Database
+
+	constructor(db: SqliteDbLike) {
+		// Public type is the structural SqliteDbLike to keep better-sqlite3
+		// off the published declarations; the runtime expectation is an
+		// actual better-sqlite3 Database instance.
+		this.db = db as unknown as Database
 		// `jid_map.lid_row_id` is the PRIMARY KEY (one PN per LID) so we
 		// upsert on conflict to support a LID being re-targeted at a new PN.
 		this.stmts = {
-			insertJid: db.prepare(
+			insertJid: this.db.prepare(
 				'INSERT INTO jid (raw_string, user, server, type) VALUES (?, ?, ?, ?) ' +
 					'ON CONFLICT(raw_string) DO NOTHING'
 			),
-			selectJidIdByRaw: db.prepare('SELECT _id FROM jid WHERE raw_string = ?'),
-			upsertMap: db.prepare(
+			selectJidIdByRaw: this.db.prepare('SELECT _id FROM jid WHERE raw_string = ?'),
+			upsertMap: this.db.prepare(
 				'INSERT INTO jid_map (lid_row_id, jid_row_id, sort_id) VALUES (?, ?, 0) ' +
 					'ON CONFLICT(lid_row_id) DO UPDATE SET jid_row_id = excluded.jid_row_id'
 			),
-			selectPnByLid: db.prepare(
+			selectPnByLid: this.db.prepare(
 				'SELECT j.raw_string AS raw FROM jid_map m ' +
 					'JOIN jid j_lid ON j_lid._id = m.lid_row_id ' +
 					'JOIN jid j ON j._id = m.jid_row_id ' +
 					'WHERE j_lid.raw_string = ?'
 			),
-			selectLidByPn: db.prepare(
+			selectLidByPn: this.db.prepare(
 				// May return multiple rows (one PN can have several LIDs); the
-				// LIDMappingStore expects a single value, so we ORDER BY sort_id
-				// DESC to surface the most-recent LID first. Callers that need
-				// the full set should query the table directly.
+				// LIDMappingStore expects a single value, so we order by
+				// `lid_row_id DESC` to surface the most-recently-allocated LID
+				// (jid._id is AUTOINCREMENT, so a higher _id ↔ a newer row).
+				// `sort_id` is not used as the ordering key because
+				// `storeMapping` writes a constant 0 there; ordering on it
+				// would be non-deterministic for PNs linked to multiple LIDs
+				// over time. Callers that need the full set should query the
+				// table directly.
 				'SELECT j.raw_string AS raw FROM jid_map m ' +
 					'JOIN jid j ON j._id = m.lid_row_id ' +
 					'JOIN jid j_pn ON j_pn._id = m.jid_row_id ' +
-					'WHERE j_pn.raw_string = ? ORDER BY m.sort_id DESC LIMIT 1'
+					'WHERE j_pn.raw_string = ? ORDER BY m.lid_row_id DESC LIMIT 1'
 			)
 		}
 	}

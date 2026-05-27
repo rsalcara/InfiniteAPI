@@ -13,7 +13,25 @@ function sleep(ms: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions
+export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
+	/**
+	 * Optional pre-opened {@link MultiDbSqliteStore}. When supplied, the
+	 * auth-state adapter reuses this handle set instead of opening a fresh
+	 * one against the same `sessionDir`, which avoids duplicate connections
+	 * (WAL contention + 2× FD usage) when the caller also passes the same
+	 * store to `SocketConfig.multiDbStore` or to a cache adapter.
+	 *
+	 * Typed as `unknown` to keep the public type free of `better-sqlite3`
+	 * references for consumers that don't use SQLite.
+	 *
+	 * Ownership: when `store` is supplied, the returned `close()` does
+	 * NOT close the injected store — the caller retains ownership and is
+	 * expected to call `store.close()` itself on shutdown. When `store`
+	 * is omitted and the adapter opens its own store, `close()` closes
+	 * everything as before.
+	 */
+	store?: unknown
+}
 
 /**
  * Multi-DB authentication state for Baileys.
@@ -54,7 +72,12 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	/** Exposed for advanced consumers and the upcoming phase 9.1+ integrations. */
 	store: MultiDbSqliteStore
 }> {
-	const store = new MultiDbSqliteStore(opts)
+	// Reuse an injected store when supplied; otherwise open our own. The
+	// injected-store path lets a single MultiDbSqliteStore be shared with
+	// `SocketConfig.multiDbStore` and with cache adapters, eliminating the
+	// duplicate 13-handle open the quick-start docs previously showed.
+	const ownsStore = !opts.store
+	const store = ownsStore ? new MultiDbSqliteStore(opts) : (opts.store as MultiDbSqliteStore)
 
 	let creds: AuthenticationCreds
 	let credsStmts: ReturnType<typeof prepareCredsStatements>
@@ -66,12 +89,19 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		// triggers the close() cleanup below — the store's own runOpen()
 		// catches partial init internally, but a thrown error past .open()
 		// would previously leave the caller with no close() to call.
+		//
+		// For an injected store the caller has already opened it; calling
+		// open() again is a safe no-op (`openInFlight` / `opened` short-
+		// circuit), so we still call it to handle the case where the caller
+		// passes a fresh-but-unopened store.
 		await store.open()
 		credsStmts = prepareCredsStatements(store)
 		signalStmts = prepareSignalStatements(store)
 		creds = loadCreds(credsStmts, opts.logger)
 	} catch (err) {
-		store.close()
+		// Only close the store if WE opened it — injected stores belong to
+		// the caller.
+		if (ownsStore) store.close()
 		throw err
 	}
 
@@ -165,7 +195,13 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		saveCreds: async () => {
 			persistCreds()
 		},
-		close: () => store.close(),
+		close: () => {
+			// Injected stores belong to the caller — they call .close()
+			// themselves on shutdown. Our close() is a no-op in that case so
+			// the caller can keep using the store after the auth-state is
+			// torn down (e.g. for cache adapters that share the same store).
+			if (ownsStore) store.close()
+		},
 		store
 	}
 }

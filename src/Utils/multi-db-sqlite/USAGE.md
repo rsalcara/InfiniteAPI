@@ -17,17 +17,24 @@ import {
 
 const sessionDir = '/var/lib/infiniteapi/sessions/main'
 
-// 1) Open the multi-DB store (13 .db files materialize on first open).
+// 1) Open ONE MultiDbSqliteStore. All consumers below share these 13 handles —
+//    do NOT open the store again inside `useMultiDbSqliteAuthState` or the
+//    adapters, or you'll end up with duplicate connections (WAL contention,
+//    2× FD usage).
 const store = new MultiDbSqliteStore({ sessionDir })
 await store.open()
 
 // 2) Auth state — drop-in replacement for useMultiFileAuthState /
-//    useSqliteAuthState.
-const { state, saveCreds, close: closeAuth } = await useMultiDbSqliteAuthState({ sessionDir })
+//    useSqliteAuthState. Pass the pre-opened `store` so the adapter reuses
+//    the same handles instead of opening a second set.
+const { state, saveCreds, close: closeAuth } = await useMultiDbSqliteAuthState({
+  sessionDir,
+  store,
+})
 
 // 3) Wire the SocketConfig. Passing `multiDbStore` activates phase 9.1
 //    LID mapping persistence via msgstore.jid_map; the cache adapters
-//    activate phases 9.2 + 9.3.
+//    activate phases 9.2 + 9.3 (they reuse the same `store.handle(...)`).
 const sock = makeWASocket({
   auth: state,
   multiDbStore: store,
@@ -37,10 +44,10 @@ const sock = makeWASocket({
 
 sock.ev.on('creds.update', saveCreds)
 
-// 4) On shutdown: closeAuth() releases the auth-state handles; store.close()
-//    closes every remaining .db handle (including the ones the adapters use).
+// 4) On shutdown: closeAuth() is a no-op because the auth-state does NOT
+//    own the injected `store` — the caller does. Call store.close() yourself.
 async function shutdown() {
-  closeAuth()
+  closeAuth() // no-op when `store` was injected
   store.close()
 }
 ```

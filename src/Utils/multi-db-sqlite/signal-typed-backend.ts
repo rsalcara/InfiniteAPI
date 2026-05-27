@@ -34,7 +34,19 @@
  */
 import type BetterSqlite3Module from 'better-sqlite3'
 
+import type { SqliteDbLike } from './types'
+
 type Database = BetterSqlite3Module.Database
+
+/**
+ * Sentinel `device_id` for identities that arrive without an explicit
+ * device. SQLite treats NULLs as distinct under UNIQUE, so storing NULL
+ * in `device_id` would let multiple "no-device" identity rows for the
+ * same recipient slip past the `identities_idx` constraint and surface
+ * stale keys from `getIdentity`. Using 0 — the value the canonical
+ * mobile schema also uses — keeps the conflict target meaningful.
+ */
+const IDENTITY_DEVICE_ID_SENTINEL = 0
 
 export type SignalSessionKey = {
 	deviceId: number
@@ -75,59 +87,67 @@ export class SignalTypedBackend {
 		selectSenderKey: BetterSqlite3Module.Statement
 	}
 
-	constructor(private readonly db: Database) {
+	private readonly db: Database
+
+	constructor(db: SqliteDbLike) {
+		this.db = db as unknown as Database
 		this.stmts = {
 			// sessions: unique index on (device_id, recipient_account_id, recipient_account_type, session_type, session_scope)
-			upsertSession: db.prepare(
+			upsertSession: this.db.prepare(
 				'INSERT INTO sessions (device_id, recipient_account_id, recipient_account_type, ' +
 					'session_type, session_scope, record, timestamp) ' +
 					'VALUES (?, ?, ?, ?, ?, ?, ?) ' +
 					'ON CONFLICT(device_id, recipient_account_id, recipient_account_type, session_type, session_scope) ' +
 					'DO UPDATE SET record = excluded.record, timestamp = excluded.timestamp'
 			),
-			selectSession: db.prepare(
+			selectSession: this.db.prepare(
 				'SELECT record, timestamp FROM sessions ' +
 					'WHERE device_id = ? AND recipient_account_id = ? AND recipient_account_type = ? ' +
 					'AND session_type = ? AND session_scope = ?'
 			),
-			deleteSession: db.prepare(
+			deleteSession: this.db.prepare(
 				'DELETE FROM sessions ' +
 					'WHERE device_id = ? AND recipient_account_id = ? AND recipient_account_type = ? ' +
 					'AND session_type = ? AND session_scope = ?'
 			),
-			upsertPrekey: db.prepare(
+			upsertPrekey: this.db.prepare(
 				'INSERT INTO prekeys (prekey_id, record, key_type) VALUES (?, ?, ?) ' +
 					'ON CONFLICT(prekey_id) DO UPDATE SET record = excluded.record'
 			),
-			selectPrekey: db.prepare('SELECT record FROM prekeys WHERE prekey_id = ?'),
-			deletePrekey: db.prepare('DELETE FROM prekeys WHERE prekey_id = ?'),
-			upsertSignedPrekey: db.prepare(
+			selectPrekey: this.db.prepare('SELECT record FROM prekeys WHERE prekey_id = ?'),
+			deletePrekey: this.db.prepare('DELETE FROM prekeys WHERE prekey_id = ?'),
+			upsertSignedPrekey: this.db.prepare(
 				'INSERT INTO signed_prekeys (prekey_id, record, timestamp, key_type) VALUES (?, ?, ?, ?) ' +
 					'ON CONFLICT(prekey_id) DO UPDATE SET record = excluded.record, timestamp = excluded.timestamp'
 			),
-			selectSignedPrekey: db.prepare('SELECT record, timestamp FROM signed_prekeys WHERE prekey_id = ?'),
-			upsertKyberPrekey: db.prepare(
+			selectSignedPrekey: this.db.prepare('SELECT record, timestamp FROM signed_prekeys WHERE prekey_id = ?'),
+			upsertKyberPrekey: this.db.prepare(
 				'INSERT INTO kyber_prekeys (prekey_id, record, last_resort_key) VALUES (?, ?, ?) ' +
 					'ON CONFLICT(prekey_id) DO UPDATE SET record = excluded.record'
 			),
-			selectKyberPrekey: db.prepare('SELECT record, last_resort_key FROM kyber_prekeys WHERE prekey_id = ?'),
-			upsertIdentity: db.prepare(
+			selectKyberPrekey: this.db.prepare('SELECT record, last_resort_key FROM kyber_prekeys WHERE prekey_id = ?'),
+			upsertIdentity: this.db.prepare(
 				'INSERT INTO identities (recipient_id, recipient_type, device_id, public_key, timestamp) ' +
 					'VALUES (?, ?, ?, ?, ?) ' +
 					'ON CONFLICT(recipient_id, recipient_type, device_id) ' +
 					'DO UPDATE SET public_key = excluded.public_key, timestamp = excluded.timestamp'
 			),
-			selectIdentity: db.prepare(
+			selectIdentity: this.db.prepare(
+				// `device_id = ?` (not `IS ?`) because `putIdentity` coerces a
+				// missing/null device id to the IDENTITY_DEVICE_ID_SENTINEL
+				// (0) before insert. Keeping `IS ?` here together with the
+				// coerced INSERT would mean a select with `deviceId: null`
+				// never finds the row even though the row exists.
 				'SELECT public_key, timestamp FROM identities ' +
-					'WHERE recipient_id = ? AND recipient_type = ? AND device_id IS ?'
+					'WHERE recipient_id = ? AND recipient_type = ? AND device_id = ?'
 			),
-			upsertSenderKey: db.prepare(
+			upsertSenderKey: this.db.prepare(
 				'INSERT INTO sender_keys (group_id, device_id, sender_account_id, sender_account_type, record, timestamp) ' +
 					'VALUES (?, ?, ?, ?, ?, ?) ' +
 					'ON CONFLICT(group_id, device_id, sender_account_id, sender_account_type) ' +
 					'DO UPDATE SET record = excluded.record, timestamp = excluded.timestamp'
 			),
-			selectSenderKey: db.prepare(
+			selectSenderKey: this.db.prepare(
 				'SELECT record, timestamp FROM sender_keys ' +
 					'WHERE group_id = ? AND device_id = ? AND sender_account_id = ? AND sender_account_type = ?'
 			)
@@ -215,10 +235,16 @@ export class SignalTypedBackend {
 	// ============ identities (dual LID + PN) ============
 
 	putIdentity(key: SignalIdentityKey, publicKey: Buffer | Uint8Array, timestamp: number = Date.now()): void {
+		// Coerce missing/null deviceId to the IDENTITY_DEVICE_ID_SENTINEL so
+		// ON CONFLICT(recipient_id, recipient_type, device_id) actually fires
+		// for "no-device" identities. SQLite considers two NULLs distinct
+		// under UNIQUE, so a NULL device_id would let repeated saves insert
+		// duplicate rows instead of upserting — and `getIdentity` could then
+		// return an older key for the same recipient.
 		this.stmts.upsertIdentity.run(
 			key.recipientId,
 			key.recipientType,
-			key.deviceId ?? null,
+			key.deviceId ?? IDENTITY_DEVICE_ID_SENTINEL,
 			publicKey,
 			timestamp
 		)
@@ -228,7 +254,7 @@ export class SignalTypedBackend {
 		const r = this.stmts.selectIdentity.get(
 			key.recipientId,
 			key.recipientType,
-			key.deviceId ?? null
+			key.deviceId ?? IDENTITY_DEVICE_ID_SENTINEL
 		) as { public_key: Buffer; timestamp: number } | undefined
 		if (!r) return null
 		return { publicKey: r.public_key, timestamp: r.timestamp }

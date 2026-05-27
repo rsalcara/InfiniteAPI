@@ -22,6 +22,8 @@
  */
 import type BetterSqlite3Module from 'better-sqlite3'
 
+import type { SqliteDbLike } from './types'
+
 type Database = BetterSqlite3Module.Database
 
 /**
@@ -52,30 +54,36 @@ export class UserDeviceBackend {
 		selectPrimaryVersion: BetterSqlite3Module.Statement
 	}
 
-	constructor(private readonly db: Database) {
+	private readonly db: Database
+
+	constructor(db: SqliteDbLike) {
+		// Public type is the structural SqliteDbLike to keep better-sqlite3
+		// off the published declarations; the runtime expectation is an
+		// actual better-sqlite3 Database instance.
+		this.db = db as unknown as Database
 		this.stmts = {
-			insertDevice: db.prepare(
+			insertDevice: this.db.prepare(
 				'INSERT INTO user_device (user_jid_row_id, device_jid_row_id, key_index) VALUES (?, ?, ?)'
 			),
-			deleteByUser: db.prepare('DELETE FROM user_device WHERE user_jid_row_id = ?'),
-			selectByUser: db.prepare(
+			deleteByUser: this.db.prepare('DELETE FROM user_device WHERE user_jid_row_id = ?'),
+			selectByUser: this.db.prepare(
 				'SELECT user_jid_row_id, device_jid_row_id, key_index FROM user_device WHERE user_jid_row_id = ?'
 			),
-			upsertInfo: db.prepare(
+			upsertInfo: this.db.prepare(
 				'INSERT INTO user_device_info (user_jid_row_id, raw_id, timestamp, expected_timestamp) ' +
 					'VALUES (?, ?, ?, ?) ' +
 					'ON CONFLICT(user_jid_row_id) DO UPDATE SET ' +
 					'  raw_id = excluded.raw_id, timestamp = excluded.timestamp, expected_timestamp = excluded.expected_timestamp'
 			),
-			selectInfo: db.prepare(
+			selectInfo: this.db.prepare(
 				'SELECT user_jid_row_id, raw_id, timestamp, expected_timestamp FROM user_device_info ' +
 					'WHERE user_jid_row_id = ?'
 			),
-			upsertPrimaryVersion: db.prepare(
+			upsertPrimaryVersion: this.db.prepare(
 				'INSERT INTO primary_device_version (user_jid_row_id, version) VALUES (?, ?) ' +
 					'ON CONFLICT(user_jid_row_id) DO UPDATE SET version = excluded.version'
 			),
-			selectPrimaryVersion: db.prepare(
+			selectPrimaryVersion: this.db.prepare(
 				'SELECT version FROM primary_device_version WHERE user_jid_row_id = ?'
 			)
 		}

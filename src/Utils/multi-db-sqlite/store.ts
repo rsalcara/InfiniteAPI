@@ -22,6 +22,7 @@ import type BetterSqlite3Module from 'better-sqlite3'
 
 import type { ILogger } from '../logger'
 import { MULTI_DB_FILES, type MultiDbFile, SCHEMAS } from './schemas'
+import type { SqliteDbLike } from './types'
 
 type Database = BetterSqlite3Module.Database
 type DatabaseConstructor = typeof import('better-sqlite3')
@@ -30,10 +31,14 @@ const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
 	'journal_mode = WAL',
 	'synchronous = NORMAL',
 	'busy_timeout = 5000',
-	// Required so `FOREIGN KEY ... ON DELETE CASCADE` constraints actually
-	// enforce — SQLite leaves them off by default per connection, so without
-	// this the cascade semantics in `jid_map`, `wa_trusted_contacts`, etc.
-	// would silently no-op.
+	// Defensively enabled. The 13 schemas in this folder currently do NOT
+	// define `FOREIGN KEY ... REFERENCES ...` clauses (they mirror the
+	// canonical mobile layout, which also keeps FK enforcement off). This
+	// pragma is set so that any future schema additions that DO add foreign
+	// keys (e.g. `jid_map` → `jid`, `wa_trusted_contacts` → `wa_contacts`)
+	// have their cascade semantics honored without a separate per-handle
+	// fix. SQLite is per-connection here, so the pragma must be present on
+	// every opened handle — DEFAULT_PRAGMAS is the right place.
 	'foreign_keys = ON'
 ]
 
@@ -140,18 +145,18 @@ export class MultiDbSqliteStore {
 	 * Returns the opened handle for the given DB file. Throws if the store
 	 * has not been opened yet — callers should always {@link open} first.
 	 *
-	 * @internal — primarily for the SQLite-backed adapters in this package.
-	 * The return type intentionally surfaces `better-sqlite3`'s `Database`
-	 * so internal call sites get the typed prepared-statement API; external
-	 * consumers of `baileys/Utils` that do not use SQLite should ignore
-	 * this method (the `database?: unknown` boundary on
-	 * `useSqliteAuthState` / `useMultiDbSqliteAuthState` keeps the optional
-	 * peer-dep contract on the entry points they actually call).
+	 * The return type is the local {@link SqliteDbLike} structural
+	 * interface (NOT `better-sqlite3.Database`), so the generated `.d.ts`
+	 * does not force every TypeScript consumer of `baileys/Utils` to
+	 * resolve `better-sqlite3`'s typings — preserving the optional
+	 * peer-dependency contract. The runtime value is an actual
+	 * `better-sqlite3` `Database` instance; internal callers cast at the
+	 * boundary when they need the typed API.
 	 */
-	handle(file: MultiDbFile): Database {
+	handle(file: MultiDbFile): SqliteDbLike {
 		const db = this.handles.get(file)
 		if (!db) throw new Error(`MultiDbSqliteStore: handle for "${file}" not opened (call .open() first)`)
-		return db
+		return db as unknown as SqliteDbLike
 	}
 
 	/**
