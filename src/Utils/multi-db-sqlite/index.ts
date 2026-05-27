@@ -8,3 +8,8 @@ export { JidMapBackend, REVERSE_SUFFIX, stripReverse } from './lid-mapping-backe
 export { wrapKeysWithJidMap } from './keys-with-jid-map'
 export { createLIDMappingStoreWithSqlite } from './factories'
 export { UserDeviceBackend, type StoredDeviceRow } from './user-device-backend'
+export {
+	UserDeviceCacheSqliteAdapter,
+	type NodeCacheLike,
+	type UserDeviceCacheAdapterOptions
+} from './user-device-cache-adapter'
