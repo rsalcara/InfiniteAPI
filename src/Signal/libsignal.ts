@@ -20,6 +20,7 @@ import { SenderKeyName } from './Group/sender-key-name'
 import { SenderKeyRecord } from './Group/sender-key-record'
 import { GroupCipher, GroupSessionBuilder, SenderKeyDistributionMessage } from './Group'
 import { LIDMappingStore } from './lid-mapping'
+import { createLIDMappingStoreWithSqlite } from '../Utils/multi-db-sqlite/factories'
 
 /**
  * Stage 3 (upstream #2573): module-scope PN→LID resolver for signal-protocol
@@ -342,14 +343,17 @@ export function makeLibSignalRepository(
 	// opaque `'lid-mapping'` rows on the shared key store. The LIDMappingStore
 	// itself is unchanged — its LRU cache, request coalescing, retry,
 	// statistics, and metrics layers all sit on top of the proxied key store.
+	//
+	// The factory is imported statically (not lazily) because this file is
+	// ESM (`"type": "module"` in package.json), so a CommonJS-style
+	// `require()` would throw at runtime. The factory module re-exports only
+	// pure TS symbols — `better-sqlite3` is not actually loaded unless
+	// `createLIDMappingStoreWithSqlite` is reached, and `multiDbStore` is
+	// only present when the caller has already opened a MultiDbSqliteStore
+	// (which is when better-sqlite3 was loaded by the auth-state adapter).
 	let lidMapping: LIDMappingStore
 	if (options?.multiDbStore) {
-		// Lazy require avoids pulling the SQLite path into the bundle for
-		// consumers that don't use it. The dynamic import expression here
-		// resolves synchronously against the local module graph.
-		// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-		const sqliteFactories = require('../Utils/multi-db-sqlite/factories') as typeof import('../Utils/multi-db-sqlite/factories')
-		lidMapping = sqliteFactories.createLIDMappingStoreWithSqlite({
+		lidMapping = createLIDMappingStoreWithSqlite({
 			innerKeys: auth.keys as SignalKeyStoreWithTransaction,
 			// Boundary cast: public type is `unknown` so consumers of this
 			// module's options don't have a hard dep on the SQLite types.

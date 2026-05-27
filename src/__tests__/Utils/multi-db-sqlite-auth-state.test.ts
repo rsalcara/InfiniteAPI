@@ -2,7 +2,9 @@
  * Phase 9 — `useMultiDbSqliteAuthState` skeleton smoke test.
  *
  * Covers:
- *   - creates all 5 physical .db files (creds, axolotl, msgstore, wa, sync);
+ *   - creates all 13 physical .db files (creds, axolotl, msgstore, wa, sync,
+ *     media, companion_devices, chatsettings, location, payments, stickers,
+ *     smb, prometheus);
  *   - typed tables exist with expected names in the right .db files;
  *   - creds round-trip via creds.db;
  *   - signal data round-trip via axolotl.db.signal_kv (opaque key-value

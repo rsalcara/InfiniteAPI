@@ -65,7 +65,7 @@ This directory ships the **skeleton** — files exist, schemas materialize, and
 `useSqliteAuthState`. Component-level integrations follow:
 
 ### Phase 9.0 (this PR) — Skeleton
-- `MultiDbSqliteStore` opens all 5 files
+- `MultiDbSqliteStore` opens all 13 files
 - `useMultiDbSqliteAuthState` routes:
   - auth creds → `creds.db` `creds(key, value, updated_at)` row
   - signal data → `axolotl.db` `signal_kv(type, id, value)` (opaque)
@@ -146,8 +146,8 @@ their current backend until they choose to migrate via `migrateAuthState`
 
 ## Lifecycle
 
-- `useMultiDbSqliteAuthState({ sessionDir })` opens all 5 handles
+- `useMultiDbSqliteAuthState({ sessionDir })` opens all 13 handles
 - The returned `close()` closes every handle in order; safe to call twice
 - After `close()`, the same `sessionDir` can be reopened to resume
 - File locking: each `.db` carries its own WAL — independent locks across the
-  5 files, hence the isolation properties stated above
+  13 files, hence the isolation properties stated above

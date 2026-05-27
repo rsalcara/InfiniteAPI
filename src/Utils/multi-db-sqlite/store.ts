@@ -1,6 +1,8 @@
 /**
  * `MultiDbSqliteStore` — multi-handle SQLite store with one physical
- * `.db` file per concern (creds, axolotl, msgstore, wa, sync).
+ * `.db` file per concern (creds, axolotl, msgstore, wa, sync, media,
+ * companion_devices, chatsettings, location, payments, stickers, smb,
+ * prometheus — 13 files total; see `MULTI_DB_FILES`).
  *
  * Why multiple files instead of one consolidated DB?
  *

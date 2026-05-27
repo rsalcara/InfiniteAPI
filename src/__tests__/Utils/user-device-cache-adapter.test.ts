@@ -89,4 +89,34 @@ describe('UserDeviceCacheSqliteAdapter', () => {
 		expect(adapter.get('fresh')).toEqual(['ok'])
 		expect(adapter.get('stale')).toBeUndefined()
 	})
+
+	it('flushAll wipes every entry', () => {
+		const adapter = new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db'))
+		adapter.set('a', [1])
+		adapter.set('b', [2])
+		adapter.set('c', [3])
+
+		adapter.flushAll()
+		expect(adapter.get('a')).toBeUndefined()
+		expect(adapter.get('b')).toBeUndefined()
+		expect(adapter.get('c')).toBeUndefined()
+	})
+
+	it('get returns undefined and drops the row when JSON is corrupted', () => {
+		const adapter = new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db'))
+		const db = store.handle('msgstore.db')
+		// Bypass the adapter to write a tampered devices_json row directly,
+		// simulating a corruption / external write. NodeCache returns
+		// undefined on a missing entry, and the adapter must mirror that.
+		db.prepare(
+			'INSERT INTO user_device_cache_json (user_jid, devices_json, expires_at) VALUES (?, ?, ?)'
+		).run('bad', '{not valid json', Date.now() + 60_000)
+
+		expect(adapter.get('bad')).toBeUndefined()
+		// The bad row is removed so it does not poison subsequent reads.
+		const remaining = db
+			.prepare('SELECT COUNT(*) AS n FROM user_device_cache_json WHERE user_jid = ?')
+			.get('bad') as { n: number }
+		expect(remaining.n).toBe(0)
+	})
 })

@@ -213,12 +213,25 @@ export type SocketConfig = {
 	) => SignalRepositoryWithLIDStore
 
 	/**
-	 * Optional multi-DB SQLite store (`MultiDbSqliteStore`). When supplied,
-	 * persistence for LID mapping, user device cache, retry counters,
-	 * quarantined stanzas, trusted-contact tokens, and app-state sync routes
-	 * through typed SQLite tables (one physical `.db` file per concern)
-	 * instead of in-RAM caches / opaque key-value rows. The default
-	 * (`undefined`) keeps the legacy behavior.
+	 * Optional multi-DB SQLite store (`MultiDbSqliteStore`).
+	 *
+	 * Currently wired components (phase 9.1):
+	 *   - **LID mapping** — `LIDMappingStore` persists `'lid-mapping'` rows
+	 *     into `msgstore.db.jid_map` (typed) instead of opaque key-value
+	 *     rows on the shared signal key store. Cache, coalescing, retry,
+	 *     and statistics on top of the store are unchanged.
+	 *
+	 * Components with adapters / backends READY but NOT wired here yet
+	 * (the caller passes the adapter explicitly to the matching
+	 * `SocketConfig` slot — `userDevicesCache`, `msgRetryCounterCache`,
+	 * etc.):
+	 *   - User device cache (`UserDeviceCacheSqliteAdapter`)
+	 *   - Retry counter (`MsgRetryCounterSqliteAdapter`)
+	 *   - Bad MAC quarantine (`MessageQuarantineBackend`)
+	 *   - Trusted Contact tokens (`TrustedContactsBackend`)
+	 *   - App-state sync (`AppStateBackend`)
+	 *
+	 * The default (`undefined`) keeps the legacy behavior end-to-end.
 	 *
 	 * Typed as `unknown` to avoid forcing every importer of `SocketConfig`
 	 * to resolve `better-sqlite3` types. The runtime expectation is a

@@ -48,6 +48,7 @@ export interface NodeCacheLike {
 	set(key: string, value: NodeCacheCompatibleEntry, ttl?: number | string): boolean
 	del(key: string | string[]): number
 	mget<T = NodeCacheCompatibleEntry>(keys: string[]): { [key: string]: T }
+	flushAll(): void
 }
 
 const CREATE_AUX_TABLE_SQL = `
@@ -60,6 +61,8 @@ CREATE TABLE IF NOT EXISTS user_device_cache_json (
 CREATE INDEX IF NOT EXISTS user_device_cache_json_expires_idx
   ON user_device_cache_json (expires_at);
 `
+
+const FLUSH_ALL_SQL = 'DELETE FROM user_device_cache_json'
 
 export type UserDeviceCacheAdapterOptions = {
 	/** Default TTL applied to entries written without an explicit TTL (seconds). */
@@ -83,6 +86,7 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 		upsert: BetterSqlite3Module.Statement
 		del: BetterSqlite3Module.Statement
 		prune: BetterSqlite3Module.Statement
+		flushAll: BetterSqlite3Module.Statement
 	}
 
 	private readonly defaultTtlMs: number
@@ -102,7 +106,8 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 					'ON CONFLICT(user_jid) DO UPDATE SET devices_json = excluded.devices_json, expires_at = excluded.expires_at'
 			),
 			del: db.prepare('DELETE FROM user_device_cache_json WHERE user_jid = ?'),
-			prune: db.prepare('DELETE FROM user_device_cache_json WHERE expires_at <= ?')
+			prune: db.prepare('DELETE FROM user_device_cache_json WHERE expires_at <= ?'),
+			flushAll: db.prepare(FLUSH_ALL_SQL)
 		}
 
 		if (opts.runPruneTickerEverySeconds && opts.runPruneTickerEverySeconds > 0) {
@@ -123,7 +128,16 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 			return undefined
 		}
 
-		return JSON.parse(row.devices_json) as T
+		// Robustness: a corrupted/tampered devices_json row must not crash the
+		// message pipeline. NodeCache returns `undefined` for missing entries
+		// and we mirror that here — drop the bad row and report a cache miss
+		// so the caller falls back to its refetch path naturally.
+		try {
+			return JSON.parse(row.devices_json) as T
+		} catch {
+			this.stmts.del.run(key)
+			return undefined
+		}
 	}
 
 	set(key: string, value: NodeCacheCompatibleEntry, ttl?: number | string): boolean {
@@ -160,6 +174,16 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 	pruneExpired(now: number = Date.now()): number {
 		const r = this.stmts.prune.run(now)
 		return r.changes
+	}
+
+	/**
+	 * Required by `SocketConfig.userDevicesCache` (which is typed
+	 * `PossiblyExtendedCacheStore` and extends `CacheStore`). Wipes every
+	 * cached entry — used on socket close so a fresh reconnect starts with
+	 * no stale device assumptions.
+	 */
+	flushAll(): void {
+		this.stmts.flushAll.run()
 	}
 
 	/** Stops the background prune ticker, if one was scheduled. */

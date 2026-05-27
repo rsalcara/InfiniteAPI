@@ -1,10 +1,21 @@
 /**
  * Phase 9.3 — `NodeCache`-shaped adapter that persists message-retry
- * counters in `msgstore.db.message_orphaned_edit`.
+ * counters in a dedicated `msg_retry_counter` auxiliary table on
+ * `msgstore.db`.
  *
- * The existing call sites in `messages-recv.ts` use the cache as a
- * `Map<msgKeyId, number>` with a 1-hour TTL. With this adapter the
- * counter survives gateway restarts, which avoids two failure modes:
+ * **Why an auxiliary table instead of `message_orphaned_edit`?**
+ *
+ * `message_orphaned_edit` carries the full natural key
+ * (`key_id`, `from_me`, `chat_row_id`, `sender_jid_row_id`) that the
+ * mobile client uses for retry dedup. The existing InfiniteAPI call sites
+ * in `messages-recv.ts` address the counter by a single string key
+ * (the upstream `NodeCache<number>` shape), so storing it in the typed
+ * table would force a parser at the boundary. The auxiliary table keeps
+ * the adapter call-compatible while leaving `message_orphaned_edit` free
+ * for the eventual fully-typed integration (phase 9.3.1).
+ *
+ * With this adapter the counter survives gateway restarts, which avoids
+ * two failure modes:
  *
  *   1. **Counter reset on restart**: a previously-retried message that
  *      hits the cap gets a fresh budget after the process bounces,
@@ -13,13 +24,6 @@
  *      the same session (e.g. blue/green deploy mid-handoff), the
  *      in-memory cache misses the other process's increments. SQLite
  *      serializes both writers naturally via WAL.
- *
- * The adapter stores ONLY the retry counter — the natural-key columns
- * (`key_id`, `from_me`, `chat_row_id`, `sender_jid_row_id`) are not
- * populated here because the gateway addresses the counter by the same
- * single string key the upstream cache uses. The full typed schema with
- * the natural key remains available for callers that want to query by
- * (chat, sender) tuples.
  */
 import type BetterSqlite3Module from 'better-sqlite3'
 
@@ -46,6 +50,7 @@ export interface CacheStoreShape {
 	get<T = unknown>(key: string): T | undefined
 	set(key: string, value: unknown, ttl?: number | string): boolean
 	del(key: string | string[]): number
+	flushAll(): void
 }
 
 export class MsgRetryCounterSqliteAdapter implements CacheStoreShape {
@@ -54,6 +59,7 @@ export class MsgRetryCounterSqliteAdapter implements CacheStoreShape {
 		upsert: BetterSqlite3Module.Statement
 		del: BetterSqlite3Module.Statement
 		prune: BetterSqlite3Module.Statement
+		flushAll: BetterSqlite3Module.Statement
 	}
 
 	private readonly defaultTtlMs: number
@@ -74,7 +80,8 @@ export class MsgRetryCounterSqliteAdapter implements CacheStoreShape {
 					'  retry_count = excluded.retry_count, last_attempt = excluded.last_attempt, expires_at = excluded.expires_at'
 			),
 			del: db.prepare('DELETE FROM msg_retry_counter WHERE key_id = ?'),
-			prune: db.prepare('DELETE FROM msg_retry_counter WHERE expires_at <= ?')
+			prune: db.prepare('DELETE FROM msg_retry_counter WHERE expires_at <= ?'),
+			flushAll: db.prepare('DELETE FROM msg_retry_counter')
 		}
 
 		if (opts.runPruneTickerEverySeconds && opts.runPruneTickerEverySeconds > 0) {
@@ -122,6 +129,15 @@ export class MsgRetryCounterSqliteAdapter implements CacheStoreShape {
 	pruneExpired(now: number = Date.now()): number {
 		const r = this.stmts.prune.run(now)
 		return r.changes
+	}
+
+	/**
+	 * Required by `SocketConfig.msgRetryCounterCache` (typed `CacheStore`).
+	 * Wipes every counter — used on socket close so a reconnect does not
+	 * inherit stale retry budgets from the previous session lifetime.
+	 */
+	flushAll(): void {
+		this.stmts.flushAll.run()
 	}
 
 	close(): void {
