@@ -33,7 +33,7 @@ describe('migrateAuthState — multi-file → SQLite', () => {
 		// `proto.Message.AppStateSyncKeyData.fromObject` codec on read, so
 		// migrating it round-trips the protobuf-special-cased path — not
 		// just plain Buffer/object values like the other types.
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
 		await src.state.keys.set({
 			'pre-key': {
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any

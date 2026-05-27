@@ -18,13 +18,10 @@
  * atomicity boundary in baileys is "save N signal data types in one call",
  * and those all live inside `axolotl.db`, so the trade-off is fine.
  */
-import type BetterSqlite3Module from 'better-sqlite3'
-
 import type { ILogger } from '../logger'
 import { MULTI_DB_FILES, type MultiDbFile, SCHEMAS } from './schemas'
 import type { SqliteDbLike } from './types'
 
-type Database = BetterSqlite3Module.Database
 type DatabaseConstructor = typeof import('better-sqlite3')
 
 const DEFAULT_PRAGMAS: ReadonlyArray<string> = [

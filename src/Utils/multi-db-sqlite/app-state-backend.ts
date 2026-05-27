@@ -87,12 +87,7 @@ export class AppStateBackend {
 	}
 
 	setCollectionVersion(row: CollectionVersionRow): void {
-		this.stmts.upsertCollectionVersion.run(
-			row.collectionName,
-			row.version,
-			row.ltHash ?? null,
-			row.dirtyVersion
-		)
+		this.stmts.upsertCollectionVersion.run(row.collectionName, row.version, row.ltHash ?? null, row.dirtyVersion)
 	}
 
 	getCollectionVersion(collectionName: string): CollectionVersionRow | null {

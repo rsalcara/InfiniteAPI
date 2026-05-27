@@ -26,28 +26,30 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 		const lidMapping = signalRepository.lidMapping
 
 		// Resolve all participant LIDs in parallel for better performance on large groups
-		await Promise.all(metadata.participants.map(async (p) => {
-			if (isLidUser(p.id)) {
-				if (p.phoneNumber) {
-					p.lid = p.id
-					p.id = p.phoneNumber
-				} else {
-					const resolved = await resolveLidToPn(p.id, lidMapping, logger)
-					if (resolved && resolved !== p.id) {
+		await Promise.all(
+			metadata.participants.map(async p => {
+				if (isLidUser(p.id)) {
+					if (p.phoneNumber) {
 						p.lid = p.id
-						p.id = resolved
+						p.id = p.phoneNumber
+					} else {
+						const resolved = await resolveLidToPn(p.id, lidMapping, logger)
+						if (resolved && resolved !== p.id) {
+							p.lid = p.id
+							p.id = resolved
+						}
 					}
 				}
-			}
-		}))
+			})
+		)
 
 		// Normalize owner/subjectOwner if LID (parallel)
 		const [resolvedOwner, resolvedSubjectOwner] = await Promise.all([
 			metadata.owner && isLidUser(metadata.owner)
-				? (metadata.ownerPn || resolveLidToPn(metadata.owner, lidMapping, logger))
+				? metadata.ownerPn || resolveLidToPn(metadata.owner, lidMapping, logger)
 				: null,
 			metadata.subjectOwner && isLidUser(metadata.subjectOwner)
-				? (metadata.subjectOwnerPn || resolveLidToPn(metadata.subjectOwner, lidMapping, logger))
+				? metadata.subjectOwnerPn || resolveLidToPn(metadata.subjectOwner, lidMapping, logger)
 				: null
 		])
 		if (resolvedOwner) metadata.owner = resolvedOwner
@@ -96,11 +98,13 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 		if (groupsChild) {
 			const groups = getBinaryNodeChildren(groupsChild, 'group')
 			for (const groupNode of groups) {
-				const meta = await normalizeGroupMetadata(extractGroupMetadata({
-					tag: 'result',
-					attrs: {},
-					content: [groupNode]
-				}))
+				const meta = await normalizeGroupMetadata(
+					extractGroupMetadata({
+						tag: 'result',
+						attrs: {},
+						content: [groupNode]
+					})
+				)
 				data[meta.id] = meta
 			}
 		}

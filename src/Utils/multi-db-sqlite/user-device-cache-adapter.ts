@@ -144,10 +144,7 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 		}
 
 		if (opts.runPruneTickerEverySeconds && opts.runPruneTickerEverySeconds > 0) {
-			this.pruneTicker = setInterval(
-				() => this.pruneExpired(),
-				opts.runPruneTickerEverySeconds * 1000
-			)
+			this.pruneTicker = setInterval(() => this.pruneExpired(), opts.runPruneTickerEverySeconds * 1000)
 			if (typeof this.pruneTicker.unref === 'function') this.pruneTicker.unref()
 		}
 	}
@@ -248,9 +245,7 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 		for (let i = 0; i < staleKeys.length; i += CHUNK) {
 			const chunk = staleKeys.slice(i, i + CHUNK)
 			const stalePlaceholders = chunk.map(() => '?').join(',')
-			this.db
-				.prepare(`DELETE FROM user_device_cache_json WHERE user_jid IN (${stalePlaceholders})`)
-				.run(...chunk)
+			this.db.prepare(`DELETE FROM user_device_cache_json WHERE user_jid IN (${stalePlaceholders})`).run(...chunk)
 		}
 
 		return out

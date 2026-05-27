@@ -144,9 +144,7 @@ export class MessageQuarantineBackend {
 		chatRowId: number,
 		senderJidRowId: number | null
 	): StoredQuarantineRow | null {
-		const row = this.stmts.selectByKey.get(keyId, fromMe ? 1 : 0, chatRowId, senderJidRowId ?? 0) as
-			| RawRow
-			| undefined
+		const row = this.stmts.selectByKey.get(keyId, fromMe ? 1 : 0, chatRowId, senderJidRowId ?? 0) as RawRow | undefined
 		return row ? mapRow(row) : null
 	}
 

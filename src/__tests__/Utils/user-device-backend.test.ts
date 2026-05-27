@@ -8,7 +8,6 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-
 import { MultiDbSqliteStore, UserDeviceBackend } from '../../Utils/multi-db-sqlite'
 
 describe('UserDeviceBackend', () => {
@@ -30,11 +29,7 @@ describe('UserDeviceBackend', () => {
 		const backend = new UserDeviceBackend(store.handle('msgstore.db'))
 		backend.replaceDevices(
 			42,
-			[
-				{ deviceJidRowId: 100, keyIndex: 1 },
-				{ deviceJidRowId: 101, keyIndex: 2 },
-				{ deviceJidRowId: 102 }
-			],
+			[{ deviceJidRowId: 100, keyIndex: 1 }, { deviceJidRowId: 101, keyIndex: 2 }, { deviceJidRowId: 102 }],
 			{ rawId: 7, timestamp: 1_000, expectedTimestamp: 5_000 }
 		)
 
@@ -46,11 +41,11 @@ describe('UserDeviceBackend', () => {
 
 	it('isFresh respects expected_timestamp', () => {
 		const backend = new UserDeviceBackend(store.handle('msgstore.db'))
-		backend.replaceDevices(
-			77,
-			[{ deviceJidRowId: 999, keyIndex: 0 }],
-			{ rawId: 1, timestamp: 1_000, expectedTimestamp: 5_000 }
-		)
+		backend.replaceDevices(77, [{ deviceJidRowId: 999, keyIndex: 0 }], {
+			rawId: 1,
+			timestamp: 1_000,
+			expectedTimestamp: 5_000
+		})
 
 		expect(backend.isFresh(77, 4_999)).toBe(true)
 		expect(backend.isFresh(77, 5_000)).toBe(true) // boundary: inclusive
@@ -71,15 +66,11 @@ describe('UserDeviceBackend', () => {
 
 	it('replaceDevices wipes old devices before inserting new', () => {
 		const backend = new UserDeviceBackend(store.handle('msgstore.db'))
-		backend.replaceDevices(
-			55,
-			[
-				{ deviceJidRowId: 1 },
-				{ deviceJidRowId: 2 },
-				{ deviceJidRowId: 3 }
-			],
-			{ rawId: 1, timestamp: 100, expectedTimestamp: 200 }
-		)
+		backend.replaceDevices(55, [{ deviceJidRowId: 1 }, { deviceJidRowId: 2 }, { deviceJidRowId: 3 }], {
+			rawId: 1,
+			timestamp: 100,
+			expectedTimestamp: 200
+		})
 		backend.replaceDevices(55, [{ deviceJidRowId: 99 }], { rawId: 2, timestamp: 300, expectedTimestamp: 400 })
 
 		const devices = backend.listDevices(55)

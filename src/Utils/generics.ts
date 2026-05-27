@@ -247,6 +247,7 @@ export const fetchLatestBaileysVersion = async (options: RequestInit & { timeout
 		} finally {
 			clearTimeout(timeout)
 		}
+
 		if (!response.ok) {
 			throw new Boom(`Failed to fetch latest Baileys version: ${response.statusText}`, { statusCode: response.status })
 		}

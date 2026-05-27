@@ -51,21 +51,18 @@ describe('useMultiFileAuthState — atomic write & corruption recovery (H7)', ()
 		expect(reopened.state.creds.advSecretKey).toBe('sentinel-value-B')
 	})
 
-	it(
-		'reading a corrupted creds.json throws (or recovers), never silently returns a fresh-init state',
-		async () => {
-			// Pre-seed dir with a deliberately corrupt creds.json.
-			await writeFile(join(dir, 'creds.json'), '{ "this is": not val')
+	it('reading a corrupted creds.json throws (or recovers), never silently returns a fresh-init state', async () => {
+		// Pre-seed dir with a deliberately corrupt creds.json.
+		await writeFile(join(dir, 'creds.json'), '{ "this is": not val')
 
-			// Stage 5 H7 fix: useMultiFileAuthState now throws `AuthFileCorruptError`
-			// when both `creds.json` AND `creds.json.bak` fail to parse — caller
-			// can distinguish corruption from a brand new install (which returns
-			// initAuthCreds() silently). With no `.bak` present (first boot), the
-			// throw must surface so the operator can recover the file or re-pair
-			// deliberately rather than discovering it silently regenerated.
-			await expect(useMultiFileAuthState(dir)).rejects.toThrow()
-		}
-	)
+		// Stage 5 H7 fix: useMultiFileAuthState now throws `AuthFileCorruptError`
+		// when both `creds.json` AND `creds.json.bak` fail to parse — caller
+		// can distinguish corruption from a brand new install (which returns
+		// initAuthCreds() silently). With no `.bak` present (first boot), the
+		// throw must surface so the operator can recover the file or re-pair
+		// deliberately rather than discovering it silently regenerated.
+		await expect(useMultiFileAuthState(dir)).rejects.toThrow()
+	})
 
 	it.failing('a multi-key set() either persists every type or fails the whole call', async () => {
 		const { state } = await useMultiFileAuthState(dir)

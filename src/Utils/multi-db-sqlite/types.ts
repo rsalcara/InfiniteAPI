@@ -60,7 +60,9 @@ export interface SqliteDbLike {
 	pragma(source: string, options?: { simple?: boolean }): unknown
 	close(): void
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	transaction<T extends (...args: any[]) => any>(fn: T): T & {
+	transaction<T extends (...args: any[]) => any>(
+		fn: T
+	): T & {
 		default: T
 		deferred: T
 		immediate: T

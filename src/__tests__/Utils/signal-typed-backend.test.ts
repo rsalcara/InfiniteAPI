@@ -8,7 +8,6 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-
 import { MultiDbSqliteStore, SignalTypedBackend } from '../../Utils/multi-db-sqlite'
 
 describe('SignalTypedBackend', () => {

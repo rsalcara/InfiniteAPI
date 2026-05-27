@@ -65,6 +65,7 @@ This directory ships the **skeleton** — files exist, schemas materialize, and
 `useSqliteAuthState`. Component-level integrations follow:
 
 ### Phase 9.0 (this PR) — Skeleton
+
 - `MultiDbSqliteStore` opens all 13 files
 - `useMultiDbSqliteAuthState` routes:
   - auth creds → `creds.db` `creds(key, value, updated_at)` row
@@ -73,25 +74,30 @@ This directory ships the **skeleton** — files exist, schemas materialize, and
   **not yet populated** — they wait for the integrations below.
 
 ### Phase 9.1 — `LIDMappingStore` → `jid_map`
+
 **Replaces:** the in-RAM `Map<lid, pn>` plus `Map<pn, lid>` pair.
 **Schema target:** `jid_map(lid_row_id, jid_row_id, sort_id)` joined with
 `jid(_id, user, server, agent, device, type, raw_string)`. Both addressing
 forms become rows in `jid`, with `jid_map` as the lookup table.
 
 ### Phase 9.2 — `userDevicesCache` → `user_device(_info)`
+
 **Replaces:** the in-RAM device list cache.
 **Schema target:** `user_device(user_jid_row_id, device_jid_row_id, key_index)`
-+ `user_device_info(user_jid_row_id, raw_id, timestamp, expected_timestamp)`.
-The `expected_timestamp` column gives a native TTL — no application-level
-eviction loop needed.
+
+- `user_device_info(user_jid_row_id, raw_id, timestamp, expected_timestamp)`.
+  The `expected_timestamp` column gives a native TTL — no application-level
+  eviction loop needed.
 
 ### Phase 9.3 — `msgRetryCounterCache` → `message_orphaned_edit`
+
 **Replaces:** the in-RAM retry counter.
 **Schema target:** `message_orphaned_edit(message_row_id, key_id, from_me,
 chat_id, sender_id, retry_count, last_attempt)` with `UNIQUE (key_id, from_me,
 chat_id, sender_id)` matching the natural retry-dedup key.
 
 ### Phase 9.4 — Bad MAC quarantine → `message_quarantine`
+
 **Replaces:** the in-RAM ring buffer.
 **Schema target:** `message_quarantine(... original_protobuf BLOB,
 serialized_stanza BLOB, failure_reason, quarantined_at)`. Critical property:
@@ -99,7 +105,9 @@ serialized_stanza BLOB, failure_reason, quarantined_at)`. Critical property:
 out-of-order retry don't vanish on gateway crash.
 
 ### Phase 9.5 — `signal_kv` → typed Signal Protocol tables
+
 **Migrates** the opaque `signal_kv(type, id, value)` row set into typed tables:
+
 - `signal_sessions(recipient_id, device_id, recipient_account_type, record BLOB)`
 - `signal_prekeys(prekey_id PK, record BLOB, consumed_at)`
 - `signal_signed_prekeys(prekey_id PK, record BLOB, created_at)`
@@ -116,12 +124,14 @@ without a join.
 preserves this gateway-specific behavior and does not force a change.
 
 ### Phase 9.6 — TC tokens → `wa_trusted_contacts(_send)`
+
 **Replaces:** trusted-contact-token storage scattered across creds JSON.
 **Schema target:** `wa_trusted_contacts(jid, incoming_tc_token BLOB,
 incoming_tc_token_timestamp)` + `wa_trusted_contacts_send(jid,
 sent_tc_token_timestamp, real_issue_timestamp)`.
 
 ### Phase 9.7 — App-state sync → `collection_versions` + `syncd_mutations`
+
 **Replaces:** the multi-file blob storage for app-state sync.
 **Schema target:** ordered mutation log + per-collection version tracking.
 

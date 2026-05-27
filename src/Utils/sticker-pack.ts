@@ -2,7 +2,7 @@ import { Boom } from '@hapi/boom'
 import { createHash } from 'crypto'
 import { zipSync } from 'fflate'
 import { promises as fs } from 'fs'
-import { gzipSync, gunzipSync } from 'zlib'
+import { gunzipSync, gzipSync } from 'zlib'
 import { proto } from '../../WAProto/index.js'
 import type { MediaType } from '../Defaults/index.js'
 import type { StickerPack, WAMediaUpload, WAMediaUploadFunction } from '../Types/Message.js'
@@ -728,10 +728,9 @@ export const prepareStickerPackMessage = async (
 		// Tray icon uses PNG format, 96x96 pixels (official client standard)
 		const lib = await getImageProcessingLibrary()
 		if (!lib?.sharp) {
-			throw new Boom(
-				'Sharp library is required for cover/tray icon processing. Install with: yarn add sharp',
-				{ statusCode: 400 }
-			)
+			throw new Boom('Sharp library is required for cover/tray icon processing. Install with: yarn add sharp', {
+				statusCode: 400
+			})
 		}
 
 		coverWebP = await lib.sharp

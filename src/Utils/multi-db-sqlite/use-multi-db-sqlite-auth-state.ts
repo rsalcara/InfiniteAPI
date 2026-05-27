@@ -250,10 +250,7 @@ function prepareSignalStatements(store: MultiDbSqliteStore) {
 	}
 }
 
-function loadCreds(
-	stmts: ReturnType<typeof prepareCredsStatements>,
-	logger: ILogger | undefined
-): AuthenticationCreds {
+function loadCreds(stmts: ReturnType<typeof prepareCredsStatements>, logger: ILogger | undefined): AuthenticationCreds {
 	const row = stmts.select.get(CREDS_ROW_KEY) as { value: string } | undefined
 	if (!row) {
 		logger?.info?.('multi-db-sqlite: creds.db empty, initializing fresh credentials')

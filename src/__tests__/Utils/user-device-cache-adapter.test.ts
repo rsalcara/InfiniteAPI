@@ -7,7 +7,6 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-
 import { MultiDbSqliteStore, UserDeviceCacheSqliteAdapter } from '../../Utils/multi-db-sqlite'
 
 describe('UserDeviceCacheSqliteAdapter', () => {
@@ -113,15 +112,17 @@ describe('UserDeviceCacheSqliteAdapter', () => {
 		// Bypass the adapter to write a tampered devices_json row directly,
 		// simulating a corruption / external write. NodeCache returns
 		// undefined on a missing entry, and the adapter must mirror that.
-		db.prepare(
-			'INSERT INTO user_device_cache_json (user_jid, devices_json, expires_at) VALUES (?, ?, ?)'
-		).run('bad', '{not valid json', Date.now() + 60_000)
+		db.prepare('INSERT INTO user_device_cache_json (user_jid, devices_json, expires_at) VALUES (?, ?, ?)').run(
+			'bad',
+			'{not valid json',
+			Date.now() + 60_000
+		)
 
 		expect(adapter.get('bad')).toBeUndefined()
 		// The bad row is removed so it does not poison subsequent reads.
-		const remaining = db
-			.prepare('SELECT COUNT(*) AS n FROM user_device_cache_json WHERE user_jid = ?')
-			.get('bad') as { n: number }
+		const remaining = db.prepare('SELECT COUNT(*) AS n FROM user_device_cache_json WHERE user_jid = ?').get('bad') as {
+			n: number
+		}
 		expect(remaining.n).toBe(0)
 	})
 })

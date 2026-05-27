@@ -18,7 +18,6 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-
 import type { SignalDataTypeMap } from '../../Types'
 import { useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
 
@@ -108,9 +107,7 @@ describe('useMultiDbSqliteAuthState', () => {
 				name: string
 			}>
 		).map(r => r.name)
-		expect(waTables).toEqual(
-			expect.arrayContaining(['wa_contacts', 'wa_trusted_contacts', 'wa_trusted_contacts_send'])
-		)
+		expect(waTables).toEqual(expect.arrayContaining(['wa_contacts', 'wa_trusted_contacts', 'wa_trusted_contacts_send']))
 
 		const syncTables = (
 			store.handle('sync.db').prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{

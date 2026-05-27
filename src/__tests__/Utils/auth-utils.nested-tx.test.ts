@@ -62,46 +62,43 @@ describe('addTransactionCapability — nested-transaction lock suppression (H0)'
 	// PR #457: flipped from `it.failing` — H0 closed by Stage 2 (commit
 	// d26053ccd5). `transaction()` agora bypass nested SOMENTE quando o
 	// lock está em heldLocks; diferentes keys acquire próprio lock.
-	it(
-		'serializes inner jid-keyed work against parallel jid-keyed work, even inside an outer meId tx',
-		async () => {
-			const keys = addTransactionCapability(makeInMemoryStore(), silentLogger(), {
-				maxCommitRetries: 1,
-				delayBetweenTriesMs: 1
-			})
+	it('serializes inner jid-keyed work against parallel jid-keyed work, even inside an outer meId tx', async () => {
+		const keys = addTransactionCapability(makeInMemoryStore(), silentLogger(), {
+			maxCommitRetries: 1,
+			delayBetweenTriesMs: 1
+		})
 
-			const meId = 'me@s.whatsapp.net'
-			const jid = 'peer@s.whatsapp.net'
+		const meId = 'me@s.whatsapp.net'
+		const jid = 'peer@s.whatsapp.net'
 
-			let activeJidWorkers = 0
-			const observedOverlap: number[] = []
+		let activeJidWorkers = 0
+		const observedOverlap: number[] = []
 
-			const jidWork = async (label: string) => {
-				activeJidWorkers++
-				if (activeJidWorkers > 1) observedOverlap.push(activeJidWorkers)
-				await delay(25)
-				activeJidWorkers--
-				void label
-			}
-
-			// Path A: outer meId tx wraps an inner jid tx (mirrors relayMessage → encryptMessage).
-			const a = keys.transaction(async () => {
-				await keys.transaction(async () => {
-					await jidWork('A-inner-jid')
-				}, jid)
-			}, meId)
-
-			// Path B: plain jid tx (mirrors decryptMessage running in parallel).
-			const b = keys.transaction(async () => {
-				await jidWork('B-jid')
-			}, jid)
-
-			await Promise.all([a, b])
-
-			// They share `jid` — they MUST serialize. Today they don't (H0).
-			expect(observedOverlap).toEqual([])
+		const jidWork = async (label: string) => {
+			activeJidWorkers++
+			if (activeJidWorkers > 1) observedOverlap.push(activeJidWorkers)
+			await delay(25)
+			activeJidWorkers--
+			void label
 		}
-	)
+
+		// Path A: outer meId tx wraps an inner jid tx (mirrors relayMessage → encryptMessage).
+		const a = keys.transaction(async () => {
+			await keys.transaction(async () => {
+				await jidWork('A-inner-jid')
+			}, jid)
+		}, meId)
+
+		// Path B: plain jid tx (mirrors decryptMessage running in parallel).
+		const b = keys.transaction(async () => {
+			await jidWork('B-jid')
+		}, jid)
+
+		await Promise.all([a, b])
+
+		// They share `jid` — they MUST serialize. Today they don't (H0).
+		expect(observedOverlap).toEqual([])
+	})
 
 	// PR #457: flipped — same Stage 2 H0 fix.
 	it('serializes nested encrypt-style writes within an outer meId tx against external jid txs', async () => {

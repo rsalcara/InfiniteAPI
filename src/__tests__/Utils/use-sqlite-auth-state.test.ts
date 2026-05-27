@@ -145,7 +145,7 @@ describe('useSqliteAuthState', () => {
 		expect(got[jid]).toBeUndefined()
 
 		const idKey = await state.keys.get('identity-key', [jid])
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
 		expect(Buffer.from(idKey[jid] as Uint8Array)).toEqual(Buffer.from([0xa0]))
 		close()
 	})

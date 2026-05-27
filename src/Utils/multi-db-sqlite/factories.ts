@@ -12,11 +12,11 @@
  * store to the component unchanged. Zero churn in the component's hot
  * paths.
  */
+import { type LIDMappingConfig, LIDMappingStore } from '../../Signal/lid-mapping'
 import type { LIDMapping, SignalKeyStoreWithTransaction } from '../../Types'
 import type { ILogger } from '../logger'
-import { type LIDMappingConfig, LIDMappingStore } from '../../Signal/lid-mapping'
-import { JidMapBackend } from './lid-mapping-backend'
 import { wrapKeysWithJidMap } from './keys-with-jid-map'
+import { JidMapBackend } from './lid-mapping-backend'
 import type { MultiDbSqliteStore } from './store'
 
 /**

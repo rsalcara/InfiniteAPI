@@ -2,6 +2,7 @@
 import { Boom } from '@hapi/boom'
 import Long from 'long'
 import { proto } from '../../WAProto/index.js'
+import type { LIDMappingStore } from '../Signal/lid-mapping'
 import type {
 	AuthenticationCreds,
 	BaileysEventEmitter,
@@ -20,7 +21,6 @@ import type {
 	WAMessage,
 	WAMessageKey
 } from '../Types'
-import type { LIDMappingStore } from '../Signal/lid-mapping'
 import { WAMessageStubType } from '../Types'
 import { getContentType, normalizeMessageContent } from '../Utils/messages'
 import {
@@ -841,7 +841,8 @@ const processMessage = async (
 			})
 		}
 
-		const participantsIncludesMe = () => participants.find(p => areJidsSameUser(meId, p.id) || areJidsSameUser(meId, p.phoneNumber))
+		const participantsIncludesMe = () =>
+			participants.find(p => areJidsSameUser(meId, p.id) || areJidsSameUser(meId, p.phoneNumber))
 
 		switch (message.messageStubType) {
 			case WAMessageStubType.GROUP_PARTICIPANT_CHANGE_NUMBER:

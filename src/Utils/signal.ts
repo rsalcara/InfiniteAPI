@@ -103,7 +103,7 @@ export const extractE2ESessionFromRetryReceipt = (receipt: BinaryNode) => {
 	if (!keysNode) return null
 
 	const typeBuf = getBinaryNodeChildBuffer(keysNode, 'type')
-	if (!typeBuf || typeBuf.length !== 1 || typeBuf[0] !== KEY_BUNDLE_TYPE[0]) return null
+	if (typeBuf?.length !== 1 || typeBuf[0] !== KEY_BUNDLE_TYPE[0]) return null
 
 	const identity = getBinaryNodeChildBuffer(keysNode, 'identity')
 	const skey = getBinaryNodeChild(keysNode, 'skey')
@@ -118,7 +118,7 @@ export const extractE2ESessionFromRetryReceipt = (receipt: BinaryNode) => {
 	// buffer and accepts trailing garbage — the parser must reject malformed
 	// receipts before any payload reaches `SessionBuilder.initOutgoing`.
 	const regBuf = getBinaryNodeChildBuffer(receipt, 'registration')
-	if (!regBuf || regBuf.length !== 4) return null
+	if (regBuf?.length !== 4) return null
 	const registrationId = getBinaryNodeChildUInt(receipt, 'registration', 4)
 	if (!isValidUInt(registrationId)) return null
 
@@ -128,17 +128,12 @@ export const extractE2ESessionFromRetryReceipt = (receipt: BinaryNode) => {
 	// Signatures are always exactly 64 bytes (Ed25519/Curve25519) — reject anything
 	// else, including the empty buffer that `getBinaryNodeChildBuffer` would
 	// otherwise pass through as truthy.
-	if (
-		!signedPubKey ||
-		(signedPubKey.length !== 32 && signedPubKey.length !== 33) ||
-		!signedSig ||
-		signedSig.length !== 64
-	) {
+	if (!signedPubKey || (signedPubKey.length !== 32 && signedPubKey.length !== 33) || signedSig?.length !== 64) {
 		return null
 	}
 
 	const signedKeyIdBuf = getBinaryNodeChildBuffer(skey, 'id')
-	if (!signedKeyIdBuf || signedKeyIdBuf.length !== 3) return null
+	if (signedKeyIdBuf?.length !== 3) return null
 	const signedKeyId = getBinaryNodeChildUInt(skey, 'id', 3)
 	if (!isValidUInt(signedKeyId)) return null
 
@@ -148,12 +143,7 @@ export const extractE2ESessionFromRetryReceipt = (receipt: BinaryNode) => {
 		const preKeyPub = getBinaryNodeChildBuffer(preKeyNode, 'value')
 		const preKeyIdBuf = getBinaryNodeChildBuffer(preKeyNode, 'id')
 		// Same 32-or-33 acceptance as identity / signed pub key.
-		if (
-			!preKeyPub ||
-			(preKeyPub.length !== 32 && preKeyPub.length !== 33) ||
-			!preKeyIdBuf ||
-			preKeyIdBuf.length !== 3
-		) {
+		if (!preKeyPub || (preKeyPub.length !== 32 && preKeyPub.length !== 33) || preKeyIdBuf?.length !== 3) {
 			return null
 		}
 

@@ -13,6 +13,7 @@ import type { BaileysEventEmitter } from '../Types/Events'
 import type { SignalRepositoryWithLIDStore } from '../Types/Signal'
 import { generateSignalPubKey } from '../Utils'
 import type { ILogger } from '../Utils/logger'
+import { createLIDMappingStoreWithSqlite } from '../Utils/multi-db-sqlite/factories'
 import { metrics } from '../Utils/prometheus-metrics.js'
 import { isAnyLidUser, isAnyPnUser, jidDecode, transferDevice, WAJIDDomains } from '../WABinary'
 import type { SenderKeyStore } from './Group/group_cipher'
@@ -20,7 +21,6 @@ import { SenderKeyName } from './Group/sender-key-name'
 import { SenderKeyRecord } from './Group/sender-key-record'
 import { GroupCipher, GroupSessionBuilder, SenderKeyDistributionMessage } from './Group'
 import { LIDMappingStore } from './lid-mapping'
-import { createLIDMappingStoreWithSqlite } from '../Utils/multi-db-sqlite/factories'
 
 /**
  * Stage 3 (upstream #2573): module-scope PN→LID resolver for signal-protocol
@@ -447,7 +447,7 @@ export function makeLibSignalRepository(
 	// This prevents PN/LID race conditions where concurrent operations for the
 	// same logical contact acquire different mutex locks because one uses PN
 	// and the other uses LID. (Aligned with WABA behavior — all operations use LID internally.)
-	const resolveCanonicalJid = async(jid: string): Promise<string> => {
+	const resolveCanonicalJid = async (jid: string): Promise<string> => {
 		if (isAnyLidUser(jid)) {
 			return jid
 		}
@@ -583,10 +583,7 @@ export function makeLibSignalRepository(
 							}
 						} catch (error) {
 							// Log but don't fail decryption — identity tracking is best-effort.
-							logger.warn(
-								{ jid, error: (error as Error).message },
-								'Failed to save identity key during decryption'
-							)
+							logger.warn({ jid, error: (error as Error).message }, 'Failed to save identity key during decryption')
 						}
 					}
 				}
@@ -662,26 +659,20 @@ export function makeLibSignalRepository(
 			// Lock per (group, meId) sender-key instead of the synthetic group jid —
 			// concurrent encrypts for different group/meId pairs run in parallel.
 			const senderName = jidToSignalSenderKeyName(group, meId)
-			return parsedKeys.transactWith(
-				{ records: [{ type: 'sender-key', id: senderName.toString() }] },
-				async () => {
-					const { skdm } = await ensureSenderKeyAndCreateSkdm(group, meId)
-					const ciphertext = await new GroupCipher(storage, senderName).encrypt(data)
-					return { ciphertext, senderKeyDistributionMessage: skdm.serialize() }
-				}
-			)
+			return parsedKeys.transactWith({ records: [{ type: 'sender-key', id: senderName.toString() }] }, async () => {
+				const { skdm } = await ensureSenderKeyAndCreateSkdm(group, meId)
+				const ciphertext = await new GroupCipher(storage, senderName).encrypt(data)
+				return { ciphertext, senderKeyDistributionMessage: skdm.serialize() }
+			})
 		},
 
 		async getSenderKeyDistributionMessage({ group, meId }) {
 			// Stage 2: same record-scoped pattern as encryptGroupMessage.
 			const senderName = jidToSignalSenderKeyName(group, meId)
-			return parsedKeys.transactWith(
-				{ records: [{ type: 'sender-key', id: senderName.toString() }] },
-				async () => {
-					const { skdm } = await ensureSenderKeyAndCreateSkdm(group, meId)
-					return skdm.serialize()
-				}
-			)
+			return parsedKeys.transactWith({ records: [{ type: 'sender-key', id: senderName.toString() }] }, async () => {
+				const { skdm } = await ensureSenderKeyAndCreateSkdm(group, meId)
+				return skdm.serialize()
+			})
 		},
 
 		async hasSenderKey({ group, meId }) {
@@ -784,12 +775,9 @@ export function makeLibSignalRepository(
 			// encrypt/decrypt transactions on any of these jids — a delete
 			// can no longer race past an in-flight encrypt that's still
 			// reading the same session.
-			return parsedKeys.transactWith(
-				{ records: sessionAddrs.map(id => ({ type: 'session', id })) },
-				async () => {
-					await auth.keys.set({ session: sessionUpdates })
-				}
-			)
+			return parsedKeys.transactWith({ records: sessionAddrs.map(id => ({ type: 'session', id })) }, async () => {
+				await auth.keys.set({ session: sessionUpdates })
+			})
 		},
 
 		// Release in-memory caches and timers on socket close (adapted from #2191). Uses our own
@@ -1392,8 +1380,7 @@ function signalStorage(
 
 					// Check if keys match
 					const keysMatch =
-						existingKey?.length === identityKey.length &&
-						existingKey.every((byte, i) => byte === identityKey[i])
+						existingKey?.length === identityKey.length && existingKey.every((byte, i) => byte === identityKey[i])
 
 					if (existingKey && !keysMatch) {
 						// IDENTITY KEY CHANGED - contact reinstalled WhatsApp or switched devices

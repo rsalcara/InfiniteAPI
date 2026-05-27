@@ -13,14 +13,8 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-
 import type { SignalKeyStoreWithTransaction } from '../../Types'
-import {
-	JidMapBackend,
-	MultiDbSqliteStore,
-	REVERSE_SUFFIX,
-	wrapKeysWithJidMap
-} from '../../Utils/multi-db-sqlite'
+import { JidMapBackend, MultiDbSqliteStore, REVERSE_SUFFIX, wrapKeysWithJidMap } from '../../Utils/multi-db-sqlite'
 
 function makeInnerStub(): SignalKeyStoreWithTransaction & { _calls: string[] } {
 	const calls: string[] = []

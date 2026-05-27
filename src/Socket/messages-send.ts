@@ -1,6 +1,6 @@
-import { randomBytes } from 'crypto'
 import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
+import { randomBytes } from 'crypto'
 import { proto } from '../../WAProto/index.js'
 import { DEFAULT_CACHE_TTLS, WA_DEFAULT_EPHEMERAL } from '../Defaults'
 import type {
@@ -735,7 +735,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				})
 		)
 
-		const nodes = (await Promise.all(encryptionPromises)).filter(node => node !== null) as BinaryNode[]
+		const nodes = (await Promise.all(encryptionPromises)).filter(node => node !== null)
 
 		if (recipientJids.length > 0 && nodes.length === 0) {
 			recordMessageFailure('send', 'encryption_failed')
@@ -1097,10 +1097,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		// are per-device session updates inside encrypt — independent records,
 		// no atomicity requirement between them.
 		const _isInteractiveSendBypass =
-			!isGroup &&
-			!isStatus &&
-			!isNewsletter &&
-			(isCarouselMessage(message) || getButtonType(message) !== undefined)
+			!isGroup && !isStatus && !isNewsletter && (isCarouselMessage(message) || getButtonType(message) !== undefined)
 
 		const runSendBody = async () => {
 			const mediaType = getMediaType(message)
@@ -2052,7 +2049,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		try {
 			if (_isInteractiveSendBypass) {
 				logger.info(
-					{ msgId, kind: isCarouselMessage(message) ? 'carousel' : getButtonType(message), isGroup, isStatus, isNewsletter },
+					{
+						msgId,
+						kind: isCarouselMessage(message) ? 'carousel' : getButtonType(message),
+						isGroup,
+						isStatus,
+						isNewsletter
+					},
 					'[relayMessage] WORKAROUND ACTIVE: bypassing outer transaction(meId) for interactive 1-on-1 send'
 				)
 				await runSendBody()
@@ -2750,10 +2753,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							() => {
 								let mutexKey = fullMsg.key.remoteJid
 								if (!mutexKey) {
-									logger.warn(
-										{ msgId: fullMsg.key.id },
-										'Missing remoteJid in fullMsg, using msg.key.id as fallback'
-									)
+									logger.warn({ msgId: fullMsg.key.id }, 'Missing remoteJid in fullMsg, using msg.key.id as fallback')
 									mutexKey = fullMsg.key.id || 'unknown'
 								}
 

@@ -45,8 +45,8 @@ import {
 	generateThumbnail,
 	getAudioDuration,
 	getAudioWaveform,
-	getStream,
 	getRawMediaUploadData,
+	getStream,
 	type MediaDownloadOptions
 } from './messages-media'
 import { shouldIncludeReportingToken } from './reporting-utils'
@@ -1778,11 +1778,9 @@ export const generateWAMessageContent = async (
 		// Unwrap viewOnceMessage to reach the actual content node that carries contextInfo.
 		// Object.keys(m)[0] would otherwise resolve to 'viewOnceMessage' (or 'messageContextInfo'
 		// if reporting tokens were attached first), and mentions would be lost on the wrapper.
-		const target =
-			'viewOnceMessage' in m && m.viewOnceMessage?.message ? m.viewOnceMessage.message : m
-		const messageType = (Object.keys(target).find(
-			k => k !== 'messageContextInfo'
-		) || Object.keys(target)[0]) as Extract<keyof proto.IMessage, MessageWithContextInfo>
+		const target = 'viewOnceMessage' in m && m.viewOnceMessage?.message ? m.viewOnceMessage.message : m
+		const messageType = (Object.keys(target).find(k => k !== 'messageContextInfo') ||
+			Object.keys(target)[0]) as Extract<keyof proto.IMessage, MessageWithContextInfo>
 		if (messageType) {
 			const key = target[messageType]
 			if (key) {

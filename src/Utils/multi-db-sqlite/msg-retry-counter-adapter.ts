@@ -112,10 +112,7 @@ export class MsgRetryCounterSqliteAdapter implements CacheStoreShape {
 		}
 
 		if (opts.runPruneTickerEverySeconds && opts.runPruneTickerEverySeconds > 0) {
-			this.pruneTicker = setInterval(
-				() => this.pruneExpired(),
-				opts.runPruneTickerEverySeconds * 1000
-			)
+			this.pruneTicker = setInterval(() => this.pruneExpired(), opts.runPruneTickerEverySeconds * 1000)
 			if (typeof this.pruneTicker.unref === 'function') this.pruneTicker.unref()
 		}
 	}

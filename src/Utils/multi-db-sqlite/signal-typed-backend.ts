@@ -188,7 +188,7 @@ export class SignalTypedBackend {
 
 	// ============ prekeys ============
 
-	putPrekey(prekeyId: number, record: Buffer | Uint8Array, keyType: number = 0): void {
+	putPrekey(prekeyId: number, record: Buffer | Uint8Array, keyType = 0): void {
 		this.stmts.upsertPrekey.run(prekeyId, record, keyType)
 	}
 
@@ -203,27 +203,23 @@ export class SignalTypedBackend {
 
 	// ============ signed prekeys ============
 
-	putSignedPrekey(prekeyId: number, record: Buffer | Uint8Array, timestamp: number = Date.now(), keyType: number = 0): void {
+	putSignedPrekey(prekeyId: number, record: Buffer | Uint8Array, timestamp: number = Date.now(), keyType = 0): void {
 		this.stmts.upsertSignedPrekey.run(prekeyId, record, timestamp, keyType)
 	}
 
 	getSignedPrekey(prekeyId: number): { record: Buffer; timestamp: number } | null {
-		const r = this.stmts.selectSignedPrekey.get(prekeyId) as
-			| { record: Buffer; timestamp: number }
-			| undefined
+		const r = this.stmts.selectSignedPrekey.get(prekeyId) as { record: Buffer; timestamp: number } | undefined
 		return r ?? null
 	}
 
 	// ============ kyber prekeys ============
 
-	putKyberPrekey(prekeyId: number, record: Buffer | Uint8Array, lastResortKey: boolean = false): void {
+	putKyberPrekey(prekeyId: number, record: Buffer | Uint8Array, lastResortKey = false): void {
 		this.stmts.upsertKyberPrekey.run(prekeyId, record, lastResortKey ? 1 : 0)
 	}
 
 	getKyberPrekey(prekeyId: number): { record: Buffer; lastResortKey: boolean } | null {
-		const r = this.stmts.selectKyberPrekey.get(prekeyId) as
-			| { record: Buffer; last_resort_key: number }
-			| undefined
+		const r = this.stmts.selectKyberPrekey.get(prekeyId) as { record: Buffer; last_resort_key: number } | undefined
 		if (!r) return null
 		return { record: r.record, lastResortKey: r.last_resort_key === 1 }
 	}
@@ -270,12 +266,9 @@ export class SignalTypedBackend {
 	}
 
 	getSenderKey(key: SignalSenderKeyKey): { record: Buffer; timestamp: number } | null {
-		const r = this.stmts.selectSenderKey.get(
-			key.groupId,
-			key.deviceId,
-			key.senderAccountId,
-			key.senderAccountType
-		) as { record: Buffer; timestamp: number } | undefined
+		const r = this.stmts.selectSenderKey.get(key.groupId, key.deviceId, key.senderAccountId, key.senderAccountType) as
+			| { record: Buffer; timestamp: number }
+			| undefined
 		return r ?? null
 	}
 }

@@ -13,7 +13,7 @@ import {
 	isJidNewsletter,
 	isJidStatusBroadcast,
 	isLidUser,
-	isPnUser,
+	isPnUser
 	//	transferDevice
 } from '../WABinary'
 import { unpadRandomMax16 } from './generics'
@@ -287,7 +287,7 @@ export const decryptMessageNode = (
 	meId: string,
 	meLid: string,
 	repository: SignalRepositoryWithLIDStore,
-	logger: ILogger,
+	logger: ILogger
 ) => {
 	const { fullMessage, author, sender } = decodeMessageNode(stanza, meId, meLid)
 	return {

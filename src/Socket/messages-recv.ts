@@ -66,7 +66,6 @@ import { logMessageReceived, logTcToken } from '../Utils/baileys-logger'
 import { makeLockManager } from '../Utils/lock-manager'
 import { makeMutex } from '../Utils/make-mutex'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
-import { buildAckStanza } from '../Utils/stanza-ack'
 import {
 	metrics,
 	recordHistorySyncMessages,
@@ -74,6 +73,7 @@ import {
 	recordMessageReceived,
 	recordMessageRetry
 } from '../Utils/prometheus-metrics.js'
+import { buildAckStanza } from '../Utils/stanza-ack'
 import { isRegularUser, isTcTokenExpired, resolveTcTokenJid, storeTcTokensFromIqResult } from '../Utils/tc-token-utils'
 import {
 	areJidsSameUser,
@@ -506,7 +506,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				for (const update of updates) {
 					if (update.jid && update.user) {
 						const [resolvedAuthor, resolvedUser] = await Promise.all([
-							resolveLidToPn(node.attrs.from!, signalRepository.lidMapping, logger),
+							resolveLidToPn(node.attrs.from, signalRepository.lidMapping, logger),
 							resolveLidToPn(update.user, signalRepository.lidMapping, logger)
 						])
 						ev.emit('newsletter-participants.update', {
@@ -556,7 +556,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const children = getAllBinaryNodeChildren(node)
 		const rawAuthor = node.attrs.participant!
 		// Resolve author LID→PN (participant is a user JID that could be LID)
-		const author = await resolveLidToPn(rawAuthor, signalRepository.lidMapping, logger) || rawAuthor
+		const author = (await resolveLidToPn(rawAuthor, signalRepository.lidMapping, logger)) || rawAuthor
 
 		for (const child of children) {
 			logger.debug({ from, child }, 'got newsletter notification')
@@ -587,7 +587,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 				case 'participant': {
 					const resolvedParticipantUser =
-						(await resolveLidToPn(child.attrs.jid!, signalRepository.lidMapping, logger)) || child.attrs.jid!
+						(await resolveLidToPn(child.attrs.jid, signalRepository.lidMapping, logger)) || child.attrs.jid!
 					const participantUpdate = {
 						id: from,
 						author,
@@ -706,7 +706,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const offerContent: BinaryNode[] = [
 			{ tag: 'privacy', attrs: {}, content: undefined },
 			{ tag: 'audio', attrs: { rate: '8000', enc: 'opus' }, content: undefined },
-			{ tag: 'audio', attrs: { rate: '16000', enc: 'opus' }, content: undefined },
+			{ tag: 'audio', attrs: { rate: '16000', enc: 'opus' }, content: undefined }
 		]
 
 		if (isVideo) {
@@ -727,31 +727,31 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			{ tag: 'net', attrs: { medium: '3' }, content: undefined },
 			{ tag: 'capability', attrs: { ver: '1' }, content: undefined },
 			{ tag: 'enc', attrs: { v: '2', type: isVideo ? 'msg' : 'pkmsg' }, content: undefined },
-			{ tag: 'encopt', attrs: { keygen: '2' }, content: undefined },
+			{ tag: 'encopt', attrs: { keygen: '2' }, content: undefined }
 		)
 
 		// Voice calls include device-identity (verified via Frida capture)
 		if (!isVideo) {
-			offerContent.push(
-				{ tag: 'device-identity', attrs: {}, content: undefined },
-			)
+			offerContent.push({ tag: 'device-identity', attrs: {}, content: undefined })
 		}
 
 		const stanza: BinaryNode = {
 			tag: 'call',
 			attrs: {
 				to: jid,
-				id: stanzaId,
+				id: stanzaId
 			},
-			content: [{
-				tag: 'offer',
-				attrs: {
-					'call-creator': meId,
-					'call-id': callId,
-					'device_class': '2013',
-				},
-				content: offerContent
-			}]
+			content: [
+				{
+					tag: 'offer',
+					attrs: {
+						'call-creator': meId,
+						'call-id': callId,
+						device_class: '2013'
+					},
+					content: offerContent
+				}
+			]
 		}
 
 		await query(stanza)
@@ -780,7 +780,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		const terminateAttrs: Record<string, string> = {
 			'call-id': callId,
-			'call-creator': callCreator || meId,
+			'call-creator': callCreator || meId
 		}
 
 		if (reason) {
@@ -796,13 +796,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			tag: 'call',
 			attrs: {
 				to: callTo,
-				id: randomBytes(16).toString('hex').toUpperCase(),
+				id: randomBytes(16).toString('hex').toUpperCase()
 			},
-			content: [{
-				tag: 'terminate',
-				attrs: terminateAttrs,
-				content: undefined
-			}]
+			content: [
+				{
+					tag: 'terminate',
+					attrs: terminateAttrs,
+					content: undefined
+				}
+			]
 		}
 
 		await query(stanza)
@@ -816,24 +818,18 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	 * @param callFrom - JID of the caller (call-creator)
 	 * @param isVideo - true for video call
 	 */
-	const acceptCall = async (
-		callId: string,
-		callFrom: string,
-		isVideo?: boolean,
-	) => {
+	const acceptCall = async (callId: string, callFrom: string, isVideo?: boolean) => {
 		const meId = authState.creds.me?.id
 		if (!meId) throw new Boom('Not authenticated', { statusCode: 401 })
 
-		const acceptContent: BinaryNode[] = [
-			{ tag: 'audio', attrs: { rate: '16000', enc: 'opus' }, content: undefined },
-		]
+		const acceptContent: BinaryNode[] = [{ tag: 'audio', attrs: { rate: '16000', enc: 'opus' }, content: undefined }]
 
 		if (isVideo) {
 			acceptContent.push({
 				tag: 'video',
 				attrs: {
 					dec: 'H264,AV1',
-					device_orientation: '1',
+					device_orientation: '1'
 				},
 				content: undefined
 			})
@@ -841,7 +837,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		acceptContent.push(
 			{ tag: 'net', attrs: { medium: '2' }, content: undefined },
-			{ tag: 'encopt', attrs: { keygen: '2' }, content: undefined },
+			{ tag: 'encopt', attrs: { keygen: '2' }, content: undefined }
 		)
 
 		const stanza: BinaryNode = {
@@ -849,16 +845,18 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			attrs: {
 				from: meId,
 				to: callFrom,
-				id: randomBytes(16).toString('hex').toUpperCase(),
+				id: randomBytes(16).toString('hex').toUpperCase()
 			},
-			content: [{
-				tag: 'accept',
-				attrs: {
-					'call-id': callId,
-					'call-creator': callFrom,
-				},
-				content: acceptContent
-			}]
+			content: [
+				{
+					tag: 'accept',
+					attrs: {
+						'call-id': callId,
+						'call-creator': callFrom
+					},
+					content: acceptContent
+				}
+			]
 		}
 
 		await query(stanza)
@@ -873,14 +871,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	 * @param callCreator - JID of the caller
 	 * @param isVideo - true for video call
 	 */
-	const preacceptCall = async (
-		callId: string,
-		callCreator: string,
-		isVideo?: boolean,
-	) => {
-		const preacceptContent: BinaryNode[] = [
-			{ tag: 'audio', attrs: { rate: '16000', enc: 'opus' }, content: undefined },
-		]
+	const preacceptCall = async (callId: string, callCreator: string, isVideo?: boolean) => {
+		const preacceptContent: BinaryNode[] = [{ tag: 'audio', attrs: { rate: '16000', enc: 'opus' }, content: undefined }]
 
 		if (isVideo) {
 			preacceptContent.push({
@@ -889,7 +881,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					screen_width: '1080',
 					screen_height: '2400',
 					dec: 'H264,H265,AV1',
-					device_orientation: '0',
+					device_orientation: '0'
 				},
 				content: undefined
 			})
@@ -897,23 +889,25 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		preacceptContent.push(
 			{ tag: 'encopt', attrs: { keygen: '2' }, content: undefined },
-			{ tag: 'capability', attrs: { ver: '1' }, content: undefined },
+			{ tag: 'capability', attrs: { ver: '1' }, content: undefined }
 		)
 
 		const stanza: BinaryNode = {
 			tag: 'call',
 			attrs: {
 				to: callCreator,
-				id: randomBytes(16).toString('hex').toUpperCase(),
+				id: randomBytes(16).toString('hex').toUpperCase()
 			},
-			content: [{
-				tag: 'preaccept',
-				attrs: {
-					'call-id': callId,
-					'call-creator': callCreator,
-				},
-				content: preacceptContent
-			}]
+			content: [
+				{
+					tag: 'preaccept',
+					attrs: {
+						'call-id': callId,
+						'call-creator': callCreator
+					},
+					content: preacceptContent
+				}
+			]
 		}
 
 		await query(stanza)
@@ -939,11 +933,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			dlBw?: number
 			ulBw?: number
 		}>,
-		transactionId?: string,
+		transactionId?: string
 	) => {
 		const relayLatencyAttrs: Record<string, string> = {
 			'call-id': callId,
-			'call-creator': callCreator,
+			'call-creator': callCreator
 		}
 
 		if (transactionId) {
@@ -976,13 +970,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			tag: 'call',
 			attrs: {
 				to: callCreator,
-				id: randomBytes(16).toString('hex').toUpperCase(),
+				id: randomBytes(16).toString('hex').toUpperCase()
 			},
-			content: [{
-				tag: 'relaylatency',
-				attrs: relayLatencyAttrs,
-				content: teChildren
-			}]
+			content: [
+				{
+					tag: 'relaylatency',
+					attrs: relayLatencyAttrs,
+					content: teChildren
+				}
+			]
 		}
 
 		await sendNode(stanza)
@@ -1003,12 +999,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		callCreator: string,
 		to: string,
 		candidates: Array<{ priority: string; data?: Uint8Array }>,
-		round?: number,
+		round?: number
 	) => {
 		const transportAttrs: Record<string, string> = {
 			'call-id': callId,
 			'call-creator': callCreator,
-			'transport-message-type': '1',
+			'transport-message-type': '1'
 		}
 
 		if (round !== undefined) {
@@ -1018,20 +1014,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const teChildren: BinaryNode[] = candidates.map(c => ({
 			tag: 'te',
 			attrs: { priority: c.priority },
-			content: c.data,
+			content: c.data
 		}))
 
 		const stanza: BinaryNode = {
 			tag: 'call',
 			attrs: {
 				to,
-				id: randomBytes(16).toString('hex').toUpperCase(),
+				id: randomBytes(16).toString('hex').toUpperCase()
 			},
-			content: [{
-				tag: 'transport',
-				attrs: transportAttrs,
-				content: teChildren
-			}]
+			content: [
+				{
+					tag: 'transport',
+					attrs: transportAttrs,
+					content: teChildren
+				}
+			]
 		}
 
 		await sendNode(stanza)
@@ -1052,25 +1050,27 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		callCreator: string,
 		peer: string,
 		audioDuration: number,
-		callType: string = '1x1',
+		callType = '1x1'
 	) => {
 		const stanza: BinaryNode = {
 			tag: 'call',
 			attrs: {
 				to: 'call',
-				id: randomBytes(16).toString('hex').toUpperCase(),
+				id: randomBytes(16).toString('hex').toUpperCase()
 			},
-			content: [{
-				tag: 'duration',
-				attrs: {
-					'call-id': callId,
-					'call-creator': callCreator,
-					peer,
-					audio_duration: String(audioDuration),
-					type: callType,
-				},
-				content: undefined
-			}]
+			content: [
+				{
+					tag: 'duration',
+					attrs: {
+						'call-id': callId,
+						'call-creator': callCreator,
+						peer,
+						audio_duration: String(audioDuration),
+						type: callType
+					},
+					content: undefined
+				}
+			]
 		}
 
 		await sendNode(stanza)
@@ -1085,27 +1085,24 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	 * @param to - destination JID
 	 * @param muted - true to mute, false to unmute
 	 */
-	const muteCall = async (
-		callId: string,
-		callCreator: string,
-		to: string,
-		muted: boolean,
-	) => {
+	const muteCall = async (callId: string, callCreator: string, to: string, muted: boolean) => {
 		const stanza: BinaryNode = {
 			tag: 'call',
 			attrs: {
 				to,
-				id: randomBytes(16).toString('hex').toUpperCase(),
+				id: randomBytes(16).toString('hex').toUpperCase()
 			},
-			content: [{
-				tag: 'mute_v2',
-				attrs: {
-					'mute-state': muted ? '1' : '0',
-					'call-id': callId,
-					'call-creator': callCreator,
-				},
-				content: undefined
-			}]
+			content: [
+				{
+					tag: 'mute_v2',
+					attrs: {
+						'mute-state': muted ? '1' : '0',
+						'call-id': callId,
+						'call-creator': callCreator
+					},
+					content: undefined
+				}
+			]
 		}
 
 		await sendNode(stanza)
@@ -1118,24 +1115,23 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	 * @param callId - the call-id (also used as JID with @call)
 	 * @param callCreator - JID of the call creator
 	 */
-	const sendHeartbeat = async (
-		callId: string,
-		callCreator: string,
-	) => {
+	const sendHeartbeat = async (callId: string, callCreator: string) => {
 		const stanza: BinaryNode = {
 			tag: 'call',
 			attrs: {
 				to: `${callId}@call`,
-				id: randomBytes(16).toString('hex').toUpperCase(),
+				id: randomBytes(16).toString('hex').toUpperCase()
 			},
-			content: [{
-				tag: 'heartbeat',
-				attrs: {
-					'call-id': callId,
-					'call-creator': callCreator,
-				},
-				content: undefined
-			}]
+			content: [
+				{
+					tag: 'heartbeat',
+					attrs: {
+						'call-id': callId,
+						'call-creator': callCreator
+					},
+					content: undefined
+				}
+			]
 		}
 
 		await sendNode(stanza)
@@ -1150,30 +1146,27 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	 * @param to - destination JID
 	 * @param transactionId - transaction ID for the rekey
 	 */
-	const sendEncRekey = async (
-		callId: string,
-		callCreator: string,
-		to: string,
-		transactionId: string,
-	) => {
+	const sendEncRekey = async (callId: string, callCreator: string, to: string, transactionId: string) => {
 		const stanza: BinaryNode = {
 			tag: 'call',
 			attrs: {
 				to,
-				id: randomBytes(16).toString('hex').toUpperCase(),
+				id: randomBytes(16).toString('hex').toUpperCase()
 			},
-			content: [{
-				tag: 'enc_rekey',
-				attrs: {
-					'transaction-id': transactionId,
-					'call-id': callId,
-					'call-creator': callCreator,
-				},
-				content: [
-					{ tag: 'encopt', attrs: { keygen: '2' }, content: undefined },
-					{ tag: 'enc', attrs: { v: '2', type: 'msg' }, content: undefined },
-				]
-			}]
+			content: [
+				{
+					tag: 'enc_rekey',
+					attrs: {
+						'transaction-id': transactionId,
+						'call-id': callId,
+						'call-creator': callCreator
+					},
+					content: [
+						{ tag: 'encopt', attrs: { keygen: '2' }, content: undefined },
+						{ tag: 'enc', attrs: { v: '2', type: 'msg' }, content: undefined }
+					]
+				}
+			]
 		}
 
 		await sendNode(stanza)
@@ -1194,24 +1187,26 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		callCreator: string,
 		to: string,
 		enabled: boolean,
-		orientation: string = '1',
+		orientation = '1'
 	) => {
 		const stanza: BinaryNode = {
 			tag: 'call',
 			attrs: {
 				to,
-				id: randomBytes(16).toString('hex').toUpperCase(),
+				id: randomBytes(16).toString('hex').toUpperCase()
 			},
-			content: [{
-				tag: 'video',
-				attrs: {
-					'call-id': callId,
-					'call-creator': callCreator,
-					state: enabled ? '1' : '0',
-					device_orientation: orientation,
-				},
-				content: undefined
-			}]
+			content: [
+				{
+					tag: 'video',
+					attrs: {
+						'call-id': callId,
+						'call-creator': callCreator,
+						state: enabled ? '1' : '0',
+						device_orientation: orientation
+					},
+					content: undefined
+				}
+			]
 		}
 
 		await sendNode(stanza)
@@ -1233,15 +1228,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			tag: 'call',
 			attrs: {
 				to: 'call',
-				id: randomBytes(16).toString('hex').toUpperCase(),
+				id: randomBytes(16).toString('hex').toUpperCase()
 			},
-			content: [{
-				tag: 'link_create',
-				attrs: { media },
-				content: event
-					? [{ tag: 'event', attrs: { start_time: String(event.startTime) }, content: undefined }]
-					: undefined
-			}]
+			content: [
+				{
+					tag: 'link_create',
+					attrs: { media },
+					content: event
+						? [{ tag: 'event', attrs: { start_time: String(event.startTime) }, content: undefined }]
+						: undefined
+				}
+			]
 		}
 
 		const response = await query(stanza, timeoutMs)
@@ -1269,9 +1266,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 
 		// URL format verified via Frida capture: https://call.whatsapp.com/<token>
-		const url = token
-			? `https://call.whatsapp.com/${token}`
-			: undefined
+		const url = token ? `https://call.whatsapp.com/${token}` : undefined
 
 		return { token, url, response }
 	}
@@ -1289,13 +1284,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			tag: 'call',
 			attrs: {
 				to: 'call',
-				id: randomBytes(16).toString('hex').toUpperCase(),
+				id: randomBytes(16).toString('hex').toUpperCase()
 			},
-			content: [{
-				tag: 'link_query',
-				attrs: { media, token },
-				content: undefined
-			}]
+			content: [
+				{
+					tag: 'link_query',
+					attrs: { media, token },
+					content: undefined
+				}
+			]
 		}
 
 		return await query(stanza)
@@ -1313,7 +1310,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const joinContent: BinaryNode[] = [
 			{ tag: 'audio', attrs: { rate: '16000', enc: 'opus' }, content: undefined },
 			{ tag: 'net', attrs: { medium: '2' }, content: undefined },
-			{ tag: 'capability', attrs: { ver: '1' }, content: undefined },
+			{ tag: 'capability', attrs: { ver: '1' }, content: undefined }
 		]
 
 		if (media === 'video') {
@@ -1323,7 +1320,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					screen_width: '1080',
 					screen_height: '2400',
 					dec: 'H264,H265,AV1',
-					device_orientation: '0',
+					device_orientation: '0'
 				},
 				content: undefined
 			})
@@ -1333,13 +1330,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			tag: 'call',
 			attrs: {
 				to: 'call',
-				id: randomBytes(16).toString('hex').toUpperCase(),
+				id: randomBytes(16).toString('hex').toUpperCase()
 			},
-			content: [{
-				tag: 'link_join',
-				attrs: { media, token },
-				content: joinContent
-			}]
+			content: [
+				{
+					tag: 'link_join',
+					attrs: { media, token },
+					content: joinContent
+				}
+			]
 		}
 
 		return await query(stanza)
@@ -1356,7 +1355,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// For group messages, scope by participant (each participant has its own Signal session).
 		const retryDedupeJid = msgKey.participant
 			? jidNormalizedUser(msgKey.participant)
-			: jidNormalizedUser(node.attrs.from!)
+			: jidNormalizedUser(node.attrs.from)
 		if (retryRequestActiveJids.has(retryDedupeJid)) {
 			logger.debug(
 				{ fromJid: retryDedupeJid, msgId },
@@ -1385,7 +1384,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				// this cleanup only runs as a last resort.
 				// For group messages, use participant JID (Signal sessions are per-participant, not per-group).
 				if (autoCleanCorrupted) {
-					const senderJid = msgKey.participant ? jidNormalizedUser(msgKey.participant) : jidNormalizedUser(node.attrs.from!)
+					const senderJid = msgKey.participant
+						? jidNormalizedUser(msgKey.participant)
+						: jidNormalizedUser(node.attrs.from)
 					try {
 						const decryptionJid = await getDecryptionJid(senderJid, signalRepository)
 						const deletedCount = await cleanupCorruptedSession(decryptionJid, signalRepository, logger)
@@ -1425,7 +1426,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 				// Safety net cleanup (same as new system above)
 				if (autoCleanCorrupted) {
-					const senderJid = msgKey.participant ? jidNormalizedUser(msgKey.participant) : jidNormalizedUser(node.attrs.from!)
+					const senderJid = msgKey.participant
+						? jidNormalizedUser(msgKey.participant)
+						: jidNormalizedUser(node.attrs.from)
 					try {
 						const decryptionJid = await getDecryptionJid(senderJid, signalRepository)
 						await cleanupCorruptedSession(decryptionJid, signalRepository, logger)
@@ -1608,13 +1611,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							const senderTs = unixTimestampSeconds()
 							logTcToken('reissue', { jid: normalizedJid, reason: 'session_refreshed' })
 							getPrivacyTokens([normalizedJid], senderTs)
-								.then(async (iqResult) => {
+								.then(async iqResult => {
 									await storeTcTokensFromIqResult({
 										result: iqResult,
 										fallbackJid: normalizedJid,
 										keys: authState.keys,
 										getLIDForPN,
-										onNewJidStored: (storedJid) => {
+										onNewJidStored: storedJid => {
 											tcTokenKnownJids.add(storedJid)
 											scheduleTcTokenIndexSave()
 										}
@@ -1661,16 +1664,20 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const affectedParticipantPn = getBinaryNodeChild(child, 'participant')?.attrs?.phone_number || actingParticipantPn!
 
 		// Resolve acting participant to PN — prefer inline PN, fall back to LID→PN resolution
-		const actingParticipant = actingParticipantPn
-			|| await resolveLidToPn(actingParticipantLid, lidMapping, logger)
+		const actingParticipant = actingParticipantPn || (await resolveLidToPn(actingParticipantLid, lidMapping, logger))
 
 		// Resolve affected participant to PN
-		const affectedParticipant = affectedParticipantPn
-			|| await resolveLidToPn(affectedParticipantLid, lidMapping, logger)
+		const affectedParticipant =
+			affectedParticipantPn || (await resolveLidToPn(affectedParticipantLid, lidMapping, logger))
 
 		// Store LID↔PN mappings from notification attributes
 		const mappingsToStore: Array<{ lid: string; pn: string }> = []
-		if (actingParticipantLid && actingParticipantPn && isLidUser(actingParticipantLid) && isPnUser(actingParticipantPn)) {
+		if (
+			actingParticipantLid &&
+			actingParticipantPn &&
+			isLidUser(actingParticipantLid) &&
+			isPnUser(actingParticipantPn)
+		) {
 			mappingsToStore.push({ lid: actingParticipantLid, pn: actingParticipantPn })
 		}
 
@@ -1699,7 +1706,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 				// Resolve metadata owner to PN
 				if (metadata.owner && isLidUser(metadata.owner)) {
-					const resolvedOwner = metadata.ownerPn || await resolveLidToPn(metadata.owner, lidMapping, logger)
+					const resolvedOwner = metadata.ownerPn || (await resolveLidToPn(metadata.owner, lidMapping, logger))
 					if (resolvedOwner) metadata.owner = resolvedOwner
 				}
 
@@ -1735,7 +1742,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			case 'modify':
 				const oldNumbers = await Promise.all(
 					getBinaryNodeChildren(child, 'participant').map(async p => {
-						const resolved = await resolveLidToPn(p.attrs.jid!, lidMapping, logger)
+						const resolved = await resolveLidToPn(p.attrs.jid, lidMapping, logger)
 						return resolved || p.attrs.jid!
 					})
 				)
@@ -2008,7 +2015,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 				{
 					const rawPictureJid = jidNormalizedUser(node?.attrs?.from) || (setPicture || delPicture)?.attrs?.hash || ''
-					const pictureJid = await resolveLidToPn(rawPictureJid, signalRepository.lidMapping, logger) || rawPictureJid
+					const pictureJid = (await resolveLidToPn(rawPictureJid, signalRepository.lidMapping, logger)) || rawPictureJid
 					ev.emit('contacts.update', [
 						{
 							id: pictureJid,
@@ -2053,7 +2060,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					const blocklists = getBinaryNodeChildren(child, 'item')
 
 					for (const { attrs } of blocklists) {
-						const resolvedBlockJid = await resolveLidToPn(attrs.jid!, signalRepository.lidMapping, logger) || attrs.jid!
+						const resolvedBlockJid =
+							(await resolveLidToPn(attrs.jid, signalRepository.lidMapping, logger)) || attrs.jid!
 						const blocklist = [resolvedBlockJid]
 						const type = attrs.action === 'block' ? 'add' : 'remove'
 						ev.emit('blocklist.update', { blocklist, type })
@@ -2368,16 +2376,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				// a concurrent retry-inject and send/encrypt for the same logical peer would
 				// hold different `parsedKeys.transaction` mutex keys (`PN` vs the resolved
 				// LID), letting them mutate the same canonical session record concurrently.
-				const lid = !isLidUser(participant)
-					? await signalRepository.lidMapping.getLIDForPN(participant)
-					: null
+				const lid = !isLidUser(participant) ? await signalRepository.lidMapping.getLIDForPN(participant) : null
 				const canonicalJid = lid || participant
 				await signalRepository.injectE2ESession({ jid: canonicalJid, session: bundle })
 				injectedFromBundle = true
-				logger.debug(
-					{ participant, canonicalJid, retryCount },
-					'injected session from retry receipt key bundle'
-				)
+				logger.debug({ participant, canonicalJid, retryCount }, 'injected session from retry receipt key bundle')
 			} catch (error) {
 				logger.warn({ error, participant }, 'failed to inject session from retry receipt')
 			}
@@ -2392,8 +2395,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// parser) before trusting the decoded uint — overlong buffers would otherwise
 			// silently pass the first-4-bytes decode.
 			const regBuf = getBinaryNodeChildBuffer(receiptNode, 'registration')
-			const receivedRegId =
-				regBuf && regBuf.length === 4 ? getBinaryNodeChildUInt(receiptNode, 'registration', 4) : undefined
+			const receivedRegId = regBuf?.length === 4 ? getBinaryNodeChildUInt(receiptNode, 'registration', 4) : undefined
 			if (typeof receivedRegId === 'number' && Number.isInteger(receivedRegId)) {
 				const info = await signalRepository.getSessionInfo(participant)
 				if (info && info.registrationId !== 0 && info.registrationId !== receivedRegId) {
@@ -2553,7 +2555,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							if (attrs.participant) {
 								const updateKey: keyof MessageUserReceipt =
 									status === proto.WebMessageInfo.Status.DELIVERY_ACK ? 'receiptTimestamp' : 'readTimestamp'
-								const resolvedReceiptUserJid = await resolveLidToPn(attrs.participant, lidMapping, logger) || jidNormalizedUser(attrs.participant)
+								const resolvedReceiptUserJid =
+									(await resolveLidToPn(attrs.participant, lidMapping, logger)) || jidNormalizedUser(attrs.participant)
 								ev.emit(
 									'message-receipt.update',
 									ids.map(id => ({
@@ -2684,13 +2687,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				category,
 				author,
 				decrypt
-			} = decryptMessageNode(
-				node,
-				authState.creds.me!.id,
-				authState.creds.me!.lid || '',
-				signalRepository,
-				logger,
-			)
+			} = decryptMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '', signalRepository, logger)
 
 			const alt = msg.key.participantAlt || msg.key.remoteJidAlt
 			// Handle LID/PN mappings with hybrid approach:
@@ -2737,9 +2734,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							// in the LIDMappingStore to resolve LID→PN for events delivered to consumers
 							await signalRepository.lidMapping
 								.storeLIDPNMappings([{ lid: alt, pn: primaryJid }])
-								.catch(error =>
-									logger.warn({ error, alt, primaryJid, existingPn }, 'LID mapping storage failed')
-								)
+								.catch(error => logger.warn({ error, alt, primaryJid, existingPn }, 'LID mapping storage failed'))
 						}
 
 						await signalRepository.migrateSession(primaryJid, alt)
@@ -2751,9 +2746,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							// in the LIDMappingStore to resolve LID→PN for events delivered to consumers
 							await signalRepository.lidMapping
 								.storeLIDPNMappings([{ lid: primaryJid, pn: alt }])
-								.catch(error =>
-									logger.warn({ error, alt, primaryJid, existingLid }, 'LID mapping storage failed')
-								)
+								.catch(error => logger.warn({ error, alt, primaryJid, existingLid }, 'LID mapping storage failed'))
 						}
 
 						await signalRepository.migrateSession(alt, primaryJid)
@@ -3152,7 +3145,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			jid: u.attrs.jid,
 			state: u.attrs.state,
 			userPn: u.attrs.user_pn,
-			type: u.attrs.type,
+			type: u.attrs.type
 		}))
 	}
 
@@ -3248,9 +3241,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				const callSummary = getBinaryNodeChild(infoChild, 'call_summary')
 				if (callSummary) {
 					call.media = callSummary.attrs.media
-					call.duration = callSummary.attrs.call_duration
-						? Number(callSummary.attrs.call_duration)
-						: undefined
+					call.duration = callSummary.attrs.call_duration ? Number(callSummary.attrs.call_duration) : undefined
 					call.participants = extractParticipants(callSummary)
 				}
 			}
@@ -3294,12 +3285,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			if (resolvedLinkCreator) call.linkCreator = resolvedLinkCreator
 			// Resolve participant JIDs in parallel
 			if (call.participants) {
-				await Promise.all(call.participants.map(async (p) => {
-					if (p.jid) {
-						const resolved = p.userPn || await resolveLidToPn(p.jid, callLidMapping, logger)
-						if (resolved) p.jid = resolved
-					}
-				}))
+				await Promise.all(
+					call.participants.map(async p => {
+						if (p.jid) {
+							const resolved = p.userPn || (await resolveLidToPn(p.jid, callLidMapping, logger))
+							if (resolved) p.jid = resolved
+						}
+					})
+				)
 			}
 
 			ev.emit('call', [call])
@@ -3352,20 +3345,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				if (!inFlight463Recoveries.has(jid)) {
 					inFlight463Recoveries.add(jid)
 					getPrivacyTokens([jid])
-						.then(async (result) => {
+						.then(async result => {
 							await storeTcTokensFromIqResult({
 								result,
 								fallbackJid: jid,
 								keys: authState.keys,
 								getLIDForPN,
-								onNewJidStored: (storedJid) => {
+								onNewJidStored: storedJid => {
 									tcTokenKnownJids.add(storedJid)
 									scheduleTcTokenIndexSave()
 								}
 							})
 							logTcToken('fetched', { jid, reason: 'error_463' })
 						})
-						.catch(() => { /* fire-and-forget */ })
+						.catch(() => {
+							/* fire-and-forget */
+						})
 						.finally(() => {
 							inFlight463Recoveries.delete(jid)
 						})
@@ -3410,20 +3405,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				logTcToken('error_479', { jid: jid479, msgId: attrs.id })
 				// WABA Android: error 479 (SmaxInvalid) also triggers token re-fetch
 				getPrivacyTokens([jid479])
-					.then(async (result) => {
+					.then(async result => {
 						await storeTcTokensFromIqResult({
 							result,
 							fallbackJid: jid479,
 							keys: authState.keys,
 							getLIDForPN,
-							onNewJidStored: (storedJid) => {
+							onNewJidStored: storedJid => {
 								tcTokenKnownJids.add(storedJid)
 								scheduleTcTokenIndexSave()
 							}
 						})
 						logTcToken('fetched', { jid: jid479, reason: 'error_479' })
 					})
-					.catch(() => { /* fire-and-forget */ })
+					.catch(() => {
+						/* fire-and-forget */
+					})
 			} else {
 				logger.warn({ attrs }, 'received error in ack')
 			}
@@ -3512,24 +3509,20 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// (call link relays may arrive without these attrs — just log them)
 		if (callId && rawCallCreator) {
 			// Resolve LID→PN for call creator
-			const callCreator = await resolveLidToPn(rawCallCreator, signalRepository.lidMapping, logger) || rawCallCreator
-			logger.debug(
-				{ callId, callCreator, uuid: node.attrs.uuid },
-				'received relay info'
-			)
-			ev.emit('call', [{
-				chatId: callCreator,
-				from: callCreator,
-				id: callId,
-				date: new Date(),
-				offline: false,
-				status: 'relay' as WACallUpdateType,
-			}])
+			const callCreator = (await resolveLidToPn(rawCallCreator, signalRepository.lidMapping, logger)) || rawCallCreator
+			logger.debug({ callId, callCreator, uuid: node.attrs.uuid }, 'received relay info')
+			ev.emit('call', [
+				{
+					chatId: callCreator,
+					from: callCreator,
+					id: callId,
+					date: new Date(),
+					offline: false,
+					status: 'relay' as WACallUpdateType
+				}
+			])
 		} else {
-			logger.debug(
-				{ attrs: node.attrs },
-				'received relay stanza without call-id/call-creator'
-			)
+			logger.debug({ attrs: node.attrs }, 'received relay stanza without call-id/call-creator')
 		}
 	})
 

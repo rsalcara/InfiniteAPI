@@ -402,7 +402,7 @@ export const useMultiFileAuthState = async (
 					for (const category in data) {
 						const type = category as keyof SignalDataTypeMap
 						for (const id in data[type]) {
-							const value = data[type]![id]
+							const value = data[type][id]
 							const file = `${type}-${id}.json`
 							// Copilot round-5 fix: `null` is the SignalDataSet delete
 							// sentinel — use an explicit comparison rather than

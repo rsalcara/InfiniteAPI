@@ -79,11 +79,7 @@ CREATE INDEX IF NOT EXISTS signal_keys_type_idx ON signal_keys(type);
  *     bursts (e.g. concurrent migrations or sidecar processes touching the same
  *     db) without escalating to the caller.
  */
-const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
-	'journal_mode = WAL',
-	'synchronous = NORMAL',
-	'busy_timeout = 5000'
-]
+const DEFAULT_PRAGMAS: ReadonlyArray<string> = ['journal_mode = WAL', 'synchronous = NORMAL', 'busy_timeout = 5000']
 
 /**
  * Total attempts (NOT additional retries) for SQLITE_BUSY on the per-call

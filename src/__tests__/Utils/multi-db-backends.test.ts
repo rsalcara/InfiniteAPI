@@ -12,7 +12,6 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-
 import {
 	AppStateBackend,
 	MessageQuarantineBackend,

@@ -48,8 +48,7 @@ export class JidMapBackend {
 		// upsert on conflict to support a LID being re-targeted at a new PN.
 		this.stmts = {
 			insertJid: this.db.prepare(
-				'INSERT INTO jid (raw_string, user, server, type) VALUES (?, ?, ?, ?) ' +
-					'ON CONFLICT(raw_string) DO NOTHING'
+				'INSERT INTO jid (raw_string, user, server, type) VALUES (?, ?, ?, ?) ' + 'ON CONFLICT(raw_string) DO NOTHING'
 			),
 			selectJidIdByRaw: this.db.prepare('SELECT _id FROM jid WHERE raw_string = ?'),
 			upsertMap: this.db.prepare(

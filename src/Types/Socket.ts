@@ -198,7 +198,6 @@ export type SocketConfig = {
 	/** cached group metadata, use to prevent redundant requests to WA & speed up msg sending */
 	cachedGroupMetadata: (jid: string) => Promise<GroupMetadata | undefined>
 
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	makeSignalRepository: (
 		auth: SignalAuthState,
 		logger: ILogger,

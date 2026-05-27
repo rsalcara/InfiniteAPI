@@ -987,8 +987,7 @@ function append<E extends BufferableEvent>(
 				const merged = new Map<string, proto.IPastParticipants>()
 				// `leaveReason` is a zero-valued enum (LEFT=0); use nullish coalescing
 				// so an explicit LEFT is not collapsed with `missing` during dedup.
-				const sigOf = (p: proto.IPastParticipant) =>
-					`${p.userJid ?? ''}:${p.leaveTs ?? ''}:${p.leaveReason ?? ''}`
+				const sigOf = (p: proto.IPastParticipant) => `${p.userJid ?? ''}:${p.leaveTs ?? ''}:${p.leaveReason ?? ''}`
 				const ingest = (entry: proto.IPastParticipants) => {
 					const key = entry.groupJid ?? JSON.stringify(entry)
 					const existing = merged.get(key)

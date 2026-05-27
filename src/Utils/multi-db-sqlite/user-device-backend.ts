@@ -76,9 +76,7 @@ export class UserDeviceBackend {
 				'INSERT INTO primary_device_version (user_jid_row_id, version) VALUES (?, ?) ' +
 					'ON CONFLICT(user_jid_row_id) DO UPDATE SET version = excluded.version'
 			),
-			selectPrimaryVersion: this.db.prepare(
-				'SELECT version FROM primary_device_version WHERE user_jid_row_id = ?'
-			)
+			selectPrimaryVersion: this.db.prepare('SELECT version FROM primary_device_version WHERE user_jid_row_id = ?')
 		}
 	}
 

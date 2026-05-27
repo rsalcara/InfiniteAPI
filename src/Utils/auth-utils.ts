@@ -340,9 +340,7 @@ export const addTransactionCapability = (
 
 				// Per-type read serialization, same semantic as before but routed
 				// through the canonical LockManager instead of a private mutex map.
-				const fetched = await locks.withLock({ namespace: '__type__', id: type }, () =>
-					state.get(type, missing)
-				)
+				const fetched = await locks.withLock({ namespace: '__type__', id: type }, () => state.get(type, missing))
 
 				// Update cache
 				ctx.cache[type] = ctx.cache[type] || ({} as any)
@@ -402,10 +400,7 @@ export const addTransactionCapability = (
 			// become no-ops with a structured warn rather than silently
 			// mutating already-committed state.
 			if (ctx.sealed) {
-				logger.warn(
-					{ types: Object.keys(data) },
-					'transaction context is sealed; ignoring detached write (M5 guard)'
-				)
+				logger.warn({ types: Object.keys(data) }, 'transaction context is sealed; ignoring detached write (M5 guard)')
 				return
 			}
 
@@ -710,6 +705,7 @@ export const addTransactionCapability = (
 					)
 					break
 				}
+
 				const now = Date.now()
 				if (activeTransactions !== lastLoggedCount || now - lastLoggedAt >= 500) {
 					logger.trace({ activeTransactions }, 'destroy: waiting for in-flight transactions to drain')
