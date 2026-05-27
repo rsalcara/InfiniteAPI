@@ -23,11 +23,7 @@
  *   - `retry_count` INTEGER: incremented on every quarantine attempt for
  *     the same natural key, mirroring the existing in-RAM ring buffer.
  */
-import type BetterSqlite3Module from 'better-sqlite3'
-
-import type { SqliteDbLike } from './types'
-
-type Database = BetterSqlite3Module.Database
+import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 export type QuarantineRecord = {
 	keyId: string
@@ -48,19 +44,19 @@ export type StoredQuarantineRow = QuarantineRecord & {
 
 export class MessageQuarantineBackend {
 	private readonly stmts: {
-		insert: BetterSqlite3Module.Statement
-		incrementOnConflict: BetterSqlite3Module.Statement
-		selectByKey: BetterSqlite3Module.Statement
-		selectByChat: BetterSqlite3Module.Statement
-		selectSince: BetterSqlite3Module.Statement
-		delByKey: BetterSqlite3Module.Statement
-		pruneOlderThan: BetterSqlite3Module.Statement
+		insert: SqliteStatementLike
+		incrementOnConflict: SqliteStatementLike
+		selectByKey: SqliteStatementLike
+		selectByChat: SqliteStatementLike
+		selectSince: SqliteStatementLike
+		delByKey: SqliteStatementLike
+		pruneOlderThan: SqliteStatementLike
 	}
 
-	private readonly db: Database
+	private readonly db: SqliteDbLike
 
 	constructor(db: SqliteDbLike) {
-		this.db = db as unknown as Database
+		this.db = db
 		this.stmts = {
 			insert: this.db.prepare(
 				'INSERT INTO message_quarantine ' +

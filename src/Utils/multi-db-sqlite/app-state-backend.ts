@@ -14,11 +14,7 @@
  *
  * Column names match the canonical schema verbatim.
  */
-import type BetterSqlite3Module from 'better-sqlite3'
-
-import type { SqliteDbLike } from './types'
-
-type Database = BetterSqlite3Module.Database
+import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 export type CollectionVersionRow = {
 	collectionName: string
@@ -43,19 +39,19 @@ export type SyncdMutationRow = {
 
 export class AppStateBackend {
 	private readonly stmts: {
-		upsertCollectionVersion: BetterSqlite3Module.Statement
-		selectCollectionVersion: BetterSqlite3Module.Statement
-		listCollectionVersions: BetterSqlite3Module.Statement
-		insertSyncdMutation: BetterSqlite3Module.Statement
-		selectMutationsByCollection: BetterSqlite3Module.Statement
-		selectMutationsByVersionRange: BetterSqlite3Module.Statement
-		deleteMutationsByCollection: BetterSqlite3Module.Statement
+		upsertCollectionVersion: SqliteStatementLike
+		selectCollectionVersion: SqliteStatementLike
+		listCollectionVersions: SqliteStatementLike
+		insertSyncdMutation: SqliteStatementLike
+		selectMutationsByCollection: SqliteStatementLike
+		selectMutationsByVersionRange: SqliteStatementLike
+		deleteMutationsByCollection: SqliteStatementLike
 	}
 
-	private readonly db: Database
+	private readonly db: SqliteDbLike
 
 	constructor(db: SqliteDbLike) {
-		this.db = db as unknown as Database
+		this.db = db
 		this.stmts = {
 			upsertCollectionVersion: this.db.prepare(
 				'INSERT INTO collection_versions (collection_name, version, lt_hash, dirty_version) ' +

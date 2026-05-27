@@ -16,11 +16,7 @@
  * The {@link wrapKeysWithJidMap} helper plugs this typed backend into that
  * key-store interface without changing the LIDMappingStore at all.
  */
-import type BetterSqlite3Module from 'better-sqlite3'
-
-import type { SqliteDbLike } from './types'
-
-type Database = BetterSqlite3Module.Database
+import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 const REVERSE_SUFFIX = '_reverse'
 
@@ -32,20 +28,22 @@ const REVERSE_SUFFIX = '_reverse'
  */
 export class JidMapBackend {
 	private readonly stmts: {
-		insertJid: BetterSqlite3Module.Statement
-		selectJidIdByRaw: BetterSqlite3Module.Statement
-		upsertMap: BetterSqlite3Module.Statement
-		selectPnByLid: BetterSqlite3Module.Statement
-		selectLidByPn: BetterSqlite3Module.Statement
+		insertJid: SqliteStatementLike
+		selectJidIdByRaw: SqliteStatementLike
+		upsertMap: SqliteStatementLike
+		selectPnByLid: SqliteStatementLike
+		selectLidByPn: SqliteStatementLike
 	}
 
-	private readonly db: Database
+	private readonly db: SqliteDbLike
 
 	constructor(db: SqliteDbLike) {
-		// Public type is the structural SqliteDbLike to keep better-sqlite3
-		// off the published declarations; the runtime expectation is an
-		// actual better-sqlite3 Database instance.
-		this.db = db as unknown as Database
+		// Both the field and the parameter use the local structural
+		// `SqliteDbLike` so TypeScript emits the local interface into the
+		// `.d.ts` instead of `BetterSqlite3Module.Database` (private members
+		// ARE included in declaration output, so they would otherwise leak
+		// the optional peer-dep through the published types).
+		this.db = db
 		// `jid_map.lid_row_id` is the PRIMARY KEY (one PN per LID) so we
 		// upsert on conflict to support a LID being re-targeted at a new PN.
 		this.stmts = {

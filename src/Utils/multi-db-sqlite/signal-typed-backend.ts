@@ -32,11 +32,7 @@
  *     row into the typed tables, gated behind a version flag in the
  *     creds row so a partial migration is detectable on restart.
  */
-import type BetterSqlite3Module from 'better-sqlite3'
-
-import type { SqliteDbLike } from './types'
-
-type Database = BetterSqlite3Module.Database
+import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 /**
  * Sentinel `device_id` for identities that arrive without an explicit
@@ -71,26 +67,26 @@ export type SignalSenderKeyKey = {
 
 export class SignalTypedBackend {
 	private readonly stmts: {
-		upsertSession: BetterSqlite3Module.Statement
-		selectSession: BetterSqlite3Module.Statement
-		deleteSession: BetterSqlite3Module.Statement
-		upsertPrekey: BetterSqlite3Module.Statement
-		selectPrekey: BetterSqlite3Module.Statement
-		deletePrekey: BetterSqlite3Module.Statement
-		upsertSignedPrekey: BetterSqlite3Module.Statement
-		selectSignedPrekey: BetterSqlite3Module.Statement
-		upsertKyberPrekey: BetterSqlite3Module.Statement
-		selectKyberPrekey: BetterSqlite3Module.Statement
-		upsertIdentity: BetterSqlite3Module.Statement
-		selectIdentity: BetterSqlite3Module.Statement
-		upsertSenderKey: BetterSqlite3Module.Statement
-		selectSenderKey: BetterSqlite3Module.Statement
+		upsertSession: SqliteStatementLike
+		selectSession: SqliteStatementLike
+		deleteSession: SqliteStatementLike
+		upsertPrekey: SqliteStatementLike
+		selectPrekey: SqliteStatementLike
+		deletePrekey: SqliteStatementLike
+		upsertSignedPrekey: SqliteStatementLike
+		selectSignedPrekey: SqliteStatementLike
+		upsertKyberPrekey: SqliteStatementLike
+		selectKyberPrekey: SqliteStatementLike
+		upsertIdentity: SqliteStatementLike
+		selectIdentity: SqliteStatementLike
+		upsertSenderKey: SqliteStatementLike
+		selectSenderKey: SqliteStatementLike
 	}
 
-	private readonly db: Database
+	private readonly db: SqliteDbLike
 
 	constructor(db: SqliteDbLike) {
-		this.db = db as unknown as Database
+		this.db = db
 		this.stmts = {
 			// sessions: unique index on (device_id, recipient_account_id, recipient_account_type, session_type, session_scope)
 			upsertSession: this.db.prepare(

@@ -25,16 +25,36 @@
  *      in-memory cache misses the other process's increments. SQLite
  *      serializes both writers naturally via WAL.
  */
-import type BetterSqlite3Module from 'better-sqlite3'
-
-import type { SqliteDbLike } from './types'
-
-type Database = BetterSqlite3Module.Database
+import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 // Year-9999 epoch ms — NodeCache `ttl=0` means "never expire", which we
 // encode as a fixed far-future `expires_at` so the read path stays NULL-
 // free and the column stays NOT NULL.
 const NO_EXPIRY_SENTINEL = 253_402_300_799_000
+
+/**
+ * Parses a NodeCache-style TTL string ("35m", "1h", etc.) into ms.
+ * Returns `null` if the input is malformed.
+ */
+function parseTtlString(ttl: string): number | null {
+	const m = /^(\d+)\s*([smhd])?$/i.exec(ttl.trim())
+	if (!m) return null
+	const n = Number(m[1])
+	if (!Number.isFinite(n)) return null
+	const unit = (m[2] ?? 's').toLowerCase()
+	switch (unit) {
+		case 's':
+			return n * 1000
+		case 'm':
+			return n * 60_000
+		case 'h':
+			return n * 3_600_000
+		case 'd':
+			return n * 86_400_000
+		default:
+			return null
+	}
+}
 
 const CREATE_AUX_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS msg_retry_counter (
@@ -62,20 +82,20 @@ export interface CacheStoreShape {
 
 export class MsgRetryCounterSqliteAdapter implements CacheStoreShape {
 	private readonly stmts: {
-		select: BetterSqlite3Module.Statement
-		upsert: BetterSqlite3Module.Statement
-		del: BetterSqlite3Module.Statement
-		prune: BetterSqlite3Module.Statement
-		flushAll: BetterSqlite3Module.Statement
+		select: SqliteStatementLike
+		upsert: SqliteStatementLike
+		del: SqliteStatementLike
+		prune: SqliteStatementLike
+		flushAll: SqliteStatementLike
 	}
 
 	private readonly defaultTtlMs: number
 	private pruneTicker?: NodeJS.Timeout
 
-	private readonly db: Database
+	private readonly db: SqliteDbLike
 
 	constructor(db: SqliteDbLike, opts: MsgRetryCounterAdapterOptions = {}) {
-		this.db = db as unknown as Database
+		this.db = db
 		this.defaultTtlMs = (opts.defaultTtlSeconds ?? 60 * 60) * 1000 // 1 hour default
 
 		this.db.exec(CREATE_AUX_TABLE_SQL)
@@ -119,6 +139,10 @@ export class MsgRetryCounterSqliteAdapter implements CacheStoreShape {
 		if (typeof ttl === 'number') {
 			// NodeCache compat: ttl === 0 means "never expire".
 			expiresAt = ttl === 0 ? NO_EXPIRY_SENTINEL : now + ttl * 1000
+		} else if (typeof ttl === 'string') {
+			// NodeCache also accepts strings like "35m", "1h", "30s".
+			const parsed = parseTtlString(ttl)
+			expiresAt = parsed === null ? now + this.defaultTtlMs : now + parsed
 		} else {
 			expiresAt = now + this.defaultTtlMs
 		}

@@ -20,11 +20,7 @@
  *     the server-reported one we know the device list is still current and
  *     skip the refetch entirely.
  */
-import type BetterSqlite3Module from 'better-sqlite3'
-
-import type { SqliteDbLike } from './types'
-
-type Database = BetterSqlite3Module.Database
+import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 /**
  * Resolved device record returned by lookups.
@@ -45,22 +41,19 @@ export type StoredDeviceRow = {
  */
 export class UserDeviceBackend {
 	private readonly stmts: {
-		insertDevice: BetterSqlite3Module.Statement
-		deleteByUser: BetterSqlite3Module.Statement
-		selectByUser: BetterSqlite3Module.Statement
-		upsertInfo: BetterSqlite3Module.Statement
-		selectInfo: BetterSqlite3Module.Statement
-		upsertPrimaryVersion: BetterSqlite3Module.Statement
-		selectPrimaryVersion: BetterSqlite3Module.Statement
+		insertDevice: SqliteStatementLike
+		deleteByUser: SqliteStatementLike
+		selectByUser: SqliteStatementLike
+		upsertInfo: SqliteStatementLike
+		selectInfo: SqliteStatementLike
+		upsertPrimaryVersion: SqliteStatementLike
+		selectPrimaryVersion: SqliteStatementLike
 	}
 
-	private readonly db: Database
+	private readonly db: SqliteDbLike
 
 	constructor(db: SqliteDbLike) {
-		// Public type is the structural SqliteDbLike to keep better-sqlite3
-		// off the published declarations; the runtime expectation is an
-		// actual better-sqlite3 Database instance.
-		this.db = db as unknown as Database
+		this.db = db
 		this.stmts = {
 			insertDevice: this.db.prepare(
 				'INSERT INTO user_device (user_jid_row_id, device_jid_row_id, key_index) VALUES (?, ?, ?)'

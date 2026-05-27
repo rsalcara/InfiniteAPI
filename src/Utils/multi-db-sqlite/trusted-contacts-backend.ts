@@ -17,11 +17,7 @@
  * Column names match the canonical mobile schema verbatim — backups,
  * forensic dumps, and migration scripts work without renames.
  */
-import type BetterSqlite3Module from 'better-sqlite3'
-
-import type { SqliteDbLike } from './types'
-
-type Database = BetterSqlite3Module.Database
+import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 export type TrustedContactsBackendStats = {
 	incomingCount: number
@@ -30,20 +26,20 @@ export type TrustedContactsBackendStats = {
 
 export class TrustedContactsBackend {
 	private readonly stmts: {
-		upsertIncoming: BetterSqlite3Module.Statement
-		selectIncoming: BetterSqlite3Module.Statement
-		delIncoming: BetterSqlite3Module.Statement
-		upsertSent: BetterSqlite3Module.Statement
-		selectSent: BetterSqlite3Module.Statement
-		delSent: BetterSqlite3Module.Statement
-		countIncoming: BetterSqlite3Module.Statement
-		countSent: BetterSqlite3Module.Statement
+		upsertIncoming: SqliteStatementLike
+		selectIncoming: SqliteStatementLike
+		delIncoming: SqliteStatementLike
+		upsertSent: SqliteStatementLike
+		selectSent: SqliteStatementLike
+		delSent: SqliteStatementLike
+		countIncoming: SqliteStatementLike
+		countSent: SqliteStatementLike
 	}
 
-	private readonly db: Database
+	private readonly db: SqliteDbLike
 
 	constructor(db: SqliteDbLike) {
-		this.db = db as unknown as Database
+		this.db = db
 		this.stmts = {
 			upsertIncoming: this.db.prepare(
 				'INSERT INTO wa_trusted_contacts (jid, incoming_tc_token, incoming_tc_token_timestamp) VALUES (?, ?, ?) ' +

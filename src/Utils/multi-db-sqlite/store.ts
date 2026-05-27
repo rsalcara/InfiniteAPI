@@ -79,9 +79,21 @@ export type MultiDbSqliteStoreOptions = {
  * handles are opened by {@link open} and closed together via {@link close}.
  */
 export class MultiDbSqliteStore {
-	private readonly handles = new Map<MultiDbFile, Database>()
+	// Typed as `SqliteDbLike` (the local structural interface) so the
+	// emitted `.d.ts` does not leak `better-sqlite3` types into the public
+	// declaration surface — TypeScript includes private members in the
+	// generated declarations, and this Map's value type would otherwise
+	// pull `BetterSqlite3Module.Database` into every consumer that imports
+	// from `baileys/Utils`.
+	private readonly handles = new Map<MultiDbFile, SqliteDbLike>()
 	private opened = false
 	private openInFlight?: Promise<void>
+	// Monotonic counter incremented on every close(). `runOpen()` captures
+	// the generation at start and aborts (closing its own newly-opened
+	// handles) if the generation changed mid-flight — this is the abort
+	// mechanism close() uses to interrupt a concurrent open() without
+	// leaking handles or leaving `opened=true` after teardown.
+	private openGeneration = 0
 
 	constructor(private readonly opts: MultiDbSqliteStoreOptions) {}
 
@@ -110,6 +122,12 @@ export class MultiDbSqliteStore {
 		const Database = await loadBetterSqlite3()
 		const extra = this.opts.extraPragmas ?? []
 
+		// Capture the generation at the start. If close() runs while we
+		// are still here, it will increment this counter — we then know
+		// the caller has explicitly torn the store down and we must abort
+		// (closing the just-opened db) instead of stashing it.
+		const startGen = this.openGeneration
+
 		// On partial-initialization failure (bad extraPragma entry, missing
 		// directory permissions on one .db, schema error inside one of the
 		// later SCHEMAS, etc.), close every handle opened so far so the file
@@ -122,7 +140,25 @@ export class MultiDbSqliteStore {
 				for (const pragma of DEFAULT_PRAGMAS) db.pragma(pragma)
 				for (const pragma of extra) db.pragma(pragma)
 				db.exec(SCHEMAS[file])
-				this.handles.set(file, db)
+				// Abort check: if close() bumped the generation while we were
+				// in here, close this brand-new handle and stop. close() has
+				// already cleared `this.handles` and reset `opened=false`;
+				// we must not re-populate the map.
+				if (this.openGeneration !== startGen) {
+					try {
+						db.close()
+					} catch {
+						// Best effort — the store is being torn down anyway.
+					}
+
+					return
+				}
+
+				// Boundary cast: the Map is typed `SqliteDbLike` so the
+				// emitted `.d.ts` does not pull `better-sqlite3` types. At
+				// runtime the value IS a `better-sqlite3` `Database`; the
+				// `SqliteDbLike` interface matches the methods we use.
+				this.handles.set(file, db as unknown as SqliteDbLike)
 				this.opts.logger?.info?.({ file, path: fullPath }, 'multi-db-sqlite: opened')
 			}
 		} catch (err) {
@@ -136,6 +172,24 @@ export class MultiDbSqliteStore {
 
 			this.handles.clear()
 			throw err
+		}
+
+		// Final generation check before flipping `opened=true`: if close()
+		// ran AFTER the loop but BEFORE we get here, do not resurrect the
+		// store. The handles we just opened are now in `this.handles` —
+		// close them and clear the map so the postcondition matches what
+		// close() established.
+		if (this.openGeneration !== startGen) {
+			for (const [file, db] of this.handles) {
+				try {
+					db.close()
+				} catch (closeErr) {
+					this.opts.logger?.warn?.({ file, err: closeErr }, 'multi-db-sqlite: post-close cleanup failed')
+				}
+			}
+
+			this.handles.clear()
+			return
 		}
 
 		this.opened = true
@@ -156,7 +210,7 @@ export class MultiDbSqliteStore {
 	handle(file: MultiDbFile): SqliteDbLike {
 		const db = this.handles.get(file)
 		if (!db) throw new Error(`MultiDbSqliteStore: handle for "${file}" not opened (call .open() first)`)
-		return db as unknown as SqliteDbLike
+		return db
 	}
 
 	/**
@@ -173,9 +227,12 @@ export class MultiDbSqliteStore {
 	 * caller that explicitly tore the store down.
 	 */
 	close(): void {
-		// Snapshot the current handles regardless of `opened` state — an
-		// open() in flight may have populated the Map even though `opened`
-		// is still false at this instant.
+		// Bump the generation FIRST so a concurrent runOpen() observes the
+		// change on its next checkpoint and aborts cleanly. Then snapshot
+		// the handles currently in the map and close them — runOpen() may
+		// have added some between its last checkpoint and this point, but
+		// the generation bump guarantees it will not add MORE after this.
+		this.openGeneration++
 		const handlesToClose = Array.from(this.handles.entries())
 		this.handles.clear()
 		this.opened = false

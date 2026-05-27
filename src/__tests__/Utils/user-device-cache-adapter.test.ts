@@ -27,9 +27,14 @@ describe('UserDeviceCacheSqliteAdapter', () => {
 
 	it('round-trips a JidWithDevice[] payload via get/set', () => {
 		const adapter = new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db'))
+		// Use realistic FullJid-shaped objects WITHOUT `agent: undefined`
+		// fields — `JSON.stringify` drops undefined properties, so the
+		// round-trip equality below would never hit if we included them
+		// (the actual gateway addressed JID shape omits `agent` entirely
+		// for the common no-agent case).
 		const devices = [
-			{ user: '5515991426667', agent: undefined, device: 0 },
-			{ user: '5515991426667', agent: undefined, device: 1 }
+			{ user: '5515991426667', device: 0 },
+			{ user: '5515991426667', device: 1 }
 		]
 		adapter.set('5515991426667', devices)
 

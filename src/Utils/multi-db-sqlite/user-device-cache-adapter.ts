@@ -29,11 +29,7 @@
  *     (an opt-in `runPruneTickerEverySeconds` constructor option does
  *     this automatically).
  */
-import type BetterSqlite3Module from 'better-sqlite3'
-
-import type { SqliteDbLike } from './types'
-
-type Database = BetterSqlite3Module.Database
+import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 export type NodeCacheCompatibleEntry = unknown
 
@@ -69,6 +65,31 @@ CREATE INDEX IF NOT EXISTS user_device_cache_json_expires_idx
 
 const FLUSH_ALL_SQL = 'DELETE FROM user_device_cache_json'
 
+/**
+ * Parses a NodeCache-style TTL string ("35m", "1h", "30s", "1d") into
+ * milliseconds. Returns `null` if the input is not a recognized shape so
+ * the caller can fall back to the default TTL.
+ */
+function parseTtlString(ttl: string): number | null {
+	const m = /^(\d+)\s*([smhd])?$/i.exec(ttl.trim())
+	if (!m) return null
+	const n = Number(m[1])
+	if (!Number.isFinite(n)) return null
+	const unit = (m[2] ?? 's').toLowerCase()
+	switch (unit) {
+		case 's':
+			return n * 1000
+		case 'm':
+			return n * 60_000
+		case 'h':
+			return n * 3_600_000
+		case 'd':
+			return n * 86_400_000
+		default:
+			return null
+	}
+}
+
 // Year-9999 in epoch milliseconds. Used as `expires_at` for entries
 // written with `ttl=0` (NodeCache convention for "never expire"). Picking
 // a fixed huge value keeps the column NOT NULL and the read path simple:
@@ -94,20 +115,20 @@ export type UserDeviceCacheAdapterOptions = {
  */
 export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 	private readonly stmts: {
-		select: BetterSqlite3Module.Statement
-		upsert: BetterSqlite3Module.Statement
-		del: BetterSqlite3Module.Statement
-		prune: BetterSqlite3Module.Statement
-		flushAll: BetterSqlite3Module.Statement
+		select: SqliteStatementLike
+		upsert: SqliteStatementLike
+		del: SqliteStatementLike
+		prune: SqliteStatementLike
+		flushAll: SqliteStatementLike
 	}
 
 	private readonly defaultTtlMs: number
 	private pruneTicker?: NodeJS.Timeout
 
-	private readonly db: Database
+	private readonly db: SqliteDbLike
 
 	constructor(db: SqliteDbLike, opts: UserDeviceCacheAdapterOptions = {}) {
-		this.db = db as unknown as Database
+		this.db = db
 		this.defaultTtlMs = (opts.defaultTtlSeconds ?? 5 * 60) * 1000
 
 		this.db.exec(CREATE_AUX_TABLE_SQL)
@@ -159,6 +180,12 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 			// as a far-future timestamp so we don't need a nullable column
 			// and a NULL-aware check on every get/mget hot-path read.
 			expiresAt = ttl === 0 ? NO_EXPIRY_SENTINEL : Date.now() + ttl * 1000
+		} else if (typeof ttl === 'string') {
+			// NodeCache also accepts string-formatted TTLs like "35m", "1h",
+			// "30s". Parse explicitly; fall back to the default if the
+			// string is malformed (mirrors NodeCache's defensive behavior).
+			const parsed = parseTtlString(ttl)
+			expiresAt = parsed === null ? Date.now() + this.defaultTtlMs : Date.now() + parsed
 		} else {
 			expiresAt = Date.now() + this.defaultTtlMs
 		}

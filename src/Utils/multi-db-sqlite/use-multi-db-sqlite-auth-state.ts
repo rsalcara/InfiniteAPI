@@ -174,8 +174,18 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				// the LIDMappingStore (in-RAM LRU + retry) to surface
 				// stale resolutions for previously-known contacts after a
 				// "clear all keys" event.
+				//
+				// Only `jid_map` is cleared here — NOT the shared `jid` table.
+				// Other msgstore tables (`user_device.user_jid_row_id`,
+				// `user_device_info.user_jid_row_id`, `message_orphaned_edit.
+				// chat_row_id`, etc.) hold row-id references into `jid`, and
+				// deleting `jid` rows would orphan them into an inconsistent
+				// state. The `jid` rows are cheap to keep — they're only
+				// addresses, not session material — and are reused naturally
+				// by the next `LIDMappingStore.storeMapping()` call that
+				// resolves to the same raw_string.
 				const msgstoreDb = store.handle('msgstore.db')
-				msgstoreDb.exec('DELETE FROM jid_map; DELETE FROM jid;')
+				msgstoreDb.exec('DELETE FROM jid_map;')
 			},
 			list: async function* <T extends keyof SignalDataTypeMap>(
 				type: T
