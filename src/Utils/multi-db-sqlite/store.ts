@@ -27,7 +27,12 @@ type DatabaseConstructor = typeof import('better-sqlite3')
 const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
 	'journal_mode = WAL',
 	'synchronous = NORMAL',
-	'busy_timeout = 5000'
+	'busy_timeout = 5000',
+	// Required so `FOREIGN KEY ... ON DELETE CASCADE` constraints actually
+	// enforce — SQLite leaves them off by default per connection, so without
+	// this the cascade semantics in `jid_map`, `wa_trusted_contacts`, etc.
+	// would silently no-op.
+	'foreign_keys = ON'
 ]
 
 async function loadBetterSqlite3(): Promise<DatabaseConstructor> {
@@ -69,12 +74,27 @@ export type MultiDbSqliteStoreOptions = {
 export class MultiDbSqliteStore {
 	private readonly handles = new Map<MultiDbFile, Database>()
 	private opened = false
+	private openInFlight?: Promise<void>
 
 	constructor(private readonly opts: MultiDbSqliteStoreOptions) {}
 
 	async open(): Promise<void> {
 		if (this.opened) return
+		// Concurrency-safe open: if a second caller hits open() while the first
+		// is still inside the async init below, return the in-flight promise so
+		// both end up sharing the same set of handles rather than racing to
+		// create duplicates.
+		if (this.openInFlight) return this.openInFlight
 
+		this.openInFlight = this.runOpen()
+		try {
+			await this.openInFlight
+		} finally {
+			this.openInFlight = undefined
+		}
+	}
+
+	private async runOpen(): Promise<void> {
 		const fs = await import('node:fs')
 		const path = await import('node:path')
 
@@ -83,14 +103,32 @@ export class MultiDbSqliteStore {
 		const Database = await loadBetterSqlite3()
 		const extra = this.opts.extraPragmas ?? []
 
-		for (const file of MULTI_DB_FILES) {
-			const fullPath = path.join(this.opts.sessionDir, file)
-			const db = new Database(fullPath)
-			for (const pragma of DEFAULT_PRAGMAS) db.pragma(pragma)
-			for (const pragma of extra) db.pragma(pragma)
-			db.exec(SCHEMAS[file])
-			this.handles.set(file, db)
-			this.opts.logger?.info?.({ file, path: fullPath }, 'multi-db-sqlite: opened')
+		// On partial-initialization failure (bad extraPragma entry, missing
+		// directory permissions on one .db, schema error inside one of the
+		// later SCHEMAS, etc.), close every handle opened so far so the file
+		// descriptor / WAL lock does not leak. Throw the original error so the
+		// caller still sees it.
+		try {
+			for (const file of MULTI_DB_FILES) {
+				const fullPath = path.join(this.opts.sessionDir, file)
+				const db = new Database(fullPath)
+				for (const pragma of DEFAULT_PRAGMAS) db.pragma(pragma)
+				for (const pragma of extra) db.pragma(pragma)
+				db.exec(SCHEMAS[file])
+				this.handles.set(file, db)
+				this.opts.logger?.info?.({ file, path: fullPath }, 'multi-db-sqlite: opened')
+			}
+		} catch (err) {
+			for (const [file, db] of this.handles) {
+				try {
+					db.close()
+				} catch (closeErr) {
+					this.opts.logger?.warn?.({ file, err: closeErr }, 'multi-db-sqlite: cleanup close failed')
+				}
+			}
+
+			this.handles.clear()
+			throw err
 		}
 
 		this.opened = true
@@ -99,6 +137,14 @@ export class MultiDbSqliteStore {
 	/**
 	 * Returns the opened handle for the given DB file. Throws if the store
 	 * has not been opened yet — callers should always {@link open} first.
+	 *
+	 * @internal — primarily for the SQLite-backed adapters in this package.
+	 * The return type intentionally surfaces `better-sqlite3`'s `Database`
+	 * so internal call sites get the typed prepared-statement API; external
+	 * consumers of `baileys/Utils` that do not use SQLite should ignore
+	 * this method (the `database?: unknown` boundary on
+	 * `useSqliteAuthState` / `useMultiDbSqliteAuthState` keeps the optional
+	 * peer-dep contract on the entry points they actually call).
 	 */
 	handle(file: MultiDbFile): Database {
 		const db = this.handles.get(file)

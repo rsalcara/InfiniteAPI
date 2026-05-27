@@ -25,7 +25,9 @@ Three operational wins under load:
 
 ```
 sessionDir/
-├── creds.db             (auth credentials root + app-state sync keys)
+├── creds.db             (auth credentials root; `app_state_sync_keys`
+│                         table reserved for a later phase — v1 keeps
+│                         `app-state-sync-key` in axolotl.signal_kv)
 ├── axolotl.db           (Signal Protocol — sessions, prekeys, identities,
 │                         sender_keys, stanza queues, base keys, kyber
 │                         prekeys, preacks)

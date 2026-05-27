@@ -23,7 +23,9 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions
  * concern:
  *
  *   sessionDir/
- *     creds.db        — auth credentials + app_state_sync_keys
+ *     creds.db        — auth credentials (the `app_state_sync_keys` table
+ *                       is reserved for a later phase; v1 still routes
+ *                       `app-state-sync-key` to axolotl.signal_kv)
  *     axolotl.db      — Signal Protocol (opaque `signal_kv` in v1; typed
  *                       tables reserved for phase 9.5 integration)
  *     msgstore.db     — JID routing, device cache, quarantine, retry counters
@@ -52,13 +54,18 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	store: MultiDbSqliteStore
 }> {
 	const store = new MultiDbSqliteStore(opts)
-	await store.open()
 
 	let creds: AuthenticationCreds
 	let credsStmts: ReturnType<typeof prepareCredsStatements>
 	let signalStmts: ReturnType<typeof prepareSignalStatements>
 
 	try {
+		// store.open() now lives INSIDE the try/catch so any open-time error
+		// (mkdir permission denial, bad extraPragma, schema exec failure) still
+		// triggers the close() cleanup below — the store's own runOpen()
+		// catches partial init internally, but a thrown error past .open()
+		// would previously leave the caller with no close() to call.
+		await store.open()
 		credsStmts = prepareCredsStatements(store)
 		signalStmts = prepareSignalStatements(store)
 		creds = loadCreds(credsStmts, opts.logger)

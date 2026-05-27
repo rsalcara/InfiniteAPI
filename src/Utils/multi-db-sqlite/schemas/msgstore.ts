@@ -96,7 +96,12 @@ CREATE TABLE IF NOT EXISTS message_quarantine (
   key_id TEXT NOT NULL,
   from_me INTEGER NOT NULL DEFAULT 0,
   chat_row_id INTEGER NOT NULL,
-  sender_jid_row_id INTEGER,
+  /* sender_jid_row_id is NOT NULL DEFAULT 0 so the UNIQUE constraint
+     treats unknown-sender rows consistently; SQLite considers two NULLs
+     distinct under UNIQUE, so a nullable column would let duplicate
+     (key_id, from_me, chat_row_id, NULL) rows in. The 0 sentinel mirrors
+     message_orphaned_edit. */
+  sender_jid_row_id INTEGER NOT NULL DEFAULT 0,
   original_protobuf BLOB,
   serialized_stanza BLOB,
   failure_reason TEXT,

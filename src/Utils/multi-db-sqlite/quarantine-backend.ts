@@ -65,7 +65,7 @@ export class MessageQuarantineBackend {
 			),
 			incrementOnConflict: db.prepare(
 				'UPDATE message_quarantine SET retry_count = retry_count + 1, quarantined_at = ?, failure_reason = ? ' +
-					'WHERE key_id = ? AND from_me = ? AND chat_row_id = ? AND sender_jid_row_id IS ?'
+					'WHERE key_id = ? AND from_me = ? AND chat_row_id = ? AND sender_jid_row_id = ?'
 			),
 			selectByKey: db.prepare(
 				'SELECT _id, key_id, from_me, chat_row_id, sender_jid_row_id, original_protobuf, ' +
@@ -84,7 +84,7 @@ export class MessageQuarantineBackend {
 			),
 			delByKey: db.prepare(
 				'DELETE FROM message_quarantine ' +
-					'WHERE key_id = ? AND from_me = ? AND chat_row_id = ? AND sender_jid_row_id IS ?'
+					'WHERE key_id = ? AND from_me = ? AND chat_row_id = ? AND sender_jid_row_id = ?'
 			),
 			pruneOlderThan: db.prepare('DELETE FROM message_quarantine WHERE quarantined_at < ?')
 		}
@@ -97,7 +97,10 @@ export class MessageQuarantineBackend {
 	 */
 	quarantine(record: QuarantineRecord): { id: number; retryCount: number } {
 		const now = record.quarantinedAt ?? Date.now()
-		const sender = record.senderJidRowId ?? null
+		// schema: sender_jid_row_id NOT NULL DEFAULT 0 — coerce nullish to 0 so
+		// UNIQUE constraint sees consistent values (SQLite treats NULLs as
+		// distinct under UNIQUE).
+		const sender = record.senderJidRowId ?? 0
 
 		const tx = this.db.transaction((rec: QuarantineRecord) => {
 			const incrementRes = this.stmts.incrementOnConflict.run(
@@ -109,12 +112,10 @@ export class MessageQuarantineBackend {
 				sender
 			)
 			if (incrementRes.changes > 0) {
-				const existing = this.stmts.selectByKey.get(
-					rec.keyId,
-					rec.fromMe ? 1 : 0,
-					rec.chatRowId,
-					sender
-				) as { _id: number; retry_count: number }
+				const existing = this.stmts.selectByKey.get(rec.keyId, rec.fromMe ? 1 : 0, rec.chatRowId, sender) as {
+					_id: number
+					retry_count: number
+				}
 				return { id: existing._id, retryCount: existing.retry_count }
 			}
 
@@ -142,7 +143,7 @@ export class MessageQuarantineBackend {
 		chatRowId: number,
 		senderJidRowId: number | null
 	): StoredQuarantineRow | null {
-		const row = this.stmts.selectByKey.get(keyId, fromMe ? 1 : 0, chatRowId, senderJidRowId) as
+		const row = this.stmts.selectByKey.get(keyId, fromMe ? 1 : 0, chatRowId, senderJidRowId ?? 0) as
 			| RawRow
 			| undefined
 		return row ? mapRow(row) : null
@@ -165,7 +166,7 @@ export class MessageQuarantineBackend {
 	 * recovery so the row doesn't pile up forever.
 	 */
 	dismiss(keyId: string, fromMe: boolean, chatRowId: number, senderJidRowId: number | null): boolean {
-		const r = this.stmts.delByKey.run(keyId, fromMe ? 1 : 0, chatRowId, senderJidRowId)
+		const r = this.stmts.delByKey.run(keyId, fromMe ? 1 : 0, chatRowId, senderJidRowId ?? 0)
 		return r.changes > 0
 	}
 
