@@ -198,11 +198,33 @@ export type SocketConfig = {
 	/** cached group metadata, use to prevent redundant requests to WA & speed up msg sending */
 	cachedGroupMetadata: (jid: string) => Promise<GroupMetadata | undefined>
 
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	makeSignalRepository: (
 		auth: SignalAuthState,
 		logger: ILogger,
-		pnToLIDFunc?: (jids: string[]) => Promise<LIDMapping[] | undefined>
+		pnToLIDFunc?: (jids: string[]) => Promise<LIDMapping[] | undefined>,
+		// `any` here intentionally — the concrete option shape is owned by
+		// `LibSignalRepositoryOptions` in `../Signal/libsignal.ts`, and the
+		// import cycle would bloat the public Types surface. The runtime
+		// makeLibSignalRepository validates the field it actually uses
+		// (`multiDbStore`) — extra fields are ignored.
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		options?: any
 	) => SignalRepositoryWithLIDStore
+
+	/**
+	 * Optional multi-DB SQLite store (`MultiDbSqliteStore`). When supplied,
+	 * persistence for LID mapping, user device cache, retry counters,
+	 * quarantined stanzas, trusted-contact tokens, and app-state sync routes
+	 * through typed SQLite tables (one physical `.db` file per concern)
+	 * instead of in-RAM caches / opaque key-value rows. The default
+	 * (`undefined`) keeps the legacy behavior.
+	 *
+	 * Typed as `unknown` to avoid forcing every importer of `SocketConfig`
+	 * to resolve `better-sqlite3` types. The runtime expectation is a
+	 * `MultiDbSqliteStore` instance from `Utils/multi-db-sqlite`.
+	 */
+	multiDbStore?: unknown
 
 	// === Listener Limits (Memory Leak Prevention) ===
 

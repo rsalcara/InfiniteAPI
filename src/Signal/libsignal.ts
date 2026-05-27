@@ -112,6 +112,21 @@ export interface IdentitySaveResult {
 export interface LibSignalRepositoryOptions {
 	/** Event emitter for broadcasting identity changes */
 	ev?: BaileysEventEmitter
+	/**
+	 * Optional multi-DB SQLite store. When supplied, the LID mapping
+	 * persistence routes through the typed `jid` + `jid_map` tables in
+	 * `msgstore.db` instead of opaque key-value rows on the shared signal
+	 * key store. All in-memory caching, coalescing, retry, statistics, and
+	 * metrics on top remain identical.
+	 *
+	 * Default (`undefined`): legacy behavior — `auth.keys` carries the
+	 * `'lid-mapping'` rows as before.
+	 *
+	 * Typed as `unknown` here to avoid forcing every importer of
+	 * `LibSignalRepositoryOptions` to resolve the SQLite types. The runtime
+	 * expectation is `MultiDbSqliteStore` from `../Utils/multi-db-sqlite`.
+	 */
+	multiDbStore?: unknown
 }
 
 // ============================================
@@ -322,7 +337,30 @@ export function makeLibSignalRepository(
 		)
 	}
 
-	const lidMapping = new LIDMappingStore(auth.keys as SignalKeyStoreWithTransaction, logger, pnToLIDFunc)
+	// Phase 9.1 integration: if a multi-DB SQLite store was supplied, route
+	// LID mapping persistence through `msgstore.jid_map` (typed) instead of
+	// opaque `'lid-mapping'` rows on the shared key store. The LIDMappingStore
+	// itself is unchanged — its LRU cache, request coalescing, retry,
+	// statistics, and metrics layers all sit on top of the proxied key store.
+	let lidMapping: LIDMappingStore
+	if (options?.multiDbStore) {
+		// Lazy require avoids pulling the SQLite path into the bundle for
+		// consumers that don't use it. The dynamic import expression here
+		// resolves synchronously against the local module graph.
+		// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+		const sqliteFactories = require('../Utils/multi-db-sqlite/factories') as typeof import('../Utils/multi-db-sqlite/factories')
+		lidMapping = sqliteFactories.createLIDMappingStoreWithSqlite({
+			innerKeys: auth.keys as SignalKeyStoreWithTransaction,
+			// Boundary cast: public type is `unknown` so consumers of this
+			// module's options don't have a hard dep on the SQLite types.
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			store: options.multiDbStore as any,
+			logger,
+			pnToLIDFunc
+		})
+	} else {
+		lidMapping = new LIDMappingStore(auth.keys as SignalKeyStoreWithTransaction, logger, pnToLIDFunc)
+	}
 
 	// Identity key cache to avoid repeated storage reads
 	const identityKeyCache = new LRUCache<string, Uint8Array>({

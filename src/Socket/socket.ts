@@ -441,7 +441,9 @@ export const makeSocket = (config: SocketConfig) => {
 	const { creds } = authState
 	// add transaction capability
 	const keys = addTransactionCapability(authState.keys, logger, transactionOpts)
-	const signalRepository = makeSignalRepository({ creds, keys }, logger, pnFromLIDUSync)
+	const signalRepository = makeSignalRepository({ creds, keys }, logger, pnFromLIDUSync, {
+		multiDbStore: config.multiDbStore
+	})
 
 	// Session activity tracker - tracks last activity for cleanup (must be created first)
 	const sessionActivityTracker = makeSessionActivityTracker(keys, logger)
