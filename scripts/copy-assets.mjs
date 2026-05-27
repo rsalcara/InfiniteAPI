@@ -27,7 +27,7 @@
  *   `npm run build:assets`, chained at the end of `npm run build`.
  */
 
-import { readdir, mkdir, copyFile, stat } from 'node:fs/promises'
+import { readdir, mkdir, copyFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
