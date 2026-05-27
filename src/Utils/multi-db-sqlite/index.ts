@@ -13,3 +13,22 @@ export {
 	type NodeCacheLike,
 	type UserDeviceCacheAdapterOptions
 } from './user-device-cache-adapter'
+export {
+	MsgRetryCounterSqliteAdapter,
+	type CacheStoreShape,
+	type MsgRetryCounterAdapterOptions
+} from './msg-retry-counter-adapter'
+export {
+	MessageQuarantineBackend,
+	type QuarantineRecord,
+	type StoredQuarantineRow
+} from './quarantine-backend'
+export {
+	TrustedContactsBackend,
+	type TrustedContactsBackendStats
+} from './trusted-contacts-backend'
+export {
+	AppStateBackend,
+	type CollectionVersionRow,
+	type SyncdMutationRow
+} from './app-state-backend'
