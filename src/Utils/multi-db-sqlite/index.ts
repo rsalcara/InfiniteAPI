@@ -4,3 +4,6 @@ export {
 	type UseMultiDbSqliteAuthStateOptions
 } from './use-multi-db-sqlite-auth-state'
 export { MULTI_DB_FILES, SCHEMAS, type MultiDbFile } from './schemas'
+export { JidMapBackend, REVERSE_SUFFIX, stripReverse } from './lid-mapping-backend'
+export { wrapKeysWithJidMap } from './keys-with-jid-map'
+export { createLIDMappingStoreWithSqlite } from './factories'
