@@ -146,7 +146,7 @@ export class UserDeviceBackend {
 	 */
 	isFresh(userJidRowId: number, now: number = Date.now()): boolean {
 		const info = this.getInfo(userJidRowId)
-		if (!info || info.expectedTimestamp === null) return false
+		if (info?.expectedTimestamp == null) return false
 		return now <= info.expectedTimestamp
 	}
 

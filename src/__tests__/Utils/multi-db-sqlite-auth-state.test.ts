@@ -61,7 +61,7 @@ describe('useMultiDbSqliteAuthState', () => {
 		const { store, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
 
 		const axolotlTables = (
-			store.handle('axolotl.db').prepare('SELECT name FROM sqlite_master WHERE type="table"').all() as Array<{
+			store.handle('axolotl.db').prepare('SELECT name FROM sqlite_master WHERE type='table'').all() as Array<{
 				name: string
 			}>
 		).map(r => r.name)
@@ -85,7 +85,7 @@ describe('useMultiDbSqliteAuthState', () => {
 		)
 
 		const msgstoreTables = (
-			store.handle('msgstore.db').prepare('SELECT name FROM sqlite_master WHERE type="table"').all() as Array<{
+			store.handle('msgstore.db').prepare('SELECT name FROM sqlite_master WHERE type='table'').all() as Array<{
 				name: string
 			}>
 		).map(r => r.name)
@@ -102,7 +102,7 @@ describe('useMultiDbSqliteAuthState', () => {
 		)
 
 		const waTables = (
-			store.handle('wa.db').prepare('SELECT name FROM sqlite_master WHERE type="table"').all() as Array<{
+			store.handle('wa.db').prepare('SELECT name FROM sqlite_master WHERE type='table'').all() as Array<{
 				name: string
 			}>
 		).map(r => r.name)
@@ -111,7 +111,7 @@ describe('useMultiDbSqliteAuthState', () => {
 		)
 
 		const syncTables = (
-			store.handle('sync.db').prepare('SELECT name FROM sqlite_master WHERE type="table"').all() as Array<{
+			store.handle('sync.db').prepare('SELECT name FROM sqlite_master WHERE type='table'').all() as Array<{
 				name: string
 			}>
 		).map(r => r.name)
@@ -128,7 +128,7 @@ describe('useMultiDbSqliteAuthState', () => {
 		)
 
 		const prometheusTables = (
-			store.handle('prometheus.db').prepare('SELECT name FROM sqlite_master WHERE type="table"').all() as Array<{
+			store.handle('prometheus.db').prepare('SELECT name FROM sqlite_master WHERE type='table'').all() as Array<{
 				name: string
 			}>
 		).map(r => r.name)
