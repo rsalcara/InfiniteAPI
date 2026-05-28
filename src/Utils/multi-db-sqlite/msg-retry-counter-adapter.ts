@@ -83,7 +83,19 @@ export class MsgRetryCounterSqliteAdapter implements CacheStoreShape {
 		}
 
 		if (opts.runPruneTickerEverySeconds && opts.runPruneTickerEverySeconds > 0) {
-			this.pruneTicker = setInterval(() => this.pruneExpired(), opts.runPruneTickerEverySeconds * 1000)
+			// Guard the timer body — see user-device-cache-adapter.ts for the
+			// full rationale. Short version: if the host process closes the
+			// underlying db handle before this adapter's own close() runs, the
+			// next tick throws "database connection is not open" from inside
+			// the timer (no surrounding caller). Catching it keeps shutdown
+			// noise-free; there is nothing to prune on a closed handle.
+			this.pruneTicker = setInterval(() => {
+				try {
+					this.pruneExpired()
+				} catch {
+					/* db handle already closed by host shutdown — nothing to prune */
+				}
+			}, opts.runPruneTickerEverySeconds * 1000)
 			if (typeof this.pruneTicker.unref === 'function') this.pruneTicker.unref()
 		}
 	}
@@ -92,7 +104,15 @@ export class MsgRetryCounterSqliteAdapter implements CacheStoreShape {
 		const row = this.stmts.select.get(key) as { retry_count: number; expires_at: number } | undefined
 		if (!row) return undefined
 		if (row.expires_at <= Date.now()) {
-			this.stmts.del.run(key)
+			// Lazy expiry — must not throw. NodeCache's contract is that
+			// `.get()` returns `undefined` for miss; surfacing SQLITE_BUSY
+			// here breaks the retry-counter increment path in messages-recv.ts.
+			try {
+				this.stmts.del.run(key)
+			} catch {
+				/* lazy expiry only — leave the stale row for the prune ticker */
+			}
+
 			return undefined
 		}
 
@@ -110,6 +130,11 @@ export class MsgRetryCounterSqliteAdapter implements CacheStoreShape {
 
 	del(key: string | string[]): number {
 		const keys = Array.isArray(key) ? key : [key]
+		// Fast path for the single-key case (the only one exercised by
+		// messages-recv.ts today) — skips BEGIN IMMEDIATE / COMMIT and the
+		// closure allocation. Keeps the multi-key reducer path for callers
+		// that bulk-delete multiple counters at once.
+		if (keys.length === 1) return this.stmts.del.run(keys[0]!).changes
 		// Reducer keeps the per-call accumulator local to the transaction
 		// instead of leaking it into the closure. better-sqlite3 does NOT
 		// retry the transaction body automatically, but the previous

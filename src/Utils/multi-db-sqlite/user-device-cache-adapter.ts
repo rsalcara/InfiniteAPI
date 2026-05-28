@@ -126,7 +126,22 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 		this.mDelQuery = prepareInClause(this.db, 'DELETE FROM user_device_cache_json WHERE user_jid IN (', ')')
 
 		if (opts.runPruneTickerEverySeconds && opts.runPruneTickerEverySeconds > 0) {
-			this.pruneTicker = setInterval(() => this.pruneExpired(), opts.runPruneTickerEverySeconds * 1000)
+			// The try/catch is not paranoia: when the host process calls
+			// `MultiDbSqliteStore.close()` BEFORE the adapter's own `close()`,
+			// the underlying db handle is gone but this interval may already be
+			// armed for its next fire. The synchronous `stmt.run` then throws
+			// `"The database connection is not open"` from inside the timer
+			// callback, where there is no caller to catch it — Node surfaces
+			// it as an unhandled exception and the process crashes on
+			// teardown. Swallowing it here is correct because by the time the
+			// db is closed there is nothing meaningful to prune anyway.
+			this.pruneTicker = setInterval(() => {
+				try {
+					this.pruneExpired()
+				} catch {
+					/* db handle already closed by host shutdown — nothing to prune */
+				}
+			}, opts.runPruneTickerEverySeconds * 1000)
 			if (typeof this.pruneTicker.unref === 'function') this.pruneTicker.unref()
 		}
 	}
@@ -135,8 +150,17 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 		const row = this.stmts.select.get(key) as { devices_json: string; expires_at: number } | undefined
 		if (!row) return undefined
 		if (row.expires_at <= Date.now()) {
-			// Expired: delete and report miss to mimic NodeCache's TTL.
-			this.stmts.del.run(key)
+			// Lazy expiry — swallow SQLITE_BUSY so the lookup still reports a
+			// clean miss to the caller. NodeCache's `get()` never throws and
+			// this adapter is a drop-in replacement; surfacing a busy-error
+			// here breaks `messages-recv.ts`'s `incrementRetryAndGet` path
+			// which expects `undefined | number`, not an exception.
+			try {
+				this.stmts.del.run(key)
+			} catch {
+				/* lazy expiry only — leave the stale row for the prune ticker */
+			}
+
 			return undefined
 		}
 
@@ -160,6 +184,10 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 
 	del(key: string | string[]): number {
 		const keys = Array.isArray(key) ? key : [key]
+		// Fast path for the common single-key case (every NodeCache caller in
+		// messages-recv.ts passes one key) — avoids a BEGIN IMMEDIATE /
+		// COMMIT round-trip and the closure allocation for a single DELETE.
+		if (keys.length === 1) return this.stmts.del.run(keys[0]!).changes
 		// Reducer-based counter — see msg-retry-counter-adapter.ts for the
 		// rationale (closure-mutation would double-count under a future
 		// retry-wrapped transaction).
@@ -200,7 +228,12 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 			}
 		}
 
-		if (staleKeys.length > 0) this.mDelQuery.all([], staleKeys)
+		// Use `.run()` (not `.all()`) — the previous `.all()` worked at runtime
+		// but discarded the changes count and was semantically wrong for a
+		// DELETE statement. The change is invisible to callers (mget()'s
+		// return type doesn't expose deletion stats) but matches the SQLite
+		// statement-type contract.
+		if (staleKeys.length > 0) this.mDelQuery.run([], staleKeys)
 
 		return out
 	}

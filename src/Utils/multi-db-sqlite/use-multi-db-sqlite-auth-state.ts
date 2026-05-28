@@ -139,11 +139,16 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		}
 	})
 
-	const runSetWithBusyRetry = async (data: SignalDataSet): Promise<void> => {
+	// Generic SQLITE_BUSY retry helper. Was previously inlined in
+	// `runSetWithBusyRetry` only; extracted so `clear()` can use the same
+	// jittered-exponential-backoff against the `DELETE FROM jid_map` exec
+	// (which previously had no busy retry and would surface SQLITE_BUSY
+	// directly to the caller after the 5 s busy_timeout expired).
+	const runWithBusyRetry = async (label: string, work: () => void): Promise<void> => {
 		let lastError: unknown
 		for (let attempt = 0; attempt < MAX_BUSY_ATTEMPTS; attempt++) {
 			try {
-				applySetTx.immediate(data)
+				work()
 				return
 			} catch (err) {
 				const code = (err as { code?: string } | null)?.code
@@ -151,13 +156,16 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				lastError = err
 				const jitter = 0.5 + Math.random()
 				const delay = Math.floor(BUSY_RETRY_BASE_MS * Math.pow(2, attempt) * jitter)
-				opts.logger?.warn?.({ attempt: attempt + 1, delay, code }, 'multi-db-sqlite: SQLITE_BUSY, retrying')
+				opts.logger?.warn?.({ label, attempt: attempt + 1, delay, code }, 'multi-db-sqlite: SQLITE_BUSY, retrying')
 				await sleep(delay)
 			}
 		}
 
-		throw lastError ?? new Error('runSetWithBusyRetry: no attempts were made (MAX_BUSY_ATTEMPTS=0?)')
+		throw lastError ?? new Error(`runWithBusyRetry(${label}): no attempts were made (MAX_BUSY_ATTEMPTS=0?)`)
 	}
+
+	const runSetWithBusyRetry = (data: SignalDataSet): Promise<void> =>
+		runWithBusyRetry('signal_kv set', () => applySetTx.immediate(data))
 
 	const state: AuthenticationState = {
 		// Getter/setter pair so `state.creds = newObj` mutations are
@@ -221,8 +229,19 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				// `LIDMappingStore.storeMapping()` resolve on the same
 				// raw_string.
 				const msgstoreDb = store.handle('msgstore.db')
-				msgstoreDb.exec('DELETE FROM jid_map;')
-				signalStmts.clear.run()
+				// Wrap both DELETEs in the same busy-retry helper as
+				// `runSetWithBusyRetry`. Without it, `exec('DELETE FROM
+				// jid_map')` raised SQLITE_BUSY directly to the caller after
+				// the 5 s busy_timeout expired — under contention pressure
+				// (e.g. cleanup raced with a hot LIDMappingStore write) the
+				// session reset would abort and the caller usually doesn't
+				// handle the error. The two DELETEs are still issued in the
+				// documented order so the partial-crash recovery semantics
+				// above hold.
+				await runWithBusyRetry('clear', () => {
+					msgstoreDb.exec('DELETE FROM jid_map;')
+					signalStmts.clear.run()
+				})
 			},
 			list: async function* <T extends keyof SignalDataTypeMap>(
 				type: T

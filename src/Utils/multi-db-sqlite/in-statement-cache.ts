@@ -31,6 +31,14 @@ export interface InClauseQuery {
 	 * every chunk. The returned rows are concatenated in chunk order.
 	 */
 	all(leadingParams: ReadonlyArray<unknown>, inValues: ReadonlyArray<unknown>): unknown[]
+	/**
+	 * Same as `all()` but uses `stmt.run()` and returns the total `changes`
+	 * across every chunk. For INSERT/UPDATE/DELETE statements — calling
+	 * `.all()` works at runtime but is semantically wrong (DELETE has no
+	 * rows to "iterate") and discards the `changes` count callers might
+	 * want for metrics or assertions.
+	 */
+	run(leadingParams: ReadonlyArray<unknown>, inValues: ReadonlyArray<unknown>): number
 }
 
 export function prepareInClause(
@@ -68,6 +76,18 @@ export function prepareInClause(
 			}
 
 			return out
+		},
+		run(leadingParams, inValues) {
+			if (inValues.length === 0) return 0
+			let total = 0
+			for (let i = 0; i < inValues.length; i += chunkSize) {
+				const chunk = inValues.slice(i, i + chunkSize)
+				const stmt = getStmt(chunk.length)
+				const result = stmt.run(...leadingParams, ...chunk)
+				total += result.changes
+			}
+
+			return total
 		}
 	}
 }

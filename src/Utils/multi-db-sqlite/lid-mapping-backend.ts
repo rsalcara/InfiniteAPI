@@ -157,13 +157,26 @@ export class JidMapBackend {
 		})(jid)
 	}
 
-	/** Stores a single PN↔LID mapping. Idempotent. */
+	/**
+	 * Stores a single PN↔LID mapping. Idempotent.
+	 *
+	 * Wrapped in a transaction so the three operations (materialise LID row,
+	 * materialise PN row, upsert the map row) commit or roll back together.
+	 * Without the outer transaction a crash between `rowIdFor(lidUser)` and
+	 * `upsertMap.run()` would leave a freshly-inserted `jid` row with no
+	 * matching `jid_map` entry — silently orphaned and never garbage-
+	 * collected (nothing in the code path deletes orphan jid rows). When
+	 * called from `storeMappingsBatch` the outer wrapper is nested with
+	 * this one, which better-sqlite3 promotes to a SAVEPOINT — still safe.
+	 */
 	storeMapping(pnUser: string, lidUser: string): void {
-		const lidRowId = this.rowIdFor(lidUser)
-		const pnRowId = this.rowIdFor(pnUser)
-		// `Date.now()` as sort_id so the latest write wins on PN→LID lookups
-		// even if the mapping points back to an older LID (lower lid_row_id).
-		this.stmts.upsertMap.run(lidRowId, pnRowId, Date.now())
+		this.db.transaction(() => {
+			const lidRowId = this.rowIdFor(lidUser)
+			const pnRowId = this.rowIdFor(pnUser)
+			// `Date.now()` as sort_id so the latest write wins on PN→LID lookups
+			// even if the mapping points back to an older LID (lower lid_row_id).
+			this.stmts.upsertMap.run(lidRowId, pnRowId, Date.now())
+		})()
 	}
 
 	/** Stores N mappings atomically (single transaction). */

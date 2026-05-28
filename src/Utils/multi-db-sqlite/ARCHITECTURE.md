@@ -179,6 +179,24 @@ Approach (b) keeps the standard `better-sqlite3` binary so deployments
 without crypto requirements aren't forced into the SQLCipher build, and
 lets ops decide which columns are sensitive enough to encrypt.
 
+**Until 9.9 ships — operational requirements for `sessionDir`:**
+
+- The directory and all 13 `.db` files contain Signal Protocol private
+  keys, Noise transport keys, and session records in plaintext. Treat the
+  directory like an SSH private key directory.
+- Set filesystem permissions to owner-only (`chmod 600` on files,
+  `chmod 700` on the directory). The library does not chmod for you —
+  honouring the host umask is the right behaviour for a library, but ops
+  is on the hook to set it correctly.
+- Do not include `sessionDir` in container layer caches, image snapshots,
+  or generic backup buckets unless those targets are themselves
+  encrypted-at-rest with restricted ACLs. The single-file layout makes
+  accidental exfiltration easier than the legacy multi-file layout did.
+- Multi-tenant deployments: one `sessionDir` per session. Never share a
+  directory between two `makeWASocket` instances — the WAL locks
+  serialize correctly within a process but cross-process write conflicts
+  on `creds.db` are not handled.
+
 ### Phase 9.7 — App-state sync → `collection_versions` + `syncd_mutations`
 
 **Replaces:** the multi-file blob storage for app-state sync.

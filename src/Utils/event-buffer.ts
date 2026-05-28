@@ -50,6 +50,27 @@ export interface BufferConfig {
 }
 
 /**
+ * `parseInt('disabled', 10)` returns NaN. NaN flows into `setTimeout(fn,
+ * NaN)` which Node treats as 0 — turning the safety auto-flush into a
+ * tight event-loop spin. Same hazard for `setInterval` and for the
+ * `> threshold` comparisons elsewhere in this file (NaN comparisons are
+ * always false → checks silently disabled). These two helpers reject
+ * non-finite values so a malformed env var falls back to the documented
+ * default instead of poisoning the runtime.
+ */
+const parseIntEnv = (raw: string | undefined, fallback: number): number => {
+	if (raw === undefined || raw === '') return fallback
+	const n = parseInt(raw, 10)
+	return Number.isFinite(n) && n >= 0 ? n : fallback
+}
+
+const parseFloatEnv = (raw: string | undefined, fallback: number): number => {
+	if (raw === undefined || raw === '') return fallback
+	const n = parseFloat(raw)
+	return Number.isFinite(n) ? n : fallback
+}
+
+/**
  * Load buffer configuration from environment variables
  * Uses BAILEYS_BUFFER_* prefix for consistency
  */
@@ -58,16 +79,16 @@ export function loadBufferConfig(): BufferConfig {
 		// perf(inbound-latency): reduced from 15s → 3s so the safety auto-flush fires sooner.
 		// processNodeWithBuffer always calls ev.flush() explicitly (no-op for this timer),
 		// but socket.ts's offline-phase buffer and any stalled buffer benefit from the lower cap.
-		bufferTimeoutMs: parseInt(process.env.BAILEYS_BUFFER_TIMEOUT_MS || '3000', 10),
-		minBufferTimeoutMs: parseInt(process.env.BAILEYS_BUFFER_MIN_TIMEOUT_MS || '1000', 10),
-		maxBufferTimeoutMs: parseInt(process.env.BAILEYS_BUFFER_MAX_TIMEOUT_MS || '3000', 10),
-		maxHistoryCacheSize: parseInt(process.env.BAILEYS_BUFFER_MAX_HISTORY_CACHE || '10000', 10),
-		maxBufferSize: parseInt(process.env.BAILEYS_BUFFER_MAX_SIZE || '5000', 10),
-		flushDebounceMs: parseInt(process.env.BAILEYS_BUFFER_FLUSH_DEBOUNCE_MS || '10', 10),
+		bufferTimeoutMs: parseIntEnv(process.env.BAILEYS_BUFFER_TIMEOUT_MS, 3000),
+		minBufferTimeoutMs: parseIntEnv(process.env.BAILEYS_BUFFER_MIN_TIMEOUT_MS, 1000),
+		maxBufferTimeoutMs: parseIntEnv(process.env.BAILEYS_BUFFER_MAX_TIMEOUT_MS, 3000),
+		maxHistoryCacheSize: parseIntEnv(process.env.BAILEYS_BUFFER_MAX_HISTORY_CACHE, 10000),
+		maxBufferSize: parseIntEnv(process.env.BAILEYS_BUFFER_MAX_SIZE, 5000),
+		flushDebounceMs: parseIntEnv(process.env.BAILEYS_BUFFER_FLUSH_DEBOUNCE_MS, 10),
 		enableAdaptiveTimeout: process.env.BAILEYS_BUFFER_ADAPTIVE_TIMEOUT !== 'false',
 		enableMetrics: process.env.BAILEYS_BUFFER_METRICS === 'true' || process.env.BAILEYS_PROMETHEUS_ENABLED === 'true',
-		lruCleanupRatio: parseFloat(process.env.BAILEYS_BUFFER_LRU_CLEANUP_RATIO || '0.2'),
-		bufferWarnThreshold: parseFloat(process.env.BAILEYS_BUFFER_WARN_THRESHOLD || '0.8')
+		lruCleanupRatio: parseFloatEnv(process.env.BAILEYS_BUFFER_LRU_CLEANUP_RATIO, 0.2),
+		bufferWarnThreshold: parseFloatEnv(process.env.BAILEYS_BUFFER_WARN_THRESHOLD, 0.8)
 	}
 }
 
