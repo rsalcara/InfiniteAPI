@@ -112,4 +112,31 @@ CREATE TABLE IF NOT EXISTS message_quarantine (
 
 CREATE INDEX IF NOT EXISTS message_quarantine_chat_row_id_idx
   ON message_quarantine (chat_row_id);
+
+/* InfiniteAPI extension: auxiliary cache tables for the NodeCache-shaped
+   adapters (MsgRetryCounterSqliteAdapter, UserDeviceCacheSqliteAdapter).
+   They are colocated on msgstore.db (instead of axolotl.db) because they
+   are addressed by the same single-string key that messages-recv.ts /
+   messages-send.ts already use, and live next to the routing tables
+   (jid, jid_map, user_device) they cache. Owned by this schema file so
+   runMigrations can ALTER them in a future phase without a special-case
+   for "table created in adapter constructor". */
+CREATE TABLE IF NOT EXISTS msg_retry_counter (
+  key_id TEXT PRIMARY KEY,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  last_attempt INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS msg_retry_counter_expires_idx
+  ON msg_retry_counter (expires_at);
+
+CREATE TABLE IF NOT EXISTS user_device_cache_json (
+  user_jid TEXT PRIMARY KEY,
+  devices_json TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS user_device_cache_json_expires_idx
+  ON user_device_cache_json (expires_at);
 `

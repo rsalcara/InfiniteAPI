@@ -57,6 +57,14 @@ CREATE INDEX IF NOT EXISTS syncd_mutations_active_mutations_index
   ON syncd_mutations (are_dependencies_missing);
 CREATE INDEX IF NOT EXISTS syncd_mutations_active_mutations_chat_jid_index
   ON syncd_mutations (chat_jid, are_dependencies_missing);
+/* InfiniteAPI addition: the most common app-state scan is "give me all
+   ready mutations for collection X" — covered by this composite index. The
+   two indexes above do not cover this access pattern (their leftmost column
+   is are_dependencies_missing or chat_jid, never collection_name). Additive
+   index; does not change row semantics, so fidelity to the mobile schema is
+   preserved at the data layer. */
+CREATE INDEX IF NOT EXISTS syncd_mutations_collection_deps_index
+  ON syncd_mutations (collection_name, are_dependencies_missing);
 
 CREATE TABLE IF NOT EXISTS pending_mutations (
   _id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL DEFAULT 0,

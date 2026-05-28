@@ -35,17 +35,10 @@
 import { resolveExpiresAt } from './ttl-utils'
 import type { SqliteDbLike, SqliteStatementLike } from './types'
 
-const CREATE_AUX_TABLE_SQL = `
-CREATE TABLE IF NOT EXISTS msg_retry_counter (
-  key_id TEXT PRIMARY KEY,
-  retry_count INTEGER NOT NULL DEFAULT 0,
-  last_attempt INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS msg_retry_counter_expires_idx
-  ON msg_retry_counter (expires_at);
-`
+// `msg_retry_counter` is owned by `schemas/msgstore.ts` so it goes through
+// the same migration bookkeeping as the rest of the multi-DB store. The
+// adapter assumes the table already exists (MultiDbSqliteStore has opened
+// msgstore.db and run its schema by the time this adapter is constructed).
 
 export type MsgRetryCounterAdapterOptions = {
 	defaultTtlSeconds?: number
@@ -77,7 +70,6 @@ export class MsgRetryCounterSqliteAdapter implements CacheStoreShape {
 		this.db = db
 		this.defaultTtlMs = (opts.defaultTtlSeconds ?? 60 * 60) * 1000 // 1 hour default
 
-		this.db.exec(CREATE_AUX_TABLE_SQL)
 		this.stmts = {
 			select: this.db.prepare('SELECT retry_count, expires_at FROM msg_retry_counter WHERE key_id = ?'),
 			upsert: this.db.prepare(

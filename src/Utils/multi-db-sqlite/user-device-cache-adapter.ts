@@ -62,16 +62,11 @@ export interface NodeCacheLike {
 	flushAll(): void
 }
 
-const CREATE_AUX_TABLE_SQL = `
-CREATE TABLE IF NOT EXISTS user_device_cache_json (
-  user_jid TEXT PRIMARY KEY,
-  devices_json TEXT NOT NULL,
-  expires_at INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS user_device_cache_json_expires_idx
-  ON user_device_cache_json (expires_at);
-`
+// `user_device_cache_json` is owned by `schemas/msgstore.ts` so it goes
+// through the same migration bookkeeping as the rest of the multi-DB
+// store. The adapter assumes the table already exists (MultiDbSqliteStore
+// has opened msgstore.db and run its schema by the time this adapter is
+// constructed).
 
 const FLUSH_ALL_SQL = 'DELETE FROM user_device_cache_json'
 
@@ -112,7 +107,6 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 		this.db = db
 		this.defaultTtlMs = (opts.defaultTtlSeconds ?? 5 * 60) * 1000
 
-		this.db.exec(CREATE_AUX_TABLE_SQL)
 		this.stmts = {
 			select: this.db.prepare('SELECT devices_json, expires_at FROM user_device_cache_json WHERE user_jid = ?'),
 			upsert: this.db.prepare(
