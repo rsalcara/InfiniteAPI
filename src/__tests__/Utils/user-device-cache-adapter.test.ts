@@ -72,13 +72,13 @@ describe('UserDeviceCacheSqliteAdapter', () => {
 		expect(adapter.get('c')).toBeUndefined()
 	})
 
-	it('mget returns a record of all present keys', () => {
+	it('mget returns a record of all present keys', async () => {
 		const adapter = new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db'))
 		adapter.set('u1', ['d1'])
 		adapter.set('u2', ['d2'])
 		adapter.set('u3', ['d3'])
 
-		const got = adapter.mget(['u1', 'u2', 'u4'])
+		const got = await adapter.mget(['u1', 'u2', 'u4'])
 		expect(got).toEqual({ u1: ['d1'], u2: ['d2'] })
 	})
 
