@@ -37,19 +37,32 @@ export type MigrateAuthStateOptions = {
 	verify?: boolean
 }
 
+/**
+ * Compile-time check: the `_ALL_TYPES_MAP` literal MUST contain every key
+ * of `SignalDataTypeMap`. Adding a new signal-data type without listing it
+ * here causes a TS error on the `_ensureAllTypes` line below — the array
+ * passed to consumers can't drift behind the runtime types.
+ */
+const _ALL_TYPES_MAP = {
+	'pre-key': true,
+	session: true,
+	'sender-key': true,
+	'sender-key-memory': true,
+	'app-state-sync-key': true,
+	'app-state-sync-version': true,
+	'lid-mapping': true,
+	'device-list': true,
+	tctoken: true,
+	'identity-key': true
+} as const
+
+// Type-only assertion: if a new SignalDataTypeMap key is added without an
+// entry in `_ALL_TYPES_MAP`, TypeScript errors here on the assignment.
+const _ensureAllTypes: Record<keyof SignalDataTypeMap, true> = _ALL_TYPES_MAP
+void _ensureAllTypes
+
 /** Every record type that `migrateAuthState` will iterate. */
-const ALL_TYPES: ReadonlyArray<keyof SignalDataTypeMap> = [
-	'pre-key',
-	'session',
-	'sender-key',
-	'sender-key-memory',
-	'app-state-sync-key',
-	'app-state-sync-version',
-	'lid-mapping',
-	'device-list',
-	'tctoken',
-	'identity-key'
-]
+const ALL_TYPES = Object.keys(_ALL_TYPES_MAP) as ReadonlyArray<keyof SignalDataTypeMap>
 
 /**
  * Copy a full authentication state (creds + every signal key record) from one
@@ -247,8 +260,8 @@ async function verifyMigration(
 
 	let ok = true
 	for (const type of ALL_TYPES) {
-		const fromIds = await collectIds(from, type)
-		const toIds = await collectIds(to, type)
+		const fromIds = await collectIds(from, type, logger)
+		const toIds = await collectIds(to, type, logger)
 		// A null from `collectIds` means we couldn't enumerate that side at
 		// all — that's a verification gap, not a clean pass. Surface it as
 		// a warning and fail the overall verified flag.
@@ -281,7 +294,11 @@ async function verifyMigration(
 	return ok
 }
 
-async function collectIds(state: AuthenticationState, type: keyof SignalDataTypeMap): Promise<Set<string> | null> {
+async function collectIds(
+	state: AuthenticationState,
+	type: keyof SignalDataTypeMap,
+	logger?: ILogger
+): Promise<Set<string> | null> {
 	const out = new Set<string>()
 	try {
 		if (state.keys.listIds) {
@@ -293,7 +310,12 @@ async function collectIds(state: AuthenticationState, type: keyof SignalDataType
 		}
 
 		return out
-	} catch {
+	} catch (err) {
+		// Log the original error so the operator can distinguish "store
+		// doesn't expose listIds/list" (null) from a real failure here
+		// (locked db, corrupted file, etc.). The caller still treats null
+		// as "could not enumerate" but the diagnostic is preserved.
+		logger?.warn({ type, err }, 'collectIds: failed to enumerate signal-data type')
 		return null
 	}
 }

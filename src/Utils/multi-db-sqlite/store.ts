@@ -19,8 +19,17 @@
  * and those all live inside `axolotl.db`, so the trade-off is fine.
  */
 import type { ILogger } from '../logger'
+import { type Migration, runMigrations } from './schema-migrations'
 import { MULTI_DB_FILES, type MultiDbFile, SCHEMAS } from './schemas'
 import type { SqliteDbLike } from './types'
+
+/**
+ * Per-DB migration lists. Empty in the Phase 9 PR — the bookkeeping
+ * infrastructure is shipped so future PRs can append a `{ version, name,
+ * sql }` entry without retrofitting it at the point they need it. Each
+ * key in this record corresponds to a `MultiDbFile`.
+ */
+const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {}
 
 type DatabaseConstructor = typeof import('better-sqlite3')
 
@@ -151,6 +160,19 @@ export class MultiDbSqliteStore {
 				for (const pragma of DEFAULT_PRAGMAS) db.pragma(pragma)
 				for (const pragma of extra) db.pragma(pragma)
 				db.exec(SCHEMAS[file])
+				// Apply per-DB migrations after the base schema is in place.
+				// Empty list today, but the bookkeeping table is created on
+				// the first call so future migrations have somewhere to
+				// record their applied state.
+				const fileMigrations = MIGRATIONS[file]
+				if (fileMigrations && fileMigrations.length > 0) {
+					runMigrations(db as unknown as SqliteDbLike, fileMigrations)
+				} else {
+					// Still create the bookkeeping table so the first real
+					// migration in a future PR doesn't have to special-case
+					// "table doesn't exist yet" for already-deployed dbs.
+					runMigrations(db as unknown as SqliteDbLike, [])
+				}
 
 				// Abort check: if close() bumped the generation while we were
 				// in here, close this brand-new handle and stop. close() has
@@ -217,7 +239,14 @@ export class MultiDbSqliteStore {
 	 */
 	handle(file: MultiDbFile): SqliteDbLike {
 		const db = this.handles.get(file)
-		if (!db) throw new Error(`MultiDbSqliteStore: handle for "${file}" not opened (call .open() first)`)
+		if (!db) {
+			// Distinguish "never opened" from "already closed" so callers
+			// don't spend time chasing a missing `await store.open()` call
+			// when the real cause is a teardown that happened earlier.
+			const state = this.opened ? 'closed' : 'not yet opened (call .open() first)'
+			throw new Error(`MultiDbSqliteStore: handle for "${file}" is ${state}`)
+		}
+
 		return db
 	}
 

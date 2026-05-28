@@ -44,8 +44,7 @@ export type StoredQuarantineRow = QuarantineRecord & {
 
 export class MessageQuarantineBackend {
 	private readonly stmts: {
-		insert: SqliteStatementLike
-		incrementOnConflict: SqliteStatementLike
+		upsert: SqliteStatementLike
 		selectByKey: SqliteStatementLike
 		selectByChat: SqliteStatementLike
 		selectSince: SqliteStatementLike
@@ -58,20 +57,32 @@ export class MessageQuarantineBackend {
 	constructor(db: SqliteDbLike) {
 		this.db = db
 		this.stmts = {
-			insert: this.db.prepare(
+			// Single atomic UPSERT with RETURNING. The previous design used a
+			// transaction wrapping (UPDATE-then-INSERT-if-no-rows) but
+			// `db.transaction()` defaults to DEFERRED mode, so two callers
+			// across processes could both execute UPDATE → 0 changes, then
+			// both attempt INSERT — the second hitting `SQLITE_CONSTRAINT_
+			// UNIQUE` instead of falling through to a retry-count bump. The
+			// `busy_timeout` pragma only smooths `SQLITE_BUSY`, not UNIQUE
+			// violations. The conflict clause now does the increment in the
+			// same statement and `RETURNING` gives us the row's _id and
+			// final retry_count without a separate SELECT.
+			upsert: this.db.prepare(
 				'INSERT INTO message_quarantine ' +
 					'(key_id, from_me, chat_row_id, sender_jid_row_id, original_protobuf, serialized_stanza, ' +
 					'failure_reason, quarantined_at, retry_count) ' +
-					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-			),
-			incrementOnConflict: this.db.prepare(
-				'UPDATE message_quarantine SET retry_count = retry_count + 1, quarantined_at = ?, failure_reason = ? ' +
-					'WHERE key_id = ? AND from_me = ? AND chat_row_id = ? AND sender_jid_row_id = ?'
+					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1) ' +
+					'ON CONFLICT(key_id, from_me, chat_row_id, sender_jid_row_id) ' +
+					'DO UPDATE SET ' +
+					'  retry_count = retry_count + 1, ' +
+					'  quarantined_at = excluded.quarantined_at, ' +
+					'  failure_reason = excluded.failure_reason ' +
+					'RETURNING _id, retry_count'
 			),
 			selectByKey: this.db.prepare(
 				'SELECT _id, key_id, from_me, chat_row_id, sender_jid_row_id, original_protobuf, ' +
 					'serialized_stanza, failure_reason, quarantined_at, retry_count ' +
-					'FROM message_quarantine WHERE key_id = ? AND from_me = ? AND chat_row_id = ? AND sender_jid_row_id IS ?'
+					'FROM message_quarantine WHERE key_id = ? AND from_me = ? AND chat_row_id = ? AND sender_jid_row_id = ?'
 			),
 			selectByChat: this.db.prepare(
 				'SELECT _id, key_id, from_me, chat_row_id, sender_jid_row_id, original_protobuf, ' +
@@ -95,6 +106,9 @@ export class MessageQuarantineBackend {
 	 * Inserts a quarantine row, or increments `retry_count` on an existing
 	 * row matching the natural key. Returns the resulting row's id +
 	 * retry_count after the operation.
+	 *
+	 * Atomic via single UPSERT + RETURNING — no transaction wrapper needed
+	 * and no race window between the conflict check and the row read.
 	 */
 	quarantine(record: QuarantineRecord): { id: number; retryCount: number } {
 		const now = record.quarantinedAt ?? Date.now()
@@ -103,38 +117,18 @@ export class MessageQuarantineBackend {
 		// distinct under UNIQUE).
 		const sender = record.senderJidRowId ?? 0
 
-		const tx = this.db.transaction((rec: QuarantineRecord) => {
-			const incrementRes = this.stmts.incrementOnConflict.run(
-				now,
-				rec.failureReason ?? null,
-				rec.keyId,
-				rec.fromMe ? 1 : 0,
-				rec.chatRowId,
-				sender
-			)
-			if (incrementRes.changes > 0) {
-				const existing = this.stmts.selectByKey.get(rec.keyId, rec.fromMe ? 1 : 0, rec.chatRowId, sender) as {
-					_id: number
-					retry_count: number
-				}
-				return { id: existing._id, retryCount: existing.retry_count }
-			}
+		const row = this.stmts.upsert.get(
+			record.keyId,
+			record.fromMe ? 1 : 0,
+			record.chatRowId,
+			sender,
+			record.originalProtobuf ?? null,
+			record.serializedStanza ?? null,
+			record.failureReason ?? null,
+			now
+		) as { _id: number; retry_count: number }
 
-			const insertRes = this.stmts.insert.run(
-				rec.keyId,
-				rec.fromMe ? 1 : 0,
-				rec.chatRowId,
-				sender,
-				rec.originalProtobuf ?? null,
-				rec.serializedStanza ?? null,
-				rec.failureReason ?? null,
-				now,
-				1 // initial retry_count
-			)
-			return { id: Number(insertRes.lastInsertRowid), retryCount: 1 }
-		})
-
-		return tx(record)
+		return { id: row._id, retryCount: row.retry_count }
 	}
 
 	/** Returns the quarantine row matching the natural key, or `null`. */

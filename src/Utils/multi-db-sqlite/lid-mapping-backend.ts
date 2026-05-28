@@ -16,6 +16,7 @@
  * The {@link wrapKeysWithJidMap} helper plugs this typed backend into that
  * key-store interface without changing the LIDMappingStore at all.
  */
+import { type InClauseQuery, prepareInClause } from './in-statement-cache'
 import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 const REVERSE_SUFFIX = '_reverse'
@@ -36,6 +37,21 @@ export class JidMapBackend {
 	}
 
 	private readonly db: SqliteDbLike
+
+	/**
+	 * Cached `IN (…)` queries for the batch lookups. `prepareInClause`
+	 * holds at most two prepared statements per query (full chunk + one
+	 * trailing chunk) so the hot path doesn't pay `db.prepare()` per call.
+	 * Without this, every `LIDMappingStore.batchResolvePn()` call (~100
+	 * recipients) compiled a brand-new statement that leaked native memory
+	 * until V8 collected the JS wrapper.
+	 *
+	 * Uses SQLite window functions (`ROW_NUMBER() OVER PARTITION BY`) for
+	 * the PN→LID "most recent" pick — eliminates the correlated subquery
+	 * the previous version had (which scanned the table per row).
+	 */
+	private readonly batchLidForPnQuery: InClauseQuery
+	private readonly batchPnForLidQuery: InClauseQuery
 
 	constructor(db: SqliteDbLike) {
 		// Both the field and the parameter use the local structural
@@ -90,15 +106,55 @@ export class JidMapBackend {
 					'WHERE j_pn.raw_string = ? ORDER BY m.sort_id DESC LIMIT 1'
 			)
 		}
+
+		// Window-function variant of the "most recent LID per PN" pick.
+		// `ROW_NUMBER() OVER PARTITION BY jid_row_id ORDER BY sort_id DESC`
+		// runs in a single pass, avoiding the correlated subquery that
+		// scanned `jid_map` once per result row.
+		this.batchLidForPnQuery = prepareInClause(
+			this.db,
+			'WITH ranked AS ( ' +
+				'  SELECT m.lid_row_id, m.jid_row_id, ' +
+				'         ROW_NUMBER() OVER (PARTITION BY m.jid_row_id ORDER BY m.sort_id DESC) AS rn ' +
+				'  FROM jid_map m ' +
+				'  JOIN jid j_pn ON j_pn._id = m.jid_row_id ' +
+				'  WHERE j_pn.raw_string IN (',
+			') ) ' +
+				'SELECT j_pn.raw_string AS pn, j.raw_string AS lid ' +
+				'FROM ranked r ' +
+				'JOIN jid j ON j._id = r.lid_row_id ' +
+				'JOIN jid j_pn ON j_pn._id = r.jid_row_id ' +
+				'WHERE r.rn = 1'
+		)
+		this.batchPnForLidQuery = prepareInClause(
+			this.db,
+			'SELECT j_lid.raw_string AS lid, j_pn.raw_string AS pn FROM jid_map m ' +
+				'JOIN jid j_lid ON j_lid._id = m.lid_row_id ' +
+				'JOIN jid j_pn ON j_pn._id = m.jid_row_id ' +
+				'WHERE j_lid.raw_string IN (',
+			')'
+		)
 	}
 
-	/** Upserts the JID row and returns its `_id`. */
+	/**
+	 * Upserts the JID row and returns its `_id`.
+	 *
+	 * Wrapped in a transaction so the `INSERT ... ON CONFLICT DO NOTHING` +
+	 * subsequent `SELECT _id` are atomic against any concurrent writer.
+	 * Without the transaction, a deletion landing between the two
+	 * statements would surface the row as "not materialized" and the
+	 * caller would see a misleading `failed to materialize jid row` error.
+	 * The `jid` table is not deleted by today's code paths, so this is
+	 * defensive — but cheap enough to keep the invariant explicit.
+	 */
 	private rowIdFor(jid: string): number {
 		const decoded = decodeJid(jid)
-		this.stmts.insertJid.run(jid, decoded.user, decoded.server, decoded.typeHint)
-		const row = this.stmts.selectJidIdByRaw.get(jid) as { _id: number } | undefined
-		if (!row) throw new Error(`JidMapBackend: failed to materialize jid row for "${jid}"`)
-		return row._id
+		return this.db.transaction((rawString: string): number => {
+			this.stmts.insertJid.run(rawString, decoded.user, decoded.server, decoded.typeHint)
+			const row = this.stmts.selectJidIdByRaw.get(rawString) as { _id: number } | undefined
+			if (!row) throw new Error(`JidMapBackend: failed to materialize jid row for "${rawString}"`)
+			return row._id
+		})(jid)
 	}
 
 	/** Stores a single PN↔LID mapping. Idempotent. */
@@ -140,49 +196,16 @@ export class JidMapBackend {
 	 */
 	batchGetLidForPn(pnUsers: string[]): Record<string, string> {
 		const out: Record<string, string> = {}
-		if (pnUsers.length === 0) return out
-
-		const CHUNK = 500
-		for (let i = 0; i < pnUsers.length; i += CHUNK) {
-			const chunk = pnUsers.slice(i, i + CHUNK)
-			const placeholders = chunk.map(() => '?').join(',')
-			// For each PN, surface the LAST-WRITTEN mapping (highest sort_id).
-			// `sort_id` is now Date.now() on every `storeMapping()` upsert,
-			// so MAX(sort_id) = most recent write — matches the single-row
-			// `selectLidByPn` "last write wins" semantics that the legacy
-			// opaque key-value store had. Using `lid_row_id` here was wrong
-			// because it tracks allocation order, not write order.
-			const sql =
-				'SELECT j_pn.raw_string AS pn, j.raw_string AS lid FROM jid_map m ' +
-				'JOIN jid j ON j._id = m.lid_row_id ' +
-				'JOIN jid j_pn ON j_pn._id = m.jid_row_id ' +
-				`WHERE j_pn.raw_string IN (${placeholders}) ` +
-				'AND m.sort_id = (SELECT MAX(m2.sort_id) FROM jid_map m2 WHERE m2.jid_row_id = m.jid_row_id)'
-			const rows = this.db.prepare(sql).all(...chunk) as Array<{ pn: string; lid: string }>
-			for (const r of rows) out[r.pn] = r.lid
-		}
-
+		const rows = this.batchLidForPnQuery.all([], pnUsers) as Array<{ pn: string; lid: string }>
+		for (const r of rows) out[r.pn] = r.lid
 		return out
 	}
 
 	/** Batch lookup: input list of LIDs → record of those that resolved. */
 	batchGetPnForLid(lidUsers: string[]): Record<string, string> {
 		const out: Record<string, string> = {}
-		if (lidUsers.length === 0) return out
-
-		const CHUNK = 500
-		for (let i = 0; i < lidUsers.length; i += CHUNK) {
-			const chunk = lidUsers.slice(i, i + CHUNK)
-			const placeholders = chunk.map(() => '?').join(',')
-			const sql =
-				'SELECT j_lid.raw_string AS lid, j_pn.raw_string AS pn FROM jid_map m ' +
-				'JOIN jid j_lid ON j_lid._id = m.lid_row_id ' +
-				'JOIN jid j_pn ON j_pn._id = m.jid_row_id ' +
-				`WHERE j_lid.raw_string IN (${placeholders})`
-			const rows = this.db.prepare(sql).all(...chunk) as Array<{ lid: string; pn: string }>
-			for (const r of rows) out[r.lid] = r.pn
-		}
-
+		const rows = this.batchPnForLidQuery.all([], lidUsers) as Array<{ lid: string; pn: string }>
+		for (const r of rows) out[r.lid] = r.pn
 		return out
 	}
 }

@@ -3,6 +3,7 @@ import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDat
 import { initAuthCreds } from '../auth-utils'
 import { BufferJSON } from '../generics'
 import type { ILogger } from '../logger'
+import { prepareInClause } from './in-statement-cache'
 import { MultiDbSqliteStore, type MultiDbSqliteStoreOptions } from './store'
 
 const CREDS_ROW_KEY = '__creds__'
@@ -105,9 +106,22 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		throw err
 	}
 
+	// Wrap `creds` in a ref so a caller that REASSIGNS `state.creds = newObj`
+	// (instead of mutating in place) gets that change persisted by
+	// `saveCreds()`. Without this indirection, `persistCreds(creds)` would
+	// always serialize the originally-loaded credentials object.
+	const credsRef: { current: AuthenticationCreds } = { current: creds }
 	const persistCreds = (): void => {
-		credsStmts.upsert.run(CREDS_ROW_KEY, JSON.stringify(creds, BufferJSON.replacer), Date.now())
+		credsStmts.upsert.run(CREDS_ROW_KEY, JSON.stringify(credsRef.current, BufferJSON.replacer), Date.now())
 	}
+
+	// Cached batched `IN (…)` SELECT — see use-sqlite-auth-state.ts for
+	// rationale (one round-trip per batched get instead of N).
+	const signalGetIn = prepareInClause(
+		store.handle('axolotl.db'),
+		'SELECT id, value FROM signal_kv WHERE type = ? AND id IN (',
+		')'
+	)
 
 	const applySetTx = store.handle('axolotl.db').transaction((data: SignalDataSet) => {
 		for (const category in data) {
@@ -142,23 +156,32 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			}
 		}
 
-		throw lastError
+		throw lastError ?? new Error('runSetWithBusyRetry: no attempts were made (MAX_BUSY_ATTEMPTS=0?)')
 	}
 
 	const state: AuthenticationState = {
-		creds,
+		// Getter/setter pair so `state.creds = newObj` mutations are
+		// observed by `saveCreds()` via the shared `credsRef`. Callers that
+		// only mutate fields in place (`state.creds.advSecretKey = …`)
+		// continue to work too — both paths land on `credsRef.current`.
+		get creds() {
+			return credsRef.current
+		},
+		set creds(value: AuthenticationCreds) {
+			credsRef.current = value
+		},
 		keys: {
 			get: async (type, ids) => {
 				const out: { [_: string]: SignalDataTypeMap[typeof type] } = {}
-				for (const id of ids) {
-					const row = signalStmts.select.get(type, id) as { value: string } | undefined
-					if (!row) continue
+				if (ids.length === 0) return out
+				const rows = signalGetIn.all([type], ids) as Array<{ id: string; value: string }>
+				for (const row of rows) {
 					let parsed = JSON.parse(row.value, BufferJSON.reviver)
 					if (type === 'app-state-sync-key' && parsed) {
 						parsed = proto.Message.AppStateSyncKeyData.fromObject(parsed)
 					}
 
-					out[id] = parsed as SignalDataTypeMap[typeof type]
+					out[row.id] = parsed as SignalDataTypeMap[typeof type]
 				}
 
 				return out
@@ -167,25 +190,39 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				await runSetWithBusyRetry(data)
 			},
 			clear: async () => {
-				signalStmts.clear.run()
-				// LID mappings now live in msgstore.db.jid_map (phase 9.1),
-				// not in signal_kv. A reset/wipe that only nukes signal_kv
-				// would leave the LID↔PN mappings behind, which can cause
-				// the LIDMappingStore (in-RAM LRU + retry) to surface
-				// stale resolutions for previously-known contacts after a
-				// "clear all keys" event.
+				// Order matters here because cross-file transactions are NOT
+				// ACID in SQLite — `clear()` writes to two physical .db files
+				// (axolotl.db.signal_kv + msgstore.db.jid_map). If the
+				// process crashes between the two DELETEs, the partially-
+				// completed state must be RECOVERABLE on the next startup.
 				//
-				// Only `jid_map` is cleared here — NOT the shared `jid` table.
-				// Other msgstore tables (`user_device.user_jid_row_id`,
-				// `user_device_info.user_jid_row_id`, `message_orphaned_edit.
-				// chat_row_id`, etc.) hold row-id references into `jid`, and
-				// deleting `jid` rows would orphan them into an inconsistent
-				// state. The `jid` rows are cheap to keep — they're only
-				// addresses, not session material — and are reused naturally
-				// by the next `LIDMappingStore.storeMapping()` call that
-				// resolves to the same raw_string.
+				// We clear `jid_map` FIRST. If we crash now:
+				//   - msgstore.jid_map is empty (no stale LID mappings)
+				//   - axolotl.signal_kv still has Signal keys
+				//   - on next start, `initAuthCreds()` only runs when creds.db
+				//     is empty, so existing creds are loaded; the leftover
+				//     Signal keys in signal_kv will be naturally overwritten
+				//     by the next session establishment. NOT catastrophic.
+				//
+				// If we cleared `signal_kv` first and crashed:
+				//   - axolotl.signal_kv is empty (Signal session lost)
+				//   - msgstore.jid_map STILL has LID mappings pointing at the
+				//     old session — `LIDMappingStore` would resolve contacts
+				//     to LIDs whose sessions no longer exist, breaking
+				//     encryption for those contacts until a fresh
+				//     `storeMapping()` overwrites them.
+				//
+				// Only `jid_map` is cleared, NOT the shared `jid` table:
+				// other msgstore tables (`user_device.user_jid_row_id`,
+				// `user_device_info.user_jid_row_id`,
+				// `message_orphaned_edit.chat_row_id`) hold row-id
+				// references into `jid`. Deleting `jid` rows would orphan
+				// them. `jid` rows are reused naturally by the next
+				// `LIDMappingStore.storeMapping()` resolve on the same
+				// raw_string.
 				const msgstoreDb = store.handle('msgstore.db')
 				msgstoreDb.exec('DELETE FROM jid_map;')
+				signalStmts.clear.run()
 			},
 			list: async function* <T extends keyof SignalDataTypeMap>(
 				type: T

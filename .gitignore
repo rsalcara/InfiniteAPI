@@ -22,3 +22,4 @@ coverage
 AUDIT_REPORT_*.md
 logs_analise/
 .claude/
+tsconfig.tsbuildinfo

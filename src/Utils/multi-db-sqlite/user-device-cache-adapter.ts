@@ -29,6 +29,8 @@
  *     (an opt-in `runPruneTickerEverySeconds` constructor option does
  *     this automatically).
  */
+import { type InClauseQuery, prepareInClause } from './in-statement-cache'
+import { resolveExpiresAt } from './ttl-utils'
 import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 export type NodeCacheCompatibleEntry = unknown
@@ -73,38 +75,6 @@ CREATE INDEX IF NOT EXISTS user_device_cache_json_expires_idx
 
 const FLUSH_ALL_SQL = 'DELETE FROM user_device_cache_json'
 
-/**
- * Parses a NodeCache-style TTL string ("35m", "1h", "30s", "1d") into
- * milliseconds. Returns `null` if the input is not a recognized shape so
- * the caller can fall back to the default TTL.
- */
-function parseTtlString(ttl: string): number | null {
-	const m = /^(\d+)\s*([smhd])?$/i.exec(ttl.trim())
-	if (!m) return null
-	const n = Number(m[1])
-	if (!Number.isFinite(n)) return null
-	const unit = (m[2] ?? 's').toLowerCase()
-	switch (unit) {
-		case 's':
-			return n * 1000
-		case 'm':
-			return n * 60_000
-		case 'h':
-			return n * 3_600_000
-		case 'd':
-			return n * 86_400_000
-		default:
-			return null
-	}
-}
-
-// Year-9999 in epoch milliseconds. Used as `expires_at` for entries
-// written with `ttl=0` (NodeCache convention for "never expire"). Picking
-// a fixed huge value keeps the column NOT NULL and the read path simple:
-// `expires_at <= Date.now()` returns false until well past any realistic
-// runtime, while bookkeeping (pruneExpired) still treats it as live.
-const NO_EXPIRY_SENTINEL = 253_402_300_799_000
-
 export type UserDeviceCacheAdapterOptions = {
 	/** Default TTL applied to entries written without an explicit TTL (seconds). */
 	defaultTtlSeconds?: number
@@ -134,6 +104,9 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 	private pruneTicker?: NodeJS.Timeout
 
 	private readonly db: SqliteDbLike
+	/** Cached `IN (…)` queries for `mget` (and its companion bulk delete). */
+	private readonly mgetQuery: InClauseQuery
+	private readonly mDelQuery: InClauseQuery
 
 	constructor(db: SqliteDbLike, opts: UserDeviceCacheAdapterOptions = {}) {
 		this.db = db
@@ -150,6 +123,13 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 			prune: this.db.prepare('DELETE FROM user_device_cache_json WHERE expires_at <= ?'),
 			flushAll: this.db.prepare(FLUSH_ALL_SQL)
 		}
+
+		this.mgetQuery = prepareInClause(
+			this.db,
+			'SELECT user_jid, devices_json, expires_at FROM user_device_cache_json WHERE user_jid IN (',
+			')'
+		)
+		this.mDelQuery = prepareInClause(this.db, 'DELETE FROM user_device_cache_json WHERE user_jid IN (', ')')
 
 		if (opts.runPruneTickerEverySeconds && opts.runPruneTickerEverySeconds > 0) {
 			this.pruneTicker = setInterval(() => this.pruneExpired(), opts.runPruneTickerEverySeconds * 1000)
@@ -179,82 +159,54 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 	}
 
 	set(key: string, value: NodeCacheCompatibleEntry, ttl?: number | string): boolean {
-		let expiresAt: number
-		if (typeof ttl === 'number') {
-			// NodeCache compat: ttl === 0 means "never expire". Encode that
-			// as a far-future timestamp so we don't need a nullable column
-			// and a NULL-aware check on every get/mget hot-path read.
-			expiresAt = ttl === 0 ? NO_EXPIRY_SENTINEL : Date.now() + ttl * 1000
-		} else if (typeof ttl === 'string') {
-			// NodeCache also accepts string-formatted TTLs like "35m", "1h",
-			// "30s". Parse explicitly; fall back to the default if the
-			// string is malformed (mirrors NodeCache's defensive behavior).
-			const parsed = parseTtlString(ttl)
-			expiresAt = parsed === null ? Date.now() + this.defaultTtlMs : Date.now() + parsed
-		} else {
-			expiresAt = Date.now() + this.defaultTtlMs
-		}
-
+		const expiresAt = resolveExpiresAt(ttl, this.defaultTtlMs)
 		this.stmts.upsert.run(key, JSON.stringify(value), expiresAt)
 		return true
 	}
 
 	del(key: string | string[]): number {
 		const keys = Array.isArray(key) ? key : [key]
-		let n = 0
-		const tx = this.db.transaction((keys: string[]) => {
-			for (const k of keys) {
-				const r = this.stmts.del.run(k)
-				n += r.changes
-			}
-		})
-		tx(keys)
-		return n
+		// Reducer-based counter — see msg-retry-counter-adapter.ts for the
+		// rationale (closure-mutation would double-count under a future
+		// retry-wrapped transaction).
+		const tx = this.db.transaction((batch: string[]) =>
+			batch.reduce((acc, k) => acc + this.stmts.del.run(k).changes, 0)
+		)
+		return tx(keys)
 	}
 
 	async mget<T = NodeCacheCompatibleEntry>(keys: string[]): Promise<Record<string, T | undefined>> {
 		const out: Record<string, T | undefined> = {}
 		if (keys.length === 0) return out
 
-		// Batched SELECT replaces N point selects on the hot path
-		// (`messages-send.ts` calls `mget` with every recipient of a fan-out
-		// at once). SQLite's default `SQLITE_LIMIT_VARIABLE_NUMBER` is 999;
-		// large fan-outs would otherwise hit "too many SQL variables". We
-		// chunk `keys` into safe batches and stitch the results in memory.
-		// 500 leaves headroom for any DELETE-side IN list reused below.
-		const CHUNK = 500
+		// Cached IN-clause statements (`mgetQuery` + `mDelQuery`) replace
+		// what previously was ad-hoc `db.prepare()` per chunk. `prepareInClause`
+		// caches by placeholder count, so the hot path pays at most one
+		// compilation per unique chunk size (default chunk 500 → 1 cache
+		// entry covers 99% of calls). Stops the gradual native-memory
+		// growth that the per-call prepare pattern caused.
 		const now = Date.now()
 		const staleKeys: string[] = []
-		for (let i = 0; i < keys.length; i += CHUNK) {
-			const chunk = keys.slice(i, i + CHUNK)
-			const placeholders = chunk.map(() => '?').join(',')
-			const rows = this.db
-				.prepare(
-					`SELECT user_jid, devices_json, expires_at FROM user_device_cache_json WHERE user_jid IN (${placeholders})`
-				)
-				.all(...chunk) as Array<{ user_jid: string; devices_json: string; expires_at: number }>
-			for (const r of rows) {
-				if (r.expires_at <= now) {
-					staleKeys.push(r.user_jid)
-					continue
-				}
+		const rows = this.mgetQuery.all([], keys) as Array<{
+			user_jid: string
+			devices_json: string
+			expires_at: number
+		}>
+		for (const r of rows) {
+			if (r.expires_at <= now) {
+				staleKeys.push(r.user_jid)
+				continue
+			}
 
-				try {
-					out[r.user_jid] = JSON.parse(r.devices_json) as T
-				} catch {
-					// Corrupted JSON — drop the row, report a miss for this key.
-					staleKeys.push(r.user_jid)
-				}
+			try {
+				out[r.user_jid] = JSON.parse(r.devices_json) as T
+			} catch {
+				// Corrupted JSON — drop the row, report a miss for this key.
+				staleKeys.push(r.user_jid)
 			}
 		}
 
-		// Delete stale/corrupt rows in the same chunked manner so the
-		// cleanup statement never exceeds the variable limit either.
-		for (let i = 0; i < staleKeys.length; i += CHUNK) {
-			const chunk = staleKeys.slice(i, i + CHUNK)
-			const stalePlaceholders = chunk.map(() => '?').join(',')
-			this.db.prepare(`DELETE FROM user_device_cache_json WHERE user_jid IN (${stalePlaceholders})`).run(...chunk)
-		}
+		if (staleKeys.length > 0) this.mDelQuery.all([], staleKeys)
 
 		return out
 	}

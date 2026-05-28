@@ -11,6 +11,7 @@
 import type BetterSqlite3Module from 'better-sqlite3'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDataTypeMap } from '../Types'
+import { prepareInClause } from './multi-db-sqlite/in-statement-cache'
 import { initAuthCreds } from './auth-utils'
 import { BufferJSON } from './generics'
 import type { ILogger } from './logger'
@@ -233,6 +234,15 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 			keyList: db.prepare('SELECT id, value FROM signal_keys WHERE type = ?'),
 			clearKeys: db.prepare('DELETE FROM signal_keys')
 		}
+		// Cached batched `IN (…)` SELECT so a multi-id `keys.get(type, [a, b, c])`
+		// lands as one round-trip instead of N point selects. The legacy loop
+		// over `stmts.keySelect.get(type, id)` was a real fan-out cost on
+		// group sends with ≥10 recipients.
+		const keySelectIn = prepareInClause(
+			db as unknown as Parameters<typeof prepareInClause>[0],
+			'SELECT id, value FROM signal_keys WHERE type = ? AND id IN (',
+			')'
+		)
 
 		const loadCreds = (): AuthenticationCreds => {
 			const row = stmts.credsSelect.get(CREDS_ROW_KEY) as { value: string } | undefined
@@ -247,13 +257,25 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 				// stack with no indication of WHICH database / row failed.
 				// `cause` preserves the original parse exception so any
 				// existing handler chain still sees it.
-				const error = new Error(
-					`Auth state SQLite creds row is corrupt or unreadable (dbPath=${opts.dbPath}, key=${CREDS_ROW_KEY})`
+				//
+				// SEC fix: `dbPath` is logged INTERNALLY via the logger (which
+				// goes to the operator's own structured logs) but NOT included
+				// in the thrown Error's `message`. Session paths often encode
+				// user identifiers (`/sessions/<userId>/creds.db`), and
+				// external aggregators (Sentry, DataDog) routinely capture
+				// `error.message` — keeping the path out of that string keeps
+				// the identifier out of third-party logging surfaces.
+				opts.logger?.error(
+					{ dbPath: opts.dbPath, rowKey: CREDS_ROW_KEY, cause },
+					'sqlite-auth-state: creds row corrupt or unreadable'
 				)
+				const error = new Error(`Auth state SQLite creds row is corrupt or unreadable (key=${CREDS_ROW_KEY})`)
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				;(error as any).cause = cause
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				;(error as any).dbPath = opts.dbPath
+				// `dbPath` intentionally NOT attached to the Error object —
+				// see the logger.error() above. Operators inspecting the
+				// thrown Error get the row key without leaking session paths
+				// into external structured logs.
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				;(error as any).rowKey = CREDS_ROW_KEY
 				throw error
@@ -336,8 +358,11 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 				}
 			}
 
-			// Defensive — loop above always either returns or throws.
-			throw lastError
+			// Defensive — loop above always either returns or throws when
+			// MAX_BUSY_ATTEMPTS >= 1. The fallback `Error` covers the
+			// impossible-today MAX_BUSY_ATTEMPTS=0 path so handlers that
+			// look at `err.message`/`err.stack` never see `undefined`.
+			throw lastError ?? new Error('runSetWithBusyRetry: no attempts were made (MAX_BUSY_ATTEMPTS=0?)')
 		}
 
 		// `db` is captured by `close` below; the non-null narrowing inside this
@@ -349,22 +374,28 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 		// inspector sidecar). Capture ownership at init time so `close()`
 		// only acts on handles we opened ourselves.
 		const closeOwnsDb = ownsDb
+		const stateRef: { creds: AuthenticationCreds } = { creds }
 		return {
 			state: {
-				creds,
+				get creds() {
+					return stateRef.creds
+				},
+				set creds(value: AuthenticationCreds) {
+					stateRef.creds = value
+				},
 				keys: {
 					get: async (type, ids) => {
 						const out: Record<string, SignalDataTypeMap[typeof type]> = {}
-						for (const id of ids) {
-							const row = stmts.keySelect.get(type, id) as { value: string } | undefined
-							if (!row) continue
+						if (ids.length === 0) return out
+						const rows = keySelectIn.all([type], ids) as Array<{ id: string; value: string }>
+						for (const row of rows) {
 							// eslint-disable-next-line @typescript-eslint/no-explicit-any
 							let value: any = JSON.parse(row.value, BufferJSON.reviver)
 							if (type === 'app-state-sync-key' && value) {
 								value = proto.Message.AppStateSyncKeyData.fromObject(value)
 							}
 
-							out[id] = value as SignalDataTypeMap[typeof type]
+							out[row.id] = value as SignalDataTypeMap[typeof type]
 						}
 
 						return out
@@ -396,7 +427,12 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 				}
 			},
 			saveCreds: async () => {
-				persistCreds(creds)
+				// Read through the stateRef so a caller that REASSIGNS
+				// `state.creds = newObj` (instead of mutating in place) is
+				// honored — without this, the original `creds` captured in
+				// the closure would silently shadow the new object and
+				// `persistCreds(creds)` would serialize stale credentials.
+				persistCreds(stateRef.creds)
 			},
 			close: () => {
 				if (closeOwnsDb) {

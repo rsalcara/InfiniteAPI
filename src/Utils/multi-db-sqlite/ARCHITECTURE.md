@@ -156,6 +156,29 @@ preserves this gateway-specific behavior and does not force a change.
 incoming_tc_token_timestamp)` + `wa_trusted_contacts_send(jid,
 sent_tc_token_timestamp, real_issue_timestamp)`.
 
+### Phase 9.9 — Encryption-at-rest (NEW, planned)
+
+**Replaces:** the current plaintext JSON storage of Signal Protocol keys
+in `axolotl.db.signal_kv.value` and creds in `creds.db.creds.value`.
+
+**Motivation:** The multi-DB layer consolidates session material that
+`useMultiFileAuthState` previously spread across N small JSON files. A
+single `axolotl.db` file is much easier to exfiltrate (e.g. via accidental
+S3 backup exposure or container filesystem snapshot) than a directory of
+named files, so the same data benefits from encryption-at-rest more here
+than it did under the multi-file backend.
+
+**Schema target:** either (a) wrap `better-sqlite3` with SQLCipher, gating
+its presence behind a new optional peer dep, or (b) implement
+envelope-encryption on the BLOB columns themselves (`signal_kv.value`,
+`sessions.record`, `creds.value`, `signal_identities.public_key`,
+`signal_identities.private_key`) using a key derived from a
+process-supplied passphrase + per-session salt stored alongside `creds.db`.
+
+Approach (b) keeps the standard `better-sqlite3` binary so deployments
+without crypto requirements aren't forced into the SQLCipher build, and
+lets ops decide which columns are sensitive enough to encrypt.
+
 ### Phase 9.7 — App-state sync → `collection_versions` + `syncd_mutations`
 
 **Replaces:** the multi-file blob storage for app-state sync.

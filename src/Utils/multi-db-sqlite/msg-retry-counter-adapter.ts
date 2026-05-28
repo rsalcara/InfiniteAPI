@@ -32,36 +32,8 @@
  *      would require an atomic `INSERT ... ON CONFLICT DO UPDATE SET
  *      retry_count = retry_count + 1` and is tracked for phase 9.3.1.
  */
+import { resolveExpiresAt } from './ttl-utils'
 import type { SqliteDbLike, SqliteStatementLike } from './types'
-
-// Year-9999 epoch ms — NodeCache `ttl=0` means "never expire", which we
-// encode as a fixed far-future `expires_at` so the read path stays NULL-
-// free and the column stays NOT NULL.
-const NO_EXPIRY_SENTINEL = 253_402_300_799_000
-
-/**
- * Parses a NodeCache-style TTL string ("35m", "1h", etc.) into ms.
- * Returns `null` if the input is malformed.
- */
-function parseTtlString(ttl: string): number | null {
-	const m = /^(\d+)\s*([smhd])?$/i.exec(ttl.trim())
-	if (!m) return null
-	const n = Number(m[1])
-	if (!Number.isFinite(n)) return null
-	const unit = (m[2] ?? 's').toLowerCase()
-	switch (unit) {
-		case 's':
-			return n * 1000
-		case 'm':
-			return n * 60_000
-		case 'h':
-			return n * 3_600_000
-		case 'd':
-			return n * 86_400_000
-		default:
-			return null
-	}
-}
 
 const CREATE_AUX_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS msg_retry_counter (
@@ -139,33 +111,22 @@ export class MsgRetryCounterSqliteAdapter implements CacheStoreShape {
 		const now = Date.now()
 		const count = Number(value)
 		if (!Number.isFinite(count)) return false
-		let expiresAt: number
-		if (typeof ttl === 'number') {
-			// NodeCache compat: ttl === 0 means "never expire".
-			expiresAt = ttl === 0 ? NO_EXPIRY_SENTINEL : now + ttl * 1000
-		} else if (typeof ttl === 'string') {
-			// NodeCache also accepts strings like "35m", "1h", "30s".
-			const parsed = parseTtlString(ttl)
-			expiresAt = parsed === null ? now + this.defaultTtlMs : now + parsed
-		} else {
-			expiresAt = now + this.defaultTtlMs
-		}
-
+		const expiresAt = resolveExpiresAt(ttl, this.defaultTtlMs, now)
 		this.stmts.upsert.run(key, count, now, expiresAt)
 		return true
 	}
 
 	del(key: string | string[]): number {
 		const keys = Array.isArray(key) ? key : [key]
-		let n = 0
-		const tx = this.db.transaction((keys: string[]) => {
-			for (const k of keys) {
-				const r = this.stmts.del.run(k)
-				n += r.changes
-			}
-		})
-		tx(keys)
-		return n
+		// Reducer keeps the per-call accumulator local to the transaction
+		// instead of leaking it into the closure. better-sqlite3 does NOT
+		// retry the transaction body automatically, but the previous
+		// closure-mutation pattern would have double-counted on a future
+		// caller that wrapped tx() in a retry loop.
+		const tx = this.db.transaction((batch: string[]) =>
+			batch.reduce((acc, k) => acc + this.stmts.del.run(k).changes, 0)
+		)
+		return tx(keys)
 	}
 
 	pruneExpired(now: number = Date.now()): number {
