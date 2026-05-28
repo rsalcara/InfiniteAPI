@@ -54,9 +54,17 @@ export const NO_MESSAGE_FOUND_ERROR_TEXT = 'Message absent from node'
 export const MISSING_KEYS_ERROR_TEXT = 'Key used already or never filled'
 export const BAD_MAC_ERROR_TEXT = 'Bad MAC'
 
+// Single source of truth for decryption retry tuning. Previously the cap
+// "3" was hardcoded in three independent places (DECRYPTION_RETRY_CONFIG.
+// maxRetries, DECRYPTION_RETRY_OPTIONS.maxAttempts, and the `attempt < 3`
+// check inside `shouldRetry`); changing one without the others created
+// silent off-by-one mismatches.
+const SESSION_RECORD_MAX_ATTEMPTS = 3
+const UNKNOWN_ERROR_MAX_ATTEMPTS = 2
+
 // Retry configuration for failed decryption
 export const DECRYPTION_RETRY_CONFIG = {
-	maxRetries: 3,
+	maxRetries: SESSION_RECORD_MAX_ATTEMPTS,
 	baseDelayMs: 100,
 	sessionRecordErrors: ['No session record', 'SessionError: No session record'],
 	corruptedSessionErrors: ['Bad MAC', 'MessageCounterError', MISSING_KEYS_ERROR_TEXT]
@@ -67,7 +75,7 @@ export const DECRYPTION_RETRY_CONFIG = {
  * Uses exponential backoff with jitter to handle transient failures
  */
 export const DECRYPTION_RETRY_OPTIONS: RetryOptions = {
-	maxAttempts: 3,
+	maxAttempts: SESSION_RECORD_MAX_ATTEMPTS,
 	baseDelay: 200, // 200ms base delay
 	maxDelay: 2000, // 2s max delay
 	backoffStrategy: 'exponential',
@@ -80,7 +88,7 @@ export const DECRYPTION_RETRY_OPTIONS: RetryOptions = {
 
 		// Always retry on session record errors (session might be syncing)
 		if (DECRYPTION_RETRY_CONFIG.sessionRecordErrors.some(err => errorMsg.includes(err))) {
-			return attempt < 3 // Retry up to 3 times
+			return attempt < SESSION_RECORD_MAX_ATTEMPTS
 		}
 
 		// Don't retry on corrupted session errors (need cleanup first)
@@ -88,8 +96,9 @@ export const DECRYPTION_RETRY_OPTIONS: RetryOptions = {
 			return false
 		}
 
-		// Retry other transient errors
-		return attempt < 2 // Retry up to 2 times for unknown errors
+		// Retry other transient errors (tighter cap — unknown failures are
+		// less likely to be transient than a still-syncing session)
+		return attempt < UNKNOWN_ERROR_MAX_ATTEMPTS
 	}
 }
 

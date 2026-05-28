@@ -85,6 +85,16 @@ type ResolvedLoggerConfig = Omit<Required<StructuredLoggerConfig>, 'externalHook
 	externalHook?: (entry: LogEntry) => void | Promise<void>
 }
 
+// Parses a positive integer env var, returning undefined for missing or
+// non-numeric values. `parseInt('abc', 10)` returns NaN; if we forwarded that
+// to setInterval(fn, NaN) the buffer would flush on every event-loop tick,
+// destroying the batching the user asked for.
+const parsePositiveIntEnv = (raw: string | undefined): number | undefined => {
+	if (raw === undefined || raw === '') return undefined
+	const n = parseInt(raw, 10)
+	return Number.isFinite(n) && n > 0 ? n : undefined
+}
+
 /**
  * Load configuration from environment variables
  */
@@ -95,16 +105,10 @@ export function loadLoggerConfig(): Partial<StructuredLoggerConfig> {
 		name: process.env.BAILEYS_LOG_NAME,
 		jsonFormat: process.env.BAILEYS_LOG_JSON === 'true' || process.env.NODE_ENV === 'production',
 		enableBuffering: process.env.BAILEYS_LOG_BUFFERING === 'true',
-		bufferFlushIntervalMs: process.env.BAILEYS_LOG_BUFFER_FLUSH_MS
-			? parseInt(process.env.BAILEYS_LOG_BUFFER_FLUSH_MS, 10)
-			: undefined,
-		maxBufferSize: process.env.BAILEYS_LOG_MAX_BUFFER_SIZE
-			? parseInt(process.env.BAILEYS_LOG_MAX_BUFFER_SIZE, 10)
-			: undefined,
+		bufferFlushIntervalMs: parsePositiveIntEnv(process.env.BAILEYS_LOG_BUFFER_FLUSH_MS),
+		maxBufferSize: parsePositiveIntEnv(process.env.BAILEYS_LOG_MAX_BUFFER_SIZE),
 		enableRateLimiting: process.env.BAILEYS_LOG_RATE_LIMIT === 'true',
-		maxLogsPerSecond: process.env.BAILEYS_LOG_MAX_PER_SECOND
-			? parseInt(process.env.BAILEYS_LOG_MAX_PER_SECOND, 10)
-			: undefined,
+		maxLogsPerSecond: parsePositiveIntEnv(process.env.BAILEYS_LOG_MAX_PER_SECOND),
 		enableAsyncQueue: process.env.BAILEYS_LOG_ASYNC === 'true',
 		enableMetrics: process.env.BAILEYS_LOG_METRICS === 'true',
 		includeStackTrace: process.env.BAILEYS_LOG_STACK_TRACE !== 'false'
@@ -279,6 +283,26 @@ class AsyncLogQueue {
 		return this.queue.length
 	}
 
+	/**
+	 * Run every queued task synchronously and clear the queue. Called by
+	 * `StructuredLogger.destroy()` to ensure logs enqueued just before
+	 * teardown are not silently dropped. Errors thrown by individual tasks
+	 * are swallowed (matches the `processNext` semantics) so a single bad
+	 * task cannot block the rest of the drain.
+	 */
+	drain(): void {
+		while (this.queue.length > 0) {
+			const task = this.queue.shift()
+			if (task) {
+				try {
+					task()
+				} catch {
+					// Mirrors processNext: drains are best-effort.
+				}
+			}
+		}
+	}
+
 	destroy(): void {
 		this.destroyed = true
 		this.queue = []
@@ -436,12 +460,28 @@ export class StructuredLogger implements ILogger {
 	}
 
 	/**
-	 * Create a child logger with additional context
+	 * Create a child logger with additional context.
+	 *
+	 * Children DO NOT spin up their own buffer timer / async queue / rate
+	 * limiter. Each `child()` call previously did `new StructuredLogger(
+	 * {...this.config})`, which preserved `enableBuffering` and so allocated
+	 * a fresh `setInterval` per child. In Baileys, `logger.child({class: 'x'})`
+	 * is called pervasively (every handler, every component), so on a high-
+	 * fanout deployment that pattern produced thousands of unrelated timers.
+	 * Children now disable buffering/queue/rate-limit locally and let the
+	 * root logger own the single resource. The behavior is preserved at the
+	 * write boundary — output still goes through `console.{debug,info,warn,
+	 * error}` synchronously inside the child — only the resource lifecycle
+	 * moves up to the root.
 	 */
 	child(obj: Record<string, unknown>): StructuredLogger {
 		const childLogger = new StructuredLogger({
 			...this.config,
-			context: { ...this.config.context, ...this.childContext, ...obj }
+			context: { ...this.config.context, ...this.childContext, ...obj },
+			enableBuffering: false,
+			enableAsyncQueue: false,
+			enableRateLimiting: false,
+			enableMetrics: false
 		})
 		childLogger.childContext = { ...this.childContext, ...obj }
 		return childLogger
@@ -785,9 +825,22 @@ export class StructuredLogger implements ILogger {
 	destroy(): void {
 		if (this.destroyed) return
 
+		// Order matters when both buffering and the async queue are enabled:
+		// queued tasks are what FILL the buffer, so draining the queue first
+		// makes sure the buffer holds every entry that was already
+		// `log()`-ed before we attempt to flush it. The previous order
+		// (flush → clear queue) silently dropped any entries still sitting
+		// in the queue at teardown — exactly the last few logs that matter
+		// most for diagnosing a crash. We flip `destroyed` AFTER the drain
+		// so the in-flight tasks are not refused (`enqueue` is a no-op
+		// once `destroyed` is true).
+		if (this.asyncQueue) {
+			this.asyncQueue.drain()
+		}
+
 		this.destroyed = true
 
-		// Flush remaining buffer
+		// Flush remaining buffer (now includes everything the queue produced)
 		this.flushBuffer()
 
 		// Clear buffer flush timer

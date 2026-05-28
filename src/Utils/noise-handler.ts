@@ -41,6 +41,19 @@ const ivForCounter = (counter: number): Uint8Array => {
  */
 export const __testOnly_ivForCounter = ivForCounter
 
+// AES-GCM IV is built from a 32-bit counter (bytes 8-11 of the 12-byte IV;
+// see `ivForCounter`). Reusing an (IV, key) pair under AES-GCM is
+// catastrophic — it leaks the XOR of plaintexts and breaks the
+// authentication guarantee. After 2^32 - 1 frames the counter would wrap
+// and we'd start reusing IVs. The cap below throws BEFORE the wrap on
+// either direction, forcing the caller to reconnect (which establishes a
+// fresh transport key via the handshake and resets both counters to 0).
+// In practice this limit is never hit by normal sessions — at sustained
+// 1000 frames/sec a session would have to run for ~50 days before reaching
+// it — but the explicit refusal is cheaper than an undetected silent IV
+// collision on a pathological long-lived connection.
+const NOISE_COUNTER_MAX = 0xffffffff
+
 class TransportState {
 	private readCounter = 0
 	private writeCounter = 0
@@ -51,11 +64,19 @@ class TransportState {
 	) {}
 
 	encrypt(plaintext: Uint8Array): Uint8Array {
+		if (this.writeCounter >= NOISE_COUNTER_MAX) {
+			throw new Error('noise-handler: AES-GCM write counter exhausted; reconnect required to rekey')
+		}
+
 		const c = this.writeCounter++
 		return aesEncryptGCM(plaintext, this.encKey, ivForCounter(c), EMPTY_BUFFER)
 	}
 
 	decrypt(ciphertext: Uint8Array): Buffer {
+		if (this.readCounter >= NOISE_COUNTER_MAX) {
+			throw new Error('noise-handler: AES-GCM read counter exhausted; reconnect required to rekey')
+		}
+
 		const c = this.readCounter++
 		return aesDecryptGCM(ciphertext, this.decKey, ivForCounter(c), EMPTY_BUFFER) as Buffer
 	}
