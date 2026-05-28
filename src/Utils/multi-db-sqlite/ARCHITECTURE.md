@@ -10,7 +10,7 @@ Three operational wins under load:
 
 1. **Lock isolation** — a heavy write burst on the routing tables (e.g. a sync
    flow inserting thousands of `jid_map` rows) does not block point reads on
-   `signal_sessions`, which sit on the message-send hot path. With a single
+   `sessions` (axolotl.db), which sits on the message-send hot path. With a single
    consolidated DB those would contend on the same WAL writer slot.
 2. **Corruption blast radius** — WAL checkpoint corruption on the
    `msgstore.db` file leaves `creds.db` untouched. A gateway can recover its
@@ -70,7 +70,7 @@ This directory ships the **skeleton** — files exist, schemas materialize, and
 - `useMultiDbSqliteAuthState` routes:
   - auth creds → `creds.db` `creds(key, value, updated_at)` row
   - signal data → `axolotl.db` `signal_kv(type, id, value)` (opaque)
-- Typed tables (`signal_sessions`, `jid_map`, etc.) created and indexed but
+- Typed tables (`sessions`, `prekeys`, `identities`, `sender_keys`, `jid_map`, etc.) created and indexed but
   **not yet populated** — they wait for the integrations below.
 
 ### Phase 9.1 — `LIDMappingStore` → `jid_map`

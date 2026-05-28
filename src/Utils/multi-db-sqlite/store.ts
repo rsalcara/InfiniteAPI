@@ -134,9 +134,24 @@ export class MultiDbSqliteStore {
 			for (const file of MULTI_DB_FILES) {
 				const fullPath = path.join(this.opts.sessionDir, file)
 				const db = new Database(fullPath)
+				// Register the handle in the map IMMEDIATELY after construction,
+				// before any pragma/schema work that could throw. The outer
+				// catch below closes every handle currently in the map, so if
+				// `db.pragma()` or `db.exec(SCHEMAS[file])` blows up for THIS
+				// file we still close it (otherwise the brand-new handle
+				// would never have made it into the map and would leak its
+				// fd / WAL lock).
+				//
+				// Boundary cast: the Map is typed `SqliteDbLike` so the
+				// emitted `.d.ts` does not pull `better-sqlite3` types. At
+				// runtime the value IS a `better-sqlite3` `Database`; the
+				// `SqliteDbLike` interface matches the methods we use.
+				this.handles.set(file, db as unknown as SqliteDbLike)
+
 				for (const pragma of DEFAULT_PRAGMAS) db.pragma(pragma)
 				for (const pragma of extra) db.pragma(pragma)
 				db.exec(SCHEMAS[file])
+
 				// Abort check: if close() bumped the generation while we were
 				// in here, close this brand-new handle and stop. close() has
 				// already cleared `this.handles` and reset `opened=false`;
@@ -148,14 +163,10 @@ export class MultiDbSqliteStore {
 						// Best effort — the store is being torn down anyway.
 					}
 
+					this.handles.delete(file)
 					return
 				}
 
-				// Boundary cast: the Map is typed `SqliteDbLike` so the
-				// emitted `.d.ts` does not pull `better-sqlite3` types. At
-				// runtime the value IS a `better-sqlite3` `Database`; the
-				// `SqliteDbLike` interface matches the methods we use.
-				this.handles.set(file, db as unknown as SqliteDbLike)
 				this.opts.logger?.info?.({ file, path: fullPath }, 'multi-db-sqlite: opened')
 			}
 		} catch (err) {

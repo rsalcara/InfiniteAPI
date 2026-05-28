@@ -48,7 +48,15 @@ export interface NodeCacheLike {
 	get<T = NodeCacheCompatibleEntry>(key: string): T | undefined
 	set(key: string, value: NodeCacheCompatibleEntry, ttl?: number | string): boolean
 	del(key: string | string[]): number
-	mget<T = NodeCacheCompatibleEntry>(keys: string[]): { [key: string]: T }
+	/**
+	 * `mget` returns a Promise to be assignable to
+	 * `PossiblyExtendedCacheStore.mget` (which is async). The implementation
+	 * stays synchronous internally — we just wrap the resolved value in
+	 * `Promise.resolve()` at the boundary so TypeScript is happy when a
+	 * consumer writes `userDevicesCache: new UserDeviceCacheSqliteAdapter(...)`
+	 * against `SocketConfig`.
+	 */
+	mget<T = NodeCacheCompatibleEntry>(keys: string[]): Promise<Record<string, T | undefined>>
 	flushAll(): void
 }
 
@@ -204,8 +212,8 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 		return n
 	}
 
-	mget<T = NodeCacheCompatibleEntry>(keys: string[]): { [key: string]: T } {
-		const out: { [key: string]: T } = {}
+	async mget<T = NodeCacheCompatibleEntry>(keys: string[]): Promise<Record<string, T | undefined>> {
+		const out: Record<string, T | undefined> = {}
 		if (keys.length === 0) return out
 
 		// Batched SELECT replaces N point selects on the hot path

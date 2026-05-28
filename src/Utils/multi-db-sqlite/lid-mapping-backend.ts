@@ -52,8 +52,19 @@ export class JidMapBackend {
 			),
 			selectJidIdByRaw: this.db.prepare('SELECT _id FROM jid WHERE raw_string = ?'),
 			upsertMap: this.db.prepare(
-				'INSERT INTO jid_map (lid_row_id, jid_row_id, sort_id) VALUES (?, ?, 0) ' +
-					'ON CONFLICT(lid_row_id) DO UPDATE SET jid_row_id = excluded.jid_row_id'
+				// `sort_id` is set to the current epoch ms on every insert
+				// AND every conflict update so it tracks "last write wins"
+				// across rotations — important when a PN gets re-mapped
+				// back to an OLDER LID (lower `lid_row_id`): without this,
+				// `selectLidByPn ORDER BY lid_row_id DESC` would surface the
+				// most-recently-ALLOCATED LID even though the most-recently-
+				// WRITTEN mapping points elsewhere. The legacy opaque
+				// key-value store overwrote the PN key directly; we mirror
+				// the same "last write wins" semantics by ordering on
+				// `sort_id` instead of `lid_row_id` for the PN→LID lookup.
+				'INSERT INTO jid_map (lid_row_id, jid_row_id, sort_id) VALUES (?, ?, ?) ' +
+					'ON CONFLICT(lid_row_id) DO UPDATE SET ' +
+					'  jid_row_id = excluded.jid_row_id, sort_id = excluded.sort_id'
 			),
 			selectPnByLid: this.db.prepare(
 				'SELECT j.raw_string AS raw FROM jid_map m ' +
@@ -63,18 +74,20 @@ export class JidMapBackend {
 			),
 			selectLidByPn: this.db.prepare(
 				// May return multiple rows (one PN can have several LIDs); the
-				// LIDMappingStore expects a single value, so we order by
-				// `lid_row_id DESC` to surface the most-recently-allocated LID
-				// (jid._id is AUTOINCREMENT, so a higher _id ↔ a newer row).
-				// `sort_id` is not used as the ordering key because
-				// `storeMapping` writes a constant 0 there; ordering on it
-				// would be non-deterministic for PNs linked to multiple LIDs
-				// over time. Callers that need the full set should query the
-				// table directly.
+				// LIDMappingStore expects a single value, so we ORDER BY
+				// `sort_id DESC` to surface the LAST WRITTEN mapping (the
+				// legacy opaque key-value store's overwrite semantics).
+				// `lid_row_id DESC` was wrong for the case where a PN is
+				// re-mapped back to an OLDER LID — `lid_row_id` reflects
+				// allocation order, not write order. `sort_id` is now a
+				// monotonic epoch-ms tick written on every insert/upsert by
+				// `upsertMap`, so `ORDER BY sort_id DESC` always wins for
+				// the latest write. Callers that need the full set should
+				// query the table directly.
 				'SELECT j.raw_string AS raw FROM jid_map m ' +
 					'JOIN jid j ON j._id = m.lid_row_id ' +
 					'JOIN jid j_pn ON j_pn._id = m.jid_row_id ' +
-					'WHERE j_pn.raw_string = ? ORDER BY m.lid_row_id DESC LIMIT 1'
+					'WHERE j_pn.raw_string = ? ORDER BY m.sort_id DESC LIMIT 1'
 			)
 		}
 	}
@@ -92,7 +105,9 @@ export class JidMapBackend {
 	storeMapping(pnUser: string, lidUser: string): void {
 		const lidRowId = this.rowIdFor(lidUser)
 		const pnRowId = this.rowIdFor(pnUser)
-		this.stmts.upsertMap.run(lidRowId, pnRowId)
+		// `Date.now()` as sort_id so the latest write wins on PN→LID lookups
+		// even if the mapping points back to an older LID (lower lid_row_id).
+		this.stmts.upsertMap.run(lidRowId, pnRowId, Date.now())
 	}
 
 	/** Stores N mappings atomically (single transaction). */
@@ -131,14 +146,18 @@ export class JidMapBackend {
 		for (let i = 0; i < pnUsers.length; i += CHUNK) {
 			const chunk = pnUsers.slice(i, i + CHUNK)
 			const placeholders = chunk.map(() => '?').join(',')
-			// For each PN, surface the most-recent LID (highest lid_row_id);
-			// matches the single-row `selectLidByPn` semantics.
+			// For each PN, surface the LAST-WRITTEN mapping (highest sort_id).
+			// `sort_id` is now Date.now() on every `storeMapping()` upsert,
+			// so MAX(sort_id) = most recent write — matches the single-row
+			// `selectLidByPn` "last write wins" semantics that the legacy
+			// opaque key-value store had. Using `lid_row_id` here was wrong
+			// because it tracks allocation order, not write order.
 			const sql =
 				'SELECT j_pn.raw_string AS pn, j.raw_string AS lid FROM jid_map m ' +
 				'JOIN jid j ON j._id = m.lid_row_id ' +
 				'JOIN jid j_pn ON j_pn._id = m.jid_row_id ' +
 				`WHERE j_pn.raw_string IN (${placeholders}) ` +
-				'AND m.lid_row_id = (SELECT MAX(m2.lid_row_id) FROM jid_map m2 WHERE m2.jid_row_id = m.jid_row_id)'
+				'AND m.sort_id = (SELECT MAX(m2.sort_id) FROM jid_map m2 WHERE m2.jid_row_id = m.jid_row_id)'
 			const rows = this.db.prepare(sql).all(...chunk) as Array<{ pn: string; lid: string }>
 			for (const r of rows) out[r.pn] = r.lid
 		}

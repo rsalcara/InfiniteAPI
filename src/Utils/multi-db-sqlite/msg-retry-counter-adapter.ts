@@ -20,10 +20,17 @@
  *   1. **Counter reset on restart**: a previously-retried message that
  *      hits the cap gets a fresh budget after the process bounces,
  *      defeating the back-off the upstream code put in place.
- *   2. **Cross-instance collision**: if two parallel processes share
- *      the same session (e.g. blue/green deploy mid-handoff), the
- *      in-memory cache misses the other process's increments. SQLite
- *      serializes both writers naturally via WAL.
+ *   2. **Cross-instance collision (partial fix)**: if two parallel
+ *      processes share the same session (e.g. blue/green deploy mid-
+ *      handoff), the in-memory cache misses the other process's
+ *      increments. SQLite serializes the WRITES naturally via WAL, but
+ *      the existing `messages-recv.ts` callers do `get()` then `set(n+1)`
+ *      — a non-atomic read-modify-write that can still undercount when
+ *      both processes read the same value before either writes. The
+ *      InfiniteAPI deployment topology is single-process (PM2), so this
+ *      undercount is not exercised today; a fully race-free counter
+ *      would require an atomic `INSERT ... ON CONFLICT DO UPDATE SET
+ *      retry_count = retry_count + 1` and is tracked for phase 9.3.1.
  */
 import type { SqliteDbLike, SqliteStatementLike } from './types'
 
