@@ -221,6 +221,22 @@ export namespace proto {
         public static getTypeUrl(typeUrlPrefix?: string): string;
     }
 
+    interface IAIMetadataOperation {
+        hatchMetadataSync?: (proto.IHatchMetadataSync|null);
+    }
+
+    class AIMetadataOperation implements IAIMetadataOperation {
+        constructor(p?: proto.IAIMetadataOperation);
+        public hatchMetadataSync?: (proto.IHatchMetadataSync|null);
+        public static create(properties?: proto.IAIMetadataOperation): proto.AIMetadataOperation;
+        public static encode(m: proto.IAIMetadataOperation, w?: $protobuf.Writer): $protobuf.Writer;
+        public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.AIMetadataOperation;
+        public static fromObject(d: { [k: string]: any }): proto.AIMetadataOperation;
+        public static toObject(m: proto.AIMetadataOperation, o?: $protobuf.IConversionOptions): { [k: string]: any };
+        public toJSON(): { [k: string]: any };
+        public static getTypeUrl(typeUrlPrefix?: string): string;
+    }
+
     interface IAIQueryFanout {
         messageKey?: (proto.IMessageKey|null);
         message?: (proto.IMessage|null);
@@ -1121,7 +1137,8 @@ export namespace proto {
             AI_SUBSCRIPTION_ENABLED = 61,
             UNIFIED_RESPONSE_AI_CONTENT_SEARCH_ENABLED = 62,
             UNIFIED_RESPONSE_MARKDOWN_LINKS_ENABLED = 63,
-            AI_RICH_RESPONSE_MAPS_V2_ENABLED = 64
+            AI_RICH_RESPONSE_MAPS_V2_ENABLED = 64,
+            AI_SUBSCRIPTION_METERING_ENABLED = 65
         }
     }
 
@@ -1732,6 +1749,7 @@ export namespace proto {
         commandMetadata?: (proto.IBotCommandMetadata|null);
         resolvedToolCallMetadata?: (proto.IBotResolvedToolCallMetadata|null);
         subscriptionUpsellMetadata?: (proto.IAISubscriptionUpsellMetadata|null);
+        pttPromptMetadata?: (proto.IBotPttPromptMetadata|null);
         internalMetadata?: (Uint8Array|null);
     }
 
@@ -1777,6 +1795,7 @@ export namespace proto {
         public commandMetadata?: (proto.IBotCommandMetadata|null);
         public resolvedToolCallMetadata?: (proto.IBotResolvedToolCallMetadata|null);
         public subscriptionUpsellMetadata?: (proto.IAISubscriptionUpsellMetadata|null);
+        public pttPromptMetadata?: (proto.IBotPttPromptMetadata|null);
         public internalMetadata?: (Uint8Array|null);
         public static create(properties?: proto.IBotMetadata): proto.BotMetadata;
         public static encode(m: proto.IBotMetadata, w?: $protobuf.Writer): $protobuf.Writer;
@@ -2178,6 +2197,22 @@ export namespace proto {
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.BotPromptSuggestions;
         public static fromObject(d: { [k: string]: any }): proto.BotPromptSuggestions;
         public static toObject(m: proto.BotPromptSuggestions, o?: $protobuf.IConversionOptions): { [k: string]: any };
+        public toJSON(): { [k: string]: any };
+        public static getTypeUrl(typeUrlPrefix?: string): string;
+    }
+
+    interface IBotPttPromptMetadata {
+        transcript?: (string|null);
+    }
+
+    class BotPttPromptMetadata implements IBotPttPromptMetadata {
+        constructor(p?: proto.IBotPttPromptMetadata);
+        public transcript?: (string|null);
+        public static create(properties?: proto.IBotPttPromptMetadata): proto.BotPttPromptMetadata;
+        public static encode(m: proto.IBotPttPromptMetadata, w?: $protobuf.Writer): $protobuf.Writer;
+        public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.BotPttPromptMetadata;
+        public static fromObject(d: { [k: string]: any }): proto.BotPttPromptMetadata;
+        public static toObject(m: proto.BotPttPromptMetadata, o?: $protobuf.IConversionOptions): { [k: string]: any };
         public toJSON(): { [k: string]: any };
         public static getTypeUrl(typeUrlPrefix?: string): string;
     }
@@ -4919,6 +4954,7 @@ export namespace proto {
         groupRootKey?: (Uint8Array|null);
         keyId?: (string|null);
         expiryTimestampMs?: (number|Long|null);
+        createdTimestampMs?: (number|Long|null);
     }
 
     class GroupRootKeyShareEntry implements IGroupRootKeyShareEntry {
@@ -4926,6 +4962,7 @@ export namespace proto {
         public groupRootKey?: (Uint8Array|null);
         public keyId?: (string|null);
         public expiryTimestampMs?: (number|Long|null);
+        public createdTimestampMs?: (number|Long|null);
         public static create(properties?: proto.IGroupRootKeyShareEntry): proto.GroupRootKeyShareEntry;
         public static encode(m: proto.IGroupRootKeyShareEntry, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.GroupRootKeyShareEntry;
@@ -5052,6 +5089,26 @@ export namespace proto {
             public toJSON(): { [k: string]: any };
             public static getTypeUrl(typeUrlPrefix?: string): string;
         }
+    }
+
+    interface IHatchMetadataSync {
+        data?: (Uint8Array|null);
+        timestampMs?: (number|Long|null);
+        requestId?: (string|null);
+    }
+
+    class HatchMetadataSync implements IHatchMetadataSync {
+        constructor(p?: proto.IHatchMetadataSync);
+        public data?: (Uint8Array|null);
+        public timestampMs?: (number|Long|null);
+        public requestId?: (string|null);
+        public static create(properties?: proto.IHatchMetadataSync): proto.HatchMetadataSync;
+        public static encode(m: proto.IHatchMetadataSync, w?: $protobuf.Writer): $protobuf.Writer;
+        public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.HatchMetadataSync;
+        public static fromObject(d: { [k: string]: any }): proto.HatchMetadataSync;
+        public static toObject(m: proto.HatchMetadataSync, o?: $protobuf.IConversionOptions): { [k: string]: any };
+        public toJSON(): { [k: string]: any };
+        public static getTypeUrl(typeUrlPrefix?: string): string;
     }
 
     interface IHistorySync {
@@ -7588,6 +7645,7 @@ export namespace proto {
                 uuid?: (string|null);
                 data?: (string|null);
                 type?: (string|null);
+                fallback?: (string|null);
             }
 
             class BloksWidget implements IBloksWidget {
@@ -7595,6 +7653,7 @@ export namespace proto {
                 public uuid?: (string|null);
                 public data?: (string|null);
                 public type?: (string|null);
+                public fallback?: (string|null);
                 public static create(properties?: proto.Message.InteractiveMessage.IBloksWidget): proto.Message.InteractiveMessage.BloksWidget;
                 public static encode(m: proto.Message.InteractiveMessage.IBloksWidget, w?: $protobuf.Writer): $protobuf.Writer;
                 public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Message.InteractiveMessage.BloksWidget;
@@ -9650,6 +9709,7 @@ export namespace proto {
             aiMediaCollectionMessage?: (proto.IAIMediaCollectionMessage|null);
             afterReadDuration?: (number|null);
             chatThemeSetting?: (proto.Message.IChatThemeSetting|null);
+            aiMetadataOperation?: (proto.IAIMetadataOperation|null);
         }
 
         class ProtocolMessage implements IProtocolMessage {
@@ -9681,6 +9741,7 @@ export namespace proto {
             public aiMediaCollectionMessage?: (proto.IAIMediaCollectionMessage|null);
             public afterReadDuration?: (number|null);
             public chatThemeSetting?: (proto.Message.IChatThemeSetting|null);
+            public aiMetadataOperation?: (proto.IAIMetadataOperation|null);
             public static create(properties?: proto.Message.IProtocolMessage): proto.Message.ProtocolMessage;
             public static encode(m: proto.Message.IProtocolMessage, w?: $protobuf.Writer): $protobuf.Writer;
             public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Message.ProtocolMessage;
@@ -9721,7 +9782,8 @@ export namespace proto {
                 GROUP_MEMBER_LABEL_CHANGE = 30,
                 AI_MEDIA_COLLECTION_MESSAGE = 31,
                 MESSAGE_UNSCHEDULE = 32,
-                CHAT_THEME_SETTING = 34
+                CHAT_THEME_SETTING = 34,
+                AI_METADATA_OPERATION = 35
             }
         }
 
@@ -13498,7 +13560,11 @@ export namespace proto {
                 DRAFTED = 8,
                 AI_HANDOFF = 9,
                 CHANNELS = 10,
-                AI_RESPONDING = 11
+                AI_RESPONDING = 11,
+                ARCHIVED = 12,
+                LOCKED = 13,
+                INVITES = 14,
+                THIRD_PARTY = 15
             }
         }
 

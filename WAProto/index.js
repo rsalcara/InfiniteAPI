@@ -1615,6 +1615,96 @@ export const proto = $root.proto = (() => {
         return AIMediaCollectionMetadata;
     })();
 
+    proto.AIMetadataOperation = (function() {
+
+        function AIMetadataOperation(p) {
+            if (p)
+                for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                    if (p[ks[i]] != null)
+                        this[ks[i]] = p[ks[i]];
+        }
+
+        AIMetadataOperation.prototype.hatchMetadataSync = null;
+
+        let $oneOfFields;
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(AIMetadataOperation.prototype, "_hatchMetadataSync", {
+            get: $util.oneOfGetter($oneOfFields = ["hatchMetadataSync"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        AIMetadataOperation.create = function create(properties) {
+            return new AIMetadataOperation(properties);
+        };
+
+        AIMetadataOperation.encode = function encode(m, w) {
+            if (!w)
+                w = $Writer.create();
+            if (m.hatchMetadataSync != null && Object.hasOwnProperty.call(m, "hatchMetadataSync"))
+                $root.proto.HatchMetadataSync.encode(m.hatchMetadataSync, w.uint32(10).fork()).ldelim();
+            return w;
+        };
+
+        AIMetadataOperation.decode = function decode(r, l, e) {
+            if (!(r instanceof $Reader))
+                r = $Reader.create(r);
+            var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.AIMetadataOperation();
+            while (r.pos < c) {
+                var t = r.uint32();
+                if (t === e)
+                    break;
+                switch (t >>> 3) {
+                case 1: {
+                        m.hatchMetadataSync = $root.proto.HatchMetadataSync.decode(r, r.uint32());
+                        break;
+                    }
+                default:
+                    r.skipType(t & 7);
+                    break;
+                }
+            }
+            return m;
+        };
+
+        AIMetadataOperation.fromObject = function fromObject(d) {
+            if (d instanceof $root.proto.AIMetadataOperation)
+                return d;
+            var m = new $root.proto.AIMetadataOperation();
+            if (d.hatchMetadataSync != null) {
+                if (typeof d.hatchMetadataSync !== "object")
+                    throw TypeError(".proto.AIMetadataOperation.hatchMetadataSync: object expected");
+                m.hatchMetadataSync = $root.proto.HatchMetadataSync.fromObject(d.hatchMetadataSync);
+            }
+            return m;
+        };
+
+        AIMetadataOperation.toObject = function toObject(m, o) {
+            if (!o)
+                o = {};
+            var d = {};
+            if (m.hatchMetadataSync != null && m.hasOwnProperty("hatchMetadataSync")) {
+                d.hatchMetadataSync = $root.proto.HatchMetadataSync.toObject(m.hatchMetadataSync, o);
+                if (o.oneofs)
+                    d._hatchMetadataSync = "hatchMetadataSync";
+            }
+            return d;
+        };
+
+        AIMetadataOperation.prototype.toJSON = function toJSON() {
+            return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+        };
+
+        AIMetadataOperation.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+            if (typeUrlPrefix === undefined) {
+                typeUrlPrefix = "type.googleapis.com";
+            }
+            return typeUrlPrefix + "/proto.AIMetadataOperation";
+        };
+
+        return AIMetadataOperation;
+    })();
+
     proto.AIQueryFanout = (function() {
 
         function AIQueryFanout(p) {
@@ -7057,6 +7147,10 @@ export const proto = $root.proto = (() => {
                     case 64:
                         m.capabilities[i] = 64;
                         break;
+                    case "AI_SUBSCRIPTION_METERING_ENABLED":
+                    case 65:
+                        m.capabilities[i] = 65;
+                        break;
                     }
                 }
             }
@@ -7157,6 +7251,7 @@ export const proto = $root.proto = (() => {
             values[valuesById[62] = "UNIFIED_RESPONSE_AI_CONTENT_SEARCH_ENABLED"] = 62;
             values[valuesById[63] = "UNIFIED_RESPONSE_MARKDOWN_LINKS_ENABLED"] = 63;
             values[valuesById[64] = "AI_RICH_RESPONSE_MAPS_V2_ENABLED"] = 64;
+            values[valuesById[65] = "AI_SUBSCRIPTION_METERING_ENABLED"] = 65;
             return values;
         })();
 
@@ -10762,6 +10857,7 @@ export const proto = $root.proto = (() => {
         BotMetadata.prototype.commandMetadata = null;
         BotMetadata.prototype.resolvedToolCallMetadata = null;
         BotMetadata.prototype.subscriptionUpsellMetadata = null;
+        BotMetadata.prototype.pttPromptMetadata = null;
         BotMetadata.prototype.internalMetadata = null;
 
         let $oneOfFields;
@@ -11007,6 +11103,12 @@ export const proto = $root.proto = (() => {
         });
 
         // Virtual OneOf for proto3 optional field
+        Object.defineProperty(BotMetadata.prototype, "_pttPromptMetadata", {
+            get: $util.oneOfGetter($oneOfFields = ["pttPromptMetadata"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
         Object.defineProperty(BotMetadata.prototype, "_internalMetadata", {
             get: $util.oneOfGetter($oneOfFields = ["internalMetadata"]),
             set: $util.oneOfSetter($oneOfFields)
@@ -11099,6 +11201,8 @@ export const proto = $root.proto = (() => {
                 $root.proto.BotResolvedToolCallMetadata.encode(m.resolvedToolCallMetadata, w.uint32(322).fork()).ldelim();
             if (m.subscriptionUpsellMetadata != null && Object.hasOwnProperty.call(m, "subscriptionUpsellMetadata"))
                 $root.proto.AISubscriptionUpsellMetadata.encode(m.subscriptionUpsellMetadata, w.uint32(330).fork()).ldelim();
+            if (m.pttPromptMetadata != null && Object.hasOwnProperty.call(m, "pttPromptMetadata"))
+                $root.proto.BotPttPromptMetadata.encode(m.pttPromptMetadata, w.uint32(338).fork()).ldelim();
             if (m.internalMetadata != null && Object.hasOwnProperty.call(m, "internalMetadata"))
                 w.uint32(7994).bytes(m.internalMetadata);
             return w;
@@ -11271,6 +11375,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 41: {
                         m.subscriptionUpsellMetadata = $root.proto.AISubscriptionUpsellMetadata.decode(r, r.uint32());
+                        break;
+                    }
+                case 42: {
+                        m.pttPromptMetadata = $root.proto.BotPttPromptMetadata.decode(r, r.uint32());
                         break;
                     }
                 case 999: {
@@ -11477,6 +11585,11 @@ export const proto = $root.proto = (() => {
                 if (typeof d.subscriptionUpsellMetadata !== "object")
                     throw TypeError(".proto.BotMetadata.subscriptionUpsellMetadata: object expected");
                 m.subscriptionUpsellMetadata = $root.proto.AISubscriptionUpsellMetadata.fromObject(d.subscriptionUpsellMetadata);
+            }
+            if (d.pttPromptMetadata != null) {
+                if (typeof d.pttPromptMetadata !== "object")
+                    throw TypeError(".proto.BotMetadata.pttPromptMetadata: object expected");
+                m.pttPromptMetadata = $root.proto.BotPttPromptMetadata.fromObject(d.pttPromptMetadata);
             }
             if (d.internalMetadata != null) {
                 if (typeof d.internalMetadata === "string")
@@ -11690,6 +11803,11 @@ export const proto = $root.proto = (() => {
                 d.subscriptionUpsellMetadata = $root.proto.AISubscriptionUpsellMetadata.toObject(m.subscriptionUpsellMetadata, o);
                 if (o.oneofs)
                     d._subscriptionUpsellMetadata = "subscriptionUpsellMetadata";
+            }
+            if (m.pttPromptMetadata != null && m.hasOwnProperty("pttPromptMetadata")) {
+                d.pttPromptMetadata = $root.proto.BotPttPromptMetadata.toObject(m.pttPromptMetadata, o);
+                if (o.oneofs)
+                    d._pttPromptMetadata = "pttPromptMetadata";
             }
             if (m.internalMetadata != null && m.hasOwnProperty("internalMetadata")) {
                 d.internalMetadata = o.bytes === String ? $util.base64.encode(m.internalMetadata, 0, m.internalMetadata.length) : o.bytes === Array ? Array.prototype.slice.call(m.internalMetadata) : m.internalMetadata;
@@ -14104,6 +14222,94 @@ export const proto = $root.proto = (() => {
         };
 
         return BotPromptSuggestions;
+    })();
+
+    proto.BotPttPromptMetadata = (function() {
+
+        function BotPttPromptMetadata(p) {
+            if (p)
+                for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                    if (p[ks[i]] != null)
+                        this[ks[i]] = p[ks[i]];
+        }
+
+        BotPttPromptMetadata.prototype.transcript = null;
+
+        let $oneOfFields;
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(BotPttPromptMetadata.prototype, "_transcript", {
+            get: $util.oneOfGetter($oneOfFields = ["transcript"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        BotPttPromptMetadata.create = function create(properties) {
+            return new BotPttPromptMetadata(properties);
+        };
+
+        BotPttPromptMetadata.encode = function encode(m, w) {
+            if (!w)
+                w = $Writer.create();
+            if (m.transcript != null && Object.hasOwnProperty.call(m, "transcript"))
+                w.uint32(10).string(m.transcript);
+            return w;
+        };
+
+        BotPttPromptMetadata.decode = function decode(r, l, e) {
+            if (!(r instanceof $Reader))
+                r = $Reader.create(r);
+            var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.BotPttPromptMetadata();
+            while (r.pos < c) {
+                var t = r.uint32();
+                if (t === e)
+                    break;
+                switch (t >>> 3) {
+                case 1: {
+                        m.transcript = r.string();
+                        break;
+                    }
+                default:
+                    r.skipType(t & 7);
+                    break;
+                }
+            }
+            return m;
+        };
+
+        BotPttPromptMetadata.fromObject = function fromObject(d) {
+            if (d instanceof $root.proto.BotPttPromptMetadata)
+                return d;
+            var m = new $root.proto.BotPttPromptMetadata();
+            if (d.transcript != null) {
+                m.transcript = String(d.transcript);
+            }
+            return m;
+        };
+
+        BotPttPromptMetadata.toObject = function toObject(m, o) {
+            if (!o)
+                o = {};
+            var d = {};
+            if (m.transcript != null && m.hasOwnProperty("transcript")) {
+                d.transcript = m.transcript;
+                if (o.oneofs)
+                    d._transcript = "transcript";
+            }
+            return d;
+        };
+
+        BotPttPromptMetadata.prototype.toJSON = function toJSON() {
+            return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+        };
+
+        BotPttPromptMetadata.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+            if (typeUrlPrefix === undefined) {
+                typeUrlPrefix = "type.googleapis.com";
+            }
+            return typeUrlPrefix + "/proto.BotPttPromptMetadata";
+        };
+
+        return BotPttPromptMetadata;
     })();
 
     proto.BotQuotaMetadata = (function() {
@@ -33678,6 +33884,7 @@ export const proto = $root.proto = (() => {
         GroupRootKeyShareEntry.prototype.groupRootKey = null;
         GroupRootKeyShareEntry.prototype.keyId = null;
         GroupRootKeyShareEntry.prototype.expiryTimestampMs = null;
+        GroupRootKeyShareEntry.prototype.createdTimestampMs = null;
 
         let $oneOfFields;
 
@@ -33699,6 +33906,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(GroupRootKeyShareEntry.prototype, "_createdTimestampMs", {
+            get: $util.oneOfGetter($oneOfFields = ["createdTimestampMs"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         GroupRootKeyShareEntry.create = function create(properties) {
             return new GroupRootKeyShareEntry(properties);
         };
@@ -33712,6 +33925,8 @@ export const proto = $root.proto = (() => {
                 w.uint32(18).string(m.keyId);
             if (m.expiryTimestampMs != null && Object.hasOwnProperty.call(m, "expiryTimestampMs"))
                 w.uint32(24).int64(m.expiryTimestampMs);
+            if (m.createdTimestampMs != null && Object.hasOwnProperty.call(m, "createdTimestampMs"))
+                w.uint32(32).int64(m.createdTimestampMs);
             return w;
         };
 
@@ -33734,6 +33949,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 3: {
                         m.expiryTimestampMs = r.int64();
+                        break;
+                    }
+                case 4: {
+                        m.createdTimestampMs = r.int64();
                         break;
                     }
                 default:
@@ -33767,6 +33986,16 @@ export const proto = $root.proto = (() => {
                 else if (typeof d.expiryTimestampMs === "object")
                     m.expiryTimestampMs = new $util.LongBits(d.expiryTimestampMs.low >>> 0, d.expiryTimestampMs.high >>> 0).toNumber();
             }
+            if (d.createdTimestampMs != null) {
+                if ($util.Long)
+                    (m.createdTimestampMs = $util.Long.fromValue(d.createdTimestampMs)).unsigned = false;
+                else if (typeof d.createdTimestampMs === "string")
+                    m.createdTimestampMs = parseInt(d.createdTimestampMs, 10);
+                else if (typeof d.createdTimestampMs === "number")
+                    m.createdTimestampMs = d.createdTimestampMs;
+                else if (typeof d.createdTimestampMs === "object")
+                    m.createdTimestampMs = new $util.LongBits(d.createdTimestampMs.low >>> 0, d.createdTimestampMs.high >>> 0).toNumber();
+            }
             return m;
         };
 
@@ -33791,6 +34020,14 @@ export const proto = $root.proto = (() => {
                     d.expiryTimestampMs = o.longs === String ? longToString(m.expiryTimestampMs) : o.longs === Number ? longToNumber(m.expiryTimestampMs) : m.expiryTimestampMs;
                 if (o.oneofs)
                     d._expiryTimestampMs = "expiryTimestampMs";
+            }
+            if (m.createdTimestampMs != null && m.hasOwnProperty("createdTimestampMs")) {
+                if (typeof m.createdTimestampMs === "number")
+                    d.createdTimestampMs = o.longs === String ? String(m.createdTimestampMs) : m.createdTimestampMs;
+                else
+                    d.createdTimestampMs = o.longs === String ? longToString(m.createdTimestampMs) : o.longs === Number ? longToNumber(m.createdTimestampMs) : m.createdTimestampMs;
+                if (o.oneofs)
+                    d._createdTimestampMs = "createdTimestampMs";
             }
             return d;
         };
@@ -34688,6 +34925,149 @@ export const proto = $root.proto = (() => {
         })();
 
         return HandshakeMessage;
+    })();
+
+    proto.HatchMetadataSync = (function() {
+
+        function HatchMetadataSync(p) {
+            if (p)
+                for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                    if (p[ks[i]] != null)
+                        this[ks[i]] = p[ks[i]];
+        }
+
+        HatchMetadataSync.prototype.data = null;
+        HatchMetadataSync.prototype.timestampMs = null;
+        HatchMetadataSync.prototype.requestId = null;
+
+        let $oneOfFields;
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(HatchMetadataSync.prototype, "_data", {
+            get: $util.oneOfGetter($oneOfFields = ["data"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(HatchMetadataSync.prototype, "_timestampMs", {
+            get: $util.oneOfGetter($oneOfFields = ["timestampMs"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(HatchMetadataSync.prototype, "_requestId", {
+            get: $util.oneOfGetter($oneOfFields = ["requestId"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        HatchMetadataSync.create = function create(properties) {
+            return new HatchMetadataSync(properties);
+        };
+
+        HatchMetadataSync.encode = function encode(m, w) {
+            if (!w)
+                w = $Writer.create();
+            if (m.data != null && Object.hasOwnProperty.call(m, "data"))
+                w.uint32(10).bytes(m.data);
+            if (m.timestampMs != null && Object.hasOwnProperty.call(m, "timestampMs"))
+                w.uint32(16).int64(m.timestampMs);
+            if (m.requestId != null && Object.hasOwnProperty.call(m, "requestId"))
+                w.uint32(26).string(m.requestId);
+            return w;
+        };
+
+        HatchMetadataSync.decode = function decode(r, l, e) {
+            if (!(r instanceof $Reader))
+                r = $Reader.create(r);
+            var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.HatchMetadataSync();
+            while (r.pos < c) {
+                var t = r.uint32();
+                if (t === e)
+                    break;
+                switch (t >>> 3) {
+                case 1: {
+                        m.data = r.bytes();
+                        break;
+                    }
+                case 2: {
+                        m.timestampMs = r.int64();
+                        break;
+                    }
+                case 3: {
+                        m.requestId = r.string();
+                        break;
+                    }
+                default:
+                    r.skipType(t & 7);
+                    break;
+                }
+            }
+            return m;
+        };
+
+        HatchMetadataSync.fromObject = function fromObject(d) {
+            if (d instanceof $root.proto.HatchMetadataSync)
+                return d;
+            var m = new $root.proto.HatchMetadataSync();
+            if (d.data != null) {
+                if (typeof d.data === "string")
+                    $util.base64.decode(d.data, m.data = $util.newBuffer($util.base64.length(d.data)), 0);
+                else if (d.data.length >= 0)
+                    m.data = d.data;
+            }
+            if (d.timestampMs != null) {
+                if ($util.Long)
+                    (m.timestampMs = $util.Long.fromValue(d.timestampMs)).unsigned = false;
+                else if (typeof d.timestampMs === "string")
+                    m.timestampMs = parseInt(d.timestampMs, 10);
+                else if (typeof d.timestampMs === "number")
+                    m.timestampMs = d.timestampMs;
+                else if (typeof d.timestampMs === "object")
+                    m.timestampMs = new $util.LongBits(d.timestampMs.low >>> 0, d.timestampMs.high >>> 0).toNumber();
+            }
+            if (d.requestId != null) {
+                m.requestId = String(d.requestId);
+            }
+            return m;
+        };
+
+        HatchMetadataSync.toObject = function toObject(m, o) {
+            if (!o)
+                o = {};
+            var d = {};
+            if (m.data != null && m.hasOwnProperty("data")) {
+                d.data = o.bytes === String ? $util.base64.encode(m.data, 0, m.data.length) : o.bytes === Array ? Array.prototype.slice.call(m.data) : m.data;
+                if (o.oneofs)
+                    d._data = "data";
+            }
+            if (m.timestampMs != null && m.hasOwnProperty("timestampMs")) {
+                if (typeof m.timestampMs === "number")
+                    d.timestampMs = o.longs === String ? String(m.timestampMs) : m.timestampMs;
+                else
+                    d.timestampMs = o.longs === String ? longToString(m.timestampMs) : o.longs === Number ? longToNumber(m.timestampMs) : m.timestampMs;
+                if (o.oneofs)
+                    d._timestampMs = "timestampMs";
+            }
+            if (m.requestId != null && m.hasOwnProperty("requestId")) {
+                d.requestId = m.requestId;
+                if (o.oneofs)
+                    d._requestId = "requestId";
+            }
+            return d;
+        };
+
+        HatchMetadataSync.prototype.toJSON = function toJSON() {
+            return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+        };
+
+        HatchMetadataSync.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+            if (typeUrlPrefix === undefined) {
+                typeUrlPrefix = "type.googleapis.com";
+            }
+            return typeUrlPrefix + "/proto.HatchMetadataSync";
+        };
+
+        return HatchMetadataSync;
     })();
 
     proto.HistorySync = (function() {
@@ -53399,6 +53779,7 @@ export const proto = $root.proto = (() => {
                 BloksWidget.prototype.uuid = null;
                 BloksWidget.prototype.data = null;
                 BloksWidget.prototype.type = null;
+                BloksWidget.prototype.fallback = null;
 
                 let $oneOfFields;
 
@@ -53420,6 +53801,12 @@ export const proto = $root.proto = (() => {
                     set: $util.oneOfSetter($oneOfFields)
                 });
 
+                // Virtual OneOf for proto3 optional field
+                Object.defineProperty(BloksWidget.prototype, "_fallback", {
+                    get: $util.oneOfGetter($oneOfFields = ["fallback"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+
                 BloksWidget.create = function create(properties) {
                     return new BloksWidget(properties);
                 };
@@ -53433,6 +53820,8 @@ export const proto = $root.proto = (() => {
                         w.uint32(18).string(m.data);
                     if (m.type != null && Object.hasOwnProperty.call(m, "type"))
                         w.uint32(26).string(m.type);
+                    if (m.fallback != null && Object.hasOwnProperty.call(m, "fallback"))
+                        w.uint32(34).string(m.fallback);
                     return w;
                 };
 
@@ -53457,6 +53846,10 @@ export const proto = $root.proto = (() => {
                                 m.type = r.string();
                                 break;
                             }
+                        case 4: {
+                                m.fallback = r.string();
+                                break;
+                            }
                         default:
                             r.skipType(t & 7);
                             break;
@@ -53477,6 +53870,9 @@ export const proto = $root.proto = (() => {
                     }
                     if (d.type != null) {
                         m.type = String(d.type);
+                    }
+                    if (d.fallback != null) {
+                        m.fallback = String(d.fallback);
                     }
                     return m;
                 };
@@ -53499,6 +53895,11 @@ export const proto = $root.proto = (() => {
                         d.type = m.type;
                         if (o.oneofs)
                             d._type = "type";
+                    }
+                    if (m.fallback != null && m.hasOwnProperty("fallback")) {
+                        d.fallback = m.fallback;
+                        if (o.oneofs)
+                            d._fallback = "fallback";
                     }
                     return d;
                 };
@@ -67397,6 +67798,7 @@ export const proto = $root.proto = (() => {
             ProtocolMessage.prototype.aiMediaCollectionMessage = null;
             ProtocolMessage.prototype.afterReadDuration = null;
             ProtocolMessage.prototype.chatThemeSetting = null;
+            ProtocolMessage.prototype.aiMetadataOperation = null;
 
             let $oneOfFields;
 
@@ -67562,6 +67964,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ProtocolMessage.prototype, "_aiMetadataOperation", {
+                get: $util.oneOfGetter($oneOfFields = ["aiMetadataOperation"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             ProtocolMessage.create = function create(properties) {
                 return new ProtocolMessage(properties);
             };
@@ -67623,6 +68031,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(232).uint32(m.afterReadDuration);
                 if (m.chatThemeSetting != null && Object.hasOwnProperty.call(m, "chatThemeSetting"))
                     $root.proto.Message.ChatThemeSetting.encode(m.chatThemeSetting, w.uint32(242).fork()).ldelim();
+                if (m.aiMetadataOperation != null && Object.hasOwnProperty.call(m, "aiMetadataOperation"))
+                    $root.proto.AIMetadataOperation.encode(m.aiMetadataOperation, w.uint32(250).fork()).ldelim();
                 return w;
             };
 
@@ -67741,6 +68151,10 @@ export const proto = $root.proto = (() => {
                         }
                     case 30: {
                             m.chatThemeSetting = $root.proto.Message.ChatThemeSetting.decode(r, r.uint32());
+                            break;
+                        }
+                    case 31: {
+                            m.aiMetadataOperation = $root.proto.AIMetadataOperation.decode(r, r.uint32());
                             break;
                         }
                     default:
@@ -67883,6 +68297,10 @@ export const proto = $root.proto = (() => {
                 case 34:
                     m.type = 34;
                     break;
+                case "AI_METADATA_OPERATION":
+                case 35:
+                    m.type = 35;
+                    break;
                 }
                 if (d.ephemeralExpiration != null) {
                     m.ephemeralExpiration = d.ephemeralExpiration >>> 0;
@@ -68013,6 +68431,11 @@ export const proto = $root.proto = (() => {
                     if (typeof d.chatThemeSetting !== "object")
                         throw TypeError(".proto.Message.ProtocolMessage.chatThemeSetting: object expected");
                     m.chatThemeSetting = $root.proto.Message.ChatThemeSetting.fromObject(d.chatThemeSetting);
+                }
+                if (d.aiMetadataOperation != null) {
+                    if (typeof d.aiMetadataOperation !== "object")
+                        throw TypeError(".proto.Message.ProtocolMessage.aiMetadataOperation: object expected");
+                    m.aiMetadataOperation = $root.proto.AIMetadataOperation.fromObject(d.aiMetadataOperation);
                 }
                 return m;
             };
@@ -68162,6 +68585,11 @@ export const proto = $root.proto = (() => {
                     if (o.oneofs)
                         d._chatThemeSetting = "chatThemeSetting";
                 }
+                if (m.aiMetadataOperation != null && m.hasOwnProperty("aiMetadataOperation")) {
+                    d.aiMetadataOperation = $root.proto.AIMetadataOperation.toObject(m.aiMetadataOperation, o);
+                    if (o.oneofs)
+                        d._aiMetadataOperation = "aiMetadataOperation";
+                }
                 return d;
             };
 
@@ -68207,6 +68635,7 @@ export const proto = $root.proto = (() => {
                 values[valuesById[31] = "AI_MEDIA_COLLECTION_MESSAGE"] = 31;
                 values[valuesById[32] = "MESSAGE_UNSCHEDULE"] = 32;
                 values[valuesById[34] = "CHAT_THEME_SETTING"] = 34;
+                values[valuesById[35] = "AI_METADATA_OPERATION"] = 35;
                 return values;
             })();
 
@@ -94321,6 +94750,22 @@ export const proto = $root.proto = (() => {
                 case 11:
                     m.type = 11;
                     break;
+                case "ARCHIVED":
+                case 12:
+                    m.type = 12;
+                    break;
+                case "LOCKED":
+                case 13:
+                    m.type = 13;
+                    break;
+                case "INVITES":
+                case 14:
+                    m.type = 14;
+                    break;
+                case "THIRD_PARTY":
+                case 15:
+                    m.type = 15;
+                    break;
                 }
                 if (d.isImmutable != null) {
                     m.isImmutable = Boolean(d.isImmutable);
@@ -94418,6 +94863,10 @@ export const proto = $root.proto = (() => {
                 values[valuesById[9] = "AI_HANDOFF"] = 9;
                 values[valuesById[10] = "CHANNELS"] = 10;
                 values[valuesById[11] = "AI_RESPONDING"] = 11;
+                values[valuesById[12] = "ARCHIVED"] = 12;
+                values[valuesById[13] = "LOCKED"] = 13;
+                values[valuesById[14] = "INVITES"] = 14;
+                values[valuesById[15] = "THIRD_PARTY"] = 15;
                 return values;
             })();
 
