@@ -1,13 +1,10 @@
-// Install the libsignal log filter BEFORE any other imports so it captures
-// console calls from libsignal's first load. Opt-out via env var for
-// downstream consumers that want full unfiltered console output.
-// Implementation lives in `./Utils/suppress-libsignal-logs`; this is just
-// the wiring that preserves the previous default-on behavior.
+// ./prelude MUST be the first import: it installs the libsignal log filter
+// as a module side-effect. In native ESM all static imports are evaluated
+// before the module body runs, so a call in the body would fire too late
+// (libsignal already loaded). The prelude has no Socket dependency, so the
+// ESM loader evaluates it — and its filter — before the Socket/index graph.
+import './prelude'
 import { suppressLibsignalLogs } from './Utils/suppress-libsignal-logs'
-
-if (process.env.INFINITEAPI_DISABLE_LIBSIGNAL_LOG_FILTER !== 'true') {
-	suppressLibsignalLogs()
-}
 
 import makeWASocket, { makeWASocketAutoVersion } from './Socket/index'
 
