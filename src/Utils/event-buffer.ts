@@ -574,6 +574,16 @@ export const makeEventBuffer = (
 	function cleanupHistoryCache(): void {
 		if (historyCache.size > config.maxHistoryCacheSize) {
 			const removed = historyCache.cleanup(config.lruCleanupRatio)
+			// Audit MEM-B4 — antes só o tracker LRU era limpo. As entries
+			// reais em `data.historySets.messages[key]` ficavam até o próximo
+			// flush() — e como `!historyCache.has(key)` voltava true após
+			// cleanup, a mesma key era re-adicionada no plain object. Resultado:
+			// crescimento ilimitado de `historySets.messages` em syncs longos.
+			// Evictar os dados também garante que o RSS reflete o cap configurado.
+			for (const key of removed) {
+				delete data.historySets.messages[key]
+			}
+
 			stats.lruCleanups++
 			logger.debug(
 				{

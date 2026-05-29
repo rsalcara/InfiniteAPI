@@ -70,7 +70,20 @@ export const DECRYPTION_RETRY_CONFIG = {
 	maxRetries: SESSION_RECORD_MAX_ATTEMPTS,
 	baseDelayMs: 100,
 	sessionRecordErrors: ['No session record', 'SessionError: No session record'],
-	corruptedSessionErrors: ['Bad MAC', 'MessageCounterError', MISSING_KEYS_ERROR_TEXT]
+	// Audit RETRY-A1 — `'old counter'` e `'Over 2000 messages into the future'`
+	// vêm de `Group/group_cipher.ts:86/90` quando a sender-key local está
+	// dessincronizada (counter avançou no remetente mas não no receptor).
+	// Antes caíam no fallthrough `attempt < UNKNOWN_ERROR_MAX_ATTEMPTS` (2)
+	// e disparavam 3 micro-retries inúteis por entrega — a chain já passou
+	// daquele counter, nenhum retry recupera. Marcar como corrupted faz o
+	// shouldRetry retornar false na primeira tentativa.
+	corruptedSessionErrors: [
+		'Bad MAC',
+		'MessageCounterError',
+		MISSING_KEYS_ERROR_TEXT,
+		'old counter',
+		'Over 2000 messages into the future'
+	]
 }
 
 /**
