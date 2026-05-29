@@ -422,6 +422,11 @@ export function makeLibSignalRepository(
 
 	const parsedKeys = auth.keys as SignalKeyStoreWithRecordTransaction
 	const migratedSessionCache = new LRUCache<string, true>({
+		// Audit memory MEM-005 — sem `max`, lru-cache v11 só expira por TTL
+		// (3 dias). Em contas business com churn alto, isso acumula entries
+		// `${user}.${device}` por dias antes do TTL kick-in. `max: 5000` cobre
+		// folgadamente ~2500 contatos × 2 devices típicos sem perder hit-rate.
+		max: 5000,
 		ttl: 3 * 24 * 60 * 60 * 1000, // 3 days
 		ttlAutopurge: true,
 		updateAgeOnGet: true
@@ -1234,6 +1239,13 @@ function signalStorage(
 					return libsignal.SessionRecord.deserialize(sess)
 				}
 			} catch (e) {
+				// Audit SILENT-003 — antes `return null` silencioso engolia
+				// corrupção de session record, falhas em resolveLIDSignalAddress,
+				// erros de deserialize. Tudo virava "sessão ausente" → Signal
+				// recriava sessão silenciosamente → Bad MAC no destinatário.
+				// `warn` permite diagnosticar quando essa classe de falha
+				// dispara recriação de sessão indesejada.
+				logger?.warn({ id, err: (e as Error)?.message }, 'loadSession failed, treating as missing')
 				return null
 			}
 
@@ -1273,6 +1285,11 @@ function signalStorage(
 					// Keystore may be destroyed if connection closed — safe to ignore
 				}
 			}, PREKEY_GRACE_PERIOD_MS)
+			// Audit PROTO-003 — sem `unref()`, esse timer de 5 min bloqueia
+			// SIGTERM se `close()` não for chamado antes. PM2 manda SIGKILL
+			// após kill_timeout e a pre-key fica em estado inconsistente.
+			// Mesmo padrão do `cacheMetricsInterval.unref()` em :384.
+			if (typeof timer.unref === 'function') timer.unref()
 
 			pendingPreKeyDeletions.set(keyId, timer)
 		},

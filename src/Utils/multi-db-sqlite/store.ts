@@ -45,7 +45,20 @@ const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
 	// have their cascade semantics honored without a separate per-handle
 	// fix. SQLite is per-connection here, so the pragma must be present on
 	// every opened handle — DEFAULT_PRAGMAS is the right place.
-	'foreign_keys = ON'
+	'foreign_keys = ON',
+	// Audit memory MEM-001 — sem esta pragma, SQLite cai no default de
+	// `-2000` (~2 MB de page cache por handle). Com 13 handles × N
+	// sessões, isso vira pressão de RSS desnecessária pro workload da
+	// lib (point reads em signal_kv/jid_map, sem joins grandes). `-512`
+	// = 512 KiB por handle → ~6.5 MB por sessão em vez de ~26 MB.
+	// Quem precisa de mais cache pode override via `extraPragmas`.
+	'cache_size = -512',
+	// Audit memory MEM-002 — `mmap_size = 0` desabilita explicitamente o
+	// memory-mapped I/O. better-sqlite3 já usa 0 por default em builds
+	// padrão, mas algumas distros Linux compilam com `SQLITE_DEFAULT_
+	// MMAP_SIZE` ≠ 0 e o VSZ infla sem refletir consumo real, dificultando
+	// diagnóstico de leak. Defensivo.
+	'mmap_size = 0'
 ]
 
 async function loadBetterSqlite3(): Promise<DatabaseConstructor> {

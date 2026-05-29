@@ -1813,13 +1813,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							)
 						}
 
-						// Also store for future use
+						// Also store for future use. Audit SILENT-001 — antes era
+						// `.catch(() => {})` silencioso; agora loga em debug pra
+						// dar visibilidade em caso de SQLITE_BUSY/JSON parse
+						// errors. Caminho carrossel: falha não derruba o envio.
 						await storeTcTokensFromIqResult({
 							result: fetchResult,
 							fallbackJid: destinationJid,
 							keys: authState.keys,
 							getLIDForPN
-						}).catch(() => {})
+						}).catch(err => logger.debug({ destinationJid, err: err?.message }, '[CAROUSEL] tctoken store failed'))
 					} catch (err: any) {
 						logger.warn({ jid: destinationJid, err: err?.message }, '[CAROUSEL] Blocking tctoken fetch failed')
 					} finally {

@@ -3522,8 +3522,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							})
 							logTcToken('fetched', { jid, reason: 'error_463' })
 						})
-						.catch(() => {
-							/* fire-and-forget */
+						.catch(err => {
+							// Audit SILENT-002 — antes silenciado; agora `debug` pra dar
+							// visibilidade quando 463 recovery falhar sistematicamente
+							// (próximas mensagens pro mesmo JID podem falhar).
+							logger.debug({ jid, err: err?.message }, '463 recovery: tctoken fetch/store failed')
 						})
 						.finally(() => {
 							inFlight463Recoveries.delete(jid)
@@ -3588,8 +3591,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						})
 						logTcToken('fetched', { jid: jid479, reason: 'error_479' })
 					})
-					.catch(() => {
-						/* fire-and-forget */
+					.catch(err => {
+						// Audit SILENT-002 — antes silenciado; agora `debug` pra
+						// dar visibilidade em falhas sistemáticas de 479 recovery.
+						logger.debug({ jid: jid479, err: err?.message }, '479 recovery: tctoken fetch/store failed')
 					})
 			} else {
 				logger.warn({ attrs }, 'received error in ack')

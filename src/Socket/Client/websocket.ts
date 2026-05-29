@@ -47,7 +47,7 @@ export class WebSocketClient extends AbstractSocketClient {
 		}
 	}
 
-	async close() {
+	async close(timeoutMs = 5000) {
 		if (!this.socket) {
 			return
 		}
@@ -58,7 +58,27 @@ export class WebSocketClient extends AbstractSocketClient {
 
 		this.socket.close()
 
-		await closePromise
+		// Audit ROBUST-001 — antes `await closePromise` ficava pendente
+		// indefinidamente se o WS não emitisse `close` (TCP half-open, RST
+		// nunca recebido, servidor degradado). Race com timeout + fallback
+		// pra `terminate()` garante que reconexão sempre ocorre em ≤5s.
+		let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+		const timeoutPromise = new Promise<'timeout'>(resolve => {
+			timeoutHandle = setTimeout(() => resolve('timeout'), timeoutMs)
+		})
+		const result = await Promise.race([closePromise.then(() => 'closed' as const), timeoutPromise])
+		if (timeoutHandle) clearTimeout(timeoutHandle)
+
+		if (result === 'timeout') {
+			// Last resort — force the WebSocket transport down. terminate()
+			// shuts down the underlying TCP socket without waiting for the
+			// close frame to round-trip.
+			try {
+				this.socket?.terminate?.()
+			} catch {
+				/* best effort */
+			}
+		}
 
 		this.socket = null
 	}

@@ -1024,7 +1024,20 @@ export const makeSocket = (config: SocketConfig) => {
 					errorType = 'multidevice_mismatch'
 					break
 				default:
-					errorType = `error_${statusCode}`
+					// Audit SEC-003 — antes `error_${statusCode}` criava UMA série
+					// Prometheus por código distinto. Servidor sob carga ou
+					// codes exóticos → cardinality explosion no `/metrics` e
+					// OOM no scraper. Agora bucketamos por faixa HTTP/WS pra
+					// limitar a cardinalidade do label a ~5 valores.
+					if (typeof statusCode === 'number' && statusCode >= 500) {
+						errorType = 'error_5xx'
+					} else if (typeof statusCode === 'number' && statusCode >= 400) {
+						errorType = 'error_4xx'
+					} else if (typeof statusCode === 'number' && statusCode >= 300) {
+						errorType = 'error_3xx'
+					} else {
+						errorType = 'error_other'
+					}
 			}
 
 			recordConnectionError(errorType)

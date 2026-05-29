@@ -3,7 +3,7 @@ import { Boom } from '@hapi/boom'
 import { AsyncLocalStorage } from 'async_hooks'
 import { Mutex } from 'async-mutex'
 import { randomBytes } from 'crypto'
-import { DEFAULT_CACHE_TTLS } from '../Defaults'
+import { DEFAULT_CACHE_MAX_KEYS, DEFAULT_CACHE_TTLS } from '../Defaults'
 import type {
 	AuthenticationCreds,
 	CacheStore,
@@ -108,7 +108,15 @@ export function makeCacheableSignalKeyStore(
 		new NodeCache<SignalDataTypeMap[keyof SignalDataTypeMap]>({
 			stdTTL: DEFAULT_CACHE_TTLS.SIGNAL_STORE, // 5 minutes
 			useClones: false,
-			deleteOnExpire: true
+			deleteOnExpire: true,
+			// Audit memory MEM-006 — sem `maxKeys`, NodeCache aceita entries
+			// ilimitadas até o TTL (5min) expirar. Em history sync inicial
+			// com milhares de chaves Signal (pre-keys, sessions, sender-keys),
+			// o cache cresce livremente durante a janela e fragmenta o V8
+			// heap — RSS pós-sync não retorna ao baseline. `maxKeys: 10_000`
+			// é consistente com `DEFAULT_CACHE_MAX_KEYS.SIGNAL_STORE` usado
+			// nos LRUCache equivalentes do fork.
+			maxKeys: DEFAULT_CACHE_MAX_KEYS.SIGNAL_STORE
 		})
 
 	// Mutex for protecting cache operations
