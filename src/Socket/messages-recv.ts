@@ -3843,26 +3843,32 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		identityAssertDebounce.close?.()
 		identityAssertDebounce.flushAll?.()
 
-		// Audit memory-leak Finding 8 PARCIAL — placeholderResendCache estava
-		// faltando close(). Os outros 3 NodeCaches já chamavam close(), só este
-		// vazava o setInterval interno de 600s do NodeCache em cada reconexão.
-		if (!config.placeholderResendCache) {
-			placeholderResendCache.close?.()
-			placeholderResendCache.flushAll?.()
-		}
+		// Audit memory-leak Finding 8: o cleanup do `placeholderResendCache`
+		// JÁ acontece em chats.ts:1631-1640 (que roda DEPOIS deste handler
+		// na cadeia de close). chats.ts:138-140 faz back-assign
+		// `config.placeholderResendCache = placeholderResendCache` quando o
+		// consumer não supre, então uma guarda `!config.placeholderResendCache`
+		// aqui seria sempre false — código morto. Cobertura é total via
+		// chats.ts; nada a fazer aqui (review Copilot #476).
 
-		// Audit memory-leak Finding 1+9 — os Sets em si são pequenos (cada
-		// entry ~50 bytes), mas seus conteúdos ficam pinados pelas closures
-		// dos timers internos (setTimeout 5s/60s) e dos in-flight handlers.
-		// Limpar agora libera a memória imediatamente em vez de esperar
-		// expiração natural dos timers, que em workloads com burst (carrossel
-		// multi-destinatário) pode reter centenas de entries por minutos
-		// após disconnect.
-		tcTokenKnownJids.clear()
+		// Audit memory-leak Finding 1+9 — limpa Sets de dedup/in-flight pra
+		// soltar suas closures imediatamente em vez de esperar expiração
+		// natural dos timers internos (5s/60s).
+		//
+		// NÃO limpar `tcTokenKnownJids` aqui: o handler de `connection.update`
+		// em :3772 agenda um flush assíncrono via `tcTokenIndexLoaded.then(...)`
+		// que serializa `[...tcTokenKnownJids]` pro auth state. Limpar
+		// síncrono aqui faria o spread capturar Set vazio antes do `then`
+		// rodar, persistindo índice vazio (review Codex P2 #476).
+		// O conteúdo de `tcTokenKnownJids` é solto naturalmente pelo GC
+		// quando o socket for descartado.
 		tcTokenRetriedMsgIds.clear()
 		inFlight463Recoveries.clear()
 		retryRequestActiveJids.clear()
 		identityInFlightRefreshes.clear()
+		// `tcTokenIndexSaveTimer` é cancelado pelo handler de connection.update
+		// (:3774) ANTES de agendar o flush final; aqui só limpamos defensivamente
+		// caso a sequência de eventos seja invertida em algum caminho de erro.
 		if (tcTokenIndexSaveTimer) {
 			clearTimeout(tcTokenIndexSaveTimer)
 			tcTokenIndexSaveTimer = undefined
