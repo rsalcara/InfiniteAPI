@@ -94,10 +94,7 @@ export function wrapKeysWithJidMap(
 			// that still have lid-mapping entries under the inner store rather
 			// than jid_map — without this, those mappings are invisible until
 			// WhatsApp re-emits them.
-			const allOriginalIds = [
-				...forwardIds,
-				...reverseLids.map(lid => reverseLookup.get(lid)!)
-			]
+			const allOriginalIds = [...forwardIds, ...reverseLids.map(lid => reverseLookup.get(lid)!)]
 			const missedIds = allOriginalIds.filter(id => out[id] === undefined)
 			if (missedIds.length > 0) {
 				const legacyHits = await inner.get(type, missedIds)

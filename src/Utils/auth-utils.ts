@@ -1,4 +1,5 @@
 import NodeCache from '@cacheable/node-cache'
+import { Boom } from '@hapi/boom'
 import { AsyncLocalStorage } from 'async_hooks'
 import { Mutex } from 'async-mutex'
 import { randomBytes } from 'crypto'
@@ -736,6 +737,21 @@ export const addTransactionCapability = (
 				}
 			: {})
 	}
+}
+
+/**
+ * Pure helper que devolve `creds.me.id` ou lança `Boom 401` se a socket
+ * ainda não autenticou. Mantém o uso DRY em vez de espalhar checks inline
+ * (`creds.me?.id` || throw) por messages-send e callers que pré-supõem
+ * autenticação concluída. Port parcial de upstream `798f2a93b9` (PR #1892).
+ */
+export const assertMeId = (creds: AuthenticationCreds): string => {
+	const id = creds.me?.id
+	if (!id) {
+		throw new Boom('Cannot proceed: socket is not authenticated yet (creds.me.id is missing)', { statusCode: 401 })
+	}
+
+	return id
 }
 
 export const initAuthCreds = (): AuthenticationCreds => {

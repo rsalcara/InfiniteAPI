@@ -53,6 +53,9 @@ const storeMappingFromEnvelope = async (
 export const NO_MESSAGE_FOUND_ERROR_TEXT = 'Message absent from node'
 export const MISSING_KEYS_ERROR_TEXT = 'Key used already or never filled'
 export const BAD_MAC_ERROR_TEXT = 'Bad MAC'
+/** Texto exibido como messageStub quando o servidor restringe envios.
+ *  Port de upstream `4dbbba2891` (PR #2442). */
+export const ACCOUNT_RESTRICTED_TEXT = 'Your account has been restricted'
 
 // Single source of truth for decryption retry tuning. Previously the cap
 // "3" was hardcoded in three independent places (DECRYPTION_RETRY_CONFIG.
@@ -103,6 +106,8 @@ export const DECRYPTION_RETRY_OPTIONS: RetryOptions = {
 }
 
 export const NACK_REASONS = {
+	// Port de upstream `4dbbba2891` (PR #2442)
+	SenderReachoutTimelocked: 463,
 	ParsingError: 487,
 	UnrecognizedStanza: 488,
 	UnrecognizedStanzaClass: 489,
@@ -120,7 +125,19 @@ export const NACK_REASONS = {
 }
 
 export const SERVER_ERROR_CODES = {
+	/**
+	 * @deprecated Use `MessageAccountRestriction` (mesma código `'463'`).
+	 * Mantido como alias pra preservar compat com consumers externos que
+	 * importam este símbolo. Port de upstream `0b159bfefc`.
+	 */
 	MissingTcToken: '463',
+	/**
+	 * 1:1 message missing privacy token (tctoken). Usually means the account
+	 * is restricted: WhatsApp blocks starting new chats but preserves existing
+	 * ones, since established chats already carry a tctoken.
+	 * Port de upstream `0b159bfefc`.
+	 */
+	MessageAccountRestriction: '463',
 	SmaxInvalid: '479',
 	StaleGroupAddressingMode: '421',
 	NewChatMessagesCapped: '475'
@@ -206,6 +223,17 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 
 			chatId = recipient
 		} else {
+			// Peer-routed self stanzas (history sync, app-state sync, LID
+			// migration, PDO responses) arrive com `from === me` mas SEM
+			// atributo `recipient`. Sem `fromMe = true` aqui, o self-only
+			// protocolMessage guard descarta esses stanzas — quebrando
+			// messaging-history.set pra INITIAL_BOOTSTRAP, INITIAL_STATUS_V3,
+			// RECENT e ON_DEMAND. Espelha o branch acima (recipient-present).
+			// Port de upstream `5ddc231fe3`.
+			if (isMe(from) || isMeLid(from)) {
+				fromMe = true
+			}
+
 			chatId = from
 		}
 

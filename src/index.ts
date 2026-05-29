@@ -4,9 +4,8 @@
 // (libsignal already loaded). The prelude has no Socket dependency, so the
 // ESM loader evaluates it — and its filter — before the Socket/index graph.
 import './prelude'
-import { suppressLibsignalLogs } from './Utils/suppress-libsignal-logs'
-
 import makeWASocket, { makeWASocketAutoVersion } from './Socket/index'
+import { suppressLibsignalLogs } from './Utils/suppress-libsignal-logs'
 
 export * from '../WAProto/index.js'
 export * from './Utils/index'
