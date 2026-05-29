@@ -422,6 +422,15 @@ export const makeEventBuffer = (
 	let destroyed = false
 	let bufferTimeout: NodeJS.Timeout | null = null
 	let flushPendingTimeout: NodeJS.Timeout | null = null
+	/**
+	 * Audit memory-leak Finding 3 — `createBufferedFunction` agenda um
+	 * `functionTimeout` por chamada DEPOIS de um await. Sem rastreio,
+	 * o `clearAllTimers()` chamado por `destroy()` não tinha visibilidade
+	 * desses timers (ficavam em closure isolada). Impacto real é baixo
+	 * (flushDebounceMs default = 10ms e o callback verifica `!destroyed`),
+	 * mas garante zero janelas onde um timer dispara após destroy.
+	 */
+	const pendingFunctionTimeouts = new Set<NodeJS.Timeout>()
 	let bufferCount = 0
 	let currentEventCount = 0
 
@@ -501,6 +510,11 @@ export const makeEventBuffer = (
 			clearTimeout(flushPendingTimeout)
 			flushPendingTimeout = null
 		}
+
+		// Audit memory-leak Finding 3 — limpa também os functionTimeouts
+		// pendentes de `createBufferedFunction`.
+		for (const t of pendingFunctionTimeouts) clearTimeout(t)
+		pendingFunctionTimeouts.clear()
 	}
 
 	// Take the generic event and fire it as a baileys event
@@ -862,14 +876,20 @@ export const makeEventBuffer = (
 						// Clear any existing function timeout to prevent orphaned timers
 						if (functionTimeout) {
 							clearTimeout(functionTimeout)
+							pendingFunctionTimeouts.delete(functionTimeout)
 						}
 
-						functionTimeout = setTimeout(() => {
+						const t: NodeJS.Timeout = setTimeout(() => {
+							pendingFunctionTimeouts.delete(t)
 							functionTimeout = null
 							if (isBuffering && bufferCount === 1 && !destroyed) {
 								flush()
 							}
 						}, config.flushDebounceMs)
+						functionTimeout = t
+						// Audit memory-leak Finding 3 — rastreio pra que destroy()
+						// pegue qualquer timer ainda em vôo.
+						pendingFunctionTimeouts.add(t)
 					}
 
 					return result
@@ -877,6 +897,7 @@ export const makeEventBuffer = (
 					// Clear timeout on error
 					if (functionTimeout) {
 						clearTimeout(functionTimeout)
+						pendingFunctionTimeouts.delete(functionTimeout)
 						functionTimeout = null
 					}
 

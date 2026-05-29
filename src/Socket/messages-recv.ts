@@ -276,6 +276,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	let tcTokenIndexSaveTimer: ReturnType<typeof setTimeout> | undefined
 	let lastTcTokenPruneTs = 0
 
+	/**
+	 * Audit memory-leak Finding 6 — timers de cleanup do PDO (8s) eram criados
+	 * com `setTimeout(...)` sem rastreio. Em disconnect com PDOs in-flight, o
+	 * timer disparava sobre cache fechado e retinha closures (stanzaId,
+	 * placeholderResendCache, logger) por até 8s. Rastreamento permite
+	 * cancelamento síncrono no `registerSocketEndHandler`.
+	 */
+	const pdoCleanupTimers = new Set<ReturnType<typeof setTimeout>>()
+
 	// Load persisted JID index and last prune timestamp on startup
 	const tcTokenIndexLoaded = (async () => {
 		try {
@@ -447,13 +456,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// Clean up message ID marker after storing with stanzaId
 		await placeholderResendCache.del(resendId)
 
-		// Cleanup timeout: if no response after 8s, assume phone is offline
-		setTimeout(async () => {
+		// Cleanup timeout: if no response after 8s, assume phone is offline.
+		// Audit memory-leak Finding 6 — timer agora rastreado em `pdoCleanupTimers`
+		// pra que `registerSocketEndHandler` cancele todos os pendentes no disconnect.
+		const cleanupTimer: ReturnType<typeof setTimeout> = setTimeout(async () => {
+			pdoCleanupTimers.delete(cleanupTimer)
 			if (await placeholderResendCache.get<PlaceholderMessageData | boolean>(stanzaId)) {
 				logger.debug({ stanzaId }, 'PDO message without response after 8 seconds. Phone possibly offline')
 				await placeholderResendCache.del(stanzaId)
 			}
 		}, 8_000)
+		pdoCleanupTimers.add(cleanupTimer)
 
 		return stanzaId
 	}
@@ -3829,6 +3842,37 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		identityAssertDebounce.close?.()
 		identityAssertDebounce.flushAll?.()
+
+		// Audit memory-leak Finding 8 PARCIAL — placeholderResendCache estava
+		// faltando close(). Os outros 3 NodeCaches já chamavam close(), só este
+		// vazava o setInterval interno de 600s do NodeCache em cada reconexão.
+		if (!config.placeholderResendCache) {
+			placeholderResendCache.close?.()
+			placeholderResendCache.flushAll?.()
+		}
+
+		// Audit memory-leak Finding 1+9 — os Sets em si são pequenos (cada
+		// entry ~50 bytes), mas seus conteúdos ficam pinados pelas closures
+		// dos timers internos (setTimeout 5s/60s) e dos in-flight handlers.
+		// Limpar agora libera a memória imediatamente em vez de esperar
+		// expiração natural dos timers, que em workloads com burst (carrossel
+		// multi-destinatário) pode reter centenas de entries por minutos
+		// após disconnect.
+		tcTokenKnownJids.clear()
+		tcTokenRetriedMsgIds.clear()
+		inFlight463Recoveries.clear()
+		retryRequestActiveJids.clear()
+		identityInFlightRefreshes.clear()
+		if (tcTokenIndexSaveTimer) {
+			clearTimeout(tcTokenIndexSaveTimer)
+			tcTokenIndexSaveTimer = undefined
+		}
+
+		// Audit memory-leak Finding 6 — cancela qualquer cleanup PDO ainda
+		// pendente (até 8s). Sem isso, o timer disparava sobre o cache
+		// fechado e retinha as closures até resolver.
+		for (const t of pdoCleanupTimers) clearTimeout(t)
+		pdoCleanupTimers.clear()
 	})
 
 	return {

@@ -118,11 +118,22 @@ async function fetchVersionOnce(cacheFilePath: string, logger?: VersionCacheLogg
 		source: result.isLatest ? 'online' : 'fallback'
 	}
 
-	// Update memory cache
-	memoryCache = entry
-
-	// Persist to file (async, don't wait)
-	writeCacheFile(cacheFilePath, entry, logger).catch(() => {})
+	// Audit memory-leak Finding 10 — populate memoryCache APENAS para versões
+	// online válidas. Versões fallback (bundled) eram cacheadas por 6h e
+	// bloqueavam tentativas de refetch, prendendo todos os sockets em versão
+	// estática. Agora o fallback é retornado mas não persiste — próxima
+	// chamada tenta o online de novo.
+	if (result.isLatest) {
+		memoryCache = entry
+		// Audit Finding 10 — erro do writeCacheFile era silenciado por
+		// `.catch(() => {})`; agora vai pro logger pra surfar problemas
+		// de I/O (permissão, disco cheio).
+		writeCacheFile(cacheFilePath, entry, logger).catch(err =>
+			logger?.warn({ err }, 'failed to write version cache file')
+		)
+	} else {
+		logger?.debug({ version: entry.version }, 'using bundled fallback version (not caching)')
+	}
 
 	logger?.info({ version: entry.version, source: entry.source }, 'Version fetched and cached')
 
