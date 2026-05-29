@@ -125,12 +125,11 @@ async function fetchVersionOnce(cacheFilePath: string, logger?: VersionCacheLogg
 	// chamada tenta o online de novo.
 	if (result.isLatest) {
 		memoryCache = entry
-		// Audit Finding 10 — erro do writeCacheFile era silenciado por
-		// `.catch(() => {})`; agora vai pro logger pra surfar problemas
-		// de I/O (permissão, disco cheio).
-		writeCacheFile(cacheFilePath, entry, logger).catch(err =>
-			logger?.warn({ err }, 'failed to write version cache file')
-		)
+		// Audit Finding 10 — `writeCacheFile` já loga internamente via
+		// try/catch e nunca rejeita; o `.catch()` no call site era dead
+		// code (review #476). `void` documenta a intenção fire-and-forget
+		// sem o `no-floating-promises` lint warning.
+		void writeCacheFile(cacheFilePath, entry, logger)
 	} else {
 		logger?.debug({ version: entry.version }, 'using bundled fallback version (not caching)')
 	}
