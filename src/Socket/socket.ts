@@ -1663,23 +1663,44 @@ export const makeSocket = (config: SocketConfig) => {
 	/**
 	 * Fetches your account's standing when it comes to restrictions.
 	 * Port de upstream `4dbbba2891` (PR #2442).
+	 *
+	 * @param emitUpdate — quando `true` (default), emite `connection.update`
+	 *   com o `ReachoutTimelockState` resultante. Quando `false`, apenas
+	 *   retorna — usado pelo caminho fire-and-forget no handler de 463 pra
+	 *   evitar double-emit com o push notification `NotificationUser-
+	 *   ReachoutTimelockUpdate` que chega em paralelo (audit SEC #475 RACE-01).
 	 * @returns Returns the state of the restrictions.
 	 */
-	const fetchAccountReachoutTimelock = async (): Promise<ReachoutTimelockState> => {
-		const queryResult = await executeWMexQuery<{
+	const fetchAccountReachoutTimelock = async (emitUpdate = true): Promise<ReachoutTimelockState> => {
+		// 10s timeout — fire-and-forget chamadores não podem ficar com
+		// promise pendente indefinida em caso de socket instável (audit
+		// ROBUST-01).
+		const queryResult = await promiseTimeout<{
 			is_active?: boolean
 			time_enforcement_ends?: string
 			enforcement_type: ReachoutTimelockEnforcementType
-		}>({}, QueryIds.REACHOUT_TIMELOCK, XWAPaths.xwa2_fetch_account_reachout_timelock, query, generateMessageTag)
+		}>(10_000, (resolve, reject) =>
+			executeWMexQuery<{
+				is_active?: boolean
+				time_enforcement_ends?: string
+				enforcement_type: ReachoutTimelockEnforcementType
+			}>({}, QueryIds.REACHOUT_TIMELOCK, XWAPaths.xwa2_fetch_account_reachout_timelock, query, generateMessageTag)
+				.then(resolve)
+				.catch(reject)
+		)
+		// NaN guard — servidor pode mandar "abc", "0", "1abc"; sem proteção
+		// caímos em `Invalid Date` ou `new Date(0)` (audit SEC-01).
+		const tsRaw = queryResult?.time_enforcement_ends
+		const tsParsed = tsRaw && tsRaw !== '0' ? parseInt(tsRaw, 10) : NaN
 		const result: ReachoutTimelockState = {
 			isActive: !!queryResult?.is_active,
-			timeEnforcementEnds:
-				queryResult?.time_enforcement_ends && queryResult?.time_enforcement_ends !== '0'
-					? new Date(parseInt(queryResult.time_enforcement_ends, 10) * 1000)
-					: undefined,
+			timeEnforcementEnds: Number.isFinite(tsParsed) && tsParsed > 0 ? new Date(tsParsed * 1000) : undefined,
 			enforcementType: queryResult?.enforcement_type ?? ReachoutTimelockEnforcementType.DEFAULT
 		}
-		ev.emit('connection.update', { reachoutTimeLock: result })
+		if (emitUpdate) {
+			ev.emit('connection.update', { reachoutTimeLock: result })
+		}
+
 		return result
 	}
 

@@ -20,6 +20,7 @@ import type {
 import {
 	aggregateMessageKeysNotFromMe,
 	assertMediaContent,
+	assertMeId,
 	bindWaitForEvent,
 	decryptMediaRetryData,
 	encodeNewsletterMessage,
@@ -587,9 +588,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		pdoMessage: proto.Message.IPeerDataOperationRequestMessage
 	): Promise<string> => {
 		//TODO: for later, abstract the logic to send a Peer Message instead of just PDO - useful for App State Key Resync with phone
-		if (!authState.creds.me?.id) {
-			throw new Boom('Not authenticated')
-		}
+		// `assertMeId` lança Boom 401 padronizado e devolve o id já validado
+		// (port de upstream `798f2a93b9`, audit ROBUST-03). Usar o retorno
+		// elimina o non-null assertion (`!`) e o duplicate-check abaixo.
+		const meId = assertMeId(authState.creds)
 
 		const protocolMessage: proto.IMessage = {
 			protocolMessage: {
@@ -598,7 +600,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 		}
 
-		const meJid = jidNormalizedUser(authState.creds.me.id)
+		const meJid = jidNormalizedUser(meId)
 
 		const msgId = await relayMessage(meJid, protocolMessage, {
 			additionalAttributes: {

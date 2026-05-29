@@ -106,8 +106,6 @@ export const DECRYPTION_RETRY_OPTIONS: RetryOptions = {
 }
 
 export const NACK_REASONS = {
-	// Port de upstream `4dbbba2891` (PR #2442)
-	SenderReachoutTimelocked: 463,
 	ParsingError: 487,
 	UnrecognizedStanza: 488,
 	UnrecognizedStanzaClass: 489,
