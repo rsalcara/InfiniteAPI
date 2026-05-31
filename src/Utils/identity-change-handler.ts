@@ -216,7 +216,21 @@ export async function handleIdentityChange(
 
 		// FIX: Set debounce cache only immediately before the actual refresh attempt
 		// This ensures we don't incorrectly debounce when we exit early (offline, etc.)
-		ctx.debounceCache.set(from, true)
+		// Audit IDENTITY-CACHE — `@cacheable/node-cache` default `NodeCache.set()`
+		// LANÇA quando atinge maxKeys (não evicta). Swallow silencioso aqui: o
+		// debounce é otimização, não correctness — sem o set apenas dispara a
+		// próxima identity assert (cobertura pelo `inFlightRefreshes` set
+		// abaixo). Mesmo padrão de BOT-001 em auth-utils.ts.
+		try {
+			ctx.debounceCache.set(from, true)
+		} catch (err) {
+			const msg = (err as Error)?.message ?? ''
+			if (!msg.includes('max keys') && !msg.includes('ECACHEFULL')) {
+				throw err
+			}
+
+			ctx.logger.debug({ from }, 'identity debounce cache full, skipping cache write')
+		}
 
 		// Attempt session refresh/creation
 		try {

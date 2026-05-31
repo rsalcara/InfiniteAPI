@@ -234,7 +234,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	// Debounce identity-change session refreshes per JID to avoid bursts
-	const identityAssertDebounce = new NodeCache<boolean>({ stdTTL: 5, useClones: false })
+	// Audit IDENTITY-CACHE — TTL 5s + uso esporádico mantém o cap baixo na
+	// prática. Cap defensivo de 1000 (= ~200 identity asserts/s sustentados,
+	// muito acima do realista). `NodeCache.set()` LANÇA ao atingir maxKeys,
+	// então identity-change-handler.ts:219 envolve em try/catch silencioso
+	// (mesmo padrão de BOT-001 em auth-utils.ts).
+	const identityAssertDebounce = new NodeCache<boolean>({
+		stdTTL: 5,
+		useClones: false,
+		maxKeys: 1000
+	})
 
 	// Stage 3 (upstream #2573 M11): in-flight Set for identity refreshes.
 	// Created ONCE per socket lifetime so handleIdentityChange can dedup
