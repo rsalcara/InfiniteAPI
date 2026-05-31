@@ -64,6 +64,12 @@ export type SocketConfig = {
 	versionCheckIntervalMs: number
 	/** override browser config */
 	browser: WABrowserDescription
+	/**
+	 * Initial pushName carried in the registration ClientPayload.
+	 * Used by mock servers (e2e harness) for deterministic phone assignment.
+	 * Upstream #2432.
+	 */
+	pushName?: string
 	/** agent used for fetch requests -- uploading/downloading media */
 	fetchAgent?: Agent
 	/** should the QR be printed in the terminal

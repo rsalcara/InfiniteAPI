@@ -60,6 +60,11 @@ const getClientPayload = (config: SocketConfig) => {
 
 	payload.webInfo = getWebInfo(config)
 
+	// Upstream #2432: expose pushName for mock-phone harness deterministic assignment.
+	if (config.pushName) {
+		payload.pushName = config.pushName
+	}
+
 	return payload
 }
 
