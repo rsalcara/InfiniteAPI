@@ -126,6 +126,32 @@ export function makeCacheableSignalKeyStore(
 		return `${type}.${id}`
 	}
 
+	/**
+	 * Audit BOT-001 — `@cacheable/node-cache` default export (`NodeCache`,
+	 * versão síncrona) LANÇA `Cache max keys amount exceeded` (linha 278 do
+	 * dist) quando `store.size >= maxKeys`. NÃO é eviction LRU como o
+	 * `lru-cache` v11. Sem este wrapper, o throw propaga pra dentro do
+	 * caller de `signalStore.get()`/`set()` mesmo o durable store já ter
+	 * persistido com sucesso — Signal interpreta como falha de read/write
+	 * e mensagens param de ser entregues em sessões com >10k Signal keys
+	 * distintas dentro da janela de TTL (history sync inicial de conta
+	 * business). Tornar o cache write best-effort: durable store é a
+	 * fonte de verdade; cache miss no próximo read recupera natural.
+	 */
+	async function safeCacheSet(key: string, value: SignalDataTypeMap[keyof SignalDataTypeMap]) {
+		try {
+			await cache.set(key, value)
+		} catch (err) {
+			const msg = (err as Error)?.message ?? ''
+			if (msg.includes('max keys') || msg.includes('ECACHEFULL')) {
+				logger?.debug({ key }, 'signal cache full, skipping cache write (durable store unaffected)')
+				return
+			}
+
+			throw err
+		}
+	}
+
 	return {
 		async get(type, ids) {
 			return cacheMutex.runExclusive(async () => {
@@ -158,7 +184,7 @@ export function makeCacheableSignalKeyStore(
 						if (item !== null && item !== undefined) {
 							data[id] = item
 							// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
-							await cache.set(getUniqueId(type, id), item as SignalDataTypeMap[keyof SignalDataTypeMap])
+							await safeCacheSet(getUniqueId(type, id), item as SignalDataTypeMap[keyof SignalDataTypeMap])
 						}
 					}
 				}
@@ -193,7 +219,7 @@ export function makeCacheableSignalKeyStore(
 						if (value === null || value === undefined) {
 							await cache.del(getUniqueId(type, id))
 						} else {
-							await cache.set(getUniqueId(type, id), value)
+							await safeCacheSet(getUniqueId(type, id), value)
 						}
 
 						keys += 1

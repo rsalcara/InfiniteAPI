@@ -574,32 +574,27 @@ export const makeEventBuffer = (
 	function cleanupHistoryCache(): void {
 		if (historyCache.size > config.maxHistoryCacheSize) {
 			const removed = historyCache.cleanup(config.lruCleanupRatio)
-			// Audit MEM-B4 — antes só o tracker LRU era limpo. As entries
-			// reais em `data.historySets.{messages,chats,contacts}` ficavam
-			// até o próximo flush() — e como `!historyCache.has(key)` voltava
-			// true após cleanup, a mesma key era re-adicionada no plain
-			// object. Resultado: crescimento ilimitado em syncs longos.
-			// Evictar os dados também garante que o RSS reflete o cap.
+			// Audit BOT-002 (cubic review #480) — REVERTIDO: o bloco
+			// `for (const key of removed) delete data.historySets.*` causava
+			// perda de dados.
 			//
-			// Audit follow-up review #480 — o tracker `historyCache` guarda
-			// 3 tipos de keys com formatos distintos (ver linhas 994, 1012,
-			// 1024). O fix inicial só pegava `messages`. Agora descrimina
-			// pelo formato pra evictar do bucket correto:
-			//   - message: `"remoteJid,id,fromMe"`  (tem vírgula — formato
-			//     do `stringifyMessageKey`)
-			//   - contact: `"c:" + jid`             (prefixo `c:` adicionado
-			//     em :1008 antes de `historyCache.add`)
-			//   - chat: bare JID                    (sem vírgula, sem prefix)
-			for (const key of removed) {
-				if (key.startsWith('c:')) {
-					delete data.historySets.contacts[key.slice(2)]
-				} else if (key.includes(',')) {
-					delete data.historySets.messages[key]
-				} else {
-					delete data.historySets.chats[key]
-				}
-			}
-
+			// Fluxo do flush():
+			//   1. cleanupHistoryCache() é chamado AQUI (linha 688)
+			//   2. consolidateEvents(data) lê data.historySets.* (linha 730)
+			//   3. data = newData                                  (linha 738)
+			//   4. ev.emit('event', consolidatedData)              (linha 740)
+			//
+			// Se deletássemos entradas de data.historySets aqui, mensagens
+			// evictadas pelo LRU desapareceriam ANTES do consolidateEvents
+			// → messaging-history.set seria emitido SEM essas mensagens.
+			// E o `data = newData` no passo 3 já zera o buffer inteiro após
+			// emit, então deletar individual aqui não libera memória
+			// duradoura — só causa perda de dados.
+			//
+			// O `historyCache.cleanup()` acima continua sendo chamado pra
+			// cap do dedup tracker (necessário pra dedup entre batches).
+			// Os dados em data.historySets seguem até o flush emitir e
+			// trocar pra newData — comportamento original e correto.
 			stats.lruCleanups++
 			logger.debug(
 				{
