@@ -23,6 +23,7 @@ import {
 	assertMeId,
 	bindWaitForEvent,
 	decryptMediaRetryData,
+	DEF_MEDIA_HOST,
 	encodeNewsletterMessage,
 	encodeSignedDeviceIdentity,
 	encodeWAMessage,
@@ -126,6 +127,18 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 	let mediaConn: Promise<MediaConnInfo> | undefined
 	/**
+	 * Per-socket media host (Upstream #2432). Starts at `DEF_MEDIA_HOST`
+	 * (`mmg.whatsapp.net`) and is refreshed every time `refreshMediaConn`
+	 * fetches a new `media_conn`. The server can publish a non-default
+	 * CDN host for regional balancing — honoring it shaves the round-trip
+	 * latency on every `getUrlFromDirectPath` produced by media updates.
+	 *
+	 * No behavior change for the default case: when the server returns
+	 * `mmg.whatsapp.net` (the historical default), this variable stays at
+	 * `DEF_MEDIA_HOST` and the URLs are identical to the pre-port build.
+	 */
+	let mediaHost: string = DEF_MEDIA_HOST
+	/**
 	 * Single-flight guard for the media-conn fetch (adapted from upstream #2579 Stage 9).
 	 * Two concurrent callers used to both observe `mediaConn` as expired and both
 	 * reassign the in-flight promise, leaking the first fetch's result. The mutex
@@ -187,6 +200,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					ttl: +mediaConnNode.attrs.ttl!,
 					fetchDate: new Date()
 				}
+				// Upstream #2432: pick up the server-published CDN host for this socket.
+				// Falls back to the existing `mediaHost` (initially `DEF_MEDIA_HOST`) when
+				// the server returns an empty host list — i.e. behavior unchanged for that case.
+				if (node.hosts[0]) {
+					mediaHost = node.hosts[0].hostname
+				}
+
 				logger.debug('fetched media conn')
 				return node
 			})()
@@ -2255,6 +2275,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		sendReceipts,
 		readMessages,
 		refreshMediaConn,
+		// Upstream #2432: expose the per-socket media host so test/download
+		// helpers (and any consumer doing manual downloads via
+		// `downloadContentFromMessage`) can pass it as `opts.host`. Function
+		// (not getter) so the spread in chats.ts preserves the live closure binding.
+		getMediaHost: () => mediaHost,
 		waUploadToServer,
 		fetchPrivacySettings,
 		sendPeerDataOperationMessage,
@@ -2292,7 +2317,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								}
 
 								content.directPath = media.directPath
-								content.url = getUrlFromDirectPath(content.directPath!)
+								// Upstream #2432: route the rebuilt URL through this socket's
+								// `mediaHost` so a regional CDN host published in media_conn is
+								// honored. Defaults to `DEF_MEDIA_HOST` until media_conn refresh,
+								// preserving the historical URL shape for the default case.
+								content.url = getUrlFromDirectPath(content.directPath!, mediaHost)
 
 								logger.debug({ directPath: media.directPath, key: result.key }, 'media update successful')
 							} catch (err: any) {
