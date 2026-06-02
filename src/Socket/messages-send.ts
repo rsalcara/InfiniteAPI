@@ -202,8 +202,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 				// Upstream #2432: pick up the server-published CDN host for this socket.
 				// Falls back to the existing `mediaHost` (initially `DEF_MEDIA_HOST`) when
-				// the server returns an empty host list — i.e. behavior unchanged for that case.
-				if (node.hosts[0]) {
+				// the server returns an empty host list — behavior unchanged for that case.
+				// PR #490 review (Copilot P3): check `hosts[0]?.hostname` truthy — guards
+				// against an empty-string hostname slot, which would otherwise produce
+				// `https:///${directPath}` (malformed) on the next media URL build.
+				if (node.hosts[0]?.hostname) {
 					mediaHost = node.hosts[0].hostname
 				}
 

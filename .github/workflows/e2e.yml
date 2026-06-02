@@ -1,10 +1,18 @@
 name: E2E Tests
 
+# SECURITY (PR #490 review — GHSL-2021-004):
+# This workflow used `pull_request_target` upstream, which runs in the BASE
+# repository context WITH secrets. Combined with `checkout @ pr.head.sha` and
+# `yarn install` (postinstall scripts) + `yarn test:e2e` (arbitrary code), any
+# fork PR could exfiltrate the `BARTENDER_GHCR_TOKEN` secret. Switched to
+# `pull_request` (no secrets exposure on fork PRs) and gated the GHCR-credentialed
+# mock-server job to push events on master, where the PR has already been merged
+# and the code is trusted.
 on:
   push:
     branches:
       - master
-  pull_request_target:
+  pull_request:
     branches:
       - master
 
@@ -16,6 +24,11 @@ jobs:
     name: E2E Tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # GHCR-authenticated mock-server only runs on push to master (post-merge,
+    # trusted code). Pull-request runs do not need the secret because the
+    # mock-server is a public image once pulled into the runner — but since
+    # we don't ship a public mirror, PR runs simply skip the e2e job below.
+    if: github.event_name == 'push'
     services:
       mock-server:
         image: ghcr.io/whiskeysockets-devtools/bartender:latest
@@ -31,8 +44,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Node.js and Corepack
         uses: actions/setup-node@v4

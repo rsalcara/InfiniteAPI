@@ -428,6 +428,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// Stage 9 (upstream #2579): collapse the previous `get → set` cache-
 		// dedupe into one per-id critical section so two concurrent callers
 		// can't both observe an empty cache and both fire the resend.
+		//
+		// PR #490 review (Cubic P1): track whether the marker was actually
+		// persisted. `safeCacheSet` swallows maxKeys saturation, so if the
+		// cache is full the marker write becomes a no-op — and the post-delay
+		// `'RESOLVED'` check (which infers "message arrived during the delay"
+		// from cache miss) would incorrectly drop the resend silently. When
+		// the marker write fails, we still need to proceed with the PDO send
+		// and skip the early-return branch entirely.
+		let markerWritten = false
 		const alreadyHandled = await placeholderResendLocks.withLock(
 			{ namespace: '__placeholder_resend__', id: resendId },
 			async () => {
@@ -439,7 +448,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 				// Temporarily mark as requested using message ID to prevent race conditions.
 				// BOT-001-B: maxKeys saturation falls back to debug log instead of throwing.
-				await safeCacheSet(placeholderResendCache, resendId, true, logger, 'placeholderResendCache')
+				try {
+					await placeholderResendCache.set(resendId, true)
+					markerWritten = true
+				} catch (err) {
+					const msg = (err as Error)?.message ?? ''
+					if (!msg.includes('max keys') && !msg.includes('ECACHEFULL')) {
+						throw err
+					}
+
+					logger.debug(
+						{ resendId },
+						'placeholderResendCache full, marker skipped (will still send PDO unconditionally)'
+					)
+				}
+
 				return false
 			}
 		)
@@ -447,8 +470,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		await delay(2000)
 
-		// Check if message was received during delay
-		if (!(await placeholderResendCache.get<PlaceholderMessageData | boolean>(resendId))) {
+		// Check if message was received during delay.
+		// PR #490 review (Cubic P1): only trust the cache-miss → 'RESOLVED' inference
+		// when we actually persisted the marker. If markerWritten=false the cache miss
+		// reflects "we never wrote it" (cache was full), NOT "message arrived during delay"
+		// — skip the early return and let the PDO go out unconditionally.
+		if (markerWritten && !(await placeholderResendCache.get<PlaceholderMessageData | boolean>(resendId))) {
 			logger.debug({ messageKey }, 'message received while resend requested')
 			return 'RESOLVED'
 		}
@@ -1595,6 +1622,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				// mirror only means the in-memory retry count diverges from the
 				// durable one for this key until the next successful write — the
 				// retry loop is bounded by `maxMsgRetryCount` either way.
+				//
+				// PR #490 review (Cubic P1 acceptable): yes, a saturated
+				// `msgRetryCache` (10k entries × TTL 1h) could in theory let the
+				// retry counter stall and exceed `maxMsgRetryCount` for that
+				// key. The alternative — throwing to the receive handler — would
+				// tear down message processing for ALL keys, not just one. We
+				// accept the bounded over-retry as the lesser evil; if it does
+				// happen, the `autoCleanCorrupted` path still handles the
+				// corrupted session independently.
 				await safeCacheSet(msgRetryCache, key, attempt.count, logger, 'msgRetryCache')
 			})
 		} else {

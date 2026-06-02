@@ -15,6 +15,7 @@ import type {
 	TransactionCapabilityOptions,
 	TransactionScope
 } from '../Types'
+import { safeCacheSet as sharedSafeCacheSet } from './cache-utils'
 import { Curve, signedKeyPair } from './crypto'
 import { delay, generateRegistrationId } from './generics'
 import { makeLockManager } from './lock-manager'
@@ -138,18 +139,13 @@ export function makeCacheableSignalKeyStore(
 	 * business). Tornar o cache write best-effort: durable store é a
 	 * fonte de verdade; cache miss no próximo read recupera natural.
 	 */
+	// PR #490 review (Cubic P3): delegate to the shared `safeCacheSet` in
+	// `cache-utils.ts` instead of carrying a divergent local copy. Wrapper
+	// preserves the original signature (just `key` + `value`) so the 2
+	// callsites below don't have to thread `cache`, `logger`, and the
+	// context label every time.
 	async function safeCacheSet(key: string, value: SignalDataTypeMap[keyof SignalDataTypeMap]) {
-		try {
-			await cache.set(key, value)
-		} catch (err) {
-			const msg = (err as Error)?.message ?? ''
-			if (msg.includes('max keys') || msg.includes('ECACHEFULL')) {
-				logger?.debug({ key }, 'signal cache full, skipping cache write (durable store unaffected)')
-				return
-			}
-
-			throw err
-		}
+		await sharedSafeCacheSet(cache, key, value, logger, 'signalCache')
 	}
 
 	return {
