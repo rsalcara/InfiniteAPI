@@ -1628,21 +1628,39 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						})
 					}
 
-					// Bot node — skip for native_flow buttons (breaks Web rendering)
-					const isNativeFlowButtons = buttonType === 'native_flow'
-
+					// Bot node — required for WhatsApp Web/Desktop to render interactive
+					// messages in 1:1 chats (private user chat).
+					//
+					// History:
+					// - Commit 4cfa95bb92 (Feb 2026) removed the bot node for native_flow
+					//   and list, with the rationale "removing bot node fixes rendering on
+					//   Web/Desktop for both CTA buttons and quick_reply buttons".
+					// - WhatsApp Web has since changed its rendering rules: as of mid-2026,
+					//   the bot node is REQUIRED for CTA-only and list messages to render
+					//   on Web/Desktop. Quick_reply continued to render with the bot node
+					//   (it was never removed for that path), confirming the new requirement
+					//   is "bot node present" rather than "bot node absent".
+					//
+					// Current rule: inject the bot node for ALL private 1:1 interactive
+					// messages — quick_reply, CTA-only, list. Carousels and catalogs are
+					// the only legitimate exceptions:
+					// - Carousels: never had bot node (CDP traces from Pastorini capture
+					//   show carousel stanzas without bot node — keeping our behavior
+					//   aligned with the canonical mobile sender).
+					// - Catalogs: business product list, distinct rendering pipeline.
 					const isPrivateUserChat =
 						(isPnUser(destinationJid) || isLidUser(destinationJid) || destinationJid?.endsWith('@c.us')) &&
 						!isJidBot(destinationJid)
 
-					if (isPrivateUserChat && !isCarousel && !isCatalog && buttonType !== 'list' && !isNativeFlowButtons) {
+					if (isPrivateUserChat && !isCarousel && !isCatalog) {
 						deferredNodes.push({
 							tag: 'bot',
 							attrs: { biz_bot: '1' }
 						})
-						logger.info({ msgId, to: destinationJid }, '[BOT NODE] Added bot node (biz_bot=1)')
-					} else if (isNativeFlowButtons) {
-						logger.debug({ msgId, to: destinationJid }, '[BOT NODE] Skipped — native_flow (Web compatibility)')
+						logger.info(
+							{ msgId, to: destinationJid, buttonType: effectiveButtonType },
+							'[BOT NODE] Added bot node (biz_bot=1)'
+						)
 					} else if (isCarousel) {
 						logger.debug({ msgId, to: destinationJid }, '[BOT NODE] Skipped — carousel message')
 					} else if (isCatalog) {
