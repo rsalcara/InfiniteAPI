@@ -76353,6 +76353,13 @@ export const proto = $root.proto = (() => {
         MsgOpaqueData.prototype.pollEndTime = null;
         MsgOpaqueData.prototype.pollHideVoterNames = null;
         MsgOpaqueData.prototype.pollAllowAddOption = null;
+        MsgOpaqueData.prototype.sharableEventInviteId = null;
+        MsgOpaqueData.prototype.sharableEventInviteTitle = null;
+        MsgOpaqueData.prototype.sharableEventInviteStartTime = null;
+        MsgOpaqueData.prototype.sharableEventInviteEndTime = null;
+        MsgOpaqueData.prototype.sharableEventInviteCaption = null;
+        MsgOpaqueData.prototype.sharableEventInviteIsCanceled = null;
+        MsgOpaqueData.prototype.sharableEventInviteJpegThumbnail = null;
 
         let $oneOfFields;
 
@@ -76632,6 +76639,48 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(MsgOpaqueData.prototype, "_sharableEventInviteId", {
+            get: $util.oneOfGetter($oneOfFields = ["sharableEventInviteId"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(MsgOpaqueData.prototype, "_sharableEventInviteTitle", {
+            get: $util.oneOfGetter($oneOfFields = ["sharableEventInviteTitle"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(MsgOpaqueData.prototype, "_sharableEventInviteStartTime", {
+            get: $util.oneOfGetter($oneOfFields = ["sharableEventInviteStartTime"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(MsgOpaqueData.prototype, "_sharableEventInviteEndTime", {
+            get: $util.oneOfGetter($oneOfFields = ["sharableEventInviteEndTime"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(MsgOpaqueData.prototype, "_sharableEventInviteCaption", {
+            get: $util.oneOfGetter($oneOfFields = ["sharableEventInviteCaption"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(MsgOpaqueData.prototype, "_sharableEventInviteIsCanceled", {
+            get: $util.oneOfGetter($oneOfFields = ["sharableEventInviteIsCanceled"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(MsgOpaqueData.prototype, "_sharableEventInviteJpegThumbnail", {
+            get: $util.oneOfGetter($oneOfFields = ["sharableEventInviteJpegThumbnail"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         MsgOpaqueData.create = function create(properties) {
             return new MsgOpaqueData(properties);
         };
@@ -76735,6 +76784,20 @@ export const proto = $root.proto = (() => {
                 w.uint32(410).string(m.originalSelfAuthor);
             if (m.pollAllowAddOption != null && Object.hasOwnProperty.call(m, "pollAllowAddOption"))
                 w.uint32(416).bool(m.pollAllowAddOption);
+            if (m.sharableEventInviteId != null && Object.hasOwnProperty.call(m, "sharableEventInviteId"))
+                w.uint32(426).string(m.sharableEventInviteId);
+            if (m.sharableEventInviteTitle != null && Object.hasOwnProperty.call(m, "sharableEventInviteTitle"))
+                w.uint32(434).string(m.sharableEventInviteTitle);
+            if (m.sharableEventInviteStartTime != null && Object.hasOwnProperty.call(m, "sharableEventInviteStartTime"))
+                w.uint32(440).int64(m.sharableEventInviteStartTime);
+            if (m.sharableEventInviteEndTime != null && Object.hasOwnProperty.call(m, "sharableEventInviteEndTime"))
+                w.uint32(448).int64(m.sharableEventInviteEndTime);
+            if (m.sharableEventInviteCaption != null && Object.hasOwnProperty.call(m, "sharableEventInviteCaption"))
+                w.uint32(458).string(m.sharableEventInviteCaption);
+            if (m.sharableEventInviteIsCanceled != null && Object.hasOwnProperty.call(m, "sharableEventInviteIsCanceled"))
+                w.uint32(464).bool(m.sharableEventInviteIsCanceled);
+            if (m.sharableEventInviteJpegThumbnail != null && Object.hasOwnProperty.call(m, "sharableEventInviteJpegThumbnail"))
+                w.uint32(474).bytes(m.sharableEventInviteJpegThumbnail);
             return w;
         };
 
@@ -76935,6 +76998,34 @@ export const proto = $root.proto = (() => {
                     }
                 case 52: {
                         m.pollAllowAddOption = r.bool();
+                        break;
+                    }
+                case 53: {
+                        m.sharableEventInviteId = r.string();
+                        break;
+                    }
+                case 54: {
+                        m.sharableEventInviteTitle = r.string();
+                        break;
+                    }
+                case 55: {
+                        m.sharableEventInviteStartTime = r.int64();
+                        break;
+                    }
+                case 56: {
+                        m.sharableEventInviteEndTime = r.int64();
+                        break;
+                    }
+                case 57: {
+                        m.sharableEventInviteCaption = r.string();
+                        break;
+                    }
+                case 58: {
+                        m.sharableEventInviteIsCanceled = r.bool();
+                        break;
+                    }
+                case 59: {
+                        m.sharableEventInviteJpegThumbnail = r.bytes();
                         break;
                     }
                 default:
@@ -77184,6 +77275,44 @@ export const proto = $root.proto = (() => {
             }
             if (d.pollAllowAddOption != null) {
                 m.pollAllowAddOption = Boolean(d.pollAllowAddOption);
+            }
+            if (d.sharableEventInviteId != null) {
+                m.sharableEventInviteId = String(d.sharableEventInviteId);
+            }
+            if (d.sharableEventInviteTitle != null) {
+                m.sharableEventInviteTitle = String(d.sharableEventInviteTitle);
+            }
+            if (d.sharableEventInviteStartTime != null) {
+                if ($util.Long)
+                    (m.sharableEventInviteStartTime = $util.Long.fromValue(d.sharableEventInviteStartTime)).unsigned = false;
+                else if (typeof d.sharableEventInviteStartTime === "string")
+                    m.sharableEventInviteStartTime = parseInt(d.sharableEventInviteStartTime, 10);
+                else if (typeof d.sharableEventInviteStartTime === "number")
+                    m.sharableEventInviteStartTime = d.sharableEventInviteStartTime;
+                else if (typeof d.sharableEventInviteStartTime === "object")
+                    m.sharableEventInviteStartTime = new $util.LongBits(d.sharableEventInviteStartTime.low >>> 0, d.sharableEventInviteStartTime.high >>> 0).toNumber();
+            }
+            if (d.sharableEventInviteEndTime != null) {
+                if ($util.Long)
+                    (m.sharableEventInviteEndTime = $util.Long.fromValue(d.sharableEventInviteEndTime)).unsigned = false;
+                else if (typeof d.sharableEventInviteEndTime === "string")
+                    m.sharableEventInviteEndTime = parseInt(d.sharableEventInviteEndTime, 10);
+                else if (typeof d.sharableEventInviteEndTime === "number")
+                    m.sharableEventInviteEndTime = d.sharableEventInviteEndTime;
+                else if (typeof d.sharableEventInviteEndTime === "object")
+                    m.sharableEventInviteEndTime = new $util.LongBits(d.sharableEventInviteEndTime.low >>> 0, d.sharableEventInviteEndTime.high >>> 0).toNumber();
+            }
+            if (d.sharableEventInviteCaption != null) {
+                m.sharableEventInviteCaption = String(d.sharableEventInviteCaption);
+            }
+            if (d.sharableEventInviteIsCanceled != null) {
+                m.sharableEventInviteIsCanceled = Boolean(d.sharableEventInviteIsCanceled);
+            }
+            if (d.sharableEventInviteJpegThumbnail != null) {
+                if (typeof d.sharableEventInviteJpegThumbnail === "string")
+                    $util.base64.decode(d.sharableEventInviteJpegThumbnail, m.sharableEventInviteJpegThumbnail = $util.newBuffer($util.base64.length(d.sharableEventInviteJpegThumbnail)), 0);
+                else if (d.sharableEventInviteJpegThumbnail.length >= 0)
+                    m.sharableEventInviteJpegThumbnail = d.sharableEventInviteJpegThumbnail;
             }
             return m;
         };
@@ -77442,6 +77571,47 @@ export const proto = $root.proto = (() => {
                 d.pollAllowAddOption = m.pollAllowAddOption;
                 if (o.oneofs)
                     d._pollAllowAddOption = "pollAllowAddOption";
+            }
+            if (m.sharableEventInviteId != null && m.hasOwnProperty("sharableEventInviteId")) {
+                d.sharableEventInviteId = m.sharableEventInviteId;
+                if (o.oneofs)
+                    d._sharableEventInviteId = "sharableEventInviteId";
+            }
+            if (m.sharableEventInviteTitle != null && m.hasOwnProperty("sharableEventInviteTitle")) {
+                d.sharableEventInviteTitle = m.sharableEventInviteTitle;
+                if (o.oneofs)
+                    d._sharableEventInviteTitle = "sharableEventInviteTitle";
+            }
+            if (m.sharableEventInviteStartTime != null && m.hasOwnProperty("sharableEventInviteStartTime")) {
+                if (typeof m.sharableEventInviteStartTime === "number")
+                    d.sharableEventInviteStartTime = o.longs === String ? String(m.sharableEventInviteStartTime) : m.sharableEventInviteStartTime;
+                else
+                    d.sharableEventInviteStartTime = o.longs === String ? longToString(m.sharableEventInviteStartTime) : o.longs === Number ? longToNumber(m.sharableEventInviteStartTime) : m.sharableEventInviteStartTime;
+                if (o.oneofs)
+                    d._sharableEventInviteStartTime = "sharableEventInviteStartTime";
+            }
+            if (m.sharableEventInviteEndTime != null && m.hasOwnProperty("sharableEventInviteEndTime")) {
+                if (typeof m.sharableEventInviteEndTime === "number")
+                    d.sharableEventInviteEndTime = o.longs === String ? String(m.sharableEventInviteEndTime) : m.sharableEventInviteEndTime;
+                else
+                    d.sharableEventInviteEndTime = o.longs === String ? longToString(m.sharableEventInviteEndTime) : o.longs === Number ? longToNumber(m.sharableEventInviteEndTime) : m.sharableEventInviteEndTime;
+                if (o.oneofs)
+                    d._sharableEventInviteEndTime = "sharableEventInviteEndTime";
+            }
+            if (m.sharableEventInviteCaption != null && m.hasOwnProperty("sharableEventInviteCaption")) {
+                d.sharableEventInviteCaption = m.sharableEventInviteCaption;
+                if (o.oneofs)
+                    d._sharableEventInviteCaption = "sharableEventInviteCaption";
+            }
+            if (m.sharableEventInviteIsCanceled != null && m.hasOwnProperty("sharableEventInviteIsCanceled")) {
+                d.sharableEventInviteIsCanceled = m.sharableEventInviteIsCanceled;
+                if (o.oneofs)
+                    d._sharableEventInviteIsCanceled = "sharableEventInviteIsCanceled";
+            }
+            if (m.sharableEventInviteJpegThumbnail != null && m.hasOwnProperty("sharableEventInviteJpegThumbnail")) {
+                d.sharableEventInviteJpegThumbnail = o.bytes === String ? $util.base64.encode(m.sharableEventInviteJpegThumbnail, 0, m.sharableEventInviteJpegThumbnail.length) : o.bytes === Array ? Array.prototype.slice.call(m.sharableEventInviteJpegThumbnail) : m.sharableEventInviteJpegThumbnail;
+                if (o.oneofs)
+                    d._sharableEventInviteJpegThumbnail = "sharableEventInviteJpegThumbnail";
             }
             return d;
         };

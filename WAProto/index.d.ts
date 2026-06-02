@@ -10889,6 +10889,13 @@ export namespace proto {
         pollEndTime?: (number|Long|null);
         pollHideVoterNames?: (boolean|null);
         pollAllowAddOption?: (boolean|null);
+        sharableEventInviteId?: (string|null);
+        sharableEventInviteTitle?: (string|null);
+        sharableEventInviteStartTime?: (number|Long|null);
+        sharableEventInviteEndTime?: (number|Long|null);
+        sharableEventInviteCaption?: (string|null);
+        sharableEventInviteIsCanceled?: (boolean|null);
+        sharableEventInviteJpegThumbnail?: (Uint8Array|null);
     }
 
     class MsgOpaqueData implements IMsgOpaqueData {
@@ -10940,6 +10947,13 @@ export namespace proto {
         public pollEndTime?: (number|Long|null);
         public pollHideVoterNames?: (boolean|null);
         public pollAllowAddOption?: (boolean|null);
+        public sharableEventInviteId?: (string|null);
+        public sharableEventInviteTitle?: (string|null);
+        public sharableEventInviteStartTime?: (number|Long|null);
+        public sharableEventInviteEndTime?: (number|Long|null);
+        public sharableEventInviteCaption?: (string|null);
+        public sharableEventInviteIsCanceled?: (boolean|null);
+        public sharableEventInviteJpegThumbnail?: (Uint8Array|null);
         public static create(properties?: proto.IMsgOpaqueData): proto.MsgOpaqueData;
         public static encode(m: proto.IMsgOpaqueData, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.MsgOpaqueData;
