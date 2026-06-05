@@ -140,19 +140,69 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	enableUnifiedSession: undefined
 }
 
+/**
+ * Path prefixes for non-newsletter (1:1 / group) media uploads.
+ *
+ * Confirmed empirically against WhatsApp Web 2.3000.x source code on
+ * 2026-06-05 (via CDP `Runtime.evaluate` enumerating `'/mms/*'` string
+ * literals across 50 loaded chunks). See
+ * `WABA-ANDROID-RE/captures/wa-web-cdp-20260605-021821.log` for the run.
+ *
+ * Previous values for `sticker` and `thumbnail-link` were `/mms/image`,
+ * which works because the CDN's content-typing is permissive — but it
+ * tags uploads as image and breaks newsletter / channel routing on the
+ * server side. The strings here match the WA Web source 1:1.
+ */
 export const MEDIA_PATH_MAP: { [T in MediaType]?: string } = {
 	image: '/mms/image',
 	video: '/mms/video',
 	document: '/mms/document',
 	audio: '/mms/audio',
-	sticker: '/mms/image',
-	'thumbnail-link': '/mms/image',
+	gif: '/mms/gif',
+	ptt: '/mms/ptt',
+	sticker: '/mms/sticker',
+	'thumbnail-image': '/mms/thumbnail-image',
+	'thumbnail-video': '/mms/thumbnail-video',
+	'thumbnail-document': '/mms/thumbnail-document',
+	'thumbnail-link': '/mms/thumbnail-link',
 	'product-catalog-image': '/product/image',
 	'md-app-state': '',
 	'md-msg-hist': '/mms/md-app-state',
 	'biz-cover-photo': '/pps/biz-cover-photo',
 	'sticker-pack': '/mms/sticker-pack',
 	'thumbnail-sticker-pack': '/mms/thumbnail-sticker-pack'
+}
+
+/**
+ * Path prefixes for media uploaded to newsletter (channel) chats.
+ *
+ * Confirmed empirically against WhatsApp Web 2.3000.x source code on
+ * 2026-06-05 (via CDP `Runtime.evaluate` enumerating `'/newsletter/*'`
+ * string literals across 50 loaded chunks). 5 of the 10 paths were
+ * additionally observed live in network captures (image, video, gif,
+ * ptt, sticker uploads sent from a real channel via WhatsApp Desktop).
+ *
+ * This matches PR #2434 (WhiskeySockets/Baileys) with the corrections
+ * requested by reviewer @vinikjkkj (sticker and thumbnail-link were
+ * incorrectly pointed to `-image` in the original PR; gif/ptt/ptv/
+ * sticker-pack were missing entirely). Both bugs are fixed here.
+ *
+ * Note: `audio` exists on the server side but the WhatsApp client
+ * always uploads audio to a channel as `ptt` (push-to-talk), even when
+ * the source file is an arbitrary mp3. The mapping is preserved for
+ * completeness in case a caller dispatches by raw mediaType.
+ */
+export const NEWSLETTER_MEDIA_PATH_MAP: { [T in MediaType]?: string } = {
+	image: '/newsletter/newsletter-image',
+	video: '/newsletter/newsletter-video',
+	audio: '/newsletter/newsletter-audio',
+	document: '/newsletter/newsletter-document',
+	sticker: '/newsletter/newsletter-sticker',
+	'sticker-pack': '/newsletter/newsletter-sticker-pack',
+	gif: '/newsletter/newsletter-gif',
+	ptt: '/newsletter/newsletter-ptt',
+	ptv: '/newsletter/newsletter-ptv',
+	'thumbnail-link': '/newsletter/newsletter-thumbnail-link'
 }
 
 export const MEDIA_HKDF_KEY_MAPPING = {

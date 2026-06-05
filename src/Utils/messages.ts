@@ -199,7 +199,13 @@ export const prepareWAMessageMedia = async (
 		const { mediaUrl, directPath } = await options.upload(filePath, {
 			fileEncSha256B64: fileSha256B64,
 			mediaType: mediaType,
-			timeoutMs: options.mediaUploadTimeoutMs
+			timeoutMs: options.mediaUploadTimeoutMs,
+			// Route through NEWSLETTER_MEDIA_PATH_MAP so the upload goes to
+			// `/newsletter/newsletter-<type>` instead of `/mms/<type>`.
+			// Server-side routing enforces this — a newsletter message that
+			// references a `/mms/*` upload is rejected with ACK 479 and the
+			// media never becomes visible to subscribers.
+			newsletter: true
 		})
 
 		await fs.unlink(filePath)

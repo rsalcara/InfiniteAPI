@@ -1117,9 +1117,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			if (isNewsletter) {
 				const patched = patchMessageBeforeSending ? await patchMessageBeforeSending(message, []) : message
 				const bytes = encodeNewsletterMessage(patched as proto.IMessage)
+				// `mediatype` on the plaintext node lets the channel server
+				// route the message to the right media CDN bucket. Without
+				// it, media-bearing newsletter messages can be ACK'd 479 and
+				// drop silently for subscribers. The attribute mirrors the
+				// `mediatype` set on `enc` for non-newsletter encrypted sends.
+				const plaintextAttrs: BinaryNodeAttributes = mediaType ? { mediatype: mediaType } : {}
 				binaryNodeContent.push({
 					tag: 'plaintext',
-					attrs: {},
+					attrs: plaintextAttrs,
 					content: bytes
 				})
 				const stanza: BinaryNode = {

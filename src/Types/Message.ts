@@ -1003,7 +1003,18 @@ export type MessageGenerationOptionsFromContent = MiscMessageGenerationOptions &
 
 export type WAMediaUploadFunction = (
 	encFilePath: string,
-	opts: { fileEncSha256B64: string; mediaType: MediaType; timeoutMs?: number }
+	opts: {
+		fileEncSha256B64: string
+		mediaType: MediaType
+		timeoutMs?: number
+		/**
+		 * When true, the upload uses the newsletter (channel) path map
+		 * (e.g. `/newsletter/newsletter-image`) instead of the default
+		 * `/mms/*` paths. Set by callers that build a message destined
+		 * for a `@newsletter` JID.
+		 */
+		newsletter?: boolean
+	}
 ) => Promise<{ mediaUrl: string; directPath: string; meta_hmac?: string; ts?: number; fbid?: number }>
 
 export type MediaGenerationOptions = {

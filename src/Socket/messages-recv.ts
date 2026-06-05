@@ -2097,6 +2097,19 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				break
 			case 'created_membership_requests':
 				msg.messageStubType = WAMessageStubType.GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD
+				// Persist the affected participant's LID↔PN pair when both are
+				// present and well-formed. Mirrors upstream PR #2617; previously
+				// only `create`/`add`/`promote`/`demote`/`remove`/`leave` cases
+				// stored mappings here, leaving join-request flows blind when
+				// `resolveLidToPn` later needed them.
+				if (
+					affectedParticipantLid &&
+					affectedParticipantPn &&
+					isLidUser(affectedParticipantLid) &&
+					isPnUser(affectedParticipantPn)
+				) {
+					mappingsToStore.push({ lid: affectedParticipantLid, pn: affectedParticipantPn })
+				}
 				msg.messageStubParameters = [
 					JSON.stringify({ lid: affectedParticipantLid, pn: affectedParticipant }),
 					'created',
@@ -2106,6 +2119,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			case 'revoked_membership_requests':
 				const isDenied = areJidsSameUser(affectedParticipantLid, actingParticipantLid)
 				msg.messageStubType = WAMessageStubType.GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD
+				if (
+					affectedParticipantLid &&
+					affectedParticipantPn &&
+					isLidUser(affectedParticipantLid) &&
+					isPnUser(affectedParticipantPn)
+				) {
+					mappingsToStore.push({ lid: affectedParticipantLid, pn: affectedParticipantPn })
+				}
 				msg.messageStubParameters = [
 					JSON.stringify({ lid: affectedParticipantLid, pn: affectedParticipant }),
 					isDenied ? 'revoked' : 'rejected'
