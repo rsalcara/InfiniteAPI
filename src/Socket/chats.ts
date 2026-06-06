@@ -132,7 +132,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		config.placeholderResendCache ||
 		(new NodeCache<number>({
 			stdTTL: DEFAULT_CACHE_TTLS.MSG_RETRY, // 1 hour
-			useClones: false
+			useClones: false,
+			// Audit memory — this is the cache instantiation that REALLY
+			// runs in the standard socket chain (chats is the base; it
+			// mutates `config.placeholderResendCache` so the duplicated
+			// instantiation in messages-recv.ts with the same cap never
+			// fires). Without `maxKeys`, the NodeCache TTL of 1h plus
+			// re-extend-on-set means it grows unbounded under a stream of
+			// unique-id placeholder retries.
+			maxKeys: DEFAULT_CACHE_MAX_KEYS.PLACEHOLDER_RESEND
 		}) as CacheStore)
 
 	if (!config.placeholderResendCache) {
