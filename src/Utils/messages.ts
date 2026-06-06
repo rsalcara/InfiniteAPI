@@ -139,7 +139,16 @@ export const prepareWAMessageMedia = async (
 
 	let mediaType: (typeof MEDIA_KEYS)[number] | undefined
 	for (const key of MEDIA_KEYS) {
-		if (key in message) {
+		// Skip boolean flags. After NEWSLETTER_MEDIA_PATH_MAP and the
+		// missing-keys cleanup landed in this PR, MEDIA_KEYS now also
+		// includes `'ptt'` and `'gif'` — both of which appear in caller
+		// payloads as `{ audio: Buffer, ptt: true }` and
+		// `{ video: Buffer, gif: true }`. Without the type guard the loop
+		// would overwrite `mediaType` with the flag name and then try to
+		// upload `true` as media, breaking every voice note and animated
+		// GIF send. The guard makes the loop pick the real payload key
+		// regardless of iteration order.
+		if (key in message && typeof (message as any)[key] !== 'boolean') {
 			mediaType = key
 		}
 	}

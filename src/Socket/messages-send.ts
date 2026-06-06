@@ -147,10 +147,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		if (typeof content !== 'object' || content === null) return content
 		const text = (content as { text?: string }).text
 		if (typeof text !== 'string' || text.length === 0) return content
-		const hasOtherMedia = Object.keys(content).some(k =>
-			['image', 'video', 'audio', 'document', 'sticker', 'gif', 'ptt', 'ptv', 'stickerPack'].includes(k)
-		)
-		if (hasOtherMedia) return content
+		// Stricter than checking known media keys: any non-text field
+		// (mentions, contextInfo, linkPreview: false, edit, quoted, etc.)
+		// signals the caller has intent beyond a bare text + URL post.
+		// Refuse to silently drop those by upgrading. The newsletter
+		// broadcast nature means mentions and replies aren't meaningful
+		// in practice, but respecting the input shape avoids surprise
+		// regressions for callers that pass extra fields.
+		const hasExtraFields = Object.keys(content).some(k => k !== 'text')
+		if (hasExtraFields) return content
 
 		// Find the first URL in the text.
 		URL_REGEX.lastIndex = 0
@@ -1204,7 +1209,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// it, media-bearing newsletter messages can be ACK'd 479 and
 				// drop silently for subscribers. The attribute mirrors the
 				// `mediatype` set on `enc` for non-newsletter encrypted sends.
-				const plaintextAttrs: BinaryNodeAttributes = mediaType ? { mediatype: mediaType } : {}
+				// PTV note: `getMediaType` returns '' for `ptvMessage`. Without a
+			// fallback, a newsletter PTV send would land without the
+			// `mediatype` attribute and the server may ACK it 479. Detect
+			// PTV directly so the plaintext node carries `mediatype="ptv"`.
+			const plaintextMediaType =
+				mediaType || ((patched as proto.IMessage | undefined)?.ptvMessage ? 'ptv' : '')
+			const plaintextAttrs: BinaryNodeAttributes = plaintextMediaType
+				? { mediatype: plaintextMediaType }
+				: {}
 				binaryNodeContent.push({
 					tag: 'plaintext',
 					attrs: plaintextAttrs,
