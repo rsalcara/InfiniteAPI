@@ -936,7 +936,34 @@ export const getWAUploadToServer = (
 			logger.debug(`uploading to "${hostname}"`)
 
 			const auth = encodeURIComponent(uploadInfo.auth)
-			const url = `https://${hostname}${pathSegment}/${fileEncSha256B64}?auth=${auth}&token=${fileEncSha256B64}`
+			let url = `https://${hostname}${pathSegment}/${fileEncSha256B64}?auth=${auth}&token=${fileEncSha256B64}`
+
+			// Newsletter upload hints, mirroring upstream PR #2434.
+			//
+			// Empirically grounded against WA Web 2.3000.x JS source on
+			// 2026-06-05 — both literals are present in chunk MEhTUFr43MH.js:
+			//
+			//   server_thumb_gen: (c?.server_thumb_gen) != null ? "1" : void 0
+			//   server_transcode: m === "newsletter-video" &&
+			//                     o("WAWebABProps").getABPropConfigVa(...)
+			//
+			// In the official client, `server_thumb_gen=1` is gated on a per-
+			// upload config and `server_transcode=1` is gated on an A/B test
+			// firing only for `newsletter-video`. In our 5-minute CDP capture
+			// neither toggle was set, so the official traffic did not include
+			// either param — and the upload still succeeded. The server treats
+			// both as hints, so always sending them is the safe default and
+			// matches the behavior @alesdi documented on PR #2434.
+			//
+			// We send `server_transcode=1` for video / gif / ptv (slightly
+			// broader than the JS literal, which only mentions newsletter-video)
+			// to preserve parity with the upstream PR.
+			if (newsletter) {
+				url += '&server_thumb_gen=1'
+				if (mediaType === 'video' || mediaType === 'gif' || mediaType === 'ptv') {
+					url += '&server_transcode=1'
+				}
+			}
 
 			let result: MediaUploadResult | undefined
 			try {
