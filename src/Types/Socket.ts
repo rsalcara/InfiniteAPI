@@ -108,16 +108,8 @@ export type SocketConfig = {
 	callOfferCache?: CacheStore
 	/** cache to track placeholder resends */
 	placeholderResendCache?: CacheStore
-	/** width for link preview images in 1:1 / group chats */
+	/** width for link preview images */
 	linkPreviewImageThumbnailWidth: number
-	/**
-	 * Width for link preview thumbnails when the destination JID is a
-	 * `@newsletter` (channel). Channels render link previews full-width
-	 * (~720px on most clients), so the regular 192px thumb gets upscaled
-	 * and looks blurry. Larger thumbs upload as `/newsletter/newsletter-
-	 * thumbnail-link` and render crisply. Defaults to 720 if unset.
-	 */
-	newsletterLinkPreviewImageThumbnailWidth?: number
 	/** Should Baileys ask the phone for full history, will be received async */
 	syncFullHistory: boolean
 	/** Should baileys fire init queries automatically, default true */
