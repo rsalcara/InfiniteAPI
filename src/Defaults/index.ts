@@ -101,6 +101,14 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	shouldSyncHistoryMessage: () => true,
 	shouldIgnoreJid: () => false,
 	linkPreviewImageThumbnailWidth: 192,
+	// Empirically confirmed via SQLite capture on WA Business 2.26.21.75
+	// 2026-06-05: the official channel client doesn't generate a preview at
+	// all when posting a link (sends as plain text), so any preview a Baileys
+	// caller produces is the one that ends up rendered. WA renders channel
+	// previews ~720px wide, so a 192px upload visibly blurs after upscale.
+	// Bumping the newsletter-specific default to 720 keeps non-newsletter
+	// thumbs untouched while making channel previews crisp.
+	newsletterLinkPreviewImageThumbnailWidth: 720,
 	transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 1000 },
 	generateHighQualityLinkPreview: false,
 	enableAutoSessionRecreation: true,

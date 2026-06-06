@@ -66,6 +66,7 @@ import {
 	isHostedPnUser,
 	isJidBot,
 	isJidGroup,
+	isJidNewsletter,
 	isLidUser,
 	isPnUser,
 	jidDecode,
@@ -81,6 +82,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
 		logger,
 		linkPreviewImageThumbnailWidth,
+		newsletterLinkPreviewImageThumbnailWidth,
 		generateHighQualityLinkPreview,
 		options: httpRequestOptions,
 		patchMessageBeforeSending,
@@ -90,6 +92,18 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		enableInteractiveMessages
 	} = config
 	const sock = makeNewsletterSocket(config)
+
+	/**
+	 * Pick the right link-preview thumbnail width for the destination chat.
+	 * Channels (newsletters) render previews full-width on most clients, so
+	 * we upload a larger thumb when the JID is `@newsletter`. Falls back to
+	 * the regular thumbnail width otherwise. See Defaults/index.ts for the
+	 * empirical rationale (capture on WA Business 2026-06-05).
+	 */
+	const pickLinkPreviewThumbnailWidth = (jid: string): number =>
+		isJidNewsletter(jid)
+			? (newsletterLinkPreviewImageThumbnailWidth ?? 720)
+			: linkPreviewImageThumbnailWidth
 	const {
 		ev,
 		authState,
@@ -2436,7 +2450,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					userJid,
 					getUrlInfo: text =>
 						getUrlInfo(text, {
-							thumbnailWidth: linkPreviewImageThumbnailWidth,
+							thumbnailWidth: pickLinkPreviewThumbnailWidth(jid),
 							fetchOpts: { timeout: 3_000, ...(httpRequestOptions || {}) },
 							logger,
 							uploadImage: generateHighQualityLinkPreview ? waUploadToServer : undefined
@@ -2542,7 +2556,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							userJid,
 							getUrlInfo: text =>
 								getUrlInfo(text, {
-									thumbnailWidth: linkPreviewImageThumbnailWidth,
+									thumbnailWidth: pickLinkPreviewThumbnailWidth(jid),
 									fetchOpts: { timeout: 3_000, ...(httpRequestOptions || {}) },
 									logger,
 									uploadImage: generateHighQualityLinkPreview ? waUploadToServer : undefined
@@ -2730,7 +2744,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					userJid,
 					getUrlInfo: text =>
 						getUrlInfo(text, {
-							thumbnailWidth: linkPreviewImageThumbnailWidth,
+							thumbnailWidth: pickLinkPreviewThumbnailWidth(jid),
 							fetchOpts: {
 								timeout: 3_000,
 								...(httpRequestOptions || {})
