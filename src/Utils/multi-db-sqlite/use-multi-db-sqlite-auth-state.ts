@@ -52,6 +52,9 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
  *                       (schemas reserved for phases 9.1–9.4)
  *     wa.db           — contacts + TC tokens (schemas reserved for phase 9.6)
  *     sync.db         — app-state sync (schemas reserved for phase 9.7)
+ *     status.db       — Status (24h feed) + channel-crosspost state
+ *                       (schema ships ahead of callers — no Baileys feature
+ *                       consumes it today)
  *     prometheus.db   — metrics history; isolated so high-frequency writes
  *                       never contend with the message-send hot path
  *
@@ -76,7 +79,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	// Reuse an injected store when supplied; otherwise open our own. The
 	// injected-store path lets a single MultiDbSqliteStore be shared with
 	// `SocketConfig.multiDbStore` and with cache adapters, eliminating the
-	// duplicate 13-handle open the quick-start docs previously showed.
+	// duplicate 14-handle open the quick-start docs previously showed.
 	const ownsStore = !opts.store
 	const store = ownsStore ? new MultiDbSqliteStore(opts) : (opts.store as MultiDbSqliteStore)
 

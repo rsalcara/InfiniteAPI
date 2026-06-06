@@ -37,7 +37,7 @@ const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
 	'journal_mode = WAL',
 	'synchronous = NORMAL',
 	'busy_timeout = 5000',
-	// Defensively enabled. The 13 schemas in this folder currently do NOT
+	// Defensively enabled. The 14 schemas in this folder currently do NOT
 	// define `FOREIGN KEY ... REFERENCES ...` clauses (they mirror the
 	// canonical mobile layout, which also keeps FK enforcement off). This
 	// pragma is set so that any future schema additions that DO add foreign
@@ -47,10 +47,10 @@ const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
 	// every opened handle — DEFAULT_PRAGMAS is the right place.
 	'foreign_keys = ON',
 	// Audit memory MEM-001 — sem esta pragma, SQLite cai no default de
-	// `-2000` (~2 MB de page cache por handle). Com 13 handles × N
+	// `-2000` (~2 MB de page cache por handle). Com 14 handles × N
 	// sessões, isso vira pressão de RSS desnecessária pro workload da
 	// lib (point reads em signal_kv/jid_map, sem joins grandes). `-512`
-	// = 512 KiB por handle → ~6.5 MB por sessão em vez de ~26 MB.
+	// = 512 KiB por handle → ~7 MB por sessão em vez de ~28 MB.
 	// Quem precisa de mais cache pode override via `extraPragmas`.
 	'cache_size = -512',
 	// Audit memory MEM-002 — `mmap_size = 0` desabilita explicitamente o

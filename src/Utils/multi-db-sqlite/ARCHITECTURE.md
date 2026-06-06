@@ -186,7 +186,7 @@ lets ops decide which columns are sensitive enough to encrypt.
 
 **Until 9.9 ships — operational requirements for `sessionDir`:**
 
-- The directory and all 13 `.db` files contain Signal Protocol private
+- The directory and all 14 `.db` files contain Signal Protocol private
   keys, Noise transport keys, and session records in plaintext. Treat the
   directory like an SSH private key directory.
 - Set filesystem permissions to owner-only (`chmod 600` on files,

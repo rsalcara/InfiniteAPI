@@ -2,15 +2,16 @@
  * Schema for `status.db` — Status (24h feed) + channel-crosspost state.
  *
  * Mirrors the canonical mobile schema discovered on WA Business 2.26.21.75
- * via Frida (see `memory/wa_android_newsletter_admin_invite_status_share.md`).
- * The mobile DB has ~25 tables; we ship the core subset that any Baileys
- * status / channel-crosspost feature would touch — `status` (the root feed),
- * `status_attribution` (channel-crosspost reference), `status_info` (per-chat
- * aggregates), the read-receipt + privacy + media-link companion tables, and
- * the `status_crossposting_v3` outbound queue. Remaining tables (reporting,
- * orphan, interactions, add_on, etc.) can be appended in future PRs as
- * concrete callers land — the bookkeeping schema-migrations helper lets new
- * tables be introduced safely against existing databases.
+ * via Frida (the verbatim mobile dump captured at the same time is preserved
+ * outside the repo for future reference). The mobile DB has ~25 tables; we
+ * ship the core subset that any Baileys status / channel-crosspost feature
+ * would touch — `status` (the root feed), `status_attribution` (channel-
+ * crosspost reference), `status_info` (per-chat aggregates), the read-receipt
+ * + privacy + media-link companion tables, and the `status_crossposting_v3`
+ * outbound queue. Remaining tables (reporting, orphan, interactions, add_on,
+ * etc.) can be appended in future PRs as concrete callers land — the
+ * bookkeeping schema-migrations helper lets new tables be introduced safely
+ * against existing databases.
  *
  * State machine for `status.state` (empirical):
  *   0 → creating / uploading
@@ -137,6 +138,11 @@ CREATE TABLE IF NOT EXISTS status_thumbnail (
   highres_thumbnail_path TEXT
 );
 
+CREATE INDEX IF NOT EXISTS status_thumbnail_status_row_id_index
+  ON status_thumbnail (status_row_id);
+CREATE INDEX IF NOT EXISTS status_thumbnail_media_content_row_id_index
+  ON status_thumbnail (media_content_row_id);
+
 CREATE TABLE IF NOT EXISTS status_seen_receipt (
   row_id INTEGER PRIMARY KEY AUTOINCREMENT,
   status_row_id INTEGER,
@@ -144,6 +150,9 @@ CREATE TABLE IF NOT EXISTS status_seen_receipt (
   received_timestamp INTEGER,
   seen_timestamp INTEGER
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS status_seen_receipt_index
+  ON status_seen_receipt (status_row_id, receipt_user_jid);
 
 CREATE TABLE IF NOT EXISTS status_privacy_custom_list (
   row_id INTEGER PRIMARY KEY AUTOINCREMENT,

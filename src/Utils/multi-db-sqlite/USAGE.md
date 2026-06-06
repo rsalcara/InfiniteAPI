@@ -17,7 +17,7 @@ import {
 
 const sessionDir = '/var/lib/infiniteapi/sessions/main'
 
-// 1) Open ONE MultiDbSqliteStore. All consumers below share these 13 handles —
+// 1) Open ONE MultiDbSqliteStore. All consumers below share these 14 handles —
 //    do NOT open the store again inside `useMultiDbSqliteAuthState` or the
 //    adapters, or you'll end up with duplicate connections (WAL contention,
 //    2× FD usage).
@@ -65,9 +65,9 @@ in isolation if you only want part of the multi-DB layer.
 
 | Export                                     | Purpose                                                                                     |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------- |
-| `MultiDbSqliteStore`                       | Opens / closes 13 `.db` handles with WAL + busy_timeout.                                    |
+| `MultiDbSqliteStore`                       | Opens / closes 14 `.db` handles with WAL + busy_timeout.                                    |
 | `useMultiDbSqliteAuthState`                | `useSqliteAuthState` replacement; creds → `creds.db`, signal data → `axolotl.db.signal_kv`. |
-| `MULTI_DB_FILES`, `SCHEMAS`, `MultiDbFile` | The 13 filenames, their schemas, and the union type for `store.handle(...)`.                |
+| `MULTI_DB_FILES`, `SCHEMAS`, `MultiDbFile` | The 14 filenames, their schemas, and the union type for `store.handle(...)`.                |
 
 ### Phase 9.1 — LID mapping (wired)
 
