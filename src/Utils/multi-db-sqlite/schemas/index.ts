@@ -8,6 +8,7 @@ export { MSGSTORE_SCHEMA } from './msgstore'
 export { PAYMENTS_SCHEMA } from './payments'
 export { PROMETHEUS_SCHEMA } from './prometheus'
 export { SMB_SCHEMA } from './smb'
+export { STATUS_SCHEMA } from './status'
 export { STICKERS_SCHEMA } from './stickers'
 export { SYNC_SCHEMA } from './sync'
 export { WA_SCHEMA } from './wa'
@@ -22,12 +23,13 @@ import { MSGSTORE_SCHEMA } from './msgstore'
 import { PAYMENTS_SCHEMA } from './payments'
 import { PROMETHEUS_SCHEMA } from './prometheus'
 import { SMB_SCHEMA } from './smb'
+import { STATUS_SCHEMA } from './status'
 import { STICKERS_SCHEMA } from './stickers'
 import { SYNC_SCHEMA } from './sync'
 import { WA_SCHEMA } from './wa'
 
 /**
- * The 13 physical SQLite files we open in multi-DB mode, one per concern:
+ * The 14 physical SQLite files we open in multi-DB mode, one per concern:
  *
  *   - `creds.db`             — auth credentials root + app-state sync keys
  *   - `axolotl.db`           — Signal Protocol (sessions, prekeys, identities,
@@ -45,6 +47,12 @@ import { WA_SCHEMA } from './wa'
  *   - `payments.db`          — payment state (consumer + merchant)
  *   - `stickers.db`          — sticker pack catalog and recent state
  *   - `smb.db`               — Small Business / Marketing Messages state
+ *   - `status.db`            — Status (24h feed) + channel-crosspost state.
+ *                              Schema ships ahead of callers — no Baileys
+ *                              feature consumes it today, but the file is
+ *                              opened so future status-feed / channel-share
+ *                              features can land without retrofitting the
+ *                              MULTI_DB_FILES list.
  *   - `prometheus.db`        — observability / metrics history (isolated so
  *                              high-frequency writes never contend with the
  *                              message-send hot path)
@@ -62,6 +70,7 @@ export const MULTI_DB_FILES = [
 	'payments.db',
 	'stickers.db',
 	'smb.db',
+	'status.db',
 	'prometheus.db'
 ] as const
 
@@ -80,5 +89,6 @@ export const SCHEMAS: Record<MultiDbFile, string> = {
 	'payments.db': PAYMENTS_SCHEMA,
 	'stickers.db': STICKERS_SCHEMA,
 	'smb.db': SMB_SCHEMA,
+	'status.db': STATUS_SCHEMA,
 	'prometheus.db': PROMETHEUS_SCHEMA
 }

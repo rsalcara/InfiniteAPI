@@ -2,9 +2,9 @@
  * Phase 9 — `useMultiDbSqliteAuthState` skeleton smoke test.
  *
  * Covers:
- *   - creates all 13 physical .db files (creds, axolotl, msgstore, wa, sync,
+ *   - creates all 14 physical .db files (creds, axolotl, msgstore, wa, sync,
  *     media, companion_devices, chatsettings, location, payments, stickers,
- *     smb, prometheus);
+ *     smb, status, prometheus);
  *   - typed tables exist with expected names in the right .db files;
  *   - creds round-trip via creds.db;
  *   - signal data round-trip via axolotl.db.signal_kv (opaque key-value
@@ -13,7 +13,7 @@
  *
  * Uses on-disk DBs in a tmp directory because the multi-file layout
  * requires real files (`:memory:` is per-connection and doesn't apply
- * across the 13 handles).
+ * across the 14 handles).
  */
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
@@ -34,7 +34,7 @@ describe('useMultiDbSqliteAuthState', () => {
 		await rm(dir, { recursive: true, force: true })
 	})
 
-	it('opens all 13 physical .db files on first open', async () => {
+	it('opens all 14 physical .db files on first open', async () => {
 		const { close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		const { promises: fs } = await import('fs')
 		const files = await fs.readdir(dir)
@@ -52,6 +52,7 @@ describe('useMultiDbSqliteAuthState', () => {
 				'payments.db',
 				'stickers.db',
 				'smb.db',
+				'status.db',
 				'prometheus.db'
 			])
 		)
@@ -133,6 +134,27 @@ describe('useMultiDbSqliteAuthState', () => {
 		).map(r => r.name)
 		expect(prometheusTables).toEqual(
 			expect.arrayContaining(['metric_samples', 'metric_descriptors', 'retention_policies', 'pruning_log'])
+		)
+
+		const statusTables = (
+			store.handle('status.db').prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{
+				name: string
+			}>
+		).map(r => r.name)
+		expect(statusTables).toEqual(
+			expect.arrayContaining([
+				'status',
+				'status_attribution',
+				'status_crossposting_v3',
+				'status_info',
+				'status_text',
+				'status_media_link',
+				'status_thumbnail',
+				'status_seen_receipt',
+				'status_privacy_custom_list',
+				'key_value_store',
+				'props'
+			])
 		)
 
 		close()
