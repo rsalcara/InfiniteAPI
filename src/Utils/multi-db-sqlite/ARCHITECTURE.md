@@ -21,7 +21,7 @@ Three operational wins under load:
    contacts/biz state, app-state sync). This makes the schema diffable and
    navigable.
 
-## The 14 files
+## The 13 files
 
 ```
 sessionDir/
@@ -42,11 +42,6 @@ sessionDir/
 ├── payments.db          (payment state — consumer + merchant)
 ├── stickers.db          (sticker pack catalog and recent state)
 ├── smb.db               (Small Business / Marketing Messages state)
-├── status.db            (Status 24h feed + channel-crosspost state.
-│                         Schema mirrors the canonical mobile DB but ships
-│                         ahead of callers — no Baileys feature consumes it
-│                         today; the file is opened so future status / share
-│                         features can land without retrofitting the file list)
 └── prometheus.db        (observability — metric samples with retention
                           policies; isolated so high-frequency writes never
                           contend with the message-send hot path)
@@ -71,7 +66,7 @@ This directory ships the **skeleton** — files exist, schemas materialize, and
 
 ### Phase 9.0 (this PR) — Skeleton
 
-- `MultiDbSqliteStore` opens all 14 files
+- `MultiDbSqliteStore` opens all 13 files
 - `useMultiDbSqliteAuthState` routes:
   - auth creds → `creds.db` `creds(key, value, updated_at)` row
   - signal data → `axolotl.db` `signal_kv(type, id, value)` (opaque)
@@ -186,7 +181,7 @@ lets ops decide which columns are sensitive enough to encrypt.
 
 **Until 9.9 ships — operational requirements for `sessionDir`:**
 
-- The directory and all 14 `.db` files contain Signal Protocol private
+- The directory and all 13 `.db` files contain Signal Protocol private
   keys, Noise transport keys, and session records in plaintext. Treat the
   directory like an SSH private key directory.
 - Set filesystem permissions to owner-only (`chmod 600` on files,
@@ -228,8 +223,8 @@ their current backend until they choose to migrate via `migrateAuthState`
 
 ## Lifecycle
 
-- `useMultiDbSqliteAuthState({ sessionDir })` opens all 14 handles
+- `useMultiDbSqliteAuthState({ sessionDir })` opens all 13 handles
 - The returned `close()` closes every handle in order; safe to call twice
 - After `close()`, the same `sessionDir` can be reopened to resume
 - File locking: each `.db` carries its own WAL — independent locks across the
-  14 files, hence the isolation properties stated above
+  13 files, hence the isolation properties stated above
