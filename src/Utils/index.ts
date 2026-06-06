@@ -23,6 +23,7 @@ export * from './browser-utils'
 export * from './companion-reg-client-utils'
 
 // === Identity and Session Management ===
+export * from './contact-picture-identity'
 export * from './identity-change-handler'
 
 // === Observability and Resilience Utilities ===

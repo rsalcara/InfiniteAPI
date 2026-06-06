@@ -58,6 +58,7 @@ import {
 	NO_MESSAGE_FOUND_ERROR_TEXT,
 	normalizeKeyLidToPn,
 	normalizeMessageJids,
+	resolveContactPictureIdentity,
 	resolveLidToPn,
 	safeCacheSet,
 	SERVER_ERROR_CODES,
@@ -154,6 +155,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	} = sock
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
 
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
 	const retryMutex = makeMutex()
@@ -2283,37 +2285,41 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 
 				break
-			case 'picture':
+			case 'picture': {
 				const setPicture = getBinaryNodeChild(node, 'set')
 				const delPicture = getBinaryNodeChild(node, 'delete')
-
-				{
-					const rawPictureJid = jidNormalizedUser(node?.attrs?.from) || (setPicture || delPicture)?.attrs?.hash || ''
-					const pictureJid = (await resolveLidToPn(rawPictureJid, signalRepository.lidMapping, logger)) || rawPictureJid
-					ev.emit('contacts.update', [
-						{
-							id: pictureJid,
-							imgUrl: setPicture ? 'changed' : 'removed'
-						}
-					])
-				}
+				const pictureNode = setPicture || delPicture
+				const pictureFrom = jidNormalizedUser(node?.attrs?.from) || pictureNode?.attrs?.hash
+				const pictureImgUrl = setPicture ? 'changed' : 'removed'
 
 				if (isJidGroup(from)) {
-					const node = setPicture || delPicture
+					if (pictureFrom) {
+						ev.emit('contacts.update', [{ id: pictureFrom, imgUrl: pictureImgUrl }])
+					}
+
 					result.messageStubType = WAMessageStubType.GROUP_CHANGE_ICON
 
 					if (setPicture) {
 						result.messageStubParameters = [setPicture.attrs.id!]
 					}
 
-					result.participant = node?.attrs.author
+					result.participant = pictureNode?.attrs.author
 					result.key = {
 						...(result.key || {}),
 						participant: setPicture?.attrs.author
 					}
+				} else if (pictureFrom) {
+					const identity = await resolveContactPictureIdentity(pictureFrom, {
+						getPNForLID,
+						getLIDForPN,
+						meId: authState.creds.me?.id,
+						meLid: authState.creds.me?.lid
+					})
+					ev.emit('contacts.update', [{ ...identity, imgUrl: pictureImgUrl }])
 				}
 
 				break
+			}
 			case 'account_sync':
 				if (child!.tag === 'disappearing_mode') {
 					const newDuration = +child!.attrs.duration!
