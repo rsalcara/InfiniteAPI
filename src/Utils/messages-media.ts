@@ -925,7 +925,11 @@ export const getWAUploadToServer = (
 
 		const pathMap = newsletter ? NEWSLETTER_MEDIA_PATH_MAP : MEDIA_PATH_MAP
 		const pathSegment = pathMap[mediaType]
-		if (!pathSegment) {
+		// Use explicit `=== undefined` rather than falsy check: some valid map
+		// entries are empty strings (e.g. `md-app-state: ''`). Treating those
+		// as "missing path" would throw an unintended error for callers that
+		// hit those flows.
+		if (pathSegment === undefined) {
 			throw new Error(
 				`No upload path configured for mediaType=${mediaType}` +
 					(newsletter ? ' in NEWSLETTER_MEDIA_PATH_MAP' : ' in MEDIA_PATH_MAP')

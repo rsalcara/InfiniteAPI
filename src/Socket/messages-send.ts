@@ -125,6 +125,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	 * original text content is returned unchanged so the send still goes
 	 * out as text. Non-newsletter JIDs and non-text content always return
 	 * the original.
+	 *
+	 * Security note (residual risk, accepted): `getUrlInfo` fetches the
+	 * page to extract og:image, and the upload step later fetches the
+	 * og:image URL itself. Both reuse the same fetch path Baileys uses
+	 * everywhere else, so no NEW SSRF surface is introduced — but the
+	 * 3s timeout, opt-in flag, and the fact that only newsletter owners
+	 * can trigger this make the residual risk acceptable for the feature.
+	 * Hosts that need strict egress filtering should set
+	 * `autoImageFromLinkInNewsletter: false` and produce their own image
+	 * messages upstream of `sendMessage`.
 	 */
 	const tryUpgradeNewsletterLinkToImage = async (
 		jid: string,
@@ -138,7 +148,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const text = (content as { text?: string }).text
 		if (typeof text !== 'string' || text.length === 0) return content
 		const hasOtherMedia = Object.keys(content).some(k =>
-			['image', 'video', 'audio', 'document', 'sticker', 'audio', 'gif', 'ptt', 'ptv', 'stickerPack'].includes(k)
+			['image', 'video', 'audio', 'document', 'sticker', 'gif', 'ptt', 'ptv', 'stickerPack'].includes(k)
 		)
 		if (hasOtherMedia) return content
 
