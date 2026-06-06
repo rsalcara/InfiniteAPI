@@ -101,6 +101,14 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	shouldSyncHistoryMessage: () => true,
 	shouldIgnoreJid: () => false,
 	linkPreviewImageThumbnailWidth: 192,
+	// When sending plain text + URL to a newsletter (channel), upgrade the
+	// message to imageMessage + caption using the URL's og:image so it
+	// renders full-width and crisp like news channels do (verified on g1,
+	// 6.4M followers: message_type=1, 1547×864 JPEG, text_data carries the
+	// caption with the URL). Without this, the channel UI shows raw text
+	// because the official mobile client never auto-generates a preview
+	// for links posted in channels. Disable with explicit `false`.
+	autoImageFromLinkInNewsletter: true,
 	transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 1000 },
 	generateHighQualityLinkPreview: false,
 	enableAutoSessionRecreation: true,

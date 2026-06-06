@@ -110,6 +110,30 @@ export type SocketConfig = {
 	placeholderResendCache?: CacheStore
 	/** width for link preview images */
 	linkPreviewImageThumbnailWidth: number
+	/**
+	 * When a plain-text message containing a URL is sent to a newsletter
+	 * (channel), automatically upgrade it to an `imageMessage` with the
+	 * page's og:image as media and the original text as caption.
+	 *
+	 * Empirically (Frida SQLite hook on WA Business 2.26.21.75, 2026-06-05)
+	 * the official channel client never generates a link preview for text
+	 * sent to a channel — it sends as `message_type=0` (plain text) every
+	 * time, so the preview is always omitted. Channels run by news outlets
+	 * (g1 was the reference: full-resolution 1547×864 JPEG with caption +
+	 * URL in `text_data`) work around this by composing the message as an
+	 * imageMessage themselves. This config does that automatically.
+	 *
+	 * Set to `false` to keep the legacy behavior of falling back to
+	 * `extendedTextMessage` with a small `urlInfo` thumbnail (which lands
+	 * blurry on the channel UI because it gets upscaled to full width).
+	 *
+	 * The upgrade is best-effort: if og:image is missing, unreachable, or
+	 * times out, the send continues as a regular text message. Only newsletter
+	 * JIDs trigger this; 1:1 and group sends are untouched.
+	 *
+	 * @default true
+	 */
+	autoImageFromLinkInNewsletter?: boolean
 	/** Should Baileys ask the phone for full history, will be received async */
 	syncFullHistory: boolean
 	/** Should baileys fire init queries automatically, default true */

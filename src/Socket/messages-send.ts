@@ -2,7 +2,7 @@ import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
 import { randomBytes } from 'crypto'
 import { proto } from '../../WAProto/index.js'
-import { DEFAULT_CACHE_TTLS, WA_DEFAULT_EPHEMERAL } from '../Defaults'
+import { DEFAULT_CACHE_TTLS, URL_REGEX, WA_DEFAULT_EPHEMERAL } from '../Defaults'
 import type {
 	AlbumMediaItem,
 	AlbumMediaResult,
@@ -66,6 +66,7 @@ import {
 	isHostedPnUser,
 	isJidBot,
 	isJidGroup,
+	isJidNewsletter,
 	isLidUser,
 	isPnUser,
 	jidDecode,
@@ -81,6 +82,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
 		logger,
 		linkPreviewImageThumbnailWidth,
+		autoImageFromLinkInNewsletter,
 		generateHighQualityLinkPreview,
 		options: httpRequestOptions,
 		patchMessageBeforeSending,
@@ -104,6 +106,76 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		groupToggleEphemeral,
 		registerSocketEndHandler
 	} = sock
+
+	/**
+	 * Newsletter (channel) link upgrade.
+	 *
+	 * When the destination is a newsletter and the caller is sending plain
+	 * text containing a URL, upgrade the message to an `imageMessage` with
+	 * the URL's og:image as media and the original text as caption. This
+	 * matches how news outlets (g1 in our reference capture) post articles
+	 * in channels: full-resolution image + caption with title and URL.
+	 *
+	 * Without this upgrade, channels show the raw URL with no preview at
+	 * all — the official mobile client never auto-generates one for posts
+	 * in channels, so any preview a Baileys caller produces is the only
+	 * preview that exists.
+	 *
+	 * Best-effort: if og:image is missing, unreachable, or times out, the
+	 * original text content is returned unchanged so the send still goes
+	 * out as text. Non-newsletter JIDs and non-text content always return
+	 * the original.
+	 */
+	const tryUpgradeNewsletterLinkToImage = async (
+		jid: string,
+		content: AnyMessageContent
+	): Promise<AnyMessageContent> => {
+		if (autoImageFromLinkInNewsletter === false) return content
+		if (!isJidNewsletter(jid)) return content
+		// Only act on a bare `{ text }`. If caller is already sending image,
+		// video, document, etc. — respect their intent.
+		if (typeof content !== 'object' || content === null) return content
+		const text = (content as { text?: string }).text
+		if (typeof text !== 'string' || text.length === 0) return content
+		const hasOtherMedia = Object.keys(content).some(k =>
+			['image', 'video', 'audio', 'document', 'sticker', 'audio', 'gif', 'ptt', 'ptv', 'stickerPack'].includes(k)
+		)
+		if (hasOtherMedia) return content
+
+		// Find the first URL in the text.
+		URL_REGEX.lastIndex = 0
+		const match = URL_REGEX.exec(text)
+		if (!match) return content
+		const url = match[0]
+
+		try {
+			const info = await getUrlInfo(url, {
+				thumbnailWidth: linkPreviewImageThumbnailWidth,
+				fetchOpts: {
+					timeout: 3_000,
+					...(httpRequestOptions || {})
+				},
+				logger
+			})
+			const ogImage = info?.originalThumbnailUrl
+			if (!ogImage) return content
+
+			logger?.debug(
+				{ jid, url, ogImage },
+				'newsletter link upgrade: posting as imageMessage with og:image'
+			)
+			return {
+				image: { url: ogImage },
+				caption: text
+			} as AnyMessageContent
+		} catch (err: any) {
+			logger?.debug(
+				{ jid, url, err: err?.message },
+				'newsletter link upgrade: og:image fetch failed, falling back to text'
+			)
+			return content
+		}
+	}
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 
@@ -2710,6 +2782,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			const userJid = authState.creds.me!.id
 
+			// Best-effort upgrade: plain text + URL → imageMessage + caption
+			// when destination is a newsletter (no-op for other JIDs).
+			// We thread this through `effectiveContent` rather than reassigning
+			// `content`, so TypeScript can still narrow the original union for
+			// the `disappearingMessagesInChat` / `delete` branches below.
+			const effectiveContent: AnyMessageContent = await tryUpgradeNewsletterLinkToImage(jid, content)
+
 			if (
 				typeof content === 'object' &&
 				'disappearingMessagesInChat' in content &&
@@ -2725,7 +2804,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						: disappearingMessagesInChat
 				await groupToggleEphemeral(jid, value)
 			} else {
-				const fullMsg = await generateWAMessage(jid, content, {
+				const fullMsg = await generateWAMessage(jid, effectiveContent, {
 					logger,
 					userJid,
 					getUrlInfo: text =>
