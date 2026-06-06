@@ -58,25 +58,6 @@ export interface NewsletterCreateResponse {
 		role: NewsletterViewRole
 	}
 }
-export interface NewsletterCreateResponse {
-	id: string
-	state: { type: string }
-	thread_metadata: {
-		creation_time: string
-		description: { id: string; text: string; update_time: string }
-		handle: string | null
-		invite: string
-		name: { id: string; text: string; update_time: string }
-		picture: { direct_path: string; id: string; type: string }
-		preview: { direct_path: string; id: string; type: string }
-		subscribers_count: string
-		verification: 'VERIFIED' | 'UNVERIFIED'
-	}
-	viewer_metadata: {
-		mute: 'ON' | 'OFF'
-		role: NewsletterViewRole
-	}
-}
 export type NewsletterViewRole = 'ADMIN' | 'GUEST' | 'OWNER' | 'SUBSCRIBER'
 export interface NewsletterMetadata {
 	id: string

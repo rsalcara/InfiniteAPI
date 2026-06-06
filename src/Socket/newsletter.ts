@@ -1,8 +1,9 @@
+import { proto } from '../../WAProto/index.js'
 import type { NewsletterCreateResponse, SocketConfig, WAMediaUpload } from '../Types'
 import type { NewsletterMetadata, NewsletterUpdate } from '../Types'
 import { QueryIds, XWAPaths } from '../Types'
 import { generateProfilePicture } from '../Utils/messages-media'
-import { getBinaryNodeChild } from '../WABinary'
+import { type BinaryNode, getBinaryNodeChild, getBinaryNodeChildren, S_WHATSAPP_NET } from '../WABinary'
 import { makeGroupsSocket } from './groups'
 import { executeWMexQuery as genericExecuteWMexQuery } from './mex'
 
@@ -39,19 +40,108 @@ const parseNewsletterCreateResponse = (response: NewsletterCreateResponse): News
 }
 
 const parseNewsletterMetadata = (result: unknown): NewsletterMetadata | null => {
+	// Port of upstream PR #2620 (vinikjkkj). Earlier behavior cast the raw
+	// server response to `NewsletterMetadata` whole, which broke two
+	// callers in practice:
+	//   1. The actual response shape uses snake_case (`thread_metadata.
+	//      subscribers_count`, `picture.direct_path`) while
+	//      `NewsletterMetadata` is the flat camelCase shape we expose —
+	//      casting lost the channel name, subscribers count, etc.
+	//   2. For preview-only responses (e.g. fetching a non-followed
+	//      channel via invite), `thread_metadata.picture` is absent and
+	//      the server returns `image` / `preview` siblings instead, so
+	//      reading `.picture` alone returned undefined.
+	//
+	// Fix: unwrap the `result` envelope if present, require a string `id`,
+	// and translate fields into the flat shape with the documented
+	// fallback chain for the picture.
 	if (typeof result !== 'object' || result === null) {
 		return null
 	}
 
-	if ('id' in result && typeof result.id === 'string') {
-		return result as NewsletterMetadata
+	const raw = result as Record<string, unknown>
+	const node = (raw.result && typeof raw.result === 'object' ? raw.result : raw) as Record<string, any>
+
+	if (typeof node.id !== 'string') {
+		return null
 	}
 
-	if ('result' in result && typeof result.result === 'object' && result.result !== null && 'id' in result.result) {
-		return result.result as NewsletterMetadata
+	const thread = node.thread_metadata ?? {}
+	const viewer = node.viewer_metadata ?? {}
+	const pic = thread.picture ?? thread.image ?? thread.preview
+
+	return {
+		id: node.id,
+		name: thread.name?.text ?? '',
+		description: thread.description?.text,
+		invite: thread.invite,
+		creation_time: thread.creation_time ? parseInt(thread.creation_time, 10) : undefined,
+		subscribers: thread.subscribers_count ? parseInt(thread.subscribers_count, 10) : undefined,
+		picture: pic ? { id: pic.id, directPath: pic.direct_path } : undefined,
+		verification: thread.verification,
+		mute_state: viewer.mute
+	}
+}
+
+/**
+ * Parse a single `<message>` node from a newsletter `<messages>` response.
+ *
+ * Port of upstream PR #2620 (vinikjkkj). The server wraps the proto-encoded
+ * `Message` in a `<plaintext>` child and adorns the node with counters
+ * (views/forwards/responses), edit metadata, reaction tallies, poll vote
+ * tallies and an optional `<rcat>` blob for media-category routing. Returning
+ * the full structured shape lets callers see all of that without re-parsing.
+ */
+const parseFetchedNewsletterMessage = (node: BinaryNode) => {
+	const plaintext = getBinaryNodeChild(node, 'plaintext')
+	const plaintextContent = plaintext?.content
+	const meta = getBinaryNodeChild(node, 'meta')
+	const viewsCount = getBinaryNodeChild(node, 'views_count')
+	const forwardsCount = getBinaryNodeChild(node, 'forwards_count')
+	const responsesCount = getBinaryNodeChild(node, 'responses_count')
+	const rcat = getBinaryNodeChild(node, 'rcat')
+
+	const reactionsNode = getBinaryNodeChild(node, 'reactions')
+	const reactions = reactionsNode
+		? getBinaryNodeChildren(reactionsNode, 'reaction').map(r => ({
+				code: r.attrs.code,
+				count: r.attrs.count ? parseInt(r.attrs.count, 10) : 0
+			}))
+		: []
+
+	const votesNode = getBinaryNodeChild(node, 'votes')
+	const pollVotes = votesNode
+		? getBinaryNodeChildren(votesNode, 'vote').map(v => ({
+				count: v.attrs.count ? parseInt(v.attrs.count, 10) : 0,
+				hash: v.content instanceof Uint8Array ? v.content : undefined
+			}))
+		: []
+
+	let message: proto.IMessage | undefined
+	if (plaintextContent instanceof Uint8Array) {
+		try {
+			message = proto.Message.decode(plaintextContent)
+		} catch {
+			message = undefined
+		}
 	}
 
-	return null
+	return {
+		id: node.attrs.id,
+		serverId: node.attrs.server_id,
+		type: node.attrs.type,
+		timestamp: node.attrs.t ? parseInt(node.attrs.t, 10) : undefined,
+		isSender: node.attrs.is_sender === 'true',
+		views: viewsCount?.attrs?.count ? parseInt(viewsCount.attrs.count, 10) : undefined,
+		forwards: forwardsCount?.attrs?.count ? parseInt(forwardsCount.attrs.count, 10) : undefined,
+		responses: responsesCount?.attrs?.count ? parseInt(responsesCount.attrs.count, 10) : undefined,
+		editTimestamp: meta?.attrs?.msg_edit_t ? parseInt(meta.attrs.msg_edit_t, 10) : undefined,
+		originalTimestamp: meta?.attrs?.original_msg_t ? parseInt(meta.attrs.original_msg_t, 10) : undefined,
+		mediaRcat: rcat?.content instanceof Uint8Array ? rcat.content : undefined,
+		reactions,
+		pollVotes,
+		message
+	}
 }
 
 export const makeNewsletterSocket = (config: SocketConfig) => {
@@ -167,15 +257,30 @@ export const makeNewsletterSocket = (config: SocketConfig) => {
 		},
 
 		newsletterFetchMessages: async (jid: string, count: number, since: number, after: number) => {
-			const messageUpdateAttrs: { count: string; since?: string; after?: string } = {
+			// Port of upstream PR #2620 (vinikjkkj). The previous shape was
+			// `<iq to='<channel-jid>' xmlns='newsletter'><message_updates count
+			// since after/></iq>` which the server simply doesn't answer — it
+			// hangs until the request times out (#2555 in upstream).
+			//
+			// The correct shape, captured from WA Web, is:
+			//   <iq to='s.whatsapp.net' xmlns='newsletter'>
+			//     <messages type='jid' jid='<channel-jid>' count='N' [before/after]/>
+			//   </iq>
+			//
+			// Note also: the param name flipped from `since` to `before` in the
+			// XML attribute. The function signature stays the same so existing
+			// callers keep working.
+			const messagesAttrs: { type: string; jid: string; count: string; before?: string; after?: string } = {
+				type: 'jid',
+				jid,
 				count: count.toString()
 			}
-			if (typeof since === 'number') {
-				messageUpdateAttrs.since = since.toString()
+			if (typeof since === 'number' && since) {
+				messagesAttrs.before = since.toString()
 			}
 
 			if (after) {
-				messageUpdateAttrs.after = after.toString()
+				messagesAttrs.after = after.toString()
 			}
 
 			const result = await query({
@@ -183,17 +288,19 @@ export const makeNewsletterSocket = (config: SocketConfig) => {
 				attrs: {
 					id: generateMessageTag(),
 					type: 'get',
-					xmlns: 'newsletter',
-					to: jid
+					to: S_WHATSAPP_NET,
+					xmlns: 'newsletter'
 				},
 				content: [
 					{
-						tag: 'message_updates',
-						attrs: messageUpdateAttrs
+						tag: 'messages',
+						attrs: messagesAttrs
 					}
 				]
 			})
-			return result
+
+			const messagesNode = getBinaryNodeChild(result, 'messages')
+			return getBinaryNodeChildren(messagesNode, 'message').map(parseFetchedNewsletterMessage)
 		},
 
 		subscribeNewsletterUpdates: async (jid: string): Promise<{ duration: string } | null> => {
