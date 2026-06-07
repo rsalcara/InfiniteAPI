@@ -40,6 +40,7 @@ import {
 	normalizeMessageContent,
 	parseAndInjectE2ESessions,
 	runDetached,
+	safeCacheSet,
 	unixTimestampSeconds
 } from '../Utils'
 import { logMessageSent, logTcToken } from '../Utils/baileys-logger'
@@ -534,12 +535,36 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 
 			await devicesMutex.mutex(async () => {
+				// Audit ECACHEFULL — @cacheable/node-cache throws "Cache max keys amount
+				// exceeded" when `maxKeys` is reached (instead of LRU-evicting). For
+				// `mset` we fall back to a per-key path on ECACHEFULL so partial writes
+				// don't surface as send failures; for `.set` we route through
+				// `safeCacheSet` which already swallows ECACHEFULL with a debug log.
+				// Either way, durable state is unaffected — a cache miss next round
+				// triggers a USync refresh, same as a TTL-expired entry.
 				if (userDevicesCache.mset) {
-					// if the cache supports mset, we can set all devices in one go
-					await userDevicesCache.mset(Object.entries(deviceMap).map(([key, value]) => ({ key, value })))
+					try {
+						await userDevicesCache.mset(
+							Object.entries(deviceMap).map(([key, value]) => ({ key, value }))
+						)
+					} catch (err) {
+						const msg = (err as Error)?.message ?? ''
+						if (!msg.includes('max keys') && !msg.includes('ECACHEFULL')) throw err
+						logger.debug(
+							{ entries: Object.keys(deviceMap).length },
+							'userDevicesCache mset hit ECACHEFULL — falling back to per-key safeCacheSet'
+						)
+						for (const key in deviceMap) {
+							if (deviceMap[key]) {
+								await safeCacheSet(userDevicesCache, key, deviceMap[key], logger, 'userDevicesCache')
+							}
+						}
+					}
 				} else {
 					for (const key in deviceMap) {
-						if (deviceMap[key]) await userDevicesCache.set(key, deviceMap[key])
+						if (deviceMap[key]) {
+							await safeCacheSet(userDevicesCache, key, deviceMap[key], logger, 'userDevicesCache')
+						}
 					}
 				}
 			})
