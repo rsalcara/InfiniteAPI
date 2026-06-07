@@ -23,6 +23,11 @@
  *
  * Used for log lines covering recoverable Signal Protocol failures, where the
  * stack is constant and the actionable information is the type + message.
+ *
+ * MUST NEVER THROW — this helper is called from inside catch blocks (notably
+ * `messages-recv.ts` where a throw bubbles past the NACK and leaves the server
+ * retrying the same stanza forever). `JSON.stringify` on a circular object
+ * raises `TypeError`, so the object-without-message branch is guarded.
  */
 export const compactError = (err: unknown): string => {
 	if (!err) return 'Unknown'
@@ -33,8 +38,13 @@ export const compactError = (err: unknown): string => {
 	if (typeof err === 'object') {
 		const e = err as { name?: string; type?: string; message?: string }
 		const name = e.name || e.type || 'Error'
-		const msg = e.message || JSON.stringify(err)
-		return `${name}: ${msg}`
+		if (e.message) return `${name}: ${e.message}`
+		try {
+			return `${name}: ${JSON.stringify(err)}`
+		} catch {
+			// Circular structure, BigInt, or any other JSON.stringify hazard.
+			return `${name}: [unserializable]`
+		}
 	}
 	return String(err)
 }

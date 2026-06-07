@@ -480,24 +480,22 @@ export const decryptMessageNode = (
 							...(isRetryExhausted && { retriesExhausted: true, attempts: err.attempts })
 						}
 
-						// Smart logging based on error type and retry status
+						// Smart logging based on error type. Note: `isRetryExhausted` is
+						// always true inside the corrupted/session-record branches —
+						// DECRYPTION_RETRY_OPTIONS.shouldRetry returns false immediately
+						// for corruptedSessionErrors (so retry-utils throws
+						// RetryExhaustedError on attempt 1), and intermediate session-record
+						// retries are absorbed by the internal retry loop via onRetry. By
+						// the time the outer catch fires, the operation has given up.
 						if (isCorrupted) {
 							// Corrupted-session failures are expected operationally: WhatsApp
 							// rotates keys, sends out-of-order group messages, and replays
 							// pkmsg under flaky networks. The retry+pkmsg flow recovers
 							// automatically. Logging these as `error` (level 50) triggers
-							// alerting on something operators can't act on.
-							//
-							// Level chosen:
-							//   - debug on first attempt (pre-retry, very noisy in groups)
-							//   - warn on retry exhaustion (still recoverable, but worth
-							//     surfacing if it happens at high frequency for one JID)
-							// eslint-disable-next-line max-depth
-							if (isRetryExhausted) {
-								logger.warn(compactContext, 'session stale, auto-recovering via retry+pkmsg')
-							} else {
-								logger.debug(compactContext, 'corrupted session detected, attempting auto-recovery')
-							}
+							// alerting on something operators can't act on, so emit at warn
+							// — still surfaced if it happens at high frequency for one JID,
+							// but doesn't pollute the error dashboard.
+							logger.warn(compactContext, 'session stale, auto-recovering via retry+pkmsg')
 
 							// Session cleanup is deferred to retry exhaustion (safety net).
 							// The Signal Protocol handles recovery naturally via retry+pkmsg:
@@ -506,13 +504,9 @@ export const decryptMessageNode = (
 							// multiple messages from the same contact arrive simultaneously.
 							// See: messages-recv.ts sendRetryRequest() for deferred cleanup.
 						} else if (isSessionRecord) {
-							// Session record errors are transient — retry should handle them.
-							// eslint-disable-next-line max-depth
-							if (isRetryExhausted) {
-								logger.warn(compactContext, `no session record after ${err.attempts} attempts, will resync`)
-							} else {
-								logger.debug(compactContext, 'no session record, will retry')
-							}
+							// Session record errors are transient and the internal retry
+							// loop already exhausted its retries before reaching here.
+							logger.warn(compactContext, `no session record after ${err.attempts} attempts, will resync`)
 						} else {
 							// Unknown/unexpected errors (protobuf, parsing, etc.) — these
 							// don't go through retry and the stack is actually useful here,
