@@ -101,12 +101,48 @@ type TcTokenParams = {
 	getLIDForPN?: (pn: string) => Promise<string | null>
 }
 
-export async function buildTcTokenFromJid({
+/**
+ * Resolved tctoken state for a JID, shared by the two public builders.
+ *
+ * - `buffer`: present iff a non-expired, non-empty token exists in store.
+ * - Absent `buffer`: caller produces a "no tctoken" result (the shape of
+ *   that result differs per builder — array vs single node).
+ *
+ * The helper is also responsible for the opportunistic expired-token wipe
+ * documented inline. Callers must NOT re-do that bookkeeping.
+ */
+type ResolvedTcToken = { buffer?: Buffer }
+
+/**
+ * Shared retrieval + expiry + opportunistic-cleanup pipeline used by both
+ * `buildTcTokenFromJid` (sibling-array shape, kept for legacy call sites)
+ * and `buildTcTokenNode` (single-node shape, used for nested tctoken in
+ * `<picture>`). Extracting this collapses what used to be two
+ * byte-for-byte identical critical sections so any future change to the
+ * expiry / cleanup semantics happens in one place.
+ *
+ * Returns `{}` (no buffer) on every "no usable token" outcome:
+ *   - store miss
+ *   - empty token
+ *   - expired token (also performs the cleanup write)
+ *   - key-store error (swallowed; callers fall back to base content)
+ *
+ * Notes on the cleanup write (preserved from the original implementation):
+ *   - Only fires when an EXPIRED non-empty token was found. Missing tokens
+ *     are NOT wiped because nothing exists to wipe.
+ *   - If the entry carried a `senderTimestamp`, we preserve it via a
+ *     placeholder `{ token: Buffer.alloc(0), senderTimestamp }` so the
+ *     fire-and-forget issuance dedupe in messages-send survives. Otherwise
+ *     we tombstone the entry with `null`.
+ *   - Matches the exact same shape messages-send writes for issuance
+ *     placeholders, so we never accidentally widen the wipe to clear a
+ *     legitimate placeholder.
+ */
+async function resolveTcTokenForJid({
 	authState,
 	jid,
-	baseContent = [],
 	getLIDForPN
-}: TcTokenParams): Promise<BinaryNode[] | undefined> {
+}: Pick<TcTokenParams, 'authState' | 'jid' | 'getLIDForPN'>): Promise<ResolvedTcToken> {
 	try {
 		const storageJid = getLIDForPN ? await resolveTcTokenJid(jid, getLIDForPN) : jid
 		const tcTokenData = await authState.keys.get('tctoken', [storageJid])
@@ -114,9 +150,6 @@ export async function buildTcTokenFromJid({
 		const tcTokenBuffer = entry?.token
 
 		if (!tcTokenBuffer?.length || isTcTokenExpired(entry?.timestamp)) {
-			// Opportunistic cleanup: drop the expired token but preserve senderTimestamp so the
-			// fire-and-forget issuance dedupe survives — same shape used in messages-send, so this
-			// path no longer wipes that placeholder (only clears a real, non-empty expired token).
 			if (tcTokenBuffer?.length) {
 				const cleared =
 					entry?.senderTimestamp !== undefined
@@ -125,19 +158,40 @@ export async function buildTcTokenFromJid({
 				await authState.keys.set({ tctoken: { [storageJid]: cleared } })
 			}
 
-			return baseContent.length > 0 ? baseContent : undefined
+			return {}
 		}
 
-		baseContent.push({
-			tag: 'tctoken',
-			attrs: {},
-			content: tcTokenBuffer
-		})
+		return { buffer: tcTokenBuffer }
+	} catch {
+		return {}
+	}
+}
 
-		return baseContent
-	} catch (error) {
+/**
+ * Legacy sibling-array shape. Used by `presenceSubscribe` where the tctoken
+ * is the only content of a `<presence>` (so the "sibling" framing is moot —
+ * there's nothing to sibling against). Kept on the legacy
+ * `buildTcTokenFromJid` + `getLIDForPN` resolver pair for behavioral
+ * stability.
+ *
+ * Returns `baseContent` (mutated in place with the `<tctoken>` appended)
+ * when a token exists, or `baseContent | undefined` otherwise — same exact
+ * contract as before the helper extraction.
+ */
+export async function buildTcTokenFromJid({
+	authState,
+	jid,
+	baseContent = [],
+	getLIDForPN
+}: TcTokenParams): Promise<BinaryNode[] | undefined> {
+	const { buffer } = await resolveTcTokenForJid({ authState, jid, getLIDForPN })
+
+	if (!buffer) {
 		return baseContent.length > 0 ? baseContent : undefined
 	}
+
+	baseContent.push({ tag: 'tctoken', attrs: {}, content: buffer })
+	return baseContent
 }
 
 /**
@@ -149,41 +203,16 @@ export async function buildTcTokenFromJid({
  * + whatsmeow's `pictureContent`).
  *
  * Returns the node when a valid (non-expired, non-empty) tctoken exists for
- * the resolved storage JID, or `undefined` otherwise. Same expiry / opportunistic
- * cleanup semantics as `buildTcTokenFromJid` — the only structural difference
- * is that this returns the single node instead of pushing into a content
- * array.
+ * the resolved storage JID, or `undefined` otherwise.
  */
 export async function buildTcTokenNode({
 	authState,
 	jid,
 	getLIDForPN
 }: Omit<TcTokenParams, 'baseContent'>): Promise<BinaryNode | undefined> {
-	try {
-		const storageJid = getLIDForPN ? await resolveTcTokenJid(jid, getLIDForPN) : jid
-		const tcTokenData = await authState.keys.get('tctoken', [storageJid])
-		const entry = tcTokenData?.[storageJid]
-		const tcTokenBuffer = entry?.token
+	const { buffer } = await resolveTcTokenForJid({ authState, jid, getLIDForPN })
 
-		if (!tcTokenBuffer?.length || isTcTokenExpired(entry?.timestamp)) {
-			// Same opportunistic cleanup as buildTcTokenFromJid — preserve
-			// the senderTimestamp placeholder so the issuance fire-and-forget
-			// dedupe survives an expired-real-token wipe.
-			if (tcTokenBuffer?.length) {
-				const cleared =
-					entry?.senderTimestamp !== undefined
-						? { token: Buffer.alloc(0), senderTimestamp: entry.senderTimestamp }
-						: null
-				await authState.keys.set({ tctoken: { [storageJid]: cleared } })
-			}
-
-			return undefined
-		}
-
-		return { tag: 'tctoken', attrs: {}, content: tcTokenBuffer }
-	} catch {
-		return undefined
-	}
+	return buffer ? { tag: 'tctoken', attrs: {}, content: buffer } : undefined
 }
 
 type StoreTcTokensParams = {
