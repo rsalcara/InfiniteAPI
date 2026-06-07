@@ -1,34 +1,45 @@
 /**
- * Concurrency regression suite for `makeCacheableSignalKeyStore` AFTER the
+ * Concurrency regression suite for `makeCacheableSignalKeyStore` after the
  * removal of the global `cacheMutex` from `get()` and `set()` (port of
  * upstream PR #2593).
  *
- * Each test models a scenario the upstream argument relies on:
+ * The tests model the contract each scenario in this file exists to verify:
  *
- *   1. Concurrent GETs for the same MISSING id must coalesce safely — the
- *      store may be hit twice, but both callers must see the same value
- *      and the cache must end up populated with that value.
+ *   1. Concurrent GETs for the same MISSING id may both hit `store.get` (no
+ *      coalescing was claimed by the upstream PR), but both callers must
+ *      observe the same value, the cache must end up populated, and a
+ *      subsequent `get` for the same id must be a pure cache hit (zero new
+ *      store.get calls).
  *
- *   2. Concurrent SETs for different keys must NOT serialize against each
- *      other (no global mutex contention) AND must each land in both the
- *      cache and the durable store.
+ *   2. Concurrent SETs for DIFFERENT keys must each land in both the cache
+ *      and the durable store. Without the global mutex they are no longer
+ *      serialized.
  *
  *   3. Concurrent SETs for the SAME key must each commit to the durable
- *      store. Cache may transiently diverge under interleaving, but the
- *      durable store has the canonical value — exactly the upstream
- *      contract (cache is read-through / write-through; store is truth).
+ *      store. The cache must converge with the store on a subsequent read
+ *      WITHOUT any clear() in between — this is the "cache eventually
+ *      reflects the store" contract upstream relies on.
  *
- *   4. `clear()` STILL must observe atomicity vs concurrent `set()`
- *      (we deliberately kept the mutex around `clear()` even though
- *      upstream removed it from all three methods).
+ *   4. H6 closure preserved without the mutex: if `store.set` throws, the
+ *      cache must stay untouched and a subsequent `get` must NOT serve the
+ *      uncommitted value.
  *
- *   5. H6 closure preserved without the mutex: if `store.set` throws, the
- *      cache must stay untouched and subsequent `get` reads must NOT serve
- *      the uncommitted value.
- *
- *   6. Stage 5 null tombstone behavior preserved without the mutex: a
+ *   5. Stage 5 null tombstone behavior preserved without the mutex: a
  *      `set({type: {id: null}})` must evict the cache entry AND not
  *      reappear as a cache hit on the next `get`.
+ *
+ *   6. The mutex on `clear()` serializes `clear()` against ANOTHER `clear()`
+ *      ONLY. It does NOT exclude concurrent `set()` calls — the upstream
+ *      race between `set()` and the `flushAll` + `store.clear?.()` pair is
+ *      ACCEPTED. The covering test only proves clear-vs-clear interleaving
+ *      doesn't crash and that the post-state stays cache↔store consistent.
+ *
+ * The mock store inserts a microtask yield (`await Promise.resolve()`) at
+ * the top of `get`/`set`/`clear` so that `Promise.all([a, b])` actually
+ * interleaves rather than running each operation atomically end-to-end.
+ * Without the yield, JS's single-threaded event loop runs each async body
+ * to its first real await without giving the other promise a chance — the
+ * "concurrent" tests would degenerate into sequential ones.
  */
 import type { SignalDataSet, SignalKeyStore } from '../../Types'
 import { makeCacheableSignalKeyStore } from '../../Utils/auth-utils'
@@ -49,17 +60,22 @@ const silentLogger = (): ILogger =>
 type Bucket = Record<string, unknown>
 type Persisted = Record<string, Bucket>
 
-const makeMemoryStore = (): {
+interface MemoryStoreHandle {
 	store: SignalKeyStore & { clear?: () => void | Promise<void> }
 	persisted: Persisted
 	getCalls: { type: string; ids: string[] }[]
-	setCalls: number
-} => {
+	setCalls: () => number
+}
+
+const makeMemoryStore = (): MemoryStoreHandle => {
 	const persisted: Persisted = {}
 	const getCalls: { type: string; ids: string[] }[] = []
-	let setCalls = 0
+	let setCallCount = 0
 	const store: SignalKeyStore & { clear?: () => void | Promise<void> } = {
 		async get(type, ids) {
+			// Force a microtask yield so a sibling promise inside Promise.all
+			// can actually interleave instead of running this body atomically.
+			await Promise.resolve()
 			getCalls.push({ type, ids: [...ids] })
 			const bucket = persisted[type] ?? {}
 			const out: Record<string, unknown> = {}
@@ -70,7 +86,8 @@ const makeMemoryStore = (): {
 			return out as any
 		},
 		async set(data: SignalDataSet) {
-			setCalls++
+			await Promise.resolve() // yield to peers — see file header comment
+			setCallCount++
 			for (const type in data) {
 				persisted[type] = persisted[type] ?? {}
 				const incoming = (data as any)[type] as Record<string, unknown>
@@ -85,16 +102,18 @@ const makeMemoryStore = (): {
 			}
 		},
 		async clear() {
+			await Promise.resolve()
 			for (const type in persisted) delete persisted[type]
 		}
 	}
 
-	return { store, persisted, getCalls, setCalls: () => setCalls } as any
+	return { store, persisted, getCalls, setCalls: () => setCallCount }
 }
 
 describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal (#2593)', () => {
-	it('coalesces concurrent GETs of the same missing id without losing the value', async () => {
-		const { store, persisted } = makeMemoryStore()
+	it('concurrent GETs of the same missing id end up populating the cache; next read is a pure cache hit', async () => {
+		const handle = makeMemoryStore()
+		const { store, persisted, getCalls } = handle
 		persisted.session = { 'aaa:0': Buffer.from([0xab]) as any }
 		const cacheable = makeCacheableSignalKeyStore(store, silentLogger())
 
@@ -109,14 +128,16 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 		expect(b['aaa:0']).toEqual(persisted.session!['aaa:0'])
 		expect(c['aaa:0']).toEqual(persisted.session!['aaa:0'])
 
-		// Subsequent read is a pure cache hit (no further store.get).
-		const before = (store as any).get.length
+		// Subsequent read is a pure cache hit — no new `store.get` invocation.
+		// Use the recorded call list, NOT `store.get.length` (which returns
+		// the arity of the get method and never changes — would be tautology).
+		const callsBefore = getCalls.length
 		await cacheable.get('session', ['aaa:0'])
-		expect((store as any).get.length).toBe(before)
+		expect(getCalls.length).toBe(callsBefore)
 	})
 
 	it('concurrent SETs for DIFFERENT keys both land in store + cache', async () => {
-		const { store, persisted } = makeMemoryStore()
+		const { store, persisted, getCalls } = makeMemoryStore()
 		const cacheable = makeCacheableSignalKeyStore(store, silentLogger())
 
 		await Promise.all([
@@ -127,12 +148,15 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 		expect(persisted.session!['aaa:0']).toEqual(Buffer.from([0x01]))
 		expect(persisted.session!['bbb:0']).toEqual(Buffer.from([0x02]))
 
+		// Both values must now serve from the cache (no extra store.get).
+		const callsBefore = getCalls.length
 		const got = await cacheable.get('session', ['aaa:0', 'bbb:0'])
 		expect(got['aaa:0']).toEqual(Buffer.from([0x01]))
 		expect(got['bbb:0']).toEqual(Buffer.from([0x02]))
+		expect(getCalls.length).toBe(callsBefore)
 	})
 
-	it('concurrent SETs for the SAME key both reach the durable store (cache eventually converges)', async () => {
+	it('concurrent SETs for the SAME key both commit; cache converges with the store on the next read (no clear() needed)', async () => {
 		const { store, persisted } = makeMemoryStore()
 		const cacheable = makeCacheableSignalKeyStore(store, silentLogger())
 
@@ -142,17 +166,16 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 		])
 
 		// The store has the value from whichever set() committed last.
-		const finalStored = persisted.session!['aaa:0']
-		expect([Buffer.from([0xa1]), Buffer.from([0xa2])].some(b => b.equals(finalStored as Buffer))).toBe(true)
+		const finalStored = persisted.session!['aaa:0'] as Buffer
+		const validFinal =
+			finalStored.equals(Buffer.from([0xa1])) || finalStored.equals(Buffer.from([0xa2]))
+		expect(validFinal).toBe(true)
 
-		// A fresh get must converge with the store eventually. We force convergence
-		// by clearing the cache and re-reading.
-		await cacheable.clear!()
+		// Convergence: the next read returns the SAME value the durable store
+		// is holding. We do NOT clear() here — that would make both store
+		// AND cache empty trivially and prove nothing.
 		const got = await cacheable.get('session', ['aaa:0'])
-		// After clear() the value is gone (store.clear was also called). This is
-		// not the typical convergence path in production; it shows that clear()
-		// remains atomic — which is the reason we kept the mutex on clear().
-		expect(got['aaa:0']).toBeUndefined()
+		expect((got['aaa:0'] as Buffer).equals(finalStored)).toBe(true)
 	})
 
 	it('H6 preserved without the mutex: failed store.set leaves cache untouched', async () => {
@@ -160,6 +183,7 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 		const persisted: Persisted = {}
 		const flaky: SignalKeyStore = {
 			async get(type, ids) {
+				await Promise.resolve()
 				const bucket = persisted[type] ?? {}
 				const out: Record<string, unknown> = {}
 				for (const id of ids) {
@@ -169,6 +193,7 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 				return out as any
 			},
 			async set(data: SignalDataSet) {
+				await Promise.resolve()
 				if (shouldThrow) {
 					shouldThrow = false
 					throw new Error('simulated transient durable-store failure')
@@ -184,9 +209,9 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 
 		const cacheable = makeCacheableSignalKeyStore(flaky, silentLogger())
 
-		await expect(
-			cacheable.set({ session: { 'aaa:0': Buffer.from([0xee]) as any } })
-		).rejects.toThrow(/simulated transient/)
+		await expect(cacheable.set({ session: { 'aaa:0': Buffer.from([0xee]) as any } })).rejects.toThrow(
+			/simulated transient/
+		)
 
 		// Cache must NOT serve the uncommitted value.
 		const got = await cacheable.get('session', ['aaa:0'])
@@ -211,7 +236,17 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 		expect(after['aaa:0']).toBeUndefined()
 	})
 
-	it('clear() observes atomicity vs concurrent set()s (mutex retained on clear)', async () => {
+	it('clear() serializes against another clear() only; concurrent set() is NOT excluded — post-state stays cache↔store consistent', async () => {
+		// What this test really proves:
+		//   - Two concurrent clear() calls don't crash and leave the store
+		//     in the cleared state.
+		//   - A concurrent set() that races against a clear() is NOT
+		//     excluded by the mutex. The outcome depends on interleaving;
+		//     this test checks that the cache and store agree at the end
+		//     (so we don't observe a "cache has the value, store doesn't"
+		//     half-state).
+		// It does NOT prove atomicity of clear() vs set() — that race is
+		// inherited from upstream PR #2593 and is accepted in our adaptation.
 		const { store, persisted } = makeMemoryStore()
 		const cacheable = makeCacheableSignalKeyStore(store, silentLogger())
 
@@ -219,14 +254,19 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 		await cacheable.set({ session: { 'aaa:0': Buffer.from([0x01]) as any } })
 		expect(persisted.session!['aaa:0']).toEqual(Buffer.from([0x01]))
 
-		// Concurrently: spin off a set() and a clear()
-		const setPromise = cacheable.set({ session: { 'bbb:0': Buffer.from([0x02]) as any } })
-		const clearPromise = cacheable.clear!()
+		// Concurrently: a set() + TWO clear()s. The two clear() calls
+		// exercise the mutex (clear-vs-clear); the set() is the unprotected
+		// racer.
+		await Promise.all([
+			cacheable.set({ session: { 'bbb:0': Buffer.from([0x02]) as any } }),
+			cacheable.clear!(),
+			cacheable.clear!()
+		])
 
-		await Promise.all([setPromise, clearPromise])
-
-		// The end state depends on which finished last, but the cache must
-		// agree with the store in either outcome (no half-cleared cache).
+		// The end state depends on whether set() landed before or after the
+		// clear() pair. EITHER way, the cache must AGREE with the durable
+		// store on a fresh read — no "value in cache but absent from store"
+		// (or vice versa) is allowed.
 		const got = await cacheable.get('session', ['aaa:0', 'bbb:0'])
 		expect(got['aaa:0']).toEqual(persisted.session?.['aaa:0'] ?? undefined)
 		expect(got['bbb:0']).toEqual(persisted.session?.['bbb:0'] ?? undefined)

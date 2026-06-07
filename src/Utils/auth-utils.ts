@@ -120,9 +120,9 @@ export function makeCacheableSignalKeyStore(
 			maxKeys: DEFAULT_CACHE_MAX_KEYS.SIGNAL_STORE
 		})
 
-	// Mutex retained EXCLUSIVELY for `clear()`. Port of upstream PR #2593
-	// (`perf(auth): remove global mutex from cacheable signal key store`)
-	// adapted for our fork:
+	// Mutex retained to serialize `clear()` against itself ONLY. Port of
+	// upstream PR #2593 (`perf(auth): remove global mutex from cacheable
+	// signal key store`) adapted for our fork:
 	//
 	//   - get() and set() no longer serialize through this mutex. Upstream's
 	//     argument holds: the cache is a read-through / write-through layer
@@ -137,16 +137,22 @@ export function makeCacheableSignalKeyStore(
 	//     consumption, transactional batches) is handled by
 	//     `addTransactionCapability` below using `makeLockManager()`
 	//     per-record locks — already in our tree as the Stage 1 (upstream
-	//     #2571) port. The previously-staling note on `set()` claiming
+	//     #2571) port. The previously-stale note on `set()` claiming
 	//     "Stage 1 not yet ported" was out of date and has been removed.
 	//
-	//   - `clear()` STILL acquires the mutex. Without it, a concurrent
-	//     `set()` can land between `cache.flushAll()` and `store.clear?.()`,
-	//     repopulating the cache with values that no longer reflect the
-	//     just-cleared store. Holding the lock across the full clear is the
-	//     only place where the global mutex earns its keep, and our `clear`
-	//     callers (destroy, disconnect) are infrequent enough that the
-	//     contention impact is negligible.
+	//   - `clear()` still acquires this mutex, but the scope of that
+	//     protection is narrow: it ONLY serializes `clear()` against another
+	//     concurrent `clear()`. It does NOT exclude `get()`/`set()` because
+	//     those no longer acquire the mutex — i.e. a concurrent set() CAN
+	//     interleave between `cache.flushAll()` and `store.clear?.()` here.
+	//     That race is the same one upstream PR #2593 accepts by removing
+	//     the mutex entirely. We keep it for the cheaper guarantee:
+	//     `clear()` callers (destroy, disconnect) shouldn't double-fire and
+	//     undo each other's `store.clear?.()` half-way through a flushAll.
+	//     The benefit is modest; the cost (contention against the rare
+	//     clear() path) is near-zero, so the mutex stays as a defensive
+	//     scaffold against double-clear interleaving — not as a barrier
+	//     against concurrent get/set.
 	//
 	// The other invariants this file depends on are unchanged and do NOT
 	// rely on a global lock:
@@ -261,14 +267,19 @@ export function makeCacheableSignalKeyStore(
 			logger?.trace({ keys }, 'updated cache')
 		},
 		async clear() {
-			// PR #453 round-4 (Copilot) — DELIBERATE deviation from upstream
-			// PR #2593: `clear()` continues to hold `cacheMutex`. Without it, a
-			// concurrent set() could land between `cache.flushAll()` and
-			// `store.clear?.()`, repopulating the cache with values that no
-			// longer reflect the just-cleared store. Holding the lock across
-			// the full clear op ensures no get/set observes a half-cleared
-			// state. `clear` callers (destroy, disconnect) are rare, so the
-			// contention impact is negligible.
+			// Deliberate deviation from upstream PR #2593: `clear()` continues
+			// to acquire `cacheMutex`. The lock here ONLY serializes `clear()`
+			// against another concurrent `clear()` — it does NOT exclude
+			// `get()`/`set()` (those no longer acquire the mutex, so they may
+			// still interleave between `cache.flushAll()` and `store.clear?.()`
+			// below). That get/set interleaving race is the same one upstream
+			// accepts. The benefit we keep is narrower: when two `clear()`
+			// callers fire concurrently (destroy + disconnect overlap, for
+			// example), one must complete its full flushAll + store.clear?.()
+			// pair before the other starts, so the second clear doesn't observe
+			// a half-flushed cache or double-call the store's clear method.
+			// `clear()` is invoked only on lifecycle teardown — the contention
+			// cost of this narrow lock is essentially zero.
 			return cacheMutex.runExclusive(async () => {
 				await cache.flushAll()
 				await store.clear?.()
