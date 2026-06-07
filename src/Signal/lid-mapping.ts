@@ -506,6 +506,43 @@ export class LIDMappingStore {
 	}
 
 	/**
+	 * Port of upstream PR #2614 (`fix: nest profile picture tctoken and avoid
+	 * usync on lookup`). Returns the LID for a PN ONLY if the mapping is
+	 * already known (memory cache or on-disk store). Never triggers a USync
+	 * lookup.
+	 *
+	 * Use this on hot paths where firing a USync just to opportunistically
+	 * attach metadata (e.g. profile-picture tctoken) is undesired — both
+	 * because the latency is wasted (the operation must still proceed if the
+	 * mapping is unknown) AND because USync-on-look-up is a behavioral
+	 * fingerprint WA Web / whatsmeow don't emit, so doing it makes our
+	 * traffic profile stand out and may serve as a ban signal.
+	 */
+	async getKnownLIDForPN(pn: string): Promise<string | null> {
+		if (!isAnyPnUser(pn)) return null
+
+		const decoded = jidDecode(pn)
+		if (!decoded) return null
+
+		const pnUser = decoded.user
+		let lidUser = this.mappingCache.get(`pn:${pnUser}`)
+		if (!lidUser) {
+			const stored = await this.keys.get('lid-mapping', [pnUser])
+			const storedLidUser = stored[pnUser]
+			if (typeof storedLidUser === 'string' && storedLidUser) {
+				lidUser = storedLidUser
+				this.mappingCache.set(`pn:${pnUser}`, lidUser)
+				this.mappingCache.set(`lid:${lidUser}`, pnUser)
+			}
+		}
+
+		if (!lidUser) return null
+
+		const pnDevice = decoded.device !== undefined ? decoded.device : 0
+		return `${lidUser}${pnDevice ? `:${pnDevice}` : ''}@${decoded.server === 'hosted' ? 'hosted.lid' : 'lid'}`
+	}
+
+	/**
 	 * Get LIDs for multiple PNs - Optimized batch operation
 	 *
 	 * Note: PNs that fail database lookup are silently skipped and queued for

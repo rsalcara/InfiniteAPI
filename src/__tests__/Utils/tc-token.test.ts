@@ -1,7 +1,12 @@
 import { jest } from '@jest/globals'
 import { DisconnectReason, type SignalKeyStoreWithTransaction } from '../../Types'
 import { getErrorCodeFromStreamError, SERVER_ERROR_CODES } from '../../Utils'
-import { buildTcTokenFromJid, isTcTokenExpired, shouldSendNewTcToken } from '../../Utils/tc-token-utils'
+import {
+	buildTcTokenFromJid,
+	buildTcTokenNode,
+	isTcTokenExpired,
+	shouldSendNewTcToken
+} from '../../Utils/tc-token-utils'
 import type { BinaryNode } from '../../WABinary'
 
 /** 7 days in seconds — matches WA Web tctoken_duration */
@@ -276,6 +281,81 @@ describe('buildTcTokenFromJid', () => {
 		const result = await buildTcTokenFromJid({ authState: { keys: mockKeys }, jid: TEST_JID })
 
 		expect(result).toBeUndefined()
+	})
+})
+
+// ─── buildTcTokenNode (single-node helper for nested tctoken in <picture>) ─
+
+describe('buildTcTokenNode', () => {
+	const TEST_JID = 'user@s.whatsapp.net'
+	const VALID_TOKEN = Buffer.from([4, 1, 33, 254, 110])
+	const RECENT_TS = String(nowSeconds() - 86400) // 1 day ago
+	const EXPIRED_TS = String(nowSeconds() - 30 * 86400) // 30 days ago
+
+	let mockKeys: jest.Mocked<SignalKeyStoreWithTransaction>
+
+	beforeEach(() => {
+		mockKeys = createMockKeys()
+	})
+
+	it('returns a single tctoken node for valid non-expired token', async () => {
+		// @ts-ignore
+		mockKeys.get.mockResolvedValue({ [TEST_JID]: { token: VALID_TOKEN, timestamp: RECENT_TS } })
+
+		const result = await buildTcTokenNode({ authState: { keys: mockKeys }, jid: TEST_JID })
+
+		expect(result).toBeDefined()
+		expect(result!.tag).toBe('tctoken')
+		expect(result!.attrs).toEqual({})
+		expect(result!.content).toBe(VALID_TOKEN)
+	})
+
+	it('returns undefined when no token exists', async () => {
+		// @ts-ignore
+		mockKeys.get.mockResolvedValue({})
+
+		const result = await buildTcTokenNode({ authState: { keys: mockKeys }, jid: TEST_JID })
+
+		expect(result).toBeUndefined()
+	})
+
+	it('returns undefined for expired token + opportunistically wipes it', async () => {
+		// @ts-ignore
+		mockKeys.get.mockResolvedValue({ [TEST_JID]: { token: VALID_TOKEN, timestamp: EXPIRED_TS } })
+
+		const result = await buildTcTokenNode({ authState: { keys: mockKeys }, jid: TEST_JID })
+
+		expect(result).toBeUndefined()
+		expect(mockKeys.set).toHaveBeenCalledWith({ tctoken: { [TEST_JID]: null } })
+	})
+
+	it('does NOT wipe when token is simply missing', async () => {
+		// @ts-ignore
+		mockKeys.get.mockResolvedValue({})
+
+		await buildTcTokenNode({ authState: { keys: mockKeys }, jid: TEST_JID })
+
+		expect(mockKeys.set).not.toHaveBeenCalled()
+	})
+
+	it('returns undefined and swallows on key store error', async () => {
+		// @ts-ignore
+		mockKeys.get.mockRejectedValueOnce(new Error('database error'))
+
+		const result = await buildTcTokenNode({ authState: { keys: mockKeys }, jid: TEST_JID })
+
+		expect(result).toBeUndefined()
+	})
+
+	it('does NOT mutate any baseContent (no caller-passed array exists)', async () => {
+		// Smoke: signature has no baseContent param. Just confirming the
+		// function is purely returning a node, not pushing to anything.
+		// @ts-ignore
+		mockKeys.get.mockResolvedValue({ [TEST_JID]: { token: VALID_TOKEN, timestamp: RECENT_TS } })
+
+		const result = await buildTcTokenNode({ authState: { keys: mockKeys }, jid: TEST_JID })
+
+		expect(result).toEqual({ tag: 'tctoken', attrs: {}, content: VALID_TOKEN })
 	})
 })
 

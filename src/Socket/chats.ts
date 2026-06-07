@@ -55,7 +55,7 @@ import {
 } from '../Utils'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
 import processMessage from '../Utils/process-message'
-import { buildTcTokenFromJid } from '../Utils/tc-token-utils'
+import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
 import {
 	type BinaryNode,
 	getBinaryNodeChild,
@@ -96,6 +96,14 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	} = sock
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+	/**
+	 * Local-only LID resolver (port of upstream PR #2614). Use on
+	 * profile-picture / similar paths where we OPPORTUNISTICALLY attach
+	 * metadata: a USync miss should NOT bubble out as a network round-trip
+	 * because that traffic profile diverges from WA Web / whatsmeow and
+	 * smells like a custom client.
+	 */
+	const getKnownLIDForPN = signalRepository.lidMapping.getKnownLIDForPN.bind(signalRepository.lidMapping)
 
 	let privacySettings: { [_: string]: string } | undefined
 
@@ -784,43 +792,88 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	)
 
 	/**
-	 * fetch the profile picture of a user/group
-	 * type = "preview" for a low res picture
-	 * type = "image for the high res picture"
+	 * Fetch the profile picture URL of a user/group.
+	 *
+	 * `type`:        "preview" for a low-res picture, "image" for the high-res picture.
+	 * `existingId`:  the `id` of the last known picture for this JID. If supplied AND the
+	 *                picture has not changed, the server responds with a `304`-style empty
+	 *                result (sentinel for "use cached URL") instead of returning a fresh URL.
+	 *                Saves a CDN re-fetch per refresh — matches WA Web `pictureId` and
+	 *                whatsmeow `ExistingID`.
+	 * `invite`:      group-invite code. Allows fetching a group's picture without joining,
+	 *                used by the "preview before accepting invite" flow. Mutually exclusive
+	 *                with `tctoken` (server doesn't require it for invite-code lookups).
+	 * `personaId`:   Meta-AI bot persona id. Required to fetch the picture of an AI persona.
+	 * `commonGid`:   a group jid both parties belong to. Required when the target's privacy
+	 *                is set to "My contacts" and we are NOT in their contacts but share a
+	 *                group — without it the server returns 401/403. Matches WA Web.
+	 *
+	 * Stanza shape (matches WA Web `WASmaxOutProfilePictureGetRequest` + whatsmeow):
+	 *
+	 *   <iq xmlns="w:profile:picture" type="get" target="{jid}" to="s.whatsapp.net">
+	 *     <picture type="..." query="url" [id] [invite] [persona_id] [common_gid]>
+	 *       [<tctoken>...</tctoken>]   ← nested CHILD (not sibling)
+	 *     </picture>
+	 *   </iq>
 	 */
-	const profilePictureUrl = async (jid: string, type: 'preview' | 'image' = 'preview', timeoutMs?: number) => {
-		const baseContent: BinaryNode[] = [{ tag: 'picture', attrs: { type, query: 'url' } }]
-
-		// WA Web only includes tctoken for user JIDs (not groups/newsletters)
-		// and never for own profile pic (Chat model for self has no tcToken).
-		// Including tctoken for own JID causes the server to never respond.
+	const profilePictureUrl = async (
+		jid: string,
+		type: 'preview' | 'image' = 'preview',
+		timeoutMs?: number,
+		opts?: {
+			existingId?: string
+			invite?: string
+			personaId?: string
+			commonGid?: string
+		}
+	) => {
 		const normalizedJid = jidNormalizedUser(jid)
 		const isUserJid = isAnyPnUser(normalizedJid) || isAnyLidUser(normalizedJid)
 		const me = authState.creds.me
 		const isSelf =
 			me && (normalizedJid === jidNormalizedUser(me.id) || (me.lid && normalizedJid === jidNormalizedUser(me.lid)))
-		let content: BinaryNode[] | undefined = baseContent
 
-		if (isUserJid && !isSelf) {
-			content = await buildTcTokenFromJid({
+		// Build the <picture> attrs — include only the fields the caller supplied,
+		// so unset ones map to DROP_ATTR (matching WA Web's OPTIONAL serializer behavior).
+		const pictureAttrs: { [k: string]: string } = { type, query: 'url' }
+		if (opts?.existingId) pictureAttrs.id = opts.existingId
+		if (opts?.invite) pictureAttrs.invite = opts.invite
+		if (opts?.personaId) pictureAttrs.persona_id = opts.personaId
+		if (opts?.commonGid) pictureAttrs.common_gid = opts.commonGid
+
+		const pictureNode: BinaryNode = { tag: 'picture', attrs: pictureAttrs }
+
+		// Attach tctoken (if known) as a CHILD of <picture>. Match WA Web
+		// (WASmaxOutProfilePictureTCTokenMixin) and whatsmeow (pictureContent).
+		// WA Web only includes tctoken for user JIDs (not groups/newsletters)
+		// and never for own profile pic — including it for self causes the
+		// server to never respond. Invite-code lookups also skip the token
+		// (the invite IS the authorization).
+		if (isUserJid && !isSelf && !opts?.invite) {
+			const tctokenNode = await buildTcTokenNode({
 				authState,
 				jid: normalizedJid,
-				baseContent,
-				getLIDForPN
+				// Port of upstream PR #2614: never fire USync from the profile-picture
+				// path. If the LID mapping is unknown we send the IQ without the
+				// tctoken and let the server tell us (vs. doing a USync round trip
+				// that fingerprints us as non-WA-Web).
+				getLIDForPN: getKnownLIDForPN
 			})
+			if (tctokenNode) {
+				pictureNode.content = [tctokenNode]
+			}
 		}
 
-		jid = normalizedJid
 		const result = await query(
 			{
 				tag: 'iq',
 				attrs: {
-					target: jid,
+					target: normalizedJid,
 					to: S_WHATSAPP_NET,
 					type: 'get',
 					xmlns: 'w:profile:picture'
 				},
-				content
+				content: [pictureNode]
 			},
 			timeoutMs
 		)

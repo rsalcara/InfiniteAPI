@@ -140,6 +140,52 @@ export async function buildTcTokenFromJid({
 	}
 }
 
+/**
+ * Build a standalone <tctoken> BinaryNode (no container, no sibling array).
+ *
+ * Use this when the caller needs the tctoken as a CHILD of another stanza node
+ * — e.g. nested inside <picture> for `w:profile:picture` queries (port of
+ * upstream PR #2614 / matches WA Web's `WASmaxOutProfilePictureTCTokenMixin`
+ * + whatsmeow's `pictureContent`).
+ *
+ * Returns the node when a valid (non-expired, non-empty) tctoken exists for
+ * the resolved storage JID, or `undefined` otherwise. Same expiry / opportunistic
+ * cleanup semantics as `buildTcTokenFromJid` — the only structural difference
+ * is that this returns the single node instead of pushing into a content
+ * array.
+ */
+export async function buildTcTokenNode({
+	authState,
+	jid,
+	getLIDForPN
+}: Omit<TcTokenParams, 'baseContent'>): Promise<BinaryNode | undefined> {
+	try {
+		const storageJid = getLIDForPN ? await resolveTcTokenJid(jid, getLIDForPN) : jid
+		const tcTokenData = await authState.keys.get('tctoken', [storageJid])
+		const entry = tcTokenData?.[storageJid]
+		const tcTokenBuffer = entry?.token
+
+		if (!tcTokenBuffer?.length || isTcTokenExpired(entry?.timestamp)) {
+			// Same opportunistic cleanup as buildTcTokenFromJid — preserve
+			// the senderTimestamp placeholder so the issuance fire-and-forget
+			// dedupe survives an expired-real-token wipe.
+			if (tcTokenBuffer?.length) {
+				const cleared =
+					entry?.senderTimestamp !== undefined
+						? { token: Buffer.alloc(0), senderTimestamp: entry.senderTimestamp }
+						: null
+				await authState.keys.set({ tctoken: { [storageJid]: cleared } })
+			}
+
+			return undefined
+		}
+
+		return { tag: 'tctoken', attrs: {}, content: tcTokenBuffer }
+	} catch {
+		return undefined
+	}
+}
+
 type StoreTcTokensParams = {
 	result: BinaryNode
 	fallbackJid: string
