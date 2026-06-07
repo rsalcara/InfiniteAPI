@@ -260,7 +260,11 @@ export const DEFAULT_CACHE_TTLS = {
 	SIGNAL_STORE: 5 * 60, // 5 minutes
 	MSG_RETRY: 60 * 60, // 1 hour
 	CALL_OFFER: 5 * 60, // 5 minutes
-	USER_DEVICES: 5 * 60 // 5 minutes
+	USER_DEVICES: 5 * 60, // 5 minutes
+	// Meta AI / FBID bot message-secret cache. Streaming responses (first/inner/last edit chain)
+	// reference the same target_id over ~600ms, so an hour is comfortably long. Cache is
+	// also cleared on socket disconnect (mimics WA Web's BackendEventBus.onLogout).
+	MSMSG_SECRET: 60 * 60 // 1 hour
 }
 
 /**
@@ -279,7 +283,11 @@ export const DEFAULT_CACHE_MAX_KEYS = {
 	USER_DEVICES: 5_000,
 	PLACEHOLDER_RESEND: 5_000,
 	LID_PER_SOCKET: 2_000,
-	LID_GLOBAL: 10_000
+	LID_GLOBAL: 10_000,
+	// Per-socket Meta AI / FBID bot message-secret cache. One key per outgoing
+	// bot-conversation message — 500 covers heavy users without unbounded growth.
+	// Upstream PR #2592 uses an unbounded module-global Map (cubic P1, coderabbit Major).
+	MSMSG_SECRET: 500
 }
 
 /**

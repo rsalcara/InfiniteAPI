@@ -19,7 +19,21 @@ import {
 import { compactError } from './error-log-utils'
 import { unpadRandomMax16 } from './generics'
 import type { ILogger } from './logger'
+import {
+	cacheMessageSecretIfPresent,
+	decryptMsmsgBotMessage,
+	extractMsmsgStanzaInfo,
+	type MsmsgSecretCache
+} from './meta-ai-msmsg'
 import { retry, RetryExhaustedError, type RetryOptions } from './retry-utils'
+
+/**
+ * Re-used sentinel for the msgBuffer initializer when the e2e type is `msmsg`
+ * (which decodes via decryptMsmsgBotMessage and bypasses the generic
+ * `proto.Message.decode(msgBuffer)` path entirely). Avoids `noUnusedLocals` /
+ * `used-before-assignment` warnings without paying a per-call alloc.
+ */
+const EMPTY_UINT8_ARRAY = new Uint8Array(0)
 
 export const getDecryptionJid = async (sender: string, repository: SignalRepositoryWithLIDStore): Promise<string> => {
 	if (isLidUser(sender) || isHostedLidUser(sender)) {
@@ -336,9 +350,23 @@ export const decryptMessageNode = (
 	meId: string,
 	meLid: string,
 	repository: SignalRepositoryWithLIDStore,
-	logger: ILogger
+	logger: ILogger,
+	/**
+	 * Optional per-socket cache of (cacheKey → messageSecret) used to decrypt
+	 * `<enc type="msmsg">` (Meta AI / FBID bot replies). Caller (Socket layer)
+	 * supplies one instance per connection — when absent, msmsg stanzas fall
+	 * through to the "Unknown e2e type" error path the same way the upstream
+	 * early-return NACK used to do.
+	 */
+	msmsgCache?: MsmsgSecretCache
 ) => {
 	const { fullMessage, author, sender } = decodeMessageNode(stanza, meId, meLid)
+
+	// Pre-scan for msmsg metadata children (<meta target_id>, <bot edit>, etc.).
+	// extractMsmsgStanzaInfo returns null unless an enc child with type=msmsg
+	// is present, so this is a no-op for ordinary pkmsg/skmsg stanzas.
+	const msmsgInfo = extractMsmsgStanzaInfo(stanza)
+
 	return {
 		fullMessage,
 		category: stanza.attrs.category,
@@ -373,7 +401,10 @@ export const decryptMessageNode = (
 
 					decryptables += 1
 
-					let msgBuffer: Uint8Array
+					// Initialized for skmsg/pkmsg/msg/plaintext paths. The msmsg path
+					// short-circuits the generic decode by setting msg directly below,
+					// so msgBuffer stays at this sentinel-empty value.
+					let msgBuffer: Uint8Array = EMPTY_UINT8_ARRAY
 
 					const decryptionJid = await getDecryptionJid(author, repository)
 
@@ -429,14 +460,59 @@ export const decryptMessageNode = (
 							case 'plaintext':
 								msgBuffer = content
 								break
+							case 'msmsg':
+								// msmsg is decoded INSIDE decryptMsmsgBotMessage (it returns an
+								// already-decoded IMessage), so leave msgBuffer alone and short-
+								// circuit the generic decode path below.
+								break
 							default:
 								throw new Error(`Unknown e2e type: ${e2eType}`)
 						}
 
-						let msg: proto.IMessage = proto.Message.decode(
-							e2eType !== 'plaintext' ? unpadRandomMax16(msgBuffer) : msgBuffer
-						)
+						let msg: proto.IMessage
+						if (e2eType === 'msmsg') {
+							if (!msmsgCache) {
+								throw new Error(
+									'Meta AI msmsg received but no MsmsgSecretCache was wired into decryptMessageNode'
+								)
+							}
+							if (!msmsgInfo) {
+								throw new Error('msmsg enc without companion <meta target_id> node')
+							}
+							// Note on `lidToPn`: WAWebLidMigrationUtils.toPn is sync in WA Web
+							// (looks up an in-memory map). Our LIDMappingStore.getPNForLID is
+							// async, so we can't call it from this sync block without
+							// restructuring the wider decrypt flow. Empirically the Meta AI
+							// "oi" capture is 1:1 (no participant in the cache key) — group bot
+							// chats are the only case that needs LID→PN, and they fall back to
+							// using the raw LID as the participant component. If group bot
+							// support is needed later, pass a pre-resolved sync mapper here.
+							msg = decryptMsmsgBotMessage({
+								ciphertext: content,
+								stanzaInfo: msmsgInfo,
+								stanzaId: fullMessage.key.id || stanza.attrs.id || '',
+								authorJid: author,
+								chatJid: sender,
+								isGroup: isJidGroup(sender) ?? false,
+								isFbidBot: isJidMetaAI(author) ?? false,
+								meLid,
+								meId,
+								cache: msmsgCache,
+								logger
+							})
+						} else {
+							msg = proto.Message.decode(
+								e2eType !== 'plaintext' ? unpadRandomMax16(msgBuffer) : msgBuffer
+							)
+						}
 						msg = msg.deviceSentMessage?.message || msg
+
+						// Cache `messageContextInfo.messageSecret` so subsequent msmsg replies
+						// referencing this message's id can find the decryption secret. Mirrors
+						// WA Web's flow where every decoded msg has its secret stashed in
+						// `WAWebMsmsgMsgSecretCache`.
+						cacheMessageSecretIfPresent(msmsgCache, msg, fullMessage.key)
+
 						if (msg.senderKeyDistributionMessage) {
 							//eslint-disable-next-line max-depth
 							try {

@@ -1,6 +1,7 @@
 export * from './generics'
 export * from './decode-wa-message'
 export * from './error-log-utils'
+export * from './meta-ai-msmsg'
 export * from './messages'
 export * from './messages-media'
 export * from './validate-connection'
