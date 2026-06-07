@@ -517,29 +517,39 @@ export class LIDMappingStore {
 	 * mapping is unknown) AND because USync-on-look-up is a behavioral
 	 * fingerprint WA Web / whatsmeow don't emit, so doing it makes our
 	 * traffic profile stand out and may serve as a ban signal.
+	 *
+	 * Thread safety: wrapped in `checkDestroyed()` + `trackOperation()` —
+	 * same contract every other public method on this store follows. Without
+	 * these, the async `keys.get()` could race with `destroy()` (UAF on the
+	 * key store) and a post-destroy call could silently return stale data.
+	 * (PR #510 review — addresses cubic / copilot P2.)
 	 */
 	async getKnownLIDForPN(pn: string): Promise<string | null> {
-		if (!isAnyPnUser(pn)) return null
+		this.checkDestroyed()
 
-		const decoded = jidDecode(pn)
-		if (!decoded) return null
+		return this.trackOperation(async () => {
+			if (!isAnyPnUser(pn)) return null
 
-		const pnUser = decoded.user
-		let lidUser = this.mappingCache.get(`pn:${pnUser}`)
-		if (!lidUser) {
-			const stored = await this.keys.get('lid-mapping', [pnUser])
-			const storedLidUser = stored[pnUser]
-			if (typeof storedLidUser === 'string' && storedLidUser) {
-				lidUser = storedLidUser
-				this.mappingCache.set(`pn:${pnUser}`, lidUser)
-				this.mappingCache.set(`lid:${lidUser}`, pnUser)
+			const decoded = jidDecode(pn)
+			if (!decoded) return null
+
+			const pnUser = decoded.user
+			let lidUser = this.mappingCache.get(`pn:${pnUser}`)
+			if (!lidUser) {
+				const stored = await this.keys.get('lid-mapping', [pnUser])
+				const storedLidUser = stored[pnUser]
+				if (typeof storedLidUser === 'string' && storedLidUser) {
+					lidUser = storedLidUser
+					this.mappingCache.set(`pn:${pnUser}`, lidUser)
+					this.mappingCache.set(`lid:${lidUser}`, pnUser)
+				}
 			}
-		}
 
-		if (!lidUser) return null
+			if (!lidUser) return null
 
-		const pnDevice = decoded.device !== undefined ? decoded.device : 0
-		return `${lidUser}${pnDevice ? `:${pnDevice}` : ''}@${decoded.server === 'hosted' ? 'hosted.lid' : 'lid'}`
+			const pnDevice = decoded.device !== undefined ? decoded.device : 0
+			return `${lidUser}${pnDevice ? `:${pnDevice}` : ''}@${decoded.server === 'hosted' ? 'hosted.lid' : 'lid'}`
+		})
 	}
 
 	/**
