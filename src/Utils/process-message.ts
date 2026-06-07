@@ -685,11 +685,20 @@ const processMessage = async (
 				])
 				break
 			case proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE:
+				// Port of upstream WhiskeySockets/Baileys#2609 (`fix: emit member tag
+				// removal updates`). Member-tag removal arrives as a `memberLabel`
+				// patch with NO populated label, so the previous guard
+				// `labelAssociationMsg?.label` silently swallowed the removal event.
+				// Mirror WA Web's `WAWebHandleMemberLabelChange` which coerces a
+				// missing label to "":
+				//   `var f = (n = a.label) != null ? n : "";`
+				// followed by `createOrUpdateMemberLabel({ ..., label: f })` —
+				// i.e. an empty label IS a valid update, the removal channel.
 				const labelAssociationMsg = protocolMsg.memberLabel
-				if (labelAssociationMsg?.label) {
+				if (labelAssociationMsg) {
 					ev.emit('group.member-tag.update', {
 						groupId: chat.id!,
-						label: labelAssociationMsg.label,
+						label: labelAssociationMsg.label || '',
 						participant: message.key.participant!,
 						participantAlt: message.key.participantAlt!,
 						messageTimestamp: Number(message.messageTimestamp)

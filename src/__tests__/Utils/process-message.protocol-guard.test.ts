@@ -139,3 +139,119 @@ describe('processMessage — protocolMessage guard (regression for blanket fromM
 		expect(credUpdates.filter(u => u.myAppStateKeyId !== undefined)).toHaveLength(0)
 	})
 })
+
+// ─── GROUP_MEMBER_LABEL_CHANGE — assignment + removal ──────────────────────
+//
+// Regression cover for upstream PR #2609 port: `group.member-tag.update`
+// must fire for both assignment AND removal patches. The previous guard
+// (`if (labelAssociationMsg?.label)`) silently swallowed removals because
+// removal arrives as a `memberLabel` patch with NO populated label
+// — matching WA Web `WAWebHandleMemberLabelChange`'s
+// `var f = (n = a.label) != null ? n : "";` (live source verified via CDP).
+describe('processMessage — GROUP_MEMBER_LABEL_CHANGE event emission', () => {
+	const makeGroupCtx = () => {
+		const events = new EventEmitter() as unknown as BaileysEventEmitter
+		const tagUpdates: any[] = []
+		;(events as any).on('group.member-tag.update', (upd: any) => tagUpdates.push(upd))
+
+		return {
+			tagUpdates,
+			ctx: {
+				shouldProcessHistoryMsg: false,
+				placeholderResendCache: undefined,
+				ev: events,
+				creds: credsWithMe(),
+				keyStore: {} as any,
+				signalRepository: {} as any,
+				logger: silent,
+				options: {},
+				getMessage: async () => undefined
+			}
+		}
+	}
+
+	const groupInbound = (id: string, message: proto.IMessage): WAMessage => ({
+		key: {
+			remoteJid: '120363000000000000@g.us',
+			fromMe: false,
+			id,
+			participant: 'admin@s.whatsapp.net',
+			participantAlt: 'admin@lid'
+		},
+		message,
+		messageTimestamp: 1770000000
+	})
+
+	it('emits group.member-tag.update when a label is assigned', async () => {
+		const { ctx, tagUpdates } = makeGroupCtx()
+		const msg = groupInbound(
+			'lbl-set',
+			protocolMessage(proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE, {
+				memberLabel: { label: 'moderator', labelTimestamp: 1770000000 } as any
+			})
+		)
+
+		await processMessage(msg, ctx as any)
+
+		expect(tagUpdates).toHaveLength(1)
+		expect(tagUpdates[0]).toEqual({
+			groupId: '120363000000000000@g.us',
+			label: 'moderator',
+			participant: 'admin@s.whatsapp.net',
+			participantAlt: 'admin@lid',
+			messageTimestamp: 1770000000
+		})
+	})
+
+	it('emits group.member-tag.update with empty label when label is REMOVED (no label field)', async () => {
+		const { ctx, tagUpdates } = makeGroupCtx()
+		const msg = groupInbound(
+			'lbl-removed',
+			protocolMessage(proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE, {
+				// removal arrives as memberLabel patch WITHOUT label populated —
+				// previously silently swallowed by the `if (labelAssociationMsg?.label)` guard
+				memberLabel: { labelTimestamp: 1770000000 } as any
+			})
+		)
+
+		await processMessage(msg, ctx as any)
+
+		expect(tagUpdates).toHaveLength(1)
+		expect(tagUpdates[0]).toEqual({
+			groupId: '120363000000000000@g.us',
+			label: '',
+			participant: 'admin@s.whatsapp.net',
+			participantAlt: 'admin@lid',
+			messageTimestamp: 1770000000
+		})
+	})
+
+	it('emits group.member-tag.update with empty label when label is the empty string', async () => {
+		const { ctx, tagUpdates } = makeGroupCtx()
+		const msg = groupInbound(
+			'lbl-empty',
+			protocolMessage(proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE, {
+				memberLabel: { label: '', labelTimestamp: 1770000000 } as any
+			})
+		)
+
+		await processMessage(msg, ctx as any)
+
+		expect(tagUpdates).toHaveLength(1)
+		expect(tagUpdates[0].label).toBe('')
+	})
+
+	it('does NOT emit when memberLabel patch is entirely absent', async () => {
+		const { ctx, tagUpdates } = makeGroupCtx()
+		const msg = groupInbound(
+			'lbl-noop',
+			protocolMessage(proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE, {
+				// no memberLabel field at all → no event
+			})
+		)
+
+		await processMessage(msg, ctx as any)
+
+		expect(tagUpdates).toHaveLength(0)
+	})
+})
