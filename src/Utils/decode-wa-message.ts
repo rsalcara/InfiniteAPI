@@ -35,6 +35,54 @@ import { retry, RetryExhaustedError, type RetryOptions } from './retry-utils'
  */
 const EMPTY_UINT8_ARRAY = new Uint8Array(0)
 
+/**
+ * Extracted to keep the inline e2e-type switch under the `max-depth: 4` lint
+ * rule. The msmsg branch otherwise needs an extra `if (e2eType === 'msmsg')`
+ * level inside the existing `try { switch { case '...' } }` block, pushing the
+ * sender-key-distribution `if/try` further down to depth 5.
+ *
+ * Note on `lidToPn`: WAWebLidMigrationUtils.toPn is sync in WA Web (looks up
+ * an in-memory map). Our LIDMappingStore.getPNForLID is async, so we can't
+ * call it from this sync block without restructuring the wider decrypt flow.
+ * Empirically the Meta AI "oi" capture is 1:1 (no participant in the cache
+ * key) — group bot chats are the only case that needs LID→PN, and they fall
+ * back to using the raw LID as the participant component. If group bot
+ * support is needed later, pass a pre-resolved sync mapper here.
+ */
+const decodeIncomingMsmsg = (args: {
+	content: Uint8Array
+	msmsgCache: MsmsgSecretCache | undefined
+	msmsgInfo: ReturnType<typeof extractMsmsgStanzaInfo>
+	fullMessage: WAMessage
+	stanza: BinaryNode
+	author: string
+	sender: string
+	meLid: string
+	meId: string
+	logger: ILogger
+}): proto.IMessage => {
+	const { content, msmsgCache, msmsgInfo, fullMessage, stanza, author, sender, meLid, meId, logger } = args
+	if (!msmsgCache) {
+		throw new Error('Meta AI msmsg received but no MsmsgSecretCache was wired into decryptMessageNode')
+	}
+	if (!msmsgInfo) {
+		throw new Error('msmsg enc without companion <meta target_id> node')
+	}
+	return decryptMsmsgBotMessage({
+		ciphertext: content,
+		stanzaInfo: msmsgInfo,
+		stanzaId: fullMessage.key.id || stanza.attrs.id || '',
+		authorJid: author,
+		chatJid: sender,
+		isGroup: isJidGroup(sender) ?? false,
+		isFbidBot: isJidMetaAI(author) ?? false,
+		meLid,
+		meId,
+		cache: msmsgCache,
+		logger
+	})
+}
+
 export const getDecryptionJid = async (sender: string, repository: SignalRepositoryWithLIDStore): Promise<string> => {
 	if (isLidUser(sender) || isHostedLidUser(sender)) {
 		return sender
@@ -469,42 +517,21 @@ export const decryptMessageNode = (
 								throw new Error(`Unknown e2e type: ${e2eType}`)
 						}
 
-						let msg: proto.IMessage
-						if (e2eType === 'msmsg') {
-							if (!msmsgCache) {
-								throw new Error(
-									'Meta AI msmsg received but no MsmsgSecretCache was wired into decryptMessageNode'
-								)
-							}
-							if (!msmsgInfo) {
-								throw new Error('msmsg enc without companion <meta target_id> node')
-							}
-							// Note on `lidToPn`: WAWebLidMigrationUtils.toPn is sync in WA Web
-							// (looks up an in-memory map). Our LIDMappingStore.getPNForLID is
-							// async, so we can't call it from this sync block without
-							// restructuring the wider decrypt flow. Empirically the Meta AI
-							// "oi" capture is 1:1 (no participant in the cache key) — group bot
-							// chats are the only case that needs LID→PN, and they fall back to
-							// using the raw LID as the participant component. If group bot
-							// support is needed later, pass a pre-resolved sync mapper here.
-							msg = decryptMsmsgBotMessage({
-								ciphertext: content,
-								stanzaInfo: msmsgInfo,
-								stanzaId: fullMessage.key.id || stanza.attrs.id || '',
-								authorJid: author,
-								chatJid: sender,
-								isGroup: isJidGroup(sender) ?? false,
-								isFbidBot: isJidMetaAI(author) ?? false,
-								meLid,
-								meId,
-								cache: msmsgCache,
-								logger
-							})
-						} else {
-							msg = proto.Message.decode(
-								e2eType !== 'plaintext' ? unpadRandomMax16(msgBuffer) : msgBuffer
-							)
-						}
+						let msg: proto.IMessage =
+							e2eType === 'msmsg'
+								? decodeIncomingMsmsg({
+										content,
+										msmsgCache,
+										msmsgInfo,
+										fullMessage,
+										stanza,
+										author,
+										sender,
+										meLid,
+										meId,
+										logger
+									})
+								: proto.Message.decode(e2eType !== 'plaintext' ? unpadRandomMax16(msgBuffer) : msgBuffer)
 						msg = msg.deviceSentMessage?.message || msg
 
 						// Cache `messageContextInfo.messageSecret` so subsequent msmsg replies
