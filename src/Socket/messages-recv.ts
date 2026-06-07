@@ -191,17 +191,25 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		})
 
 	// Per-socket cache of Meta AI / FBID bot message secrets (msmsg). Bounded by
-	// DEFAULT_CACHE_MAX_KEYS.MSMSG_SECRET (500) + 1h TTL. Cleared on socket end
-	// (see registerSocketEndHandler below) to mirror WAWebMsmsgMsgSecretCache's
-	// BackendEventBus.onLogout clear and avoid cross-account secret leakage when
-	// multiple sockets share the same Node process. Upstream PR #2592 uses an
-	// unbounded module-global Map (cubic P1, coderabbit Major) — we fix both.
+	// DEFAULT_CACHE_MAX_KEYS.MSMSG_SECRET (500) + 1h TTL. Cleared AND closed on
+	// socket end (see registerSocketEndHandler below) to:
+	//   1. mirror WAWebMsmsgMsgSecretCache's BackendEventBus.onLogout clear and
+	//      avoid cross-account secret leakage when multiple sockets share the
+	//      same Node process; AND
+	//   2. stop the NodeCache `checkperiod` setInterval timer so frequent
+	//      reconnects (network flap / multi-tenant pools) don't leak one timer
+	//      per disconnect (audit P2 thread 8).
+	// Upstream PR #2592 uses an unbounded module-global Map (cubic P1, coderabbit
+	// Major) — we fix that AND the timer leak.
 	const msmsgSecretCache = makeMsmsgSecretCache()
 	registerSocketEndHandler(async () => {
 		try {
 			msmsgSecretCache.flushAll()
+			// close() releases the periodic-check setInterval — without it each
+			// reconnect leaves a stale timer alive.
+			msmsgSecretCache.close()
 		} catch {
-			// flushAll never throws on a healthy cache, but defensive on shutdown
+			// flushAll/close never throw on a healthy cache, but defensive on shutdown
 		}
 	})
 

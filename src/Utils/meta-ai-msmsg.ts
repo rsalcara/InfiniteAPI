@@ -44,6 +44,7 @@ import { proto } from '../../WAProto/index.js'
 import { DEFAULT_CACHE_MAX_KEYS, DEFAULT_CACHE_TTLS } from '../Defaults'
 import type { BinaryNode } from '../WABinary'
 import { isJidGroup, isJidMetaAI, jidDecode, jidNormalizedUser } from '../WABinary/jid-utils'
+import { isNodeCacheFullError } from './cache-utils'
 import { aesDecryptGCM, hkdf } from './crypto'
 import { compactError } from './error-log-utils'
 import { unpadRandomMax16 } from './generics'
@@ -97,11 +98,19 @@ export interface MsmsgStanzaInfo {
 }
 
 /**
- * Per-socket LRU cache of (cacheKey → messageSecret bytes). Bounded by
+ * Per-socket bounded TTL cache of (cacheKey → messageSecret bytes). Capped at
  * `DEFAULT_CACHE_MAX_KEYS.MSMSG_SECRET` (500) and TTLed at
- * `DEFAULT_CACHE_TTLS.MSMSG_SECRET` (1h). The caller MUST clear on socket
- * close to mirror WA Web's `BackendEventBus.onLogout` behaviour and to avoid
- * leaking secrets between accounts that share the same Node process.
+ * `DEFAULT_CACHE_TTLS.MSMSG_SECRET` (1h).
+ *
+ * NOT an LRU — `@cacheable/node-cache` v2.x raises `ECACHEFULL` on `.set()`
+ * once `maxKeys` is reached rather than evicting the oldest entry. Caller-side
+ * writes are guarded with `isNodeCacheFullError` so a saturated cache logs at
+ * debug and drops the write instead of crashing the decrypt path.
+ *
+ * The caller MUST `flushAll()` AND `close()` on socket end (see
+ * `registerSocketEndHandler` in `messages-recv.ts`) to mirror WA Web's
+ * `BackendEventBus.onLogout` behaviour AND to stop the NodeCache `setInterval`
+ * timer, avoiding a per-reconnect timer leak across long-running processes.
  */
 export type MsmsgSecretCache = NodeCache<Buffer>
 
@@ -173,11 +182,18 @@ export const buildMsmsgCacheKey = (params: {
  * decrypted message. Called from `decryptMessageNode` after every successful
  * decode — covers both messages we received (cache entry for OUR follow-up
  * bot replies) and messages we sent that were echoed back via deviceSentMessage.
+ *
+ * `cache.set` raises `ECACHEFULL` once `MSMSG_SECRET` (500) is reached. The
+ * guard distinguishes that case (debug-log + drop the write — losing one
+ * cache entry just means the next bot reply for the same id will raise
+ * `OrphanMsmsgError`, which is operationally recoverable) from every other
+ * exception (re-thrown — those are bugs we want surfaced).
  */
 export const cacheMessageSecretIfPresent = (
 	cache: MsmsgSecretCache | undefined,
 	msg: proto.IMessage,
-	msgKey: { fromMe?: boolean | null; remoteJid?: string | null; id?: string | null; participant?: string | null }
+	msgKey: { fromMe?: boolean | null; remoteJid?: string | null; id?: string | null; participant?: string | null },
+	logger?: ILogger
 ): void => {
 	if (!cache) return
 	const secret = msg.messageContextInfo?.messageSecret
@@ -193,10 +209,12 @@ export const cacheMessageSecretIfPresent = (
 	const buf = Buffer.isBuffer(secret) ? secret : Buffer.from(secret as Uint8Array)
 	try {
 		cache.set(cacheKey, buf)
-	} catch {
-		// ECACHEFULL means the cache hit maxKeys — operationally fine, the
-		// oldest entry stays cached until evicted. We don't want to surface
-		// this as an error on the hot path.
+	} catch (err) {
+		if (!isNodeCacheFullError(err)) throw err
+		logger?.debug(
+			{ cacheKey, msmsgCacheSize: cache.keys().length },
+			'msmsg secret cache full (ECACHEFULL), dropping write'
+		)
 	}
 }
 
@@ -487,18 +505,19 @@ const isMeJid = (jid: string, meId: string, meLid: string): boolean => {
 }
 
 /**
- * Detect whether a given chat jid is a Meta AI / FBID bot conversation.
- * Combines the @bot-server check (incoming bot stanzas use that server) with
- * the bot-id pattern check (the chat is shown to users on @c.us in some
- * locales — `isJidBot` already covers `1313555XXXX@c.us` etc).
+ * Returns true ONLY for the `@bot` server. That's the authoritative signal
+ * that the AUTHOR of an incoming stanza is a Meta AI / FBID bot — the cipher
+ * layer needs that distinction to pick the FBID HKDF derivation.
+ *
+ * Intentionally does NOT match the user-facing chat jid (e.g. Meta AI shows
+ * up as `13135550202@c.us` in the chat list). `@c.us` is shared with regular
+ * 1:1 user chats, so matching it here would risk taking the FBID code path
+ * for a non-bot conversation. The `<bot>` xml node on the stanza is the only
+ * authoritative tag; for jid-based detection we restrict to `@bot`.
  */
 export const isMsmsgBotConversation = (chatOrAuthorJid: string | undefined): boolean => {
 	if (!chatOrAuthorJid) return false
-	if (isJidMetaAI(chatOrAuthorJid)) return true
-	// Conservatively NOT treating any other @s.whatsapp.net JID as a bot to
-	// avoid accidentally taking the FBID path for a regular user chat. The
-	// `@bot` server is the authoritative signal that this is an FBID bot.
-	return false
+	return !!isJidMetaAI(chatOrAuthorJid)
 }
 
 /** Re-export for the test suite + decoder. */

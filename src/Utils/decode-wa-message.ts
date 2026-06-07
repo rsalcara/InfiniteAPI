@@ -23,7 +23,8 @@ import {
 	cacheMessageSecretIfPresent,
 	decryptMsmsgBotMessage,
 	extractMsmsgStanzaInfo,
-	type MsmsgSecretCache
+	type MsmsgSecretCache,
+	OrphanMsmsgError
 } from './meta-ai-msmsg'
 import { retry, RetryExhaustedError, type RetryOptions } from './retry-utils'
 
@@ -402,9 +403,11 @@ export const decryptMessageNode = (
 	/**
 	 * Optional per-socket cache of (cacheKey → messageSecret) used to decrypt
 	 * `<enc type="msmsg">` (Meta AI / FBID bot replies). Caller (Socket layer)
-	 * supplies one instance per connection — when absent, msmsg stanzas fall
-	 * through to the "Unknown e2e type" error path the same way the upstream
-	 * early-return NACK used to do.
+	 * supplies one instance per connection. When absent and an msmsg stanza
+	 * does arrive, `decodeIncomingMsmsg` throws a dedicated `Error('Meta AI
+	 * msmsg received but no MsmsgSecretCache was wired into decryptMessageNode')`
+	 * — not the generic "Unknown e2e type" path — so misconfiguration surfaces
+	 * with a precise message rather than being silently NACKed.
 	 */
 	msmsgCache?: MsmsgSecretCache
 ) => {
@@ -538,7 +541,7 @@ export const decryptMessageNode = (
 						// referencing this message's id can find the decryption secret. Mirrors
 						// WA Web's flow where every decoded msg has its secret stashed in
 						// `WAWebMsmsgMsgSecretCache`.
-						cacheMessageSecretIfPresent(msmsgCache, msg, fullMessage.key)
+						cacheMessageSecretIfPresent(msmsgCache, msg, fullMessage.key, logger)
 
 						if (msg.senderKeyDistributionMessage) {
 							//eslint-disable-next-line max-depth
@@ -564,6 +567,7 @@ export const decryptMessageNode = (
 
 						const isCorrupted = isCorruptedSessionError(originalError)
 						const isSessionRecord = isSessionRecordError(originalError)
+						const isOrphanMsmsg = originalError instanceof OrphanMsmsgError
 
 						// Compact context for the COMMON case (corrupted-session +
 						// no-session-record). Keeps a one-liner per failure instead of the
@@ -580,6 +584,7 @@ export const decryptMessageNode = (
 							decryptionJid,
 							isSessionRecordError: isSessionRecord,
 							isCorruptedSession: isCorrupted,
+							isOrphanMsmsg,
 							...(isRetryExhausted && { retriesExhausted: true, attempts: err.attempts })
 						}
 
@@ -610,6 +615,24 @@ export const decryptMessageNode = (
 							// Session record errors are transient and the internal retry
 							// loop already exhausted its retries before reaching here.
 							logger.warn(compactContext, `no session record after ${err.attempts} attempts, will resync`)
+						} else if (isOrphanMsmsg) {
+							// Meta AI / FBID bot reply arrived but we never saw the outgoing
+							// message that carried `messageContextInfo.messageSecret`. Common
+							// when sending the prompt single-device (no deviceSentMessage
+							// echo to feed the cache) — emit at debug since the user will
+							// retry the prompt naturally and the next reply will succeed if
+							// the cache catches the outgoing secret. NOT an `error` because
+							// it's operationally expected; NOT a `warn` either because at
+							// high message rates this can flood the log with noise that
+							// operators can't act on without the deferred send-side caching
+							// landing first.
+							logger.debug(
+								{
+									...compactContext,
+									targetCacheKey: (originalError as OrphanMsmsgError).targetCacheKey
+								},
+								'msmsg orphan — outgoing message secret not in cache yet'
+							)
 						} else {
 							// Unknown/unexpected errors (protobuf, parsing, etc.) — these
 							// don't go through retry and the stack is actually useful here,

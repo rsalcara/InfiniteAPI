@@ -533,7 +533,13 @@ export type NodeCacheSetLike<V> = {
 
 const NODE_CACHE_FULL_TOKENS = ['max keys', 'ECACHEFULL']
 
-const isNodeCacheFullError = (err: unknown): boolean => {
+/**
+ * Returns true when an error from `@cacheable/node-cache` `.set()` indicates
+ * cache saturation (`maxKeys` hit). Exported so other modules can guard their
+ * own `try { cache.set(...) } catch (e) { if (!isNodeCacheFullError(e)) throw e }`
+ * blocks without duplicating the token list.
+ */
+export const isNodeCacheFullError = (err: unknown): boolean => {
 	const msg = (err as Error)?.message ?? ''
 	return NODE_CACHE_FULL_TOKENS.some(t => msg.includes(t))
 }
