@@ -41,8 +41,14 @@ const LIB_DIR = join(REPO_ROOT, 'lib')
  * Extensions that should NOT be copied — these are TypeScript / map / test
  * sources that `tsc` already handles (or shouldn't ship in `lib/` anyway).
  * Anything else under `src/` is treated as an asset and mirrored.
+ *
+ * `.md` is excluded so internal architecture / usage notes that live next
+ * to their modules (e.g. `src/Utils/multi-db-sqlite/ARCHITECTURE.md`,
+ * `USAGE.md`) stay as repo-local docs and don't end up in the consumer's
+ * `node_modules/.../lib/` after install. Those files exist for fork
+ * contributors, not for end users.
  */
-const SKIP_EXTENSIONS = new Set(['.ts', '.tsx', '.map'])
+const SKIP_EXTENSIONS = new Set(['.ts', '.tsx', '.map', '.md'])
 
 /**
  * Files / directories to skip entirely (regardless of extension).
