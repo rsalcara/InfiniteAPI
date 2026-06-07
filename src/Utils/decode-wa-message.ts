@@ -16,6 +16,7 @@ import {
 	isPnUser
 	//	transferDevice
 } from '../WABinary'
+import { compactError } from './error-log-utils'
 import { unpadRandomMax16 } from './generics'
 import type { ILogger } from './logger'
 import { retry, RetryExhaustedError, type RetryOptions } from './retry-utils'
@@ -461,9 +462,15 @@ export const decryptMessageNode = (
 						const isCorrupted = isCorruptedSessionError(originalError)
 						const isSessionRecord = isSessionRecordError(originalError)
 
-						const errorContext = {
+						// Compact context for the COMMON case (corrupted-session +
+						// no-session-record). Keeps a one-liner per failure instead of the
+						// pino-serialized error object that pulls in the full stack — the
+						// stack is always rooted in `libsignal/session_cipher.js` or
+						// `group_cipher.ts` for these patterns and adds no information.
+						// Unknown errors keep the raw error object (stack matters there).
+						const compactContext = {
 							key: fullMessage.key,
-							err: originalError,
+							err: compactError(originalError),
 							messageType: tag === 'plaintext' ? 'plaintext' : attrs.type,
 							sender,
 							author,
@@ -475,17 +482,21 @@ export const decryptMessageNode = (
 
 						// Smart logging based on error type and retry status
 						if (isCorrupted) {
-							// Corrupted session errors are expected and auto-recovered
-							// Only log as ERROR if retries exhausted, otherwise WARN on first attempt
+							// Corrupted-session failures are expected operationally: WhatsApp
+							// rotates keys, sends out-of-order group messages, and replays
+							// pkmsg under flaky networks. The retry+pkmsg flow recovers
+							// automatically. Logging these as `error` (level 50) triggers
+							// alerting on something operators can't act on.
+							//
+							// Level chosen:
+							//   - debug on first attempt (pre-retry, very noisy in groups)
+							//   - warn on retry exhaustion (still recoverable, but worth
+							//     surfacing if it happens at high frequency for one JID)
 							// eslint-disable-next-line max-depth
 							if (isRetryExhausted) {
-								logger.error(
-									errorContext,
-									`⚠️ Session corrupted after ${err.attempts} attempts. Retry+pkmsg flow will recover.`
-								)
+								logger.warn(compactContext, 'session stale, auto-recovering via retry+pkmsg')
 							} else {
-								// First occurrence - log as warning since auto-recovery will attempt
-								logger.warn(errorContext, '⚠️ Corrupted session detected - attempting auto-recovery')
+								logger.debug(compactContext, 'corrupted session detected, attempting auto-recovery')
 							}
 
 							// Session cleanup is deferred to retry exhaustion (safety net).
@@ -495,19 +506,19 @@ export const decryptMessageNode = (
 							// multiple messages from the same contact arrive simultaneously.
 							// See: messages-recv.ts sendRetryRequest() for deferred cleanup.
 						} else if (isSessionRecord) {
-							// Session record errors are transient - retry should handle them
+							// Session record errors are transient — retry should handle them.
 							// eslint-disable-next-line max-depth
 							if (isRetryExhausted) {
-								logger.error(errorContext, `Failed to decrypt: No session record found after ${err.attempts} attempts`)
+								logger.warn(compactContext, `no session record after ${err.attempts} attempts, will resync`)
 							} else {
-								logger.debug(errorContext, 'No session record - will retry')
+								logger.debug(compactContext, 'no session record, will retry')
 							}
 						} else {
-							// Unknown/unexpected errors (protobuf, parsing, etc.)
-							// These don't go through retry, so always log as ERROR
-							// Type-safe explicit logging instead of dynamic property access
+							// Unknown/unexpected errors (protobuf, parsing, etc.) — these
+							// don't go through retry and the stack is actually useful here,
+							// so swap the compact `err` string back for the raw object.
 							logger.error(
-								errorContext,
+								{ ...compactContext, err: originalError },
 								isRetryExhausted
 									? `Failed to decrypt message after ${err.attempts} attempts`
 									: 'Failed to decrypt message'

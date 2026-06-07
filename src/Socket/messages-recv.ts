@@ -36,6 +36,7 @@ import {
 	aesEncryptGCM,
 	cleanMessage,
 	cleanupCorruptedSession,
+	compactError,
 	Curve,
 	decodeMediaRetryNode,
 	decodeMessageNode,
@@ -53,6 +54,7 @@ import {
 	getStatusFromReceiptType,
 	handleIdentityChange,
 	hkdf,
+	isCorruptedSessionError,
 	MISSING_KEYS_ERROR_TEXT,
 	NACK_REASONS,
 	NO_MESSAGE_FOUND_ERROR_TEXT,
@@ -3373,7 +3375,24 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 			})
 		} catch (error) {
-			logger.error({ error, node: binaryNodeToString(node) }, 'error in handling message')
+			// For recoverable Signal Protocol failures (Bad MAC, MessageCounterError,
+			// old counter, missing prekey) the retry+pkmsg flow recovers automatically.
+			// Logging the full stanza here just floods the log with the raw ciphertext
+			// hex — operators can't act on it. Emit a compact one-liner at `warn` and
+			// let the unrecoverable branch keep the full payload for real debugging.
+			if (isCorruptedSessionError(error)) {
+				logger.warn(
+					{
+						err: compactError(error),
+						from: node.attrs?.from,
+						msgId: node.attrs?.id,
+						msgType: node.attrs?.type
+					},
+					'message handle failed (auto-recovering via retry+pkmsg)'
+				)
+			} else {
+				logger.error({ error, node: binaryNodeToString(node) }, 'error in handling message')
+			}
 			// If nothing acked the message yet (a throw in alt-mapping / migrateSession /
 			// normalizeMessageJids / decrypt / upsert), send a single NACK so the server
 			// stops retrying. Guarded by `acked` to avoid double-ack on paths that already

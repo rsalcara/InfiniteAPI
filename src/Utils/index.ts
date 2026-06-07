@@ -1,5 +1,6 @@
 export * from './generics'
 export * from './decode-wa-message'
+export * from './error-log-utils'
 export * from './messages'
 export * from './messages-media'
 export * from './validate-connection'

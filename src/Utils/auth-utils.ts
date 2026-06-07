@@ -707,7 +707,11 @@ export const addTransactionCapability = (
 					return result
 				} catch (err) {
 					ctx.sealed = true
-					logger.error({ err }, 'transactWith failed, rolling back')
+					// trace, not error: the caller re-throws and ALWAYS logs the failure
+					// with the message context attached (key/sender/decryptionJid). This
+					// site has none of that context — it would just duplicate the stack
+					// without anything actionable on top.
+					logger.trace({ err: (err as any)?.message }, 'transactWith rolled back')
 					throw err
 				} finally {
 					activeTransactions--
