@@ -1855,6 +1855,38 @@ export const generateWAMessageContent = async (
 		}
 	}
 
+	// Lottie animated stickers (`.was`, `application/was`) MUST be wrapped in a
+	// `lottieStickerMessage` (FutureProofMessage at proto field 74). Mobile
+	// WhatsApp clients silently drop Lottie payloads delivered inside a plain
+	// `stickerMessage` (field 26), even when `isLottie:true` is set — Web
+	// tolerates it but the sticker bubble never renders on the recipient's
+	// phone (the server accepts the message, no exception, no log).
+	//
+	// Trigger mirrors a defensive read of WA Web's `WAWebE2EProtoGenerator`:
+	//   t.type === STICKER && d.stickerMessage?.isLottie && (d = S(d))
+	// WA Web checks `isLottie` only; we additionally accept the
+	// `application/was` mimetype so callers that set only the mimetype get
+	// the right shape too. Both flags are then forced true (defensive) so the
+	// wrap and the recipient's parser observe a consistent view.
+	//
+	// Wrap shape (`S(e)` in WA Web):
+	//   d = { lottieStickerMessage: { message: d } }
+	// where `d` (the outer Message) carries EVERYTHING that was on top —
+	// not just `stickerMessage`. PR #2592 (#2563) elevates `messageContextInfo`
+	// back to the top level inside its wrap, which diverges from WA Web's
+	// shape; in our experience the inner-message-carries-context-info form is
+	// closer to what mobile clients expect, especially for stickers carrying
+	// a `messageSecret` (the receive-side `normalizeMessageContent` below
+	// re-unwraps so downstream readers don't care either way).
+	if (
+		m.stickerMessage &&
+		(m.stickerMessage.mimetype === 'application/was' || m.stickerMessage.isLottie)
+	) {
+		m.stickerMessage.isAnimated = true
+		m.stickerMessage.isLottie = true
+		m = { lottieStickerMessage: { message: m } }
+	}
+
 	return WAProto.Message.create(m)
 }
 
@@ -2025,7 +2057,17 @@ export const normalizeMessageContent = (content: WAMessageContent | null | undef
 			message?.editedMessage ||
 			message?.associatedChildMessage ||
 			message?.groupStatusMessage ||
-			message?.groupStatusMessageV2
+			message?.groupStatusMessageV2 ||
+			// Lottie animated stickers (`.was`) arrive wrapped in
+			// `lottieStickerMessage` (FutureProofMessage at proto field 74).
+			// Unwrapping here lets the rest of the pipeline (downloadMediaMessage,
+			// extractMessageContent, assertMediaContent, etc.) treat it as a
+			// normal `stickerMessage` with `isLottie:true`. Mirrors WA Web's
+			// `WAWebStickersParseStickerMessageProto`:
+			//   const lottieWrap = msg.lottieStickerMessage
+			//   const inner = lottieWrap?.message?.stickerMessage
+			//   const d = inner ?? msg.stickerMessage
+			message?.lottieStickerMessage
 		)
 	}
 }
