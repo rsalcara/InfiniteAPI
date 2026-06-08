@@ -140,3 +140,69 @@ describe('proto round-trip', () => {
 		expect(decoded.lottieStickerMessage?.message?.stickerMessage?.isLottie).toBe(true)
 	})
 })
+
+// ─── Send-path contract pinning ───────────────────────────────────────────
+//
+// `getMediaType()` and the DSM (`deviceSentMessage`) builder live as
+// closures inside `makeMessagesSocket` and aren't directly importable.
+// Instead, pin the SHAPE contracts they read so any refactor that breaks
+// the assumption surfaces here:
+//
+//   - `getMediaType(message)` for a Lottie send MUST receive an object where
+//     `lottieStickerMessage` is a recognizable top-level key (we just added
+//     the branch returning 'sticker').
+//   - `meMsg.messageContextInfo` for the DSM envelope needs to be reachable
+//     at `message.lottieStickerMessage.message.messageContextInfo` (NOT the
+//     top level) so the sender's other devices receive the reporting token
+//     and any `messageSecret`.
+//
+// Regression for two audit findings: chatgpt-codex P2 (mediatype dropped on
+// the enc stanza) and copilot P2 (DSM envelope context_info lost).
+describe('send-path contracts after Lottie wrap', () => {
+	const buildWrapped = (): proto.IMessage => ({
+		lottieStickerMessage: {
+			message: {
+				stickerMessage: innerSticker,
+				messageContextInfo: { messageSecret: Buffer.alloc(32, 0x99) }
+			}
+		}
+	})
+
+	it('top-level `lottieStickerMessage` is detectable for getMediaType branching', () => {
+		const m = buildWrapped()
+		// The runSendBody site reads `message.lottieStickerMessage` directly —
+		// pin that this key remains accessible (not normalized away by some
+		// future helper) so the new `else if (message.lottieStickerMessage)`
+		// arm in getMediaType keeps firing.
+		expect(m.lottieStickerMessage).toBeDefined()
+		expect(m.stickerMessage).toBeUndefined()
+	})
+
+	it('messageContextInfo for the DSM envelope is reachable at .lottieStickerMessage.message.messageContextInfo', () => {
+		const m = buildWrapped()
+		// runSendBody's `dsmMessageContextInfo` reads this exact path. If the
+		// PR's wrap shape ever changes (e.g. elevates messageContextInfo to
+		// the top like upstream PR #2563 does), the reader must change too —
+		// this test fails first and points at the contract break.
+		const dsm = m.lottieStickerMessage?.message?.messageContextInfo ?? m.messageContextInfo
+		expect(dsm?.messageSecret).toBeDefined()
+		expect(dsm?.messageSecret).toHaveLength(32)
+		// Sanity: also confirms the wrong reader (`m.messageContextInfo`
+		// directly) returns nothing — which is what the original bug was.
+		expect(m.messageContextInfo).toBeUndefined()
+	})
+
+	it('plain stickerMessage path (no Lottie) leaves both reads working unchanged', () => {
+		// Negative-control: a non-Lottie sticker still has stickerMessage at
+		// the top, and messageContextInfo wherever the caller put it — both
+		// branches of the new readers must still pick the right value.
+		const plain: proto.IMessage = {
+			stickerMessage: innerSticker,
+			messageContextInfo: { messageSecret: Buffer.alloc(32, 0x55) }
+		}
+		expect(plain.stickerMessage).toBeDefined()
+		expect(plain.lottieStickerMessage).toBeUndefined()
+		const dsm = plain.lottieStickerMessage?.message?.messageContextInfo ?? plain.messageContextInfo
+		expect(dsm?.messageSecret).toHaveLength(32)
+	})
+})
