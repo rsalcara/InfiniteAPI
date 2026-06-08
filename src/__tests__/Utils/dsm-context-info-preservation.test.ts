@@ -197,8 +197,12 @@ describe('unwrapDeviceSentMessage — messageContextInfo per-field merge', () =>
 		expect(ours.messageContextInfo?.threadId).toEqual(innerThreadId)
 
 		// Naive PR #2566 approach: inner.messageContextInfo wins ENTIRELY,
-		// losing the outer messageSecret.
+		// losing the outer messageSecret. The `deviceSentMessage` destructure
+		// here intentionally pulls the key out of `outerWithoutDsm` and discards
+		// it — the discarded binding name matches the proto field, which is the
+		// whole point of this control comparison.
 		const inner = msg.deviceSentMessage!.message!
+		// eslint-disable-next-line @typescript-eslint/no-unused-vars
 		const { deviceSentMessage, ...outerWithoutDsm } = msg
 		const naive = { ...outerWithoutDsm, ...inner }
 		expect(naive.messageContextInfo?.messageSecret).toBeUndefined() // ← the bug
