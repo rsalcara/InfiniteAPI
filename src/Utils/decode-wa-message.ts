@@ -37,6 +37,65 @@ import { retry, RetryExhaustedError, type RetryOptions } from './retry-utils'
 const EMPTY_UINT8_ARRAY = new Uint8Array(0)
 
 /**
+ * Unwrap a `deviceSentMessage` envelope while preserving fields from the OUTER
+ * `Message` that the inner payload would otherwise lose. WhatsApp ships some
+ * fields — most importantly `messageContextInfo.messageSecret` — on the OUTER
+ * `Message` and an empty / partial `messageContextInfo` on the inner. The
+ * previous unwrap `msg = msg.deviceSentMessage?.message || msg` silently
+ * dropped those outer fields.
+ *
+ * Why this matters operationally:
+ *   - Encrypted edit envelopes (upstream PR #2554) need the original
+ *     `messageContextInfo.messageSecret` to derive the edit key. If the
+ *     upsert dropped the secret on the fromMe-via-linked-device delivery,
+ *     `getMessage` later returns the cached message WITHOUT the secret and
+ *     the edit decrypt fails.
+ *   - Our Meta AI / FBID bot msmsg cache (`cacheMessageSecretIfPresent`,
+ *     called immediately after this unwrap) needs the secret to land
+ *     against the outgoing message's id so subsequent bot replies can
+ *     decrypt. Without preserving the outer context info, single-device
+ *     and linked-device flows both miss the cache for the very first
+ *     reply (the audit gap codex flagged on PR #518).
+ *
+ * Why a per-field merge instead of a generic `{...outer, ...inner}` spread
+ * (upstream PR #2566's approach): upstream's spread lets the inner message's
+ * `messageContextInfo` ENTIRELY override the outer's. If the inner ships a
+ * partial `messageContextInfo` (e.g. just `threadId`), the outer's
+ * `messageSecret` is lost. WA Web's `WAWebDeviceSentMessageProtoUtils.l(e)`
+ * (extracted via CDP, validated against live captures) merges field-by-field:
+ * inner is preferred when present, otherwise outer is used. Each field that
+ * matters for downstream decoders is named explicitly. The fall-through
+ * `...inner.messageContextInfo` preserves any other future fields whichever
+ * side carried them.
+ *
+ * Returns the input unchanged when there is no `deviceSentMessage` envelope.
+ */
+const unwrapDeviceSentMessage = (msg: proto.IMessage): proto.IMessage => {
+	const inner = msg.deviceSentMessage?.message
+	if (!inner) return msg
+
+	const innerCtx = inner.messageContextInfo
+	const outerCtx = msg.messageContextInfo
+
+	// Inner-preferred merge for every messageContextInfo field that
+	// WhatsApp Web's `l(e)` handles explicitly. Inner takes precedence so
+	// message-local context (the explicit intent of the inner sender) is not
+	// overwritten by an outer envelope value — except `limitSharingV2` which
+	// WA Web sources from the OUTER only (the message-local inner has no
+	// say in the policy attached to the linked-device fanout).
+	const messageContextInfo: proto.IMessageContextInfo = {
+		...innerCtx,
+		messageSecret: innerCtx?.messageSecret ?? outerCtx?.messageSecret,
+		messageAssociation: innerCtx?.messageAssociation ?? outerCtx?.messageAssociation,
+		limitSharingV2: outerCtx?.limitSharingV2,
+		threadId: innerCtx?.threadId ?? outerCtx?.threadId ?? [],
+		botMetadata: innerCtx?.botMetadata ?? outerCtx?.botMetadata
+	}
+
+	return { ...inner, messageContextInfo }
+}
+
+/**
  * Extracted to keep the inline e2e-type switch under the `max-depth: 4` lint
  * rule. The msmsg branch otherwise needs an extra `if (e2eType === 'msmsg')`
  * level inside the existing `try { switch { case '...' } }` block, pushing the
@@ -535,7 +594,7 @@ export const decryptMessageNode = (
 										logger
 									})
 								: proto.Message.decode(e2eType !== 'plaintext' ? unpadRandomMax16(msgBuffer) : msgBuffer)
-						msg = msg.deviceSentMessage?.message || msg
+						msg = unwrapDeviceSentMessage(msg)
 
 						// Cache `messageContextInfo.messageSecret` so subsequent msmsg replies
 						// referencing this message's id can find the decryption secret. Mirrors
