@@ -88,7 +88,15 @@ const unwrapDeviceSentMessage = (msg: proto.IMessage): proto.IMessage => {
 		messageSecret: innerCtx?.messageSecret ?? outerCtx?.messageSecret,
 		messageAssociation: innerCtx?.messageAssociation ?? outerCtx?.messageAssociation,
 		limitSharingV2: outerCtx?.limitSharingV2,
-		threadId: innerCtx?.threadId ?? outerCtx?.threadId ?? [],
+		// `threadId` is a `repeated` field in the proto, which `protobufjs`
+		// decodes as `[]` (empty array) when absent on the wire — NOT
+		// `undefined`. A plain `innerCtx.threadId ?? outerCtx.threadId` would
+		// therefore never fall through to the outer side, silently dropping
+		// any thread context the outer envelope carried. Treat an empty
+		// inner array as "inner didn't set it" so the outer wins. Spec-pinned
+		// against `WAWebDeviceSentMessageProtoUtils.l(e)` whose JS source has
+		// the same length-check semantics (chatgpt + cubic audit P2).
+		threadId: (innerCtx?.threadId?.length ? innerCtx.threadId : null) ?? outerCtx?.threadId ?? [],
 		botMetadata: innerCtx?.botMetadata ?? outerCtx?.botMetadata
 	}
 

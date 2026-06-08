@@ -37,7 +37,7 @@ const unwrapDeviceSentMessage = (msg: proto.IMessage): proto.IMessage => {
 		messageSecret: innerCtx?.messageSecret ?? outerCtx?.messageSecret,
 		messageAssociation: innerCtx?.messageAssociation ?? outerCtx?.messageAssociation,
 		limitSharingV2: outerCtx?.limitSharingV2,
-		threadId: innerCtx?.threadId ?? outerCtx?.threadId ?? [],
+		threadId: (innerCtx?.threadId?.length ? innerCtx.threadId : null) ?? outerCtx?.threadId ?? [],
 		botMetadata: innerCtx?.botMetadata ?? outerCtx?.botMetadata
 	}
 	return { ...inner, messageContextInfo }
@@ -138,6 +138,39 @@ describe('unwrapDeviceSentMessage — messageContextInfo per-field merge', () =>
 		}
 		const result = unwrapDeviceSentMessage(msg)
 		expect(result.messageContextInfo?.threadId).toEqual([])
+	})
+
+	// ── protobuf-decode behaviour: `repeated` fields are `[]` when absent ──
+	it('outer threadId WINS when inner messageContextInfo exists without a threadId in the wire (protobuf [] vs ?? trap)', () => {
+		// `proto.MessageContextInfo.decode(...)` initializes `threadId` to `[]`
+		// (proto3 repeated-field default), NOT `undefined`. A naive
+		// `innerCtx.threadId ?? outerCtx.threadId` never falls through —
+		// `[]` isn't nullish. Simulate the exact post-decode shape: inner
+		// has a `messageContextInfo` instance with `threadId = []` (because
+		// decode set it, not because the sender intended `[]`).
+		const outerThreadId = [{ threadType: proto.ThreadID.ThreadType.AI_THREAD }]
+		const decodedInnerCtx = proto.MessageContextInfo.decode(
+			proto.MessageContextInfo.encode({ messageSecret: INNER_SECRET }).finish()
+		)
+		// Sanity: the decoded inner WILL have threadId === [] from the proto3 default.
+		expect(decodedInnerCtx.threadId).toEqual([])
+
+		const msg: proto.IMessage = {
+			messageContextInfo: { threadId: outerThreadId },
+			deviceSentMessage: {
+				destinationJid: '5511999@s.whatsapp.net',
+				message: {
+					conversation: 'thread reply via linked device',
+					messageContextInfo: decodedInnerCtx
+				}
+			}
+		}
+		const result = unwrapDeviceSentMessage(msg)
+		// The fix is `innerCtx?.threadId?.length ? innerCtx.threadId : null`,
+		// which treats the empty array as "inner didn't set it" so outer wins.
+		expect(result.messageContextInfo?.threadId).toEqual(outerThreadId)
+		// And messageSecret from inner is still preserved (inner explicitly set it).
+		expect(result.messageContextInfo?.messageSecret).toEqual(INNER_SECRET)
 	})
 
 	it('inner takes precedence for botMetadata + messageAssociation', () => {
