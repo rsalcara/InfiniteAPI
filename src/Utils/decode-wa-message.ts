@@ -70,7 +70,7 @@ const EMPTY_UINT8_ARRAY = new Uint8Array(0)
  *
  * Returns the input unchanged when there is no `deviceSentMessage` envelope.
  */
-const unwrapDeviceSentMessage = (msg: proto.IMessage): proto.IMessage => {
+export const unwrapDeviceSentMessage = (msg: proto.IMessage): proto.IMessage => {
 	const inner = msg.deviceSentMessage?.message
 	if (!inner) return msg
 

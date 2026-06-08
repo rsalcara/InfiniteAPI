@@ -22,26 +22,15 @@
  *     are caught too.
  */
 import { proto } from '../../../WAProto/index.js'
+import { unwrapDeviceSentMessage } from '../../Utils/decode-wa-message'
 
-// The helper is intentionally not exported (it's a leaf utility used by
-// `decryptMessageNode`). Re-derive its behaviour here to pin the exact
-// per-field merge rules. If the rules change in `decode-wa-message.ts`,
-// these expectations break first and point at the divergence.
-const unwrapDeviceSentMessage = (msg: proto.IMessage): proto.IMessage => {
-	const inner = msg.deviceSentMessage?.message
-	if (!inner) return msg
-	const innerCtx = inner.messageContextInfo
-	const outerCtx = msg.messageContextInfo
-	const messageContextInfo: proto.IMessageContextInfo = {
-		...innerCtx,
-		messageSecret: innerCtx?.messageSecret ?? outerCtx?.messageSecret,
-		messageAssociation: innerCtx?.messageAssociation ?? outerCtx?.messageAssociation,
-		limitSharingV2: outerCtx?.limitSharingV2,
-		threadId: (innerCtx?.threadId?.length ? innerCtx.threadId : null) ?? outerCtx?.threadId ?? [],
-		botMetadata: innerCtx?.botMetadata ?? outerCtx?.botMetadata
-	}
-	return { ...inner, messageContextInfo }
-}
+// Import the REAL helper from production (not a re-derivation). Earlier
+// version of this file kept a local copy because the helper wasn't exported,
+// but that broke the contract these tests claim to enforce: a regression
+// in `decode-wa-message.ts` would not surface here. cubic audit thread 8
+// (PR #521) caught it — exported the helper as a named export and import
+// it now, so any change to the production implementation is reflected in
+// the assertions below.
 
 const OUTER_SECRET = Buffer.alloc(32, 0xaa)
 const INNER_SECRET = Buffer.alloc(32, 0xbb)

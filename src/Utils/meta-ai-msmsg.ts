@@ -43,7 +43,7 @@ import NodeCache from '@cacheable/node-cache'
 import { proto } from '../../WAProto/index.js'
 import { DEFAULT_CACHE_MAX_KEYS, DEFAULT_CACHE_TTLS } from '../Defaults'
 import type { BinaryNode } from '../WABinary'
-import { isJidGroup, isJidMetaAI, jidDecode, jidNormalizedUser } from '../WABinary/jid-utils'
+import { isJidMetaAI, jidDecode, jidNormalizedUser } from '../WABinary/jid-utils'
 import { isNodeCacheFullError } from './cache-utils'
 import { aesDecryptGCM, hkdf } from './crypto'
 import { compactError } from './error-log-utils'
@@ -518,15 +518,4 @@ const isMeJid = (jid: string, meId: string, meLid: string): boolean => {
 export const isMsmsgBotConversation = (chatOrAuthorJid: string | undefined): boolean => {
 	if (!chatOrAuthorJid) return false
 	return !!isJidMetaAI(chatOrAuthorJid)
-}
-
-/** Re-export for the test suite + decoder. */
-export const __internal = {
-	BOT_MESSAGE_INFO,
-	KEY_LENGTH,
-	isMeJid,
-	deriveKeyAndDecrypt,
-	decodeDecryptedMsmsg,
-	userOnlyJid,
-	isJidGroup
 }

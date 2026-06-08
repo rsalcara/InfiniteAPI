@@ -43,6 +43,18 @@ describe('compactError', () => {
 		expect(compactError(true)).toBe('true')
 	})
 
+	// cubic audit thread 9 (PR #521): the original `if (!err)` short-circuit
+	// captured `0`, `''`, `false`, `NaN` as "Unknown" even though those are
+	// (unusual but valid) thrown values. The narrowed `if (err == null)`
+	// nullish check keeps `undefined`/`null` → "Unknown" but lets the falsy
+	// primitives reach the `String(err)` fallback below.
+	it('preserves falsy primitives that are NOT null/undefined', () => {
+		expect(compactError(0)).toBe('0') // not 'Unknown'
+		expect(compactError(false)).toBe('false') // not 'Unknown'
+		expect(compactError('')).toBe('') // empty string is still a string
+		expect(compactError(NaN)).toBe('NaN') // not 'Unknown'
+	})
+
 	it('falls back to JSON.stringify on a plain object without .message', () => {
 		const err = { name: 'CustomBag', code: 'X1', details: 'no message field' }
 		expect(compactError(err)).toBe('CustomBag: {"name":"CustomBag","code":"X1","details":"no message field"}')
