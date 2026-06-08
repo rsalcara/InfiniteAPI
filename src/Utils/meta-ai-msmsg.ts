@@ -519,14 +519,3 @@ export const isMsmsgBotConversation = (chatOrAuthorJid: string | undefined): boo
 	if (!chatOrAuthorJid) return false
 	return !!isJidMetaAI(chatOrAuthorJid)
 }
-
-/** Re-export for the test suite + decoder. */
-export const __internal = {
-	BOT_MESSAGE_INFO,
-	KEY_LENGTH,
-	isMeJid,
-	deriveKeyAndDecrypt,
-	decodeDecryptedMsmsg,
-	userOnlyJid,
-	isJidGroup
-}

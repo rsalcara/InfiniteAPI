@@ -3121,6 +3121,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						return
 					}
 
+					// `OrphanMsmsgError` from `decryptMsmsgBotMessage` (Meta AI / FBID bot
+					// reply that arrived before we cached the matching outgoing
+					// `messageContextInfo.messageSecret`). Without this guard the stub
+					// string falls through to the Signal retry/PDO path below — pointless
+					// because a missing CACHE entry can't be recovered by a Signal retry,
+					// and we'd burn the retry budget asking the bot for prekeys it has
+					// no business issuing. Send a plain ACK (no NACK) so the server
+					// considers the message delivered; the next bot reply that arrives
+					// after the outgoing-secret cache populates will decrypt cleanly
+					// (audit thread 2 / chatgpt P2 on release PR #521).
+					if (msg?.messageStubParameters?.[0]?.startsWith('decryptMsmsgBotMessage:')) {
+						await sendMessageAck(node)
+						acked = true
+						return
+					}
+
 					// Audit RETRY-A2 — sender-key stale em skmsg de grupo: o counter
 					// avançou no remetente mas a chain local não acompanhou. Reenviar
 					// o mesmo skmsg via sendRetryRequest sempre falha (mesma sender-key,

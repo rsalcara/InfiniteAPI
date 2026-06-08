@@ -1575,14 +1575,27 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 				}
 
-				// Send DSM for all message types including carousel
+				// Send DSM for all message types including carousel.
+				// Mirrors the same `messageContextInfo` lift done on the initial-
+				// fanout DSM build (line ~1198 — release PR #519 fix): Lottie
+				// stickers wrap their `messageContextInfo` inside
+				// `lottieStickerMessage.message`, so the retry-resend envelope
+				// needs to lift it back to the DSM top-level just like the initial
+				// send does. Without this, the sender's other devices receive the
+				// retry without `messageSecret` / reporting token and the next
+				// edit / msmsg reply can't be decrypted on those devices.
+				// (audit thread 5 / coderabbit Major on release PR #521)
+				const retryDsmContextInfo =
+					messageToSend.lottieStickerMessage?.message?.messageContextInfo ??
+					messageToSend.messageContextInfo
 				const usesDSM = isMe
 				const encodedMessageToSend = usesDSM
 					? encodeWAMessage({
 							deviceSentMessage: {
 								destinationJid,
 								message: messageToSend
-							}
+							},
+							messageContextInfo: retryDsmContextInfo
 						})
 					: encodeWAMessage(messageToSend)
 
@@ -1878,10 +1891,19 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				logger.debug({ jid }, 'adding device identity')
 			}
 
+			// Lottie stickers (`{ lottieStickerMessage: { message: outer }}`) carry
+			// their `messageContextInfo` INSIDE the wrap — read both spots so the
+			// reporting-token attachment works the same for wrapped and unwrapped
+			// stickers (audit thread 1 / chatgpt P2 on release PR #521).
+			const reportingMessageSecret =
+				reportingMessage?.lottieStickerMessage?.message?.messageContextInfo?.messageSecret ??
+				reportingMessage?.messageContextInfo?.messageSecret
+
 			if (
 				!isNewsletter &&
 				!isRetryResend &&
-				reportingMessage?.messageContextInfo?.messageSecret &&
+				reportingMessage &&
+				reportingMessageSecret &&
 				shouldIncludeReportingToken(reportingMessage)
 			) {
 				try {

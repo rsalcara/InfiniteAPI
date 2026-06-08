@@ -711,7 +711,7 @@ export const addTransactionCapability = (
 					// with the message context attached (key/sender/decryptionJid). This
 					// site has none of that context — it would just duplicate the stack
 					// without anything actionable on top.
-					logger.trace({ err: (err as any)?.message }, 'transactWith rolled back')
+					logger.trace({ err: err instanceof Error ? err.message : String(err) }, 'transactWith rolled back')
 					throw err
 				} finally {
 					activeTransactions--
