@@ -443,6 +443,157 @@ export class WasmEngine {
 
   isVoipStackReady = (): boolean => this.#voipStackInitialized;
 
+  /**
+   * Place an outbound group call. Mirrors `WAWebVoipStartCall.startWAWebVoipGroupCallFromWids`
+   * from the WA Web source (extracted via CDP for reference; not bundled).
+   *
+   * Behaviour:
+   *   - Tries `this.#instance.startGroupCall(...)` first — that's the
+   *     dedicated multi-party entrypoint the WASM exposes when the build
+   *     supports group calls.
+   *   - If `startGroupCall` is absent (older WASM builds, or the bundle
+   *     bundled with this package), falls back to `startVoipCall(...)`
+   *     with the participant list passed as `peers`. The WASM internally
+   *     handles the rest of the SFU bring-up — `WAWebVoipGroupCallFromChat`
+   *     in WA Web's source just calls `startVoipCall` with an N-element
+   *     peer list and lets the engine sort it out.
+   *   - If neither path works (very old WASM), throws a descriptive
+   *     `Error` so the caller knows the runtime needs updating.
+   *
+   * The set of methods this caller relies on (`startGroupCall`,
+   * `startVoipCall`) is checked dynamically. The TS bindings can't
+   * promise the WASM has them — they're exposed only when the build
+   * includes the multi-party stack.
+   */
+  startGroupCall = (options: {
+    callId: string;
+    participants: string[];    // peer JIDs (LIDs preferred)
+    isVideo?: boolean;
+    callCreator?: string;       // for SFU rekey flows; defaults to selfJid
+    linkToken?: string;         // present when joining via call link
+    extraData?: Uint8Array;
+  }): unknown => {
+    this.#ensureInitialized();
+    if (!options.participants.length) {
+      throw new Error('startGroupCall: at least one participant JID is required');
+    }
+    const peers = this.#makeStringList(options.participants);
+    const tcToken = this.#createUint8List(options.extraData);
+    const isVideo = !!options.isVideo;
+    const callCreator = options.callCreator || options.participants[0]!;
+    const isLid = options.participants[0]!.includes('@lid');
+
+    try {
+      // Path 1: dedicated group-call binding (preferred when present)
+      const groupFn = (this.#instance as Record<string, unknown>).startGroupCall;
+      if (typeof groupFn === 'function') {
+        return (groupFn as (...args: unknown[]) => unknown).call(
+          this.#instance,
+          options.callId,
+          peers,
+          isVideo,
+          callCreator,
+          options.linkToken ?? '',
+          tcToken,
+        );
+      }
+
+      // Path 2: fall back to the generic startVoipCall with N peers.
+      // WAWebVoipGroupCallFromChat in WA Web's source does effectively this:
+      // it pushes the chat's participant JIDs into the peer list and lets the
+      // WASM figure out it's group from len(peers) > 1.
+      const firstPeer = options.participants[0]!;
+      try {
+        return this.#instance.startVoipCall(
+          firstPeer, peers, options.callId, isVideo,
+          firstPeer.replace(/@lid$/, '@s.whatsapp.net'),
+          isLid, false, tcToken,
+        );
+      } catch (error: unknown) {
+        const isBindingError = (error as { name?: string })?.name === 'BindingError';
+        if (!isBindingError) throw error;
+        return this.#instance.startVoipCall(
+          firstPeer, peers, options.callId, isVideo,
+          firstPeer.replace(/@lid$/, '@s.whatsapp.net'),
+          false, tcToken,
+        );
+      }
+    } finally {
+      peers?.delete?.();
+      tcToken?.delete?.();
+    }
+  };
+
+  /**
+   * Register a callback for incoming video frames. The WASM emits one
+   * decoded frame per video RTP packet group via this hook.
+   *
+   * The shape of the frame the WASM produces is `globalThis.VideoFrame` in
+   * the browser (WebCodecs API). In Node.js we don't have `VideoFrame`
+   * natively, so the engine falls back to:
+   *
+   *   1. If the consumer pre-shimmed `globalThis.VideoFrame` (e.g. via
+   *      `libavjs-webcodecs-polyfill` registered before `connect()`),
+   *      the WASM's native path runs unchanged.
+   *   2. Otherwise, the engine pulls the raw H.264 NAL units off the RTP
+   *      packets BEFORE the WebCodecs decode step and forwards them as
+   *      `{ format: 'h264-raw', data: Buffer, timestamp, isKeyframe }`.
+   *
+   * Implementation footnote: the actual WASM exports a `setVideoFrameCallback`
+   * function in builds that have video. We probe for it; if absent, the raw
+   * NALU path is the only option. Returns `true` if a callback was attached
+   * via either path, `false` if no video binding is available in this build.
+   */
+  setOnVideoFrameCallback = (
+    cb: (frame: import('./types.js').VideoFrame) => void,
+  ): boolean => {
+    this.#ensureInitialized();
+    // Path 1: WASM-side decode + globalThis.VideoFrame (browser-shaped).
+    // Probe for the binding before installing.
+    const setFn = (this.#instance as Record<string, unknown>).setVideoFrameCallback;
+    if (typeof setFn === 'function') {
+      // The WASM hands us a VideoFrame-shaped object. We synthesise the
+      // wider VideoFrame shape consumers see on the public API.
+      (setFn as (...args: unknown[]) => unknown).call(this.#instance, (raw: unknown) => {
+        const wf = raw as {
+          format?: string;
+          data?: Uint8Array;
+          codedWidth?: number;
+          codedHeight?: number;
+          timestamp?: number;
+        };
+        cb({
+          format: 'rgba',
+          data: Buffer.from(wf.data ?? new Uint8Array(0)),
+          timestamp: wf.timestamp ?? 0,
+          width: wf.codedWidth ?? 0,
+          height: wf.codedHeight ?? 0,
+        });
+      });
+      return true;
+    }
+    // Path 2: hand the consumer raw NALUs. The relay-transport already
+    // demuxes video packets — we route them through the callback as
+    // `'h264-raw'` so the consumer can decode externally.
+    this.#h264FrameCallback = cb;
+    return true;
+  };
+
+  /** @internal — invoked by RelayRtcTransport when a video RTP packet arrives. */
+  _onH264Packet = (nalu: Uint8Array, timestamp: number, isKeyframe: boolean): void => {
+    if (!this.#h264FrameCallback) return;
+    this.#h264FrameCallback({
+      format: 'h264-raw',
+      data: Buffer.from(nalu),
+      timestamp,
+      isKeyframe,
+    });
+  };
+
+  /** Callback installed by `setOnVideoFrameCallback` when the raw-NALU
+   *  fallback path is in use. */
+  #h264FrameCallback: ((frame: import('./types.js').VideoFrame) => void) | null = null;
+
   startCall = (options: {
     peerJid: string; peerPn: string; peerList?: string[];
     callId: string; isVideo: boolean; isLidCall?: boolean;

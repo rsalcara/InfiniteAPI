@@ -474,6 +474,9 @@ export class VoipClient extends EventEmitter {
         // F3: opt into video frame delivery on accept.
         if (opts?.video) {
           active._videoConfig = opts.video;
+          // Bridge engine → call: install the frame callback so frames the
+          // engine pulls off the wire reach `_emitVideoFrame`.
+          self.#engine!.setOnVideoFrameCallback((frame) => active._emitVideoFrame(frame));
         }
         // F2: for group/link offers, wire the heartbeat context so the
         // ActiveCall starts pinging once it reaches `Active` state.
@@ -552,6 +555,9 @@ export class VoipClient extends EventEmitter {
     // the engine to negotiate the video codec (H.264/H.265/AV1) with the peer.
     if (opts.video) {
       call._videoConfig = opts.video;
+      // Bridge engine → call: install the frame callback so frames the
+      // engine pulls off the wire reach `_emitVideoFrame`.
+      this.#engine.setOnVideoFrameCallback((frame) => call._emitVideoFrame(frame));
     }
 
     this.#engine.startCall({
@@ -640,6 +646,85 @@ export class VoipClient extends EventEmitter {
       throw new Error('Socket does not expose sendHeartbeat');
     }
     await this.#sock.sendHeartbeat(callId, callCreator);
+  };
+
+  /**
+   * Place an outbound GROUP call to a list of participants.
+   *
+   * Drives `wasm-engine.startGroupCall` which mirrors WhatsApp Web's
+   * `WAWebVoipStartCall.startWAWebVoipGroupCallFromWids` — extracted via
+   * CDP for reference; not bundled. The engine picks between the
+   * dedicated `startGroupCall` WASM binding (when present) and the
+   * generic `startVoipCall` with an N-element peer list (the path
+   * WA Web itself falls back to). See the JSDoc on
+   * `WasmEngine.startGroupCall` for the routing details.
+   *
+   * Participants should be passed as LID-form JIDs (`<number>@lid`) when
+   * possible — that's what the WASM SFU bring-up expects. Bare phone
+   * numbers are resolved by the signaling layer the same way `call()` does.
+   *
+   * `opts.video` opts into video frame delivery on the returned
+   * `ActiveCall` (same shape as 1:1 `call()`).
+   */
+  groupCall = async (
+    participants: string[],
+    opts: {
+      audioSource?: string;
+      durationMs?: number;
+      video?: import('./types.js').VideoConfig;
+      linkToken?: string;
+    } = {},
+  ): Promise<ActiveCall> => {
+    if (!this.#engine || !this.#signaling) throw new Error('Not connected. Call connect() first.');
+    if (this.#activeCall) throw new Error('A call is already active.');
+    if (!participants.length) throw new Error('groupCall: at least one participant is required');
+
+    // Resolve each participant to a LID if it's a bare phone number — the
+    // SFU expects LIDs and the signaling layer's `discoverPeerDevices`
+    // returns per-device LIDs. We don't fan-out per device here; the WASM
+    // does that internally from the per-participant LID.
+    const resolved: string[] = [];
+    for (const p of participants) {
+      if (p.endsWith('@lid')) {
+        resolved.push(p);
+      } else if (p.endsWith('@s.whatsapp.net')) {
+        const lid = await this.#signaling.resolveLid(p);
+        resolved.push(lid || p);
+      } else {
+        const digits = p.replace(/\D/g, '');
+        const pnJid = `${digits}@s.whatsapp.net`;
+        const lid = await this.#signaling.resolveLid(pnJid);
+        resolved.push(lid || pnJid);
+      }
+    }
+
+    const callId = ('00' + randomBytes(16).toString('hex').slice(2)).toUpperCase();
+    const durationMs = opts.durationMs ?? 0;
+    const audioSource = opts.audioSource ?? 'silence';
+
+    const active = new ActiveCall(callId, this.#engine, durationMs);
+    active._audioSource = audioSource;
+    if (opts.video) active._videoConfig = opts.video;
+    // Group calls always run the heartbeat loop. The call creator for the
+    // heartbeat is OUR own JID (we're the originator).
+    const selfJid = this.#sock.authState.creds.me?.lid || this.#sock.authState.creds.me?.id;
+    if (selfJid) active._setGroupContext(selfJid, this.#sock);
+    this.#activeCall = active;
+
+    // Hook the video frame stream into the active call (if opted-in).
+    if (opts.video) {
+      this.#engine.setOnVideoFrameCallback((frame) => active._emitVideoFrame(frame));
+    }
+
+    this.#engine.startGroupCall({
+      callId,
+      participants: resolved,
+      isVideo: !!opts.video,
+      callCreator: selfJid,
+      linkToken: opts.linkToken,
+    });
+
+    return active;
   };
 
   /** Tear down the WhatsApp socket and release resources. */
