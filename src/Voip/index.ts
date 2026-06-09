@@ -150,7 +150,7 @@ export class ActiveCall extends EventEmitter {
 }
 
 /** Top-level client. Connects to WhatsApp and lets you place calls. */
-export class VoipClient {
+export class VoipClient extends EventEmitter {
   readonly #config: VoipSdkConfig;
   #engine: WasmEngine | null = null;
   #relay: RelayRtcTransport | null = null;
@@ -158,6 +158,10 @@ export class VoipClient {
   #sock: any = null;
   #activeCall: ActiveCall | null = null;
   #baileys: any = null;
+  /** Tracks incoming call IDs we have already surfaced as `'incoming'` to dedupe
+   *  re-emits when the same `<call>` stanza is delivered with multiple children
+   *  (e.g. offer + transport in the same node). */
+  #seenIncomingIds = new Set<string>();
 
   // Capture state populated when WASM negotiates audio params
   #capturePtr = 0;
@@ -168,17 +172,44 @@ export class VoipClient {
   #feeder: AudioFeeder | null = null;
 
   constructor(config: VoipSdkConfig) {
+    super();
+    if (!config.authDir && !config.socket) {
+      throw new Error('VoipSdkConfig: must provide either `authDir` (standalone) or `socket` (embedded).');
+    }
+    if (config.authDir && config.socket) {
+      throw new Error('VoipSdkConfig: `authDir` and `socket` are mutually exclusive — pass one only.');
+    }
     this.#config = config;
   }
 
-  /** Connect to WhatsApp and bring up the WASM VoIP stack. */
+  /**
+   * Connect to WhatsApp and bring up the WASM VoIP stack.
+   *
+   * Two modes:
+   *  - **Embedded** (`config.socket` provided): skips auth/QR; reuses the
+   *    caller's socket. Returns once the WASM engine is up.
+   *  - **Standalone** (`config.authDir` provided): creates its own Baileys
+   *    socket, prints QR on first run, waits for connection.
+   */
   connect = async (): Promise<void> => {
+    // Embedded mode: socket already provided by the caller. Skip the
+    // auth/QR ceremony and go straight to wiring the WASM stack.
+    if (this.#config.socket) {
+      this.#sock = this.#config.socket;
+      await this.#initEngineWithSocket();
+      this.#wireIncomingCallListener();
+      return;
+    }
+
     this.#baileys = await loadBaileys();
     const { useMultiFileAuthState, default: makeWASocket, DisconnectReason } = this.#baileys;
     const makeSocket: (opts: any) => any =
       makeWASocket ?? this.#baileys.makeWASocket ?? this.#baileys;
 
-    const authDir = resolve(this.#config.authDir);
+    // `authDir` is required in standalone mode — the constructor guard above
+    // already rejected configs that have neither `authDir` nor `socket`, so
+    // by the time we get here the non-null assertion is sound.
+    const authDir = resolve(this.#config.authDir!);
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
     const silentLogger: any = {
@@ -251,6 +282,17 @@ export class VoipClient {
       connectSocket();
     });
 
+    await this.#initEngineWithSocket();
+    this.#wireIncomingCallListener();
+  };
+
+  /**
+   * Spin up the WASM engine + RTP transport + signaling bridge against the
+   * already-attached `this.#sock`. Extracted from the original `connect()`
+   * body so it can be reused by the embedded-mode path (which skips the
+   * QR/auth ceremony and goes straight here).
+   */
+  #initEngineWithSocket = async (): Promise<void> => {
     this.#signaling = new SignalingBridge({ sock: this.#sock });
     await this.#signaling.init();
 
@@ -283,13 +325,103 @@ export class VoipClient {
     await this.#engine.waitForVoipStackReady();
     try { this.#engine.updateNetworkMedium(2, 0); } catch {}
 
-    this.#sock.ws.on("CB:call", (node: any) => {
-      this.#signaling!.processIncomingCall(node, this.#engine!, this.#activeCall?.callId ?? "");
+    // Direct binary-node hooks used for incoming stanza processing. In embedded
+    // mode the socket exposes `.ws` (the underlying ws.WebSocket); in standalone
+    // mode it's the socket the client just built. Both expose the same handle.
+    if (this.#sock.ws?.on) {
+      this.#sock.ws.on("CB:call", (node: any) => {
+        this.#signaling!.processIncomingCall(node, this.#engine!, this.#activeCall?.callId ?? "");
+      });
+      this.#sock.ws.on("CB:receipt", (node: any) => {
+        if (!isCallReceiptNode(node)) return;
+        this.#signaling!.processIncomingReceipt(node, this.#engine!, this.#activeCall?.callId ?? "");
+      });
+    }
+  };
+
+  /**
+   * Subscribe to the socket's `'call'` event. When an offer arrives that we
+   * haven't already surfaced (dedupe by call-id), construct an
+   * `IncomingCallHandle` and emit `'incoming'` so the caller can
+   * `accept()` / `reject()`.
+   *
+   * Other call statuses (`terminate`, `transport`, `relaylatency`, etc.)
+   * are forwarded into the engine via the SignalingBridge — this listener
+   * only cares about the `offer` first-touch.
+   */
+  #wireIncomingCallListener = (): void => {
+    if (!this.#sock?.ev?.on) return;
+    this.#sock.ev.on('call', (calls: Array<Record<string, unknown>>) => {
+      for (const call of calls) {
+        if (call?.status !== 'offer') continue;
+        const callId = String(call.id ?? '');
+        if (!callId || this.#seenIncomingIds.has(callId)) continue;
+        this.#seenIncomingIds.add(callId);
+        const incoming = this.#makeIncomingHandle(call);
+        this.emit('incoming', incoming);
+      }
     });
-    this.#sock.ws.on("CB:receipt", (node: any) => {
-      if (!isCallReceiptNode(node)) return;
-      this.#signaling!.processIncomingReceipt(node, this.#engine!, this.#activeCall?.callId ?? "");
-    });
+  };
+
+  /**
+   * Build an `IncomingCallHandle` for an `'offer'` event from the socket.
+   * `accept()` performs the signaling stanza + sets up the active call;
+   * `reject()` just sends the rejection signaling and removes the dedupe
+   * marker so a re-offer with the same id can be surfaced again.
+   */
+  #makeIncomingHandle = (call: Record<string, unknown>): import('./types.js').IncomingCallHandle => {
+    const self = this;
+    const callId = String(call.id ?? '');
+    const from = String(call.from ?? '');
+    const fromPn = (call.callerPn as string | undefined) ?? undefined;
+    const isVideo = !!call.isVideo;
+    const isGroup = !!call.isGroup;
+    const arrivedAt = call.date instanceof Date ? call.date : new Date();
+
+    return {
+      callId,
+      from,
+      fromPn,
+      isVideo,
+      isGroup,
+      arrivedAt,
+      accept: async (opts) => {
+        if (!self.#sock?.acceptCall) {
+          throw new Error('Socket does not expose acceptCall — is the fork’s call signaling wired up?');
+        }
+        // Pre-accept first (acknowledges ringing without committing audio
+        // path yet), then accept proper. Matches what WA Web does on
+        // incoming-call answer.
+        if (self.#sock.preacceptCall) {
+          await self.#sock.preacceptCall(callId, from, isVideo);
+        }
+        await self.#sock.acceptCall(callId, from, isVideo);
+
+        // Spin up an ActiveCall and hand it back. The engine was already
+        // initialised in `connect()`; we just need to register the call id
+        // so audio playback / video frame dispatch routes through it.
+        const active = new ActiveCall(callId, self.#engine!, opts?.durationMs ?? 0);
+        // mark the source so AudioFeeder can attach later if requested
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (active as any)._audioSource = opts?.audioSource ?? 'silence';
+        self.#activeCall = active;
+        return active as unknown as import('./types.js').ActiveCallHandle;
+      },
+      reject: async (reason) => {
+        if (!self.#sock?.rejectCall) {
+          throw new Error('Socket does not expose rejectCall — is the fork’s call signaling wired up?');
+        }
+        await self.#sock.rejectCall(callId, from);
+        // Allow a re-offer with the same id to surface again (the server
+        // sometimes redelivers an offer when the recipient ignored the
+        // first attempt).
+        self.#seenIncomingIds.delete(callId);
+        if (reason) {
+          // Surface as an `ended` event semantically — useful for logging.
+          self.emit('rejected', { callId, reason });
+        }
+      },
+    };
   };
 
   /** Place an outbound voice call. */
