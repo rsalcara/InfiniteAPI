@@ -2948,7 +2948,7 @@ __metadata:
     whatsapp-rust-bridge: "npm:0.5.4"
     ws: "npm:^8.13.0"
   peerDependencies:
-    "@roamhq/wrtc": ^0.8.0
+    "@roamhq/wrtc": ">=0.8.0 <0.11.0"
     audio-decode: ^2.2.3
     better-sqlite3: ^11.0.0
     jimp: ^1.6.0

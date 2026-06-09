@@ -116,15 +116,26 @@ class NodeWorkerMessagePort {
 	constructor(worker: any, name = 'WAWebVoipWebWasmWorker') {
 		this.#worker = worker
 		this.name = name
-		this.fullyConnected = new Promise(resolve => {
+		this.fullyConnected = new Promise((resolve, reject) => {
 			const loadedHandler = (msg: any) => {
 				if (msg?.cmd === 'loaded') {
 					this.workerID = msg.workerID ?? 0
+					this.removeMessageListener('cmd', loadedHandler)
+					this.removeMessageListener('cmd', errorHandler)
 					resolve(this)
 				}
 			}
 
+			const errorHandler = (msg: any): void => {
+				if (msg?.cmd === 'error') {
+					this.removeMessageListener('cmd', loadedHandler)
+					this.removeMessageListener('cmd', errorHandler)
+					reject(new Error(`VoIP worker init failed: ${String(msg.error ?? 'unknown')}`))
+				}
+			}
+
 			this.addMessageListener('cmd', loadedHandler)
+			this.addMessageListener('cmd', errorHandler)
 		})
 		if (typeof worker.on === 'function') {
 			worker.on('message', (data: any) => this.#handleMessage(data))
@@ -1053,10 +1064,15 @@ export class WasmEngine {
 	}
 
 	#loadWasmModuleToWorker = (worker: NodeWorkerMessagePort): Promise<void> =>
-		new Promise(resolve => {
+		new Promise((resolve, reject) => {
+			const cleanup = (): void => {
+				worker.removeMessageListener('cmd', loadedHandler)
+				worker.removeMessageListener('cmd', errorHandler)
+			}
+
 			const loadedHandler = (msg: any): void => {
 				if (msg?.cmd === 'loaded') {
-					worker.removeMessageListener('cmd', loadedHandler)
+					cleanup()
 					this.#workersLoadedCount += 1
 					if (this.#workersLoadedCount >= PTHREAD_POOL_SIZE && this.#removeRunDependencyCallback) {
 						this.#removeRunDependencyCallback('loading-workers')
@@ -1066,7 +1082,15 @@ export class WasmEngine {
 				}
 			}
 
+			const errorHandler = (msg: any): void => {
+				if (msg?.cmd === 'error') {
+					cleanup()
+					reject(new Error(`VoIP worker WASM load failed: ${String(msg.error ?? 'unknown')}`))
+				}
+			}
+
 			worker.addMessageListener('cmd', loadedHandler)
+			worker.addMessageListener('cmd', errorHandler)
 			worker.workerID = this.#nextWorkerID++
 			worker.postMessage({
 				cmd: 'load',

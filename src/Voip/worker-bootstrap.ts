@@ -1138,14 +1138,17 @@ function f(t: any): void {
 						})
 					)
 					// Without .catch() a loader rejection becomes a pending Promise:
-					// the worker never sends 'loaded' and the parent deadlocks waiting.
-					// Forward as a synthetic 'loaded' with an error attribute so the
-					// parent can surface it instead of hanging forever.
+					// the worker never sends a message and the parent deadlocks
+					// waiting. Forward as a distinct error message so the parent
+					// can fail deterministically. Earlier we sent `cmd: 'loaded'`
+					// with an error attr — that hit the loaded-handler in the
+					// parent and made init appear to succeed while the worker
+					// was broken. `cmd: 'error'` ensures the failure surfaces.
 					.catch((err: any) => {
 						try {
 							e.postMessage({
 								type: 'cmd',
-								cmd: 'loaded',
+								cmd: 'error',
 								error: String(err?.message ?? err ?? 'wasmLoader rejected')
 							})
 						} catch {}

@@ -98,6 +98,10 @@ export type RelayTransportStats = {
 export type RelayTransportConfig = {
 	onTransportMessage: (data: Uint8Array, ip: string, port: number) => void
 	onIceRtt?: (rttMs: number, ip: string, port: number) => void
+	/** Called when a relay connection setup or send fails. Without it,
+	 *  transport errors are swallowed silently — pass a logger here for
+	 *  diagnostics. Default: `process.stderr.write(...)`. */
+	onError?: (err: Error) => void
 }
 
 const getConnectionIdentifier = (ip: string, port: number): string =>
@@ -244,6 +248,20 @@ export class RelayRtcTransport {
 
 	constructor(private readonly config: RelayTransportConfig) {}
 
+	/** Surface a transport error via the consumer's callback if provided,
+	 *  otherwise log to stderr. Used by `.catch` handlers in place of the
+	 *  earlier empty-block swallows. */
+	#reportError = (err: unknown, context: string): void => {
+		const error = err instanceof Error ? err : new Error(typeof err === 'string' ? err : String(err))
+		if (this.config.onError) {
+			try {
+				this.config.onError(error)
+			} catch {}
+		} else {
+			process.stderr.write(`[RelayRtcTransport] ${context}: ${error.message}\n`)
+		}
+	}
+
 	updateRelayList = (update: RelayListUpdatePayload): void => {
 		const nextInfoById = new Map<string, RelayConnectionInfo>()
 
@@ -305,9 +323,7 @@ export class RelayRtcTransport {
 		this.#relayInfoById.clear()
 		for (const [id, info] of nextInfoById) {
 			this.#relayInfoById.set(id, info)
-			this.#ensureConnection(info).catch(() => {
-				/* connection state already moves to 'failed' inside */
-			})
+			this.#ensureConnection(info).catch(err => this.#reportError(err, `ensureConnection ${id}`))
 		}
 	}
 
@@ -360,9 +376,7 @@ export class RelayRtcTransport {
 		}
 
 		bufferPacket(connection, arrayBuffer, this.#totals)
-		this.#ensureConnection(info).catch(() => {
-			/* connection state already moves to 'failed' inside */
-		})
+		this.#ensureConnection(info).catch(err => this.#reportError(err, `ensureConnection ${info.id}`))
 		return packet.byteLength
 	}
 
@@ -452,8 +466,13 @@ export class RelayRtcTransport {
 
 	#ensureConnection = async (info: RelayConnectionInfo): Promise<void> => {
 		const connection = this.#getOrCreateConnection(info)
-		if (connection.state === 'open' || connection.state === 'connecting') {
-			return connection.connectPromise ?? Promise.resolve()
+		if (connection.state === 'open') return
+		// 'connecting' WITHOUT a live connectPromise means a previous attempt
+		// is in a half-initialised state (typical after a stalled ICE
+		// restart). Don't trust it — falling through and kicking off a fresh
+		// connect cycle resolves the deadlock.
+		if (connection.state === 'connecting' && connection.connectPromise) {
+			return connection.connectPromise
 		}
 
 		const promise = this.#connect(connection)

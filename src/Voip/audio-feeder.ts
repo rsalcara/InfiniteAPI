@@ -101,7 +101,15 @@ export class AudioFeeder {
 			// Silence sources are capped at 1h (`aevalsrc=0:d=3600`). When the
 			// call outlives that, ffmpeg exits cleanly and the uplink dries up.
 			// Respawn so heartbeat / audio path keeps going indefinitely.
+			// IMPORTANT: cancel the in-flight #emitTimer first — start() will
+			// schedule a fresh one, and a stale timer from the previous run
+			// would emit alongside the new loop, doubling the cadence.
 			if (wasSilence) {
+				if (this.#emitTimer) {
+					clearTimeout(this.#emitTimer)
+					this.#emitTimer = null
+				}
+
 				setImmediate(() => {
 					if (!this.#stopped) this.start()
 				})
