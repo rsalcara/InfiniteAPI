@@ -99,6 +99,22 @@ export class ActiveCall extends EventEmitter {
   /** @internal mirrors the source path for the audio feeder */
   _audioSource: string = "silence";
 
+  /** @internal — optional video stream configuration. When set, the engine
+   *  routes inbound video frames through `_emitVideoFrame` so the caller's
+   *  `'video-frame'` listener fires. */
+  _videoConfig: import('./types.js').VideoConfig | null = null;
+
+  /** @internal — group/link callId for the call-creator field used by
+   *  `sendHeartbeat`. Populated by `_setGroupContext` when the call is a
+   *  group / call-link join. */
+  _callCreator: string | null = null;
+
+  /** @internal — heartbeat timer used for group/link calls. Cleared on end. */
+  #heartbeatTimer: NodeJS.Timeout | null = null;
+  /** @internal — bound socket reference for the heartbeat send. Set by
+   *  `_setGroupContext`. */
+  #socketForHeartbeat: { sendHeartbeat?: (callId: string, callCreator: string) => Promise<void> } | null = null;
+
   constructor(
     public readonly callId: string,
     private readonly engine: WasmEngine,
@@ -110,6 +126,17 @@ export class ActiveCall extends EventEmitter {
       this.#endTimer = setTimeout(() => this.end(), durationMs);
     }
   }
+
+  /** @internal — mark this call as a group/link call and provide the
+   *  socket reference so the heartbeat loop can fire. Heartbeats start
+   *  automatically on `connected` and stop on `ended`. */
+  _setGroupContext = (
+    callCreator: string,
+    sock: { sendHeartbeat?: (callId: string, callCreator: string) => Promise<void> },
+  ): void => {
+    this._callCreator = callCreator;
+    this.#socketForHeartbeat = sock;
+  };
 
   get state(): CallState { return this.#state; }
 
@@ -130,8 +157,14 @@ export class ActiveCall extends EventEmitter {
   _updateState = (state: number): void => {
     this.#state = state as CallState;
     if (state === CallState.PreacceptReceived) this.emit("ringing");
-    else if (state === CallState.Active) this.emit("connected");
-    else if (state === CallState.Idle || state === CallState.Ending) {
+    else if (state === CallState.Active) {
+      this.emit("connected");
+      // F2: start the per-call heartbeat loop once we have a working session
+      // for group/link calls. WhatsApp Web sends one heartbeat every ~10s
+      // while a multi-party call is active; without it the server treats
+      // the participant as having timed out after ~30s.
+      this.#maybeStartHeartbeat();
+    } else if (state === CallState.Idle || state === CallState.Ending) {
       this._forceEnd("ended");
     }
   };
@@ -139,13 +172,47 @@ export class ActiveCall extends EventEmitter {
   /** @internal */
   _emitAudio = (pcm: Float32Array): void => { this.emit("audio", pcm); };
 
+  /** @internal — surface a video frame to the consumer. The engine wraps
+   *  the raw H.264 NAL units from RTP (when `format === 'h264-raw'`) or
+   *  delivers an already-decoded YUV420P / RGBA buffer when the consumer
+   *  asked for decoding. */
+  _emitVideoFrame = (frame: import('./types.js').VideoFrame): void => {
+    if (!this._videoConfig) return; // consumer opted out of video
+    this.emit("video-frame", frame);
+  };
+
   /** @internal */
   _forceEnd = (reason: string): void => {
     if (this.#ended) return;
     this.#ended = true;
     if (this.#endTimer) { clearTimeout(this.#endTimer); this.#endTimer = null; }
+    if (this.#heartbeatTimer) { clearInterval(this.#heartbeatTimer); this.#heartbeatTimer = null; }
     this.emit("ended", reason);
     this.#endResolver(reason);
+  };
+
+  /** @internal — start a 10s heartbeat loop. Idempotent (no-op if already
+   *  running, or if this isn't a group call, or if the socket doesn't
+   *  expose `sendHeartbeat`). */
+  #maybeStartHeartbeat = (): void => {
+    if (this.#heartbeatTimer) return;
+    if (!this._callCreator) return; // not a group/link call
+    if (!this.#socketForHeartbeat?.sendHeartbeat) return;
+    const sock = this.#socketForHeartbeat;
+    const callCreator = this._callCreator;
+    const callId = this.callId;
+    // Fire one immediately, then every 10s. WhatsApp Web's interval is
+    // configured via the WASM (`heartbeat_interval_s`, default 30s in the
+    // engine wrapper) — we pick 10s for safety against tight server timeouts
+    // seen in practice on group calls.
+    const fire = () => {
+      sock.sendHeartbeat?.(callId, callCreator).catch(() => {
+        // network blips, log via emit so the consumer can decide what to do
+        this.emit("error", new Error(`heartbeat failed for ${callId}`));
+      });
+    };
+    fire();
+    this.#heartbeatTimer = setInterval(fire, 10_000);
   };
 }
 
@@ -404,6 +471,15 @@ export class VoipClient extends EventEmitter {
         // mark the source so AudioFeeder can attach later if requested
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (active as any)._audioSource = opts?.audioSource ?? 'silence';
+        // F3: opt into video frame delivery on accept.
+        if (opts?.video) {
+          active._videoConfig = opts.video;
+        }
+        // F2: for group/link offers, wire the heartbeat context so the
+        // ActiveCall starts pinging once it reaches `Active` state.
+        if (isGroup) {
+          active._setGroupContext(from, self.#sock);
+        }
         self.#activeCall = active;
         return active as unknown as import('./types.js').ActiveCallHandle;
       },
@@ -424,10 +500,21 @@ export class VoipClient extends EventEmitter {
     };
   };
 
-  /** Place an outbound voice call. */
+  /**
+   * Place an outbound voice (or video) call.
+   *
+   * Pass `opts.video` to receive the remote peer's video frames via the
+   * `'video-frame'` event on the returned `ActiveCall`. See `VideoConfig`
+   * for the available output formats. Omitting `opts.video` means the call
+   * is treated as voice-only (matching the SheIITear baseline).
+   */
   call = async (
     phoneNumber: string,
-    opts: { audioSource?: string; durationMs?: number } = {},
+    opts: {
+      audioSource?: string;
+      durationMs?: number;
+      video?: import('./types.js').VideoConfig;
+    } = {},
   ): Promise<ActiveCall> => {
     if (!this.#engine || !this.#signaling) throw new Error("Not connected. Call connect() first.");
     if (this.#activeCall) throw new Error("A call is already active.");
@@ -460,18 +547,99 @@ export class VoipClient extends EventEmitter {
     call._audioSource = audioSource;
     this.#activeCall = call;
 
+    // F3: surface video config so the call's `'video-frame'` listener gets
+    // engaged when the WASM delivers a frame. `isVideo` on `startCall` tells
+    // the engine to negotiate the video codec (H.264/H.265/AV1) with the peer.
+    if (opts.video) {
+      call._videoConfig = opts.video;
+    }
+
     this.#engine.startCall({
       peerJid: peerLid,
       peerPn: targetPnJid,
       peerList: deviceList,
       callId,
-      isVideo: false,
+      isVideo: !!opts.video,
       isLidCall: true,
       isFromDialer: false,
       extraData: tcToken,
     });
 
     return call;
+  };
+
+  // ─── F2 — Group / Call-link orchestration ──────────────────────────────────
+  //
+  // Signaling for create / query / join + heartbeat / participant tracking is
+  // already wired into the fork's socket via PR #245 (`createCallLink`,
+  // `joinCallLink`, `queryCallLink`, `sendHeartbeat`, `extractParticipants`).
+  // These wrappers just expose them as ergonomic `VoipClient` methods AND
+  // start a per-call heartbeat loop once the call reaches the `Active` state.
+  //
+  // What's NOT covered here: the multi-party AUDIO ROUTING that mixes uplinks
+  // from N participants downstream to each of them lives inside the WASM
+  // binary itself (`whatsapp.wasm`). The bundled engine wrapper exposes
+  // `startCall` for 1:1 — group-call init requires the WASM-side
+  // `WAWebVoipGroupCallFromChat` / `WAWebVoipGroupCallFromWids` entrypoint
+  // we identified via CDP. Surfacing those goes in a follow-up PR once the
+  // WASM bindings are extended; today's wrappers below give consumers the
+  // signaling path so they can at least RECEIVE / dial into a group call.
+
+  /**
+   * Create a new call link. Returns the token + the `https://call.whatsapp.com/...`
+   * URL the recipient can use to join.
+   *
+   * Delegates to the fork's socket-level `createCallLink` (shipped in
+   * PR #245). Throws if the embedded socket doesn't expose it.
+   */
+  createLink = async (media: 'voice' | 'video' = 'voice'): Promise<{ token: string; url: string }> => {
+    if (!this.#sock?.createCallLink) {
+      throw new Error('Socket does not expose createCallLink — is the fork’s call signaling wired up?');
+    }
+    return this.#sock.createCallLink(media === 'video' ? 'video' : 'audio');
+  };
+
+  /**
+   * Query an existing call link's metadata (creator, current participants,
+   * media type, etc.) without joining.
+   */
+  queryLink = async (token: string, media: 'voice' | 'video' = 'voice'): Promise<unknown> => {
+    if (!this.#sock?.queryCallLink) {
+      throw new Error('Socket does not expose queryCallLink');
+    }
+    return this.#sock.queryCallLink(token, media === 'video' ? 'video' : 'audio');
+  };
+
+  /**
+   * Join an existing call link. Returns immediately after the signaling
+   * round-trip — the call lifecycle then flows through `'incoming'` /
+   * `ActiveCall` events the same way a regular call does.
+   *
+   * Future-work note: the WASM engine still needs `startGroupCall(...)`
+   * (or equivalent) to be wired for the inbound audio mixer to engage.
+   * For now this primes the signaling side and emits a `'group-joined'`
+   * event so the caller knows the join succeeded at the protocol layer.
+   */
+  joinLink = async (token: string, media: 'voice' | 'video' = 'voice'): Promise<{ token: string }> => {
+    if (!this.#sock?.joinCallLink) {
+      throw new Error('Socket does not expose joinCallLink');
+    }
+    await this.#sock.joinCallLink(token, media === 'video' ? 'video' : 'audio');
+    this.emit('group-joined', { token });
+    return { token };
+  };
+
+  /**
+   * Send a manual heartbeat for an active group/link call. Most consumers
+   * won't need this — `ActiveCall` runs an internal heartbeat loop once
+   * the call enters the `Active` state. Exposed for advanced cases (manual
+   * keep-alive on stale sessions, debugging the protocol, etc.).
+   */
+  sendHeartbeat = async (callId: string, callCreator: string): Promise<void> => {
+    if (!this.#sock?.sendHeartbeat) {
+      throw new Error('Socket does not expose sendHeartbeat');
+    }
+    await this.#sock.sendHeartbeat(callId, callCreator);
   };
 
   /** Tear down the WhatsApp socket and release resources. */
