@@ -545,7 +545,7 @@ export class WasmEngine {
    * via either path, `false` if no video binding is available in this build.
    */
   setOnVideoFrameCallback = (
-    cb: (frame: import('./types.js').VideoFrame) => void,
+    cb: (frame: import('../types.js').VideoFrame) => void,
   ): boolean => {
     this.#ensureInitialized();
     // Path 1: WASM-side decode + globalThis.VideoFrame (browser-shaped).
@@ -592,7 +592,7 @@ export class WasmEngine {
 
   /** Callback installed by `setOnVideoFrameCallback` when the raw-NALU
    *  fallback path is in use. */
-  #h264FrameCallback: ((frame: import('./types.js').VideoFrame) => void) | null = null;
+  #h264FrameCallback: ((frame: import('../types.js').VideoFrame) => void) | null = null;
 
   startCall = (options: {
     peerJid: string; peerPn: string; peerList?: string[];

@@ -33,7 +33,7 @@ const ACK_TIMEOUT_MS = 15_000;
 // version lazy-loaded `@whiskeysockets/baileys` as a peer dep. Inside the fork
 // we ship as part of the same package, so static imports are cleaner and avoid
 // the runtime `import()` ceremony.
-import { jidDecode, jidNormalizedUser } from "../WABinary/jid-utils";
+import { jidDecode, jidNormalizedUser } from "../../WABinary/jid-utils";
 
 const loadBaileys = async (): Promise<any> => ({ jidDecode, jidNormalizedUser });
 

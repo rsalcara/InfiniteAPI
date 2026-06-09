@@ -21,9 +21,9 @@ import { EventEmitter } from "node:events";
 import { randomBytes, createHmac } from "node:crypto";
 import { resolve } from "node:path";
 
-import { WasmEngine } from "./wasm-engine.js";
+import { WasmEngine } from "./wasm-engine/index.js";
 import { RelayRtcTransport, type RelayListUpdatePayload } from "./relay-transport.js";
-import { SignalingBridge } from "./signaling.js";
+import { SignalingBridge } from "./signaling/index.js";
 import { AudioFeeder } from "./audio-feeder.js";
 import { CallState, type VoipSdkConfig } from "./types.js";
 
