@@ -22,4 +22,12 @@ export { makeWASocket, makeWASocketAutoVersion, suppressLibsignalLogs }
 // isJidUser é um alias para isPersonJid (mantém retrocompatibilidade)
 export { isPersonJid as isJidUser } from './Utils/history'
 
+// VoIP (voice calls) — outbound 1:1 calls via WhatsApp Web's WASM stack.
+// Ported from SheIITear/baileys-caller (MIT); see src/Voip/ATTRIBUTION.md.
+// Peer deps `@roamhq/wrtc` and `qrcode-terminal` are OPTIONAL — only
+// consumers placing voice calls need to install them. `ffmpeg` on PATH is
+// also required for MP3/WAV source decoding.
+export { VoipClient, ActiveCall, CallState } from './Voip/index'
+export type { VoipSdkConfig, CallOptions, CallEvents, AudioConfig } from './Voip/index'
+
 export default makeWASocket
