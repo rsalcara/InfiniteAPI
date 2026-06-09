@@ -26,6 +26,7 @@ export default defineConfig([globalIgnores([
     "Example/Example.ts",
     "**/docs",
     "**/proto-extract",
+    "src/Voip/assets/**",
 ]),
 ...base,
 {
@@ -69,6 +70,23 @@ export default defineConfig([globalIgnores([
         }],
         "@typescript-eslint/no-floating-promises": "warn",
         "@typescript-eslint/no-unused-vars": ["error", {
+            caughtErrors: "none",
+        }],
+    },
+},
+{
+    // src/Voip wraps the WhatsApp Web VoIP loader/worker bundle. Several
+    // files contain code-shaped-after the original WA Web bundle (Babel
+    // helpers, callback dictionaries) where `x == null` is the idiomatic
+    // null-OR-undefined check. Allow it ONLY for null-comparisons; other
+    // eqeqeq cases still error.
+    files: ["src/Voip/**/*.ts"],
+    rules: {
+        "eqeqeq": ["error", "always", { "null": "ignore" }],
+        "@typescript-eslint/no-unused-vars": ["error", {
+            args: "all",
+            argsIgnorePattern: "^_",
+            varsIgnorePattern: "^_",
             caughtErrors: "none",
         }],
     },

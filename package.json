@@ -92,13 +92,13 @@
 		"typescript": "^5.9.3"
 	},
 	"peerDependencies": {
+		"@roamhq/wrtc": ">=0.8.0 <0.11.0",
 		"audio-decode": "^2.2.3",
 		"better-sqlite3": "^11.0.0",
 		"jimp": "^1.6.0",
 		"link-preview-js": "^4.0.0",
-		"sharp": "*",
-		"@roamhq/wrtc": "^0.8.0",
-		"qrcode-terminal": "^0.12.0"
+		"qrcode-terminal": "^0.12.0",
+		"sharp": "*"
 	},
 	"resolutions": {
 		"ajv@npm:^6.12.4": "^6.14.0",
@@ -130,6 +130,9 @@
 		"yaml@npm:^2.6.1": "^2.8.4"
 	},
 	"peerDependenciesMeta": {
+		"@roamhq/wrtc": {
+			"optional": true
+		},
 		"audio-decode": {
 			"optional": true
 		},
@@ -140,9 +143,6 @@
 			"optional": true
 		},
 		"link-preview-js": {
-			"optional": true
-		},
-		"@roamhq/wrtc": {
 			"optional": true
 		},
 		"qrcode-terminal": {
