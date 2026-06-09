@@ -5,7 +5,6 @@
  * stanzas, decrypts inbound ones, manages TC tokens, multi-device JID routing,
  * and signal-session refresh.
  *
- * @author ShellTear
  */
 
 export type BaileysSocket = {
@@ -30,7 +29,7 @@ const TC_TOKEN_REQUEST_TIMEOUT_MS = 3500;
 const SESSION_CACHE_TTL_MS = 5 * 60_000;
 const ACK_TIMEOUT_MS = 15_000;
 
-// Direct imports from our own InfiniteAPI codebase — the upstream SheIITear
+// Direct imports from our own InfiniteAPI codebase — the third-party
 // version lazy-loaded `@whiskeysockets/baileys` as a peer dep. Inside the fork
 // we ship as part of the same package, so static imports are cleaner and avoid
 // the runtime `import()` ceremony.

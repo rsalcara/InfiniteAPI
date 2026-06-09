@@ -4,7 +4,6 @@
  * Spawns ffmpeg to decode `source` into f32le PCM at the requested rate, then
  * meters frames out at chunk-cadence to the WASM uplink.
  *
- * @author ShellTear
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 

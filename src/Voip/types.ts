@@ -1,7 +1,6 @@
 /**
- * Shared type definitions for baileys-caller.
+ * Shared type definitions for the VoIP module.
  *
- * @author ShellTear
  */
 
 /** Audio stream configuration reported by the WASM. */

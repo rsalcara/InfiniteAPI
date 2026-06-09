@@ -6,7 +6,6 @@
  * `worker_threads` Worker. Function-keyword shims are intentional — the
  * loader inspects `.prototype` and `instanceof` on these.
  *
- * @author ShellTear
  */
 "use strict";
 

@@ -5,7 +5,6 @@
  * channels (using `@roamhq/wrtc`). Mirrors the browser client's behavior:
  * pre-negotiated SCTP, custom DTLS fingerprint, ICE restart on idle.
  *
- * @author ShellTear
  */
 import { appendFileSync } from "node:fs";
 

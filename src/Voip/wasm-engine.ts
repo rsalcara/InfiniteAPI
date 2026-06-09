@@ -5,7 +5,6 @@
  * spawns a 20-thread `worker_threads` pool to mirror the browser's pthread
  * model, and exposes a callback-based JS bridge. Audio-only (no video).
  *
- * @author ShellTear
  */
 import * as vm from "node:vm";
 import * as fs from "node:fs";

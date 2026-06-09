@@ -1,14 +1,21 @@
 /**
- * baileys-caller — WhatsApp voice calling for Node.js.
+ * VoIP module — WhatsApp voice calling for Node.js.
  *
  * Wraps WhatsApp Web's official VoIP WASM stack and routes signaling through
- * Baileys. Public surface:
+ * the fork's own socket. Public surface:
  *
  *   const client = new VoipClient({ authDir })
  *   await client.connect()
  *   const call = await client.call("12345678901", { audioSource: "./hi.mp3" })
  *
- * @author ShellTear
+ * `@roamhq/wrtc` + `qrcode-terminal` are declared as OPTIONAL peer
+ * dependencies so the published package doesn't force ~50MB of native WebRTC
+ * bindings on users who never place a call. `ffmpeg` on PATH is also
+ * required for MP3/WAV source decoding.
+ *
+ * The `whatsapp.wasm` / `loader.js` / `worker-modules.js` blobs in
+ * `assets/wasm/` originate from WhatsApp Web's own VoIP module
+ * (Meta-authored binaries).
  */
 import { EventEmitter } from "node:events";
 import { randomBytes, createHmac } from "node:crypto";
@@ -23,7 +30,7 @@ import { CallState, type VoipSdkConfig } from "./types.js";
 export type { VoipSdkConfig, CallOptions, CallEvents, AudioConfig } from "./types.js";
 export { CallState } from "./types.js";
 
-// Direct imports from our own InfiniteAPI codebase — the upstream SheIITear
+// Direct imports from our own InfiniteAPI codebase — the third-party
 // version lazy-loaded `@whiskeysockets/baileys` as a peer dep. Inside the fork
 // we ship as part of the same package, so static imports are cleaner and
 // remove the runtime `import()` ceremony.
