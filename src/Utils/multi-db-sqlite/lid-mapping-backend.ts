@@ -215,20 +215,24 @@ export class JidMapBackend {
 	}
 
 	/**
-	 * Returns ALL LIDs ever mapped to this PN. WhatsApp links new device-LIDs
-	 * over a contact's lifetime, so `jid_map` can hold N rows for one PN.
-	 * `getLidForPn` returns only the most-recent (highest `sort_id`); for a
-	 * delete request we need every row so historical mappings don't ressurect
-	 * via `inner.get` fallback. (audit MDB-01)
+	 * Returns ALL LIDs ever mapped to this PN, newest first. WhatsApp links
+	 * new device-LIDs over a contact's lifetime, so `jid_map` can hold N
+	 * rows for one PN. `getLidForPn` returns only the most-recent (highest
+	 * `sort_id`); for a delete request we need every row so historical
+	 * mappings don't ressurect via `inner.get` fallback. (audit MDB-01)
 	 */
 	getAllLidsForPn(pnUser: string): string[] {
+		// 2-table join: lid_row_id → jid (LID side), jid_row_id → jid (PN side).
+		// Earlier version had a third `JOIN jid j ON j._id = l._id` and read
+		// `j.raw_string` — `j` was just a re-alias of `l`, harmless but a
+		// pointless extra lookup.
 		const rows = this.db
 			.prepare(
-				`SELECT j.raw_string AS raw FROM jid_map jm
+				`SELECT l.raw_string AS raw FROM jid_map jm
 				 JOIN jid l ON l._id = jm.lid_row_id
 				 JOIN jid p ON p._id = jm.jid_row_id
-				 JOIN jid j ON j._id = l._id
-				 WHERE p.raw_string = ?`
+				 WHERE p.raw_string = ?
+				 ORDER BY jm.sort_id DESC`
 			)
 			.all(pnUser) as Array<{ raw: string }>
 		return rows.map(r => r.raw)
