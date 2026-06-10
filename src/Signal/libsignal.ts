@@ -1148,30 +1148,14 @@ function signalStorage(
 	ev?: BaileysEventEmitter,
 	logger?: ILogger
 ): ExtendedSignalStorage {
-	// Shared function to resolve PN signal address to LID if mapping exists
-	const resolveLIDSignalAddress = async (id: string): Promise<string> => {
-		if (id.includes('.')) {
-			const [deviceId, device] = id.split('.')
-			if (!deviceId) {
-				throw new Error('Missing device ID')
-			}
-
-			const [user, domainType_] = deviceId.split('_')
-			const domainType = parseInt(domainType_ || '0')
-
-			if (domainType === WAJIDDomains.LID || domainType === WAJIDDomains.HOSTED_LID) return id
-
-			const pnJid = `${user!}${device !== '0' ? `:${device}` : ''}@${domainType === WAJIDDomains.HOSTED ? 'hosted' : 's.whatsapp.net'}`
-
-			const lidForPN = await lidMapping.getLIDForPN(pnJid)
-			if (lidForPN) {
-				const lidAddr = jidToSignalProtocolAddress(lidForPN)
-				return lidAddr.toString()
-			}
-		}
-
-		return id
-	}
+	// Shared function to resolve PN signal address to LID if mapping exists.
+	// Delegates to the module-level `resolveSignalAddressId` so the two
+	// resolvers can't drift apart. The previous local copy threw on a
+	// missing deviceId (after a leading `.`); the module helper returns `id`
+	// unchanged for the same input. Both are safe — `transactWith` upstream
+	// re-validates the address shape — but converging fixes the TOCTOU the
+	// wrapper was originally written to close.
+	const resolveLIDSignalAddress = (id: string): Promise<string> => resolveSignalAddressId(id, lidMapping)
 
 	// Delayed PreKey deletion: grace period to handle race conditions
 	// where two pkmsg with the same preKeyId arrive nearly simultaneously.

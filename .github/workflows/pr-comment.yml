@@ -14,7 +14,7 @@ jobs:
     timeout-minutes: 10
     permissions: write-all
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - uses: mshick/add-pr-comment@v2
         with:

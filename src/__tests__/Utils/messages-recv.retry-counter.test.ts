@@ -48,7 +48,17 @@ async function todaysIncrement(cache: CacheStore, key: string): Promise<number> 
 }
 
 describe('msgRetryCache — atomic increment across retry paths (H9)', () => {
-	it.failing('parallel increments do not lose updates', async () => {
+	// NOTE: these two suites exercise the local `todaysIncrement` helper, which
+	// is a bare `get → +1 → set` WITHOUT the production lock. They were authored
+	// before the H9 fix shipped and were intended to flip from `it.failing` to
+	// `it` once Stage 6 closed the race. That never happened — because the
+	// mock has no lock, the suites will keep "failing as expected" no matter
+	// how good the production code gets. They never validated the fix.
+	//
+	// Skipping with a marker until somebody rewrites the suites against the
+	// real `msgRetryManager` from src/Utils/. The H9 fix is confirmed live in
+	// production (PR #457 + Stage 6).
+	it.skip('parallel increments do not lose updates (placeholder — see comment above)', async () => {
 		const cache = makeCacheStore()
 		const key = 'msg-123:peer@s.whatsapp.net'
 
@@ -59,9 +69,7 @@ describe('msgRetryCache — atomic increment across retry paths (H9)', () => {
 		expect(final).toBe(N)
 	})
 
-	it.failing('the two retry paths agree on the counter when interleaved', async () => {
-		// Two parallel callers race read-add-write on the same key. With a
-		// shared lock (Stage 6) the final counter equals the call count.
+	it.skip('the two retry paths agree on the counter when interleaved (placeholder)', async () => {
 		const cache = makeCacheStore()
 		const key = 'msg-123:peer@s.whatsapp.net'
 

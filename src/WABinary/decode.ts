@@ -6,9 +6,39 @@ import type { BinaryNode, BinaryNodeCodingOptions } from './types'
 
 const inflatePromise = promisify(inflate)
 
+/**
+ * Cap on the decompressed payload size we will accept from the relay.
+ * WhatsApp stanzas are tiny in practice (≤ 256 KiB even for big media
+ * negotiation), so 16 MiB is several orders of magnitude above legitimate
+ * traffic but tight enough to defuse a zlib bomb (a few KiB of crafted
+ * deflate stream can otherwise expand to GiBs and OOM the process).
+ *
+ * The cap can be raised at runtime via `BAILEYS_MAX_DECOMPRESSED_NODE`
+ * (bytes) for unusual deployments — set to 0/empty to disable.
+ */
+const MAX_DECOMPRESSED_NODE_BYTES = (() => {
+	const raw = process.env.BAILEYS_MAX_DECOMPRESSED_NODE
+	if (raw === '0' || raw === '') return Infinity
+	const parsed = raw ? Number.parseInt(raw, 10) : NaN
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : 16 * 1024 * 1024
+})()
+
+/**
+ * Cap on how deep `decodeDecompressedBinaryNode` will recurse into nested
+ * `readList`. Legitimate stanzas top out around 8 levels; 64 leaves comfortable
+ * headroom while preventing a stack overflow from a crafted frame whose only
+ * payload is an arbitrarily-deep list-of-lists.
+ */
+const MAX_NODE_DEPTH = 64
+
 export const decompressingIfRequired = async (buffer: Buffer) => {
 	if (2 & buffer.readUInt8()) {
-		buffer = await inflatePromise(buffer.slice(1))
+		// `maxOutputLength` makes zlib abort with a clear `RangeError` instead
+		// of growing the output buffer unboundedly. Without it, the inflated
+		// stanza is a DoS primitive — the relay is hostile-trustless.
+		buffer = await inflatePromise(buffer.slice(1), {
+			maxOutputLength: Number.isFinite(MAX_DECOMPRESSED_NODE_BYTES) ? MAX_DECOMPRESSED_NODE_BYTES : undefined
+		})
 	} else {
 		// nodes with no compression have a 0x00 prefix, we remove that
 		buffer = buffer.slice(1)
@@ -20,8 +50,16 @@ export const decompressingIfRequired = async (buffer: Buffer) => {
 export const decodeDecompressedBinaryNode = (
 	buffer: Buffer,
 	opts: Pick<BinaryNodeCodingOptions, 'DOUBLE_BYTE_TOKENS' | 'SINGLE_BYTE_TOKENS' | 'TAGS'>,
-	indexRef: { index: number } = { index: 0 }
+	indexRef: { index: number } = { index: 0 },
+	depth: number = 0
 ): BinaryNode => {
+	// Depth guard — a crafted frame whose payload is just a list-of-lists
+	// recurses one level per byte. Without this guard the stack overflows
+	// long before the buffer is exhausted, crashing the socket.
+	if (depth > MAX_NODE_DEPTH) {
+		throw new Error(`max node depth exceeded (${MAX_NODE_DEPTH})`)
+	}
+
 	const { DOUBLE_BYTE_TOKENS, SINGLE_BYTE_TOKENS, TAGS } = opts
 
 	const checkEOS = (length: number) => {
@@ -229,7 +267,7 @@ export const decodeDecompressedBinaryNode = (
 		const items: BinaryNode[] = []
 		const size = readListSize(tag)!
 		for (let i = 0; i < size; i++) {
-			items.push(decodeDecompressedBinaryNode(buffer, opts, indexRef))
+			items.push(decodeDecompressedBinaryNode(buffer, opts, indexRef, depth + 1))
 		}
 
 		return items

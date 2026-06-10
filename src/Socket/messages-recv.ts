@@ -3942,7 +3942,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 
 		if (ignoreJid && ignoreJid !== S_WHATSAPP_NET && shouldIgnoreJid(ignoreJid)) {
-			await sendMessageAck(node, type === 'message' ? NACK_REASONS.UnhandledError : undefined)
+			// Plain ACK (no error code) — InfiniteAPI's pre-existing semantics
+			// for ignored stanzas. NACK 500 (UnhandledError) would tell the
+			// server the message failed processing and trigger redelivery,
+			// producing a duplicate-traffic storm on filtered JIDs (status,
+			// newsletter, blocked contacts). This restores commit c46889db43
+			// after upstream PR #2352 port (b8edacb7ce) reintroduced the NACK.
+			// Audit ref: messages-recv P1 from the 2026-06-10 review.
+			await sendMessageAck(node).catch(ackErr =>
+				logger.error({ ackErr }, 'failed to ack ignored stanza')
+			)
 			return
 		}
 

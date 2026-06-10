@@ -1323,10 +1323,11 @@ function append<E extends BufferableEvent>(
 					continue
 				}
 
-				const groupUpdate = data.groupUpdates[id] || {}
-				if (!data.groupUpdates[id]) {
-					data.groupUpdates[id] = Object.assign(groupUpdate, update)
-				}
+				// Merge into the buffered update unconditionally — the previous
+				// `if (!data.groupUpdates[id])` guard silently dropped any update
+				// after the first (e.g. an announce/restrict change arriving while
+				// a subject change was still buffered during drain/history-sync).
+				data.groupUpdates[id] = Object.assign(data.groupUpdates[id] || {}, update)
 			}
 
 			break
