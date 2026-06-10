@@ -278,6 +278,21 @@ export const makeSocket = (config: SocketConfig) => {
 
 		const result = await responsePromise
 
+		// Convert the `waitForMessage` timeout sentinel (returns `undefined`)
+		// into a typed Boom so callers can `.catch` it as a real error.
+		// Without this, `uploadPreKeys` logged "uploaded successfully" and
+		// reset `lastUploadTime` on timeout (exhausting server-side prekeys),
+		// `appPatch` advanced `app-state-sync-version` (LTHash divergence),
+		// `fetchPrivacySettings` destructured `undefined` → opaque TypeError,
+		// and `assertSessions` set `didFetchNewSession=true` without ever
+		// injecting a session. (audit SOCK-01)
+		if (result === undefined) {
+			throw new Boom('query timed out', {
+				statusCode: DisconnectReason.timedOut,
+				data: { msgId, timeoutMs: timeoutMs ?? defaultQueryTimeoutMs }
+			})
+		}
+
 		if (result && 'tag' in result) {
 			assertNodeErrorFree(result)
 		}

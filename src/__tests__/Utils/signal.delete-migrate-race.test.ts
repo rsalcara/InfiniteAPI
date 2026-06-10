@@ -59,7 +59,17 @@ const makeStore = (): SignalKeyStore => {
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
 describe('libsignal — bulk session delete/migrate vs per-JID encrypt (H4)', () => {
-	it.failing('deleteSession serializes against an in-flight encrypt for the same address', async () => {
+	// NOTE: H4 fix shipped via Stage 2 (upstream #2572) — see `libsignal.ts:777`.
+	// These two suites exercise a local `addTransactionCapability` mock with
+	// synthetic addresses, NOT the real `transactWith({ records })` path used
+	// in production. They were intended to flip from `it.failing` to `it` once
+	// the fix landed, but they can't observe the production lock semantics
+	// (per-record `transactWith` vs the namespace-keyed `transaction` here),
+	// so they'd keep "failing as expected" forever and signal a phantom open
+	// issue. Demoting to `it.skip` until somebody rewrites them against the
+	// real `parsedKeys.transactWith({ records: [{type:'session', id}] })`
+	// path. Same pattern as the H8/H9 skips. (audit TST-07)
+	it.skip('deleteSession serializes against an in-flight encrypt for the same address (placeholder)', async () => {
 		const keys = addTransactionCapability(makeStore(), silentLogger(), {
 			maxCommitRetries: 1,
 			delayBetweenTriesMs: 1
@@ -91,7 +101,7 @@ describe('libsignal — bulk session delete/migrate vs per-JID encrypt (H4)', ()
 		expect(deleteSawEncryptActive).toBe(false)
 	})
 
-	it.failing('migrateSession serializes against in-flight encrypts for any of the migrated addresses', async () => {
+	it.skip('migrateSession serializes against in-flight encrypts for any of the migrated addresses (placeholder)', async () => {
 		const keys = addTransactionCapability(makeStore(), silentLogger(), {
 			maxCommitRetries: 1,
 			delayBetweenTriesMs: 1

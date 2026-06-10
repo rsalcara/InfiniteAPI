@@ -153,13 +153,20 @@ function generateKeyFingerprint(key: Uint8Array): string {
  * - Byte 0: Version byte (high nibble = current version, low nibble = 3)
  * - Bytes 1+: Protobuf-encoded PreKeySignalMessage
  *
- * The protobuf contains:
- * - registrationId (uint32)
- * - preKeyId (uint32, optional)
- * - signedPreKeyId (uint32)
- * - baseKey (bytes, 33 bytes - Curve25519 public key)
- * - identityKey (bytes, 33 bytes - Curve25519 public key)
- * - message (bytes - the actual encrypted message)
+ * Per libsignal's spec (WhisperTextProtocol.proto, PreKeySignalMessage):
+ *   field 1: preKeyId       (uint32, varint, wireType 0)
+ *   field 2: baseKey        (bytes 33, wireType 2)
+ *   field 3: identityKey    (bytes 33, wireType 2)  ← what we want
+ *   field 4: message        (bytes, wireType 2)
+ *   field 5: registrationId (uint32, varint, wireType 0)
+ *   field 6: signedPreKeyId (uint32, varint, wireType 0)
+ *
+ * Earlier code looked for `fieldNumber === 5` here (audit SIG-A1) — that's
+ * `registrationId`, which is a varint, not a 33-byte key. Combined with the
+ * `wireType === 2` filter the function never matched anything and always
+ * returned `undefined`. Net effect: identity-change detection in
+ * `decryptMessage` (and the resulting `identity.changed` event +
+ * reinstall-triggered session cleanup) was dead code in production.
  *
  * We manually parse the protobuf to extract identityKey without depending on
  * the full protobuf library, making this compatible with any Signal implementation.
@@ -210,8 +217,9 @@ function extractIdentityFromPkmsg(ciphertext: Uint8Array, logger?: ILogger): Uin
 				const length = lengthResult.value
 				offset = lengthResult.nextOffset
 
-				// Field 5 is identityKey
-				if (fieldNumber === 5) {
+				// Field 3 is identityKey — see comment block above for spec ref.
+				// (audit SIG-A1: was `fieldNumber === 5` which is registrationId, varint.)
+				if (fieldNumber === 3) {
 					// Validate key length
 					// eslint-disable-next-line max-depth
 					if (length !== IDENTITY_KEY_LENGTH) {
