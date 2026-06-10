@@ -49,11 +49,23 @@ jobs:
           YARN_HTTP_RETRY: 10
         run: yarn install --immutable
 
-      # audit CI-01: `lint:fix` runs `prettier --write` + `eslint --fix` IN PLACE
-      # on the working tree. Running it before `lint` meant `lint` then
-      # inspected the auto-corrected tree, so any prettier or auto-fixable
-      # eslint error in the PR would silently pass CI while the upstream
-      # branch still had the error. The lint job is the gate — don't let
-      # it heal itself.
+      # audit CI-01: `lint:fix` modifies the working tree in place. Running
+      # it before `lint` meant `lint` saw the auto-corrected source and the
+      # PR was waved through even though the branch as committed still had
+      # the errors. We KEEP the auto-fix step here (useful in CI logs to
+      # show what's auto-fixable) but gate the build on a no-diff check
+      # AFTER it runs, so a PR with un-fixed-on-disk errors fails the gate.
+      - name: Auto-fix formatting (informational)
+        run: yarn lint:fix
+        continue-on-error: true
+
+      - name: Verify tree is clean after auto-fix
+        run: |
+          if ! git diff --quiet; then
+            echo "::error::lint:fix changed files — commit the autoformat fixes locally before opening the PR"
+            git diff --stat
+            exit 1
+          fi
+
       - name: Check linting
         run: yarn lint

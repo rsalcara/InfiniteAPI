@@ -167,8 +167,7 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 
 		// The store has the value from whichever set() committed last.
 		const finalStored = persisted.session!['aaa:0'] as Buffer
-		const validFinal =
-			finalStored.equals(Buffer.from([0xa1])) || finalStored.equals(Buffer.from([0xa2]))
+		const validFinal = finalStored.equals(Buffer.from([0xa1])) || finalStored.equals(Buffer.from([0xa2]))
 		expect(validFinal).toBe(true)
 
 		// Convergence: the next read returns the SAME value the durable store

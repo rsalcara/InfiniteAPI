@@ -1,8 +1,5 @@
 import { jest } from '@jest/globals'
-import {
-	type ContactPictureIdentityContext,
-	resolveContactPictureIdentity
-} from '../../Utils/contact-picture-identity'
+import { type ContactPictureIdentityContext, resolveContactPictureIdentity } from '../../Utils/contact-picture-identity'
 
 type ResolverFn = (jid: string) => Promise<string | null>
 

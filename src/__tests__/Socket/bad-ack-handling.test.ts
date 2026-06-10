@@ -1,5 +1,4 @@
 import { jest } from '@jest/globals'
-
 /**
  * Tests for the error-463 retry logic in `handleBadAck`.
  *

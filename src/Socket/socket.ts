@@ -16,7 +16,6 @@ import {
 } from '../Defaults'
 import { makeSessionActivityTracker } from '../Signal/session-activity-tracker'
 import { makeSessionCleanup } from '../Signal/session-cleanup'
-import { createOfflineBufferState } from './offline-buffer-state'
 import type { ConnectionState, LIDMapping, NewChatMessageCapInfo, ReachoutTimelockState, SocketConfig } from '../Types'
 import { DisconnectReason, QueryIds, ReachoutTimelockEnforcementType, XWAPaths } from '../Types'
 import {
@@ -70,6 +69,7 @@ import { BinaryInfo } from '../WAM/BinaryInfo.js'
 import { USyncQuery, USyncUser } from '../WAUSync/'
 import { WebSocketClient } from './Client'
 import { executeWMexQuery } from './mex'
+import { createOfflineBufferState } from './offline-buffer-state'
 
 /**
  * Connects to WA servers and performs:
@@ -1602,10 +1602,11 @@ export const makeSocket = (config: SocketConfig) => {
 	// tested directly without spinning up a socket. (audit TST-06)
 	const offlineBuffer = createOfflineBufferState(
 		() => ev.flush(),
-		() => logger.warn(
-			{ timeoutMs: OFFLINE_BUFFER_TIMEOUT_MS },
-			'perf: offline-buffer safety timeout reached, force-flushing before CB:ib,,offline'
-		),
+		() =>
+			logger.warn(
+				{ timeoutMs: OFFLINE_BUFFER_TIMEOUT_MS },
+				'perf: offline-buffer safety timeout reached, force-flushing before CB:ib,,offline'
+			),
 		OFFLINE_BUFFER_TIMEOUT_MS
 	)
 

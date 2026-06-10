@@ -377,11 +377,9 @@ export const decryptMsmsgBotMessage = (input: DecryptMsmsgInput): proto.IMessage
 
 	// Step 4 — hkdfStanzaId selection. The FBID streaming chain anchors all
 	// chunks to the first chunk's id when botEditType is inner/last.
-	const useEditTargetForHkdf =
-		isFbidBot && INNER_OR_LAST.has(stanzaInfo.botEditType) && !!stanzaInfo.botEditTargetId
+	const useEditTargetForHkdf = isFbidBot && INNER_OR_LAST.has(stanzaInfo.botEditType) && !!stanzaInfo.botEditTargetId
 
-	const primaryHkdfStanzaId =
-		useEditTargetForHkdf ? (stanzaInfo.botEditTargetId as string) : stanzaId
+	const primaryHkdfStanzaId = useEditTargetForHkdf ? (stanzaInfo.botEditTargetId as string) : stanzaId
 
 	// Step 5+6 — derive the AES key and decrypt. Wrapped so we can retry with
 	// `botEditTargetId` for the non-FBID path (matches WA Web's f() try/catch).
@@ -430,6 +428,7 @@ export const decryptMsmsgBotMessage = (input: DecryptMsmsgInput): proto.IMessage
 				throw fallbackErr
 			}
 		}
+
 		logger?.warn(
 			{ cacheKey, isFbidBot, botEditType: stanzaInfo.botEditType, err: compactError(firstErr) },
 			'msmsg decryption failed'
@@ -464,11 +463,7 @@ const deriveKeyAndDecrypt = (params: {
 
 	// AAD = utf8(stanzaId) || 0x00 || utf8(senderJid). The `\0` byte is a literal
 	// NUL between the two ASCII strings.
-	const aad = Buffer.concat([
-		Buffer.from(hkdfStanzaId, 'utf8'),
-		Buffer.from([0]),
-		Buffer.from(senderJid, 'utf8')
-	])
+	const aad = Buffer.concat([Buffer.from(hkdfStanzaId, 'utf8'), Buffer.from([0]), Buffer.from(senderJid, 'utf8')])
 
 	return Buffer.from(aesDecryptGCM(encPayload, decryptionKey, encIv, aad))
 }
@@ -492,6 +487,7 @@ const decodeDecryptedMsmsg = (plaintext: Buffer): proto.IMessage => {
 	} catch {
 		// fall through to unpadded decode below
 	}
+
 	return proto.Message.decode(plaintext)
 }
 

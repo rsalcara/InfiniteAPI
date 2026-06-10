@@ -90,28 +90,25 @@ describe('messages-recv — concurrent alt-JID participant migration (H8)', () =
 	// gets. They never validated the fix. Skipping until somebody rewrites
 	// against the real lookup path in messages-recv.ts. H8 fix is confirmed
 	// live in production.
-	it.skip(
-		'two parallel inbound messages from the same alt-JID participant trigger at most one migration (placeholder)',
-		async () => {
-			const keys = addTransactionCapability(makeStore(), silentLogger(), {
-				maxCommitRetries: 1,
-				delayBetweenTriesMs: 1
-			})
+	it.skip('two parallel inbound messages from the same alt-JID participant trigger at most one migration (placeholder)', async () => {
+		const keys = addTransactionCapability(makeStore(), silentLogger(), {
+			maxCommitRetries: 1,
+			delayBetweenTriesMs: 1
+		})
 
-			const pnUser = '12025550100'
-			const lidUser = 'alt-12025550100'
-			const migrationCounter = { count: 0 }
+		const pnUser = '12025550100'
+		const lidUser = 'alt-12025550100'
+		const migrationCounter = { count: 0 }
 
-			await Promise.all([
-				lookupStoreMigrate(keys, pnUser, lidUser, migrationCounter),
-				lookupStoreMigrate(keys, pnUser, lidUser, migrationCounter)
-			])
+		await Promise.all([
+			lookupStoreMigrate(keys, pnUser, lidUser, migrationCounter),
+			lookupStoreMigrate(keys, pnUser, lidUser, migrationCounter)
+		])
 
-			// Today: both callers observe the mapping as missing → both migrate.
-			// With per-participant serialization (or proper coalescing), only one.
-			expect(migrationCounter.count).toBe(1)
-		}
-	)
+		// Today: both callers observe the mapping as missing → both migrate.
+		// With per-participant serialization (or proper coalescing), only one.
+		expect(migrationCounter.count).toBe(1)
+	})
 
 	it.skip('store.set is only invoked once when N parallel callers see the same missing mapping (placeholder)', async () => {
 		const setCalls: SignalDataSet[] = []

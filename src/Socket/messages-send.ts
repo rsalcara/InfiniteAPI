@@ -176,10 +176,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const ogImage = info?.originalThumbnailUrl
 			if (!ogImage) return content
 
-			logger?.debug(
-				{ jid, url, ogImage },
-				'newsletter link upgrade: posting as imageMessage with og:image'
-			)
+			logger?.debug({ jid, url, ogImage }, 'newsletter link upgrade: posting as imageMessage with og:image')
 			return {
 				image: { url: ogImage },
 				caption: text
@@ -544,9 +541,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// triggers a USync refresh, same as a TTL-expired entry.
 				if (userDevicesCache.mset) {
 					try {
-						await userDevicesCache.mset(
-							Object.entries(deviceMap).map(([key, value]) => ({ key, value }))
-						)
+						await userDevicesCache.mset(Object.entries(deviceMap).map(([key, value]) => ({ key, value })))
 					} catch (err) {
 						const msg = (err as Error)?.message ?? ''
 						if (!msg.includes('max keys') && !msg.includes('ECACHEFULL')) throw err
@@ -1256,14 +1251,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// drop silently for subscribers. The attribute mirrors the
 				// `mediatype` set on `enc` for non-newsletter encrypted sends.
 				// PTV note: `getMediaType` returns '' for `ptvMessage`. Without a
-			// fallback, a newsletter PTV send would land without the
-			// `mediatype` attribute and the server may ACK it 479. Detect
-			// PTV directly so the plaintext node carries `mediatype="ptv"`.
-			const plaintextMediaType =
-				mediaType || ((patched as proto.IMessage | undefined)?.ptvMessage ? 'ptv' : '')
-			const plaintextAttrs: BinaryNodeAttributes = plaintextMediaType
-				? { mediatype: plaintextMediaType }
-				: {}
+				// fallback, a newsletter PTV send would land without the
+				// `mediatype` attribute and the server may ACK it 479. Detect
+				// PTV directly so the plaintext node carries `mediatype="ptv"`.
+				const plaintextMediaType = mediaType || ((patched as proto.IMessage | undefined)?.ptvMessage ? 'ptv' : '')
+				const plaintextAttrs: BinaryNodeAttributes = plaintextMediaType ? { mediatype: plaintextMediaType } : {}
 				binaryNodeContent.push({
 					tag: 'plaintext',
 					attrs: plaintextAttrs,
@@ -1586,8 +1578,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// edit / msmsg reply can't be decrypted on those devices.
 				// (audit thread 5 / coderabbit Major on release PR #521)
 				const retryDsmContextInfo =
-					messageToSend.lottieStickerMessage?.message?.messageContextInfo ??
-					messageToSend.messageContextInfo
+					messageToSend.lottieStickerMessage?.message?.messageContextInfo ?? messageToSend.messageContextInfo
 				const usesDSM = isMe
 				const encodedMessageToSend = usesDSM
 					? encodeWAMessage({

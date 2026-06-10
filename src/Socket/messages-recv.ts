@@ -2142,6 +2142,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				) {
 					mappingsToStore.push({ lid: affectedParticipantLid, pn: affectedParticipantPn })
 				}
+
 				msg.messageStubParameters = [
 					JSON.stringify({ lid: affectedParticipantLid, pn: affectedParticipant }),
 					'created',
@@ -2159,6 +2160,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				) {
 					mappingsToStore.push({ lid: affectedParticipantLid, pn: affectedParticipantPn })
 				}
+
 				msg.messageStubParameters = [
 					JSON.stringify({ lid: affectedParticipantLid, pn: affectedParticipant }),
 					isDenied ? 'revoked' : 'rejected'
@@ -2357,6 +2359,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 				break
 			}
+
 			case 'account_sync':
 				if (child!.tag === 'disappearing_mode') {
 					const newDuration = +child!.attrs.duration!
@@ -3138,11 +3141,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					// `meta.target_id`, missing `encIv`/`encPayload`, AES-GCM auth-tag
 					// mismatch — which deserve the Signal retry path, NOT a silent
 					// ACK. cubic audit thread 13 (PR #521).
-					if (
-						msg?.messageStubParameters?.[0]?.startsWith(
-							'decryptMsmsgBotMessage: no messageSecret for '
-						)
-					) {
+					if (msg?.messageStubParameters?.[0]?.startsWith('decryptMsmsgBotMessage: no messageSecret for ')) {
 						await sendMessageAck(node)
 						acked = true
 						return
@@ -3452,6 +3451,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			} else {
 				logger.error({ error, node: binaryNodeToString(node) }, 'error in handling message')
 			}
+
 			// If nothing acked the message yet (a throw in alt-mapping / migrateSession /
 			// normalizeMessageJids / decrypt / upsert), send a single NACK so the server
 			// stops retrying. Guarded by `acked` to avoid double-ack on paths that already
@@ -3949,9 +3949,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// newsletter, blocked contacts). This restores commit c46889db43
 			// after upstream PR #2352 port (b8edacb7ce) reintroduced the NACK.
 			// Audit ref: messages-recv P1 from the 2026-06-10 review.
-			await sendMessageAck(node).catch(ackErr =>
-				logger.error({ ackErr }, 'failed to ack ignored stanza')
-			)
+			await sendMessageAck(node).catch(ackErr => logger.error({ ackErr }, 'failed to ack ignored stanza'))
 			return
 		}
 

@@ -17,9 +17,7 @@ describe('compactError', () => {
 				this.name = 'MessageCounterError'
 			}
 		}
-		expect(compactError(new MessageCounterError())).toBe(
-			'MessageCounterError: Key used already or never filled'
-		)
+		expect(compactError(new MessageCounterError())).toBe('MessageCounterError: Key used already or never filled')
 	})
 
 	it('uses the .type field on plain objects when .name is absent (libsignal-style errors)', () => {

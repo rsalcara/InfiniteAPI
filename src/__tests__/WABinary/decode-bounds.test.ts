@@ -29,8 +29,8 @@ describe('WABinary/decode — DoS bounds (audit TST-04)', () => {
 			const framed = Buffer.concat([Buffer.from([0x02]), compressed])
 
 			// Node surfaces this as "Cannot create a Buffer larger than N bytes"
-// when maxOutputLength fires. Match either form.
-await expect(decompressingIfRequired(framed)).rejects.toThrow(/maxOutputLength|larger than/i)
+			// when maxOutputLength fires. Match either form.
+			await expect(decompressingIfRequired(framed)).rejects.toThrow(/maxOutputLength|larger than/i)
 		})
 
 		it('passes through an uncompressed payload regardless of size', async () => {

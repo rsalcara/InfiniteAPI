@@ -1281,7 +1281,7 @@ function signalStorage(
 			// can promote this to strict-mode rejection when the WARN fires.
 			try {
 				const cached = identityKeyCache.get(id)
-				if (cached && identityKey?.length === cached.length) {
+				if (identityKey?.length === cached?.length) {
 					let diverged = false
 					for (let i = 0; i < cached.length; i++) {
 						if (cached[i] !== identityKey[i]) {

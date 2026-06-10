@@ -1878,10 +1878,7 @@ export const generateWAMessageContent = async (
 	// closer to what mobile clients expect, especially for stickers carrying
 	// a `messageSecret` (the receive-side `normalizeMessageContent` below
 	// re-unwraps so downstream readers don't care either way).
-	if (
-		m.stickerMessage &&
-		(m.stickerMessage.mimetype === 'application/was' || m.stickerMessage.isLottie)
-	) {
+	if (m.stickerMessage && (m.stickerMessage.mimetype === 'application/was' || m.stickerMessage.isLottie)) {
 		m.stickerMessage.isAnimated = true
 		m.stickerMessage.isLottie = true
 		m = { lottieStickerMessage: { message: m } }

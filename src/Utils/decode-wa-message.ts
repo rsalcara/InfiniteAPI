@@ -133,9 +133,11 @@ const decodeIncomingMsmsg = (args: {
 	if (!msmsgCache) {
 		throw new Error('Meta AI msmsg received but no MsmsgSecretCache was wired into decryptMessageNode')
 	}
+
 	if (!msmsgInfo) {
 		throw new Error('msmsg enc without companion <meta target_id> node')
 	}
+
 	return decryptMsmsgBotMessage({
 		ciphertext: content,
 		stanzaInfo: msmsgInfo,

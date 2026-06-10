@@ -38,6 +38,7 @@ export const compactError = (err: unknown): string => {
 		const name = err.name || 'Error'
 		return `${name}: ${err.message}`
 	}
+
 	if (typeof err === 'object') {
 		const e = err as { name?: string; type?: string; message?: string }
 		const name = e.name || e.type || 'Error'
@@ -49,5 +50,6 @@ export const compactError = (err: unknown): string => {
 			return `${name}: [unserializable]`
 		}
 	}
+
 	return String(err)
 }

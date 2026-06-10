@@ -1,5 +1,4 @@
 import { jest } from '@jest/globals'
-
 /**
  * Tests for the offline-buffer safety timer.
  *
@@ -11,7 +10,6 @@ import { jest } from '@jest/globals'
  * `createOfflineBufferState` factory the tests do, so a regression here
  * would also be a regression in production.
  */
-
 import { createOfflineBufferState, type OfflineBufferHandle } from '../../Socket/offline-buffer-state'
 
 const OFFLINE_BUFFER_TIMEOUT_MS = 2_000

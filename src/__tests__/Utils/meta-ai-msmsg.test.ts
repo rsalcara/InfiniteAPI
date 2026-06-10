@@ -13,11 +13,11 @@ import { hkdf } from '../../Utils/crypto'
 import {
 	buildMsmsgCacheKey,
 	cacheMessageSecretIfPresent,
+	decryptMsmsgBotMessage,
 	extractMsmsgStanzaInfo,
 	isMsmsgBotConversation,
 	makeMsmsgSecretCache,
-	OrphanMsmsgError,
-	decryptMsmsgBotMessage
+	OrphanMsmsgError
 } from '../../Utils/meta-ai-msmsg'
 
 describe('buildMsmsgCacheKey', () => {
@@ -146,11 +146,7 @@ describe('cacheMessageSecretIfPresent', () => {
 
 	it('no-ops when message has no messageContextInfo.messageSecret', () => {
 		const cache = makeMsmsgSecretCache()
-		cacheMessageSecretIfPresent(
-			cache,
-			{ conversation: 'hi' } as any,
-			{ fromMe: true, remoteJid: 'r', id: 'i' }
-		)
+		cacheMessageSecretIfPresent(cache, { conversation: 'hi' } as any, { fromMe: true, remoteJid: 'r', id: 'i' })
 		expect(cache.keys().length).toBe(0)
 	})
 
@@ -309,11 +305,7 @@ describe('decryptMsmsgBotMessage — crypto roundtrip', () => {
 		const baseSecret = Buffer.from(hkdf(messageSecret, 32, { info: 'Bot Message' }))
 		const infoStr = firstChunkId + originalUserJid + senderJid
 		const key = Buffer.from(hkdf(baseSecret, 32, { info: infoStr }))
-		const aad = Buffer.concat([
-			Buffer.from(firstChunkId, 'utf8'),
-			Buffer.from([0]),
-			Buffer.from(senderJid, 'utf8')
-		])
+		const aad = Buffer.concat([Buffer.from(firstChunkId, 'utf8'), Buffer.from([0]), Buffer.from(senderJid, 'utf8')])
 		const iv = Buffer.alloc(12, 0x21)
 		const plaintext = proto.Message.encode({ conversation: 'streaming chunk' }).finish()
 		const cipher = createCipheriv('aes-256-gcm', key, iv)

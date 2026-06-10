@@ -14,8 +14,8 @@ import {
 	DEFAULT_ORIGIN,
 	MEDIA_HKDF_KEY_MAPPING,
 	MEDIA_PATH_MAP,
-	NEWSLETTER_MEDIA_PATH_MAP,
-	type MediaType
+	type MediaType,
+	NEWSLETTER_MEDIA_PATH_MAP
 } from '../Defaults'
 import type {
 	BaileysEventMap,
@@ -624,7 +624,6 @@ export const downloadContentFromMessage = async (
 		// either we have a trusted full URL, or we build one from scratch).
 		downloadUrl = getUrlFromDirectPath(directPath, opts.host)
 	}
-
 
 	if (!downloadUrl) {
 		throw new Boom('No valid media URL or directPath present in message', { statusCode: 400 })
