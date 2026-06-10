@@ -91,9 +91,10 @@ jobs:
       # Pinned to commit SHA (not the `2.0` tag) — supply-chain hardening
       # so a compromised release of `meeDamian/github-release` can't
       # silently re-target our CI. (audit P3-CI-01)
-      # 2.0 → 35dd8df1ec03d8d2eaecaa0a5c7d36cb70d97f4b
+      # v2.0.3 tip = 7ae19492500104f636b3fee4d8103af0fed36c8e
+      # (branch `2.0` and tag `v2.0.3` both point to this commit)
       - name: Create Release
-        uses: meeDamian/github-release@35dd8df1ec03d8d2eaecaa0a5c7d36cb70d97f4b # v2.0
+        uses: meeDamian/github-release@7ae19492500104f636b3fee4d8103af0fed36c8e # v2.0.3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

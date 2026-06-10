@@ -312,16 +312,22 @@ export const DEFAULT_CACHE_MAX_KEYS = {
  * by Node to 1 ms, producing a runaway cleanup loop that pegs the event
  * loop. (audit P1-DEF-01)
  */
-const intFromEnv = (raw: string | undefined, fallback: number): number => {
+// `min` defaults to 1 so that zero is rejected for intervals/days (which
+// would produce the same runaway loop as NaN). Pass min=0 for `cleanupHour`
+// where midnight (0) is a valid, intentional value.
+const intFromEnv = (raw: string | undefined, fallback: number, min = 1): number => {
 	if (!raw) return fallback
-	const n = parseInt(raw, 10)
-	return Number.isFinite(n) && n > 0 ? n : fallback
+	// Use Number() instead of parseInt() so values like "24h" yield NaN
+	// instead of 24. parseInt("24h", 10) === 24 would silently accept
+	// malformed input and schedule cleanup every 24ms. (audit P2-DEF-03)
+	const n = Number(raw.trim())
+	return Number.isInteger(n) && n >= min ? n : fallback
 }
 
 export const DEFAULT_SESSION_CLEANUP_CONFIG = {
 	enabled: process.env.BAILEYS_SESSION_CLEANUP_ENABLED !== 'false',
 	intervalMs: intFromEnv(process.env.BAILEYS_SESSION_CLEANUP_INTERVAL, 86_400_000), // 24h
-	cleanupHour: intFromEnv(process.env.BAILEYS_SESSION_CLEANUP_HOUR, 3), // 3am
+	cleanupHour: intFromEnv(process.env.BAILEYS_SESSION_CLEANUP_HOUR, 3, 0), // 3am; 0 = midnight
 	secondaryDeviceInactiveDays: intFromEnv(process.env.BAILEYS_SESSION_SECONDARY_INACTIVE_DAYS, 7),
 	primaryDeviceInactiveDays: intFromEnv(process.env.BAILEYS_SESSION_PRIMARY_INACTIVE_DAYS, 30),
 	lidOrphanHours: intFromEnv(process.env.BAILEYS_SESSION_LID_ORPHAN_HOURS, 24),

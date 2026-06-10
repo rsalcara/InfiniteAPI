@@ -131,7 +131,7 @@ export function wrapKeysWithJidMap(
 				if (key.endsWith(REVERSE_SUFFIX)) continue
 				const pnUser = key
 				const lidUser = lidMappingBucket[key] as unknown as string | null
-				if (lidUser == null) {
+				if (lidUser === null || lidUser === undefined) {
 					// Forward delete request. We need a LID to identify the row;
 					// look up the current mapping so the delete actually lands.
 					const currentLid = jidMap.getLidForPn(pnUser)
@@ -153,7 +153,7 @@ export function wrapKeysWithJidMap(
 				if (!key.endsWith(REVERSE_SUFFIX) || seenReverse.has(key)) continue
 				const lidUser = key.slice(0, -REVERSE_SUFFIX.length)
 				const pnUser = lidMappingBucket[key] as unknown as string | null
-				if (pnUser == null) {
+				if (pnUser === null || pnUser === undefined) {
 					// Reverse delete — keyed by LID directly.
 					deletes.push(lidUser)
 					continue
