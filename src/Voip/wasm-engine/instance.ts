@@ -137,6 +137,9 @@ class NodeWorkerMessagePort {
 			this.addMessageListener('cmd', loadedHandler)
 			this.addMessageListener('cmd', errorHandler)
 		})
+		// Error already surfaces via #loadWasmModuleToWorker (which is awaited).
+		// Suppress the orphan rejection so Node doesn't emit unhandledRejection.
+		this.fullyConnected.catch(() => {})
 		if (typeof worker.on === 'function') {
 			worker.on('message', (data: any) => this.#handleMessage(data))
 			worker.on('error', () => {})
