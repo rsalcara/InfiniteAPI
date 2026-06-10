@@ -2321,12 +2321,21 @@ export const downloadMediaMessage = async <Type extends 'buffer' | 'stream'>(
 	ctx?: DownloadMediaMessageContext
 ) => {
 	const result = await downloadMsg().catch(async error => {
-		if (
-			ctx &&
-			typeof error?.status === 'number' && // treat errors with status as HTTP failures requiring reupload
-			REUPLOAD_REQUIRED_STATUS.includes(error.status as number)
-		) {
-			ctx.logger.info({ key: message.key }, 'sending reupload media request...')
+		// HTTP failures from `getHttpStream` are thrown as `Boom` (see
+		// `messages-media.ts:386`), which exposes the response code on
+		// `error.output.statusCode` — NOT `error.status`. The previous
+		// check on `error?.status` therefore never matched, leaving this
+		// whole branch dead code: a 410/404 from the CDN would propagate
+		// straight to the caller and the reupload request that Baileys
+		// is supposed to send was never issued. We fall back to
+		// `error?.status` so consumers throwing a plain object with a
+		// status field still trigger the same path. (audit P1-MED-03)
+		const httpStatus =
+			(typeof error?.output?.statusCode === 'number' ? error.output.statusCode : undefined) ??
+			(typeof error?.status === 'number' ? (error.status as number) : undefined)
+
+		if (ctx && httpStatus !== undefined && REUPLOAD_REQUIRED_STATUS.includes(httpStatus)) {
+			ctx.logger.info({ key: message.key, httpStatus }, 'sending reupload media request...')
 			// request reupload
 			message = await ctx.reuploadRequest(message)
 			const result = await downloadMsg()
