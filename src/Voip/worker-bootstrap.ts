@@ -18,8 +18,16 @@ import { fileURLToPath } from 'url'
 import * as vm from 'vm'
 import { parentPort, workerData } from 'worker_threads'
 
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = path.dirname(__filename)
+// NOTE: tsc-esm-fix runs a global `replace(/_wbFilename/g, ...)` and
+// `replace(/_wbDirname/g, ...)` on the compiled .js, intending to translate
+// CommonJS magic into ESM equivalents. The replacement target is a template
+// literal that, when substituted on the LEFT-HAND SIDE of `const X = ...`,
+// produces unparseable JS — Workers spawn but fail silently with "0 ready
+// workers" timing out after 15s. Pick non-magic names to dodge the rewrite,
+// and wrap `import.meta.url` in `new URL(...)` so the matching pattern
+// `X = fileURLToPath(import.meta.url)` never appears in the output either.
+const _wbDirname = fileURLToPath(new URL('.', import.meta.url))
+const _wbFilename = fileURLToPath(new URL(import.meta.url))
 const _require = createRequire(import.meta.url)
 
 interface WorkerData {
@@ -47,7 +55,7 @@ declare const global: typeof globalThis & { [key: string]: any }
 
 if (typeof process === 'undefined') {
 	;(global as any).process = {
-		cwd: () => __dirname || '.',
+		cwd: () => _wbDirname || '.',
 		env: {},
 		platform: 'linux',
 		version: 'v18.0.0',
@@ -62,7 +70,7 @@ if (typeof process === 'undefined') {
 		emit: () => {}
 	}
 } else if (!(process as any).cwd) {
-	;(process as any).cwd = () => __dirname || '.'
+	;(process as any).cwd = () => _wbDirname || '.'
 }
 
 ;(global as any).babelHelpers = {
@@ -439,13 +447,13 @@ global.importScripts = function (...urls: string[]): void {
 
 if (typeof (global as any).location === 'undefined') {
 	;(global as any).location = {
-		href: __filename,
+		href: _wbFilename,
 		origin: 'file://',
 		protocol: 'file:',
 		host: '',
 		hostname: '',
 		port: '',
-		pathname: __filename,
+		pathname: _wbFilename,
 		search: '',
 		hash: ''
 	}
@@ -928,7 +936,7 @@ if (typedWorkerData && (typedWorkerData.loaderCode || typedWorkerData.workerModu
 }
 
 if (!wasmLoader) {
-	const resourcesPath = typedWorkerData?.resourcesPath || path.join(__dirname, 'wasm-resources')
+	const resourcesPath = typedWorkerData?.resourcesPath || path.join(_wbDirname, 'wasm-resources')
 	const rsrcPath = path.join(resourcesPath, 'loader.js')
 	if (fs.existsSync(rsrcPath)) {
 		try {

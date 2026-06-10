@@ -16,8 +16,14 @@ import { Worker } from 'node:worker_threads'
 
 const voipStorageDir = (): string => path.join(os.tmpdir(), 'voip')
 
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = path.dirname(__filename)
+// NOTE: tsc-esm-fix runs a global `replace(/__filename/g, ...)` and
+// `replace(/_voipDirname/g, ...)` on the compiled .js. The replacement target
+// is a template literal that, when substituted on the LEFT-HAND SIDE of
+// `const X = ...`, produces unparseable JS — Workers then fail silently
+// with "0 ready workers" timing out after 15s. Pick non-magic names and
+// wrap `import.meta.url` in `new URL(...)` so neither the var name nor the
+// trigger pattern appears in the output.
+const _voipDirname = fileURLToPath(new URL('.', import.meta.url))
 
 const CALL_WASM_AB_PROPS_JSON = process.env.CALL_WASM_AB_PROPS_JSON ?? ''
 const PTHREAD_POOL_SIZE = 20
@@ -98,11 +104,28 @@ const filterWorkerStderr = (chunk: Buffer): void => {
 }
 
 const resolveWorkerScriptPath = (): string => {
-	// worker-bootstrap.ts lives in the parent dir (src/Voip/), not inside
-	// wasm-engine/. After the subdir refactor the old `path.join(__dirname,
-	// "worker-bootstrap.js")` resolves to .../wasm-engine/worker-bootstrap.js
-	// which never exists — the pthread pool then silently fails to spin up.
-	return path.join(__dirname, '..', 'worker-bootstrap.js')
+	// 1. Same-dir compiled .js — production / after `yarn build`.
+	//    worker-bootstrap lives in the parent dir of wasm-engine/.
+	const sameDirJs = path.join(_voipDirname, '..', 'worker-bootstrap.js')
+	if (fs.existsSync(sameDirJs)) return sameDirJs
+
+	// 2. Dev mode (consumer runs the source tree directly via tsx/ts-node):
+	//    `_voipDirname` points at .../src/Voip/wasm-engine/. The .ts worker
+	//    won't load inside a plain Node Worker (its module hooks are isolated
+	//    and `--import tsx` does not reliably propagate), so we look for the
+	//    compiled .js sitting in the parallel lib/ tree if a previous build
+	//    dropped it there. Regex (not path.sep) to tolerate normalized seps.
+	if (/[\\/]src[\\/]/.test(_voipDirname)) {
+		const libDirname = _voipDirname.replace(/([\\/])src([\\/])/, '$1lib$2')
+		const libEquivalent = path.join(libDirname, '..', 'worker-bootstrap.js')
+		if (fs.existsSync(libEquivalent)) return libEquivalent
+	}
+
+	// 3. Fall back to the same-dir path so the resulting ENOENT names the
+	//    expected location (lib/Voip/worker-bootstrap.js) instead of a
+	//    misleading source-tree path. If you hit this in dev, run
+	//    `yarn build` once to populate lib/.
+	return sameDirJs
 }
 
 class NodeWorkerMessagePort {
@@ -313,7 +336,7 @@ export class WasmEngine {
 			? path.isAbsolute(config.resourcesPath)
 				? config.resourcesPath
 				: path.resolve(process.cwd(), config.resourcesPath)
-			: path.resolve(__dirname, '..')
+			: path.resolve(_voipDirname, '..')
 		const wasmPath = config.wasmPath
 			? path.isAbsolute(config.wasmPath)
 				? config.wasmPath
