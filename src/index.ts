@@ -27,6 +27,25 @@ export { isPersonJid as isJidUser } from './Utils/history'
 // consumers placing voice calls need to install them. `ffmpeg` on PATH is
 // also required for MP3/WAV source decoding.
 export { VoipClient, ActiveCall, CallState } from './Voip/index'
-export type { VoipSdkConfig, CallOptions, CallEvents, AudioConfig } from './Voip/index'
+// audit EXP-01: every public surface type of the VoIP module reachable from
+// the root entry. Earlier we only exposed a handful, forcing consumers to
+// reach into `lib/Voip/types` for `IncomingCallHandle`, `VideoConfig`, etc.
+// — fragile once the package gains an `"exports"` map.
+export type {
+	AcceptOptions,
+	ActiveCallHandle,
+	AudioConfig,
+	CallEvents,
+	CallOptions,
+	IncomingCallHandle,
+	RelayListUpdate,
+	VideoConfig,
+	VideoFrame,
+	VideoFrameFormat,
+	VoipClientEvents,
+	VoipIncomingCallEvent,
+	VoipSdkConfig,
+	VoipSocketLike
+} from './Voip/types'
 
 export default makeWASocket

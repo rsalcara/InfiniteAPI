@@ -1,4 +1,5 @@
 import type { SignalKeyStoreWithTransaction } from '../Types'
+import { intFromEnv } from '../Utils/env-utils'
 import type { ILogger } from '../Utils/logger'
 
 /**
@@ -15,7 +16,9 @@ export interface SessionActivityConfig {
  * Default configuration for session activity tracking
  */
 export const DEFAULT_SESSION_ACTIVITY_CONFIG: SessionActivityConfig = {
-	flushIntervalMs: parseInt(process.env.BAILEYS_SESSION_ACTIVITY_FLUSH_MS || '60000', 10), // 1 minute
+	// audit ENV-01: was `parseInt(... || '60000', 10)` — NaN under malformed
+	// env vars (e.g. "60s") cascades into `setInterval(NaN)` → 1 ms loop.
+	flushIntervalMs: intFromEnv(process.env.BAILEYS_SESSION_ACTIVITY_FLUSH_MS, 60_000, 1), // 1 minute
 	enabled: process.env.BAILEYS_SESSION_ACTIVITY_ENABLED !== 'false'
 }
 

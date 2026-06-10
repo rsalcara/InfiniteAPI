@@ -120,6 +120,10 @@ const assertColor = async (color: any) => {
 	let assertedColor
 	if (typeof color === 'number') {
 		assertedColor = color > 0 ? color : 0xffffffff + Number(color) + 1
+		// Missing `return` here used to silently produce `undefined` for any
+		// numeric input (audit UTL-02). Numeric callers (`backgroundArgb`,
+		// status text color) all ended up with `undefined` argb downstream.
+		return assertedColor
 	} else {
 		let hex = color.trim().replace('#', '')
 		if (hex.length <= 6) {

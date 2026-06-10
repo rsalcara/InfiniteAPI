@@ -37,6 +37,7 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from 'http'
 import * as os from 'os'
 import * as promClient from 'prom-client'
+import { intFromEnv } from './env-utils'
 
 // Create a custom registry to avoid conflicts with global registry
 const customRegistry = new promClient.Registry()
@@ -168,7 +169,10 @@ function parseLabelsFromEnv(envValue: string | undefined): Labels {
 export function loadMetricsConfig(): MetricsConfig {
 	return {
 		enabled: (process.env.BAILEYS_PROMETHEUS_ENABLED ?? process.env.METRICS_ENABLED) === 'true',
-		port: parseInt(process.env.BAILEYS_PROMETHEUS_PORT || process.env.METRICS_PORT || '9092', 10),
+		// audit ENV-02: was `parseInt(... || '9092', 10)` — NaN under malformed
+		// env vars would land as `server.listen(NaN)` producing an opaque
+		// EADDRINUSE/bind error. Clamp to valid TCP range (≥1024 unprivileged).
+		port: intFromEnv(process.env.BAILEYS_PROMETHEUS_PORT ?? process.env.METRICS_PORT, 9092, 1),
 		host: process.env.BAILEYS_PROMETHEUS_HOST || process.env.METRICS_HOST || '127.0.0.1',
 		path: process.env.BAILEYS_PROMETHEUS_PATH || process.env.METRICS_PATH || '/metrics',
 		prefix: process.env.BAILEYS_PROMETHEUS_PREFIX || process.env.METRICS_PREFIX || 'baileys',
@@ -179,9 +183,12 @@ export function loadMetricsConfig(): MetricsConfig {
 		// Flag for prom-client default Node.js metrics
 		collectDefaultMetrics:
 			(process.env.BAILEYS_PROMETHEUS_COLLECT_DEFAULT ?? process.env.METRICS_COLLECT_DEFAULT) !== 'false',
-		collectIntervalMs: parseInt(
-			process.env.BAILEYS_PROMETHEUS_COLLECT_INTERVAL_MS || process.env.METRICS_COLLECT_INTERVAL_MS || '10000',
-			10
+		// audit ENV-03: was `parseInt(... || '10000', 10)` — NaN → tight
+		// `setInterval(NaN)` loop scraping prom-client internals.
+		collectIntervalMs: intFromEnv(
+			process.env.BAILEYS_PROMETHEUS_COLLECT_INTERVAL_MS ?? process.env.METRICS_COLLECT_INTERVAL_MS,
+			10_000,
+			1
 		)
 	}
 }
