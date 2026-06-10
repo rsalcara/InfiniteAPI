@@ -62,14 +62,26 @@ jobs:
       - name: GenerateStatics
         run: yarn gen:protobuf
 
+      # audit CI-03: `wa_version` comes from a regex over output produced by
+      # an external proto-extract run that fetches `web.whatsapp.com`. Pass
+      # it through an env var AND a numeric-only filter (`tr -cd '0-9.'`)
+      # so a hostile injection in the upstream output can't escape the JSON
+      # literal or the shell context. Empty input falls through to a hard
+      # fail rather than producing `{"version": []}`.
       - name: Update baileys-version.json
+        env:
+          WA_VERSION: ${{steps.wa_proto_info.outputs.wa_version}}
         run: |
-          WA_VERSION="${{steps.wa_proto_info.outputs.wa_version}}"
-          WA_NUMBERS=$(echo $WA_VERSION | sed "s/\./, /g")
+          SAFE_VERSION=$(printf '%s' "$WA_VERSION" | tr -cd '0-9.')
+          if [ -z "$SAFE_VERSION" ]; then
+            echo "::error::wa_version is empty or non-numeric after sanitisation: '$WA_VERSION'"
+            exit 1
+          fi
+          WA_NUMBERS=$(printf '%s' "$SAFE_VERSION" | sed "s/\./, /g")
           echo "{\"version\": [$WA_NUMBERS]}" > src/Defaults/baileys-version.json
-          
+
           # Confirm update
-          echo "✅ Updated baileys-version.json to v$WA_VERSION"
+          echo "✅ Updated baileys-version.json to v$SAFE_VERSION"
           cat src/Defaults/baileys-version.json
 
       - name: Create Pull Request

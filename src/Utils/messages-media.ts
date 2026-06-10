@@ -639,27 +639,19 @@ export const downloadContentFromMessage = async (
  * Decrypts and downloads an AES256-CBC encrypted file given the keys.
  * Assumes the SHA256 of the plaintext is appended to the end of the ciphertext
  * */
-// audit P2-MED-01 TODO: the WhatsApp media protocol appends a 10-byte
+// HMAC verification (audit UTL-01) — IMPLEMENTED below as of this PR.
+// The WhatsApp media protocol appends a 10-byte
 // HMAC-SHA256(macKey, iv || ciphertext)[:10] trailer to every encrypted
-// blob (see `messageVerificationMacInfo` in `getMediaKeys`). This streaming
-// decryptor never verifies it — `getMediaKeys` returns `macKey` but the
-// destructure below only reads `cipherKey` + `iv`. A corrupt or
-// tampered-with media blob therefore decrypts to garbage instead of
-// raising an integrity error.
+// blob (see `messageVerificationMacInfo` in `getMediaKeys`). The Transform
+// below reserves the trailing 10 bytes of the stream, recomputes the HMAC
+// across the ciphertext, and rejects with Boom 401 on mismatch.
 //
-// The verification cannot be done inline in the Transform because the
-// MAC is only complete at end-of-stream. The right shape is to buffer the
-// trailing 10 bytes, recompute the HMAC over the streamed plaintext (or
-// over the ciphertext alongside decryption), and emit an `error` event if
-// it doesn't match — then drop the trailer from the output. That's a
-// non-trivial refactor of the stream's framing and out of scope for this
-// PR; the verifying batch path in `downloadAndDecryptMessage` (which uses
-// `decryptStream` + `getMediaContents`) already does this for the
-// fixed-size path, so blanket-skipping the streaming path doesn't break
-// the most common consumer.
+// Verification is gated on `macKey && !range-request && !firstBlockIsIV`
+// because the trailer is only present at the end of a full download —
+// range fetches and IV-prefixed chunked downloads don't include it.
 export const downloadEncryptedContent = async (
 	downloadUrl: string,
-	{ cipherKey, iv }: MediaDecryptionKeyInfo,
+	{ cipherKey, iv, macKey }: MediaDecryptionKeyInfo,
 	{ startByte, endByte, options }: MediaDownloadOptions = {}
 ) => {
 	let bytesFetched = 0
@@ -717,9 +709,39 @@ export const downloadEncryptedContent = async (
 		}
 	}
 
+	// audit UTL-01 — HMAC verification:
+	//   spec: trailer = HMAC-SHA256(macKey, iv || ciphertext)[:10]
+	//
+	// Verified only on FULL downloads. Range requests (`startByte`/`endByte`)
+	// don't include the trailer, and `firstBlockIsIV` replaces the IV in-
+	// stream so we can't deterministically reconstruct what was HMAC'd
+	// without buffering the whole thing. Skipping there keeps the
+	// streaming/range fast path intact while closing the gap for the
+	// common full-download case the audit was concerned about.
+	const isRangeRequest = !!startByte || !!endByte
+	const verifyMac = !!macKey && !isRangeRequest && !firstBlockIsIV
+	const HMAC_TRAILER_LEN = 10
+	const hmac = verifyMac ? Crypto.createHmac('sha256', macKey!).update(iv) : null
+	let trailerBuf = Buffer.alloc(0)
+
 	const output = new Transform({
 		transform(chunk, _, callback) {
-			let data = remainingBytes.length ? Buffer.concat([remainingBytes, chunk]) : chunk
+			// Reserve the trailing 10 bytes of the entire stream as the
+			// HMAC trailer. Anything before that is real ciphertext.
+			let chunkAfterTrailer: Buffer = chunk
+			if (verifyMac) {
+				const combined = trailerBuf.length ? Buffer.concat([trailerBuf, chunk]) : chunk
+				if (combined.length <= HMAC_TRAILER_LEN) {
+					trailerBuf = combined
+					callback()
+					return
+				}
+
+				chunkAfterTrailer = combined.subarray(0, combined.length - HMAC_TRAILER_LEN)
+				trailerBuf = combined.subarray(combined.length - HMAC_TRAILER_LEN)
+			}
+
+			let data = remainingBytes.length ? Buffer.concat([remainingBytes, chunkAfterTrailer]) : chunkAfterTrailer
 
 			const decryptLength = toSmallestChunkSize(data.length)
 			remainingBytes = data.slice(decryptLength)
@@ -741,6 +763,7 @@ export const downloadEncryptedContent = async (
 			}
 
 			try {
+				hmac?.update(data)
 				pushBytes(aes.update(data), b => this.push(b))
 				callback()
 			} catch (error: any) {
@@ -749,6 +772,18 @@ export const downloadEncryptedContent = async (
 		},
 		final(callback) {
 			try {
+				if (verifyMac && hmac) {
+					const expected = hmac.digest().subarray(0, HMAC_TRAILER_LEN)
+					if (trailerBuf.length !== HMAC_TRAILER_LEN || !Crypto.timingSafeEqual(expected, trailerBuf)) {
+						return callback(
+							new Boom('media HMAC verification failed', {
+								statusCode: 401,
+								data: { gotLen: trailerBuf.length, want: HMAC_TRAILER_LEN }
+							})
+						)
+					}
+				}
+
 				pushBytes(aes.final(), b => this.push(b))
 				callback()
 			} catch (error: any) {

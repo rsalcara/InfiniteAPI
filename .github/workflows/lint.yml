@@ -49,9 +49,11 @@ jobs:
           YARN_HTTP_RETRY: 10
         run: yarn install --immutable
 
-      - name: Auto-fix formatting
-        run: yarn lint:fix
-        continue-on-error: true
-
+      # audit CI-01: `lint:fix` runs `prettier --write` + `eslint --fix` IN PLACE
+      # on the working tree. Running it before `lint` meant `lint` then
+      # inspected the auto-corrected tree, so any prettier or auto-fixable
+      # eslint error in the PR would silently pass CI while the upstream
+      # branch still had the error. The lint job is the gate — don't let
+      # it heal itself.
       - name: Check linting
         run: yarn lint

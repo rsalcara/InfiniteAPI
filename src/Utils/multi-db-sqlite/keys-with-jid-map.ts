@@ -107,6 +107,20 @@ export function wrapKeysWithJidMap(
 		},
 
 		async set(data: SignalDataSet): Promise<void> {
+			// IMPORTANT — cross-DB transaction caveat (audit MDB-03):
+			// `wrapKeysWithJidMap` writes to TWO physical .db files —
+			// axolotl.db (signal_kv via `inner.set`) and msgstore.db (jid_map
+			// via `jidMap.*`). SQLite does not support a single transaction
+			// spanning multiple files; ATTACH could come close but breaks
+			// busy-timeout semantics and is incompatible with the per-DB
+			// `transaction()` helper better-sqlite3 already wraps each call
+			// in. We therefore commit `inner.set` FIRST, then jid_map — the
+			// same order documented in `use-multi-db-sqlite-auth-state.ts:clear`.
+			// A crash between the two commits leaves jid_map STALE relative
+			// to the newer Signal keys; on next session establishment the
+			// missing jid_map row is naturally rebuilt by LIDMappingStore.
+			// Promoting this to a real distributed-transaction needs a
+			// write-ahead log on either side and is out of scope here.
 			const lidMappingBucket = data['lid-mapping']
 			if (!lidMappingBucket) {
 				return inner.set(data)
@@ -127,15 +141,25 @@ export function wrapKeysWithJidMap(
 			const deletes: string[] = []
 
 			const seenReverse = new Set<string>()
+			// Track which entries in the inner store ALSO need a delete request
+			// — used below to propagate the null sentinel down so legacy entries
+			// that landed in the inner store (pre-Phase-9) don't ressurect via
+			// the `inner.get` fallback. (audit MDB-02)
+			const innerDeleteForward: string[] = []
+			const innerDeleteReverse: string[] = []
 			for (const key of Object.keys(lidMappingBucket)) {
 				if (key.endsWith(REVERSE_SUFFIX)) continue
 				const pnUser = key
 				const lidUser = lidMappingBucket[key] as unknown as string | null
 				if (lidUser === null || lidUser === undefined) {
-					// Forward delete request. We need a LID to identify the row;
-					// look up the current mapping so the delete actually lands.
-					const currentLid = jidMap.getLidForPn(pnUser)
-					if (currentLid) deletes.push(currentLid)
+					// Forward delete request. WhatsApp can link multiple device-
+					// LIDs to one PN over time, so `getLidForPn` returning the
+					// most-recent isn't enough — N-1 historic LIDs would still
+					// be visible via batchGetPnForLid. Wipe them all.
+					// (audit MDB-01)
+					const allLids = jidMap.getAllLidsForPn(pnUser)
+					for (const l of allLids) deletes.push(l)
+					innerDeleteForward.push(pnUser)
 					continue
 				}
 
@@ -156,6 +180,7 @@ export function wrapKeysWithJidMap(
 				if (pnUser === null || pnUser === undefined) {
 					// Reverse delete — keyed by LID directly.
 					deletes.push(lidUser)
+					innerDeleteReverse.push(key) // include the `_reverse` suffix
 					continue
 				}
 
@@ -179,6 +204,18 @@ export function wrapKeysWithJidMap(
 			for (const t in data) {
 				if (t === 'lid-mapping') continue
 				;(rest as Record<string, unknown>)[t] = (data as Record<string, unknown>)[t]
+				hasRest = true
+			}
+
+			// Propagate deletes to the inner store as well — covers legacy
+			// lid-mapping entries that landed there before Phase 9 migrated
+			// the typed jid_map backend in. Without this they ressurect via
+			// `inner.get` fallback. (audit MDB-02)
+			if (innerDeleteForward.length > 0 || innerDeleteReverse.length > 0) {
+				const lidMappingDeletes: Record<string, null> = {}
+				for (const pn of innerDeleteForward) lidMappingDeletes[pn] = null
+				for (const reverseKey of innerDeleteReverse) lidMappingDeletes[reverseKey] = null
+				;(rest as Record<string, unknown>)['lid-mapping'] = lidMappingDeletes
 				hasRest = true
 			}
 

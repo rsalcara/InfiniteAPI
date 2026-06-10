@@ -16,6 +16,7 @@ import {
 } from '../Defaults'
 import { makeSessionActivityTracker } from '../Signal/session-activity-tracker'
 import { makeSessionCleanup } from '../Signal/session-cleanup'
+import { createOfflineBufferState } from './offline-buffer-state'
 import type { ConnectionState, LIDMapping, NewChatMessageCapInfo, ReachoutTimelockState, SocketConfig } from '../Types'
 import { DisconnectReason, QueryIds, ReachoutTimelockEnforcementType, XWAPaths } from '../Types'
 import {
@@ -1053,13 +1054,8 @@ export const makeSocket = (config: SocketConfig) => {
 		// Clear offline-buffer safety timer so its callback cannot call ev.flush()
 		// on an already-closed socket (e.g. auth failure or early network drop before
 		// CB:ib,,offline ever arrives).  Mirrors how awaitingSyncTimeout is cleared in
-		// chats.ts on connection close.
-		if (offlineBufferTimeout) {
-			clearTimeout(offlineBufferTimeout)
-			offlineBufferTimeout = undefined
-		}
-
-		didStartBuffer = false
+		// chats.ts on connection close. (audit TST-06)
+		offlineBuffer.onClose()
 
 		// Stop session cleanup scheduler
 		sessionCleanup.stop()
@@ -1584,7 +1580,6 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 	})
 
-	let didStartBuffer = false
 	// perf(inbound-latency): safety timer that caps how long the offline-phase buffer may
 	// block live message delivery. The server sends CB:ib,,offline only after transmitting
 	// ALL queued offline messages; on busy accounts this can take 10-30+ seconds, holding
@@ -1603,28 +1598,23 @@ export const makeSocket = (config: SocketConfig) => {
 	// server to finish flushing the pending-message backlog (CB:ib,,offline).
 	// For normal restarts (no stale routingInfo) the standard 2 s safety cap applies.
 	const OFFLINE_BUFFER_TIMEOUT_MS = 2_000
-	let offlineBufferTimeout: NodeJS.Timeout | undefined
+	// State machine lives in `./offline-buffer-state` so it can be unit
+	// tested directly without spinning up a socket. (audit TST-06)
+	const offlineBuffer = createOfflineBufferState(
+		() => ev.flush(),
+		() => logger.warn(
+			{ timeoutMs: OFFLINE_BUFFER_TIMEOUT_MS },
+			'perf: offline-buffer safety timeout reached, force-flushing before CB:ib,,offline'
+		),
+		OFFLINE_BUFFER_TIMEOUT_MS
+	)
 
 	process.nextTick(() => {
 		if (creds.me?.id && !skipOfflineBuffer) {
 			// First-time QR connection: buffer events until CB:ib,,offline signals all
 			// offline messages have been delivered, then flush everything at once.
 			ev.buffer()
-			didStartBuffer = true
-
-			// Cap the offline-phase buffer so a large backlog of missed messages
-			// does not delay delivery of the very next live message beyond OFFLINE_BUFFER_TIMEOUT_MS.
-			offlineBufferTimeout = setTimeout(() => {
-				offlineBufferTimeout = undefined
-				if (didStartBuffer) {
-					logger.warn(
-						{ timeoutMs: OFFLINE_BUFFER_TIMEOUT_MS },
-						'perf: offline-buffer safety timeout reached, force-flushing before CB:ib,,offline'
-					)
-					ev.flush()
-					didStartBuffer = false
-				}
-			}, OFFLINE_BUFFER_TIMEOUT_MS)
+			offlineBuffer.startBuffer()
 		} else if (creds.me?.id && skipOfflineBuffer) {
 			logger.info(
 				'perf: skipping offline-phase buffer — reconnect of existing session, messages will be delivered immediately'
@@ -1641,17 +1631,9 @@ export const makeSocket = (config: SocketConfig) => {
 
 		logger.info(`handled ${offlineNotifs} offline messages/notifications`)
 
-		// Clear safety timeout — CB:ib,,offline arrived in time, do the normal flush.
-		if (offlineBufferTimeout) {
-			clearTimeout(offlineBufferTimeout)
-			offlineBufferTimeout = undefined
-		}
-
-		if (didStartBuffer) {
-			ev.flush()
-			didStartBuffer = false
-			logger.trace('flushed events for initial buffer')
-		}
+		const wasBuffering = offlineBuffer.getState().didStartBuffer
+		offlineBuffer.onOffline()
+		if (wasBuffering) logger.trace('flushed events for initial buffer')
 
 		ev.emit('connection.update', { receivedPendingNotifications: true })
 	})

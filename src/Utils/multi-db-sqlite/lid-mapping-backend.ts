@@ -214,6 +214,26 @@ export class JidMapBackend {
 		return row?.raw ?? null
 	}
 
+	/**
+	 * Returns ALL LIDs ever mapped to this PN. WhatsApp links new device-LIDs
+	 * over a contact's lifetime, so `jid_map` can hold N rows for one PN.
+	 * `getLidForPn` returns only the most-recent (highest `sort_id`); for a
+	 * delete request we need every row so historical mappings don't ressurect
+	 * via `inner.get` fallback. (audit MDB-01)
+	 */
+	getAllLidsForPn(pnUser: string): string[] {
+		const rows = this.db
+			.prepare(
+				`SELECT j.raw_string AS raw FROM jid_map jm
+				 JOIN jid l ON l._id = jm.lid_row_id
+				 JOIN jid p ON p._id = jm.jid_row_id
+				 JOIN jid j ON j._id = l._id
+				 WHERE p.raw_string = ?`
+			)
+			.all(pnUser) as Array<{ raw: string }>
+		return rows.map(r => r.raw)
+	}
+
 	/** Returns the PN for a LID, or `null` if no mapping exists. */
 	getPnForLid(lidUser: string): string | null {
 		const row = this.stmts.selectPnByLid.get(lidUser) as { raw: string } | undefined

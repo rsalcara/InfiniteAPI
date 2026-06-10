@@ -1,12 +1,22 @@
 import { jest } from '@jest/globals'
 
 /**
- * Tests for the error 463 retry logic in handleBadAck.
+ * Tests for the error-463 retry logic in `handleBadAck`.
  *
- * Since handleBadAck is a closure inside makeMessagesRecvSocket, we extract
- * the core retry logic into a standalone function that mirrors the real
- * implementation and test it directly.
+ * `handleBadAck` itself is a CLOSURE inside `makeMessagesRecvSocket` that
+ * captures ~10 surrounding closures (signalRepository, ev, authState,
+ * getPrivacyTokens, storeTcTokensFromIqResult, logTcToken, etc.). Fully
+ * extracting it would be a multi-PR refactor of `messages-recv.ts`. As
+ * an intermediate step we now import the SHARED HELPERS used by production
+ * (jidNormalizedUser) instead of mirroring them locally — this caught a
+ * historical drift where the test's `jidNormalizedUser` mirror diverged
+ * from the WABinary implementation. (audit TST-05 partial)
+ *
+ * TODO: extract `handleBadAck463`'s pure retry decision (Set + cooldown +
+ * retry) into a standalone helper similar to `offline-buffer-state.ts` so
+ * the tests can drive the real production path.
  */
+import { jidNormalizedUser } from '../../WABinary/jid-utils'
 
 interface MockKey {
 	remoteJid: string
@@ -20,16 +30,6 @@ type EmitFn = (event: string, data: any) => void
 
 interface MockMessageRetryManager {
 	getRecentMessage: (jid: string, msgId: string) => { message: any } | undefined
-}
-
-/** Mirrors jidNormalizedUser: strips device suffix from JID user part */
-function jidNormalizedUser(jid: string): string {
-	const atIdx = jid.indexOf('@')
-	if (atIdx < 0) return jid
-	const user = jid.slice(0, atIdx)
-	const server = jid.slice(atIdx + 1)
-	const normalizedUser = user.includes(':') ? user.split(':')[0] : user
-	return `${normalizedUser}@${server}`
 }
 
 /** Mirrors the handleBadAck error-463 retry logic */
