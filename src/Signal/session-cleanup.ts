@@ -286,7 +286,25 @@ export const makeSessionCleanup = (
 						sessionUpdates[addr] = null
 					})
 
-					// Single atomic transaction for all deletions
+					// Single atomic transaction for all deletions.
+					// audit P2-SIG-01 TODO: this lock namespace ('session-cleanup')
+					// is disjoint from the per-record `transactWith({ records:
+					// [{type:'session', id}] })` locks used by encrypt/decrypt.
+					// A concurrent decrypt for an address we are about to delete
+					// can therefore run alongside this cleanup — usually benign
+					// (the decrypt's `transactWith` holds the record lock
+					// while it operates and our DELETE just makes the next call
+					// build a fresh session), but in the worst case the decrypt
+					// reads the session record mid-DELETE and gets back a
+					// torn / empty session. Fixing this properly means either
+					//   (a) tearing this batch into per-address `transactWith`
+					//       calls so each delete acquires the correct record
+					//       lock, or
+					//   (b) gating the entire cleanup inside a process-wide
+					//       lock that also blocks decrypt.
+					// (a) is the right shape but inflates wall-clock from one
+					// statement to N. Out of scope for this PR; documented for
+					// the follow-up.
 					await keys.transaction(async () => {
 						await keys.set({ session: sessionUpdates })
 					}, 'session-cleanup')

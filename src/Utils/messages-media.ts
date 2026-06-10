@@ -639,6 +639,24 @@ export const downloadContentFromMessage = async (
  * Decrypts and downloads an AES256-CBC encrypted file given the keys.
  * Assumes the SHA256 of the plaintext is appended to the end of the ciphertext
  * */
+// audit P2-MED-01 TODO: the WhatsApp media protocol appends a 10-byte
+// HMAC-SHA256(macKey, iv || ciphertext)[:10] trailer to every encrypted
+// blob (see `messageVerificationMacInfo` in `getMediaKeys`). This streaming
+// decryptor never verifies it — `getMediaKeys` returns `macKey` but the
+// destructure below only reads `cipherKey` + `iv`. A corrupt or
+// tampered-with media blob therefore decrypts to garbage instead of
+// raising an integrity error.
+//
+// The verification cannot be done inline in the Transform because the
+// MAC is only complete at end-of-stream. The right shape is to buffer the
+// trailing 10 bytes, recompute the HMAC over the streamed plaintext (or
+// over the ciphertext alongside decryption), and emit an `error` event if
+// it doesn't match — then drop the trailer from the output. That's a
+// non-trivial refactor of the stream's framing and out of scope for this
+// PR; the verifying batch path in `downloadAndDecryptMessage` (which uses
+// `decryptStream` + `getMediaContents`) already does this for the
+// fixed-size path, so blanket-skipping the streaming path doesn't break
+// the most common consumer.
 export const downloadEncryptedContent = async (
 	downloadUrl: string,
 	{ cipherKey, iv }: MediaDecryptionKeyInfo,

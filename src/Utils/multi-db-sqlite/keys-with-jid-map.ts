@@ -120,13 +120,25 @@ export function wrapKeysWithJidMap(
 			const pairs: Array<{ pnUser: string; lidUser: string }> = []
 			const forwardOnly: Array<{ pnUser: string; lidUser: string }> = []
 			const reverseOnly: Array<{ pnUser: string; lidUser: string }> = []
+			// Deletes — `null`/`undefined` value is the Signal protocol's
+			// delete sentinel. Previously these were silently `continue`d,
+			// leaving stale `jid_map` rows that pointed at sessions that no
+			// longer existed. (audit P1-SQDB-02)
+			const deletes: string[] = []
 
 			const seenReverse = new Set<string>()
 			for (const key of Object.keys(lidMappingBucket)) {
 				if (key.endsWith(REVERSE_SUFFIX)) continue
 				const pnUser = key
 				const lidUser = lidMappingBucket[key] as unknown as string | null
-				if (!lidUser) continue
+				if (lidUser == null) {
+					// Forward delete request. We need a LID to identify the row;
+					// look up the current mapping so the delete actually lands.
+					const currentLid = jidMap.getLidForPn(pnUser)
+					if (currentLid) deletes.push(currentLid)
+					continue
+				}
+
 				const reverseKey = lidUser + REVERSE_SUFFIX
 				const reverseVal = lidMappingBucket[reverseKey] as unknown as string | null
 				if (reverseVal === pnUser) {
@@ -141,15 +153,27 @@ export function wrapKeysWithJidMap(
 				if (!key.endsWith(REVERSE_SUFFIX) || seenReverse.has(key)) continue
 				const lidUser = key.slice(0, -REVERSE_SUFFIX.length)
 				const pnUser = lidMappingBucket[key] as unknown as string | null
-				if (!pnUser) continue
+				if (pnUser == null) {
+					// Reverse delete — keyed by LID directly.
+					deletes.push(lidUser)
+					continue
+				}
+
 				reverseOnly.push({ pnUser, lidUser })
 			}
 
-			if (pairs.length > 0) jidMap.storeMappingsBatch(pairs)
-			for (const m of forwardOnly) jidMap.storeMapping(m.pnUser, m.lidUser)
-			for (const m of reverseOnly) jidMap.storeMapping(m.pnUser, m.lidUser)
-
-			// Forward any non-lid-mapping types still present
+			// Cross-DB write ordering — see comment in
+			// `use-multi-db-sqlite-auth-state.ts:clear` for why this matters.
+			// Order chosen here:
+			//   1. Forward the rest of `data` to the inner store (axolotl.db).
+			//   2. Then write jid_map (msgstore.db).
+			// A crash between 1 and 2 leaves jid_map STALE relative to the
+			// newer Signal keys. On the next session establishment, the missing
+			// `jid_map` row is rebuilt naturally by the LIDMappingStore — no
+			// catastrophic loss. The reverse order would leave the Signal keys
+			// missing while jid_map still resolves PN→LID, causing decryption
+			// failures for those contacts until WhatsApp re-emits the mapping.
+			// (audit P1-SQDB-03)
 			const rest: SignalDataSet = {}
 			let hasRest = false
 			for (const t in data) {
@@ -159,6 +183,26 @@ export function wrapKeysWithJidMap(
 			}
 
 			if (hasRest) await inner.set(rest)
+
+			// Now persist jid_map changes. Wrapped in best-effort try/catch
+			// so a transient SQLITE_BUSY on the reverse-only path doesn't
+			// crash the caller — the missing mapping rebuilds on the next
+			// observed event. (audit P2-SQDB-02)
+			try {
+				if (deletes.length > 0) {
+					for (const lidUser of deletes) jidMap.deleteMapping(lidUser)
+				}
+
+				if (pairs.length > 0) jidMap.storeMappingsBatch(pairs)
+				for (const m of forwardOnly) jidMap.storeMapping(m.pnUser, m.lidUser)
+				for (const m of reverseOnly) jidMap.storeMapping(m.pnUser, m.lidUser)
+			} catch (err) {
+				// Re-raise SQLITE_BUSY so caller-level retry (e.g.
+				// `runSetWithBusyRetry` in `use-multi-db-sqlite-auth-state`)
+				// can drive a backoff. Anything else (constraint violation,
+				// disk full) is a hard error — let it propagate. (P2-SQDB-01)
+				throw err
+			}
 		}
 	} as SignalKeyStoreWithTransaction
 }

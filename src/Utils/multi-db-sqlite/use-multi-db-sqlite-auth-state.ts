@@ -270,7 +270,12 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	return {
 		state,
 		saveCreds: async () => {
-			persistCreds()
+			// Without busy retry, a concurrent write on creds.db (e.g. another
+			// connection rotating Noise/prekey state) used to surface
+			// SQLITE_BUSY straight up to the caller after the 5 s busy_timeout
+			// — and the caller almost never handles it, so rotated credentials
+			// were silently lost. (audit P1-SQDB-01)
+			await runWithBusyRetry('saveCreds', () => persistCreds())
 		},
 		close: () => {
 			// Injected stores belong to the caller — they call .close()

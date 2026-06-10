@@ -95,6 +95,11 @@ export const decodeDecompressedBinaryNode = (
 		let val = 0
 		for (let i = 0; i < n; i++) {
 			const shift = littleEndian ? i : n - 1 - i
+			// Intentional bitwise OR — the WhatsApp binary protocol caps
+			// these widths at 4 bytes, so the implicit i32-with-sign coercion
+			// from `|=` is fine. A 4-byte length here with the high bit set
+			// would have been a length > 2 GB, which is rejected upstream by
+			// `checkEOS`. (audit P3-WAB-01)
 			val |= next()! << (shift * 8)
 		}
 
@@ -293,7 +298,11 @@ export const decodeDecompressedBinaryNode = (
 		throw new Error('invalid node')
 	}
 
-	const attrs: BinaryNode['attrs'] = {}
+	// Prototype-less object: `attrs` keys come straight from the wire and
+	// would otherwise let an attacker pollute Object.prototype / shadow
+	// inherited members (`__proto__`, `constructor`, `toString`) on every
+	// node we hand to user code. (audit P2-WAB-01)
+	const attrs: BinaryNode['attrs'] = Object.create(null)
 	let data: BinaryNode['content']
 	if (listSize === 0 || !header) {
 		throw new Error('invalid node')

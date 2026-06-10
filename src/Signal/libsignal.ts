@@ -1161,6 +1161,19 @@ function signalStorage(
 	// where two pkmsg with the same preKeyId arrive nearly simultaneously.
 	// WABA deletes immediately (33ms), but we add a 5-min grace period
 	// because we can't handle "Invalid PreKey ID" errors at the native level.
+	//
+	// INTENTIONAL DIVERGENCE FROM SIGNAL SPEC (audit P2-SIG-04):
+	// Signal's spec requires one-time prekeys be deleted on FIRST decrypt to
+	// guarantee forward secrecy — within the grace window, a captured prekey
+	// could in theory be reused to decrypt a replayed `pkmsg`. We accept
+	// that tradeoff because dropping a duplicate inbound `pkmsg` (the WABA
+	// behaviour) would land in libsignal's native code as "Invalid PreKey
+	// ID" and crash the worker before our retry loop can intervene. The
+	// risk is bounded: an attacker would need to (1) capture the original
+	// `pkmsg`, (2) replay it within 5 min, (3) have a stale device session
+	// the receiver hasn't yet promoted. End-to-end recipients still verify
+	// the signed prekey + identity binding, so reusing the one-time prekey
+	// doesn't yield a session takeover.
 	const PREKEY_GRACE_PERIOD_MS = 5 * 60 * 1000 // 5 minutes
 	const pendingPreKeyDeletions = new Map<string, ReturnType<typeof setTimeout>>()
 
@@ -1320,7 +1333,16 @@ function signalStorage(
 			try {
 				const wireJid = await resolveLIDSignalAddress(id)
 
-				// Check cache first
+				// Check cache first. (audit P2-SIG-02 TODO: the LRU lives
+				// OUTSIDE the per-record `transactWith` lock. A concurrent
+				// `saveIdentity` for the same wireJid can populate the cache
+				// with the in-flight new value before the storage write
+				// commits — a torn read window for the duration of the
+				// transaction. The cache should be invalidated under the same
+				// `records: [{type:'identity-key', id:wireJid}]` lock or moved
+				// inside the transaction. Documenting; out of scope for the
+				// current PR because it requires reworking the cache's
+				// lifecycle and the surrounding metrics, not a one-line fix.)
 				const cached = identityKeyCache.get(wireJid)
 				if (cached) {
 					metrics.signalIdentityKeyCacheHits?.inc()
@@ -1329,11 +1351,20 @@ function signalStorage(
 
 				metrics.signalIdentityKeyCacheMisses?.inc()
 
-				// Load from storage
-				const { [wireJid]: key } = await keys.get('identity-key', [wireJid])
+				// Load from storage. (audit P2-SIG-03) `saveIdentity` writes
+				// the key under BOTH the resolved `wireJid` AND the original
+				// `id` so a future lookup via either spelling finds it. The
+				// reverse used to only read via wireJid — meaning if the
+				// PN→LID mapping was deleted between save and load, the
+				// stored key under the PN was invisible. We fall back to the
+				// original id when wireJid lookup misses, matching the dual
+				// write.
+				const lookupKeys = wireJid !== id ? [wireJid, id] : [wireJid]
+				const stored = await keys.get('identity-key', lookupKeys)
+				const key = stored[wireJid] ?? stored[id]
 
 				if (key) {
-					// Populate cache
+					// Populate cache under the resolved name only.
 					identityKeyCache.set(wireJid, key)
 					return key
 				}

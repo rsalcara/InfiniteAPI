@@ -19,13 +19,16 @@ jobs:
       - name: Fetching tags
         run: git fetch --tags -f || true
 
+      # Setup-node WITHOUT NODE_AUTH_TOKEN — the npm registry-url is
+      # configured here so the auth token is only injected on the actual
+      # publish steps below. Earlier this step (and `yarn install` below)
+      # exposed NPM_TOKEN to every postinstall script in the transitive
+      # dep tree, which is a package-takeover primitive. (audit P2-CI-01)
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20.x
           registry-url: 'https://registry.npmjs.org'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Enable Corepack and Set Yarn Version
         run: |
@@ -53,10 +56,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-yarn-
 
+      # No NODE_AUTH_TOKEN env on `yarn install` — see comment on Setup
+      # Node above. (audit P2-CI-01)
       - name: Install Dependencies
         run: yarn install --immutable
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish in NPM (as `baileys`)
         run: npm publish --access public
@@ -85,8 +88,12 @@ jobs:
       - name: Rename Pack
         run: mv *.tgz baileys.tgz
 
+      # Pinned to commit SHA (not the `2.0` tag) — supply-chain hardening
+      # so a compromised release of `meeDamian/github-release` can't
+      # silently re-target our CI. (audit P3-CI-01)
+      # 2.0 → 35dd8df1ec03d8d2eaecaa0a5c7d36cb70d97f4b
       - name: Create Release
-        uses: meeDamian/github-release@2.0
+        uses: meeDamian/github-release@35dd8df1ec03d8d2eaecaa0a5c7d36cb70d97f4b # v2.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

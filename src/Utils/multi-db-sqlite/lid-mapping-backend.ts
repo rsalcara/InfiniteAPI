@@ -188,6 +188,26 @@ export class JidMapBackend {
 		})()
 	}
 
+	/**
+	 * Removes a PN↔LID mapping. Idempotent — silently no-ops when the row
+	 * does not exist.
+	 *
+	 * Identified by the `lidUser` side (the mapping is keyed by `lid_row_id`
+	 * in `jid_map`), matching the Signal protocol semantics where setting a
+	 * `lid-mapping` value to `null` is a delete request. Without this, every
+	 * delete request through `wrapKeysWithJidMap` was silently dropped while
+	 * the inner store still emitted DELETEs — drifting jid_map until the
+	 * stale mapping was overwritten by a fresh `storeMapping` call.
+	 * (audit P1-SQDB-02)
+	 */
+	deleteMapping(lidUser: string): void {
+		const row = this.stmts.selectJidIdByRaw.get(lidUser) as { _id: number } | undefined
+		if (!row) return
+		// Single statement — no transaction needed. The `jid` row stays;
+		// orphan `jid` rows are naturally reused by future `rowIdFor` calls.
+		this.db.prepare('DELETE FROM jid_map WHERE lid_row_id = ?').run(row._id)
+	}
+
 	/** Returns the LID for a PN, or `null` if no mapping exists. */
 	getLidForPn(pnUser: string): string | null {
 		const row = this.stmts.selectLidByPn.get(pnUser) as { raw: string } | undefined

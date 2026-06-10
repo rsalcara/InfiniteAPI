@@ -59,11 +59,10 @@ function encodeEvents(binaryInfo: BinaryInfo) {
 
 		const props_ = Object.entries(props)
 
-		let extended = false
-
-		for (const [, value] of props_) {
-			extended ||= value !== null
-		}
+		// Single pass — earlier code walked `props_` twice (one loop to
+		// compute `extended`, then the emit loop below). `Array.some`
+		// short-circuits on the first non-null. (audit P3-WAM-01)
+		let extended = props_.some(([, value]) => value !== null)
 
 		const eventFlag = extended ? FLAG_EVENT : FLAG_EVENT | FLAG_EXTENDED
 		binaryInfo.buffer.push(serializeData(event.id, -event.weight, eventFlag))

@@ -304,13 +304,27 @@ export const DEFAULT_CACHE_MAX_KEYS = {
  * - BAILEYS_SESSION_CLEANUP_ON_STARTUP: Run cleanup immediately on startup (default: true)
  * - BAILEYS_SESSION_AUTO_CLEAN_CORRUPTED: Auto-delete corrupted sessions (Bad MAC) (default: true)
  */
+/**
+ * Parse an integer env var with a fallback if the value is missing, empty
+ * or non-numeric. Bare `parseInt(envVar || 'N', 10)` returns `NaN` when
+ * the var is set to something non-numeric (e.g. "24h", "true") because
+ * `'24h' || 'N'` is truthy — and downstream `setInterval(NaN)` is clamped
+ * by Node to 1 ms, producing a runaway cleanup loop that pegs the event
+ * loop. (audit P1-DEF-01)
+ */
+const intFromEnv = (raw: string | undefined, fallback: number): number => {
+	if (!raw) return fallback
+	const n = parseInt(raw, 10)
+	return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
 export const DEFAULT_SESSION_CLEANUP_CONFIG = {
 	enabled: process.env.BAILEYS_SESSION_CLEANUP_ENABLED !== 'false',
-	intervalMs: parseInt(process.env.BAILEYS_SESSION_CLEANUP_INTERVAL || '86400000', 10), // 24h
-	cleanupHour: parseInt(process.env.BAILEYS_SESSION_CLEANUP_HOUR || '3', 10), // 3am
-	secondaryDeviceInactiveDays: parseInt(process.env.BAILEYS_SESSION_SECONDARY_INACTIVE_DAYS || '7', 10),
-	primaryDeviceInactiveDays: parseInt(process.env.BAILEYS_SESSION_PRIMARY_INACTIVE_DAYS || '30', 10),
-	lidOrphanHours: parseInt(process.env.BAILEYS_SESSION_LID_ORPHAN_HOURS || '24', 10),
+	intervalMs: intFromEnv(process.env.BAILEYS_SESSION_CLEANUP_INTERVAL, 86_400_000), // 24h
+	cleanupHour: intFromEnv(process.env.BAILEYS_SESSION_CLEANUP_HOUR, 3), // 3am
+	secondaryDeviceInactiveDays: intFromEnv(process.env.BAILEYS_SESSION_SECONDARY_INACTIVE_DAYS, 7),
+	primaryDeviceInactiveDays: intFromEnv(process.env.BAILEYS_SESSION_PRIMARY_INACTIVE_DAYS, 30),
+	lidOrphanHours: intFromEnv(process.env.BAILEYS_SESSION_LID_ORPHAN_HOURS, 24),
 	cleanupOnStartup: process.env.BAILEYS_SESSION_CLEANUP_ON_STARTUP !== 'false',
 	autoCleanCorrupted: process.env.BAILEYS_SESSION_AUTO_CLEAN_CORRUPTED !== 'false'
 }

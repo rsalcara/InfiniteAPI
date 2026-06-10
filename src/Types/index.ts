@@ -11,6 +11,16 @@ export * from './Call'
 export * from './Signal'
 export * from './Newsletter'
 export * from './SessionCleanup'
+// Re-exports added 2026-06-10 (audit P1-TYPE-01): these types appear in
+// public signatures (addLabel, updateBussinesProfile, labels.* events,
+// USyncQuery primitives) and the LabelAssociationType/LabelColor runtime
+// enums are needed for chat label semantics — without these lines they
+// could only be reached via deep-imports of `lib/Types/...`, which is
+// fragile to any future `"exports"` map in package.json.
+export * from './Label'
+export * from './LabelAssociation'
+export * from './Bussines'
+export * from './USync'
 
 import type { AuthenticationState } from './Auth'
 import type { SocketConfig } from './Socket'
@@ -49,8 +59,13 @@ export type WAInitResponse = {
 export type WABusinessHoursConfig = {
 	day_of_week: string
 	mode: string
-	open_time?: number
-	close_time?: number
+	// Stored as zero-padded HHMM strings (e.g. "0900", "1830") because they
+	// come straight off BinaryNode.attrs, which is `Record<string, string>`.
+	// Earlier `number` typing was wrong: doing arithmetic on these values
+	// silently concatenated strings ("540" + 30 = "54030") instead of
+	// adding minutes. (audit P2-TYPE-01)
+	open_time?: string
+	close_time?: string
 }
 
 export type WABusinessProfile = {
