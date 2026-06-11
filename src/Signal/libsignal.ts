@@ -305,7 +305,17 @@ function readVarint(buffer: Uint8Array, offset: number): { value: number; nextOf
 		}
 
 		shift += 7
-		if (shift > 35) {
+		// Reject once shift would reach 35 — NOT just exceed it. The 5
+		// valid byte shifts are 0, 7, 14, 21, 28. After processing byte 4
+		// (`shift` was 28), this increment makes `shift = 35`. With the
+		// earlier `shift > 35` guard, byte 5 would still be read on the
+		// next loop iteration and `(byte & 0x7f) << 35` would silently
+		// fold into `<< 3` because JS `<<` is modulo-32 on the right
+		// operand — producing a corrupt value that the outer `>>> 0`
+		// would happily accept as a valid uint32, neutralising the
+		// `extractIdentityFromPkmsg` field-3 (identityKey) parse on
+		// crafted pkmsg payloads. (audit SIG-P2-NOVO)
+		if (shift >= 35) {
 			// Varint too long (max 5 bytes for 32-bit)
 			// This could indicate a malformed or malicious message
 			// Caller should log this condition at debug level
