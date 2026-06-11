@@ -27,16 +27,15 @@ CREATE TABLE IF NOT EXISTS jid (
   agent INTEGER,
   device INTEGER,
   type INTEGER,
-  /* audit MDB-schema-raw_string: NOT NULL prevents two distinct failure
-     modes —
+  /* NOT NULL prevents two distinct failure modes —
      (1) SQLite treats NULL as DISTINCT inside a UNIQUE index, so any
          malformed insert path that produced NULL would silently create
          duplicate rows that the jid_raw_string_idx was supposed to
          prevent;
      (2) selectJidIdByRaw filters by WHERE raw_string = ?, and SQL
-         NULL = NULL is FALSE, so any such row would never be found
-         again — rowIdFor would then throw "failed to materialize jid
-         row" for every subsequent access.
+         NULL = NULL evaluates to UNKNOWN, so the row is never returned
+         — rowIdFor would then throw "failed to materialize jid row"
+         for every subsequent access.
      CREATE TABLE IF NOT EXISTS is a no-op when the table exists, so
      legacy databases keep the nullable column; new databases get the
      constraint enforced. */
@@ -49,13 +48,13 @@ CREATE INDEX IF NOT EXISTS jid_user_server_idx ON jid (user, server);
 CREATE TABLE IF NOT EXISTS jid_map (
   lid_row_id INTEGER PRIMARY KEY NOT NULL,
   jid_row_id INTEGER NOT NULL,
-  /* audit MDB-P2-A: NOT NULL DEFAULT 0 so a row inserted without an
-     explicit sort_id can never end up as NULL. ORDER BY sort_id DESC
-     ranks NULLs LAST in SQLite which would silently demote a freshly-
-     inserted-but-NULL row below older ones — the opposite of the
-     "last write wins" intent. upsertMap always provides a real
-     epoch-ms tick so the default is just defensive against any future
-     code path that bypasses upsertMap. */
+  /* NOT NULL DEFAULT 0 so a row inserted without an explicit sort_id
+     can never end up as NULL. ORDER BY sort_id DESC ranks NULLs LAST
+     in SQLite which would silently demote a freshly-inserted-but-NULL
+     row below older ones — the opposite of the "last write wins"
+     intent. upsertMap always provides a real epoch-ms tick so the
+     default is just defensive against any future code path that
+     bypasses upsertMap. */
   sort_id INTEGER NOT NULL DEFAULT 0
 );
 
