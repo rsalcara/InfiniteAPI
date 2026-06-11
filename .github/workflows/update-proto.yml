@@ -117,12 +117,19 @@ jobs:
 
       - name: Enable Auto-merge
         if: steps.create_pr.outputs.pull-request-number != ''
+        # audit CI-P1-B — `wa_version` was interpolated raw into the shell
+        # here (and in Summary below), bypassing the sanitisation that only
+        # happened inside the "Update baileys-version.json" step. Pass
+        # through env vars + filter so a hostile WhatsApp source response
+        # can't escape into command execution.
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          PR_NUMBER_INPUT: ${{ steps.create_pr.outputs.pull-request-number }}
+          WA_VERSION_RAW: ${{ steps.wa_proto_info.outputs.wa_version }}
         run: |
-          PR_NUMBER="${{ steps.create_pr.outputs.pull-request-number }}"
-          WA_VERSION="${{ steps.wa_proto_info.outputs.wa_version }}"
-          
+          PR_NUMBER=$(printf '%s' "$PR_NUMBER_INPUT" | tr -cd '0-9')
+          WA_VERSION=$(printf '%s' "$WA_VERSION_RAW" | tr -cd '0-9.')
+
           echo "🔀 Enabling auto-merge for PR #$PR_NUMBER (v$WA_VERSION)..."
           
           # Enable auto-merge with squash method
@@ -239,13 +246,21 @@ jobs:
 
       - name: Summary
         if: always()
+        # audit CI-P1-B — `wa_js_url` had NEVER been sanitised anywhere. It
+        # came verbatim from a regex over `web.whatsapp.com`'s response. We
+        # accept only valid HTTPS URL characters here; everything else is
+        # stripped before the value reaches Markdown / shell.
+        env:
+          WA_VERSION_RAW: ${{ steps.wa_proto_info.outputs.wa_version }}
+          WA_JS_URL_RAW: ${{ steps.wa_proto_info.outputs.wa_js_url }}
+          PR_NUMBER_RAW: ${{ steps.create_pr.outputs.pull-request-number }}
         run: |
           echo "### 📦 WAProto Update" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
-          WA_VERSION="${{ steps.wa_proto_info.outputs.wa_version }}"
-          WA_JS_URL="${{ steps.wa_proto_info.outputs.wa_js_url }}"
-          PR_NUMBER="${{ steps.create_pr.outputs.pull-request-number }}"
+
+          WA_VERSION=$(printf '%s' "$WA_VERSION_RAW" | tr -cd '0-9.')
+          WA_JS_URL=$(printf '%s' "$WA_JS_URL_RAW" | tr -cd 'A-Za-z0-9:/?&=._-+~%#')
+          PR_NUMBER=$(printf '%s' "$PR_NUMBER_RAW" | tr -cd '0-9')
           
           echo "**Version:** \`v$WA_VERSION\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

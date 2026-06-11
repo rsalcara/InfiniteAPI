@@ -795,6 +795,20 @@ export const downloadEncryptedContent = async (
 					}
 				}
 
+				// audit UTL-P0 — if the entire stream was ≤ HMAC_TRAILER_LEN
+				// bytes, `transform` never reached the `aes` initialiser
+				// (all incoming bytes were held back as trailer candidates).
+				// `aes.final()` would then throw `TypeError: Cannot read
+				// properties of undefined` and crash the consumer. Surface
+				// it as a typed Boom 400 so the caller can handle it.
+				if (!aes) {
+					return callback(
+						new Boom('media stream too short — no ciphertext bytes received', {
+							statusCode: 400
+						})
+					)
+				}
+
 				pushBytes(aes.final(), b => this.push(b))
 				callback()
 			} catch (error: any) {

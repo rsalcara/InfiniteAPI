@@ -95,15 +95,19 @@ export const decodeDecompressedBinaryNode = (
 		let val = 0
 		for (let i = 0; i < n; i++) {
 			const shift = littleEndian ? i : n - 1 - i
-			// Intentional bitwise OR — the WhatsApp binary protocol caps
-			// these widths at 4 bytes, so the implicit i32-with-sign coercion
-			// from `|=` is fine. A 4-byte length here with the high bit set
-			// would have been a length > 2 GB, which is rejected upstream by
-			// `checkEOS`. (audit P3-WAB-01)
 			val |= next()! << (shift * 8)
 		}
 
-		return val
+		// JS bitwise ops produce a SIGNED i32. A 4-byte read whose high bit
+		// is set yields a NEGATIVE value (e.g. 0x80000000 → -2147483648).
+		// Earlier the comment here claimed `checkEOS` would reject this —
+		// it doesn't: `indexRef.index + (-N) > buffer.length` is always
+		// false, so a malformed BINARY_32 would silently produce an empty
+		// buffer instead of an error. Force unsigned interpretation so
+		// downstream length consumers see a sane value (still capped at
+		// 4 GiB which `MAX_DECOMPRESSED_NODE_BYTES` enforces upstream).
+		// (audit WAB-P1)
+		return val >>> 0
 	}
 
 	const readInt20 = () => {

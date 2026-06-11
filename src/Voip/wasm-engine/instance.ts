@@ -1063,7 +1063,17 @@ export class WasmEngine {
 
 	#allocateUnusedWorker = (): void => {
 		const workerScriptPath = resolveWorkerScriptPath()
-		if (!fs.existsSync(workerScriptPath)) return
+		if (!fs.existsSync(workerScriptPath)) {
+			// audit VOIP-P1 — earlier this was a silent `return`. A missing
+			// worker bootstrap (incomplete build, wrong resourcesPath) would
+			// then leave the pthread pool at 0 workers and the WASM init
+			// would time out after 15 s with no clue what went wrong.
+			const onLog = this.#config.callbacks?.onLog
+			if (onLog) onLog('error', `voip: worker bootstrap not found at ${workerScriptPath}`)
+			else process.stderr.write(`voip: worker bootstrap not found at ${workerScriptPath}\n`)
+			return
+		}
+
 		try {
 			const worker = new Worker(workerScriptPath, {
 				stdout: true,
@@ -1082,7 +1092,16 @@ export class WasmEngine {
 			worker.stdout?.on('data', () => {}) // suppress noisy worker stdout
 			worker.stderr?.on('data', filterWorkerStderr)
 			this.#unusedWorkers.push(port)
-		} catch {}
+		} catch (err) {
+			// audit VOIP-P1 — earlier this was a bare `catch {}`. Spawn
+			// errors (resource exhaustion, ENOENT for the bootstrap script,
+			// V8 OOM creating the isolate) used to vanish here and the pool
+			// silently came up short.
+			const onLog = this.#config.callbacks?.onLog
+			const msg = `voip: failed to spawn pthread worker — ${(err as Error)?.message ?? String(err)}`
+			if (onLog) onLog('error', msg)
+			else process.stderr.write(msg + '\n')
+		}
 	}
 
 	#initPThreadPool = async (): Promise<void> => {

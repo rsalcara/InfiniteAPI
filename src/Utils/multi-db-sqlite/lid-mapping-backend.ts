@@ -34,6 +34,11 @@ export class JidMapBackend {
 		upsertMap: SqliteStatementLike
 		selectPnByLid: SqliteStatementLike
 		selectLidByPn: SqliteStatementLike
+		// audit MDB-P1-A — cached so `deleteMapping` doesn't `db.prepare()`
+		// per call. Earlier it compiled a fresh native statement per loop
+		// iteration; under burst delete that leaked native memory until V8
+		// collected the JS wrapper.
+		deleteMapByLidRowId: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
@@ -104,7 +109,8 @@ export class JidMapBackend {
 					'JOIN jid j ON j._id = m.lid_row_id ' +
 					'JOIN jid j_pn ON j_pn._id = m.jid_row_id ' +
 					'WHERE j_pn.raw_string = ? ORDER BY m.sort_id DESC LIMIT 1'
-			)
+			),
+			deleteMapByLidRowId: this.db.prepare('DELETE FROM jid_map WHERE lid_row_id = ?')
 		}
 
 		// Window-function variant of the "most recent LID per PN" pick.
@@ -201,11 +207,19 @@ export class JidMapBackend {
 	 * (audit P1-SQDB-02)
 	 */
 	deleteMapping(lidUser: string): void {
-		const row = this.stmts.selectJidIdByRaw.get(lidUser) as { _id: number } | undefined
-		if (!row) return
-		// Single statement — no transaction needed. The `jid` row stays;
-		// orphan `jid` rows are naturally reused by future `rowIdFor` calls.
-		this.db.prepare('DELETE FROM jid_map WHERE lid_row_id = ?').run(row._id)
+		// Wrapped in a transaction so a concurrent writer can't insert a new
+		// row between the SELECT (resolving the LID's _id) and the DELETE
+		// (using that _id). better-sqlite3 is synchronous so the race window
+		// is microscopic in single-process, but a worker-thread variant
+		// would otherwise see torn state. (audit MDB-P1-B)
+		this.db.transaction(() => {
+			const row = this.stmts.selectJidIdByRaw.get(lidUser) as { _id: number } | undefined
+			if (!row) return
+			// Cached statement — see `deleteMapByLidRowId` in stmts. The `jid`
+			// row stays; orphan `jid` rows are naturally reused by future
+			// `rowIdFor` calls. (audit MDB-P1-A)
+			this.stmts.deleteMapByLidRowId.run(row._id)
+		})()
 	}
 
 	/** Returns the LID for a PN, or `null` if no mapping exists. */

@@ -100,8 +100,14 @@ jobs:
 
       - name: Check for changes
         id: check_changes
+        # audit CI-P1-A — `inputs.force` was interpolated DIRECTLY into the
+        # shell. A workflow_dispatch caller can pass an arbitrary string
+        # (the API REST accepts non-boolean values) and execute commands.
+        # Same pattern that fixed CI-02 in manual-release.yml.
+        env:
+          FORCE_INPUT: ${{ inputs.force }}
         run: |
-          FORCE="${{ inputs.force }}"
+          FORCE="$FORCE_INPUT"
 
           if git diff --quiet; then
             echo "has_changes=false" >> $GITHUB_OUTPUT
@@ -119,12 +125,16 @@ jobs:
       - name: Create Pull Request
         id: create_pr
         if: steps.check_changes.outputs.has_changes == 'true' || steps.check_changes.outputs.force_mode == 'true'
+        # audit CI-P1-A — same fix as above for the second `inputs.force`
+        # occurrence in this workflow.
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          FORCE_INPUT: ${{ inputs.force }}
+          VERSION_INPUT: ${{ steps.update_version.outputs.version }}
         run: |
           BRANCH_NAME="update-version/stable"
-          FORCE="${{ inputs.force }}"
-          VERSION="${{ steps.update_version.outputs.version }}"
+          FORCE="$FORCE_INPUT"
+          VERSION="$VERSION_INPUT"
 
           # Configure git
           git config user.name "github-actions[bot]"
