@@ -7,3 +7,8 @@ WAProto
 WASignalGroup
 Example/Example.ts
 docs
+# WhatsApp Web VoIP WASM bundle — vendored verbatim from Meta's source,
+# do NOT auto-format (the minified output is part of the binary contract).
+# eslint already ignores this path via eslint.config.mts; mirror it here so
+# `lint:fix` doesn't churn the files and trip the CI clean-tree guard.
+src/Voip/assets/**
