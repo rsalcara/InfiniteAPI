@@ -73,8 +73,13 @@ jobs:
           WA_VERSION: ${{steps.wa_proto_info.outputs.wa_version}}
         run: |
           SAFE_VERSION=$(printf '%s' "$WA_VERSION" | tr -cd '0-9.')
-          if [ -z "$SAFE_VERSION" ]; then
-            echo "::error::wa_version is empty or non-numeric after sanitisation: '$WA_VERSION'"
+          # Reject anything that isn't EXACTLY `N.N.N` — `tr -cd '0-9.'` strips
+          # non-numeric chars but leaves trailing/leading dots ("2.3000."
+          # would survive) and the resulting JSON literal would be malformed:
+          # `{"version": [2, 3000, ]}`. Tight regex makes baileys-version.json
+          # corruption impossible. (audit CI-03 followup, threads 8 + 10)
+          if ! printf '%s' "$SAFE_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::wa_version not a valid N.N.N triple after sanitisation: '$SAFE_VERSION' (raw='$WA_VERSION')"
             exit 1
           fi
           WA_NUMBERS=$(printf '%s' "$SAFE_VERSION" | sed "s/\./, /g")

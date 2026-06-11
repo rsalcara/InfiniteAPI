@@ -45,6 +45,17 @@ export const createOfflineBufferState = (
 
 	return {
 		startBuffer(): void {
+			// Defensive: if `startBuffer` is ever called twice without an
+			// intervening `onOffline` / `onClose` (e.g. a future reconnection
+			// path that double-fires the CB:ib trigger), drop the stale
+			// timer so two flushes can't race. Today's socket lifecycle
+			// guarantees a single call, so this is belt-and-suspenders.
+			// (audit thread 9)
+			if (offlineBufferTimeout) {
+				clearTimeout(offlineBufferTimeout)
+				offlineBufferTimeout = undefined
+			}
+
 			didStartBuffer = true
 			offlineBufferTimeout = setTimeout(() => {
 				offlineBufferTimeout = undefined

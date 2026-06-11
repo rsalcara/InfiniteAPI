@@ -1280,6 +1280,10 @@ function signalStorage(
 			// a miss falls through to the TOFU default (trust). A future PR
 			// can promote this to strict-mode rejection when the WARN fires.
 			try {
+				// `saveIdentity` AND `loadIdentityKey` both populate the cache
+				// under BOTH the raw `id` AND the resolved `wireJid` spelling
+				// (after the audit-thread-11 fix). So a single get(id) lookup
+				// catches every entry written through either path.
 				const cached = identityKeyCache.get(id)
 				if (identityKey?.length === cached?.length) {
 					let diverged = false
@@ -1416,8 +1420,16 @@ function signalStorage(
 				const key = stored[wireJid] ?? stored[id]
 
 				if (key) {
-					// Populate cache under the resolved name only.
+					// Populate cache under BOTH spellings — matches the dual
+					// write in `saveIdentity`. Earlier this only cached the
+					// resolved `wireJid`, leaving `isTrustedIdentity(id)`'s
+					// sync cache lookup with a miss when called with the raw
+					// `id` before any save had happened. (audit thread 11)
 					identityKeyCache.set(wireJid, key)
+					if (wireJid !== id) {
+						identityKeyCache.set(id, key)
+					}
+
 					return key
 				}
 

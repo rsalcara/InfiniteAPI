@@ -60,13 +60,32 @@ describe('WABinary/decode — DoS bounds (audit TST-04)', () => {
 
 		it('accepts a node at depth = cap (boundary inclusive)', () => {
 			// depth = MAX_NODE_DEPTH should pass; depth > MAX_NODE_DEPTH throws.
+			// The 3-byte buffer is intentionally truncated, so the decoder is
+			// EXPECTED to throw some parse error — we just need to confirm it's
+			// NOT the depth guard. Earlier `expect(...).not.toThrow(/regex/)`
+			// would have passed even on a stack overflow / other error that
+			// silently hid a regression in the depth check.
 			const buf = Buffer.from([0xf8, 1, 1])
-			expect(() => decodeDecompressedBinaryNode(buf, constants, undefined, 64)).not.toThrow(/max node depth/i)
+			let thrown: Error | undefined
+			try {
+				decodeDecompressedBinaryNode(buf, constants, undefined, 64)
+			} catch (e) {
+				thrown = e as Error
+			}
+
+			expect(thrown?.message ?? '').not.toMatch(/max node depth/i)
 		})
 
 		it('accepts a node at depth = 0', () => {
 			const buf = Buffer.from([0xf8, 1, 1])
-			expect(() => decodeDecompressedBinaryNode(buf, constants, undefined, 0)).not.toThrow(/max node depth/i)
+			let thrown: Error | undefined
+			try {
+				decodeDecompressedBinaryNode(buf, constants, undefined, 0)
+			} catch (e) {
+				thrown = e as Error
+			}
+
+			expect(thrown?.message ?? '').not.toMatch(/max node depth/i)
 		})
 	})
 

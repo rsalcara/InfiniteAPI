@@ -219,7 +219,7 @@ export class JidMapBackend {
 	 * new device-LIDs over a contact's lifetime, so `jid_map` can hold N
 	 * rows for one PN. `getLidForPn` returns only the most-recent (highest
 	 * `sort_id`); for a delete request we need every row so historical
-	 * mappings don't ressurect via `inner.get` fallback. (audit MDB-01)
+	 * mappings don't resurrect via `inner.get` fallback. (audit MDB-01)
 	 */
 	getAllLidsForPn(pnUser: string): string[] {
 		// 2-table join: lid_row_id → jid (LID side), jid_row_id → jid (PN side).

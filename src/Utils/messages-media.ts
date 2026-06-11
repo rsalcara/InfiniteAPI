@@ -772,6 +772,18 @@ export const downloadEncryptedContent = async (
 		final(callback) {
 			try {
 				if (verifyMac && hmac) {
+					// Feed the tail bytes (the 0–15 bytes left in
+					// `remainingBytes` from the very last chunk after the
+					// AES-block-size alignment) into the HMAC before we
+					// digest. Without this, the trailing bytes that
+					// `aes.final()` will decrypt are NOT covered by the MAC,
+					// leaving a small but real window for an attacker who
+					// can flip those bytes without us noticing.
+					// (audit thread 13)
+					if (remainingBytes.length) {
+						hmac.update(remainingBytes)
+					}
+
 					const expected = hmac.digest().subarray(0, HMAC_TRAILER_LEN)
 					if (trailerBuf.length !== HMAC_TRAILER_LEN || !Crypto.timingSafeEqual(expected, trailerBuf)) {
 						return callback(

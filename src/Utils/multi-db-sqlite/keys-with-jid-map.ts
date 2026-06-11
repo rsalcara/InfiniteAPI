@@ -143,7 +143,7 @@ export function wrapKeysWithJidMap(
 			const seenReverse = new Set<string>()
 			// Track which entries in the inner store ALSO need a delete request
 			// — used below to propagate the null sentinel down so legacy entries
-			// that landed in the inner store (pre-Phase-9) don't ressurect via
+			// that landed in the inner store (pre-Phase-9) don't resurrect via
 			// the `inner.get` fallback. (audit MDB-02)
 			const innerDeleteForward: string[] = []
 			const innerDeleteReverse: string[] = []
@@ -158,7 +158,17 @@ export function wrapKeysWithJidMap(
 					// be visible via batchGetPnForLid. Wipe them all.
 					// (audit MDB-01)
 					const allLids = jidMap.getAllLidsForPn(pnUser)
-					for (const l of allLids) deletes.push(l)
+					for (const l of allLids) {
+						deletes.push(l)
+						// Also propagate the corresponding `_reverse` delete to
+						// the inner store — without this, a legacy reverse
+						// mapping `${lid}_reverse → pnUser` left behind in the
+						// inner store would re-surface (and point at the
+						// just-deleted PN) on the next `getKey` fallback.
+						// (audit thread 12)
+						innerDeleteReverse.push(l + REVERSE_SUFFIX)
+					}
+
 					innerDeleteForward.push(pnUser)
 					continue
 				}
@@ -209,7 +219,7 @@ export function wrapKeysWithJidMap(
 
 			// Propagate deletes to the inner store as well — covers legacy
 			// lid-mapping entries that landed there before Phase 9 migrated
-			// the typed jid_map backend in. Without this they ressurect via
+			// the typed jid_map backend in. Without this they resurrect via
 			// `inner.get` fallback. (audit MDB-02)
 			if (innerDeleteForward.length > 0 || innerDeleteReverse.length > 0) {
 				const lidMappingDeletes: Record<string, null> = {}
