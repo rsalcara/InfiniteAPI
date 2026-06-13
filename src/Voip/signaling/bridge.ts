@@ -33,7 +33,7 @@ const ACK_TIMEOUT_MS = 15_000
 // version lazy-loaded `@whiskeysockets/baileys` as a peer dep. Inside the fork
 // we ship as part of the same package, so static imports are cleaner and avoid
 // the runtime `import()` ceremony.
-import { proto } from '../../../WAProto/index'
+import { proto } from '../../../WAProto/index.js'
 import { encodeWAMessage, unpadRandomMax16 } from '../../Utils/generics'
 import { parseAndInjectE2ESessions } from '../../Utils/signal'
 import { encodeSignedDeviceIdentity } from '../../Utils/validate-connection'
