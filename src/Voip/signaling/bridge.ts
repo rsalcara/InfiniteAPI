@@ -273,6 +273,7 @@ export class SignalingBridge {
 			const encCount = parseCountAttr(rootEnc?.attrs.count)
 			let includeDeviceIdentity = false
 
+			let encryptionFailed = false
 			for (const destNode of destinations) {
 				const targetJid = String(destNode.attrs.jid ?? '').trim()
 				const destEnc = getBinaryNodeChild(destNode, 'enc')
@@ -283,9 +284,17 @@ export class SignalingBridge {
 					setNodeChildren(destNode, [encrypted.encNode])
 				} catch {
 					for (const d of destinations) removeNodeChildrenByTag(d, 'enc')
+					encryptionFailed = true
 					break
 				}
 			}
+
+			// If ANY destination failed to encrypt, we already stripped the
+			// `enc` children from every destination — pushing the stanza now
+			// would deliver a key-less offer that the peer can't decrypt,
+			// failing the call setup silently. Bail instead so the upstream
+			// caller can surface the failure.
+			if (encryptionFailed) return
 
 			if (includeDeviceIdentity) this.#appendDeviceIdentity(voipNode)
 
@@ -590,7 +599,11 @@ export class SignalingBridge {
 		const { jidDecode, jidEncode } = this.#baileys
 		const decoded = jidDecode(jid)
 		if (!decoded?.user) return jid
-		const server = jid.endsWith('@lid') ? 'lid' : 's.whatsapp.net'
+		// `decoded.server` already captures the parsed domain — using it
+		// avoids the previous `endsWith('@lid')` check that misclassified
+		// hosted-LID accounts (`*.@hosted.lid`, device 99) as PNs and
+		// silently rewrote them to `@s.whatsapp.net`.
+		const server = decoded.server === 'lid' || decoded.server === 'hosted.lid' ? decoded.server : 's.whatsapp.net'
 		return jidEncode(decoded.user, server)
 	}
 
@@ -598,7 +611,11 @@ export class SignalingBridge {
 		const { jidDecode, jidEncode } = this.#baileys
 		const decoded = jidDecode(jid)
 		if (!decoded?.user) return jid
-		const server = jid.endsWith('@lid') ? 'lid' : 's.whatsapp.net'
+		// `decoded.server` already captures the parsed domain — using it
+		// avoids the previous `endsWith('@lid')` check that misclassified
+		// hosted-LID accounts (`*.@hosted.lid`, device 99) as PNs and
+		// silently rewrote them to `@s.whatsapp.net`.
+		const server = decoded.server === 'lid' || decoded.server === 'hosted.lid' ? decoded.server : 's.whatsapp.net'
 		if (decoded.device == null) return jidEncode(decoded.user, server)
 		return `${decoded.user}:${decoded.device}@${server}`
 	}
@@ -609,7 +626,11 @@ export class SignalingBridge {
 		if (!decoded?.user) return undefined
 		const device = decoded.device
 		if (device == null || device === 0) return undefined
-		const server = jid.endsWith('@lid') ? 'lid' : 's.whatsapp.net'
+		// `decoded.server` already captures the parsed domain — using it
+		// avoids the previous `endsWith('@lid')` check that misclassified
+		// hosted-LID accounts (`*.@hosted.lid`, device 99) as PNs and
+		// silently rewrote them to `@s.whatsapp.net`.
+		const server = decoded.server === 'lid' || decoded.server === 'hosted.lid' ? decoded.server : 's.whatsapp.net'
 		return jidEncode(decoded.user, server)
 	}
 
@@ -675,7 +696,11 @@ export class SignalingBridge {
 				continue
 			}
 
-			const server = jid.endsWith('@lid') ? 'lid' : 's.whatsapp.net'
+			// `decoded.server` already captures the parsed domain — using it
+			// avoids the previous `endsWith('@lid')` check that misclassified
+			// hosted-LID accounts (`*.@hosted.lid`, device 99) as PNs and
+			// silently rewrote them to `@s.whatsapp.net`.
+			const server = decoded.server === 'lid' || decoded.server === 'hosted.lid' ? decoded.server : 's.whatsapp.net'
 			result.add(jidEncode(decoded.user, server))
 			if (decoded.device != null) {
 				result.add(`${decoded.user}:${decoded.device}@${server}`)

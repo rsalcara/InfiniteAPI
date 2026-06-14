@@ -191,6 +191,16 @@ export function wrapKeysWithJidMap(
 					// Reverse delete — keyed by LID directly.
 					deletes.push(lidUser)
 					innerDeleteReverse.push(key) // include the `_reverse` suffix
+					// Also clean up the FORWARD direction in the inner store.
+					// Reverse-only delete was leaving any legacy `pnUser →
+					// lidUser` entry intact in the inner store, so a later
+					// `inner.get('lid-mapping', [pnUser])` would resurrect the
+					// just-deleted LID via the fallback path. Resolve the PN
+					// from the typed backend (synchronous) and queue its
+					// forward delete too.
+					const resolvedPn = jidMap.getPnForLid(lidUser)
+					if (resolvedPn) innerDeleteForward.push(resolvedPn)
+
 					continue
 				}
 
@@ -231,10 +241,11 @@ export function wrapKeysWithJidMap(
 
 			if (hasRest) await inner.set(rest)
 
-			// Now persist jid_map changes. Wrapped in best-effort try/catch
-			// so a transient SQLITE_BUSY on the reverse-only path doesn't
-			// crash the caller — the missing mapping rebuilds on the next
-			// observed event. (audit P2-SQDB-02)
+			// Now persist jid_map changes. Wrapped in try/catch so the catch
+			// arm below can distinguish SQLITE_BUSY (re-raise so the upstream
+			// `runSetWithBusyRetry` can drive a backoff) from anything else
+			// (let it propagate). NOT best-effort — every error path
+			// rethrows; the wrapper is purely about classifying.
 			try {
 				if (deletes.length > 0) {
 					for (const lidUser of deletes) jidMap.deleteMapping(lidUser)

@@ -169,10 +169,13 @@ function parseLabelsFromEnv(envValue: string | undefined): Labels {
 export function loadMetricsConfig(): MetricsConfig {
 	return {
 		enabled: (process.env.BAILEYS_PROMETHEUS_ENABLED ?? process.env.METRICS_ENABLED) === 'true',
-		// audit ENV-02: was `parseInt(... || '9092', 10)` — NaN under malformed
-		// env vars would land as `server.listen(NaN)` producing an opaque
-		// EADDRINUSE/bind error. Clamp to valid TCP range (≥1024 unprivileged).
-		port: intFromEnv(process.env.BAILEYS_PROMETHEUS_PORT ?? process.env.METRICS_PORT, 9092, 1),
+		// Was `parseInt(... || '9092', 10)` — NaN under malformed env vars
+		// would land as `server.listen(NaN)` producing an opaque
+		// EADDRINUSE/bind error. `min=1` is just "not zero / not negative"
+		// (operators running as root may legitimately bind a privileged
+		// port). `max=65535` rejects values above the TCP range before
+		// they reach `server.listen()`.
+		port: intFromEnv(process.env.BAILEYS_PROMETHEUS_PORT ?? process.env.METRICS_PORT, 9092, 1, 65535),
 		host: process.env.BAILEYS_PROMETHEUS_HOST || process.env.METRICS_HOST || '127.0.0.1',
 		path: process.env.BAILEYS_PROMETHEUS_PATH || process.env.METRICS_PATH || '/metrics',
 		prefix: process.env.BAILEYS_PROMETHEUS_PREFIX || process.env.METRICS_PREFIX || 'baileys',

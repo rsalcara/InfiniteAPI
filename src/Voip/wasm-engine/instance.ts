@@ -325,6 +325,7 @@ export class WasmEngine {
 
 	#voipStackInitialized = false
 	#voipStackInitPromise: Promise<void> | null = null
+	#voipStackInitError: Error | null = null
 	#voipReadyResolver: (() => void) | null = null
 	#voipReadyPromise: Promise<void> | null = null
 
@@ -432,7 +433,13 @@ export class WasmEngine {
 			throw new Error(`No compatible WASM loader found. Tried: ${loaderModuleNames.join(', ')}`)
 		}
 
-		if (!WasmEngine.#globalCallbacksRegistered) this.#registerGlobalCallbacks()
+		// Always re-register: each `WasmEngine` instance carries its own
+		// closures (over `this.#config.callbacks`). After a disconnect→
+		// reconnect cycle the static listener map still held closures over
+		// the destroyed instance, so events from the fresh engine were
+		// routed to dead handlers. `destroy()` now clears the map; init
+		// repopulates it for the live instance.
+		this.#registerGlobalCallbacks()
 		await this.#initPThreadPool()
 		const workersLoadingPromise = this.#loadWasmModuleToAllWorkers()
 
@@ -472,11 +479,21 @@ export class WasmEngine {
 		this.#wasmModule = null
 		this.#wasmMemory = null
 		this.#initialized = false
+		// Clear closures that captured `this.#config.callbacks` so a later
+		// re-init can register its own listeners against the live instance.
+		// Same scope as the listeners themselves (process-wide singleton);
+		// no other live engine to step on in practice.
+		WasmEngine.#globalCallbackListeners.clear()
+		WasmEngine.#globalCallbacksRegistered = false
 	}
 
 	initVoipStack = (selfJid: string, meUserJid: string, selfLid: string): void => {
 		this.#ensureInitialized()
 		if (this.#voipStackInitialized || this.#voipStackInitPromise) return
+
+		// Clear any error from a previous failed init so a fresh attempt
+		// can be observed cleanly.
+		this.#voipStackInitError = null
 
 		this.#voipStackInitPromise = new Promise<void>(resolveInit => {
 			this.#voipReadyPromise = new Promise<void>(readyResolve => {
@@ -516,7 +533,13 @@ export class WasmEngine {
 					this.#voipStackInitPromise = null
 					resolveInit()
 				})
-			} catch {
+			} catch (initErr: any) {
+				// Stash the error so `waitForVoipStackReady` can re-throw it
+				// instead of pretending init succeeded. Earlier this swallowed
+				// the failure and `waitForVoipStackReady()` returned cleanly,
+				// leaving the stack in a "ready but actually broken" state —
+				// downstream call setup would then crash with cryptic errors.
+				this.#voipStackInitError = initErr instanceof Error ? initErr : new Error(String(initErr))
 				this.#voipReadyResolver = null
 				this.#voipReadyPromise = null
 				this.#voipStackInitPromise = null
@@ -526,12 +549,18 @@ export class WasmEngine {
 	}
 
 	waitForVoipStackReady = async (): Promise<void> => {
-		if (this.#voipStackInitialized) return
+		if (this.#voipStackInitialized) {
+			if (this.#voipStackInitError) throw this.#voipStackInitError
+			return
+		}
+
 		if (this.#voipStackInitPromise) {
 			await this.#voipStackInitPromise
 		} else {
 			await new Promise(r => setTimeout(r, 100))
 		}
+
+		if (this.#voipStackInitError) throw this.#voipStackInitError
 	}
 
 	isVoipStackReady = (): boolean => this.#voipStackInitialized
@@ -1110,7 +1139,19 @@ export class WasmEngine {
 
 	#loadWasmModuleToWorker = (worker: NodeWorkerMessagePort): Promise<void> =>
 		new Promise((resolve, reject) => {
+			// Worker can crash before sending `loaded` (OOM, native segfault,
+			// `importScripts` failure). Without a timeout the outer engine
+			// init would hang indefinitely. 30 s is generous — a healthy
+			// load usually finishes in single-digit seconds.
+			const WORKER_LOAD_TIMEOUT_MS = 30_000
+			let timer: NodeJS.Timeout | null = null
+
 			const cleanup = (): void => {
+				if (timer) {
+					clearTimeout(timer)
+					timer = null
+				}
+
 				worker.removeMessageListener('cmd', loadedHandler)
 				worker.removeMessageListener('cmd', errorHandler)
 			}
@@ -1133,6 +1174,11 @@ export class WasmEngine {
 					reject(new Error(`VoIP worker WASM load failed: ${String(msg.error ?? 'unknown')}`))
 				}
 			}
+
+			timer = setTimeout(() => {
+				cleanup()
+				reject(new Error(`VoIP worker WASM load timed out after ${WORKER_LOAD_TIMEOUT_MS}ms`))
+			}, WORKER_LOAD_TIMEOUT_MS)
 
 			worker.addMessageListener('cmd', loadedHandler)
 			worker.addMessageListener('cmd', errorHandler)
