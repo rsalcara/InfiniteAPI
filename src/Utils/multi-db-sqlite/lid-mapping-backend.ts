@@ -34,11 +34,15 @@ export class JidMapBackend {
 		upsertMap: SqliteStatementLike
 		selectPnByLid: SqliteStatementLike
 		selectLidByPn: SqliteStatementLike
-		// audit MDB-P1-A — cached so `deleteMapping` doesn't `db.prepare()`
-		// per call. Earlier it compiled a fresh native statement per loop
-		// iteration; under burst delete that leaked native memory until V8
-		// collected the JS wrapper.
+		// Cached so `deleteMapping` doesn't `db.prepare()` per call. Earlier
+		// it compiled a fresh native statement per loop iteration; under
+		// burst delete that leaked native memory until V8 collected the JS
+		// wrapper.
 		deleteMapByLidRowId: SqliteStatementLike
+		// Same reasoning for `getAllLidsForPn` — used on every delete to
+		// enumerate historical mappings; the inline `db.prepare()` paid the
+		// native compile cost every call.
+		selectAllLidsByPn: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
@@ -110,7 +114,14 @@ export class JidMapBackend {
 					'JOIN jid j_pn ON j_pn._id = m.jid_row_id ' +
 					'WHERE j_pn.raw_string = ? ORDER BY m.sort_id DESC LIMIT 1'
 			),
-			deleteMapByLidRowId: this.db.prepare('DELETE FROM jid_map WHERE lid_row_id = ?')
+			deleteMapByLidRowId: this.db.prepare('DELETE FROM jid_map WHERE lid_row_id = ?'),
+			selectAllLidsByPn: this.db.prepare(
+				`SELECT l.raw_string AS raw FROM jid_map jm
+				 JOIN jid l ON l._id = jm.lid_row_id
+				 JOIN jid p ON p._id = jm.jid_row_id
+				 WHERE p.raw_string = ?
+				 ORDER BY jm.sort_id DESC`
+			)
 		}
 
 		// Window-function variant of the "most recent LID per PN" pick.
@@ -239,16 +250,9 @@ export class JidMapBackend {
 		// 2-table join: lid_row_id → jid (LID side), jid_row_id → jid (PN side).
 		// Earlier version had a third `JOIN jid j ON j._id = l._id` and read
 		// `j.raw_string` — `j` was just a re-alias of `l`, harmless but a
-		// pointless extra lookup.
-		const rows = this.db
-			.prepare(
-				`SELECT l.raw_string AS raw FROM jid_map jm
-				 JOIN jid l ON l._id = jm.lid_row_id
-				 JOIN jid p ON p._id = jm.jid_row_id
-				 WHERE p.raw_string = ?
-				 ORDER BY jm.sort_id DESC`
-			)
-			.all(pnUser) as Array<{ raw: string }>
+		// pointless extra lookup. Uses the cached statement from `this.stmts`
+		// so this hot delete path doesn't pay the SQL-compile cost per call.
+		const rows = this.stmts.selectAllLidsByPn.all(pnUser) as Array<{ raw: string }>
 		return rows.map(r => r.raw)
 	}
 

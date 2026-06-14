@@ -259,7 +259,11 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           WA_VERSION=$(printf '%s' "$WA_VERSION_RAW" | tr -cd '0-9.')
-          WA_JS_URL=$(printf '%s' "$WA_JS_URL_RAW" | tr -cd 'A-Za-z0-9:/?&=._-+~%#')
+          # The `-` MUST be the last char in the class, otherwise `_-+`
+          # is parsed as the (invalid) range from `_` (0x5F) to `+` (0x2B)
+          # and GNU `tr` aborts with "reverse collating sequence order",
+          # breaking every Summary step run.
+          WA_JS_URL=$(printf '%s' "$WA_JS_URL_RAW" | tr -cd 'A-Za-z0-9:/?&=._+~%#-')
           PR_NUMBER=$(printf '%s' "$PR_NUMBER_RAW" | tr -cd '0-9')
           
           echo "**Version:** \`v$WA_VERSION\`" >> $GITHUB_STEP_SUMMARY

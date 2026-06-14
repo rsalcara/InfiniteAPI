@@ -452,16 +452,25 @@ export class VoipClient extends EventEmitter {
 		// Direct binary-node hooks used for incoming stanza processing. In embedded
 		// mode the socket exposes `.ws` (the underlying ws.WebSocket); in standalone
 		// mode it's the socket the client just built. Both expose the same handle.
+		// Refs are stored so `disconnect()` can detach them — otherwise a stanza
+		// arriving after teardown would run against `#engine = null`.
 		if (this.#sock.ws?.on) {
-			this.#sock.ws.on('CB:call', (node: any) => {
-				this.#signaling!.processIncomingCall(node, this.#engine!, this.#activeCall?.callId ?? '')
-			})
-			this.#sock.ws.on('CB:receipt', (node: any) => {
+			this.#cbCallHandler = (node: any) => {
+				this.#signaling?.processIncomingCall(node, this.#engine!, this.#activeCall?.callId ?? '')
+			}
+
+			this.#cbReceiptHandler = (node: any) => {
 				if (!isCallReceiptNode(node)) return
-				this.#signaling!.processIncomingReceipt(node, this.#engine!, this.#activeCall?.callId ?? '')
-			})
+				this.#signaling?.processIncomingReceipt(node, this.#engine!, this.#activeCall?.callId ?? '')
+			}
+
+			this.#sock.ws.on('CB:call', this.#cbCallHandler)
+			this.#sock.ws.on('CB:receipt', this.#cbReceiptHandler)
 		}
 	}
+
+	#cbCallHandler: ((node: any) => void) | null = null
+	#cbReceiptHandler: ((node: any) => void) | null = null
 
 	/**
 	 * Subscribe to the socket's `'call'` event. When an offer arrives that we
@@ -762,7 +771,11 @@ export class VoipClient extends EventEmitter {
 		// does that internally from the per-participant LID.
 		const resolved: string[] = []
 		for (const p of participants) {
-			if (p.endsWith('@lid')) {
+			// Both `@lid` and `@hosted.lid` are already resolved — only bare
+			// phone numbers need the LID lookup. The earlier `endsWith('@lid')`
+			// missed hosted-LID accounts (device 99) and tried to re-resolve
+			// them as if they were PNs.
+			if (p.endsWith('@lid') || p.endsWith('@hosted.lid')) {
 				resolved.push(p)
 			} else if (p.endsWith('@s.whatsapp.net')) {
 				const lid = await this.#signaling.resolveLid(p)
@@ -814,6 +827,20 @@ export class VoipClient extends EventEmitter {
 	disconnect = (): void => {
 		this.#activeCall?._forceEnd('disconnect')
 		this.#activeCall = null
+		// Detach the direct ws CB hooks BEFORE we null out the engine —
+		// otherwise a stanza in flight when destroy() lands could invoke
+		// the handler against a torn-down engine and throw into the host
+		// process. We captured the refs at attach time so `removeListener`
+		// targets the exact closure (a fresh arrow would not match).
+		const ws: any = this.#sock?.ws
+		const off = ws?.off ?? ws?.removeListener
+		if (off) {
+			if (this.#cbCallHandler) off.call(ws, 'CB:call', this.#cbCallHandler)
+			if (this.#cbReceiptHandler) off.call(ws, 'CB:receipt', this.#cbReceiptHandler)
+		}
+
+		this.#cbCallHandler = null
+		this.#cbReceiptHandler = null
 		this.#relay?.closeAll()
 		this.#engine?.destroy()
 		// Only close the socket if we created it. In embedded mode the caller

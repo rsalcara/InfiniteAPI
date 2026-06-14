@@ -297,6 +297,14 @@ function readVarint(buffer: Uint8Array, offset: number): { value: number; nextOf
 
 	while (offset < buffer.length) {
 		const byte = buffer[offset]!
+		// On byte 5 (shift === 28) only the low 4 bits can fit inside a
+		// 32-bit varint — the top 4 bits would land at positions 32–35 and
+		// silently fall off the uint32. `>>> 0` masks the overflow without
+		// signalling it, so a crafted payload could encode a value
+		// arbitrarily larger than 2³² – 1 and still parse cleanly. Reject
+		// it the same way the 6-byte case is rejected by the `shift >= 35`
+		// guard below.
+		if (shift === 28 && (byte & 0xf0) !== 0) return undefined
 		result |= (byte & 0x7f) << shift
 
 		offset++
