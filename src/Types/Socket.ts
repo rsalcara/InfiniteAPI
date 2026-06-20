@@ -173,6 +173,28 @@ export type SocketConfig = {
 	enableInteractiveMessages: boolean
 
 	/**
+	 * Refuse to send messages into "admins only" groups (announce === true,
+	 * i.e. closed communities / announcement groups) when this account is NOT
+	 * an admin of that group.
+	 *
+	 * WhatsApp's server already rejects non-admin sends into announcement
+	 * groups, so this does not change what reaches recipients — but enabling it:
+	 *   1. fails fast locally (throws a 403 Boom) instead of emitting a stanza
+	 *      the server will bounce, which reduces the rejection volume that gets
+	 *      accounts flagged/banned, and
+	 *   2. prevents this socket from being abused as a bulk-spam relay into
+	 *      locked communities ("disparo em comunidade trancada").
+	 *
+	 * The guard only blocks on a POSITIVE determination: if our own identity is
+	 * found in the group's participant list and is not an admin. If our identity
+	 * cannot be found (e.g. stale/partial cached metadata), the send is allowed
+	 * so legitimate admin sends are never broken by incomplete data.
+	 *
+	 * @default false
+	 */
+	enforceAnnounceAdmin?: boolean
+
+	/**
 	 * When true, clears the `routingInfo` stored in credentials before connecting.
 	 *
 	 * `routingInfo` is a hint that directs the socket to reconnect to the same

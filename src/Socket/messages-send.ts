@@ -90,7 +90,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		cachedGroupMetadata,
 		enableRecentMessageCache,
 		maxMsgRetryCount,
-		enableInteractiveMessages
+		enableInteractiveMessages,
+		enforceAnnounceAdmin
 	} = config
 	const sock = makeNewsletterSocket(config)
 	const {
@@ -1303,6 +1304,26 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						return {}
 					})()
 				])
+
+				// SECURITY GUARD — "admins only" (announce) groups / locked communities.
+				// When opted in (`enforceAnnounceAdmin`) and the group is in announce mode,
+				// refuse to emit the stanza if we can positively determine that our own
+				// identity is a non-admin participant. WhatsApp's server enforces this too,
+				// but failing fast here avoids the rejected-send volume that drives bans and
+				// blocks this socket from being used as a bulk-spam relay into locked groups.
+				// We only block on a positive non-admin match: an unknown identity (stale /
+				// partial cached metadata) is allowed so legit admin sends are never broken.
+				if (enforceAnnounceAdmin && isGroup && groupData?.announce && !participant && !isStatus) {
+					const meParticipant = groupData.participants.find(
+						p => areJidsSameUser(p.id, meId) || (meLid ? areJidsSameUser(p.id, meLid) : false)
+					)
+					if (meParticipant && !meParticipant.admin && !meParticipant.isAdmin) {
+						throw new Boom(
+							'Refusing to send: group is in "admins only" (announce) mode and this account is not an admin',
+							{ statusCode: 403, data: { jid, reason: 'announce-non-admin' } }
+						)
+					}
+				}
 
 				const participantsList = groupData ? groupData.participants.map(p => p.id) : []
 
