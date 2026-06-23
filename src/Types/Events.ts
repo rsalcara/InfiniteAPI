@@ -103,6 +103,28 @@ export type BaileysEventMap = {
 		messageTimestamp?: number
 	}
 
+	/**
+	 * Fired when an outgoing message into an "admins only" (announce) group /
+	 * locked community is blocked because this account is a non-admin member
+	 * (see `enforceAnnounceAdmin`). Lets the operator detect, log and alert on
+	 * attempts to post where the account is not allowed to — e.g. someone using
+	 * the API to push spam into a locked community.
+	 */
+	'security.announce-violation': {
+		/** the announce group / community the send was attempted into */
+		jid: string
+		/** the identity that attempted the send (PN or LID of this account) */
+		by: string
+		/** machine-readable reason, currently always 'announce-non-admin' */
+		reason: 'announce-non-admin'
+		/** id of the message that was blocked, if one was assigned */
+		messageId?: string
+		/** group subject, when available from metadata */
+		groupSubject?: string
+		/** epoch milliseconds when the attempt was blocked */
+		timestamp: number
+	}
+
 	'blocklist.set': { blocklist: string[] }
 	'blocklist.update': { blocklist: string[]; type: 'add' | 'remove' }
 
