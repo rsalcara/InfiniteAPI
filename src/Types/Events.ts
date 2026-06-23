@@ -125,6 +125,36 @@ export type BaileysEventMap = {
 		timestamp: number
 	}
 
+	/**
+	 * Fired when the "promote → blast → demote/leave" abuse pattern is detected:
+	 * an account was promoted to admin and then demoted/removed within the
+	 * configured window (see `detectAdminPromoteDemoteAbuse`). Identifies BOTH
+	 * the promoted account that (likely) sent the blast and the admin who
+	 * promoted it — i.e. who is responsible.
+	 */
+	'security.admin-abuse-suspected': {
+		/** the group / community where it happened */
+		jid: string
+		/** group subject, when available */
+		groupSubject?: string
+		/** the account that was promoted then demoted/removed (the spammer) */
+		participant: string
+		/** the admin who granted admin to `participant` (colluding/compromised) */
+		promotedBy: string
+		/** who demoted/removed `participant` to close the window, if known */
+		removedBy?: string
+		/** how the window closed */
+		closedBy: 'demote' | 'remove'
+		/** epoch ms of the promotion */
+		promotedAt: number
+		/** epoch ms of the demote/remove that closed the window */
+		closedAt: number
+		/** elapsed ms between promotion and demote/remove */
+		windowMs: number
+		/** number of messages `participant` sent while it was admin */
+		messagesDuringWindow: number
+	}
+
 	'blocklist.set': { blocklist: string[] }
 	'blocklist.update': { blocklist: string[]; type: 'add' | 'remove' }
 

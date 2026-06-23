@@ -2,6 +2,7 @@ import { DEFAULT_CONNECTION_CONFIG } from '../Defaults'
 import type { UserFacingSocketConfig, WAVersion } from '../Types'
 import type { VersionCacheLogger } from '../Utils/version-cache'
 import { clearVersionCache, getCachedVersion, getVersionCacheStatus, refreshVersionCache } from '../Utils/version-cache'
+import { attachAdminAbuseDetector } from '../Utils/admin-abuse-detector'
 import { makeCommunitiesSocket } from './communities'
 
 /**
@@ -39,7 +40,15 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		...config
 	}
 
-	return makeCommunitiesSocket(newConfig)
+	const sock = makeCommunitiesSocket(newConfig)
+
+	if (newConfig.detectAdminPromoteDemoteAbuse !== false) {
+		attachAdminAbuseDetector(sock.ev, newConfig.logger, {
+			windowMs: newConfig.adminPromoteDemoteWindowMs ?? 15 * 60 * 1000
+		})
+	}
+
+	return sock
 }
 
 /**

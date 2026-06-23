@@ -195,6 +195,30 @@ export type SocketConfig = {
 	enforceAnnounceAdmin?: boolean
 
 	/**
+	 * Detect the "promote → blast → demote/leave" abuse pattern used to spam
+	 * announcement groups / locked communities: a colluding or compromised admin
+	 * promotes an account, that account sends messages while temporarily admin,
+	 * then is demoted or leaves so it later looks like a "non-admin sent this".
+	 *
+	 * When enabled, the socket watches participant promote/demote/remove events
+	 * (and counts messages the promoted account sent in between) and, when a
+	 * promotion is reversed within `adminPromoteDemoteWindowMs`, logs a
+	 * `[SECURITY]` warning and emits a `security.admin-abuse-suspected` event
+	 * identifying BOTH the promoted account and the admin who promoted it.
+	 *
+	 * @default true
+	 */
+	detectAdminPromoteDemoteAbuse?: boolean
+
+	/**
+	 * Time window (ms) within which a promotion followed by a demote/remove of
+	 * the same account is treated as suspicious by `detectAdminPromoteDemoteAbuse`.
+	 *
+	 * @default 900000 (15 minutes)
+	 */
+	adminPromoteDemoteWindowMs?: number
+
+	/**
 	 * When true, clears the `routingInfo` stored in credentials before connecting.
 	 *
 	 * `routingInfo` is a hint that directs the socket to reconnect to the same
