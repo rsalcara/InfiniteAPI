@@ -1,8 +1,8 @@
 import { DEFAULT_CONNECTION_CONFIG } from '../Defaults'
 import type { UserFacingSocketConfig, WAVersion } from '../Types'
+import { attachAdminAbuseDetector } from '../Utils/admin-abuse-detector'
 import type { VersionCacheLogger } from '../Utils/version-cache'
 import { clearVersionCache, getCachedVersion, getVersionCacheStatus, refreshVersionCache } from '../Utils/version-cache'
-import { attachAdminAbuseDetector } from '../Utils/admin-abuse-detector'
 import { makeCommunitiesSocket } from './communities'
 
 /**

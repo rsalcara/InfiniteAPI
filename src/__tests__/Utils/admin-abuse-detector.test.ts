@@ -13,11 +13,11 @@
  *
  * The detector is purely passive — it never blocks or mutates events.
  */
-import { EventEmitter } from 'node:events'
 import { jest } from '@jest/globals'
+import { EventEmitter } from 'node:events'
 import type { BaileysEventEmitter } from '../../Types'
-import type { ILogger } from '../../Utils/logger'
 import { attachAdminAbuseDetector } from '../../Utils/admin-abuse-detector'
+import type { ILogger } from '../../Utils/logger'
 
 const silentLogger = (): ILogger =>
 	({
