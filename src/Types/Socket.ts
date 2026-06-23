@@ -190,7 +190,7 @@ export type SocketConfig = {
 	 * cannot be found (e.g. stale/partial cached metadata), the send is allowed
 	 * so legitimate admin sends are never broken by incomplete data.
 	 *
-	 * @default false
+	 * @default true
 	 */
 	enforceAnnounceAdmin?: boolean
 
