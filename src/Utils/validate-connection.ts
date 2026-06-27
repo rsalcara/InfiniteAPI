@@ -13,6 +13,15 @@ import { Curve, hmacSign } from './crypto'
 import { encodeBigEndian } from './generics'
 import { createSignalIdentity } from './signal'
 
+// Equivalent territory: upstream PR WhiskeySockets/Baileys#2201 ("add android
+// browser, can receive viewonce") flipped `platform` to ANDROID / dropped
+// WebInfo to make the companion show up as Android. We cover the same
+// outcome WITHOUT breaking the WA\x06\x03 (web) handshake: keep
+// `platform: WEB` here (server-side requirement — ANDROID/SMB_ANDROID lets
+// pair-code connect but fails at registration), keep WebInfo, and route the
+// "appears as Android" part through `DeviceProps.platformType = ANDROID_PHONE`
+// in the registration node below. Validated in production: pair code works
+// and the device shows up as "Android (14)" in Linked Devices.
 const getUserAgent = (config: SocketConfig): proto.ClientPayload.IUserAgent => {
 	return {
 		appVersion: {
