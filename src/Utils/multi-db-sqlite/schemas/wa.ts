@@ -48,13 +48,20 @@ CREATE TABLE IF NOT EXISTS wa_contacts (
   status_emoji TEXT,
   is_contact_synced INTEGER,
   is_reachable INTEGER,
-  external_user_state INTEGER
+  external_user_state INTEGER,
+  /* WhatsApp @username (rolling out 2026). Persisted here so a future
+     contact-persistence adapter can read both phone and handle with a
+     single SELECT. Nullable: most rows never have a handle. The
+     matching ALTER for already-deployed wa.db files ships as migration
+     v1 (see MIGRATIONS in store.ts). */
+  username TEXT
 );
 
 CREATE INDEX IF NOT EXISTS wa_contacts_jid_idx ON wa_contacts (jid);
 CREATE INDEX IF NOT EXISTS wa_contacts_is_wa_idx ON wa_contacts (is_whatsapp_user);
 CREATE INDEX IF NOT EXISTS wa_contacts_is_contact_synced_idx
   ON wa_contacts (is_contact_synced);
+CREATE INDEX IF NOT EXISTS wa_contacts_username_idx ON wa_contacts (username);
 
 CREATE TABLE IF NOT EXISTS wa_trusted_contacts (
   jid TEXT PRIMARY KEY NOT NULL,

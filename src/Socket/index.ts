@@ -1,6 +1,7 @@
 import { DEFAULT_CONNECTION_CONFIG } from '../Defaults'
 import type { UserFacingSocketConfig, WAVersion } from '../Types'
 import { attachAdminAbuseDetector } from '../Utils/admin-abuse-detector'
+import { attachMeUsernameSync } from '../Utils/me-username-sync'
 import type { VersionCacheLogger } from '../Utils/version-cache'
 import { clearVersionCache, getCachedVersion, getVersionCacheStatus, refreshVersionCache } from '../Utils/version-cache'
 import { makeCommunitiesSocket } from './communities'
@@ -47,6 +48,13 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			windowMs: newConfig.adminPromoteDemoteWindowMs ?? 15 * 60 * 1000
 		})
 	}
+
+	// Auto-propagate @username changes from inbound mex notifications
+	// (re-shaped into `contacts.update` by `handleMexNotification`) into
+	// `creds.me.username`, so the bound auth state stays in sync after
+	// the user reserves / changes / deletes a handle on their primary
+	// phone post-pair. Purely reactive (no stanzas).
+	attachMeUsernameSync(sock.ev, sock.authState.creds, newConfig.logger)
 
 	return sock
 }

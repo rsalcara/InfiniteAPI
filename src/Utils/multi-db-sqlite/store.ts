@@ -24,12 +24,32 @@ import { MULTI_DB_FILES, type MultiDbFile, SCHEMAS } from './schemas'
 import type { SqliteDbLike } from './types'
 
 /**
- * Per-DB migration lists. Empty in the Phase 9 PR — the bookkeeping
- * infrastructure is shipped so future PRs can append a `{ version, name,
- * sql }` entry without retrofitting it at the point they need it. Each
- * key in this record corresponds to a `MultiDbFile`.
+ * Per-DB migration lists. Each key in this record corresponds to a
+ * `MultiDbFile`. Versions are strictly monotonic per file.
+ *
+ * Authoring rules:
+ *   - Append; never re-number, never edit a shipped migration.
+ *   - `ALTER TABLE ADD COLUMN` is the safe primitive for adding a
+ *     nullable column to an existing table. It is NOT idempotent (a
+ *     second run errors with "duplicate column name") — the per-DB
+ *     `schema_migrations` bookkeeping in `runMigrations` is what
+ *     guarantees the statement runs once.
+ *   - Pair every migration with the matching change to the `_SCHEMA`
+ *     export in `schemas/<db>.ts`, so fresh DBs get the column at
+ *     CREATE-time. The migration only fires on already-deployed DBs.
  */
-const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {}
+const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
+	'wa.db': [
+		{
+			version: 1,
+			name: 'add wa_contacts.username + index',
+			sql: `
+				ALTER TABLE wa_contacts ADD COLUMN username TEXT;
+				CREATE INDEX IF NOT EXISTS wa_contacts_username_idx ON wa_contacts (username);
+			`
+		}
+	]
+}
 
 type DatabaseConstructor = typeof import('better-sqlite3')
 
