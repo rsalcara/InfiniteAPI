@@ -24,9 +24,9 @@
  */
 import { Boom } from '@hapi/boom'
 import { jest } from '@jest/globals'
-import type { BinaryNode } from '../../WABinary'
 import { executeWMexQuery } from '../../Socket/mex'
 import { UsernameQueryIds, XWAUsernamePaths } from '../../Types/Username'
+import type { BinaryNode } from '../../WABinary'
 
 const makeOkResponse = (dataPath: string, payload: unknown): BinaryNode => ({
 	tag: 'iq',
