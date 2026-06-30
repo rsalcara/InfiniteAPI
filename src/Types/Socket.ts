@@ -173,6 +173,52 @@ export type SocketConfig = {
 	enableInteractiveMessages: boolean
 
 	/**
+	 * Refuse to send messages into "admins only" groups (announce === true,
+	 * i.e. closed communities / announcement groups) when this account is NOT
+	 * an admin of that group.
+	 *
+	 * WhatsApp's server already rejects non-admin sends into announcement
+	 * groups, so this does not change what reaches recipients — but enabling it:
+	 *   1. fails fast locally (throws a 403 Boom) instead of emitting a stanza
+	 *      the server will bounce, which reduces the rejection volume that gets
+	 *      accounts flagged/banned, and
+	 *   2. prevents this socket from being abused as a bulk-spam relay into
+	 *      locked communities ("disparo em comunidade trancada").
+	 *
+	 * The guard only blocks on a POSITIVE determination: if our own identity is
+	 * found in the group's participant list and is not an admin. If our identity
+	 * cannot be found (e.g. stale/partial cached metadata), the send is allowed
+	 * so legitimate admin sends are never broken by incomplete data.
+	 *
+	 * @default true
+	 */
+	enforceAnnounceAdmin?: boolean
+
+	/**
+	 * Detect the "promote → blast → demote/leave" abuse pattern used to spam
+	 * announcement groups / locked communities: a colluding or compromised admin
+	 * promotes an account, that account sends messages while temporarily admin,
+	 * then is demoted or leaves so it later looks like a "non-admin sent this".
+	 *
+	 * When enabled, the socket watches participant promote/demote/remove events
+	 * (and counts messages the promoted account sent in between) and, when a
+	 * promotion is reversed within `adminPromoteDemoteWindowMs`, logs a
+	 * `[SECURITY]` warning and emits a `security.admin-abuse-suspected` event
+	 * identifying BOTH the promoted account and the admin who promoted it.
+	 *
+	 * @default true
+	 */
+	detectAdminPromoteDemoteAbuse?: boolean
+
+	/**
+	 * Time window (ms) within which a promotion followed by a demote/remove of
+	 * the same account is treated as suspicious by `detectAdminPromoteDemoteAbuse`.
+	 *
+	 * @default 900000 (15 minutes)
+	 */
+	adminPromoteDemoteWindowMs?: number
+
+	/**
 	 * When true, clears the `routingInfo` stored in credentials before connecting.
 	 *
 	 * `routingInfo` is a hint that directs the socket to reconnect to the same

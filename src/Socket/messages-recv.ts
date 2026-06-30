@@ -84,6 +84,11 @@ import {
 import { buildAckStanza } from '../Utils/stanza-ack'
 import { isRegularUser, isTcTokenExpired, resolveTcTokenJid, storeTcTokensFromIqResult } from '../Utils/tc-token-utils'
 import {
+	handleUsernameDeleteNotification as handleUsernameDeleteNotificationImpl,
+	handleUsernameSetNotification as handleUsernameSetNotificationImpl,
+	handleUsernameSideSubNotification as handleUsernameSideSubNotificationImpl
+} from '../Utils/username-notifications'
+import {
 	areJidsSameUser,
 	type BinaryNode,
 	binaryNodeToString,
@@ -618,6 +623,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		ev.emit('message-capping.update', payload)
 	}
 
+	// Username @-handle notifications (2026 rollout). The handler bodies
+	// live in `Utils/username-notifications.ts` so they're testable
+	// without a full socket bring-up — this file just provides the
+	// `(ev, logger)` closure they need.
+	const handleUsernameSetNotification = (data: Record<string, unknown>) =>
+		handleUsernameSetNotificationImpl(data, ev, logger)
+	const handleUsernameDeleteNotification = (data: Record<string, unknown>) =>
+		handleUsernameDeleteNotificationImpl(data, ev, logger)
+	const handleUsernameSideSubNotification = (data: Record<string, unknown>) =>
+		handleUsernameSideSubNotificationImpl(data, logger)
+
 	// Handles mex newsletter notifications
 	const handleMexNewsletterNotification = async (node: BinaryNode) => {
 		const mexNode = getBinaryNodeChild(node, 'mex')
@@ -757,6 +773,34 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					if (parsed?.data) handleReachoutTimelockNotification(parsed.data)
 				} catch (err) {
 					logger.error({ err, opName }, 'failed to parse reachout timelock notification')
+				}
+			}
+
+			return
+		}
+
+		// Username @-handle notifications (2026 rollout). Same envelope
+		// as reachout/capping above; just different op_name + xwa2_ key.
+		const usernameOpHandlers: Record<string, (data: Record<string, unknown>) => void> = {
+			UsernameSetNotification: handleUsernameSetNotification,
+			UsernameDeleteNotification: handleUsernameDeleteNotification,
+			UsernameUpdateNotification: handleUsernameSideSubNotification
+		}
+
+		// `hasOwnProperty.call` (not `in`) — the latter would match
+		// prototype keys like `constructor`/`toString`, letting a
+		// malicious server route those op_names into our handlers.
+		// (audit P2-1) `Object.hasOwn` would read cleaner but it is
+		// ES2022 and tsconfig.lib here is older.
+		if (updateNode && opName && Object.prototype.hasOwnProperty.call(usernameOpHandlers, opName)) {
+			if (!updateNode.content) {
+				logger.debug({ opName }, 'username notification has no content, skipping')
+			} else {
+				try {
+					const parsed = JSON.parse(updateNode.content.toString()) as { data?: Record<string, unknown> }
+					if (parsed?.data) usernameOpHandlers[opName]!(parsed.data)
+				} catch (err) {
+					logger.error({ err, opName }, 'failed to parse username notification')
 				}
 			}
 
