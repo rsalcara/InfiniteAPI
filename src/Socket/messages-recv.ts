@@ -809,7 +809,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					// have the same latent bug and should be fixed in a
 					// separate follow-up — out of scope for this PR.
 					const raw = updateNode.content
-					const text = typeof raw === 'string' ? raw : raw instanceof Uint8Array ? Buffer.from(raw).toString('utf8') : ''
+					let text = ''
+					if (typeof raw === 'string') {
+						text = raw
+					} else if (raw instanceof Uint8Array) {
+						text = Buffer.from(raw).toString('utf8')
+					}
+
 					const parsed = JSON.parse(text) as { data?: Record<string, unknown> }
 					if (parsed?.data) usernameOpHandlers[opName]!(parsed.data)
 				} catch (err) {
