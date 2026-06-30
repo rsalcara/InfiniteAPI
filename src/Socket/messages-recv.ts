@@ -797,7 +797,25 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				logger.debug({ opName }, 'username notification has no content, skipping')
 			} else {
 				try {
-					const parsed = JSON.parse(updateNode.content.toString()) as { data?: Record<string, unknown> }
+					// `.toString()` on a Uint8Array (not a Buffer) yields
+					// `"byte,byte,byte"` not the UTF-8 text — `JSON.parse`
+					// then throws and the notification is silently lost.
+					// Route through `Buffer.from(...).toString('utf8')`
+					// which handles both string and binary content
+					// uniformly. Matches the pattern in the newsletter
+					// admin-promotion parser above (audit release-#583
+					// review item #2). The neighbouring reachout-timelock
+					// + message-capping branches in this same dispatcher
+					// have the same latent bug and should be fixed in a
+					// separate follow-up — out of scope for this PR.
+					const raw = updateNode.content
+					const text =
+						typeof raw === 'string'
+							? raw
+							: raw instanceof Uint8Array
+								? Buffer.from(raw).toString('utf8')
+								: ''
+					const parsed = JSON.parse(text) as { data?: Record<string, unknown> }
 					if (parsed?.data) usernameOpHandlers[opName]!(parsed.data)
 				} catch (err) {
 					logger.error({ err, opName }, 'failed to parse username notification')
