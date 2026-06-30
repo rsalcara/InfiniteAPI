@@ -77,11 +77,31 @@ export function runMigrations(db: SqliteDbLike, migrations: ReadonlyArray<Migrat
 	const appliedRows = selectApplied.all() as Array<{ version: number }>
 	const appliedVersions = new Set(appliedRows.map(r => r.version))
 
-	const insertApplied = db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)')
+	// `INSERT OR IGNORE` (not plain INSERT) so a concurrent opener that
+	// already wrote the bookkeeping row inside its own immediate-txn
+	// doesn't surface here as `UNIQUE constraint failed`. The
+	// `selectAppliedInTx` re-check inside the transaction below is the
+	// load-bearing race guard — the bookkeeping insert is just a safety
+	// net for the window between the outer SELECT and the BEGIN. (audit
+	// release #583 review item #6)
+	const insertApplied = db.prepare(
+		'INSERT OR IGNORE INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)'
+	)
+	const selectAppliedInTx = db.prepare('SELECT 1 FROM schema_migrations WHERE version = ?')
 
 	for (const m of migrations) {
 		if (appliedVersions.has(m.version)) continue
 		const tx = db.transaction(() => {
+			// Re-check INSIDE the IMMEDIATE transaction (which has the
+			// write-lock) — a peer process / handle could have applied
+			// this version between our outer `SELECT` and this BEGIN.
+			// Without the re-check the ALTER below would fire twice
+			// and the second runner would crash on `duplicate column
+			// name` / similar non-idempotent SQL.
+			if (selectAppliedInTx.get(m.version)) {
+				return
+			}
+
 			db.exec(m.sql)
 			insertApplied.run(m.version, m.name, Date.now())
 		})

@@ -327,4 +327,137 @@ describe('attachAdminAbuseDetector', () => {
 
 		expect(events).toHaveLength(0)
 	})
+
+	describe('LID/PN alias correlation (audit release #583 review #5)', () => {
+		// Same physical user; promote arrives addressed by LID, demote
+		// by PN (common in communities where the group is LID-addressed
+		// but admin actions surface PN-addressed). Detector MUST still
+		// correlate the two events as the same person.
+		const VICTIM_LID = '4001@lid'
+		const VICTIM_PN = '5511777000@s.whatsapp.net'
+
+		it('promote (by LID) → demote (by PN) on the same record correlates and emits', () => {
+			const ev = makeEv()
+			const events: Array<Record<string, unknown>> = []
+			ev.on('security.admin-abuse-suspected', e => events.push(e as Record<string, unknown>))
+			attachAdminAbuseDetector(ev, buildLogger(), { windowMs: 60_000 })
+
+			// Promote indexed under BOTH `id` and `phoneNumber` aliases
+			ev.emit('group-participants.update', {
+				id: GROUP,
+				author: ADMIN,
+				participants: [{ id: VICTIM_LID, phoneNumber: VICTIM_PN }],
+				action: 'promote'
+			} as never)
+			jest.advanceTimersByTime(5_000)
+			// Demote arrives addressed by PN ONLY — must still match
+			ev.emit('group-participants.update', {
+				id: GROUP,
+				author: ADMIN,
+				participants: [{ id: VICTIM_PN }],
+				action: 'demote'
+			} as never)
+
+			expect(events).toHaveLength(1)
+			expect(events[0]).toMatchObject({ participant: VICTIM_LID })
+		})
+
+		it('messages.upsert under PN counts toward a promotion indexed under LID', () => {
+			const ev = makeEv()
+			const events: Array<Record<string, unknown>> = []
+			ev.on('security.admin-abuse-suspected', e => events.push(e as Record<string, unknown>))
+			attachAdminAbuseDetector(ev, buildLogger(), { windowMs: 60_000 })
+
+			ev.emit('group-participants.update', {
+				id: GROUP,
+				author: ADMIN,
+				participants: [{ id: VICTIM_LID, phoneNumber: VICTIM_PN }],
+				action: 'promote'
+			} as never)
+
+			// Two messages, both addressed via PN even though the
+			// promotion was by LID
+			for (let i = 0; i < 2; i++) {
+				ev.emit('messages.upsert', {
+					messages: [{ key: { remoteJid: GROUP, participant: VICTIM_PN, fromMe: false, id: `m${i}` } }],
+					type: 'notify'
+				} as never)
+			}
+
+			ev.emit('group-participants.update', {
+				id: GROUP,
+				author: ADMIN,
+				participants: [{ id: VICTIM_LID }],
+				action: 'demote'
+			} as never)
+
+			expect(events).toHaveLength(1)
+			expect(events[0]!.messagesDuringWindow).toBe(2)
+		})
+
+		it('messages.upsert that addresses by `participantAlt` counts (LID/PN counterpart key)', () => {
+			const ev = makeEv()
+			const events: Array<Record<string, unknown>> = []
+			ev.on('security.admin-abuse-suspected', e => events.push(e as Record<string, unknown>))
+			attachAdminAbuseDetector(ev, buildLogger(), { windowMs: 60_000 })
+
+			ev.emit('group-participants.update', {
+				id: GROUP,
+				author: ADMIN,
+				participants: [{ id: VICTIM_LID }], // ONLY LID indexed
+				action: 'promote'
+			} as never)
+
+			// message addressed by an unrelated PN as `participant`,
+			// but `participantAlt` carries the LID we promoted under
+			ev.emit('messages.upsert', {
+				messages: [
+					{
+						key: {
+							remoteJid: GROUP,
+							participant: VICTIM_PN, // unrelated to record
+							participantAlt: VICTIM_LID, // matches!
+							fromMe: false,
+							id: 'm-alt'
+						}
+					}
+				],
+				type: 'notify'
+			} as never)
+
+			ev.emit('group-participants.update', {
+				id: GROUP,
+				author: ADMIN,
+				participants: [{ id: VICTIM_LID }],
+				action: 'demote'
+			} as never)
+
+			expect(events).toHaveLength(1)
+			expect(events[0]!.messagesDuringWindow).toBe(1)
+		})
+
+		it('demote dedupes the SAME record across multiple aliases (no double-emit)', () => {
+			const ev = makeEv()
+			const events: unknown[] = []
+			ev.on('security.admin-abuse-suspected', e => events.push(e))
+			attachAdminAbuseDetector(ev, buildLogger(), { windowMs: 60_000 })
+
+			ev.emit('group-participants.update', {
+				id: GROUP,
+				author: ADMIN,
+				participants: [{ id: VICTIM_LID, phoneNumber: VICTIM_PN }],
+				action: 'promote'
+			} as never)
+			// Pathological: demote payload lists the SAME user twice,
+			// once per alias. Must emit ONE event, not two.
+			ev.emit('group-participants.update', {
+				id: GROUP,
+				author: ADMIN,
+				participants: [{ id: VICTIM_LID }, { id: VICTIM_PN }],
+				action: 'demote'
+			} as never)
+
+			expect(events).toHaveLength(1)
+		})
+	})
 })

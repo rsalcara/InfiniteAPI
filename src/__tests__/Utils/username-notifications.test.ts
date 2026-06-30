@@ -103,6 +103,27 @@ describe('handleUsernameSetNotification (UsernameSetNotification)', () => {
 		expect(captured[0]![0]!.lid).toBe('46802258641027@lid')
 	})
 
+	it('rejects malformed LID that normalizes to empty string (audit #583 review #3)', () => {
+		// `jidNormalizedUser('garbage-no-at')` returns '' — without the
+		// guard we'd emit `{id:'', lid:''}` to every contacts.update
+		// listener.
+		const ev = new EventEmitter() as unknown as BaileysEventEmitter
+		const updates: unknown[] = []
+		ev.on('contacts.update', u => updates.push(u))
+		const warnSpy = jest.fn()
+		const logger = silentLogger()
+		;(logger as unknown as { warn: jest.Mock }).warn = warnSpy
+
+		handleUsernameSetNotification(
+			{ xwa2_notify_username_on_change: { username: 'tuoli', lid: 'garbage-no-at' } },
+			ev,
+			logger
+		)
+
+		expect(updates).toHaveLength(0)
+		expect(warnSpy).toHaveBeenCalledTimes(1)
+	})
+
 	it('rejects non-string lid / username (wire-trust guard)', () => {
 		// Regression for the auditor's P2-3 finding. The wire payload
 		// could carry numbers / objects / nulls. Type-check both fields
@@ -176,6 +197,24 @@ describe('handleUsernameDeleteNotification (UsernameDeleteNotification)', () => 
 		;(logger as unknown as { warn: jest.Mock }).warn = warnSpy
 
 		handleUsernameDeleteNotification({ xwa2_notify_username_delete: {} }, ev, logger)
+		expect(updates).toHaveLength(0)
+		expect(warnSpy).toHaveBeenCalledTimes(1)
+	})
+
+	it('rejects malformed LID that normalizes to empty string (audit #583 review #3)', () => {
+		const ev = new EventEmitter() as unknown as BaileysEventEmitter
+		const updates: unknown[] = []
+		ev.on('contacts.update', u => updates.push(u))
+		const warnSpy = jest.fn()
+		const logger = silentLogger()
+		;(logger as unknown as { warn: jest.Mock }).warn = warnSpy
+
+		handleUsernameDeleteNotification(
+			{ xwa2_notify_username_delete: { lid: 'no-at-here' } },
+			ev,
+			logger
+		)
+
 		expect(updates).toHaveLength(0)
 		expect(warnSpy).toHaveBeenCalledTimes(1)
 	})

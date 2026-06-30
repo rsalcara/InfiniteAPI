@@ -40,15 +40,20 @@
  *     for grace-period anti-recycling but not advertised.
  *   - `NONE`     — never set.
  *
- * Treat as opaque — server may add new states (e.g. SUSPENDED). Callers
- * should compare with `=== 'RESERVED'` etc. rather than exhaustive
- * switch.
+ * If the server introduces a new code (e.g. `SUSPENDED`), TypeScript
+ * will surface it as a string that doesn't satisfy this union — the
+ * intentional fix is to widen the union here, not to keep the
+ * `| string` escape hatch that the prior version of this type had.
+ * The escape hatch collapses the union to `string` for tooling
+ * purposes (no IntelliSense, no exhaustive `switch`), which defeats
+ * the point of having a typed state at all.
+ * Callers expecting forward-compat should compare with `=== 'RESERVED'`
+ * etc. and treat the `default` arm as "unknown future state".
  */
-export type UsernameState = 'RESERVED' | 'ACTIVE' | 'DELETED' | 'NONE' | string
+export type UsernameState = 'RESERVED' | 'ACTIVE' | 'DELETED' | 'NONE'
 
 /**
  * Result codes returned by the four `xwa2_username_*` GraphQL operations.
- * Like {@link UsernameState}, this is opaque — the server may add codes.
  *
  * Observed values from the WAWebMexClient error handler:
  *   - `SUCCESS`                — set / delete / pin_set succeeded
@@ -57,6 +62,10 @@ export type UsernameState = 'RESERVED' | 'ACTIVE' | 'DELETED' | 'NONE' | string
  *   - `INVALID_PIN` / `INCORRECT_PIN` — pin set with wrong current pin
  *   - `RESERVED_ONLY_PHASE`    — server is in reservation-only mode and
  *     rejected an `ACTIVE`-mode mutation
+ *
+ * Same forward-compat note as {@link UsernameState}: no `| string`
+ * escape hatch. A new server code is a TypeScript signal to widen the
+ * union here.
  */
 export type UsernameResult =
 	| 'SUCCESS'
@@ -66,7 +75,6 @@ export type UsernameResult =
 	| 'INVALID_PIN'
 	| 'INCORRECT_PIN'
 	| 'RESERVED_ONLY_PHASE'
-	| string
 
 /**
  * `doc_id` (query_id) values for the four MEX GraphQL operations.

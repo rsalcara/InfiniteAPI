@@ -1,4 +1,4 @@
-import type { BaileysEventEmitter } from '../Types'
+import type { BaileysEventEmitter, GroupParticipant } from '../Types'
 import { jidNormalizedUser } from '../WABinary'
 import type { ILogger } from './logger'
 
@@ -11,6 +11,15 @@ interface PromotionRecord {
 	participantDisplay: string
 	/** how many messages the promoted account sent while it was admin */
 	messageCount: number
+	/**
+	 * Every alias key under which this record is indexed in the
+	 * `promotions` Map (group|id, group|lid, group|phoneNumber, …). On
+	 * demote/remove we use this list to evict every entry pointing to
+	 * the same record in one pass, instead of relying on the demote
+	 * event to address the participant on the same alias the promote
+	 * used. (audit release #583 review item #5)
+	 */
+	aliasKeys: string[]
 }
 
 export interface AdminAbuseDetectorOptions {
@@ -32,21 +41,51 @@ export interface AdminAbuseDetectorOptions {
  * in-memory map of recent promotions (pruned to `windowMs`), and on a matching
  * demote/remove emits a `[SECURITY]` log + a `security.admin-abuse-suspected`
  * event. It never blocks or mutates anything.
+ *
+ * LID/PN alias handling — `group-participants.update` and the upstream
+ * `messages.upsert` may address the same physical user under any of
+ * `participant.id` (the addressing the group used), `participant.lid`
+ * (the LID counterpart), and `participant.phoneNumber` (the PN
+ * counterpart). The detector indexes a record under all aliases known
+ * at promote-time AND looks up under all aliases known at
+ * demote/upsert-time, so a promote-by-LID + demote-by-PN (common in
+ * communities where the group is LID-addressed but admin actions
+ * arrive PN-addressed) still correlates.
  */
 export const attachAdminAbuseDetector = (
 	ev: BaileysEventEmitter,
 	logger: ILogger,
 	{ windowMs }: AdminAbuseDetectorOptions
 ) => {
-	// key: `${normalizedGroupJid}|${normalizedParticipant}`
+	// key: `${normalizedGroupJid}|${normalizedParticipantAlias}`
 	const promotions = new Map<string, PromotionRecord>()
 
-	const recordKey = (jid: string, participant: string) =>
-		`${jidNormalizedUser(jid) ?? jid}|${jidNormalizedUser(participant) ?? participant}`
+	const normalize = (jid: string) => jidNormalizedUser(jid) || jid
+
+	const recordKey = (jid: string, participant: string) => `${normalize(jid)}|${normalize(participant)}`
+
+	/** Aliases worth indexing for a single participant. */
+	const aliasesOf = (p: Pick<GroupParticipant, 'id' | 'lid' | 'phoneNumber'>): string[] => {
+		const out = new Set<string>()
+		for (const candidate of [p.id, p.lid, p.phoneNumber]) {
+			if (candidate) out.add(candidate)
+		}
+
+		return [...out]
+	}
 
 	const prune = (now: number) => {
-		for (const [k, rec] of promotions) {
+		// Group entries by record (same record may live under multiple
+		// keys); only prune once per record but evict every key.
+		const stale = new Set<PromotionRecord>()
+		for (const rec of promotions.values()) {
 			if (now - rec.promotedAt > windowMs) {
+				stale.add(rec)
+			}
+		}
+
+		for (const rec of stale) {
+			for (const k of rec.aliasKeys) {
 				promotions.delete(k)
 			}
 		}
@@ -58,24 +97,40 @@ export const attachAdminAbuseDetector = (
 
 		if (action === 'promote') {
 			for (const p of participants) {
-				promotions.set(recordKey(id, p.id), {
+				const aliasKeys = aliasesOf(p).map(a => recordKey(id, a))
+				const rec: PromotionRecord = {
 					promotedAt: now,
 					promotedBy: author,
 					participantDisplay: p.id,
-					messageCount: 0
-				})
+					messageCount: 0,
+					aliasKeys
+				}
+				for (const k of aliasKeys) {
+					promotions.set(k, rec)
+				}
 			}
 
 			return
 		}
 
 		if (action === 'demote' || action === 'remove') {
+			// Same-record dedupe: a single physical user is indexed
+			// under multiple alias keys, so iterating `p` aliases would
+			// emit one event per alias if we naively kept finding the
+			// same record. Track seen records and emit at most once.
+			const seen = new Set<PromotionRecord>()
 			for (const p of participants) {
-				const k = recordKey(id, p.id)
-				const rec = promotions.get(k)
-				if (!rec) {
+				let rec: PromotionRecord | undefined
+				for (const a of aliasesOf(p)) {
+					rec = promotions.get(recordKey(id, a))
+					if (rec) break
+				}
+
+				if (!rec || seen.has(rec)) {
 					continue
 				}
+
+				seen.add(rec)
 
 				const elapsed = now - rec.promotedAt
 				if (elapsed <= windowMs) {
@@ -107,7 +162,13 @@ export const attachAdminAbuseDetector = (
 					})
 				}
 
-				promotions.delete(k)
+				// Evict EVERY alias-key for this record — the demote
+				// event may have addressed only one alias, but we need
+				// to make sure a later messages.upsert under a different
+				// alias does not still bump messageCount on a stale rec.
+				for (const k of rec.aliasKeys) {
+					promotions.delete(k)
+				}
 			}
 		}
 	})
@@ -126,7 +187,14 @@ export const attachAdminAbuseDetector = (
 				continue
 			}
 
-			const rec = promotions.get(recordKey(jid, participant))
+			// Try `participant` first, then `participantAlt` (the
+			// LID/PN counterpart upstream surfaces on the key) — same
+			// alias-tolerant lookup as the demote path.
+			let rec = promotions.get(recordKey(jid, participant))
+			if (!rec && msg.key?.participantAlt) {
+				rec = promotions.get(recordKey(jid, msg.key.participantAlt))
+			}
+
 			if (rec) {
 				rec.messageCount++
 			}
