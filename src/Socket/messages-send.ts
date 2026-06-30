@@ -90,7 +90,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		cachedGroupMetadata,
 		enableRecentMessageCache,
 		maxMsgRetryCount,
-		enableInteractiveMessages
+		enableInteractiveMessages,
+		enforceAnnounceAdmin
 	} = config
 	const sock = makeNewsletterSocket(config)
 	const {
@@ -1303,6 +1304,49 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						return {}
 					})()
 				])
+
+				// SECURITY GUARD — "admins only" (announce) groups / locked communities.
+				// When opted in (`enforceAnnounceAdmin`) and the group is in announce mode,
+				// refuse to emit the stanza if we can positively determine that our own
+				// identity is a non-admin participant. WhatsApp's server enforces this too,
+				// but failing fast here avoids the rejected-send volume that drives bans and
+				// blocks this socket from being used as a bulk-spam relay into locked groups.
+				// We only block on a positive non-admin match: an unknown identity (stale /
+				// partial cached metadata) is allowed so legit admin sends are never broken.
+				if (enforceAnnounceAdmin && isGroup && groupData?.announce && !participant && !isStatus) {
+					const meParticipant = groupData.participants.find(
+						p => areJidsSameUser(p.id, meId) || (meLid ? areJidsSameUser(p.id, meLid) : false)
+					)
+					if (meParticipant && !meParticipant.admin && !meParticipant.isAdmin) {
+						const by = meLid && isLidUser(meParticipant.id) ? meLid : meId
+						// Visible, structured log so the operator can immediately spot an
+						// attempt to post into a locked community where this account is not
+						// an admin (e.g. an abuser using the API to spam an announce group).
+						logger.warn(
+							{
+								jid,
+								by,
+								groupSubject: groupData.subject,
+								messageId: msgId,
+								reason: 'announce-non-admin'
+							},
+							`[SECURITY] blocked send into "admins only" group ${groupData.subject || jid} — account ${by} is not an admin`
+						)
+						// Emit a dedicated event so the attempt can be detected / alerted on.
+						ev.emit('security.announce-violation', {
+							jid,
+							by,
+							reason: 'announce-non-admin',
+							messageId: msgId,
+							groupSubject: groupData.subject,
+							timestamp: Date.now()
+						})
+						throw new Boom(
+							'Refusing to send: group is in "admins only" (announce) mode and this account is not an admin',
+							{ statusCode: 403, data: { jid, reason: 'announce-non-admin' } }
+						)
+					}
+				}
 
 				const participantsList = groupData ? groupData.participants.map(p => p.id) : []
 

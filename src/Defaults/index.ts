@@ -118,6 +118,18 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
 	enableCTWARecovery: true,
 	// Enable interactive messages (buttons, lists, templates, carousel)
 	enableInteractiveMessages: true,
+	// Refuse to send into "admins only" (announce) groups / locked communities
+	// when this account is positively a non-admin participant. WhatsApp's server
+	// rejects such sends anyway; failing fast here cuts the rejected-send volume
+	// that gets accounts banned and blocks bulk-spam abuse into locked groups.
+	// Only blocks on a positive non-admin match — unknown identity (stale cached
+	// metadata) is allowed, so legitimate admin sends are never broken.
+	enforceAnnounceAdmin: true,
+	// Detect the "promote → blast → demote/leave" abuse pattern (a colluding /
+	// compromised admin temporarily promotes an account so it can post into a
+	// locked group, then demotes it) and log + emit who did it.
+	detectAdminPromoteDemoteAbuse: true,
+	adminPromoteDemoteWindowMs: 15 * 60 * 1000,
 	// Clear stale routingInfo on every socket creation so the WhatsApp load balancer
 	// assigns a fresh, healthy edge server after any restart (pm2, server reboot, deploy).
 	// The server always sends a new routingInfo during the connection handshake, so the

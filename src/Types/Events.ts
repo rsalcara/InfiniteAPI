@@ -103,6 +103,58 @@ export type BaileysEventMap = {
 		messageTimestamp?: number
 	}
 
+	/**
+	 * Fired when an outgoing message into an "admins only" (announce) group /
+	 * locked community is blocked because this account is a non-admin member
+	 * (see `enforceAnnounceAdmin`). Lets the operator detect, log and alert on
+	 * attempts to post where the account is not allowed to — e.g. someone using
+	 * the API to push spam into a locked community.
+	 */
+	'security.announce-violation': {
+		/** the announce group / community the send was attempted into */
+		jid: string
+		/** the identity that attempted the send (PN or LID of this account) */
+		by: string
+		/** machine-readable reason, currently always 'announce-non-admin' */
+		reason: 'announce-non-admin'
+		/** id of the message that was blocked, if one was assigned */
+		messageId?: string
+		/** group subject, when available from metadata */
+		groupSubject?: string
+		/** epoch milliseconds when the attempt was blocked */
+		timestamp: number
+	}
+
+	/**
+	 * Fired when the "promote → blast → demote/leave" abuse pattern is detected:
+	 * an account was promoted to admin and then demoted/removed within the
+	 * configured window (see `detectAdminPromoteDemoteAbuse`). Identifies BOTH
+	 * the promoted account that (likely) sent the blast and the admin who
+	 * promoted it — i.e. who is responsible.
+	 */
+	'security.admin-abuse-suspected': {
+		/** the group / community where it happened */
+		jid: string
+		/** group subject, when available */
+		groupSubject?: string
+		/** the account that was promoted then demoted/removed (the spammer) */
+		participant: string
+		/** the admin who granted admin to `participant` (colluding/compromised) */
+		promotedBy: string
+		/** who demoted/removed `participant` to close the window, if known */
+		removedBy?: string
+		/** how the window closed */
+		closedBy: 'demote' | 'remove'
+		/** epoch ms of the promotion */
+		promotedAt: number
+		/** epoch ms of the demote/remove that closed the window */
+		closedAt: number
+		/** elapsed ms between promotion and demote/remove */
+		windowMs: number
+		/** number of messages `participant` sent while it was admin */
+		messagesDuringWindow: number
+	}
+
 	'blocklist.set': { blocklist: string[] }
 	'blocklist.update': { blocklist: string[]; type: 'add' | 'remove' }
 

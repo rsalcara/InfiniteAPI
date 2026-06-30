@@ -1,5 +1,6 @@
 import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
+import { randomBytes } from 'crypto'
 import { LRUCache } from 'lru-cache'
 import { proto } from '../../WAProto/index.js'
 import {
@@ -36,6 +37,13 @@ import { ALL_WA_PATCH_NAMES } from '../Types'
 import type { QuickReplyAction } from '../Types/Bussines.js'
 import type { LabelActionBody } from '../Types/Label'
 import { SyncState } from '../Types/State'
+import type {
+	UsernameCheckResponse,
+	UsernameGetResponse,
+	UsernameMutationOptions,
+	UsernameMutationResponse
+} from '../Types/Username'
+import { UsernameQueryIds, XWAUsernamePaths } from '../Types/Username'
 import {
 	chatModificationToAppPatch,
 	type ChatMutationMap,
@@ -68,6 +76,7 @@ import {
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
+import { executeWMexQuery as genericExecuteWMexQuery } from './mex'
 import { makeSocket } from './socket.js'
 
 export const makeChatsSocket = (config: SocketConfig) => {
@@ -455,6 +464,155 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	const updateProfileName = async (name: string) => {
 		await chatModify({ pushNameSetting: name }, '')
+	}
+
+	// ─────────────────────────────────────────────────────────────────────
+	// @username CRUD (WhatsApp 2026 feature)
+	//
+	// All four operations ride the SAME `executeWMexQuery` helper the
+	// newsletter code uses — only the query_id + variable shape + xwa2_*
+	// data-path differ. See `src/Types/Username.ts` for protocol notes
+	// and origin of the doc IDs.
+	//
+	// CAVEAT: WhatsApp Web companion is GATED OUT of editing (the bundle
+	// logs `Requiring unknown module "WAWebUsernameFlow"` when the user
+	// opens the panel, and the UI shows "edit on your primary phone").
+	// InfiniteAPI authenticates as a regular companion device so the
+	// server may reject these mutations with a 400 / MexFatalExtensionError
+	// until the `username_enabled_on_companion` gate flips. The query side
+	// (GET / CHECK) is observed working on companion today.
+	// ─────────────────────────────────────────────────────────────────────
+
+	const executeWMexQuery = <T>(variables: Record<string, unknown>, queryId: string, dataPath: string): Promise<T> => {
+		return genericExecuteWMexQuery<T>(variables, queryId, dataPath, query, generateMessageTag)
+	}
+
+	const newMexSessionId = () => randomBytes(8).toString('hex')
+
+	/**
+	 * Read the account's own `@username` and lifecycle state. Pass `pin`
+	 * to additionally retrieve the stored anti-spoof PIN — the server
+	 * only echoes `pin` back when the supplied value matches the stored
+	 * one, so this doubles as a "verify pin" probe.
+	 *
+	 * Throws (via `executeWMexQuery`'s Boom) when the server response
+	 * omits the `xwa2_username_get` field — observed for accounts that
+	 * have never claimed a handle. Callers that want a "did the user
+	 * even reserve?" probe should catch that Boom (`statusCode: 400`)
+	 * and treat it as "no handle".
+	 */
+	const getMyUsername = async (opts: { pin?: string } = {}): Promise<UsernameGetResponse> => {
+		return executeWMexQuery<UsernameGetResponse>(
+			opts.pin !== undefined ? { pin: opts.pin } : {},
+			UsernameQueryIds.GET,
+			XWAUsernamePaths.GET
+		)
+	}
+
+	/**
+	 * Reserve / change the account's own `@username`.
+	 *
+	 * The server enforces three rules independently of this client:
+	 *   - Format: lowercase ASCII letters/digits/underscore, length 3-30
+	 *   - Uniqueness: returns `result: 'TAKEN'` if claimed
+	 *   - Phase gate: while `username_reservation_only_mode` is set
+	 *     server-side, an existing RESERVED handle cannot be transitioned
+	 *     to ACTIVE — the mutation may succeed but the state stays
+	 *     RESERVED until the global toggle flips
+	 *
+	 * `reserved` defaults to `true` (current rollout phase). Override to
+	 * `false` once the public ACTIVE flow opens.
+	 */
+	const setMyUsername = async (
+		username: string,
+		opts: UsernameMutationOptions & { reserved?: boolean } = {}
+	): Promise<UsernameMutationResponse> => {
+		// Strip a leading `@` defensively, same convention as
+		// `getUserByUsername` — the server expects the bare handle and
+		// rejects `@tuoli` with INVALID. (audit release #583 review #4)
+		const normalized = username.startsWith('@') ? username.slice(1) : username
+		return executeWMexQuery<UsernameMutationResponse>(
+			{
+				username: normalized,
+				reserved: opts.reserved ?? true,
+				session_id: opts.sessionId ?? newMexSessionId(),
+				source: opts.source ?? 'USER_INPUT'
+			},
+			UsernameQueryIds.SET,
+			XWAUsernamePaths.SET
+		)
+	}
+
+	/**
+	 * Release the account's own `@username`. The server soft-deletes —
+	 * the handle is held in a grace-period quarantine before being
+	 * re-issuable, to prevent immediate impersonation.
+	 *
+	 * Mirrors the Web client's pattern: the SET mutation with EMPTY
+	 * variables (no `username` field) is the documented delete signal.
+	 */
+	const deleteMyUsername = async (): Promise<UsernameMutationResponse> => {
+		return executeWMexQuery<UsernameMutationResponse>({}, UsernameQueryIds.SET, XWAUsernamePaths.SET)
+	}
+
+	/**
+	 * Pre-validate handle availability before calling `setMyUsername`.
+	 * On `result: 'TAKEN'` the server populates `suggestions` with
+	 * adjacent free handles the UI can offer.
+	 *
+	 * The `sessionId` should be REUSED across the check + the subsequent
+	 * SET, so the server's telemetry can correlate them; pass the same
+	 * value to both calls when wiring a "type → debounce → check → set"
+	 * UI flow.
+	 */
+	const checkUsernameAvailability = async (
+		username: string,
+		opts: UsernameMutationOptions = {}
+	): Promise<UsernameCheckResponse> => {
+		// Strip a leading `@` (audit release #583 review #4) — same as
+		// `setMyUsername`, so a "user types `@tuoli` → debounce → check
+		// → set" UI doesn't have to manually trim at every hop.
+		const normalized = username.startsWith('@') ? username.slice(1) : username
+		return executeWMexQuery<UsernameCheckResponse>(
+			{
+				username: normalized,
+				session_id: opts.sessionId ?? newMexSessionId(),
+				source: opts.source ?? 'USER_INPUT'
+			},
+			UsernameQueryIds.CHECK,
+			XWAUsernamePaths.CHECK
+		)
+	}
+
+	/**
+	 * Set or rotate the anti-spoof PIN ("chave") protecting the username.
+	 * WhatsApp Web shows "Você pode editar o nome de usuário e a chave no
+	 * seu celular principal" — the server appears to currently restrict
+	 * this mutation to the PRIMARY device. Expect `MexFatalExtensionError`
+	 * with `error_code: 403` (not_authorized) on companion devices until
+	 * the gate flips.
+	 */
+	const setMyUsernameKey = async (pin: string): Promise<UsernameMutationResponse> => {
+		return executeWMexQuery<UsernameMutationResponse>({ pin }, UsernameQueryIds.PIN_SET, XWAUsernamePaths.PIN_SET)
+	}
+
+	/**
+	 * Resolve a `@username` to the underlying LID. Uses the existing
+	 * `USyncUsernameProtocol` (already wired into `USyncQuery`) — the
+	 * server matches on the `username` attr and returns the user node
+	 * with `id` populated to the LID JID.
+	 *
+	 * Returns `null` when the username is not registered. The username
+	 * argument is taken WITHOUT the leading `@` (e.g. `'tuoli'`, not
+	 * `'@tuoli'`); the leading `@` is stripped defensively for callers
+	 * that pass it.
+	 */
+	const getUserByUsername = async (username: string) => {
+		const normalized = username.startsWith('@') ? username.slice(1) : username
+		const usyncQuery = new USyncQuery().withUsernameProtocol().withUser(new USyncUser().withUsername(normalized))
+
+		const result = await sock.executeUSyncQuery(usyncQuery)
+		return result?.list?.[0] ?? null
 	}
 
 	const fetchBlocklist = async () => {
@@ -1726,6 +1884,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		removeProfilePicture,
 		updateProfileStatus,
 		updateProfileName,
+		getMyUsername,
+		setMyUsername,
+		deleteMyUsername,
+		checkUsernameAvailability,
+		setMyUsernameKey,
+		getUserByUsername,
 		updateBlockStatus,
 		updateDisableLinkPreviewsPrivacy,
 		updateCallPrivacy,
