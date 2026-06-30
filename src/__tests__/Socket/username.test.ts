@@ -101,7 +101,13 @@ describe('@username MEX wire protocol', () => {
 				session_id: 'abc123',
 				source: 'USER_INPUT'
 			}
-			const r = await executeWMexQuery(variables, UsernameQueryIds.SET, XWAUsernamePaths.SET, queryMock, generateMessageTag)
+			const r = await executeWMexQuery(
+				variables,
+				UsernameQueryIds.SET,
+				XWAUsernamePaths.SET,
+				queryMock,
+				generateMessageTag
+			)
 
 			expect(r).toEqual({ result: 'SUCCESS' })
 
@@ -138,9 +144,7 @@ describe('@username MEX wire protocol', () => {
 
 	describe('GET / CHECK / PIN_SET wire shape', () => {
 		it('GET sends `pin` variable when supplied; empty `{}` otherwise', async () => {
-			queryMock.mockResolvedValue(
-				makeOkResponse(XWAUsernamePaths.GET, { username: 'tuoli', state: 'RESERVED' })
-			)
+			queryMock.mockResolvedValue(makeOkResponse(XWAUsernamePaths.GET, { username: 'tuoli', state: 'RESERVED' }))
 			await executeWMexQuery({ pin: '1234' }, UsernameQueryIds.GET, XWAUsernamePaths.GET, queryMock, generateMessageTag)
 			const sent = queryMock.mock.calls[0]![0]
 			const body = JSON.parse(((sent.content as BinaryNode[])[0]!.content as Buffer).toString('utf-8'))
@@ -149,9 +153,7 @@ describe('@username MEX wire protocol', () => {
 		})
 
 		it('CHECK includes username + session_id + source', async () => {
-			queryMock.mockResolvedValue(
-				makeOkResponse(XWAUsernamePaths.CHECK, { result: 'AVAILABLE', suggestions: [] })
-			)
+			queryMock.mockResolvedValue(makeOkResponse(XWAUsernamePaths.CHECK, { result: 'AVAILABLE', suggestions: [] }))
 			const vars = { username: 'free_handle', session_id: 's1', source: 'USER_INPUT' }
 			const r = await executeWMexQuery<{ result: string; suggestions: string[] }>(
 				vars,
@@ -170,7 +172,13 @@ describe('@username MEX wire protocol', () => {
 
 		it('PIN_SET includes pin only', async () => {
 			queryMock.mockResolvedValue(makeOkResponse(XWAUsernamePaths.PIN_SET, { result: 'SUCCESS' }))
-			await executeWMexQuery({ pin: '4321' }, UsernameQueryIds.PIN_SET, XWAUsernamePaths.PIN_SET, queryMock, generateMessageTag)
+			await executeWMexQuery(
+				{ pin: '4321' },
+				UsernameQueryIds.PIN_SET,
+				XWAUsernamePaths.PIN_SET,
+				queryMock,
+				generateMessageTag
+			)
 			const sent = queryMock.mock.calls[0]![0]
 			expect((sent.content as BinaryNode[])[0]!.attrs.query_id).toBe('9749436995157074')
 		})
@@ -215,9 +223,7 @@ describe('@username MEX wire protocol', () => {
 			// Server returns data.<some_other_field>, so the helper can't
 			// find xwa2_username_set and must error rather than silently
 			// returning undefined.
-			queryMock.mockResolvedValue(
-				makeOkResponse('xwa2_some_other_op', { result: 'SUCCESS' })
-			)
+			queryMock.mockResolvedValue(makeOkResponse('xwa2_some_other_op', { result: 'SUCCESS' }))
 
 			await expect(
 				executeWMexQuery({}, UsernameQueryIds.SET, XWAUsernamePaths.SET, queryMock, generateMessageTag)

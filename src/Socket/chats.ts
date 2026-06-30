@@ -500,7 +500,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 */
 	const getMyUsername = async (opts: { pin?: string } = {}): Promise<UsernameGetResponse | undefined> => {
 		return executeWMexQuery<UsernameGetResponse>(
-			opts.pin != null ? { pin: opts.pin } : {},
+			opts.pin !== undefined ? { pin: opts.pin } : {},
 			UsernameQueryIds.GET,
 			XWAUsernamePaths.GET
 		)
