@@ -53,8 +53,19 @@ export const attachMeUsernameSync = (
 		}
 
 		for (const c of contacts) {
+			// Match on BOTH `c.id` and `c.lid` — the inbound payload may
+			// carry the addressing on either field (PN events tend to
+			// have `c.lid` populated as the LID-side counterpart, while
+			// our own mex notification re-shaper emits `{id: lid,
+			// lid}`). Without the `c.lid` arm a self-update that
+			// surfaces with `c.id` = PN and `c.lid` = the matching LID
+			// would slip past when only `creds.me.lid` is known.
+			// (audit P2-2)
 			const cId = c.id ? jidNormalizedUser(c.id) : undefined
-			if (cId !== meId && cId !== meLid) {
+			const cLid = c.lid ? jidNormalizedUser(c.lid) : undefined
+			const idMatches = cId !== undefined && (cId === meId || cId === meLid)
+			const lidMatches = cLid !== undefined && (cLid === meId || cLid === meLid)
+			if (!idMatches && !lidMatches) {
 				continue
 			}
 

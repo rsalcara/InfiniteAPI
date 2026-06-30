@@ -34,8 +34,12 @@ export const handleUsernameSetNotification = (
 	ev: BaileysEventEmitter,
 	logger: ILogger
 ) => {
-	const payload = data.xwa2_notify_username_on_change as { username?: string; lid?: string } | undefined
-	if (!payload?.lid || !payload?.username) {
+	const payload = data.xwa2_notify_username_on_change as { username?: unknown; lid?: unknown } | undefined
+	// Type-guard each field individually — the payload comes from the
+	// wire JSON and the server (or a tampered relay) could send a
+	// non-string, which would otherwise land in `contacts.update` as
+	// `{username: 42}` etc and crash downstream consumers. (audit P2-3)
+	if (typeof payload?.lid !== 'string' || typeof payload?.username !== 'string') {
 		logger.warn({ payload }, 'username set notification missing lid or username')
 		return
 	}
@@ -69,14 +73,17 @@ export const handleUsernameDeleteNotification = (
 	ev: BaileysEventEmitter,
 	logger: ILogger
 ) => {
-	const payload = data.xwa2_notify_username_delete as { lid?: string; display_name?: string } | undefined
-	if (!payload?.lid) {
+	const payload = data.xwa2_notify_username_delete as { lid?: unknown; display_name?: unknown } | undefined
+	// Same wire-trust posture as the SET handler — only `lid` is
+	// required, and it MUST be a string. (audit P2-3)
+	if (typeof payload?.lid !== 'string') {
 		logger.warn({ payload }, 'username delete notification missing lid')
 		return
 	}
 
 	const lid = jidNormalizedUser(payload.lid)
-	logger.info({ lid, displayName: payload.display_name }, 'username delete notification received')
+	const displayName = typeof payload.display_name === 'string' ? payload.display_name : undefined
+	logger.info({ lid, displayName }, 'username delete notification received')
 
 	// `null` (not undefined) is the explicit "this user's handle is
 	// now gone" signal — `attachMeUsernameSync` reads this as
@@ -90,8 +97,8 @@ export const handleUsernameDeleteNotification = (
 		username: null
 	}
 
-	if (payload.display_name) {
-		update.name = payload.display_name
+	if (displayName) {
+		update.name = displayName
 	}
 
 	ev.emit('contacts.update', [update as unknown as Partial<Contact>])

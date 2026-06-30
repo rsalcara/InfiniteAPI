@@ -30,13 +30,23 @@ import type { SqliteDbLike } from './types'
  * Authoring rules:
  *   - Append; never re-number, never edit a shipped migration.
  *   - `ALTER TABLE ADD COLUMN` is the safe primitive for adding a
- *     nullable column to an existing table. It is NOT idempotent (a
- *     second run errors with "duplicate column name") — the per-DB
+ *     nullable column to an existing table. It is NOT idempotent
+ *     (`ADD COLUMN IF NOT EXISTS` does not exist in SQLite — a second
+ *     run errors with "duplicate column name") — the per-DB
  *     `schema_migrations` bookkeeping in `runMigrations` is what
- *     guarantees the statement runs once.
- *   - Pair every migration with the matching change to the `_SCHEMA`
- *     export in `schemas/<db>.ts`, so fresh DBs get the column at
- *     CREATE-time. The migration only fires on already-deployed DBs.
+ *     guarantees the statement runs once per DB.
+ *   - **Do NOT also add the column to the `_SCHEMA` `CREATE TABLE`.**
+ *     Tempting (it'd let fresh DBs skip the migration) but breaks the
+ *     contract: `runMigrations` runs v1 unconditionally on the first
+ *     open because `schema_migrations` is empty — so fresh DBs would
+ *     hit the column twice (`CREATE TABLE` plants it, then `ALTER`
+ *     errors). Likewise: a `CREATE INDEX` that references the new
+ *     column belongs INSIDE the migration body — not in the base
+ *     schema — or you get "no such column" on upgrade (where the
+ *     `CREATE TABLE IF NOT EXISTS` is a no-op and the column does
+ *     not exist yet). The migration body is the SINGLE source of
+ *     truth for additions; the base `_SCHEMA` only carries the
+ *     ORIGINAL columns of the table.
  */
 const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 	'wa.db': [

@@ -102,6 +102,34 @@ describe('handleUsernameSetNotification (UsernameSetNotification)', () => {
 		expect(captured[0]![0]!.id).toBe('46802258641027@lid')
 		expect(captured[0]![0]!.lid).toBe('46802258641027@lid')
 	})
+
+	it('rejects non-string lid / username (wire-trust guard)', () => {
+		// Regression for the auditor's P2-3 finding. The wire payload
+		// could carry numbers / objects / nulls. Type-check both fields
+		// so we never emit `contacts.update` with garbage downstream.
+		const ev = new EventEmitter() as unknown as BaileysEventEmitter
+		const updates: unknown[] = []
+		ev.on('contacts.update', u => updates.push(u))
+		const warnSpy = jest.fn()
+		const logger = silentLogger()
+		;(logger as unknown as { warn: jest.Mock }).warn = warnSpy
+
+		// number `lid`
+		handleUsernameSetNotification(
+			{ xwa2_notify_username_on_change: { username: 'tuoli', lid: 12345 as unknown as string } },
+			ev,
+			logger
+		)
+		// object `username`
+		handleUsernameSetNotification(
+			{ xwa2_notify_username_on_change: { username: { hax: true } as unknown as string, lid: ME_LID } },
+			ev,
+			logger
+		)
+
+		expect(updates).toHaveLength(0)
+		expect(warnSpy).toHaveBeenCalledTimes(2)
+	})
 })
 
 describe('handleUsernameDeleteNotification (UsernameDeleteNotification)', () => {
@@ -154,6 +182,35 @@ describe('handleUsernameDeleteNotification (UsernameDeleteNotification)', () => 
 		handleUsernameDeleteNotification({ xwa2_notify_username_delete: {} }, ev, logger)
 		expect(updates).toHaveLength(0)
 		expect(warnSpy).toHaveBeenCalledTimes(1)
+	})
+
+	it('rejects non-string lid and ignores non-string display_name (wire-trust guard)', () => {
+		// Regression for the auditor's P2-3 finding.
+		const ev = new EventEmitter() as unknown as BaileysEventEmitter
+		const updates: Array<Array<Partial<Contact>>> = []
+		ev.on('contacts.update', u => updates.push(u))
+		const warnSpy = jest.fn()
+		const logger = silentLogger()
+		;(logger as unknown as { warn: jest.Mock }).warn = warnSpy
+
+		// non-string lid → reject entirely
+		handleUsernameDeleteNotification(
+			{ xwa2_notify_username_delete: { lid: 42 as unknown as string } },
+			ev,
+			logger
+		)
+		expect(updates).toHaveLength(0)
+		expect(warnSpy).toHaveBeenCalledTimes(1)
+
+		// non-string display_name → accept (lid is valid) but drop name
+		handleUsernameDeleteNotification(
+			{ xwa2_notify_username_delete: { lid: ME_LID, display_name: { hax: true } as unknown as string } },
+			ev,
+			logger
+		)
+		expect(updates).toHaveLength(1)
+		expect(updates[0]![0]!.username).toBeNull()
+		expect(updates[0]![0]!.name).toBeUndefined()
 	})
 })
 

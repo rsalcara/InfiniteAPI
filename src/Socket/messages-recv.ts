@@ -787,7 +787,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			UsernameUpdateNotification: handleUsernameSideSubNotification
 		}
 
-		if (updateNode && opName && opName in usernameOpHandlers) {
+		// `hasOwnProperty.call` (not `in`) — the latter would match
+		// prototype keys like `constructor`/`toString`, letting a
+		// malicious server route those op_names into our handlers.
+		// (audit P2-1) `Object.hasOwn` would read cleaner but it is
+		// ES2022 and tsconfig.lib here is older.
+		if (updateNode && opName && Object.prototype.hasOwnProperty.call(usernameOpHandlers, opName)) {
 			if (!updateNode.content) {
 				logger.debug({ opName }, 'username notification has no content, skipping')
 			} else {

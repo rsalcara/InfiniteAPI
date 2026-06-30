@@ -149,6 +149,28 @@ describe('attachMeUsernameSync', () => {
 		expect(updates).toHaveLength(1)
 	})
 
+	it('LID/PN duality: contact with `c.lid` set (and unrelated `c.id`) matches `me.lid`', () => {
+		// Regression for the auditor's P2-2 finding. Before the fix
+		// the handler only compared `c.id` and would skip a PN-addressed
+		// contact whose `c.lid` matched `me.lid`.
+		const creds = makeCreds()
+		const ev = makeEv()
+		const updates: Array<Partial<AuthenticationCreds>> = []
+		ev.on('creds.update', u => updates.push(u))
+		attachMeUsernameSync(ev, creds, silentLogger())
+
+		ev.emit('contacts.upsert', [
+			{
+				id: '5511000000000@s.whatsapp.net', // a PN that is NOT me.id
+				lid: ME_LID, // but the LID-side IS me
+				username: 'tuoli'
+			} as Contact
+		])
+
+		expect(creds.me!.username).toBe('tuoli')
+		expect(updates).toHaveLength(1)
+	})
+
 	it('contacts.update path: same handle logic runs on the partial payload', () => {
 		const creds = makeCreds()
 		const ev = makeEv()

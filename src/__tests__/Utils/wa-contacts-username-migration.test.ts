@@ -62,16 +62,21 @@ describe('wa.db migration v1 — wa_contacts.username', () => {
 	})
 
 	it('upgrade path: a pre-PR DB without the column gets ALTER applied on open', async () => {
-		// Hand-roll a `wa.db` shaped like the pre-PR layout: wa_contacts
-		// exists but has no `username`, AND no `schema_migrations` table
-		// yet (so the runner sees v1 as unapplied).
+		// Hand-roll a `wa.db` shaped like the pre-PR layout. wa_contacts
+		// must carry every column the existing CREATE INDEX statements
+		// in `wa.ts` reference (e.g. `is_contact_synced`); otherwise
+		// the next `db.exec(SCHEMAS['wa.db'])` would error "no such
+		// column: is_contact_synced" during index creation BEFORE the
+		// username migration ever ran, and the test wouldn't be
+		// exercising what it claims. (audit P2-4)
 		const walPath = join(dir, 'wa.db')
 		const pre = new Database(walPath)
 		pre.exec(`
 			CREATE TABLE IF NOT EXISTS wa_contacts (
 				_id INTEGER PRIMARY KEY AUTOINCREMENT,
 				jid TEXT NOT NULL,
-				is_whatsapp_user BOOLEAN NOT NULL
+				is_whatsapp_user BOOLEAN NOT NULL,
+				is_contact_synced INTEGER
 			);
 		`)
 		// Sanity: confirm column is NOT there
