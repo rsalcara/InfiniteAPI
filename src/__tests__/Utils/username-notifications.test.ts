@@ -209,11 +209,7 @@ describe('handleUsernameDeleteNotification (UsernameDeleteNotification)', () => 
 		const logger = silentLogger()
 		;(logger as unknown as { warn: jest.Mock }).warn = warnSpy
 
-		handleUsernameDeleteNotification(
-			{ xwa2_notify_username_delete: { lid: 'no-at-here' } },
-			ev,
-			logger
-		)
+		handleUsernameDeleteNotification({ xwa2_notify_username_delete: { lid: 'no-at-here' } }, ev, logger)
 
 		expect(updates).toHaveLength(0)
 		expect(warnSpy).toHaveBeenCalledTimes(1)
