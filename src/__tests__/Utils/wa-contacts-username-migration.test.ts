@@ -124,9 +124,9 @@ describe('wa.db migration v1 — wa_contacts.username', () => {
 			| undefined
 		expect(byUsername?.jid).toBe('5511999999991@s.whatsapp.net')
 
-		const nullRow = db.prepare('SELECT jid, username FROM wa_contacts WHERE jid = ?').get(
-			'5511777777777@s.whatsapp.net'
-		) as { jid: string; username: string | null }
+		const nullRow = db
+			.prepare('SELECT jid, username FROM wa_contacts WHERE jid = ?')
+			.get('5511777777777@s.whatsapp.net') as { jid: string; username: string | null }
 		expect(nullRow.username).toBeNull()
 
 		const plan = db.prepare("EXPLAIN QUERY PLAN SELECT jid FROM wa_contacts WHERE username = 'x'").all() as Array<{

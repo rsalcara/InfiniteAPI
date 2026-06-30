@@ -21,8 +21,8 @@
  * `undefined`) on DELETE so `attachMeUsernameSync` can distinguish
  * "explicitly cleared" from "no opinion".
  */
-import { EventEmitter } from 'node:events'
 import { jest } from '@jest/globals'
+import { EventEmitter } from 'node:events'
 import type { BaileysEventEmitter, Contact } from '../../Types'
 import type { ILogger } from '../../Utils/logger'
 import {
@@ -160,11 +160,7 @@ describe('handleUsernameDeleteNotification (UsernameDeleteNotification)', () => 
 		const captured: Array<Array<Partial<Contact>>> = []
 		ev.on('contacts.update', updates => captured.push(updates))
 
-		handleUsernameDeleteNotification(
-			{ xwa2_notify_username_delete: { lid: ME_LID } },
-			ev,
-			silentLogger()
-		)
+		handleUsernameDeleteNotification({ xwa2_notify_username_delete: { lid: ME_LID } }, ev, silentLogger())
 
 		const update = captured[0]![0]!
 		expect(update.username).toBeNull()
@@ -194,11 +190,7 @@ describe('handleUsernameDeleteNotification (UsernameDeleteNotification)', () => 
 		;(logger as unknown as { warn: jest.Mock }).warn = warnSpy
 
 		// non-string lid → reject entirely
-		handleUsernameDeleteNotification(
-			{ xwa2_notify_username_delete: { lid: 42 as unknown as string } },
-			ev,
-			logger
-		)
+		handleUsernameDeleteNotification({ xwa2_notify_username_delete: { lid: 42 as unknown as string } }, ev, logger)
 		expect(updates).toHaveLength(0)
 		expect(warnSpy).toHaveBeenCalledTimes(1)
 
@@ -220,10 +212,7 @@ describe('handleUsernameSideSubNotification (UsernameUpdateNotification)', () =>
 		const logger = silentLogger()
 		;(logger as unknown as { info: jest.Mock }).info = infoSpy
 
-		handleUsernameSideSubNotification(
-			{ xwa2_notify_username_on_update_side_sub: { hash: 'abc123' } },
-			logger
-		)
+		handleUsernameSideSubNotification({ xwa2_notify_username_on_update_side_sub: { hash: 'abc123' } }, logger)
 		expect(infoSpy).toHaveBeenCalledTimes(1)
 		const [ctx, msg] = infoSpy.mock.calls[0]!
 		expect(ctx).toEqual({ hash: 'abc123' })

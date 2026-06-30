@@ -19,8 +19,8 @@
  *   - LID/PN duality: upsert addressed by `me.lid` matches `me.id`
  *     (and vice-versa) — the mex notification path uses LID
  */
-import { EventEmitter } from 'node:events'
 import { jest } from '@jest/globals'
+import { EventEmitter } from 'node:events'
 import type { AuthenticationCreds, BaileysEventEmitter, Contact } from '../../Types'
 import type { ILogger } from '../../Utils/logger'
 import { attachMeUsernameSync } from '../../Utils/me-username-sync'

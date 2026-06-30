@@ -113,13 +113,7 @@ export const handleUsernameDeleteNotification = (
  * the best we can do is log it and move on — real consumers that
  * care can re-issue a USync to refresh.
  */
-export const handleUsernameSideSubNotification = (
-	data: Record<string, unknown>,
-	logger: ILogger
-) => {
+export const handleUsernameSideSubNotification = (data: Record<string, unknown>, logger: ILogger) => {
 	const payload = data.xwa2_notify_username_on_update_side_sub as { hash?: string } | undefined
-	logger.info(
-		{ hash: payload?.hash },
-		'username side-sub change notification — ignored (no contact-by-hash index)'
-	)
+	logger.info({ hash: payload?.hash }, 'username side-sub change notification — ignored (no contact-by-hash index)')
 }

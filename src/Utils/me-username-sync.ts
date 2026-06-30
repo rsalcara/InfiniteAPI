@@ -40,11 +40,7 @@ import type { ILogger } from './logger'
  *     alone (= the event has no opinion on the handle, e.g. a notify
  *     change for the same contact).
  */
-export const attachMeUsernameSync = (
-	ev: BaileysEventEmitter,
-	creds: AuthenticationCreds,
-	logger: ILogger
-) => {
+export const attachMeUsernameSync = (ev: BaileysEventEmitter, creds: AuthenticationCreds, logger: ILogger) => {
 	const handle = (contacts: Array<Partial<Contact>>) => {
 		const meId = creds.me?.id ? jidNormalizedUser(creds.me.id) : undefined
 		const meLid = creds.me?.lid ? jidNormalizedUser(creds.me.lid) : undefined
