@@ -13,7 +13,21 @@ export class USyncUsernameProtocol implements USyncQueryProtocol {
 	}
 
 	getUserElement(user: USyncUser): BinaryNode | null {
-		void user
+		// Resolver `@username → LID` requires emitting the queried handle
+		// in the `<user>` payload, otherwise the server receives an empty
+		// `<user></user>` and silently returns nothing. Mirrors what WA
+		// Web does in `WAWebUsyncUsername.getUserElement`:
+		//   `wap("username", { username: CUSTOM_STRING(e) })`
+		// Two independent reviewers (P1, confidence 9) flagged the prior
+		// `return null` behaviour as a bug — getUserByUsername was a no-op
+		// for every input. (This is the fix.)
+		if (user.username) {
+			return {
+				tag: 'username',
+				attrs: { username: user.username }
+			}
+		}
+
 		return null
 	}
 

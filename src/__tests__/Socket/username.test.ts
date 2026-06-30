@@ -27,6 +27,8 @@ import { jest } from '@jest/globals'
 import { executeWMexQuery } from '../../Socket/mex'
 import { UsernameQueryIds, XWAUsernamePaths } from '../../Types/Username'
 import type { BinaryNode } from '../../WABinary'
+import { USyncUsernameProtocol } from '../../WAUSync/Protocols/USyncUsernameProtocol'
+import { USyncUser } from '../../WAUSync/USyncUser'
 
 const makeOkResponse = (dataPath: string, payload: unknown): BinaryNode => ({
 	tag: 'iq',
@@ -229,5 +231,44 @@ describe('@username MEX wire protocol', () => {
 				executeWMexQuery({}, UsernameQueryIds.SET, XWAUsernamePaths.SET, queryMock, generateMessageTag)
 			).rejects.toThrow(/Failed to username set/)
 		})
+	})
+})
+
+describe('USyncUsernameProtocol wire shape (getUserByUsername path)', () => {
+	// Regression for the bug two reviewers (Codex P1 + cubic P1, confidence 9)
+	// flagged: prior `getUserElement` returned null unconditionally, so
+	// `getUserByUsername("tuoli")` shipped `<user></user>` (no jid, no username
+	// payload) and the server silently returned nothing for any input.
+	const proto = new USyncUsernameProtocol()
+
+	it('getQueryElement = <username/> (empty <username/> in the <query> envelope)', () => {
+		const node = proto.getQueryElement()
+		expect(node.tag).toBe('username')
+		expect(node.attrs).toEqual({})
+	})
+
+	it('getUserElement returns null when user has no username (the SET-pattern callers)', () => {
+		const user = new USyncUser().withId('46802@lid')
+		expect(proto.getUserElement(user)).toBeNull()
+	})
+
+	it('getUserElement emits `<username username="tuoli"/>` when user.username is set', () => {
+		// Mirrors WAWebUsyncUsername in the WhatsApp Web bundle:
+		//   `wap("username", { username: CUSTOM_STRING(e) })`
+		const user = new USyncUser().withUsername('tuoli')
+		const node = proto.getUserElement(user)
+		expect(node).toEqual({
+			tag: 'username',
+			attrs: { username: 'tuoli' }
+		})
+	})
+
+	it('parser reads the resolved username out of `<username>tuoli</username>` (string content)', () => {
+		expect(proto.parser({ tag: 'username', attrs: {}, content: 'tuoli' })).toBe('tuoli')
+	})
+
+	it('parser decodes the resolved username out of Uint8Array content (UTF-8)', () => {
+		const bytes = new TextEncoder().encode('tuoli')
+		expect(proto.parser({ tag: 'username', attrs: {}, content: bytes })).toBe('tuoli')
 	})
 })
