@@ -1,5 +1,6 @@
 import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
+import { randomBytes } from 'crypto'
 import { LRUCache } from 'lru-cache'
 import { proto } from '../../WAProto/index.js'
 import {
@@ -36,6 +37,13 @@ import { ALL_WA_PATCH_NAMES } from '../Types'
 import type { QuickReplyAction } from '../Types/Bussines.js'
 import type { LabelActionBody } from '../Types/Label'
 import { SyncState } from '../Types/State'
+import type {
+	UsernameCheckResponse,
+	UsernameGetResponse,
+	UsernameMutationOptions,
+	UsernameMutationResponse
+} from '../Types/Username'
+import { UsernameQueryIds, XWAUsernamePaths } from '../Types/Username'
 import {
 	chatModificationToAppPatch,
 	type ChatMutationMap,
@@ -70,14 +78,6 @@ import {
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { executeWMexQuery as genericExecuteWMexQuery } from './mex'
 import { makeSocket } from './socket.js'
-import type {
-	UsernameCheckResponse,
-	UsernameGetResponse,
-	UsernameMutationOptions,
-	UsernameMutationResponse
-} from '../Types/Username'
-import { UsernameQueryIds, XWAUsernamePaths } from '../Types/Username'
-import { randomBytes } from 'crypto'
 
 export const makeChatsSocket = (config: SocketConfig) => {
 	const {
