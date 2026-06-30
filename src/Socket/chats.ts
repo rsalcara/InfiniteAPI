@@ -495,10 +495,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 * only echoes `pin` back when the supplied value matches the stored
 	 * one, so this doubles as a "verify pin" probe.
 	 *
-	 * Returns `undefined` if the account has never claimed a handle
-	 * (server returns empty `xwa2_username_get`).
+	 * Throws (via `executeWMexQuery`'s Boom) when the server response
+	 * omits the `xwa2_username_get` field — observed for accounts that
+	 * have never claimed a handle. Callers that want a "did the user
+	 * even reserve?" probe should catch that Boom (`statusCode: 400`)
+	 * and treat it as "no handle".
 	 */
-	const getMyUsername = async (opts: { pin?: string } = {}): Promise<UsernameGetResponse | undefined> => {
+	const getMyUsername = async (opts: { pin?: string } = {}): Promise<UsernameGetResponse> => {
 		return executeWMexQuery<UsernameGetResponse>(
 			opts.pin !== undefined ? { pin: opts.pin } : {},
 			UsernameQueryIds.GET,
