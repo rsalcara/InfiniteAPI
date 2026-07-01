@@ -1,7 +1,7 @@
 syntax = "proto3";
 package proto;
 
-/// WhatsApp Version: 2.3000.1042350979
+/// WhatsApp Version: 2.3000.1042448437
 
 message ADVDeviceIdentity {
     optional uint32 rawId = 1;
@@ -2265,19 +2265,8 @@ message KeyId {
     optional bytes id = 1;
 }
 
-message LIDMigrationMapping {
-    optional uint64 pn = 1;
-    optional uint64 assignedLid = 2;
-    optional uint64 latestLid = 3;
-}
-
 message LIDMigrationMappingSyncMessage {
     optional bytes encodedMappingPayload = 1;
-}
-
-message LIDMigrationMappingSyncPayload {
-    repeated LIDMigrationMapping pnToLidMappings = 1;
-    optional uint64 chatDbMigrationTimestamp = 2;
 }
 
 message LegacyMessage {
@@ -4685,6 +4674,8 @@ message PreKeySignalMessage {
     optional bytes baseKey = 2;
     optional bytes identityKey = 3;
     optional bytes message = 4;
+    optional uint32 kyberPreKeyId = 7;
+    optional bytes kyberCiphertext = 8;
 }
 
 message PremiumMessageInfo {
@@ -4858,6 +4849,8 @@ message SessionStructure {
         optional uint32 preKeyId = 1;
         optional int32 signedPreKeyId = 3;
         optional bytes baseKey = 2;
+        optional uint32 kyberPreKeyId = 4;
+        optional bytes kyberCiphertext = 5;
     }
     
 }

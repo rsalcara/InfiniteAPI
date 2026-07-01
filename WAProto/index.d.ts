@@ -5598,26 +5598,6 @@ export namespace proto {
         public static getTypeUrl(typeUrlPrefix?: string): string;
     }
 
-    interface ILIDMigrationMapping {
-        pn?: (number|Long|null);
-        assignedLid?: (number|Long|null);
-        latestLid?: (number|Long|null);
-    }
-
-    class LIDMigrationMapping implements ILIDMigrationMapping {
-        constructor(p?: proto.ILIDMigrationMapping);
-        public pn?: (number|Long|null);
-        public assignedLid?: (number|Long|null);
-        public latestLid?: (number|Long|null);
-        public static create(properties?: proto.ILIDMigrationMapping): proto.LIDMigrationMapping;
-        public static encode(m: proto.ILIDMigrationMapping, w?: $protobuf.Writer): $protobuf.Writer;
-        public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.LIDMigrationMapping;
-        public static fromObject(d: { [k: string]: any }): proto.LIDMigrationMapping;
-        public static toObject(m: proto.LIDMigrationMapping, o?: $protobuf.IConversionOptions): { [k: string]: any };
-        public toJSON(): { [k: string]: any };
-        public static getTypeUrl(typeUrlPrefix?: string): string;
-    }
-
     interface ILIDMigrationMappingSyncMessage {
         encodedMappingPayload?: (Uint8Array|null);
     }
@@ -5630,24 +5610,6 @@ export namespace proto {
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.LIDMigrationMappingSyncMessage;
         public static fromObject(d: { [k: string]: any }): proto.LIDMigrationMappingSyncMessage;
         public static toObject(m: proto.LIDMigrationMappingSyncMessage, o?: $protobuf.IConversionOptions): { [k: string]: any };
-        public toJSON(): { [k: string]: any };
-        public static getTypeUrl(typeUrlPrefix?: string): string;
-    }
-
-    interface ILIDMigrationMappingSyncPayload {
-        pnToLidMappings?: (proto.ILIDMigrationMapping[]|null);
-        chatDbMigrationTimestamp?: (number|Long|null);
-    }
-
-    class LIDMigrationMappingSyncPayload implements ILIDMigrationMappingSyncPayload {
-        constructor(p?: proto.ILIDMigrationMappingSyncPayload);
-        public pnToLidMappings: proto.ILIDMigrationMapping[];
-        public chatDbMigrationTimestamp?: (number|Long|null);
-        public static create(properties?: proto.ILIDMigrationMappingSyncPayload): proto.LIDMigrationMappingSyncPayload;
-        public static encode(m: proto.ILIDMigrationMappingSyncPayload, w?: $protobuf.Writer): $protobuf.Writer;
-        public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.LIDMigrationMappingSyncPayload;
-        public static fromObject(d: { [k: string]: any }): proto.LIDMigrationMappingSyncPayload;
-        public static toObject(m: proto.LIDMigrationMappingSyncPayload, o?: $protobuf.IConversionOptions): { [k: string]: any };
         public toJSON(): { [k: string]: any };
         public static getTypeUrl(typeUrlPrefix?: string): string;
     }
@@ -11791,6 +11753,8 @@ export namespace proto {
         baseKey?: (Uint8Array|null);
         identityKey?: (Uint8Array|null);
         message?: (Uint8Array|null);
+        kyberPreKeyId?: (number|null);
+        kyberCiphertext?: (Uint8Array|null);
     }
 
     class PreKeySignalMessage implements IPreKeySignalMessage {
@@ -11801,6 +11765,8 @@ export namespace proto {
         public baseKey?: (Uint8Array|null);
         public identityKey?: (Uint8Array|null);
         public message?: (Uint8Array|null);
+        public kyberPreKeyId?: (number|null);
+        public kyberCiphertext?: (Uint8Array|null);
         public static create(properties?: proto.IPreKeySignalMessage): proto.PreKeySignalMessage;
         public static encode(m: proto.IPreKeySignalMessage, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.PreKeySignalMessage;
@@ -12354,6 +12320,8 @@ export namespace proto {
             preKeyId?: (number|null);
             signedPreKeyId?: (number|null);
             baseKey?: (Uint8Array|null);
+            kyberPreKeyId?: (number|null);
+            kyberCiphertext?: (Uint8Array|null);
         }
 
         class PendingPreKey implements IPendingPreKey {
@@ -12361,6 +12329,8 @@ export namespace proto {
             public preKeyId?: (number|null);
             public signedPreKeyId?: (number|null);
             public baseKey?: (Uint8Array|null);
+            public kyberPreKeyId?: (number|null);
+            public kyberCiphertext?: (Uint8Array|null);
             public static create(properties?: proto.SessionStructure.IPendingPreKey): proto.SessionStructure.PendingPreKey;
             public static encode(m: proto.SessionStructure.IPendingPreKey, w?: $protobuf.Writer): $protobuf.Writer;
             public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SessionStructure.PendingPreKey;
