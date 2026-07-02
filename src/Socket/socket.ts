@@ -41,8 +41,8 @@ import {
 } from '../Utils'
 import { getPlatformId, isAndroidBrowser } from '../Utils/browser-utils'
 import {
-	decrementActiveConnections,
-	incrementActiveConnections,
+	markConnectionActive,
+	markConnectionInactive,
 	recordConnectionAttempt,
 	recordConnectionError
 } from '../Utils/prometheus-metrics'
@@ -496,6 +496,14 @@ export const makeSocket = (config: SocketConfig) => {
 	 * The flag is set IMMEDIATELY in end() before any async operations to minimize race window.
 	 */
 	let closed = false
+
+	// Stable id for THIS socket instance, used by the active-connections
+	// gauge. Must be unique per instance (not per JID): two sockets for the
+	// same number — the overlapping-reconnect case — count as 2, and the old
+	// socket's teardown must not evict the new socket's gauge entry. Generated
+	// once here so `markConnectionActive` (on open) and `markConnectionInactive`
+	// (in end()) always reference the same id.
+	const connectionId = `sock:${randomBytes(8).toString('hex')}`
 
 	// Callbacks run on socket close to release per-module resources (caches, timers) and prevent
 	// memory leaks on disconnect. Adapted from upstream #2191 — but we deliberately do NOT call
@@ -1060,8 +1068,12 @@ export const makeSocket = (config: SocketConfig) => {
 			recordConnectionAttempt('failure')
 		}
 
-		// Decrement active connections
-		decrementActiveConnections()
+		// Mark this socket inactive. Idempotent + keyed by the per-instance
+		// connectionId: if the socket reached end() WITHOUT ever opening
+		// (QR timeout, 515 before success, auth failure, ws close mid-
+		// handshake), its id was never added, so this is a no-op and the
+		// gauge can't drift negative. (fix: active-connections gauge drift)
+		markConnectionInactive(connectionId)
 
 		clearInterval(keepAliveReq)
 		clearTimeout(qrTimer)
@@ -1469,6 +1481,19 @@ export const makeSocket = (config: SocketConfig) => {
 
 		ev.emit('creds.update', { me: { ...authState.creds.me!, lid: node.attrs.lid } })
 
+		// Mark this socket active BEFORE emitting `connection.update`. That
+		// emit is NOT buffered (connection.update is absent from
+		// BUFFERABLE_EVENT in event-buffer.ts), so it runs application
+		// listeners SYNCHRONOUSLY. If a listener reacts to `open` by calling
+		// end() synchronously (e.g. decides to drop the session on connect),
+		// its markConnectionInactive must find this id already present to
+		// delete it — otherwise the delete is a no-op and the subsequent
+		// markConnectionActive would add an already-closed socket, leaking an
+		// orphan +1 forever (the inverse of the orphan-dec drift this whole
+		// change fixes). Ordering active→emit→(optional inactive) keeps the
+		// final gauge correct in both branches. (audit PR #589: Codex)
+		markConnectionActive(connectionId)
+
 		// Emit connection:open immediately so the application layer begins processing
 		// incoming messages without waiting for any WA round-trips.
 		ev.emit('connection.update', { connection: 'open' })
@@ -1495,9 +1520,9 @@ export const makeSocket = (config: SocketConfig) => {
 				logger.error({ err }, 'unexpected error in background post-login handler')
 			})
 
-		// Record successful connection metrics
+		// Record successful connection metrics (markConnectionActive was
+		// already called above, before the synchronous open emit).
 		recordConnectionAttempt('success')
-		incrementActiveConnections()
 
 		// Defer session cleanup start by 5 s to avoid DB contention during the
 		// initial message flood right after CB:success. The heavyweight

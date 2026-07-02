@@ -1992,7 +1992,64 @@ export function updateAdaptiveMetrics(eventRate: number, isHealthy: boolean): vo
 // ============================================
 
 /**
- * Increment active connections gauge
+ * Registry of currently-active connection IDs, shared across every socket
+ * in the process. The `active_connections` gauge is SET to this Set's size
+ * on every change instead of being nudged with `inc()`/`dec()`.
+ *
+ * Why not inc/dec — the old `incrementActiveConnections`/`decrement...`
+ * pair drifts. `inc` only fired on `CB:success` (a real open), but `dec`
+ * fired from the central `end()` teardown on EVERY disconnect — including
+ * the ~13 paths that reach `end()` WITHOUT ever having opened (QR timeout,
+ * stream-error 515 before success, auth failure, ws close mid-handshake).
+ * Each of those produced a `dec` with no matching `inc` → an orphan `-1`
+ * that permanently corrupts the gauge. Under 515 churn the value drifted
+ * from 17 real connections down to 4 (and could go negative).
+ *
+ * With a Set + absolute `set(size)`:
+ *   - an orphan teardown is `delete(id)` of an id that was never added →
+ *     a no-op, so it can't corrupt the count;
+ *   - the gauge always equals the real number of open sockets.
+ *
+ * IDs MUST be unique PER SOCKET INSTANCE (not per phone number): two
+ * sockets for the same JID — exactly the overlapping-reconnect case that
+ * caused the original drift — must count as 2, and the old socket's
+ * `markConnectionInactive` must not evict the new socket's entry.
+ */
+const activeConnectionIds = new Set<string>()
+
+/**
+ * Mark a socket instance as ACTIVE (idempotent) and set the gauge to the
+ * real number of active sockets. Call once, on a genuine `open`
+ * (`CB:success`), with a stable per-instance id.
+ */
+export function markConnectionActive(connectionId: string): void {
+	try {
+		activeConnectionIds.add(connectionId)
+		metrics.activeConnections?.set({}, activeConnectionIds.size)
+	} catch {
+		// Metrics not initialized, ignore silently
+	}
+}
+
+/**
+ * Mark a socket instance as INACTIVE (idempotent) and set the gauge to the
+ * real number of active sockets. Safe to call from the central `end()`
+ * teardown on every disconnect: if the socket never opened, its id was
+ * never added, so this `delete` is a no-op and the gauge is untouched.
+ */
+export function markConnectionInactive(connectionId: string): void {
+	try {
+		activeConnectionIds.delete(connectionId)
+		metrics.activeConnections?.set({}, activeConnectionIds.size)
+	} catch {
+		// Metrics not initialized, ignore silently
+	}
+}
+
+/**
+ * Increment active connections gauge.
+ * @deprecated Drifts under orphan teardowns — use {@link markConnectionActive}
+ *   with a stable per-socket id. Kept only for external callers.
  */
 export function incrementActiveConnections(): void {
 	try {
@@ -2003,7 +2060,9 @@ export function incrementActiveConnections(): void {
 }
 
 /**
- * Decrement active connections gauge
+ * Decrement active connections gauge.
+ * @deprecated Drifts under orphan teardowns — use {@link markConnectionInactive}
+ *   with a stable per-socket id. Kept only for external callers.
  */
 export function decrementActiveConnections(): void {
 	try {
@@ -2014,7 +2073,10 @@ export function decrementActiveConnections(): void {
 }
 
 /**
- * Set active connections to specific value
+ * Set active connections to specific value.
+ * @deprecated The Set-backed {@link markConnectionActive}/{@link markConnectionInactive}
+ *   now own the gauge; setting an arbitrary value fights them. Retained for
+ *   backward compatibility only.
  */
 export function setActiveConnections(count: number): void {
 	try {
