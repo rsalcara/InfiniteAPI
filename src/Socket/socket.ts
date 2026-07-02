@@ -1481,6 +1481,19 @@ export const makeSocket = (config: SocketConfig) => {
 
 		ev.emit('creds.update', { me: { ...authState.creds.me!, lid: node.attrs.lid } })
 
+		// Mark this socket active BEFORE emitting `connection.update`. That
+		// emit is NOT buffered (connection.update is absent from
+		// BUFFERABLE_EVENT in event-buffer.ts), so it runs application
+		// listeners SYNCHRONOUSLY. If a listener reacts to `open` by calling
+		// end() synchronously (e.g. decides to drop the session on connect),
+		// its markConnectionInactive must find this id already present to
+		// delete it — otherwise the delete is a no-op and the subsequent
+		// markConnectionActive would add an already-closed socket, leaking an
+		// orphan +1 forever (the inverse of the orphan-dec drift this whole
+		// change fixes). Ordering active→emit→(optional inactive) keeps the
+		// final gauge correct in both branches. (audit PR #589: Codex)
+		markConnectionActive(connectionId)
+
 		// Emit connection:open immediately so the application layer begins processing
 		// incoming messages without waiting for any WA round-trips.
 		ev.emit('connection.update', { connection: 'open' })
@@ -1507,9 +1520,9 @@ export const makeSocket = (config: SocketConfig) => {
 				logger.error({ err }, 'unexpected error in background post-login handler')
 			})
 
-		// Record successful connection metrics
+		// Record successful connection metrics (markConnectionActive was
+		// already called above, before the synchronous open emit).
 		recordConnectionAttempt('success')
-		markConnectionActive(connectionId)
 
 		// Defer session cleanup start by 5 s to avoid DB contention during the
 		// initial message flood right after CB:success. The heavyweight

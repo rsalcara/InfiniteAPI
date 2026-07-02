@@ -14,8 +14,6 @@
  * drift-proof, driving the gauge's `set` via a captured mock so we assert
  * the exact value the gauge is set to after each transition.
  */
-import { jest } from '@jest/globals'
-
 // Capture the value the gauge is set to. We mock the metric registry the
 // helpers read (`metrics.activeConnections`) so no real prom-client
 // registry is needed and each `set` call is observable.
@@ -32,22 +30,43 @@ const gaugeMock = {
 // `metrics` object. Rather than mock the whole heavy module, we import
 // the real helpers and inject our gauge by monkey-patching the exported
 // `metrics` map after import.
-let markConnectionActive: (id: string) => void
+let rawMarkActive: (id: string) => void
 let markConnectionInactive: (id: string) => void
+
+// Track every id this test file adds so afterEach can evict it — the
+// backing Set is module-level state shared across tests, and leaving ids
+// behind would make the suite fragile to reordering / `.only`. All 5
+// tests assert deltas over a baseline, so a leak doesn't fail today, but
+// cleaning up keeps it robust. (audit PR #589: test hygiene)
+const addedIds = new Set<string>()
+const markConnectionActive = (id: string) => {
+	addedIds.add(id)
+	rawMarkActive(id)
+}
 
 beforeAll(async () => {
 	const mod: any = await import('../../Utils/prometheus-metrics')
+
 	// Point the module's gauge at our capture mock. `metrics` is exported
 	// for exactly this kind of test/introspection.
 	if (mod.metrics) {
 		mod.metrics.activeConnections = gaugeMock
 	}
-	markConnectionActive = mod.markConnectionActive
+
+	rawMarkActive = mod.markConnectionActive
 	markConnectionInactive = mod.markConnectionInactive
 })
 
 beforeEach(() => {
 	setCalls.length = 0
+})
+
+afterEach(() => {
+	for (const id of addedIds) {
+		markConnectionInactive(id)
+	}
+
+	addedIds.clear()
 })
 
 const lastSet = (): number => {
@@ -94,6 +113,7 @@ describe('active_connections gauge (Set-backed, drift-proof)', () => {
 		for (let i = 0; i < 50; i++) {
 			markConnectionInactive(`ghost-${i}`)
 		}
+
 		expect(lastSet()).toBe(realTwo) // still exactly the 2 real ones
 	})
 
@@ -104,6 +124,27 @@ describe('active_connections gauge (Set-backed, drift-proof)', () => {
 		expect(lastSet()).toBe(first) // Set.add of existing id → no change
 		markConnectionInactive('dup')
 		expect(lastSet()).toBe(first - 1)
+	})
+
+	it('synchronous end() during open: active-then-inactive of the same id nets to correct state (Codex ordering fix)', () => {
+		// Models the socket.ts ordering fix: markConnectionActive runs BEFORE
+		// the synchronous `connection.update {open}` emit, so a listener that
+		// calls end() synchronously (which runs markConnectionInactive on the
+		// SAME id) deletes the entry and the final gauge reflects a closed
+		// socket. If the order were reversed (inactive first, as it would be
+		// if markActive ran AFTER the emit), the delete would be a no-op and
+		// the later add would leak an orphan +1 — the exact bug being fixed.
+		const baseline = (() => {
+			markConnectionActive('codex-probe')
+			const v = lastSet()
+			markConnectionInactive('codex-probe')
+			return v - 1
+		})()
+
+		// Correct order: active → (listener's) inactive
+		markConnectionActive('codex-open')
+		markConnectionInactive('codex-open') // the synchronous end() in the open listener
+		expect(lastSet()).toBe(baseline) // socket NOT counted — no orphan +1
 	})
 
 	it('overlapping reconnect: two sockets for the SAME number count as 2, old teardown does not evict the new one', () => {
