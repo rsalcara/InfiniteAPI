@@ -59,6 +59,24 @@ jobs:
           echo "📱 WhatsApp Proto Version: v$WA_VERSION"
           echo "🔗 Source JS URL: $WA_JS_URL"
 
+      # WhatsApp Web's extractable schema omits the LID-migration messages that
+      # upstream Baileys hand-maintains and src/Utils/process-message.ts decodes
+      # at runtime (LID_MIGRATION_MAPPING_SYNC → stores LID↔PN mappings, migrates
+      # Signal sessions). A raw extract drops them, breaking tsc (TS2551) and all
+      # ts-jest suites. Re-append the fork overrides BEFORE gen:protobuf so every
+      # regen keeps them. Idempotent: skipped when the extract already includes
+      # them, so no duplicate-definition error if WhatsApp ever starts exposing
+      # them. See WAProto/fork-proto-overrides.proto.
+      - name: Preserve fork-required proto messages
+        run: |
+          if grep -q "message LIDMigrationMappingSyncPayload" WAProto/WAProto.proto; then
+            echo "ℹ️ LID migration messages already present in extract — nothing to append"
+          else
+            printf '\n' >> WAProto/WAProto.proto
+            cat WAProto/fork-proto-overrides.proto >> WAProto/WAProto.proto
+            echo "✅ Re-appended fork-required LID migration messages to WAProto.proto"
+          fi
+
       - name: GenerateStatics
         run: yarn gen:protobuf
 
