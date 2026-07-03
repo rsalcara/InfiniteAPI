@@ -1,0 +1,29 @@
+// Fork-required protobuf messages that WhatsApp Web's extractable schema does
+// NOT expose, but that upstream Baileys hand-maintains and this codebase
+// depends on at runtime.
+//
+// The daily `update-proto.yml` bot regenerates WAProto/WAProto.proto by
+// extracting the schema from https://web.whatsapp.com. That extract omits the
+// two LID-migration messages below, so a naive regen silently deletes them —
+// breaking `tsc` (TS2551) and every ts-jest suite, because
+// src/Utils/process-message.ts decodes `LIDMigrationMappingSyncPayload` on the
+// LID_MIGRATION_MAPPING_SYNC protocol-message path (stores LID↔PN mappings and
+// migrates Signal sessions).
+//
+// The workflow appends this file to the freshly-extracted WAProto.proto (only
+// when the messages are missing) BEFORE running gen:protobuf, so every regen
+// keeps them. Definitions are verbatim from upstream WhiskeySockets/Baileys.
+//
+// These are top-level `proto.*` messages; protobuf is order-independent, so
+// appending them at the end of WAProto.proto is safe.
+
+message LIDMigrationMapping {
+    optional uint64 pn = 1;
+    optional uint64 assignedLid = 2;
+    optional uint64 latestLid = 3;
+}
+
+message LIDMigrationMappingSyncPayload {
+    repeated LIDMigrationMapping pnToLidMappings = 1;
+    optional uint64 chatDbMigrationTimestamp = 2;
+}
