@@ -1,33 +1,23 @@
 name: E2E Tests
 
-# SECURITY (PR #490 review — GHSL-2021-004):
-# This workflow used `pull_request_target` upstream, which runs in the BASE
-# repository context WITH secrets. Combined with `checkout @ pr.head.sha` and
-# `yarn install` (postinstall scripts) + `yarn test:e2e` (arbitrary code), any
-# fork PR could exfiltrate the `BARTENDER_GHCR_TOKEN` secret.
+# AUTO-TRIGGERS DISABLED (this fork):
+# The mock-server this job needs — ghcr.io/whiskeysockets-devtools/bartender —
+# is a PRIVATE upstream package that requires the `BARTENDER_GHCR_TOKEN` secret
+# AND read access to that upstream org's package. Neither is available in this
+# fork. With the secret empty, the service-container `credentials.password`
+# below resolves to '' and GitHub rejects the whole workflow template
+# ("Unexpected value ''"), so every `push` to master surfaced a red E2E run
+# that never executed a single test. The `push`/`pull_request` triggers are
+# therefore removed; the job is kept behind `workflow_dispatch` only, so a
+# maintainer who DOES have the bartender secret + image access can still run it
+# manually from the Actions tab against any ref.
 #
-# PR #493 review P2-001: original fix dropped the PR-time trigger entirely
-# (`if: github.event_name == 'push'`), but that left PRs without any pre-merge
-# E2E validation. New design:
-#   - `push` to master (post-merge, trusted code): runs automatically with
-#     `BARTENDER_GHCR_TOKEN` credentialed mock-server.
-#   - `workflow_dispatch` (manual): a maintainer can trigger the job against
-#     ANY ref (branch / PR head) from the Actions tab. This re-enables
-#     pre-merge E2E validation, but ONLY when a maintainer explicitly opts
-#     in — fork PRs cannot self-trigger and thus cannot exfiltrate the
-#     secret unprompted.
-#   - `pull_request` to master: still received, but the job-level guard
-#     keeps the GHCR-credentialed mock-server OFF for those events. The
-#     workflow still appears in the PR checks list (as a skipped status),
-#     so reviewers can see at a glance that E2E is gated behind a manual
-#     trigger.
+# SECURITY (kept from PR #490 review — GHSL-2021-004): upstream used
+# `pull_request_target`, which runs in the BASE-repo context WITH secrets and
+# let fork PRs exfiltrate `BARTENDER_GHCR_TOKEN` via postinstall / test code.
+# `workflow_dispatch` is maintainer-only (write access required), so that
+# exfiltration path stays closed.
 on:
-  push:
-    branches:
-      - master
-  pull_request:
-    branches:
-      - master
   workflow_dispatch:
     inputs:
       ref:
@@ -43,10 +33,9 @@ jobs:
     name: E2E Tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Run on push to master (trusted post-merge code) OR on explicit
-    # maintainer-triggered workflow_dispatch (also trusted — only collaborators
-    # with write access can dispatch workflows by default).
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # Only runs on explicit maintainer-triggered workflow_dispatch (trusted —
+    # only collaborators with write access can dispatch workflows by default).
+    if: github.event_name == 'workflow_dispatch'
     services:
       mock-server:
         image: ghcr.io/whiskeysockets-devtools/bartender:latest
