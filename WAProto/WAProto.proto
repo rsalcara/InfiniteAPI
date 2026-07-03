@@ -1,7 +1,7 @@
 syntax = "proto3";
 package proto;
 
-/// WhatsApp Version: 2.3000.1042519063
+/// WhatsApp Version: 2.3000.1042593676
 
 message ADVDeviceIdentity {
     optional uint32 rawId = 1;
@@ -2265,19 +2265,8 @@ message KeyId {
     optional bytes id = 1;
 }
 
-message LIDMigrationMapping {
-    optional uint64 pn = 1;
-    optional uint64 assignedLid = 2;
-    optional uint64 latestLid = 3;
-}
-
 message LIDMigrationMappingSyncMessage {
     optional bytes encodedMappingPayload = 1;
-}
-
-message LIDMigrationMappingSyncPayload {
-    repeated LIDMigrationMapping pnToLidMappings = 1;
-    optional uint64 chatDbMigrationTimestamp = 2;
 }
 
 message LegacyMessage {
@@ -6286,6 +6275,10 @@ message WebMessageInfo {
         GROUP_TEE_BOT_ADDED = 223;
         CONTACT_INFO = 224;
         SCHEDULED_MESSAGE_CREATED = 225;
+        IDENTITY_TRUST_MARKED = 226;
+        IDENTITY_TRUST_UNMARKED = 227;
+        IDENTITY_TRUST_REVOKED = 228;
+        CTWA_CONSUMER_DISCLOSURE = 230;
     }
 }
 
@@ -6294,4 +6287,15 @@ message WebNotificationsInfo {
     optional uint32 unreadChats = 3;
     optional uint32 notifyMessageCount = 4;
     repeated WebMessageInfo notifyMessages = 5;
+}
+
+message LIDMigrationMapping {
+    optional uint64 pn = 1;
+    optional uint64 assignedLid = 2;
+    optional uint64 latestLid = 3;
+}
+
+message LIDMigrationMappingSyncPayload {
+    repeated LIDMigrationMapping pnToLidMappings = 1;
+    optional uint64 chatDbMigrationTimestamp = 2;
 }
