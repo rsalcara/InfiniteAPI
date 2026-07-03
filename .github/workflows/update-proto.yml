@@ -59,6 +59,37 @@ jobs:
           echo "📱 WhatsApp Proto Version: v$WA_VERSION"
           echo "🔗 Source JS URL: $WA_JS_URL"
 
+      # WhatsApp Web's extractable schema omits the LID-migration messages that
+      # upstream Baileys hand-maintains and src/Utils/process-message.ts decodes
+      # at runtime (LID_MIGRATION_MAPPING_SYNC → stores LID↔PN mappings, migrates
+      # Signal sessions). A raw extract drops them, breaking tsc (TS2551) and all
+      # ts-jest suites. Re-append the fork overrides BEFORE gen:protobuf so every
+      # regen keeps them.
+      #
+      # Each message is guarded and appended INDIVIDUALLY: if a future extract
+      # ever exposes only one of the two, we append just the missing one instead
+      # of blindly re-adding both (which would duplicate-define the present one
+      # and break gen:protobuf). The guard anchors on `^message <name> ` (field
+      # match, not substring) so a mention inside a comment can't be mistaken for
+      # a definition. See WAProto/fork-proto-overrides.proto.
+      - name: Preserve fork-required proto messages
+        run: |
+          PROTO=WAProto/WAProto.proto
+          OVERRIDES=WAProto/fork-proto-overrides.proto
+          for msg in LIDMigrationMapping LIDMigrationMappingSyncPayload; do
+            if awk -v name="$msg" '$1=="message" && $2==name {found=1} END{exit !found}' "$PROTO"; then
+              echo "ℹ️ ${msg} already present in extract — skipping"
+            else
+              printf '\n' >> "$PROTO"
+              awk -v name="$msg" '
+                $1=="message" && $2==name {inblk=1}
+                inblk {print}
+                inblk && $1=="}" {inblk=0}
+              ' "$OVERRIDES" >> "$PROTO"
+              echo "✅ Appended fork-required message ${msg} to WAProto.proto"
+            fi
+          done
+
       - name: GenerateStatics
         run: yarn gen:protobuf
 
