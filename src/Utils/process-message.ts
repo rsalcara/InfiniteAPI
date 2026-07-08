@@ -643,9 +643,14 @@ const processMessage = async (
 
 				break
 			case proto.Message.ProtocolMessage.Type.REVOKE: {
-				const targetKey: WAMessageKey = { ...message.key, id: protocolMsg.key?.id }
+				if (!protocolMsg.key?.id) {
+					logger?.debug({ protocolMsg }, 'processMessage: REVOKE with no target id, dropping')
+					break
+				}
 
-				const original = protocolMsg.key?.id ? await getMessage(targetKey) : undefined
+				const targetKey: WAMessageKey = { ...message.key, id: protocolMsg.key.id }
+
+				const original = await getMessage(targetKey)
 				if (original) {
 					emitRevokeUpdate(message, protocolMsg)
 				} else if (orphanQueue) {
