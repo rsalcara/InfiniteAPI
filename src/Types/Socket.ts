@@ -296,13 +296,15 @@ export type SocketConfig = {
 	 *     rows on the shared signal key store. Cache, coalescing, retry,
 	 *     and statistics on top of the store are unchanged.
 	 *
+	 * Also wired (phase 9.4, via the separate `onMessageQuarantine` slot
+	 * below): Bad MAC quarantine.
+	 *
 	 * Components with adapters / backends READY but NOT wired here yet
 	 * (the caller passes the adapter explicitly to the matching
 	 * `SocketConfig` slot — `userDevicesCache`, `msgRetryCounterCache`,
 	 * etc.):
 	 *   - User device cache (`UserDeviceCacheSqliteAdapter`)
 	 *   - Retry counter (`MsgRetryCounterSqliteAdapter`)
-	 *   - Bad MAC quarantine (`MessageQuarantineBackend`)
 	 *   - Trusted Contact tokens (`TrustedContactsBackend`)
 	 *   - App-state sync (`AppStateBackend`)
 	 *
@@ -313,6 +315,35 @@ export type SocketConfig = {
 	 * `MultiDbSqliteStore` instance from `Utils/multi-db-sqlite`.
 	 */
 	multiDbStore?: unknown
+
+	/**
+	 * Phase 9.4 — optional hook invoked when an inbound stanza permanently
+	 * fails Signal Protocol decryption (Bad MAC / corrupted session, retries
+	 * exhausted). Mirrors WhatsApp Android's own `msgstore.message_quarantine`
+	 * table: the raw ciphertext + stanza survive so they can be inspected or
+	 * replayed after a fresh session is established, instead of being dropped
+	 * silently on the floor as InfiniteAPI does today.
+	 *
+	 * Wire `createMessageQuarantineRecorder({ store })` from
+	 * `Utils/multi-db-sqlite` to persist into `msgstore.db`. A plain callback
+	 * (not the `unknown`-typed store pattern above) because the only contract
+	 * `decode-wa-message.ts` needs is "record this event" — it never touches
+	 * the underlying backend.
+	 *
+	 * Additive/opt-in: when omitted (the default), behavior is unchanged —
+	 * failed decrypts are logged and dropped exactly as before. A caller on
+	 * `useMultiFileAuthState` / `useSqliteAuthState` (single-bank) that never
+	 * sets this sees zero behavior change.
+	 */
+	onMessageQuarantine?: (record: {
+		chatJid: string
+		keyId: string
+		fromMe: boolean
+		senderJid?: string
+		originalProtobuf?: Uint8Array
+		serializedStanza?: Uint8Array
+		failureReason?: string
+	}) => void
 
 	// === Listener Limits (Memory Leak Prevention) ===
 

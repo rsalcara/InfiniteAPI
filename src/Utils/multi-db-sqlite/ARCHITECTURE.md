@@ -118,13 +118,35 @@ reporting_version)` — the canonical mobile-aligned schema with the full
 natural retry-dedup key. Reached once the recv path is reshaped to pass
 the structured key directly.
 
-### Phase 9.4 — Bad MAC quarantine → `message_quarantine`
+### Phase 9.4 — Bad MAC quarantine → `message_quarantine` (WIRED)
 
-**Replaces:** the in-RAM ring buffer.
-**Schema target:** `message_quarantine(... original_protobuf BLOB,
-serialized_stanza BLOB, failure_reason, quarantined_at)`. Critical property:
-**survives restart** — quarantined stanzas captured for forensic replay or
-out-of-order retry don't vanish on gateway crash.
+**Correction:** earlier drafts of this doc said this phase "replaces the
+in-RAM ring buffer." That was wrong — InfiniteAPI never had one. A failed
+decrypt was (and, without this wiring, still is on `useSqliteAuthState` /
+`useMultiFileAuthState`) logged and dropped; nothing survived a restart. The
+schema mirrors WhatsApp Android's own `msgstore.message_quarantine` (verified
+via a live Frida runtime schema dump against `com.whatsapp.w4b`, including
+its cascade-delete triggers on `chat`/`message`), which is the actual prior
+art this phase ports — not a prior InfiniteAPI mechanism.
+
+**Wiring:** `SocketConfig.onMessageQuarantine` — construct with
+`createMessageQuarantineRecorder({ store })` and pass the result. Hooked into
+`decode-wa-message.ts`'s decrypt-failure catch, scoped specifically to
+`isCorruptedSessionError` (Bad MAC / counter-error / key-already-used) after
+retries are exhausted — the same condition that today only produces a
+`logger.warn` and a `CIPHERTEXT` stub. `chat_row_id` / `sender_jid_row_id`
+are resolved through the same `jid` table `JidMapBackend` uses for phase 9.1,
+so quarantine rows join cleanly against existing LID/PN mappings.
+
+**Additive:** omitting `onMessageQuarantine` (the default) is byte-for-byte
+identical to pre-9.4 behavior. A caller that never wires `multiDbStore` /
+`onMessageQuarantine` — including every `useSqliteAuthState` (single-bank)
+deployment — sees zero change.
+
+**Schema:** `message_quarantine(... original_protobuf BLOB,
+serialized_stanza BLOB, failure_reason, quarantined_at, retry_count)`.
+Critical property: **survives restart** — quarantined stanzas captured for
+forensic replay or out-of-order retry don't vanish on gateway crash.
 
 ### Phase 9.5 — `signal_kv` → typed Signal Protocol tables
 

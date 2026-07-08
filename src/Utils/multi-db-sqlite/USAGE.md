@@ -12,6 +12,7 @@ import {
 	useMultiDbSqliteAuthState,
 	UserDeviceCacheSqliteAdapter,
 	MsgRetryCounterSqliteAdapter,
+	createMessageQuarantineRecorder,
 	makeWASocket
 } from 'baileys'
 
@@ -38,12 +39,14 @@ const {
 
 // 3) Wire the SocketConfig. Passing `multiDbStore` activates phase 9.1
 //    LID mapping persistence via msgstore.jid_map; the cache adapters
-//    activate phases 9.2 + 9.3 (they reuse the same `store.handle(...)`).
+//    activate phases 9.2 + 9.3 (they reuse the same `store.handle(...)`);
+//    `onMessageQuarantine` activates phase 9.4 (Bad MAC quarantine).
 const sock = makeWASocket({
 	auth: state,
 	multiDbStore: store,
 	userDevicesCache: new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db')),
-	msgRetryCounterCache: new MsgRetryCounterSqliteAdapter(store.handle('msgstore.db'))
+	msgRetryCounterCache: new MsgRetryCounterSqliteAdapter(store.handle('msgstore.db')),
+	onMessageQuarantine: createMessageQuarantineRecorder({ store })
 })
 
 sock.ev.on('creds.update', saveCreds)
@@ -92,11 +95,25 @@ Wired automatically when `SocketConfig.multiDbStore` is supplied.
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------ |
 | `MsgRetryCounterSqliteAdapter` | `NodeCache`-compat drop-in for `SocketConfig.msgRetryCounterCache`. Persists retry counters across restarts. |
 
-### Phase 9.4 — Bad MAC quarantine
+### Phase 9.4 — Bad MAC quarantine (wired)
 
-| Export                     | Purpose                                                                                                                                         |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MessageQuarantineBackend` | `quarantine` (upsert with retry_count increment on duplicate natural key), `findByKey`, `listByChat`, `listSince`, `dismiss`, `pruneOlderThan`. |
+| Export                             | Purpose                                                                                                                                          |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `MessageQuarantineBackend`          | `quarantine` (upsert with retry_count increment on duplicate natural key), `findByKey`, `listByChat`, `listSince`, `dismiss`, `pruneOlderThan`. |
+| `createMessageQuarantineRecorder`   | One-call factory: resolves chat/sender JIDs to `jid` row ids and persists via `MessageQuarantineBackend`. Returns the plain callback `SocketConfig.onMessageQuarantine` expects. |
+
+```typescript
+const sock = makeWASocket({
+	auth: state,
+	multiDbStore: store,
+	onMessageQuarantine: createMessageQuarantineRecorder({ store })
+})
+```
+
+Fires only for confirmed Bad MAC / corrupted-session failures once retries
+are exhausted (`decode-wa-message.ts`'s `isCorruptedSessionError` branch) —
+not on every transient decrypt retry. Omit `onMessageQuarantine` to keep the
+pre-9.4 behavior (log + drop) unchanged.
 
 ### Phase 9.5 — typed Signal Protocol tables
 
