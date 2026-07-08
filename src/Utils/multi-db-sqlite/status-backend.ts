@@ -87,24 +87,33 @@ export class StatusBackend {
 		}
 	}
 
-	/** Records one received status update, upserting its sender's status_info aggregate row first. */
+	/**
+	 * Records one received status update, upserting its sender's status_info
+	 * aggregate row first. Wrapped in a transaction (audit finding, Phase 9
+	 * self-review): this is 4 dependent statements — a crash between
+	 * insertStatus and incrementCounts would leave status_info's counters
+	 * permanently out of sync with the actual status rows.
+	 */
 	recordReceivedStatus(input: ReceivedStatusInput): void {
-		this.stmts.upsertStatusInfo.run(input.senderUserJid)
-		const infoRow = this.stmts.getStatusInfoRowId.get(input.senderUserJid) as { row_id: number } | undefined
-		if (!infoRow) return // upsert+immediate select on the same PK — should never miss
+		const run = this.db.transaction(() => {
+			this.stmts.upsertStatusInfo.run(input.senderUserJid)
+			const infoRow = this.stmts.getStatusInfoRowId.get(input.senderUserJid) as { row_id: number } | undefined
+			if (!infoRow) return // upsert+immediate select on the same PK — should never miss
 
-		const { next: sortId } = this.stmts.nextSortId.get(infoRow.row_id) as { next: number }
-		this.stmts.insertStatus.run(
-			sortId,
-			input.uuid,
-			input.senderUserJid,
-			infoRow.row_id,
-			STATUS_TYPE_STANDARD,
-			input.timestamp,
-			input.textData ?? null,
-			STATUS_STATE_SERVER_CONFIRMED
-		)
-		this.stmts.incrementCounts.run(sortId, input.timestamp, infoRow.row_id)
+			const { next: sortId } = this.stmts.nextSortId.get(infoRow.row_id) as { next: number }
+			this.stmts.insertStatus.run(
+				sortId,
+				input.uuid,
+				input.senderUserJid,
+				infoRow.row_id,
+				STATUS_TYPE_STANDARD,
+				input.timestamp,
+				input.textData ?? null,
+				STATUS_STATE_SERVER_CONFIRMED
+			)
+			this.stmts.incrementCounts.run(sortId, input.timestamp, infoRow.row_id)
+		})
+		run()
 	}
 
 	listStatusesForSender(senderUserJid: string) {
