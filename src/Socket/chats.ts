@@ -58,6 +58,7 @@ import {
 	isMissingKeyError,
 	MAX_SYNC_ATTEMPTS,
 	newLTHashState,
+	OrphanQueue,
 	processSyncAction,
 	resolveLidToPn
 } from '../Utils'
@@ -163,6 +164,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	if (!config.placeholderResendCache) {
 		config.placeholderResendCache = placeholderResendCache
 	}
+
+	// Holding pen for REVOKE/event-response that arrive before their target/parent
+	// message does (out-of-order delivery, common during history sync catch-up).
+	// See src/Utils/orphan-queue.ts for the full rationale.
+	const orphanQueue = new OrphanQueue(logger)
 
 	/** helper function to fetch the given app state sync key */
 	const getAppStateSyncKey = async (keyId: string) => {
@@ -1606,7 +1612,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				keyStore: authState.keys,
 				logger,
 				options: config.options,
-				getMessage
+				getMessage,
+				orphanQueue
 			})
 		])
 
@@ -1853,12 +1860,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				config.placeholderResendCache = undefined
 			}
 		}
+
+		orphanQueue.clear()
 	})
 
 	return {
 		...sock,
 		createCallLink,
 		getBotListV2,
+		orphanQueue,
 		messageMutex,
 		receiptMutex,
 		appStatePatchMutex,

@@ -175,6 +175,18 @@ export class JidMapBackend {
 	}
 
 	/**
+	 * Public resolve-or-create entry point onto the same `jid` table, for
+	 * callers outside the LID↔PN mapping use case. Phase 9.4 uses this to
+	 * turn a chat/sender JID string into the `chat_row_id`/`sender_jid_row_id`
+	 * foreign keys that `message_quarantine` expects — the row is shared with
+	 * (and reused by) the LID mapping table, so quarantine rows join cleanly
+	 * against `jid` without a second identity for the same contact.
+	 */
+	resolveJidRowId(jid: string): number {
+		return this.rowIdFor(jid)
+	}
+
+	/**
 	 * Stores a single PN↔LID mapping. Idempotent.
 	 *
 	 * Wrapped in a transaction so the three operations (materialise LID row,

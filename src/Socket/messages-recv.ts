@@ -3058,7 +3058,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				authState.creds.me!.lid || '',
 				signalRepository,
 				logger,
-				msmsgSecretCache
+				msmsgSecretCache,
+				config.onMessageQuarantine
 			)
 
 			const alt = msg.key.participantAlt || msg.key.remoteJidAlt
@@ -3412,10 +3413,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						} else if (msg.key.fromMe) {
 							// message was sent by us from a different device
 							type = 'sender'
-							// need to specially handle this case
-							if (isLidUser(msg.key.remoteJid!) || isLidUser(msg.key.remoteJidAlt)) {
-								participant = author // TODO: investigate sending receipts to LIDs and not PNs
-							}
+							// `author` is decodeMessageNode's raw stanza `from`/`participant` —
+							// our own device's JID exactly as the server addressed THIS stanza,
+							// in whichever mode (LID or PN) it picked. That's independent of
+							// `msg.key.remoteJid`'s addressing, which normalizeMessageJids()
+							// above may already have flipped LID→PN — so the old LID-only guard
+							// here left `participant` unset (and sendReceipt() throwing) for any
+							// fromMe sync copy of a PN-addressed chat. Always use `author`.
+							participant = author
 						} else if (!sendActiveReceipts) {
 							type = 'inactive'
 						}
