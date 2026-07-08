@@ -717,7 +717,9 @@ export const decryptMessageNode = (
 							// decrypt flow: `onQuarantine` is a best-effort side channel, so any
 							// throw (e.g. a busy SQLite writer) is swallowed and logged, not
 							// propagated.
+							// eslint-disable-next-line max-depth
 							if (onQuarantine) {
+								// eslint-disable-next-line max-depth
 								try {
 									onQuarantine({
 										chatJid: fullMessage.key.remoteJid!,
