@@ -73,7 +73,9 @@ export class StatusBackend {
 				'UPDATE status_info SET total_count = total_count + 1, unread_count = unread_count + 1, ' +
 					'last_status_sort_id = ?, last_status_timestamp = ? WHERE row_id = ?'
 			),
-			nextSortId: this.db.prepare('SELECT COALESCE(MAX(sort_id), 0) + 1 AS next FROM status WHERE status_info_row_id = ?'),
+			nextSortId: this.db.prepare(
+				'SELECT COALESCE(MAX(sort_id), 0) + 1 AS next FROM status WHERE status_info_row_id = ?'
+			),
 			insertStatus: this.db.prepare(
 				'INSERT INTO status (sort_id, uuid, sender_user_jid, status_info_row_id, type, timestamp, text_data, ' +
 					'state, origin, flags, audience_type, is_archived) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0)'

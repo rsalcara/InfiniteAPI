@@ -576,7 +576,7 @@ const processMessage = async (
 				senderUserJid: jidNormalizedUser(senderJid),
 				uuid: message.key.id,
 				timestamp: toNumber(message.messageTimestamp ?? 0),
-				textData: content?.extendedTextMessage?.text || content?.conversation || null
+				textData: content?.extendedTextMessage?.text ?? content?.conversation ?? null
 			})
 		} catch (err) {
 			logger?.warn({ err }, 'Phase 9.15: failed to record status.db row')

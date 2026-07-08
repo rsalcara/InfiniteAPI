@@ -4,8 +4,8 @@
  * on a real SQLite handle — mirrors process-message.location.test.ts's
  * mock-based pattern.
  */
-import { EventEmitter } from 'events'
 import { jest } from '@jest/globals'
+import { EventEmitter } from 'events'
 import P from 'pino'
 import { proto } from '../../../WAProto/index.js'
 import type { AuthenticationCreds, BaileysEventEmitter, WAMessage } from '../../Types'
