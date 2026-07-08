@@ -17,6 +17,7 @@ import {
 	MessageQuarantineBackend,
 	MsgRetryCounterSqliteAdapter,
 	MultiDbSqliteStore,
+	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
 	TrustedContactsBackend
 } from '../../Utils/multi-db-sqlite'
 
@@ -163,6 +164,70 @@ describe('Phase 9 backends', () => {
 
 			expect(backend.clearCollection('regular')).toBe(2)
 			expect(backend.listMutations('regular')).toHaveLength(0)
+		})
+
+		it('insertMutation upserts on a repeated mutation_index instead of throwing (real schema has it UNIQUE)', () => {
+			const backend = new AppStateBackend(store.handle('sync.db'))
+			backend.insertMutation({
+				mutationIndex: 'mute chat@s.whatsapp.net',
+				mutationValue: Buffer.from([1]),
+				mutationVersion: 1,
+				collectionName: 'regular_high',
+				areDependenciesMissing: 0,
+				deviceId: 0,
+				epoch: 0,
+				mutationName: 'mute',
+				chatJid: 'chat@s.whatsapp.net'
+			})
+			// Same index, e.g. the chat gets unmuted later — must replace, not throw.
+			expect(() =>
+				backend.insertMutation({
+					mutationIndex: 'mute chat@s.whatsapp.net',
+					mutationValue: Buffer.from([0]),
+					mutationVersion: 2,
+					collectionName: 'regular_high',
+					areDependenciesMissing: 0,
+					deviceId: 0,
+					epoch: 0,
+					mutationName: 'mute',
+					chatJid: 'chat@s.whatsapp.net'
+				})
+			).not.toThrow()
+
+			const rows = backend.listMutations('regular_high')
+			expect(rows).toHaveLength(1)
+			expect(rows[0]?.mutationVersion).toBe(2)
+			expect(rows[0]?.mutationValue).toEqual(Buffer.from([0]))
+		})
+
+		it('round-trips peer_messages through the insert → ack → delete lifecycle', () => {
+			const backend = new AppStateBackend(store.handle('sync.db'))
+			const id = backend.recordPeerMessage({
+				messageType: PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
+				keyRemoteJid: '5515981907008@s.whatsapp.net',
+				keyFromMe: 1,
+				keyId: '3EB0-TEST',
+				deviceId: '5515981907008.0:0@s.whatsapp.net',
+				timestamp: 1_700_000_000,
+				data: JSON.stringify({ appStateSyncKeyShareProtoString: 'Ckc=', isNewlyGeneratedKey: true }),
+				acked: 0
+			})
+
+			let unacked = backend.listUnackedPeerMessages()
+			expect(unacked).toHaveLength(1)
+			expect(unacked[0]).toMatchObject({
+				id,
+				messageType: PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
+				keyRemoteJid: '5515981907008@s.whatsapp.net',
+				keyFromMe: 1,
+				acked: 0
+			})
+
+			backend.ackPeerMessage(id)
+			unacked = backend.listUnackedPeerMessages()
+			expect(unacked).toHaveLength(0)
+
+			backend.deletePeerMessage(id)
 		})
 	})
 })

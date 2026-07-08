@@ -60,9 +60,12 @@ import {
 	newLTHashState,
 	OrphanQueue,
 	processSyncAction,
+	type RawSyncdMutation,
 	resolveLidToPn
 } from '../Utils'
+import type { ILogger } from '../Utils/logger'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
+import { AppStateBackend } from '../Utils/multi-db-sqlite'
 import processMessage from '../Utils/process-message'
 import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
 import {
@@ -79,6 +82,52 @@ import {
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { executeWMexQuery as genericExecuteWMexQuery } from './mex'
 import { makeSocket } from './socket.js'
+
+/**
+ * Phase 9.7 — mirror one decoded app-state mutation into `sync.db`'s
+ * `syncd_mutations` table. `index[0]` is always the action name, and for
+ * MOST actions `index[1]` is the target chat jid — verified against
+ * `chatModificationToAppPatch` in chat-utils.ts, which builds outgoing
+ * patches with that convention (`['mute', jid]`, `['archive', jid]`,
+ * `['pin_v1', jid]`). It is NOT universal, though: action-only entries like
+ * `['setting_disableLinkPreviews']` have no jid at all, and label mutations
+ * (`[LabelAssociationType.Chat, labelId, jid]`) put the jid at index[2], with
+ * a label id at index[1] instead. `chatJid` below is only populated when
+ * `index[1]` actually looks like a jid, so those cases store `null` rather
+ * than a mislabeled value.
+ *
+ * Never allowed to affect the sync flow: `appStateBackend` is a best-effort
+ * side channel (same rule as Phase 9.4's `onQuarantine`), so any throw here
+ * (e.g. a busy SQLite writer) is swallowed and logged, not propagated.
+ */
+const recordRawMutation = (
+	appStateBackend: AppStateBackend,
+	collectionName: WAPatchName,
+	raw: RawSyncdMutation & { version: number },
+	logger?: ILogger
+) => {
+	try {
+		const index = raw.mutation.index
+		appStateBackend.insertMutation({
+			mutationIndex: Buffer.from(raw.indexMac).toString('base64'),
+			mutationValue: Buffer.from(proto.SyncActionData.encode(raw.mutation.syncAction).finish()),
+			mutationVersion: raw.version,
+			collectionName,
+			areDependenciesMissing: 0,
+			mutationMac: Buffer.from(raw.valueMac),
+			// Real Android's device_id/epoch key the app-state-sync-key rotation
+			// (crypto_info.device_id/epoch) — Baileys doesn't track that epoch
+			// counter today, so these default to 0 (the schema's own default)
+			// rather than fabricate a value with no confirmed source.
+			deviceId: 0,
+			epoch: 0,
+			chatJid: typeof index[1] === 'string' && index[1].includes('@') ? index[1] : null,
+			mutationName: index[0]
+		})
+	} catch (err) {
+		logger?.warn?.({ err, collectionName }, 'Phase 9.7: failed to record syncd_mutation')
+	}
+}
 
 export const makeChatsSocket = (config: SocketConfig) => {
 	const {
@@ -144,6 +193,16 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// Collections blocked on missing app state sync keys (mirrors WA Web's "Blocked" state).
 	// When a key arrives via APP_STATE_SYNC_KEY_SHARE, these are re-synced.
 	const blockedCollections = new Set<WAPatchName>()
+
+	// Phase 9.7 — mirrors app-state sync (collection_versions + syncd_mutations
+	// + peer_messages) into sync.db when a multi-db-sqlite store is configured.
+	// Boundary cast: `multiDbStore` is typed `unknown` on SocketConfig so
+	// consumers of this module don't need a hard dependency on the SQLite
+	// types (same pattern as libsignal.ts's LID-mapping wiring).
+
+	const appStateBackend = config.multiDbStore
+		? new AppStateBackend((config.multiDbStore as any).handle('sync.db'))
+		: undefined
 
 	const ownsPlaceholderResendCache = !config.placeholderResendCache
 	const placeholderResendCache =
@@ -849,7 +908,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 									snapshot,
 									getCachedAppStateSyncKey,
 									initialVersionMap[name],
-									appStateMacVerification.snapshot
+									appStateMacVerification.snapshot,
+									appStateBackend ? raw => recordRawMutation(appStateBackend, name, raw) : undefined
 								)
 								states[name] = newState
 								Object.assign(globalMutationMap, mutationMap)
@@ -857,6 +917,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 								logger.info(`restored state of ${name} from snapshot to v${newState.version} with mutations`)
 
 								await authState.keys.set({ 'app-state-sync-version': { [name]: newState } })
+								// See AppStateBackend's class doc: `dirty_version=-1` mirrors the
+								// real schema's "converged" default — this gateway only persists
+								// server-confirmed state, never a pending local-first mutation.
+								appStateBackend?.setCollectionVersion({
+									collectionName: name,
+									version: newState.version,
+									ltHash: Buffer.from(newState.hash),
+									dirtyVersion: -1
+								})
 							}
 
 							// only process if there are syncd patches
@@ -869,10 +938,17 @@ export const makeChatsSocket = (config: SocketConfig) => {
 									config.options,
 									initialVersionMap[name],
 									logger,
-									appStateMacVerification.patch
+									appStateMacVerification.patch,
+									appStateBackend ? raw => recordRawMutation(appStateBackend, name, raw) : undefined
 								)
 
 								await authState.keys.set({ 'app-state-sync-version': { [name]: newState } })
+								appStateBackend?.setCollectionVersion({
+									collectionName: name,
+									version: newState.version,
+									ltHash: Buffer.from(newState.hash),
+									dirtyVersion: -1
+								})
 
 								logger.info(`synced ${name} to v${newState.version}`)
 								initialVersionMap[name] = newState.version
@@ -1613,7 +1689,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				logger,
 				options: config.options,
 				getMessage,
-				orphanQueue
+				orphanQueue,
+				appStateBackend
 			})
 		])
 
