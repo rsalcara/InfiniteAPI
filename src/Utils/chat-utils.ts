@@ -32,6 +32,23 @@ type FetchAppStateSyncKey = (keyId: string) => Promise<proto.Message.IAppStateSy
 
 export type ChatMutationMap = { [index: string]: ChatMutation }
 
+/**
+ * Raw wire-level fields for a single decoded app-state mutation, in addition
+ * to the already-decoded `ChatMutation` — this is what a `sync.db`-style
+ * persistence layer (Phase 9.7) needs, since the real mobile schema stores
+ * the record's index/value MACs verbatim rather than the friendly decoded
+ * value. `index[0]` is always the action name and `index[1]` (when present)
+ * the target chat jid — verified against `chatModificationToAppPatch` below,
+ * which builds outgoing patches with that exact convention (e.g.
+ * `['mute', jid]`, `['archive', jid]`, `['pin_v1', jid]`).
+ */
+export type RawSyncdMutation = {
+	indexMac: Uint8Array
+	valueMac: Uint8Array
+	operation: proto.SyncdMutation.SyncdOperation
+	mutation: ChatMutation
+}
+
 const mutationKeys = (keydata: Uint8Array) => {
 	return expandAppStateKeys(keydata)
 }
@@ -237,7 +254,8 @@ export const decodeSyncdMutations = async (
 	initialState: LTHashState,
 	getAppStateSyncKey: FetchAppStateSyncKey,
 	onMutation: (mutation: ChatMutation) => void,
-	validateMacs: boolean
+	validateMacs: boolean,
+	onRawMutation?: (raw: RawSyncdMutation) => void
 ) => {
 	const ltGenerator = makeLtHashGenerator(initialState)
 	// indexKey used to HMAC sign record.index.blob
@@ -318,7 +336,9 @@ export const decodeSyncdMutations = async (
 		}
 
 		const indexStr = Buffer.from(syncActionIndex).toString()
-		onMutation({ syncAction, index: JSON.parse(indexStr) })
+		const mutation = { syncAction, index: JSON.parse(indexStr) }
+		onMutation(mutation)
+		onRawMutation?.({ indexMac: indexBlob, valueMac: ogValueMac, operation, mutation })
 
 		ltGenerator.mix({
 			indexMac: indexBlob,
@@ -353,7 +373,8 @@ export const decodeSyncdPatch = async (
 	initialState: LTHashState,
 	getAppStateSyncKey: FetchAppStateSyncKey,
 	onMutation: (mutation: ChatMutation) => void,
-	validateMacs: boolean
+	validateMacs: boolean,
+	onRawMutation?: (raw: RawSyncdMutation) => void
 ) => {
 	if (validateMacs) {
 		const msgKeyId = msg.keyId?.id
@@ -415,7 +436,14 @@ export const decodeSyncdPatch = async (
 		throw new Boom('Missing mutations in patch message', { statusCode: 500 })
 	}
 
-	const result = await decodeSyncdMutations(patchMutations, initialState, getAppStateSyncKey, onMutation, validateMacs)
+	const result = await decodeSyncdMutations(
+		patchMutations,
+		initialState,
+		getAppStateSyncKey,
+		onMutation,
+		validateMacs,
+		onRawMutation
+	)
 	return result
 }
 
@@ -503,7 +531,8 @@ export const decodeSyncdSnapshot = async (
 	snapshot: proto.ISyncdSnapshot,
 	getAppStateSyncKey: FetchAppStateSyncKey,
 	minimumVersionNumber: number | undefined,
-	validateMacs = true
+	validateMacs = true,
+	onRawMutation?: (raw: RawSyncdMutation & { version: number }) => void
 ) => {
 	const newState = newLTHashState()
 
@@ -533,7 +562,11 @@ export const decodeSyncdSnapshot = async (
 					mutationMap[index!] = mutation
 				}
 			: () => {},
-		validateMacs
+		validateMacs,
+		// Persisted regardless of `areMutationsRequired` — that flag only gates
+		// the in-memory diff used for THIS sync's immediate event emission, not
+		// whether a Phase 9.7 sync.db mirror should see the mutation at all.
+		onRawMutation ? raw => onRawMutation({ ...raw, version: newState.version }) : undefined
 	)
 	newState.hash = hash
 	newState.indexValueMap = indexValueMap
@@ -587,7 +620,8 @@ export const decodePatches = async (
 	options: RequestInit,
 	minimumVersionNumber?: number,
 	logger?: ILogger,
-	validateMacs = true
+	validateMacs = true,
+	onRawMutation?: (raw: RawSyncdMutation & { version: number }) => void
 ) => {
 	const newState: LTHashState = {
 		...initial,
@@ -633,7 +667,8 @@ export const decodePatches = async (
 						mutationMap[index!] = mutation
 					}
 				: () => {},
-			validateMacs
+			validateMacs,
+			onRawMutation ? raw => onRawMutation({ ...raw, version: patchVersion }) : undefined
 		)
 
 		newState.hash = decodeResult.hash

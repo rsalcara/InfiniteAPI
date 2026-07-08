@@ -40,6 +40,7 @@ import { aesDecryptGCM, hmacSign } from './crypto'
 import { getKeyAuthor, toNumber } from './generics'
 import { downloadAndProcessHistorySyncNotification } from './history'
 import type { ILogger } from './logger'
+import { PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE, type AppStateBackend } from './multi-db-sqlite'
 import { type OrphanEntry, OrphanQueue } from './orphan-queue'
 import { metrics, recordHistorySyncMessages } from './prometheus-metrics.js'
 
@@ -57,6 +58,8 @@ type ProcessMessageContext = {
 	 * hasn't arrived yet. Omitting it keeps today's behavior (no queueing);
 	 * `chats.ts` wires a real instance in production. */
 	orphanQueue?: OrphanQueue
+	/** Phase 9.7 — optional sync.db mirror (collection_versions/syncd_mutations/peer_messages). */
+	appStateBackend?: AppStateBackend
 }
 
 const REAL_MSG_STUB_TYPES = new Set([
@@ -379,7 +382,8 @@ const processMessage = async (
 		logger,
 		options,
 		getMessage,
-		orphanQueue
+		orphanQueue,
+		appStateBackend
 	}: ProcessMessageContext
 ) => {
 	const meUser = creds.me
@@ -615,6 +619,7 @@ const processMessage = async (
 				const keys = protocolMsg.appStateSyncKeyShare?.keys
 				if (keys?.length) {
 					let newAppStateSyncKeyId = ''
+					let isNewlyGeneratedKey = false
 					await keyStore.transaction(async () => {
 						const newKeys: string[] = []
 						for (const { keyData, keyId } of keys) {
@@ -627,6 +632,17 @@ const processMessage = async (
 							newKeys.push(strKeyId)
 
 							if (keyData) {
+								// Phase 9.7: "isNewlyGeneratedKey" — confirmed real field in
+								// sync.db.peer_messages' JSON payload (live Frida capture), but
+								// neither the server nor this protocolMessage transmit it as a
+								// flag — it's a local determination. Inferred here as "was this
+								// key ID absent from our store before this share", which matches
+								// the field name's own meaning.
+								if (appStateBackend) {
+									const existing = await keyStore.get('app-state-sync-key', [strKeyId])
+									isNewlyGeneratedKey = !existing[strKeyId]
+								}
+
 								await keyStore.set({ 'app-state-sync-key': { [strKeyId]: keyData } })
 							}
 
@@ -635,6 +651,29 @@ const processMessage = async (
 
 						logger?.info({ newAppStateSyncKeyId, newKeys }, 'injecting new app state sync keys')
 					}, meId)
+
+					if (appStateBackend && protocolMsg.appStateSyncKeyShare) {
+						try {
+							const peerMsgId = appStateBackend.recordPeerMessage({
+								messageType: PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
+								keyRemoteJid: message.key.remoteJid ?? '',
+								keyFromMe: message.key.fromMe ? 1 : 0,
+								keyId: message.key.id ?? '',
+								deviceId: meId,
+								timestamp: toNumber(message.messageTimestamp ?? 0),
+								data: JSON.stringify({
+									appStateSyncKeyShareProtoString: Buffer.from(
+										proto.Message.AppStateSyncKeyShare.encode(protocolMsg.appStateSyncKeyShare).finish()
+									).toString('base64'),
+									isNewlyGeneratedKey
+								}),
+								acked: 0
+							})
+							appStateBackend.ackPeerMessage(peerMsgId)
+						} catch (err) {
+							logger?.warn({ err }, 'Phase 9.7: failed to record peer_messages row for app-state-sync-key-share')
+						}
+					}
 
 					ev.emit('creds.update', { myAppStateKeyId: newAppStateSyncKeyId })
 				} else {
