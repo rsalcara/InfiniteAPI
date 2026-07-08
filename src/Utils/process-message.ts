@@ -637,10 +637,14 @@ const processMessage = async (
 								// neither the server nor this protocolMessage transmit it as a
 								// flag — it's a local determination. Inferred here as "was this
 								// key ID absent from our store before this share", which matches
-								// the field name's own meaning.
+								// the field name's own meaning. A share can carry more than one
+								// key, but only one peer_messages row is recorded for the whole
+								// batch (below, after this loop) — OR the per-key results together
+								// so the flag means "at least one key in this share was new"
+								// instead of silently keeping only the last key's result.
 								if (appStateBackend) {
 									const existing = await keyStore.get('app-state-sync-key', [strKeyId])
-									isNewlyGeneratedKey = !existing[strKeyId]
+									isNewlyGeneratedKey = isNewlyGeneratedKey || !existing[strKeyId]
 								}
 
 								await keyStore.set({ 'app-state-sync-key': { [strKeyId]: keyData } })
