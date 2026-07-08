@@ -207,8 +207,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// Phase 9.8 — mirrors static/live location (location_cache/location_sharer)
 	// into location.db when a multi-db-sqlite store is configured. Same
 	// boundary-cast rationale as appStateBackend above.
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	const locationBackend = config.multiDbStore ? new LocationBackend((config.multiDbStore as any).handle('location.db')) : undefined
+
+	const locationBackend = config.multiDbStore
+		? new LocationBackend((config.multiDbStore as any).handle('location.db'))
+		: undefined
 
 	const ownsPlaceholderResendCache = !config.placeholderResendCache
 	const placeholderResendCache =

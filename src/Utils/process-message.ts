@@ -530,7 +530,12 @@ const processMessage = async (
 		try {
 			const loc = content.locationMessage || content.liveLocationMessage
 			const senderJid = getKeyAuthor(message.key, meId)
-			if (loc?.degreesLatitude != null && loc?.degreesLongitude != null) {
+			if (
+				loc?.degreesLatitude !== undefined &&
+				loc?.degreesLatitude !== null &&
+				loc?.degreesLongitude !== undefined &&
+				loc?.degreesLongitude !== null
+			) {
 				locationBackend.upsertLocationCache({
 					jid: jidNormalizedUser(senderJid),
 					latitude: loc.degreesLatitude,
