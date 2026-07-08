@@ -1,5 +1,6 @@
 import { Boom } from '@hapi/boom'
 import { proto } from '../../../WAProto/index.js'
+import { aesEncrypt } from '../../Utils/crypto'
 import {
 	decodeSyncdMutations,
 	decodeSyncdPatch,
@@ -9,7 +10,6 @@ import {
 	MAX_SYNC_ATTEMPTS,
 	newLTHashState
 } from '../../Utils/chat-utils'
-import { aesEncrypt } from '../../Utils/crypto'
 import { expandAppStateKeys } from '../../Utils/wasm-bridge'
 
 const missingKeyFn = async () => null
