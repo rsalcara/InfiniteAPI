@@ -77,6 +77,25 @@ describe('processSyncAction', () => {
 				expect.arrayContaining([expect.objectContaining({ muteEndTime: null })])
 			)
 		})
+
+		it('Phase 9.10: mirrors mute_end into chatSettingsBackend when configured', () => {
+			const chatSettingsBackend = { setMuteEnd: jest.fn(), setPinned: jest.fn() }
+			const syncAction = createSyncAction({ muteAction: { muted: true, muteEndTimestamp: 1700000000 } }, [
+				'mute',
+				'chat123@s.whatsapp.net'
+			])
+			processSyncAction(syncAction, ev, mockMe, undefined, logger, chatSettingsBackend)
+			expect(chatSettingsBackend.setMuteEnd).toHaveBeenCalledWith('chat123@s.whatsapp.net', 1700000000)
+			expect(chatSettingsBackend.setPinned).not.toHaveBeenCalled()
+		})
+
+		it('Phase 9.10: is a no-op without chatSettingsBackend (additive/opt-in)', () => {
+			const syncAction = createSyncAction({ muteAction: { muted: true, muteEndTimestamp: 1700000000 } }, [
+				'mute',
+				'chat123@s.whatsapp.net'
+			])
+			expect(() => processSyncAction(syncAction, ev, mockMe, undefined, logger)).not.toThrow()
+		})
 	})
 
 	describe('archiveChatAction', () => {
@@ -201,6 +220,17 @@ describe('processSyncAction', () => {
 				'chats.update',
 				expect.arrayContaining([expect.objectContaining({ pinned: 1700000000 })])
 			)
+		})
+
+		it('Phase 9.10: mirrors pinned/pinned_time into chatSettingsBackend when configured', () => {
+			const chatSettingsBackend = { setMuteEnd: jest.fn(), setPinned: jest.fn() }
+			const syncAction: ChatMutation = {
+				syncAction: { value: { pinAction: { pinned: true }, timestamp: 1700000000 } },
+				index: ['pin', 'chat@s.whatsapp.net']
+			}
+			processSyncAction(syncAction, ev, mockMe, undefined, logger, chatSettingsBackend)
+			expect(chatSettingsBackend.setPinned).toHaveBeenCalledWith('chat@s.whatsapp.net', true, 1700000000)
+			expect(chatSettingsBackend.setMuteEnd).not.toHaveBeenCalled()
 		})
 	})
 

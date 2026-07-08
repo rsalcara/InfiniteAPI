@@ -65,7 +65,7 @@ import {
 } from '../Utils'
 import type { ILogger } from '../Utils/logger'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
-import { AppStateBackend, LocationBackend } from '../Utils/multi-db-sqlite'
+import { AppStateBackend, ChatSettingsBackend, LocationBackend } from '../Utils/multi-db-sqlite'
 import processMessage from '../Utils/process-message'
 import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
 import {
@@ -217,6 +217,14 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// boundary-cast rationale as appStateBackend above.
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const locationBackend = config.multiDbStore ? new LocationBackend((config.multiDbStore as any).handle('location.db')) : undefined
+
+	// Phase 9.10 — mirrors mute/pin chat settings into chatsettings.db when a
+	// multi-db-sqlite store is configured. Same boundary-cast rationale as
+	// appStateBackend above.
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const chatSettingsBackend = config.multiDbStore
+		? new ChatSettingsBackend((config.multiDbStore as any).handle('chatsettings.db'))
+		: undefined
 
 	const ownsPlaceholderResendCache = !config.placeholderResendCache
 	const placeholderResendCache =
@@ -836,7 +844,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					ev,
 					me,
 					isInitialSync ? { accountSettings: authState.creds.accountSettings } : undefined,
-					logger
+					logger,
+					chatSettingsBackend
 				)
 			}
 		}

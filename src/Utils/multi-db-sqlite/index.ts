@@ -35,3 +35,4 @@ export {
 	type SignalSenderKeyKey
 } from './signal-typed-backend'
 export { LocationBackend, type LocationCacheRow, type LocationSharerRow } from './location-backend'
+export { ChatSettingsBackend, type ChatSettingsRow } from './chatsettings-backend'

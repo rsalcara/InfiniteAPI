@@ -1,11 +1,12 @@
 /**
- * Phase 9.3–9.8 — backend smoke tests for the remaining components:
+ * Phase 9.3–9.10 — backend smoke tests for the remaining components:
  *
  *   - `MsgRetryCounterSqliteAdapter` — retry counter persistence with TTL
  *   - `MessageQuarantineBackend` — quarantine row inserts + upsert-on-retry
  *   - `TrustedContactsBackend` — incoming + outbound TC token state
  *   - `AppStateBackend` — collection_versions + syncd_mutations
  *   - `LocationBackend` — location_cache + location_sharer
+ *   - `ChatSettingsBackend` — mute_end + pinned/pinned_time
  *
  * One file covers all four since they share setup/teardown (a single
  * MultiDbSqliteStore handle).
@@ -15,6 +16,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import {
 	AppStateBackend,
+	ChatSettingsBackend,
 	LocationBackend,
 	MessageQuarantineBackend,
 	MsgRetryCounterSqliteAdapter,
@@ -282,6 +284,36 @@ describe('Phase 9 backends', () => {
 
 			expect(backend.endLocationSharer('chat@s.whatsapp.net', 0, '', 'live-loc-1')).toBe(true)
 			expect(backend.listLocationSharers()).toHaveLength(0)
+		})
+	})
+
+	describe('ChatSettingsBackend', () => {
+		it('lazily creates the row on first setMuteEnd, and setPinned only touches its own columns', () => {
+			const backend = new ChatSettingsBackend(store.handle('chatsettings.db'))
+			expect(backend.getSettings('chat@s.whatsapp.net')).toBeNull()
+
+			backend.setMuteEnd('chat@s.whatsapp.net', 1_700_000_000)
+			expect(backend.getSettings('chat@s.whatsapp.net')).toMatchObject({
+				muteEnd: 1_700_000_000,
+				pinned: null,
+				pinnedTime: null
+			})
+
+			// setPinned on the SAME jid must not clobber the mute_end set above.
+			backend.setPinned('chat@s.whatsapp.net', true, 1_700_000_500)
+			expect(backend.getSettings('chat@s.whatsapp.net')).toMatchObject({
+				muteEnd: 1_700_000_000,
+				pinned: 1,
+				pinnedTime: 1_700_000_500
+			})
+
+			// unmute (muteEnd=null) must not clobber the pinned state.
+			backend.setMuteEnd('chat@s.whatsapp.net', null)
+			expect(backend.getSettings('chat@s.whatsapp.net')).toMatchObject({
+				muteEnd: null,
+				pinned: 1,
+				pinnedTime: 1_700_000_500
+			})
 		})
 	})
 })
