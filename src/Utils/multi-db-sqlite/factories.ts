@@ -78,7 +78,9 @@ export type QuarantineNodeRecord = {
  * runs on a permanent decrypt failure — nowhere near the per-message hot
  * path phase 9.1 optimizes for.
  */
-export function createMessageQuarantineRecorder(args: { store: MultiDbSqliteStore }): (record: QuarantineNodeRecord) => void {
+export function createMessageQuarantineRecorder(args: {
+	store: MultiDbSqliteStore
+}): (record: QuarantineNodeRecord) => void {
 	const db = args.store.handle('msgstore.db')
 	const jidBackend = new JidMapBackend(db)
 	const quarantineBackend = new MessageQuarantineBackend(db)

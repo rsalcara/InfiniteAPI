@@ -9,8 +9,8 @@
  * Fix: queue the dependent via OrphanQueue when getMessage() can't find the
  * parent, and replay it once the parent is actually processed.
  */
-import { EventEmitter } from 'events'
 import { jest } from '@jest/globals'
+import { EventEmitter } from 'events'
 import P from 'pino'
 import { proto } from '../../../WAProto/index.js'
 import type { AuthenticationCreds, BaileysEventEmitter, WAMessage } from '../../Types'
@@ -109,7 +109,7 @@ describe('processMessage — orphan queue (REVOKE)', () => {
 		expect(orphanQueue.drain(targetKey)).toHaveLength(0) // nothing was ever queued
 	})
 
-	it('without an orphanQueue configured, falls back to dropping (today\'s pre-fix behavior)', async () => {
+	it("without an orphanQueue configured, falls back to dropping (today's pre-fix behavior)", async () => {
 		const { ctx, updates } = makeContext(async () => undefined)
 		const targetKey = { id: 'target-4', remoteJid: 'chat@s.whatsapp.net', fromMe: false }
 		const revokeMsg = inbound('revoke-4', {
@@ -160,7 +160,10 @@ describe('processMessage — orphan queue (event-response)', () => {
 		const warnSpy = jest.spyOn(ctx.logger, 'warn')
 		const creationMsg: WAMessage = {
 			key: creationKey,
-			message: { conversation: 'the event', messageContextInfo: { messageSecret: Buffer.from('secret-32-bytes-padding-abcdefg') } },
+			message: {
+				conversation: 'the event',
+				messageContextInfo: { messageSecret: Buffer.from('secret-32-bytes-padding-abcdefg') }
+			},
 			messageTimestamp: 1770000002
 		}
 		await processMessage(creationMsg, { ...ctx, orphanQueue } as any)

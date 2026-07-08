@@ -3,7 +3,11 @@ export { useMultiDbSqliteAuthState, type UseMultiDbSqliteAuthStateOptions } from
 export { MULTI_DB_FILES, SCHEMAS, type MultiDbFile } from './schemas'
 export { JidMapBackend, REVERSE_SUFFIX, stripReverse } from './lid-mapping-backend'
 export { wrapKeysWithJidMap } from './keys-with-jid-map'
-export { createLIDMappingStoreWithSqlite, createMessageQuarantineRecorder, type QuarantineNodeRecord } from './factories'
+export {
+	createLIDMappingStoreWithSqlite,
+	createMessageQuarantineRecorder,
+	type QuarantineNodeRecord
+} from './factories'
 export { UserDeviceBackend, type StoredDeviceRow } from './user-device-backend'
 export {
 	UserDeviceCacheSqliteAdapter,

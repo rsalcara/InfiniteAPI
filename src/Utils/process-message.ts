@@ -432,7 +432,10 @@ const processMessage = async (
 				? await signalRepository.lidMapping.getPNForLID(eventCreatorKey)
 				: eventCreatorKey
 			if (!eventCreatorPn) {
-				logger?.warn({ messageKey: responseStanza.key, eventCreatorKey }, 'processMessage: eventCreatorPn missing, skipping')
+				logger?.warn(
+					{ messageKey: responseStanza.key, eventCreatorKey },
+					'processMessage: eventCreatorPn missing, skipping'
+				)
 				return
 			}
 
@@ -496,7 +499,6 @@ const processMessage = async (
 				const encEventResponse = entryContent.encEventResponseMessage
 				const creationMsgKey = encEventResponse.eventCreationMessageKey
 				if (creationMsgKey) {
-					// eslint-disable-next-line no-await-in-loop
 					await decryptAndEmitEventResponse(entry.message, encEventResponse, creationMsgKey, content!)
 				}
 			}
@@ -573,7 +575,7 @@ const processMessage = async (
 					// This is how WhatsApp Web learns mappings for chats with non-contacts
 					if (data.lidPnMappings?.length) {
 						logger?.debug({ count: data.lidPnMappings.length }, 'processing LID-PN mappings from history sync')
-						// eslint-disable-next-line max-depth
+
 						try {
 							const result = await signalRepository.lidMapping.storeLIDPNMappings(data.lidPnMappings)
 							logger?.debug(
@@ -589,7 +591,7 @@ const processMessage = async (
 						}
 
 						// Emit all mappings at once for better performance
-						// eslint-disable-next-line max-depth
+
 						if (data.lidPnMappings.length > 0) {
 							ev.emit('lid-mapping.update', data.lidPnMappings)
 						}
@@ -642,15 +644,16 @@ const processMessage = async (
 				break
 			case proto.Message.ProtocolMessage.Type.REVOKE: {
 				const targetKey: WAMessageKey = { ...message.key, id: protocolMsg.key?.id }
-				// eslint-disable-next-line no-await-in-loop
+
 				const original = protocolMsg.key?.id ? await getMessage(targetKey) : undefined
 				if (original) {
 					emitRevokeUpdate(message, protocolMsg)
 				} else if (orphanQueue) {
 					// Out-of-order arrival (common during history sync / offline catch-up):
 					// the revoke target isn't in the consumer's store yet. Queue it instead
-					// of firing a "delete a message I don't have" no-op — replayed below,
-					// at the top of this function, once the target message is processed.
+					// of firing a "delete a message I don't have" no-op — replayed by the
+					// drain block near the top of this function, on the future invocation
+					// of processMessage() that handles the target message once it arrives.
 					orphanQueue.enqueue(targetKey, 'revoke', message)
 					logger?.debug({ targetKey }, 'processMessage: REVOKE target not found yet, queued as orphan')
 				} else {
@@ -659,6 +662,7 @@ const processMessage = async (
 
 				break
 			}
+
 			case proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING:
 				Object.assign(chat, {
 					ephemeralSettingTimestamp: toNumber(message.messageTimestamp),
@@ -688,9 +692,8 @@ const processMessage = async (
 					let recoveredCount = 0
 					for (const result of peerDataOperationResult) {
 						const { placeholderMessageResendResponse: retryResponse } = result
-						//eslint-disable-next-line max-depth
+
 						if (retryResponse) {
-							// eslint-disable-next-line max-depth
 							if (!retryResponse.webMessageInfoBytes) {
 								continue
 							}
@@ -699,7 +702,7 @@ const processMessage = async (
 
 							// Merge cached metadata with decoded message
 							// This ensures we don't lose critical information like pushName and LID mappings
-							// eslint-disable-next-line max-depth
+
 							if (cachedData && typeof cachedData === 'object') {
 								// Preserve pushName if not present in PDO response
 								// eslint-disable-next-line max-depth
@@ -751,7 +754,7 @@ const processMessage = async (
 							)
 
 							// Normalize LID→PN in PDO-recovered message key before emitting
-							// eslint-disable-next-line max-depth
+
 							if (webMessageInfo.key && signalRepository) {
 								await normalizeKeyLidToPn(webMessageInfo.key as WAMessageKey, signalRepository.lidMapping, logger)
 							}
@@ -872,8 +875,9 @@ const processMessage = async (
 		} else if (orphanQueue) {
 			// Out-of-order arrival: the event-creation message isn't in the
 			// consumer's store yet. Queue it instead of dropping the response —
-			// replayed above, at the top of this function, once the creation
-			// message is processed.
+			// replayed by the drain block near the top of this function, on the
+			// future invocation of processMessage() that handles the creation
+			// message once it arrives.
 			orphanQueue.enqueue(creationMsgKey, 'event-response', message)
 			logger?.debug({ creationMsgKey }, 'processMessage: event creation message not found yet, queued as orphan')
 		} else {

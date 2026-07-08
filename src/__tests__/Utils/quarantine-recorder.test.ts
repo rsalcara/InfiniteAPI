@@ -9,7 +9,11 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { createMessageQuarantineRecorder, MessageQuarantineBackend, MultiDbSqliteStore } from '../../Utils/multi-db-sqlite'
+import {
+	createMessageQuarantineRecorder,
+	MessageQuarantineBackend,
+	MultiDbSqliteStore
+} from '../../Utils/multi-db-sqlite'
 
 describe('createMessageQuarantineRecorder', () => {
 	let dir: string
