@@ -41,6 +41,9 @@ import * as promClient from 'prom-client'
 // LID-mapping wiring in Signal/libsignal.ts.
 import type { MetricSampleInput, PrometheusBackend } from './multi-db-sqlite/prometheus-backend'
 import { intFromEnv } from './env-utils'
+// Type-only — does not eagerly load better-sqlite3. Same rationale as the
+// LID-mapping wiring in Signal/libsignal.ts.
+import type { MetricSampleInput, PrometheusBackend } from './multi-db-sqlite/prometheus-backend'
 
 // Create a custom registry to avoid conflicts with global registry
 const customRegistry = new promClient.Registry()
