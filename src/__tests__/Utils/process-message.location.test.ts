@@ -4,8 +4,8 @@
  * depending on a real SQLite handle — a lightweight mock stands in for
  * `LocationBackend`, matching the pattern used elsewhere for this file's tests.
  */
-import { EventEmitter } from 'events'
 import { jest } from '@jest/globals'
+import { EventEmitter } from 'events'
 import P from 'pino'
 import { proto } from '../../../WAProto/index.js'
 import type { AuthenticationCreds, BaileysEventEmitter, WAMessage } from '../../Types'

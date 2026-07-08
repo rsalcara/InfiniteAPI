@@ -106,7 +106,15 @@ export class LocationBackend {
 
 	getLocationCache(jid: string): LocationCacheRow | null {
 		const r = this.stmts.getLocationCache.get(jid) as
-			| { jid: string; latitude: number; longitude: number; accuracy: number; speed: number; bearing: number; location_ts: number }
+			| {
+					jid: string
+					latitude: number
+					longitude: number
+					accuracy: number
+					speed: number
+					bearing: number
+					location_ts: number
+			  }
 			| undefined
 		if (!r) return null
 		return {
@@ -124,7 +132,12 @@ export class LocationBackend {
 		this.stmts.upsertLocationSharer.run(row.remoteJid, row.fromMe, row.remoteResource, row.expires, row.messageId)
 	}
 
-	getLocationSharer(remoteJid: string, fromMe: number, remoteResource: string, messageId: string): LocationSharerRow | null {
+	getLocationSharer(
+		remoteJid: string,
+		fromMe: number,
+		remoteResource: string,
+		messageId: string
+	): LocationSharerRow | null {
 		const r = this.stmts.getLocationSharer.get(remoteJid, fromMe, remoteResource, messageId) as
 			| { remote_jid: string; from_me: number; remote_resource: string; expires: number; message_id: string }
 			| undefined
