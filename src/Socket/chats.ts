@@ -223,8 +223,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// Phase 9.15 — mirrors received status/story updates (status/status_info)
 	// into status.db when a multi-db-sqlite store is configured. Same
 	// boundary-cast rationale as appStateBackend above.
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	const statusBackend = config.multiDbStore ? new StatusBackend((config.multiDbStore as any).handle('status.db')) : undefined
+
+	const statusBackend = config.multiDbStore
+		? new StatusBackend((config.multiDbStore as any).handle('status.db'))
+		: undefined
 
 	const ownsPlaceholderResendCache = !config.placeholderResendCache
 	const placeholderResendCache =
