@@ -40,7 +40,11 @@ import { aesDecryptGCM, hmacSign } from './crypto'
 import { getKeyAuthor, toNumber } from './generics'
 import { downloadAndProcessHistorySyncNotification } from './history'
 import type { ILogger } from './logger'
-import { type AppStateBackend, PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE } from './multi-db-sqlite'
+import {
+	type AppStateBackend,
+	type LocationBackend,
+	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE
+} from './multi-db-sqlite'
 import { type OrphanEntry, OrphanQueue } from './orphan-queue'
 import { metrics, recordHistorySyncMessages } from './prometheus-metrics.js'
 
@@ -60,6 +64,8 @@ type ProcessMessageContext = {
 	orphanQueue?: OrphanQueue
 	/** Phase 9.7 — optional sync.db mirror (collection_versions/syncd_mutations/peer_messages). */
 	appStateBackend?: AppStateBackend
+	/** Phase 9.8 — optional location.db mirror (location_cache/location_sharer). */
+	locationBackend?: LocationBackend
 }
 
 const REAL_MSG_STUB_TYPES = new Set([
@@ -383,7 +389,8 @@ const processMessage = async (
 		options,
 		getMessage,
 		orphanQueue,
-		appStateBackend
+		appStateBackend,
+		locationBackend
 	}: ProcessMessageContext
 ) => {
 	const meUser = creds.me
@@ -514,6 +521,41 @@ const processMessage = async (
 	if ((isRealMsg || content?.reactionMessage?.key?.fromMe) && accountSettings?.unarchiveChats) {
 		chat.archived = false
 		chat.readOnly = false
+	}
+
+	// Phase 9.8 — mirror static/live location into location.db when configured.
+	// Never allowed to affect message processing: best-effort side channel,
+	// same rule as the other optional multi-db-sqlite mirrors in this file.
+	if (locationBackend && (content?.locationMessage || content?.liveLocationMessage)) {
+		try {
+			const loc = content.locationMessage || content.liveLocationMessage
+			const senderJid = getKeyAuthor(message.key, meId)
+			if (loc?.degreesLatitude != null && loc?.degreesLongitude != null) {
+				locationBackend.upsertLocationCache({
+					jid: jidNormalizedUser(senderJid),
+					latitude: loc.degreesLatitude,
+					longitude: loc.degreesLongitude,
+					accuracy: loc.accuracyInMeters ?? 0,
+					speed: loc.speedInMps ?? 0,
+					bearing: loc.degreesClockwiseFromMagneticNorth ?? 0,
+					locationTs: toNumber(message.messageTimestamp ?? 0)
+				})
+			}
+
+			if (content?.liveLocationMessage && message.key.id) {
+				// `expires` intentionally 0/unknown — see LocationBackend's class doc:
+				// the share duration isn't part of the decoded proto fields.
+				locationBackend.upsertLocationSharer({
+					remoteJid: jidNormalizedUser(message.key.remoteJid ?? ''),
+					fromMe: message.key.fromMe ? 1 : 0,
+					remoteResource: message.key.participant ? jidNormalizedUser(message.key.participant) : '',
+					expires: 0,
+					messageId: message.key.id
+				})
+			}
+		} catch (err) {
+			logger?.warn({ err }, 'Phase 9.8: failed to record location.db row')
+		}
 	}
 
 	const protocolMsg = content?.protocolMessage

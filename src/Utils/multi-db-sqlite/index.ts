@@ -34,3 +34,4 @@ export {
 	type SignalIdentityKey,
 	type SignalSenderKeyKey
 } from './signal-typed-backend'
+export { LocationBackend, type LocationCacheRow, type LocationSharerRow } from './location-backend'

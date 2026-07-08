@@ -65,7 +65,7 @@ import {
 } from '../Utils'
 import type { ILogger } from '../Utils/logger'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
-import { AppStateBackend } from '../Utils/multi-db-sqlite'
+import { AppStateBackend, LocationBackend } from '../Utils/multi-db-sqlite'
 import processMessage from '../Utils/process-message'
 import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
 import {
@@ -203,6 +203,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const appStateBackend = config.multiDbStore
 		? new AppStateBackend((config.multiDbStore as any).handle('sync.db'))
 		: undefined
+
+	// Phase 9.8 — mirrors static/live location (location_cache/location_sharer)
+	// into location.db when a multi-db-sqlite store is configured. Same
+	// boundary-cast rationale as appStateBackend above.
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const locationBackend = config.multiDbStore ? new LocationBackend((config.multiDbStore as any).handle('location.db')) : undefined
 
 	const ownsPlaceholderResendCache = !config.placeholderResendCache
 	const placeholderResendCache =
@@ -1690,7 +1696,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				options: config.options,
 				getMessage,
 				orphanQueue,
-				appStateBackend
+				appStateBackend,
+				locationBackend
 			})
 		])
 

@@ -1,10 +1,11 @@
 /**
- * Phase 9.3–9.7 — backend smoke tests for the remaining components:
+ * Phase 9.3–9.8 — backend smoke tests for the remaining components:
  *
  *   - `MsgRetryCounterSqliteAdapter` — retry counter persistence with TTL
  *   - `MessageQuarantineBackend` — quarantine row inserts + upsert-on-retry
  *   - `TrustedContactsBackend` — incoming + outbound TC token state
  *   - `AppStateBackend` — collection_versions + syncd_mutations
+ *   - `LocationBackend` — location_cache + location_sharer
  *
  * One file covers all four since they share setup/teardown (a single
  * MultiDbSqliteStore handle).
@@ -14,6 +15,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import {
 	AppStateBackend,
+	LocationBackend,
 	MessageQuarantineBackend,
 	MsgRetryCounterSqliteAdapter,
 	MultiDbSqliteStore,
@@ -228,6 +230,58 @@ describe('Phase 9 backends', () => {
 			expect(unacked).toHaveLength(0)
 
 			backend.deletePeerMessage(id)
+		})
+	})
+
+	describe('LocationBackend', () => {
+		it('upserts location_cache — one row per jid, newest report wins', () => {
+			const backend = new LocationBackend(store.handle('location.db'))
+			backend.upsertLocationCache({
+				jid: '5515991426667@s.whatsapp.net',
+				latitude: -23.55,
+				longitude: -46.63,
+				accuracy: 10,
+				speed: 0,
+				bearing: 0,
+				locationTs: 1_000
+			})
+			backend.upsertLocationCache({
+				jid: '5515991426667@s.whatsapp.net',
+				latitude: -23.56,
+				longitude: -46.64,
+				accuracy: 5,
+				speed: 1.2,
+				bearing: 90,
+				locationTs: 2_000
+			})
+
+			const row = backend.getLocationCache('5515991426667@s.whatsapp.net')
+			expect(row).toMatchObject({ latitude: -23.56, longitude: -46.64, locationTs: 2_000 })
+		})
+
+		it('upserts location_sharer keyed by (remote_jid, from_me, remote_resource, message_id)', () => {
+			const backend = new LocationBackend(store.handle('location.db'))
+			backend.upsertLocationSharer({
+				remoteJid: 'chat@s.whatsapp.net',
+				fromMe: 0,
+				remoteResource: '',
+				expires: 0,
+				messageId: 'live-loc-1'
+			})
+			expect(backend.listLocationSharers()).toHaveLength(1)
+
+			// same key resyncs (e.g. a later liveLocationMessage update) — must upsert, not duplicate.
+			backend.upsertLocationSharer({
+				remoteJid: 'chat@s.whatsapp.net',
+				fromMe: 0,
+				remoteResource: '',
+				expires: 0,
+				messageId: 'live-loc-1'
+			})
+			expect(backend.listLocationSharers()).toHaveLength(1)
+
+			expect(backend.endLocationSharer('chat@s.whatsapp.net', 0, '', 'live-loc-1')).toBe(true)
+			expect(backend.listLocationSharers()).toHaveLength(0)
 		})
 	})
 })
