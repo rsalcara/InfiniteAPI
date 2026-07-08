@@ -22,6 +22,7 @@ import {
 	MsgRetryCounterSqliteAdapter,
 	MultiDbSqliteStore,
 	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
+	StatusBackend,
 	TrustedContactsBackend
 } from '../../Utils/multi-db-sqlite'
 
@@ -314,6 +315,33 @@ describe('Phase 9 backends', () => {
 				pinned: 1,
 				pinnedTime: 1_700_000_500
 			})
+		})
+	})
+
+	describe('StatusBackend', () => {
+		it('creates status_info lazily and increments its aggregate counters per received status', () => {
+			const backend = new StatusBackend(store.handle('status.db'))
+			const sender = '5515991426667@s.whatsapp.net'
+
+			backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'status-1', timestamp: 1_000, textData: 'oi' })
+			backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'status-2', timestamp: 2_000 })
+
+			const rows = backend.listStatusesForSender(sender)
+			expect(rows).toHaveLength(2)
+			expect(rows[0]).toMatchObject({ uuid: 'status-1', sort_id: 1, text_data: 'oi', type: 4, state: 3 })
+			expect(rows[1]).toMatchObject({ uuid: 'status-2', sort_id: 2, text_data: null })
+			// both rows share the same status_info_row_id (one aggregate per sender)
+			expect(rows[0]?.status_info_row_id).toBe(rows[1]?.status_info_row_id)
+		})
+
+		it('keeps separate sort_id sequences per sender', () => {
+			const backend = new StatusBackend(store.handle('status.db'))
+			backend.recordReceivedStatus({ senderUserJid: 'a@s.whatsapp.net', uuid: 'a-1', timestamp: 1 })
+			backend.recordReceivedStatus({ senderUserJid: 'b@s.whatsapp.net', uuid: 'b-1', timestamp: 1 })
+			backend.recordReceivedStatus({ senderUserJid: 'a@s.whatsapp.net', uuid: 'a-2', timestamp: 2 })
+
+			expect(backend.listStatusesForSender('a@s.whatsapp.net').map(r => r.sort_id)).toEqual([1, 2])
+			expect(backend.listStatusesForSender('b@s.whatsapp.net').map(r => r.sort_id)).toEqual([1])
 		})
 	})
 })

@@ -65,7 +65,7 @@ import {
 } from '../Utils'
 import type { ILogger } from '../Utils/logger'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
-import { AppStateBackend, ChatSettingsBackend, LocationBackend } from '../Utils/multi-db-sqlite'
+import { AppStateBackend, ChatSettingsBackend, LocationBackend, StatusBackend } from '../Utils/multi-db-sqlite'
 import processMessage from '../Utils/process-message'
 import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
 import {
@@ -219,6 +219,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const chatSettingsBackend = config.multiDbStore
 		? new ChatSettingsBackend((config.multiDbStore as any).handle('chatsettings.db'))
 		: undefined
+
+	// Phase 9.15 — mirrors received status/story updates (status/status_info)
+	// into status.db when a multi-db-sqlite store is configured. Same
+	// boundary-cast rationale as appStateBackend above.
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const statusBackend = config.multiDbStore ? new StatusBackend((config.multiDbStore as any).handle('status.db')) : undefined
 
 	const ownsPlaceholderResendCache = !config.placeholderResendCache
 	const placeholderResendCache =
@@ -1708,7 +1714,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				getMessage,
 				orphanQueue,
 				appStateBackend,
-				locationBackend
+				locationBackend,
+				statusBackend
 			})
 		])
 

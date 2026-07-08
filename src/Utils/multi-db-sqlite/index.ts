@@ -36,3 +36,9 @@ export {
 } from './signal-typed-backend'
 export { LocationBackend, type LocationCacheRow, type LocationSharerRow } from './location-backend'
 export { ChatSettingsBackend, type ChatSettingsRow } from './chatsettings-backend'
+export {
+	StatusBackend,
+	STATUS_STATE_SERVER_CONFIRMED,
+	STATUS_TYPE_STANDARD,
+	type ReceivedStatusInput
+} from './status-backend'

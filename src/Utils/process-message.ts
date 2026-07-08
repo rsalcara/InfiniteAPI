@@ -43,7 +43,8 @@ import type { ILogger } from './logger'
 import {
 	type AppStateBackend,
 	type LocationBackend,
-	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE
+	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
+	type StatusBackend
 } from './multi-db-sqlite'
 import { type OrphanEntry, OrphanQueue } from './orphan-queue'
 import { metrics, recordHistorySyncMessages } from './prometheus-metrics.js'
@@ -66,6 +67,8 @@ type ProcessMessageContext = {
 	appStateBackend?: AppStateBackend
 	/** Phase 9.8 — optional location.db mirror (location_cache/location_sharer). */
 	locationBackend?: LocationBackend
+	/** Phase 9.15 — optional status.db mirror (status/status_info). */
+	statusBackend?: StatusBackend
 }
 
 const REAL_MSG_STUB_TYPES = new Set([
@@ -390,7 +393,8 @@ const processMessage = async (
 		getMessage,
 		orphanQueue,
 		appStateBackend,
-		locationBackend
+		locationBackend,
+		statusBackend
 	}: ProcessMessageContext
 ) => {
 	const meUser = creds.me
@@ -560,6 +564,22 @@ const processMessage = async (
 			}
 		} catch (err) {
 			logger?.warn({ err }, 'Phase 9.8: failed to record location.db row')
+		}
+	}
+
+	// Phase 9.15 — mirror received status/story updates into status.db when
+	// configured. Never allowed to affect message processing.
+	if (statusBackend && isJidStatusBroadcast(message.key.remoteJid ?? '') && message.key.id) {
+		try {
+			const senderJid = getKeyAuthor(message.key, meId)
+			statusBackend.recordReceivedStatus({
+				senderUserJid: jidNormalizedUser(senderJid),
+				uuid: message.key.id,
+				timestamp: toNumber(message.messageTimestamp ?? 0),
+				textData: content?.extendedTextMessage?.text || content?.conversation || null
+			})
+		} catch (err) {
+			logger?.warn({ err }, 'Phase 9.15: failed to record status.db row')
 		}
 	}
 
