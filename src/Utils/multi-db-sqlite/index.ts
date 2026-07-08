@@ -42,3 +42,4 @@ export {
 	STATUS_TYPE_STANDARD,
 	type ReceivedStatusInput
 } from './status-backend'
+export { PrometheusBackend, type MetricSampleInput } from './prometheus-backend'

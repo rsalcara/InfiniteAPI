@@ -38,6 +38,9 @@ import { createServer, IncomingMessage, Server, ServerResponse } from 'http'
 import * as os from 'os'
 import * as promClient from 'prom-client'
 import { intFromEnv } from './env-utils'
+// Type-only — does not eagerly load better-sqlite3. Same rationale as the
+// LID-mapping wiring in Signal/libsignal.ts.
+import type { MetricSampleInput, PrometheusBackend } from './multi-db-sqlite/prometheus-backend'
 
 // Create a custom registry to avoid conflicts with global registry
 const customRegistry = new promClient.Registry()
@@ -2244,6 +2247,74 @@ export async function shutdownMetrics(): Promise<void> {
 		await globalMetricsManager.shutdown()
 		globalMetricsManager = null
 	}
+}
+
+// ============================================
+// Phase 9.16 — prometheus.db snapshot (opt-in, caller-scheduled)
+// ============================================
+
+/**
+ * Snapshots every metric currently in `registry` into `backend`'s
+ * `metric_samples` table as one batched transaction. Deliberately NOT
+ * called automatically anywhere in this codebase — see PrometheusBackend's
+ * class doc for why a new auto-ticker wasn't added this late against a
+ * codebase with a prior interval-leak incident. Callers that want periodic
+ * persistence should invoke this on their own `setInterval`/cron and own
+ * that interval's teardown themselves (clearInterval on socket end).
+ */
+export async function snapshotRegistryToPrometheusDb(
+	registry: MetricsRegistry,
+	backend: PrometheusBackend,
+	timestamp: number = Date.now()
+): Promise<number> {
+	const samples: MetricSampleInput[] = []
+
+	for (const [fullName, metric] of registry.getAll()) {
+		if (metric.type === 'histogram') {
+			const values = await (metric as Histogram).getValues()
+			for (const v of values) {
+				samples.push({
+					metricName: fullName,
+					metricType: metric.type,
+					labelsJson: JSON.stringify(v.labels),
+					value: v.sum,
+					timestamp,
+					bucketsJson: JSON.stringify(Object.fromEntries(v.buckets)),
+					sum: v.sum,
+					count: v.count
+				})
+			}
+		} else if (metric.type === 'summary') {
+			const values = await (metric as Summary).getValues()
+			for (const v of values) {
+				samples.push({
+					metricName: fullName,
+					metricType: metric.type,
+					labelsJson: JSON.stringify(v.labels),
+					value: v.sum,
+					timestamp,
+					quantilesJson: JSON.stringify(v.values),
+					sum: v.sum,
+					count: v.count
+				})
+			}
+		} else {
+			// counter / gauge
+			const values = await (metric as Counter | Gauge).getValues()
+			for (const v of values) {
+				samples.push({
+					metricName: fullName,
+					metricType: metric.type,
+					labelsJson: JSON.stringify(v.labels),
+					value: v.value,
+					timestamp
+				})
+			}
+		}
+	}
+
+	backend.recordBatch(samples)
+	return samples.length
 }
 
 // ============================================
