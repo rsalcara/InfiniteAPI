@@ -5,7 +5,14 @@
  * MetricsRegistry and a mock backend — no SQLite needed for this wiring test.
  */
 import { jest } from '@jest/globals'
-import { Counter, Gauge, Histogram, MetricsRegistry, snapshotRegistryToPrometheusDb, Summary } from '../../Utils/prometheus-metrics'
+import {
+	Counter,
+	Gauge,
+	Histogram,
+	MetricsRegistry,
+	snapshotRegistryToPrometheusDb,
+	Summary
+} from '../../Utils/prometheus-metrics'
 
 const makeBackendMock = () => ({ recordBatch: jest.fn() })
 

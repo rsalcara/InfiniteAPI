@@ -40,6 +40,7 @@ export class PrometheusBackend {
 		setRetentionPolicy: SqliteStatementLike
 		getRetentionPolicy: SqliteStatementLike
 		pruneOlderThan: SqliteStatementLike
+		getOldestTimestamp: SqliteStatementLike
 		logPruning: SqliteStatementLike
 	}
 
@@ -64,6 +65,7 @@ export class PrometheusBackend {
 			),
 			getRetentionPolicy: this.db.prepare('SELECT retention_seconds FROM retention_policies WHERE metric_name = ?'),
 			pruneOlderThan: this.db.prepare('DELETE FROM metric_samples WHERE metric_name = ? AND timestamp < ?'),
+			getOldestTimestamp: this.db.prepare('SELECT MIN(timestamp) AS oldest FROM metric_samples WHERE metric_name = ?'),
 			logPruning: this.db.prepare(
 				'INSERT INTO pruning_log (pruned_at, metric_name, rows_pruned, oldest_kept_ts) VALUES (?, ?, ?, ?)'
 			)
@@ -91,7 +93,13 @@ export class PrometheusBackend {
 		insertMany()
 	}
 
-	upsertDescriptor(metricName: string, metricType: string, help: string | null, unit: string | null, now: number): void {
+	upsertDescriptor(
+		metricName: string,
+		metricType: string,
+		help: string | null,
+		unit: string | null,
+		now: number
+	): void {
 		this.stmts.upsertDescriptor.run(metricName, metricType, help, unit, now, now)
 	}
 
@@ -107,12 +115,16 @@ export class PrometheusBackend {
 	/** Prunes samples for `metricName` older than its configured retention policy, if any. Returns rows pruned. */
 	pruneOldMetrics(metricName: string, now: number): number {
 		const retentionSeconds = this.getRetentionSeconds(metricName)
-		if (retentionSeconds == null) return 0
+		if (retentionSeconds === null) return 0
 
 		const cutoff = now - retentionSeconds * 1000
 		const result = this.stmts.pruneOlderThan.run(metricName, cutoff)
 		if (result.changes > 0) {
-			this.stmts.logPruning.run(now, metricName, result.changes, cutoff)
+			// `oldest_kept_ts` names the oldest SURVIVING sample, not the cutoff
+			// threshold used to prune — query it fresh rather than assume the
+			// cutoff itself was the oldest kept row's timestamp.
+			const { oldest } = this.stmts.getOldestTimestamp.get(metricName) as { oldest: number | null }
+			this.stmts.logPruning.run(now, metricName, result.changes, oldest)
 		}
 
 		return result.changes

@@ -37,10 +37,10 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from 'http'
 import * as os from 'os'
 import * as promClient from 'prom-client'
-import { intFromEnv } from './env-utils'
 // Type-only — does not eagerly load better-sqlite3. Same rationale as the
 // LID-mapping wiring in Signal/libsignal.ts.
 import type { MetricSampleInput, PrometheusBackend } from './multi-db-sqlite/prometheus-backend'
+import { intFromEnv } from './env-utils'
 
 // Create a custom registry to avoid conflicts with global registry
 const customRegistry = new promClient.Registry()
@@ -2271,12 +2271,15 @@ export async function snapshotRegistryToPrometheusDb(
 
 	for (const [fullName, metric] of registry.getAll()) {
 		if (metric.type === 'histogram') {
-			const values = await (metric as Histogram).getValues()
+			const values = await metric.getValues()
 			for (const v of values) {
 				samples.push({
 					metricName: fullName,
 					metricType: metric.type,
 					labelsJson: JSON.stringify(v.labels),
+					// `value` has no single-number meaning for a histogram — mirror
+					// `sum` into it so a plain `SELECT value` still returns something
+					// usable; `sum`/`count`/`bucketsJson` carry the real distribution.
 					value: v.sum,
 					timestamp,
 					bucketsJson: JSON.stringify(Object.fromEntries(v.buckets)),
@@ -2285,12 +2288,13 @@ export async function snapshotRegistryToPrometheusDb(
 				})
 			}
 		} else if (metric.type === 'summary') {
-			const values = await (metric as Summary).getValues()
+			const values = await metric.getValues()
 			for (const v of values) {
 				samples.push({
 					metricName: fullName,
 					metricType: metric.type,
 					labelsJson: JSON.stringify(v.labels),
+					// same rationale as the histogram branch above.
 					value: v.sum,
 					timestamp,
 					quantilesJson: JSON.stringify(v.values),
@@ -2300,7 +2304,7 @@ export async function snapshotRegistryToPrometheusDb(
 			}
 		} else {
 			// counter / gauge
-			const values = await (metric as Counter | Gauge).getValues()
+			const values = await metric.getValues()
 			for (const v of values) {
 				samples.push({
 					metricName: fullName,
