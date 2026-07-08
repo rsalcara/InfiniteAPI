@@ -40,6 +40,7 @@ import { aesDecryptGCM, hmacSign } from './crypto'
 import { getKeyAuthor, toNumber } from './generics'
 import { downloadAndProcessHistorySyncNotification } from './history'
 import type { ILogger } from './logger'
+import { type OrphanEntry, OrphanQueue } from './orphan-queue'
 import { metrics, recordHistorySyncMessages } from './prometheus-metrics.js'
 
 type ProcessMessageContext = {
@@ -52,6 +53,10 @@ type ProcessMessageContext = {
 	options: RequestInit
 	signalRepository: SignalRepositoryWithLIDStore
 	getMessage: SocketConfig['getMessage']
+	/** Optional — holding pen for REVOKE/event-response whose parent message
+	 * hasn't arrived yet. Omitting it keeps today's behavior (no queueing);
+	 * `chats.ts` wires a real instance in production. */
+	orphanQueue?: OrphanQueue
 }
 
 const REAL_MSG_STUB_TYPES = new Set([
@@ -373,7 +378,8 @@ const processMessage = async (
 		keyStore,
 		logger,
 		options,
-		getMessage
+		getMessage,
+		orphanQueue
 	}: ProcessMessageContext
 ) => {
 	const meUser = creds.me
@@ -397,7 +403,105 @@ const processMessage = async (
 		}
 	}
 
+	/** Emits the REVOKE update once the target message is confirmed to exist —
+	 * shared by the live path (case REVOKE below) and orphan replay. */
+	const emitRevokeUpdate = (revokeStanza: WAMessage, revokeProtocolMsg: proto.Message.IProtocolMessage): void => {
+		const targetKey: WAMessageKey = { ...revokeStanza.key, id: revokeProtocolMsg.key?.id }
+		ev.emit('messages.update', [
+			{ key: targetKey, update: { message: null, messageStubType: WAMessageStubType.REVOKE, key: revokeStanza.key } }
+		])
+	}
+
+	/** Decrypts + emits an event-response once the event-creation message is known
+	 * — shared by the live path (encEventResponseMessage branch below) and orphan
+	 * replay. `eventMsg` is the creation message's decrypted content (either fetched
+	 * via getMessage on the live path, or — on replay — the just-arrived message's
+	 * own `content`, since replay only runs once that message is being processed). */
+	const decryptAndEmitEventResponse = async (
+		responseStanza: WAMessage,
+		encEventResponse: proto.Message.IEncEventResponseMessage,
+		creationMsgKey: WAMessageKey,
+		eventMsg: proto.IMessage
+	): Promise<void> => {
+		try {
+			const meIdNormalised = jidNormalizedUser(meId)
+
+			// all jids need to be PN
+			const eventCreatorKey = creationMsgKey.participant || creationMsgKey.remoteJid!
+			const eventCreatorPn = isLidUser(eventCreatorKey)
+				? await signalRepository.lidMapping.getPNForLID(eventCreatorKey)
+				: eventCreatorKey
+			if (!eventCreatorPn) {
+				logger?.warn({ messageKey: responseStanza.key, eventCreatorKey }, 'processMessage: eventCreatorPn missing, skipping')
+				return
+			}
+
+			const eventCreatorJid = getKeyAuthor(
+				{ remoteJid: jidNormalizedUser(eventCreatorPn), fromMe: meIdNormalised === eventCreatorPn },
+				meIdNormalised
+			)
+
+			const responderJid = getKeyAuthor(responseStanza.key, meIdNormalised)
+			const eventEncKey = eventMsg?.messageContextInfo?.messageSecret
+
+			if (!eventEncKey) {
+				logger?.warn({ creationMsgKey }, 'event response: missing messageSecret for decryption')
+				return
+			}
+
+			const responseMsg = decryptEventResponse(encEventResponse, {
+				eventEncKey,
+				eventCreatorJid,
+				eventMsgId: creationMsgKey.id!,
+				responderJid
+			})
+
+			const eventResponse = {
+				eventResponseMessageKey: responseStanza.key,
+				senderTimestampMs: responseMsg.timestampMs!,
+				response: responseMsg
+			}
+
+			// Normalize creationMsgKey JIDs for the emitted event
+			const normalizedCreationKey = { ...creationMsgKey }
+			await normalizeKeyLidToPn(normalizedCreationKey, signalRepository.lidMapping, logger)
+
+			ev.emit('messages.update', [
+				{
+					key: normalizedCreationKey,
+					update: {
+						eventResponses: [eventResponse]
+					}
+				}
+			])
+		} catch (err) {
+			logger?.warn({ err, creationMsgKey }, 'failed to decrypt event response')
+		}
+	}
+
 	const content = normalizeMessageContent(message.message)
+
+	// Replay any REVOKE/event-response that arrived before this (now-processed) real
+	// message did. isRealMsg is exactly the class of message that can ever be a
+	// parent for either — mutually exclusive with protocolMessage/reactionMessage/
+	// pollUpdateMessage by construction (see isRealMessage's exclusions above), so
+	// this never races with the branches below that handle those message kinds.
+	if (isRealMsg && orphanQueue) {
+		const drained = orphanQueue.drain(message.key)
+		for (const entry of drained) {
+			const entryContent = normalizeMessageContent(entry.message.message)
+			if (entry.kind === 'revoke' && entryContent?.protocolMessage) {
+				emitRevokeUpdate(entry.message, entryContent.protocolMessage)
+			} else if (entry.kind === 'event-response' && entryContent?.encEventResponseMessage) {
+				const encEventResponse = entryContent.encEventResponseMessage
+				const creationMsgKey = encEventResponse.eventCreationMessageKey
+				if (creationMsgKey) {
+					// eslint-disable-next-line no-await-in-loop
+					await decryptAndEmitEventResponse(entry.message, encEventResponse, creationMsgKey, content!)
+				}
+			}
+		}
+	}
 
 	// unarchive chat if it's a real message, or someone reacted to our message
 	// and we've the unarchive chats setting on
@@ -536,17 +640,25 @@ const processMessage = async (
 				}
 
 				break
-			case proto.Message.ProtocolMessage.Type.REVOKE:
-				ev.emit('messages.update', [
-					{
-						key: {
-							...message.key,
-							id: protocolMsg.key?.id
-						},
-						update: { message: null, messageStubType: WAMessageStubType.REVOKE, key: message.key }
-					}
-				])
+			case proto.Message.ProtocolMessage.Type.REVOKE: {
+				const targetKey: WAMessageKey = { ...message.key, id: protocolMsg.key?.id }
+				// eslint-disable-next-line no-await-in-loop
+				const original = protocolMsg.key?.id ? await getMessage(targetKey) : undefined
+				if (original) {
+					emitRevokeUpdate(message, protocolMsg)
+				} else if (orphanQueue) {
+					// Out-of-order arrival (common during history sync / offline catch-up):
+					// the revoke target isn't in the consumer's store yet. Queue it instead
+					// of firing a "delete a message I don't have" no-op — replayed below,
+					// at the top of this function, once the target message is processed.
+					orphanQueue.enqueue(targetKey, 'revoke', message)
+					logger?.debug({ targetKey }, 'processMessage: REVOKE target not found yet, queued as orphan')
+				} else {
+					logger?.debug({ targetKey }, 'processMessage: REVOKE target not found, dropping (no orphan queue configured)')
+				}
+
 				break
+			}
 			case proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING:
 				Object.assign(chat, {
 					ephemeralSettingTimestamp: toNumber(message.messageTimestamp),
@@ -756,59 +868,14 @@ const processMessage = async (
 		// we need to fetch the event creation message to get the event enc key
 		const eventMsg = await getMessage(creationMsgKey)
 		if (eventMsg) {
-			try {
-				const meIdNormalised = jidNormalizedUser(meId)
-
-				// all jids need to be PN
-				const eventCreatorKey = creationMsgKey.participant || creationMsgKey.remoteJid!
-				const eventCreatorPn = isLidUser(eventCreatorKey)
-					? await signalRepository.lidMapping.getPNForLID(eventCreatorKey)
-					: eventCreatorKey
-				if (!eventCreatorPn) {
-					logger?.warn({ messageKey: message.key, eventCreatorKey }, 'processMessage: eventCreatorPn missing, skipping')
-					return
-				}
-
-				const eventCreatorJid = getKeyAuthor(
-					{ remoteJid: jidNormalizedUser(eventCreatorPn), fromMe: meIdNormalised === eventCreatorPn },
-					meIdNormalised
-				)
-
-				const responderJid = getKeyAuthor(message.key, meIdNormalised)
-				const eventEncKey = eventMsg?.messageContextInfo?.messageSecret
-
-				if (!eventEncKey) {
-					logger?.warn({ creationMsgKey }, 'event response: missing messageSecret for decryption')
-				} else {
-					const responseMsg = decryptEventResponse(encEventResponse, {
-						eventEncKey,
-						eventCreatorJid,
-						eventMsgId: creationMsgKey.id!,
-						responderJid
-					})
-
-					const eventResponse = {
-						eventResponseMessageKey: message.key,
-						senderTimestampMs: responseMsg.timestampMs!,
-						response: responseMsg
-					}
-
-					// Normalize creationMsgKey JIDs for the emitted event
-					const normalizedCreationKey = { ...creationMsgKey }
-					await normalizeKeyLidToPn(normalizedCreationKey, signalRepository.lidMapping, logger)
-
-					ev.emit('messages.update', [
-						{
-							key: normalizedCreationKey,
-							update: {
-								eventResponses: [eventResponse]
-							}
-						}
-					])
-				}
-			} catch (err) {
-				logger?.warn({ err, creationMsgKey }, 'failed to decrypt event response')
-			}
+			await decryptAndEmitEventResponse(message, encEventResponse, creationMsgKey, eventMsg)
+		} else if (orphanQueue) {
+			// Out-of-order arrival: the event-creation message isn't in the
+			// consumer's store yet. Queue it instead of dropping the response —
+			// replayed above, at the top of this function, once the creation
+			// message is processed.
+			orphanQueue.enqueue(creationMsgKey, 'event-response', message)
+			logger?.debug({ creationMsgKey }, 'processMessage: event creation message not found yet, queued as orphan')
 		} else {
 			logger?.warn({ creationMsgKey }, 'event creation message not found, cannot decrypt response')
 		}

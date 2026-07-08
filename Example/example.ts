@@ -1,11 +1,12 @@
 import { Boom } from '@hapi/boom'
 import NodeCache from '@cacheable/node-cache'
 import readline from 'readline'
-import makeWASocket, { AnyMessageContent, BinaryInfo, CacheStore, DEFAULT_CONNECTION_CONFIG, delay, DisconnectReason, downloadAndProcessHistorySyncNotification, encodeWAM, fetchLatestBaileysVersion, generateMessageIDV2, getAggregateVotesInPollMessage, getHistoryMsg, isJidNewsletter, jidDecode, makeCacheableSignalKeyStore, normalizeMessageContent, PatchedMessageWithRecipientJID, proto, useMultiFileAuthState, WAMessageContent, WAMessageKey } from '../src'
+import makeWASocket, { AnyMessageContent, BinaryInfo, CacheStore, DEFAULT_CONNECTION_CONFIG, decryptPollVote, delay, DisconnectReason, downloadAndProcessHistorySyncNotification, encodeWAM, fetchLatestBaileysVersion, generateMessageIDV2, getAggregateVotesInPollMessage, getHistoryMsg, getKeyAuthor, isJidNewsletter, jidDecode, jidNormalizedUser, makeCacheableSignalKeyStore, normalizeMessageContent, PatchedMessageWithRecipientJID, proto, useMultiFileAuthState, WAMessageContent, WAMessageKey } from '../src'
 //import MAIN_LOGGER from '../src/Utils/logger'
 import open from 'open'
 import fs from 'fs'
 import P from 'pino'
+import qrcodeTerminal from 'qrcode-terminal'
 
 const logger = P({
   level: "trace",
@@ -34,6 +35,14 @@ const usePairingCode = process.argv.includes('--use-pairing-code')
 const msgRetryCounterCache = new NodeCache() as CacheStore
 
 const onDemandMap = new Map<string, string>()
+
+// Minimal example-only message cache, keyed by chat+id. Backs both getMessage()
+// (poll/event/retry lookups the socket asks for) and the poll-vote decryption
+// below. A real app should persist this (DB/file), not keep it in memory only —
+// this Map is empty again on every restart, so votes/retries referencing a
+// message from a previous run won't resolve.
+const messageStore = new Map<string, proto.IMessage>()
+const messageStoreKey = (key: WAMessageKey) => `${key.remoteJid}:${key.id}`
 
 // Read line interface
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -93,6 +102,9 @@ const startSock = async() => {
 						const phoneNumber = await question('Please enter your phone number:\n')
 						const code = await sock.requestPairingCode(phoneNumber)
 						console.log(`Pairing code: ${code}`)
+					} else {
+						// printQRInTerminal is deprecated by the socket itself — render it ourselves.
+						qrcodeTerminal.generate(qr, { small: true })
 					}
 				}
 
@@ -138,9 +150,60 @@ const startSock = async() => {
 
 
 
-        if (upsert.type === 'notify') {
-          for (const msg of upsert.messages) {
-            if (msg.message?.conversation || msg.message?.extendedTextMessage?.text) {
+        for (const msg of upsert.messages) {
+          if (msg.message) {
+            messageStore.set(messageStoreKey(msg.key), msg.message)
+          }
+
+          // Poll-vote decryption is the CONSUMER's responsibility (upstream commit
+          // b7a9f7bd67 moved it out of the library) — the raw pollUpdateMessage
+          // still arrives here via messages.upsert like any other message content,
+          // just still encrypted. Look up the poll-creation message (the vote only
+          // carries its key, not its content) and decrypt with decryptPollVote.
+          if (msg.message?.pollUpdateMessage) {
+            const { pollCreationMessageKey, vote, senderTimestampMs } = msg.message.pollUpdateMessage
+            const pollCreation = pollCreationMessageKey && messageStore.get(messageStoreKey(pollCreationMessageKey))
+            const pollEncKey = pollCreation?.messageContextInfo?.messageSecret
+            if (pollCreationMessageKey && vote && pollEncKey) {
+              // The poll-vote HMAC key is derived from the voter/creator's LID
+              // identity, not PN — confirmed empirically against a real account
+              // (live capture 2026-07-08): the PN form fails GCM auth, the LID
+              // form authenticates correctly. Falls back to PN only if this
+              // session has no LID yet (pre-migration creds). Device suffix
+              // must be stripped either way ("user@server", not
+              // "user:device@server") — see process-message.ts's meIdNormalised.
+              const meId = jidNormalizedUser(sock.user!.lid || sock.user!.id)
+              const pollCreatorJid = getKeyAuthor(pollCreationMessageKey, meId)
+              const voterJid = getKeyAuthor(msg.key, meId)
+              try {
+                const voteMsg = decryptPollVote(vote, {
+                  pollEncKey,
+                  pollCreatorJid,
+                  pollMsgId: pollCreationMessageKey.id!,
+                  voterJid
+                })
+                logger.debug(
+                  {
+                    voterJid,
+                    aggregate: getAggregateVotesInPollMessage({
+                      message: pollCreation,
+                      pollUpdates: [{ pollUpdateMessageKey: msg.key, vote: voteMsg, senderTimestampMs }]
+                    })
+                  },
+                  'decrypted poll vote'
+                )
+              } catch (err) {
+                logger.warn({ err, pollCreationMessageKey }, 'failed to decrypt poll vote')
+              }
+            } else {
+              logger.debug(
+                { pollCreationMessageKey },
+                'poll creation message not in local store yet, cannot decrypt vote'
+              )
+            }
+          }
+
+          if (upsert.type === 'notify' && (msg.message?.conversation || msg.message?.extendedTextMessage?.text)) {
               const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text
               if (text == "requestPlaceholder" && !upsert.requestId) {
                 const messageId = await sock.requestPlaceholderResend(msg.key)
@@ -160,27 +223,14 @@ const startSock = async() => {
               }
             }
           }
-        }
       }
 
 			// messages updated like status delivered, message deleted etc.
+			// (poll-vote decryption/aggregation happens in the messages.upsert handler
+			// above, not here — see the note there. update.pollUpdates is never
+			// populated by the library itself.)
 			if(events['messages.update']) {
 				logger.debug(events['messages.update'], 'messages.update fired')
-
-				for(const { key, update } of events['messages.update']) {
-					if(update.pollUpdates) {
-						const pollCreation: proto.IMessage = {} // get the poll creation message somehow
-						if(pollCreation) {
-							console.log(
-								'got poll update, aggregation: ',
-								getAggregateVotesInPollMessage({
-									message: pollCreation,
-									pollUpdates: update.pollUpdates,
-								})
-							)
-						}
-					}
-				}
 			}
 
 			if(events['message-receipt.update']) {
@@ -227,11 +277,10 @@ const startSock = async() => {
 	return sock
 
 	async function getMessage(key: WAMessageKey): Promise<WAMessageContent | undefined> {
-	  // Implement a way to retreive messages that were upserted from messages.upsert
-			// up to you
-
-		// only if store is present
-		return proto.Message.create({ conversation: 'test' })
+		// Backed by the same in-memory messageStore populated in the messages.upsert
+		// handler above. A real app should back this with persistent storage — this
+		// only resolves messages seen earlier in the SAME process lifetime.
+		return messageStore.get(messageStoreKey(key))
 	}
 }
 
