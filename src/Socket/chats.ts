@@ -212,16 +212,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		? new LocationBackend((config.multiDbStore as any).handle('location.db'))
 		: undefined
 
-	// Phase 9.8 — mirrors static/live location (location_cache/location_sharer)
-	// into location.db when a multi-db-sqlite store is configured. Same
-	// boundary-cast rationale as appStateBackend above.
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	const locationBackend = config.multiDbStore ? new LocationBackend((config.multiDbStore as any).handle('location.db')) : undefined
-
 	// Phase 9.10 — mirrors mute/pin chat settings into chatsettings.db when a
 	// multi-db-sqlite store is configured. Same boundary-cast rationale as
 	// appStateBackend above.
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
 	const chatSettingsBackend = config.multiDbStore
 		? new ChatSettingsBackend((config.multiDbStore as any).handle('chatsettings.db'))
 		: undefined

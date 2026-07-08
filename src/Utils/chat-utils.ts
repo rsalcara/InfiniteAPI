@@ -997,7 +997,10 @@ export const processSyncAction = (
 	// they're the only chat-level app-state actions here with a confirmed
 	// column in the real schema (archive lives in msgstore.db's `chat` table,
 	// out of scope). Never allowed to affect sync processing.
-	chatSettingsBackend?: { setMuteEnd(jid: string, muteEnd: number | null): void; setPinned(jid: string, pinned: boolean, pinnedTime: number | null): void }
+	chatSettingsBackend?: {
+		setMuteEnd(jid: string, muteEnd: number | null): void
+		setPinned(jid: string, pinned: boolean, pinnedTime: number | null): void
+	}
 ) => {
 	const isInitialSync = !!initialSyncOpts
 	const accountSettings = initialSyncOpts?.accountSettings
