@@ -2270,6 +2270,11 @@ export async function snapshotRegistryToPrometheusDb(
 	const samples: MetricSampleInput[] = []
 
 	for (const [fullName, metric] of registry.getAll()) {
+		// `unit` has no source on these metric classes — left null rather than
+		// fabricated. `help` is the constructor-supplied description every
+		// Counter/Gauge/Histogram/Summary already carries.
+		backend.upsertDescriptor(fullName, metric.type, metric.help, null, timestamp)
+
 		if (metric.type === 'histogram') {
 			const values = await metric.getValues()
 			for (const v of values) {

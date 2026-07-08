@@ -384,7 +384,9 @@ describe('Phase 9 backends', () => {
 
 			const log = store.handle('prometheus.db').prepare('SELECT * FROM pruning_log').all() as any[]
 			expect(log).toHaveLength(1)
-			expect(log[0]).toMatchObject({ metric_name: 'm', rows_pruned: 1 })
+			// oldest_kept_ts must be the surviving sample's actual timestamp
+			// (now - 1_000), not the cutoff used to decide what to prune.
+			expect(log[0]).toMatchObject({ metric_name: 'm', rows_pruned: 1, oldest_kept_ts: now - 1_000 })
 		})
 	})
 })

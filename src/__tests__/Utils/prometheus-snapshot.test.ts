@@ -14,7 +14,7 @@ import {
 	Summary
 } from '../../Utils/prometheus-metrics'
 
-const makeBackendMock = () => ({ recordBatch: jest.fn() })
+const makeBackendMock = () => ({ recordBatch: jest.fn(), upsertDescriptor: jest.fn() })
 
 describe('snapshotRegistryToPrometheusDb', () => {
 	it('snapshots a counter and a gauge with their current values', async () => {
@@ -45,6 +45,9 @@ describe('snapshotRegistryToPrometheusDb', () => {
 				})
 			])
 		)
+		// descriptors (name/type/help) are upserted once per metric, independent of recordBatch
+		expect(backend.upsertDescriptor).toHaveBeenCalledWith('test9_16a_reqs_total', 'counter', 'requests', null, 12345)
+		expect(backend.upsertDescriptor).toHaveBeenCalledWith('test9_16a_queue_size', 'gauge', 'queue size', null, 12345)
 	})
 
 	it('snapshots a histogram with buckets/sum/count', async () => {
