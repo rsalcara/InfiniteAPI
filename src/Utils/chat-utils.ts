@@ -37,10 +37,13 @@ export type ChatMutationMap = { [index: string]: ChatMutation }
  * to the already-decoded `ChatMutation` — this is what a `sync.db`-style
  * persistence layer (Phase 9.7) needs, since the real mobile schema stores
  * the record's index/value MACs verbatim rather than the friendly decoded
- * value. `index[0]` is always the action name and `index[1]` (when present)
- * the target chat jid — verified against `chatModificationToAppPatch` below,
- * which builds outgoing patches with that exact convention (e.g.
- * `['mute', jid]`, `['archive', jid]`, `['pin_v1', jid]`).
+ * value. `index[0]` is always the action name, and for most actions
+ * `index[1]` is the target chat jid — verified against
+ * `chatModificationToAppPatch` below, which builds outgoing patches with
+ * that convention (e.g. `['mute', jid]`, `['archive', jid]`,
+ * `['pin_v1', jid]`). Not universal: label mutations put the jid at
+ * index[2] instead, see the consumer in Socket/chats.ts for how that's
+ * handled.
  */
 export type RawSyncdMutation = {
 	indexMac: Uint8Array

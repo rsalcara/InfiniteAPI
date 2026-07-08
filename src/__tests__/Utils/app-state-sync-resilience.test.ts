@@ -1,6 +1,5 @@
 import { Boom } from '@hapi/boom'
 import { proto } from '../../../WAProto/index.js'
-import { aesEncrypt } from '../../Utils/crypto'
 import {
 	decodeSyncdMutations,
 	decodeSyncdPatch,
@@ -10,6 +9,7 @@ import {
 	MAX_SYNC_ATTEMPTS,
 	newLTHashState
 } from '../../Utils/chat-utils'
+import { aesEncrypt } from '../../Utils/crypto'
 import { expandAppStateKeys } from '../../Utils/wasm-bridge'
 
 const missingKeyFn = async () => null
@@ -185,16 +185,8 @@ describe('App State Sync', () => {
 
 			const rawMutations: any[] = []
 			const { decodePatches } = await import('../../Utils/chat-utils')
-			await decodePatches(
-				'regular_high',
-				[syncd],
-				newLTHashState(),
-				getKey,
-				{},
-				undefined,
-				undefined,
-				false,
-				raw => rawMutations.push(raw)
+			await decodePatches('regular_high', [syncd], newLTHashState(), getKey, {}, undefined, undefined, false, raw =>
+				rawMutations.push(raw)
 			)
 
 			expect(rawMutations).toHaveLength(1)

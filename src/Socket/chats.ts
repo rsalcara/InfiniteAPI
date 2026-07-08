@@ -63,8 +63,8 @@ import {
 	type RawSyncdMutation,
 	resolveLidToPn
 } from '../Utils'
-import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
 import type { ILogger } from '../Utils/logger'
+import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
 import { AppStateBackend } from '../Utils/multi-db-sqlite'
 import processMessage from '../Utils/process-message'
 import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
@@ -85,11 +85,16 @@ import { makeSocket } from './socket.js'
 
 /**
  * Phase 9.7 — mirror one decoded app-state mutation into `sync.db`'s
- * `syncd_mutations` table. `index[0]` is always the action name and
- * `index[1]` (when present) the target chat jid — verified against
- * `chatModificationToAppPatch` above, which builds outgoing patches with
- * that exact convention (`['mute', jid]`, `['archive', jid]`, `['pin_v1', jid]`,
- * but action-only entries like `['setting_disableLinkPreviews']` have no jid).
+ * `syncd_mutations` table. `index[0]` is always the action name, and for
+ * MOST actions `index[1]` is the target chat jid — verified against
+ * `chatModificationToAppPatch` in chat-utils.ts, which builds outgoing
+ * patches with that convention (`['mute', jid]`, `['archive', jid]`,
+ * `['pin_v1', jid]`). It is NOT universal, though: action-only entries like
+ * `['setting_disableLinkPreviews']` have no jid at all, and label mutations
+ * (`[LabelAssociationType.Chat, labelId, jid]`) put the jid at index[2], with
+ * a label id at index[1] instead. `chatJid` below is only populated when
+ * `index[1]` actually looks like a jid, so those cases store `null` rather
+ * than a mislabeled value.
  *
  * Never allowed to affect the sync flow: `appStateBackend` is a best-effort
  * side channel (same rule as Phase 9.4's `onQuarantine`), so any throw here
@@ -116,7 +121,7 @@ const recordRawMutation = (
 			// rather than fabricate a value with no confirmed source.
 			deviceId: 0,
 			epoch: 0,
-			chatJid: index[1],
+			chatJid: typeof index[1] === 'string' && index[1].includes('@') ? index[1] : null,
 			mutationName: index[0]
 		})
 	} catch (err) {
@@ -194,8 +199,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// Boundary cast: `multiDbStore` is typed `unknown` on SocketConfig so
 	// consumers of this module don't need a hard dependency on the SQLite
 	// types (same pattern as libsignal.ts's LID-mapping wiring).
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	const appStateBackend = config.multiDbStore ? new AppStateBackend((config.multiDbStore as any).handle('sync.db')) : undefined
+
+	const appStateBackend = config.multiDbStore
+		? new AppStateBackend((config.multiDbStore as any).handle('sync.db'))
+		: undefined
 
 	const ownsPlaceholderResendCache = !config.placeholderResendCache
 	const placeholderResendCache =
@@ -902,9 +909,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 									getCachedAppStateSyncKey,
 									initialVersionMap[name],
 									appStateMacVerification.snapshot,
-									appStateBackend
-										? raw => recordRawMutation(appStateBackend, name, raw)
-										: undefined
+									appStateBackend ? raw => recordRawMutation(appStateBackend, name, raw) : undefined
 								)
 								states[name] = newState
 								Object.assign(globalMutationMap, mutationMap)
@@ -934,9 +939,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 									initialVersionMap[name],
 									logger,
 									appStateMacVerification.patch,
-									appStateBackend
-										? raw => recordRawMutation(appStateBackend, name, raw)
-										: undefined
+									appStateBackend ? raw => recordRawMutation(appStateBackend, name, raw) : undefined
 								)
 
 								await authState.keys.set({ 'app-state-sync-version': { [name]: newState } })

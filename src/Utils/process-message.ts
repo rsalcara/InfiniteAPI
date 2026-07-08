@@ -40,7 +40,7 @@ import { aesDecryptGCM, hmacSign } from './crypto'
 import { getKeyAuthor, toNumber } from './generics'
 import { downloadAndProcessHistorySyncNotification } from './history'
 import type { ILogger } from './logger'
-import { PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE, type AppStateBackend } from './multi-db-sqlite'
+import { type AppStateBackend, PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE } from './multi-db-sqlite'
 import { type OrphanEntry, OrphanQueue } from './orphan-queue'
 import { metrics, recordHistorySyncMessages } from './prometheus-metrics.js'
 
@@ -653,6 +653,7 @@ const processMessage = async (
 					}, meId)
 
 					if (appStateBackend && protocolMsg.appStateSyncKeyShare) {
+						// eslint-disable-next-line max-depth
 						try {
 							const peerMsgId = appStateBackend.recordPeerMessage({
 								messageType: PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
