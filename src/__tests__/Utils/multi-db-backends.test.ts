@@ -375,7 +375,10 @@ describe('Phase 9 backends', () => {
 			const pruned = backend.pruneOldMetrics('m', now)
 			expect(pruned).toBe(1) // only the (now - 10_000ms) sample is older than 5s
 
-			const remaining = store.handle('prometheus.db').prepare('SELECT value FROM metric_samples WHERE metric_name = ?').all('m') as any[]
+			const remaining = store
+				.handle('prometheus.db')
+				.prepare('SELECT value FROM metric_samples WHERE metric_name = ?')
+				.all('m') as any[]
 			expect(remaining).toHaveLength(1)
 			expect(remaining[0].value).toBe(2)
 
