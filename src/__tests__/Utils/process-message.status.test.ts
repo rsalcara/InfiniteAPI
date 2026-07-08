@@ -65,6 +65,18 @@ describe('processMessage — status.db mirror (Phase 9.15)', () => {
 		)
 	})
 
+	it('preserves a genuinely empty-string caption instead of coercing it to null', async () => {
+		const statusBackend = makeStatusBackendMock()
+		const { ctx } = makeContext(statusBackend)
+
+		// `??` (not `||`) must be used for textData - an empty string is falsy but
+		// still a real (non-null) value, unlike `||` which would drop it to null.
+		const msg = inboundStatus('status-empty', { extendedTextMessage: { text: '' } })
+		await processMessage(msg, ctx as any)
+
+		expect(statusBackend.recordReceivedStatus).toHaveBeenCalledWith(expect.objectContaining({ textData: '' }))
+	})
+
 	it('does not record anything for a normal (non-broadcast) chat message', async () => {
 		const statusBackend = makeStatusBackendMock()
 		const { ctx } = makeContext(statusBackend)
