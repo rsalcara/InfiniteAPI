@@ -2,9 +2,9 @@
  * Phase 9 — `useMultiDbSqliteAuthState` skeleton smoke test.
  *
  * Covers:
- *   - creates all 14 physical .db files (creds, axolotl, msgstore, wa, sync,
+ *   - creates all 13 physical .db files (creds, axolotl, msgstore, wa, sync,
  *     media, companion_devices, chatsettings, location, payments, stickers,
- *     smb, status, prometheus);
+ *     smb, status);
  *   - typed tables exist with expected names in the right .db files;
  *   - creds round-trip via creds.db;
  *   - signal data round-trip via axolotl.db.signal_kv (opaque key-value
@@ -34,7 +34,7 @@ describe('useMultiDbSqliteAuthState', () => {
 		await rm(dir, { recursive: true, force: true })
 	})
 
-	it('opens all 14 physical .db files on first open', async () => {
+	it('opens all 13 physical .db files on first open', async () => {
 		const { close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		const { promises: fs } = await import('fs')
 		const files = await fs.readdir(dir)
@@ -52,8 +52,7 @@ describe('useMultiDbSqliteAuthState', () => {
 				'payments.db',
 				'stickers.db',
 				'smb.db',
-				'status.db',
-				'prometheus.db'
+				'status.db'
 			])
 		)
 		close()
@@ -125,15 +124,6 @@ describe('useMultiDbSqliteAuthState', () => {
 				'placeholder_retry_message',
 				'peer_messages'
 			])
-		)
-
-		const prometheusTables = (
-			store.handle('prometheus.db').prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{
-				name: string
-			}>
-		).map(r => r.name)
-		expect(prometheusTables).toEqual(
-			expect.arrayContaining(['metric_samples', 'metric_descriptors', 'retention_policies', 'pruning_log'])
 		)
 
 		const statusTables = (

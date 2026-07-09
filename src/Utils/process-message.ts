@@ -36,11 +36,20 @@ import {
 	jidEncode,
 	jidNormalizedUser
 } from '../WABinary'
-import { aesDecryptGCM, hmacSign } from './crypto'
+import { aesDecryptGCM, hmacSign, sha256 } from './crypto'
 import { getKeyAuthor, toNumber } from './generics'
 import { downloadAndProcessHistorySyncNotification } from './history'
 import type { ILogger } from './logger'
-import { type AppStateBackend, PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE } from './multi-db-sqlite'
+import {
+	type AppStateBackend,
+	type LocationBackend,
+	mapContentTypeToMessageType,
+	type MessageAddOnBackend,
+	type MessageMediaBackend,
+	type MessageStoreBackend,
+	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
+	type StatusBackend
+} from './multi-db-sqlite'
 import { type OrphanEntry, OrphanQueue } from './orphan-queue'
 import { metrics, recordHistorySyncMessages } from './prometheus-metrics.js'
 
@@ -60,6 +69,16 @@ type ProcessMessageContext = {
 	orphanQueue?: OrphanQueue
 	/** Phase 9.7 — optional sync.db mirror (collection_versions/syncd_mutations/peer_messages). */
 	appStateBackend?: AppStateBackend
+	/** Phase 9.8 — optional location.db mirror (location_cache/location_sharer). */
+	locationBackend?: LocationBackend
+	/** Phase 9.15 — optional status.db mirror (status/status_info). */
+	statusBackend?: StatusBackend
+	/** Optional msgstore.db mirror — real message store (message/chat/revoke). */
+	messageStoreBackend?: MessageStoreBackend
+	/** Optional msgstore.db mirror — media metadata (message_media/message_thumbnail/audio_data). */
+	mediaBackend?: MessageMediaBackend
+	/** Optional msgstore.db mirror — reactions/polls/locations/vcards attached to a message. */
+	addOnBackend?: MessageAddOnBackend
 }
 
 const REAL_MSG_STUB_TYPES = new Set([
@@ -383,7 +402,12 @@ const processMessage = async (
 		options,
 		getMessage,
 		orphanQueue,
-		appStateBackend
+		appStateBackend,
+		locationBackend,
+		statusBackend,
+		messageStoreBackend,
+		mediaBackend,
+		addOnBackend
 	}: ProcessMessageContext
 ) => {
 	const meUser = creds.me
@@ -414,6 +438,19 @@ const processMessage = async (
 		ev.emit('messages.update', [
 			{ key: targetKey, update: { message: null, messageStubType: WAMessageStubType.REVOKE, key: revokeStanza.key } }
 		])
+
+		if (messageStoreBackend && targetKey.id) {
+			try {
+				messageStoreBackend.recordRevoke({
+					chatJid: jidNormalizedUser(targetKey.remoteJid ?? ''),
+					fromMe: !!targetKey.fromMe,
+					revokedKeyId: targetKey.id,
+					revokeTimestamp: toNumber(revokeStanza.messageTimestamp ?? 0)
+				})
+			} catch (err) {
+				logger?.warn({ err }, 'failed to record message_revoked row')
+			}
+		}
 	}
 
 	/** Decrypts + emits an event-response once the event-creation message is known
@@ -514,6 +551,191 @@ const processMessage = async (
 	if ((isRealMsg || content?.reactionMessage?.key?.fromMe) && accountSettings?.unarchiveChats) {
 		chat.archived = false
 		chat.readOnly = false
+	}
+
+	// Mirrors real messages into msgstore.db's message/chat tables when
+	// configured. Never allowed to affect message processing: best-effort
+	// side channel, same rule as the other optional multi-db-sqlite mirrors
+	// in this file. Also mirrors media metadata and poll-creation options
+	// via the same messageRowId, since both hang off the message row.
+	if (messageStoreBackend && isRealMsg && message.key.id) {
+		try {
+			const senderJid = getKeyAuthor(message.key, meId)
+			const messageRowId = messageStoreBackend.recordMessage({
+				chatJid: chat.id!,
+				fromMe: !!message.key.fromMe,
+				keyId: message.key.id,
+				senderJid: message.key.fromMe ? null : jidNormalizedUser(senderJid),
+				timestamp: toNumber(message.messageTimestamp ?? 0),
+				receivedTimestamp: Date.now(),
+				messageType: mapContentTypeToMessageType(getContentType(content)),
+				textData: content?.extendedTextMessage?.text ?? content?.conversation ?? null,
+				authorDeviceJid: jidNormalizedUser(senderJid),
+				messageSecret: content?.messageContextInfo?.messageSecret
+					? Buffer.from(content.messageContextInfo.messageSecret)
+					: null,
+				incrementUnread: shouldIncrementChatUnread(message)
+			})
+
+			if (mediaBackend) {
+				const media =
+					content?.imageMessage || content?.videoMessage || content?.audioMessage || content?.documentMessage
+				if (media) {
+					mediaBackend.recordMedia({
+						messageRowId,
+						mimeType: media.mimetype ?? null,
+						fileLength: media.fileLength ? toNumber(media.fileLength) : null,
+						mediaKey: media.mediaKey ? Buffer.from(media.mediaKey) : null,
+						directPath: media.directPath ?? null,
+						fileSha256: media.fileSha256 ? Buffer.from(media.fileSha256) : null,
+						fileEncSha256: media.fileEncSha256 ? Buffer.from(media.fileEncSha256) : null,
+						width: 'width' in media ? (media.width ?? null) : null,
+						height: 'height' in media ? (media.height ?? null) : null,
+						mediaDurationSeconds: 'seconds' in media ? (media.seconds ?? null) : null,
+						caption: 'caption' in media ? (media.caption ?? null) : null,
+						mediaName: 'fileName' in media ? (media.fileName ?? null) : null
+					})
+
+					const thumbnail = content?.imageMessage?.jpegThumbnail || content?.videoMessage?.jpegThumbnail
+					if (thumbnail) {
+						mediaBackend.recordThumbnail({ messageRowId, thumbnail: Buffer.from(thumbnail) })
+					}
+
+					if (content?.audioMessage?.waveform) {
+						mediaBackend.recordAudioData({ messageRowId, waveform: Buffer.from(content.audioMessage.waveform) })
+					}
+
+					const streamingSidecar = content?.videoMessage?.streamingSidecar || content?.audioMessage?.streamingSidecar
+					if (streamingSidecar) {
+						mediaBackend.recordStreamingSidecar({
+							messageRowId,
+							sidecar: Buffer.from(streamingSidecar),
+							timestamp: toNumber(message.messageTimestamp ?? 0)
+						})
+					}
+				}
+			}
+
+			if (addOnBackend) {
+				const poll = content?.pollCreationMessage || content?.pollCreationMessageV2 || content?.pollCreationMessageV3
+				if (poll) {
+					addOnBackend.recordPoll({
+						messageRowId,
+						encKey: poll.encKey ? Buffer.from(poll.encKey) : null,
+						selectableOptionsCount: poll.selectableOptionsCount ?? null
+					})
+					for (const option of poll.options ?? []) {
+						// eslint-disable-next-line max-depth
+						if (!option.optionName) continue
+						addOnBackend.recordPollOption({
+							messageRowId,
+							optionSha256: sha256(Buffer.from(option.optionName)).toString('base64'),
+							optionName: option.optionName
+						})
+					}
+				}
+
+				if (content?.contactMessage?.vcard) {
+					addOnBackend.recordVcard({ messageRowId, vcard: content.contactMessage.vcard })
+				}
+			}
+		} catch (err) {
+			logger?.warn({ err }, 'failed to record message.db row')
+		}
+	}
+
+	// Phase 9.8 — mirror static/live location into location.db when configured.
+	// Never allowed to affect message processing: best-effort side channel,
+	// same rule as the other optional multi-db-sqlite mirrors in this file.
+	if (locationBackend && (content?.locationMessage || content?.liveLocationMessage)) {
+		try {
+			const loc = content.locationMessage || content.liveLocationMessage
+			const senderJid = getKeyAuthor(message.key, meId)
+			if (
+				loc?.degreesLatitude !== undefined &&
+				loc?.degreesLatitude !== null &&
+				loc?.degreesLongitude !== undefined &&
+				loc?.degreesLongitude !== null
+			) {
+				locationBackend.upsertLocationCache({
+					jid: jidNormalizedUser(senderJid),
+					latitude: loc.degreesLatitude,
+					longitude: loc.degreesLongitude,
+					accuracy: loc.accuracyInMeters ?? 0,
+					speed: loc.speedInMps ?? 0,
+					bearing: loc.degreesClockwiseFromMagneticNorth ?? 0,
+					locationTs: toNumber(message.messageTimestamp ?? 0)
+				})
+			}
+
+			if (content?.liveLocationMessage && message.key.id) {
+				// `expires` intentionally 0/unknown — see LocationBackend's class doc:
+				// the share duration isn't part of the decoded proto fields.
+				locationBackend.upsertLocationSharer({
+					remoteJid: jidNormalizedUser(message.key.remoteJid ?? ''),
+					fromMe: message.key.fromMe ? 1 : 0,
+					remoteResource: message.key.participant ? jidNormalizedUser(message.key.participant) : '',
+					expires: 0,
+					messageId: message.key.id
+				})
+			}
+
+			// Also mirrors the per-message location row (msgstore.db's
+			// message_location — a different concern than location.db above:
+			// this is the location DATA attached to this specific message,
+			// not the jid-level live-share state).
+			if (
+				addOnBackend &&
+				messageStoreBackend &&
+				message.key.id &&
+				loc?.degreesLatitude !== undefined &&
+				loc?.degreesLatitude !== null &&
+				loc?.degreesLongitude !== undefined &&
+				loc?.degreesLongitude !== null
+			) {
+				const row = messageStoreBackend.getMessageByKeyId(chat.id!, !!message.key.fromMe, message.key.id)
+				if (row) {
+					addOnBackend.recordLocation({
+						messageRowId: row._id,
+						chatJid: chat.id!,
+						latitude: loc.degreesLatitude,
+						longitude: loc.degreesLongitude,
+						placeName: content?.locationMessage?.name ?? null,
+						placeAddress: content?.locationMessage?.address ?? null,
+						url: content?.locationMessage?.url ?? null,
+						// LiveLocationMessage carries no share-duration field (only
+						// caption/sequenceNumber/timeOffset) — left null rather than
+						// fabricated, matching LocationBackend's own note above.
+						liveLocationShareDurationSecs: null,
+						liveLocationSequenceNumber: content?.liveLocationMessage?.sequenceNumber
+							? toNumber(content.liveLocationMessage.sequenceNumber)
+							: null
+					})
+				}
+			}
+		} catch (err) {
+			logger?.warn({ err }, 'Phase 9.8: failed to record location.db row')
+		}
+	}
+
+	// Phase 9.15 — mirror received status/story updates into status.db when
+	// configured. Never allowed to affect message processing. `isRealMsg`
+	// excludes protocolMessage/reactionMessage/pollUpdateMessage (see its
+	// own doc) — without this guard, a REVOKE or reaction addressed to
+	// status@broadcast was recorded as if it were new status content
+	// (confirmed real bug).
+	if (statusBackend && isRealMsg && isJidStatusBroadcast(message.key.remoteJid ?? '') && message.key.id) {
+		try {
+			const senderJid = getKeyAuthor(message.key, meId)
+			statusBackend.recordReceivedStatus({
+				senderUserJid: jidNormalizedUser(senderJid),
+				uuid: message.key.id,
+				timestamp: toNumber(message.messageTimestamp ?? 0),
+				textData: content?.extendedTextMessage?.text ?? content?.conversation ?? null
+			})
+		} catch (err) {
+			logger?.warn({ err }, 'Phase 9.15: failed to record status.db row')
+		}
 	}
 
 	const protocolMsg = content?.protocolMessage
@@ -657,7 +879,6 @@ const processMessage = async (
 					}, meId)
 
 					if (appStateBackend && protocolMsg.appStateSyncKeyShare) {
-						// eslint-disable-next-line max-depth
 						try {
 							const peerMsgId = appStateBackend.recordPeerMessage({
 								messageType: PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
@@ -909,6 +1130,35 @@ const processMessage = async (
 				key: reactionKey
 			}
 		])
+
+		// Mirrors the reaction into msgstore.db's message_add_on(+_reaction)
+		// tables when configured. No-ops (does not throw) when the reacted-to
+		// message isn't locally known — same best-effort convention as
+		// MessageStoreBackend.recordRevoke.
+		if (addOnBackend && messageStoreBackend && message.key.id && reactionKey.remoteJid && reactionKey.id) {
+			try {
+				const parent = messageStoreBackend.getMessageByKeyId(
+					jidNormalizedUser(reactionKey.remoteJid),
+					!!reactionKey.fromMe,
+					reactionKey.id
+				)
+				if (parent) {
+					const senderJid = getKeyAuthor(message.key, meId)
+					addOnBackend.recordReaction({
+						chatJid: jidNormalizedUser(message.key.remoteJid ?? ''),
+						fromMe: !!message.key.fromMe,
+						keyId: message.key.id,
+						senderJid: message.key.fromMe ? null : jidNormalizedUser(senderJid),
+						parentMessageRowId: parent._id,
+						timestamp: toNumber(message.messageTimestamp ?? 0),
+						reaction: content.reactionMessage.text ?? '',
+						senderTimestamp: toNumber(content.reactionMessage.senderTimestampMs ?? 0)
+					})
+				}
+			} catch (err) {
+				logger?.warn({ err }, 'failed to record message_add_on_reaction row')
+			}
+		}
 	} else if (content?.encEventResponseMessage) {
 		const encEventResponse = content.encEventResponseMessage
 		const creationMsgKey = encEventResponse.eventCreationMessageKey

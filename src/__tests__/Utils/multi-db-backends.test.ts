@@ -1,10 +1,12 @@
 /**
- * Phase 9.3–9.7 — backend smoke tests for the remaining components:
+ * Phase 9.3–9.10 — backend smoke tests for the remaining components:
  *
  *   - `MsgRetryCounterSqliteAdapter` — retry counter persistence with TTL
  *   - `MessageQuarantineBackend` — quarantine row inserts + upsert-on-retry
  *   - `TrustedContactsBackend` — incoming + outbound TC token state
  *   - `AppStateBackend` — collection_versions + syncd_mutations
+ *   - `LocationBackend` — location_cache + location_sharer
+ *   - `ChatSettingsBackend` — mute_end + pinned/pinned_time
  *
  * One file covers all four since they share setup/teardown (a single
  * MultiDbSqliteStore handle).
@@ -14,10 +16,13 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import {
 	AppStateBackend,
+	ChatSettingsBackend,
+	LocationBackend,
 	MessageQuarantineBackend,
 	MsgRetryCounterSqliteAdapter,
 	MultiDbSqliteStore,
 	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
+	StatusBackend,
 	TrustedContactsBackend
 } from '../../Utils/multi-db-sqlite'
 
@@ -228,6 +233,159 @@ describe('Phase 9 backends', () => {
 			expect(unacked).toHaveLength(0)
 
 			backend.deletePeerMessage(id)
+		})
+	})
+
+	describe('LocationBackend', () => {
+		it('upserts location_cache — one row per jid, newest report wins', () => {
+			const backend = new LocationBackend(store.handle('location.db'))
+			backend.upsertLocationCache({
+				jid: '5515991426667@s.whatsapp.net',
+				latitude: -23.55,
+				longitude: -46.63,
+				accuracy: 10,
+				speed: 0,
+				bearing: 0,
+				locationTs: 1_000
+			})
+			backend.upsertLocationCache({
+				jid: '5515991426667@s.whatsapp.net',
+				latitude: -23.56,
+				longitude: -46.64,
+				accuracy: 5,
+				speed: 1.2,
+				bearing: 90,
+				locationTs: 2_000
+			})
+
+			const row = backend.getLocationCache('5515991426667@s.whatsapp.net')
+			expect(row).toMatchObject({ latitude: -23.56, longitude: -46.64, locationTs: 2_000 })
+		})
+
+		it('upserts location_sharer keyed by (remote_jid, from_me, remote_resource, message_id)', () => {
+			const backend = new LocationBackend(store.handle('location.db'))
+			backend.upsertLocationSharer({
+				remoteJid: 'chat@s.whatsapp.net',
+				fromMe: 0,
+				remoteResource: '',
+				expires: 0,
+				messageId: 'live-loc-1'
+			})
+			expect(backend.listLocationSharers()).toHaveLength(1)
+
+			// same key resyncs (e.g. a later liveLocationMessage update) — must upsert, not duplicate.
+			backend.upsertLocationSharer({
+				remoteJid: 'chat@s.whatsapp.net',
+				fromMe: 0,
+				remoteResource: '',
+				expires: 0,
+				messageId: 'live-loc-1'
+			})
+			expect(backend.listLocationSharers()).toHaveLength(1)
+
+			expect(backend.endLocationSharer('chat@s.whatsapp.net', 0, '', 'live-loc-1')).toBe(true)
+			expect(backend.listLocationSharers()).toHaveLength(0)
+		})
+	})
+
+	describe('ChatSettingsBackend', () => {
+		it('lazily creates the row on first setMuteEnd, and setPinned only touches its own columns', () => {
+			const backend = new ChatSettingsBackend(store.handle('chatsettings.db'))
+			expect(backend.getSettings('chat@s.whatsapp.net')).toBeNull()
+
+			backend.setMuteEnd('chat@s.whatsapp.net', 1_700_000_000)
+			expect(backend.getSettings('chat@s.whatsapp.net')).toMatchObject({
+				muteEnd: 1_700_000_000,
+				pinned: null,
+				pinnedTime: null
+			})
+
+			// setPinned on the SAME jid must not clobber the mute_end set above.
+			backend.setPinned('chat@s.whatsapp.net', true, 1_700_000_500)
+			expect(backend.getSettings('chat@s.whatsapp.net')).toMatchObject({
+				muteEnd: 1_700_000_000,
+				pinned: 1,
+				pinnedTime: 1_700_000_500
+			})
+
+			// unmute (muteEnd=null) must not clobber the pinned state.
+			backend.setMuteEnd('chat@s.whatsapp.net', null)
+			expect(backend.getSettings('chat@s.whatsapp.net')).toMatchObject({
+				muteEnd: null,
+				pinned: 1,
+				pinnedTime: 1_700_000_500
+			})
+		})
+	})
+
+	describe('StatusBackend', () => {
+		it('creates status_info lazily and increments its aggregate counters per received status', () => {
+			const backend = new StatusBackend(store.handle('status.db'))
+			const sender = '5515991426667@s.whatsapp.net'
+
+			backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'status-1', timestamp: 1_000, textData: 'oi' })
+			backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'status-2', timestamp: 2_000 })
+
+			const rows = backend.listStatusesForSender(sender)
+			expect(rows).toHaveLength(2)
+			expect(rows[0]).toMatchObject({ uuid: 'status-1', sort_id: 1, text_data: 'oi', type: 4, state: 3 })
+			expect(rows[1]).toMatchObject({ uuid: 'status-2', sort_id: 2, text_data: null })
+			// both rows share the same status_info_row_id (one aggregate per sender)
+			expect(rows[0]?.status_info_row_id).toBe(rows[1]?.status_info_row_id)
+		})
+
+		it('keeps separate sort_id sequences per sender', () => {
+			const backend = new StatusBackend(store.handle('status.db'))
+			backend.recordReceivedStatus({ senderUserJid: 'a@s.whatsapp.net', uuid: 'a-1', timestamp: 1 })
+			backend.recordReceivedStatus({ senderUserJid: 'b@s.whatsapp.net', uuid: 'b-1', timestamp: 1 })
+			backend.recordReceivedStatus({ senderUserJid: 'a@s.whatsapp.net', uuid: 'a-2', timestamp: 2 })
+
+			expect(backend.listStatusesForSender('a@s.whatsapp.net').map(r => r.sort_id)).toEqual([1, 2])
+			expect(backend.listStatusesForSender('b@s.whatsapp.net').map(r => r.sort_id)).toEqual([1])
+		})
+
+		it('recordSeenReceipt resolves status_row_id by uuid and upserts on repeated views', () => {
+			const backend = new StatusBackend(store.handle('status.db'))
+			backend.recordReceivedStatus({ senderUserJid: 'me@s.whatsapp.net', uuid: 'my-status-1', timestamp: 1_000 })
+
+			backend.recordSeenReceipt({
+				statusUuid: 'my-status-1',
+				receiptUserJid: 'viewer1@s.whatsapp.net',
+				seenTimestamp: 5_000
+			})
+			backend.recordSeenReceipt({
+				statusUuid: 'my-status-1',
+				receiptUserJid: 'viewer1@s.whatsapp.net',
+				seenTimestamp: 6_000
+			})
+			backend.recordSeenReceipt({
+				statusUuid: 'my-status-1',
+				receiptUserJid: 'viewer2@s.whatsapp.net',
+				seenTimestamp: 5_500
+			})
+
+			const receipts = backend.listSeenReceiptsForStatus('my-status-1')
+			expect(receipts).toHaveLength(2) // viewer1's repeat view upserted, not duplicated
+			expect(receipts.find(r => r.receipt_user_jid === 'viewer1@s.whatsapp.net')?.seen_timestamp).toBe(6_000)
+			expect(receipts.find(r => r.receipt_user_jid === 'viewer2@s.whatsapp.net')?.seen_timestamp).toBe(5_500)
+			expect(receipts.every(r => typeof r.status_row_id === 'number')).toBe(true)
+		})
+
+		it('recordSeenReceipt does not throw when the status uuid has no local row (own posted status)', () => {
+			const backend = new StatusBackend(store.handle('status.db'))
+			// No recordReceivedStatus call for this uuid — mirrors a receipt for
+			// a status this gateway never recorded (e.g. the user's own post).
+			expect(() =>
+				backend.recordSeenReceipt({
+					statusUuid: 'unknown-status',
+					receiptUserJid: 'viewer@s.whatsapp.net',
+					seenTimestamp: 1_000
+				})
+			).not.toThrow()
+			// Not resolvable by uuid lookup (no matching `status` row), so it's
+			// correctly invisible to listSeenReceiptsForStatus (which itself
+			// resolves by uuid) even though the row was inserted with a null FK.
+			expect(backend.listSeenReceiptsForStatus('unknown-status')).toEqual([])
 		})
 	})
 })

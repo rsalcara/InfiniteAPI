@@ -34,3 +34,44 @@ export {
 	type SignalIdentityKey,
 	type SignalSenderKeyKey
 } from './signal-typed-backend'
+export { LocationBackend, type LocationCacheRow, type LocationSharerRow } from './location-backend'
+export { ChatSettingsBackend, type ChatSettingsRow } from './chatsettings-backend'
+export {
+	StatusBackend,
+	STATUS_STATE_SERVER_CONFIRMED,
+	STATUS_TYPE_STANDARD,
+	type ReceivedStatusInput
+} from './status-backend'
+export {
+	ANDROID_MESSAGE_TYPE,
+	mapContentTypeToMessageType,
+	MessageStoreBackend,
+	type ChatRowResolver,
+	type JidResolver,
+	type MessageRow,
+	type RecordMessageInput,
+	type RecordRevokeInput
+} from './message-store-backend'
+export {
+	ReceiptBackend,
+	type ReceiptKind,
+	type RecordDeviceReceiptInput,
+	type RecordUserReceiptInput
+} from './receipt-backend'
+export {
+	MessageMediaBackend,
+	type RecordAudioDataInput,
+	type RecordMediaInput,
+	type RecordStreamingSidecarInput,
+	type RecordThumbnailInput
+} from './message-media-backend'
+export {
+	MessageAddOnBackend,
+	type RecordAddOnInput,
+	type RecordLocationInput,
+	type RecordPollInput,
+	type RecordPollOptionInput,
+	type RecordPollVoteInput,
+	type RecordReactionInput,
+	type RecordVcardInput
+} from './message-addon-backend'

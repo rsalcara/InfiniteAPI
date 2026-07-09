@@ -992,7 +992,15 @@ export const processSyncAction = (
 	ev: BaileysEventEmitter,
 	me: Contact,
 	initialSyncOpts?: InitialAppStateSyncOptions,
-	logger?: ILogger
+	logger?: ILogger,
+	// Phase 9.10 — optional chatsettings.db mirror. Only mute/pin are wired:
+	// they're the only chat-level app-state actions here with a confirmed
+	// column in the real schema (archive lives in msgstore.db's `chat` table,
+	// out of scope). Never allowed to affect sync processing.
+	chatSettingsBackend?: {
+		setMuteEnd(jid: string, muteEnd: number | null): void
+		setPinned(jid: string, pinned: boolean, pinnedTime: number | null): void
+	}
 ) => {
 	const isInitialSync = !!initialSyncOpts
 	const accountSettings = initialSyncOpts?.accountSettings
@@ -1005,10 +1013,19 @@ export const processSyncAction = (
 	} = syncAction
 
 	if (action?.muteAction) {
+		const muteEndTime = action.muteAction?.muted ? toNumber(action.muteAction.muteEndTimestamp) : null
+		if (chatSettingsBackend && id) {
+			try {
+				chatSettingsBackend.setMuteEnd(id, muteEndTime)
+			} catch (err) {
+				logger?.warn({ err, id }, 'Phase 9.10: failed to record chatsettings.db mute_end')
+			}
+		}
+
 		ev.emit('chats.update', [
 			{
 				id,
-				muteEndTime: action.muteAction?.muted ? toNumber(action.muteAction.muteEndTimestamp) : null,
+				muteEndTime,
 				conditional: getChatUpdateConditional(id!, undefined)
 			}
 		])
@@ -1074,10 +1091,19 @@ export const processSyncAction = (
 			ev.emit('creds.update', { me: { ...me, name } })
 		}
 	} else if (action?.pinAction) {
+		const pinnedTime = action.pinAction?.pinned ? toNumber(action.timestamp) : null
+		if (chatSettingsBackend && id) {
+			try {
+				chatSettingsBackend.setPinned(id, !!action.pinAction?.pinned, pinnedTime)
+			} catch (err) {
+				logger?.warn({ err, id }, 'Phase 9.10: failed to record chatsettings.db pinned')
+			}
+		}
+
 		ev.emit('chats.update', [
 			{
 				id,
-				pinned: action.pinAction?.pinned ? toNumber(action.timestamp) : null,
+				pinned: pinnedTime,
 				conditional: getChatUpdateConditional(id!, undefined)
 			}
 		])

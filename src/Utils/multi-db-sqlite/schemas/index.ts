@@ -6,7 +6,6 @@ export { LOCATION_SCHEMA } from './location'
 export { MEDIA_SCHEMA } from './media'
 export { MSGSTORE_SCHEMA } from './msgstore'
 export { PAYMENTS_SCHEMA } from './payments'
-export { PROMETHEUS_SCHEMA } from './prometheus'
 export { SMB_SCHEMA } from './smb'
 export { STATUS_SCHEMA } from './status'
 export { STICKERS_SCHEMA } from './stickers'
@@ -21,7 +20,6 @@ import { LOCATION_SCHEMA } from './location'
 import { MEDIA_SCHEMA } from './media'
 import { MSGSTORE_SCHEMA } from './msgstore'
 import { PAYMENTS_SCHEMA } from './payments'
-import { PROMETHEUS_SCHEMA } from './prometheus'
 import { SMB_SCHEMA } from './smb'
 import { STATUS_SCHEMA } from './status'
 import { STICKERS_SCHEMA } from './stickers'
@@ -29,15 +27,15 @@ import { SYNC_SCHEMA } from './sync'
 import { WA_SCHEMA } from './wa'
 
 /**
- * The 14 physical SQLite files we open in multi-DB mode, one per concern:
+ * The 13 physical SQLite files we open in multi-DB mode, one per concern:
  *
  *   - `creds.db`             — auth credentials root + app-state sync keys
  *   - `axolotl.db`           — Signal Protocol (sessions, prekeys, identities,
  *                              sender_keys, stanza queues, base keys, kyber
  *                              prekeys, preacks)
  *   - `msgstore.db`          — JID routing, device cache, retry counters,
- *                              quarantine (subset of the canonical mobile
- *                              schema — gateway scope only)
+ *                              quarantine, and the real message store
+ *                              (message/chat/receipts/media/add-ons)
  *   - `wa.db`                — contacts + Trusted Contact tokens
  *   - `sync.db`              — app-state sync mutations + collection versions
  *   - `media.db`             — media metadata + transfer state
@@ -53,9 +51,9 @@ import { WA_SCHEMA } from './wa'
  *                              opened so future status-feed / channel-share
  *                              features can land without retrofitting the
  *                              MULTI_DB_FILES list.
- *   - `prometheus.db`        — observability / metrics history (isolated so
- *                              high-frequency writes never contend with the
- *                              message-send hot path)
+ *
+ * `prometheus.db` (observability/metrics history) was removed — discontinued,
+ * not part of this multi-DB set.
  */
 export const MULTI_DB_FILES = [
 	'creds.db',
@@ -70,8 +68,7 @@ export const MULTI_DB_FILES = [
 	'payments.db',
 	'stickers.db',
 	'smb.db',
-	'status.db',
-	'prometheus.db'
+	'status.db'
 ] as const
 
 export type MultiDbFile = (typeof MULTI_DB_FILES)[number]
@@ -89,6 +86,5 @@ export const SCHEMAS: Record<MultiDbFile, string> = {
 	'payments.db': PAYMENTS_SCHEMA,
 	'stickers.db': STICKERS_SCHEMA,
 	'smb.db': SMB_SCHEMA,
-	'status.db': STATUS_SCHEMA,
-	'prometheus.db': PROMETHEUS_SCHEMA
+	'status.db': STATUS_SCHEMA
 }
