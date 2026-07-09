@@ -1,0 +1,331 @@
+/**
+ * Backend smoke tests for the msgstore.db message-store mirror:
+ *
+ *   - `MessageStoreBackend` — message + chat + message_details/_secret/_revoked
+ *   - `ReceiptBackend` — receipt_user + receipt_device + receipt_orphaned
+ *   - `MessageMediaBackend` — message_media + message_thumbnail + audio_data
+ *   - `MessageAddOnBackend` — reactions, polls + poll votes, location, vcard
+ *
+ * One file covers all four since they share setup/teardown (a single
+ * MultiDbSqliteStore handle + JidMapBackend against msgstore.db).
+ */
+import { mkdtemp, rm } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import {
+	JidMapBackend,
+	MessageAddOnBackend,
+	MessageMediaBackend,
+	MessageStoreBackend,
+	MultiDbSqliteStore,
+	ReceiptBackend
+} from '../../Utils/multi-db-sqlite'
+
+describe('msgstore.db message-store backends', () => {
+	let dir: string
+	let store: MultiDbSqliteStore
+	let jidMap: JidMapBackend
+
+	beforeEach(async () => {
+		dir = await mkdtemp(join(tmpdir(), 'message-store-backends-test-'))
+		store = new MultiDbSqliteStore({ sessionDir: dir })
+		await store.open()
+		jidMap = new JidMapBackend(store.handle('msgstore.db'))
+	})
+
+	afterEach(async () => {
+		store.close()
+		await rm(dir, { recursive: true, force: true })
+	})
+
+	describe('MessageStoreBackend', () => {
+		it('records a message and its chat aggregate, upserting on retry', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+
+			const rowId = backend.recordMessage({
+				chatJid,
+				fromMe: false,
+				keyId: 'MSG-1',
+				senderJid: chatJid,
+				status: 4,
+				timestamp: 1_000,
+				receivedTimestamp: 1_001,
+				messageType: 0,
+				textData: 'oi',
+				incrementUnread: true
+			})
+			expect(typeof rowId).toBe('number')
+
+			// Retry with the same natural key must upsert, not duplicate.
+			const rowId2 = backend.recordMessage({
+				chatJid,
+				fromMe: false,
+				keyId: 'MSG-1',
+				senderJid: chatJid,
+				status: 5,
+				timestamp: 1_000,
+				receivedTimestamp: 1_050,
+				messageType: 0,
+				textData: 'oi',
+				incrementUnread: false // must NOT double-count unread on retry
+			})
+			expect(rowId2).toBe(rowId)
+
+			const row = backend.getMessageByKeyId(chatJid, false, 'MSG-1')
+			expect(row).toMatchObject({ status: 5, text_data: 'oi' })
+
+			const chat = store
+				.handle('msgstore.db')
+				.prepare(
+					'SELECT unseen_message_count, last_message_row_id FROM chat WHERE _id = (SELECT chat_row_id FROM message WHERE _id = ?)'
+				)
+				.get(rowId) as any
+			expect(chat.unseen_message_count).toBe(1)
+			expect(chat.last_message_row_id).toBe(rowId)
+		})
+
+		it('recordRevoke updates the target row to the tombstone type and links message_revoked', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			backend.recordMessage({ chatJid, fromMe: true, keyId: 'MSG-REVOKE', timestamp: 1_000, textData: 'oops' })
+
+			backend.recordRevoke({ chatJid, fromMe: true, revokedKeyId: 'MSG-REVOKE', revokeTimestamp: 2_000 })
+
+			const row = backend.getMessageByKeyId(chatJid, true, 'MSG-REVOKE')
+			expect(row?.message_type).toBe(15)
+			expect(row?.text_data).toBeNull()
+
+			const revoked = store
+				.handle('msgstore.db')
+				.prepare('SELECT * FROM message_revoked WHERE message_row_id = ?')
+				.get(row!._id) as any
+			expect(revoked).toMatchObject({ revoked_key_id: 'MSG-REVOKE', revoke_timestamp: 2_000 })
+		})
+
+		it('recordRevoke is a no-op (does not throw) when the target message is unknown', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			expect(() =>
+				backend.recordRevoke({
+					chatJid: 'unknown@s.whatsapp.net',
+					fromMe: true,
+					revokedKeyId: 'NEVER-SEEN',
+					revokeTimestamp: 1_000
+				})
+			).not.toThrow()
+		})
+	})
+
+	describe('ReceiptBackend', () => {
+		it('records a user receipt progression (delivery then read)', () => {
+			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const receipts = new ReceiptBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			messageStore.recordMessage({ chatJid, fromMe: true, keyId: 'MSG-R1', timestamp: 1_000 })
+
+			receipts.recordUserReceipt({
+				chatJid,
+				fromMe: true,
+				keyId: 'MSG-R1',
+				receiptUserJid: chatJid,
+				kind: 'delivery',
+				timestamp: 1_100
+			})
+			receipts.recordUserReceipt({
+				chatJid,
+				fromMe: true,
+				keyId: 'MSG-R1',
+				receiptUserJid: chatJid,
+				kind: 'read',
+				timestamp: 1_200
+			})
+
+			const row = messageStore.getMessageByKeyId(chatJid, true, 'MSG-R1')
+			const userReceipts = receipts.listUserReceipts(row!._id)
+			expect(userReceipts).toHaveLength(1) // same (message, user) upserts, doesn't duplicate
+			expect(userReceipts[0]).toMatchObject({ receipt_timestamp: 1_100, read_timestamp: 1_200 })
+		})
+
+		it('records a device receipt', () => {
+			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const receipts = new ReceiptBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			messageStore.recordMessage({ chatJid, fromMe: true, keyId: 'MSG-D1', timestamp: 1_000 })
+
+			receipts.recordDeviceReceipt({
+				chatJid,
+				fromMe: true,
+				keyId: 'MSG-D1',
+				receiptDeviceJid: `${chatJid.split('@')[0]}.0:5@s.whatsapp.net`,
+				timestamp: 1_100
+			})
+
+			const row = messageStore.getMessageByKeyId(chatJid, true, 'MSG-D1')
+			expect(receipts.listDeviceReceipts(row!._id)).toHaveLength(1)
+		})
+
+		it('falls back to receipt_orphaned when the target message is unknown', () => {
+			const receipts = new ReceiptBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = 'unknown@s.whatsapp.net'
+
+			expect(() =>
+				receipts.recordUserReceipt({
+					chatJid,
+					fromMe: true,
+					keyId: 'NEVER-SEEN',
+					receiptUserJid: chatJid,
+					kind: 'delivery',
+					timestamp: 1_000
+				})
+			).not.toThrow()
+
+			const orphaned = store.handle('msgstore.db').prepare('SELECT * FROM receipt_orphaned').all() as any[]
+			expect(orphaned).toHaveLength(1)
+			expect(orphaned[0]).toMatchObject({ key_id: 'NEVER-SEEN' })
+		})
+	})
+
+	describe('MessageMediaBackend', () => {
+		it('records media metadata, thumbnail, and audio waveform', () => {
+			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const media = new MessageMediaBackend(store.handle('msgstore.db'))
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const rowId = messageStore.recordMessage({ chatJid, fromMe: false, keyId: 'MSG-MEDIA', timestamp: 1_000 })
+
+			media.recordMedia({
+				messageRowId: rowId,
+				mimeType: 'image/jpeg',
+				fileLength: 12_345,
+				mediaKey: Buffer.from([1, 2, 3]),
+				fileSha256: Buffer.from([4, 5, 6]),
+				width: 1280,
+				height: 720,
+				caption: 'a photo'
+			})
+			media.recordThumbnail({ messageRowId: rowId, thumbnail: Buffer.from([9, 9, 9]) })
+			media.recordAudioData({ messageRowId: rowId, waveform: Buffer.from([1, 1, 1]) })
+
+			const mediaRow = store
+				.handle('msgstore.db')
+				.prepare('SELECT * FROM message_media WHERE message_row_id = ?')
+				.get(rowId) as any
+			expect(mediaRow).toMatchObject({ mime_type: 'image/jpeg', width: 1280, height: 720, media_caption: 'a photo' })
+
+			const thumb = store
+				.handle('msgstore.db')
+				.prepare('SELECT thumbnail FROM message_thumbnail WHERE message_row_id = ?')
+				.get(rowId) as any
+			expect(Buffer.from(thumb.thumbnail)).toEqual(Buffer.from([9, 9, 9]))
+		})
+
+		it('recordAudioData is a no-op when no waveform is provided', () => {
+			const media = new MessageMediaBackend(store.handle('msgstore.db'))
+			media.recordAudioData({ messageRowId: 1, waveform: null })
+			const rows = store.handle('msgstore.db').prepare('SELECT * FROM audio_data').all()
+			expect(rows).toHaveLength(0)
+		})
+	})
+
+	describe('MessageAddOnBackend', () => {
+		it('records a reaction linked to its parent message', () => {
+			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const parentRowId = messageStore.recordMessage({ chatJid, fromMe: false, keyId: 'MSG-PARENT', timestamp: 1_000 })
+
+			addOns.recordReaction({
+				chatJid,
+				fromMe: false,
+				keyId: 'REACTION-1',
+				senderJid: chatJid,
+				parentMessageRowId: parentRowId,
+				timestamp: 1_100,
+				reaction: '❤️',
+				senderTimestamp: 1_100
+			})
+
+			const addOnRow = store
+				.handle('msgstore.db')
+				.prepare('SELECT * FROM message_add_on WHERE key_id = ?')
+				.get('REACTION-1') as any
+			expect(addOnRow).toMatchObject({ parent_message_row_id: parentRowId })
+
+			const reactionRow = store
+				.handle('msgstore.db')
+				.prepare('SELECT * FROM message_add_on_reaction WHERE message_add_on_row_id = ?')
+				.get(addOnRow._id) as any
+			expect(reactionRow.reaction).toBe('❤️')
+		})
+
+		it('records a poll, its options, and a vote that updates vote_total', () => {
+			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const pollRowId = messageStore.recordMessage({ chatJid, fromMe: true, keyId: 'MSG-POLL', timestamp: 1_000 })
+
+			addOns.recordPoll({ messageRowId: pollRowId, selectableOptionsCount: 1 })
+			const optA = addOns.recordPollOption({ messageRowId: pollRowId, optionSha256: 'hashA', optionName: 'Option A' })
+			const optB = addOns.recordPollOption({ messageRowId: pollRowId, optionSha256: 'hashB', optionName: 'Option B' })
+
+			addOns.recordPollVote({
+				chatJid,
+				fromMe: false,
+				keyId: 'VOTE-1',
+				senderJid: chatJid,
+				parentMessageRowId: pollRowId,
+				timestamp: 1_100,
+				senderTimestamp: 1_100,
+				selectedOptionRowIds: [optA]
+			})
+
+			let optionRows = store
+				.handle('msgstore.db')
+				.prepare('SELECT _id, vote_total FROM message_poll_option WHERE message_row_id = ?')
+				.all(pollRowId) as any[]
+			expect(optionRows.find(r => r._id === optA)?.vote_total).toBe(1)
+			expect(optionRows.find(r => r._id === optB)?.vote_total).toBe(0)
+
+			// Vote update — voter changes their mind to option B. Must replace, not add.
+			addOns.recordPollVote({
+				chatJid,
+				fromMe: false,
+				keyId: 'VOTE-1',
+				senderJid: chatJid,
+				parentMessageRowId: pollRowId,
+				timestamp: 1_200,
+				senderTimestamp: 1_200,
+				selectedOptionRowIds: [optB]
+			})
+
+			optionRows = store
+				.handle('msgstore.db')
+				.prepare('SELECT _id, vote_total FROM message_poll_option WHERE message_row_id = ?')
+				.all(pollRowId) as any[]
+			expect(optionRows.find(r => r._id === optA)?.vote_total).toBe(0) // decremented — voter moved away from A
+			expect(optionRows.find(r => r._id === optB)?.vote_total).toBe(1)
+		})
+
+		it('records a location and a vcard attached to a message', () => {
+			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const locRowId = messageStore.recordMessage({ chatJid, fromMe: false, keyId: 'MSG-LOC', timestamp: 1_000 })
+			const vcardRowId = messageStore.recordMessage({ chatJid, fromMe: false, keyId: 'MSG-VCARD', timestamp: 1_001 })
+
+			addOns.recordLocation({ messageRowId: locRowId, chatJid, latitude: -23.5, longitude: -46.6, placeName: 'SP' })
+			addOns.recordVcard({ messageRowId: vcardRowId, vcard: 'BEGIN:VCARD\nEND:VCARD' })
+
+			const locRow = store
+				.handle('msgstore.db')
+				.prepare('SELECT * FROM message_location WHERE message_row_id = ?')
+				.get(locRowId) as any
+			expect(locRow).toMatchObject({ latitude: -23.5, longitude: -46.6, place_name: 'SP' })
+
+			const vcardRow = store
+				.handle('msgstore.db')
+				.prepare('SELECT * FROM message_vcard WHERE message_row_id = ?')
+				.get(vcardRowId) as any
+			expect(vcardRow.vcard).toContain('BEGIN:VCARD')
+		})
+	})
+})

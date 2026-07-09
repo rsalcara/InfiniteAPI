@@ -43,3 +43,35 @@ export {
 	type ReceivedStatusInput
 } from './status-backend'
 export { PrometheusBackend, type MetricSampleInput } from './prometheus-backend'
+export {
+	ANDROID_MESSAGE_TYPE,
+	mapContentTypeToMessageType,
+	MessageStoreBackend,
+	type JidResolver,
+	type MessageRow,
+	type RecordMessageInput,
+	type RecordRevokeInput
+} from './message-store-backend'
+export {
+	ReceiptBackend,
+	type ReceiptKind,
+	type RecordDeviceReceiptInput,
+	type RecordUserReceiptInput
+} from './receipt-backend'
+export {
+	MessageMediaBackend,
+	type RecordAudioDataInput,
+	type RecordMediaInput,
+	type RecordStreamingSidecarInput,
+	type RecordThumbnailInput
+} from './message-media-backend'
+export {
+	MessageAddOnBackend,
+	type RecordAddOnInput,
+	type RecordLocationInput,
+	type RecordPollInput,
+	type RecordPollOptionInput,
+	type RecordPollVoteInput,
+	type RecordReactionInput,
+	type RecordVcardInput
+} from './message-addon-backend'

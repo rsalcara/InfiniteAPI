@@ -73,7 +73,7 @@ import {
 import { logMessageReceived, logTcToken } from '../Utils/baileys-logger'
 import { makeLockManager } from '../Utils/lock-manager'
 import { makeMutex } from '../Utils/make-mutex'
-import { StatusBackend } from '../Utils/multi-db-sqlite'
+import { JidMapBackend, ReceiptBackend, StatusBackend } from '../Utils/multi-db-sqlite'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
 import {
 	metrics,
@@ -205,6 +205,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	// instance uses — just a second, cheap wrapper over it.
 	const statusBackend = config.multiDbStore
 		? new StatusBackend((config.multiDbStore as any).handle('status.db'))
+		: undefined
+
+	// Mirrors message receipts (receipt_user/receipt_device) into
+	// msgstore.db when a multi-db-sqlite store is configured. Same
+	// boundary-cast + fresh-JidMapBackend rationale as chats.ts's own
+	// messageStoreBackend instantiation.
+	const receiptBackend = config.multiDbStore
+		? new ReceiptBackend(
+				(config.multiDbStore as any).handle('msgstore.db'),
+				new JidMapBackend((config.multiDbStore as any).handle('msgstore.db'))
+			)
 		: undefined
 
 	// Per-socket cache of Meta AI / FBID bot message secrets (msmsg). Bounded by
@@ -2945,10 +2956,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 									}))
 								)
 
-								// Phase 9.18 — mirror status-view receipts into status.db.
-								// Never allowed to affect receipt processing: best-effort
-								// side channel, same rule as the other optional
-								// multi-db-sqlite mirrors in this codebase.
+								// Mirrors status-view receipts into status.db. Never allowed
+								// to affect receipt processing: best-effort side channel,
+								// same rule as the other optional multi-db-sqlite mirrors
+								// in this codebase.
 								if (statusBackend && isJidStatusBroadcast(remoteJid!) && updateKey === 'readTimestamp') {
 									try {
 										for (const id of ids) {
@@ -2959,7 +2970,39 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 											})
 										}
 									} catch (err) {
-										logger.warn({ err }, 'Phase 9.18: failed to record status_seen_receipt row')
+										logger.warn({ err }, 'failed to record status_seen_receipt row')
+									}
+								}
+
+								// Mirrors group message receipts into msgstore.db's
+								// receipt_user/receipt_device tables. Status broadcasts are
+								// intentionally excluded — real Android tracks those in
+								// status.db's own status_seen_receipt table (handled above),
+								// not msgstore.db's receipt tables.
+								if (receiptBackend && isJidGroup(remoteJid) && key.remoteJid) {
+									try {
+										const receiptKind = updateKey === 'receiptTimestamp' ? 'delivery' : 'read'
+										for (const id of ids) {
+											receiptBackend.recordUserReceipt({
+												chatJid: key.remoteJid,
+												fromMe: !!key.fromMe,
+												keyId: id,
+												receiptUserJid: normalizedReceiptUserJid,
+												kind: receiptKind,
+												timestamp: +attrs.t!
+											})
+											if (attrs.from) {
+												receiptBackend.recordDeviceReceipt({
+													chatJid: key.remoteJid,
+													fromMe: !!key.fromMe,
+													keyId: id,
+													receiptDeviceJid: attrs.from,
+													timestamp: +attrs.t!
+												})
+											}
+										}
+									} catch (err) {
+										logger.warn({ err }, 'failed to record receipt_user/receipt_device row')
 									}
 								}
 							}
@@ -2971,6 +3014,36 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 									update: { status, messageTimestamp: toNumber(+(attrs.t ?? 0)) }
 								}))
 							)
+
+							// Mirrors 1:1 message receipts into msgstore.db. The other
+							// party IS the receipt_user for a 1:1 chat (no separate
+							// participant field the way group/status receipts have one).
+							if (receiptBackend && key.remoteJid) {
+								try {
+									const receiptKind = status === proto.WebMessageInfo.Status.DELIVERY_ACK ? 'delivery' : 'read'
+									for (const id of ids) {
+										receiptBackend.recordUserReceipt({
+											chatJid: key.remoteJid,
+											fromMe: !!key.fromMe,
+											keyId: id,
+											receiptUserJid: jidNormalizedUser(key.remoteJid),
+											kind: receiptKind,
+											timestamp: +(attrs.t ?? 0)
+										})
+										if (attrs.from) {
+											receiptBackend.recordDeviceReceipt({
+												chatJid: key.remoteJid,
+												fromMe: !!key.fromMe,
+												keyId: id,
+												receiptDeviceJid: attrs.from,
+												timestamp: +(attrs.t ?? 0)
+											})
+										}
+									}
+								} catch (err) {
+									logger.warn({ err }, 'failed to record receipt_user/receipt_device row')
+								}
+							}
 						}
 					}
 

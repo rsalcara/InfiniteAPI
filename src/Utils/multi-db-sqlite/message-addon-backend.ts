@@ -1,0 +1,250 @@
+/**
+ * Typed storage for msgstore.db's "add-on" family — reactions, poll votes,
+ * polls, locations, and vcards attached to a message.
+ *
+ * Real Android capture (Frida, WhatsApp 2.26.22.8, 2026-07-09) confirms:
+ *   - `message_add_on` is the parent row for BOTH reactions and poll
+ *     votes — its own natural key is `(chat_row_id, from_me, key_id,
+ *     sender_jid_row_id)`, same shape as `message`, because a reaction/
+ *     vote is itself a distinct WhatsApp protocol message with its own
+ *     key_id. `parent_message_row_id` links it back to the message being
+ *     reacted to / voted on.
+ *   - `message_add_on_reaction` / `message_add_on_poll_vote` are 1:1
+ *     satellites on `message_add_on_row_id`.
+ *   - `message_poll` / `message_poll_option` attach directly to the
+ *     ORIGINAL poll-creation `message` row (not to `message_add_on`).
+ *   - `message_location` attaches directly to the message row too.
+ *   - `message_vcard`/`message_vcard_jid` likewise.
+ *
+ * `message_add_on_type` (Android's own enum distinguishing reaction vs.
+ * poll-vote vs. other add-on kinds) has no value confirmed against the
+ * capture with high confidence, so it's accepted as an optional caller-
+ * supplied int rather than guessed here.
+ */
+import type { JidResolver } from './message-store-backend'
+import type { SqliteDbLike, SqliteStatementLike } from './types'
+
+export type RecordAddOnInput = {
+	chatJid: string
+	fromMe: boolean
+	keyId: string
+	senderJid?: string | null
+	parentMessageRowId: number
+	timestamp: number
+	addOnType?: number | null
+}
+
+export type RecordReactionInput = RecordAddOnInput & {
+	reaction: string
+	senderTimestamp: number
+}
+
+export type RecordPollVoteInput = RecordAddOnInput & {
+	senderTimestamp: number
+	/** row_id of each `message_poll_option` the voter selected. */
+	selectedOptionRowIds: number[]
+}
+
+export type RecordPollInput = {
+	messageRowId: number
+	encKey?: Buffer | null
+	selectableOptionsCount?: number | null
+}
+
+export type RecordPollOptionInput = {
+	messageRowId: number
+	optionSha256: string
+	optionName: string
+}
+
+export type RecordLocationInput = {
+	messageRowId: number
+	chatJid: string
+	latitude: number
+	longitude: number
+	placeName?: string | null
+	placeAddress?: string | null
+	url?: string | null
+	liveLocationShareDurationSecs?: number | null
+	liveLocationSequenceNumber?: number | null
+}
+
+export type RecordVcardInput = {
+	messageRowId: number
+	vcard: string
+}
+
+export class MessageAddOnBackend {
+	private readonly stmts: {
+		upsertAddOn: SqliteStatementLike
+		getAddOnRowId: SqliteStatementLike
+		upsertReaction: SqliteStatementLike
+		upsertPollVote: SqliteStatementLike
+		getPollVoteSelectedOptions: SqliteStatementLike
+		insertPollVoteSelectedOption: SqliteStatementLike
+		deletePollVoteSelectedOptions: SqliteStatementLike
+		incrementPollOptionVoteTotal: SqliteStatementLike
+		upsertPoll: SqliteStatementLike
+		insertPollOption: SqliteStatementLike
+		getPollOptionRowId: SqliteStatementLike
+		upsertLocation: SqliteStatementLike
+		insertVcard: SqliteStatementLike
+	}
+
+	private readonly db: SqliteDbLike
+	private readonly jidMap: JidResolver
+
+	constructor(db: SqliteDbLike, jidMap: JidResolver) {
+		this.db = db
+		this.jidMap = jidMap
+		this.stmts = {
+			upsertAddOn: this.db.prepare(
+				'INSERT INTO message_add_on (chat_row_id, from_me, key_id, sender_jid_row_id, parent_message_row_id, ' +
+					'timestamp, message_add_on_type) VALUES (?, ?, ?, ?, ?, ?, ?) ' +
+					'ON CONFLICT(chat_row_id, from_me, key_id, sender_jid_row_id) DO UPDATE SET timestamp = excluded.timestamp'
+			),
+			getAddOnRowId: this.db.prepare(
+				'SELECT _id FROM message_add_on WHERE chat_row_id = ? AND from_me = ? AND key_id = ? AND sender_jid_row_id IS ?'
+			),
+			upsertReaction: this.db.prepare(
+				'INSERT INTO message_add_on_reaction (message_add_on_row_id, reaction, sender_timestamp) VALUES (?, ?, ?) ' +
+					'ON CONFLICT(message_add_on_row_id) DO UPDATE SET reaction = excluded.reaction, ' +
+					'sender_timestamp = excluded.sender_timestamp'
+			),
+			upsertPollVote: this.db.prepare(
+				'INSERT INTO message_add_on_poll_vote (message_add_on_row_id, sender_timestamp) VALUES (?, ?) ' +
+					'ON CONFLICT(message_add_on_row_id) DO UPDATE SET sender_timestamp = excluded.sender_timestamp'
+			),
+			getPollVoteSelectedOptions: this.db.prepare(
+				'SELECT message_poll_option_id FROM message_add_on_poll_vote_selected_option WHERE message_add_on_row_id = ?'
+			),
+			insertPollVoteSelectedOption: this.db.prepare(
+				'INSERT INTO message_add_on_poll_vote_selected_option (message_add_on_row_id, message_poll_option_id) VALUES (?, ?)'
+			),
+			deletePollVoteSelectedOptions: this.db.prepare(
+				'DELETE FROM message_add_on_poll_vote_selected_option WHERE message_add_on_row_id = ?'
+			),
+			incrementPollOptionVoteTotal: this.db.prepare(
+				'UPDATE message_poll_option SET vote_total = vote_total + ? WHERE _id = ?'
+			),
+			upsertPoll: this.db.prepare(
+				'INSERT INTO message_poll (message_row_id, enc_key, selectable_options_count) VALUES (?, ?, ?) ' +
+					'ON CONFLICT(message_row_id) DO UPDATE SET enc_key = excluded.enc_key, ' +
+					'selectable_options_count = excluded.selectable_options_count'
+			),
+			insertPollOption: this.db.prepare(
+				'INSERT INTO message_poll_option (message_row_id, option_sha256, option_name, vote_total) VALUES (?, ?, ?, 0)'
+			),
+			getPollOptionRowId: this.db.prepare(
+				'SELECT _id FROM message_poll_option WHERE message_row_id = ? AND option_sha256 = ?'
+			),
+			upsertLocation: this.db.prepare(
+				'INSERT INTO message_location (message_row_id, chat_row_id, latitude, longitude, place_name, ' +
+					'place_address, url, live_location_share_duration, live_location_sequence_number) ' +
+					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(message_row_id) DO UPDATE SET ' +
+					'latitude = excluded.latitude, longitude = excluded.longitude, ' +
+					'live_location_sequence_number = excluded.live_location_sequence_number'
+			),
+			insertVcard: this.db.prepare('INSERT INTO message_vcard (message_row_id, vcard) VALUES (?, ?)')
+		}
+	}
+
+	private upsertAddOnRow(input: RecordAddOnInput): number {
+		const chatRowId = this.jidMap.resolveJidRowId(input.chatJid)
+		const senderRowId = input.senderJid ? this.jidMap.resolveJidRowId(input.senderJid) : null
+		this.stmts.upsertAddOn.run(
+			chatRowId,
+			input.fromMe ? 1 : 0,
+			input.keyId,
+			senderRowId,
+			input.parentMessageRowId,
+			input.timestamp,
+			input.addOnType ?? null
+		)
+		const row = this.stmts.getAddOnRowId.get(chatRowId, input.fromMe ? 1 : 0, input.keyId, senderRowId) as
+			| { _id: number }
+			| undefined
+		if (!row) throw new Error(`MessageAddOnBackend: failed to materialize message_add_on row for key_id ${input.keyId}`)
+		return row._id
+	}
+
+	/** Records a reaction (emoji) to a message. */
+	recordReaction(input: RecordReactionInput): void {
+		this.db.transaction(() => {
+			const addOnRowId = this.upsertAddOnRow(input)
+			this.stmts.upsertReaction.run(addOnRowId, input.reaction, input.senderTimestamp)
+		})()
+	}
+
+	/**
+	 * Records a poll vote, replacing its previously-selected options (a vote
+	 * update always carries the voter's CURRENT full selection, not a delta —
+	 * matches WhatsApp's own poll-vote semantics). Adjusts
+	 * `message_poll_option.vote_total` by the net change in selection.
+	 */
+	recordPollVote(input: RecordPollVoteInput): void {
+		this.db.transaction(() => {
+			const addOnRowId = this.upsertAddOnRow(input)
+			this.stmts.upsertPollVote.run(addOnRowId, input.senderTimestamp)
+
+			// A vote update carries the voter's CURRENT full selection, not a
+			// delta, so the previously-selected options (if any) must be
+			// decremented before the new selection is applied — otherwise a
+			// voter changing their mind leaves their old option's vote_total
+			// permanently inflated.
+			const previous = this.stmts.getPollVoteSelectedOptions.all(addOnRowId) as Array<{
+				message_poll_option_id: number
+			}>
+			for (const { message_poll_option_id: optionRowId } of previous) {
+				this.stmts.incrementPollOptionVoteTotal.run(-1, optionRowId)
+			}
+
+			this.stmts.deletePollVoteSelectedOptions.run(addOnRowId)
+			for (const optionRowId of input.selectedOptionRowIds) {
+				this.stmts.insertPollVoteSelectedOption.run(addOnRowId, optionRowId)
+				this.stmts.incrementPollOptionVoteTotal.run(1, optionRowId)
+			}
+		})()
+	}
+
+	/** Records a poll creation message's metadata (call once per poll, alongside its options). */
+	recordPoll(input: RecordPollInput): void {
+		this.stmts.upsertPoll.run(input.messageRowId, input.encKey ?? null, input.selectableOptionsCount ?? null)
+	}
+
+	/** Records one poll option, returning its row id (needed by `recordPollVote`'s `selectedOptionRowIds`). */
+	recordPollOption(input: RecordPollOptionInput): number {
+		return this.db.transaction((): number => {
+			const existing = this.stmts.getPollOptionRowId.get(input.messageRowId, input.optionSha256) as
+				| { _id: number }
+				| undefined
+			if (existing) return existing._id
+
+			this.stmts.insertPollOption.run(input.messageRowId, input.optionSha256, input.optionName)
+			const row = this.stmts.getPollOptionRowId.get(input.messageRowId, input.optionSha256) as
+				| { _id: number }
+				| undefined
+			if (!row) throw new Error('MessageAddOnBackend: failed to materialize message_poll_option row')
+			return row._id
+		})()
+	}
+
+	recordLocation(input: RecordLocationInput): void {
+		const chatRowId = this.jidMap.resolveJidRowId(input.chatJid)
+		this.stmts.upsertLocation.run(
+			input.messageRowId,
+			chatRowId,
+			input.latitude,
+			input.longitude,
+			input.placeName ?? null,
+			input.placeAddress ?? null,
+			input.url ?? null,
+			input.liveLocationShareDurationSecs ?? null,
+			input.liveLocationSequenceNumber ?? null
+		)
+	}
+
+	recordVcard(input: RecordVcardInput): void {
+		this.stmts.insertVcard.run(input.messageRowId, input.vcard)
+	}
+}

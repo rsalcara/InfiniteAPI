@@ -36,8 +36,8 @@ import { WA_SCHEMA } from './wa'
  *                              sender_keys, stanza queues, base keys, kyber
  *                              prekeys, preacks)
  *   - `msgstore.db`          — JID routing, device cache, retry counters,
- *                              quarantine (subset of the canonical mobile
- *                              schema — gateway scope only)
+ *                              quarantine, and the real message store
+ *                              (message/chat/receipts/media/add-ons)
  *   - `wa.db`                — contacts + Trusted Contact tokens
  *   - `sync.db`              — app-state sync mutations + collection versions
  *   - `media.db`             — media metadata + transfer state

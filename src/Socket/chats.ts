@@ -65,7 +65,16 @@ import {
 } from '../Utils'
 import type { ILogger } from '../Utils/logger'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
-import { AppStateBackend, ChatSettingsBackend, LocationBackend, StatusBackend } from '../Utils/multi-db-sqlite'
+import {
+	AppStateBackend,
+	ChatSettingsBackend,
+	JidMapBackend,
+	LocationBackend,
+	MessageAddOnBackend,
+	MessageMediaBackend,
+	MessageStoreBackend,
+	StatusBackend
+} from '../Utils/multi-db-sqlite'
 import processMessage from '../Utils/process-message'
 import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
 import {
@@ -226,6 +235,38 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	const statusBackend = config.multiDbStore
 		? new StatusBackend((config.multiDbStore as any).handle('status.db'))
+		: undefined
+
+	// Mirrors real messages (message/chat tables) + delete-for-everyone
+	// (message_revoked) into msgstore.db when a multi-db-sqlite store is
+	// configured. Same boundary-cast rationale as appStateBackend above.
+	// Resolves a fresh JidMapBackend against the shared msgstore.db handle
+	// for chat/sender jid_row_id lookups — cheap (stateless prepared-
+	// statement wrapper over the same connection the LID mapping already
+	// uses), same pattern as factories.ts's createMessageQuarantineRecorder.
+	const messageStoreBackend = config.multiDbStore
+		? new MessageStoreBackend(
+				(config.multiDbStore as any).handle('msgstore.db'),
+				new JidMapBackend((config.multiDbStore as any).handle('msgstore.db'))
+			)
+		: undefined
+
+	// Mirrors media metadata (message_media/message_thumbnail/audio_data/
+	// message_streaming_sidecar) into msgstore.db. Same boundary-cast
+	// rationale as messageStoreBackend above.
+	const mediaBackend = config.multiDbStore
+		? new MessageMediaBackend((config.multiDbStore as any).handle('msgstore.db'))
+		: undefined
+
+	// Mirrors reactions/polls/locations/vcards attached to a message
+	// (message_add_on(+_reaction)/message_poll(+_option)/message_location/
+	// message_vcard) into msgstore.db. Same boundary-cast + fresh-
+	// JidMapBackend rationale as messageStoreBackend above.
+	const addOnBackend = config.multiDbStore
+		? new MessageAddOnBackend(
+				(config.multiDbStore as any).handle('msgstore.db'),
+				new JidMapBackend((config.multiDbStore as any).handle('msgstore.db'))
+			)
 		: undefined
 
 	const ownsPlaceholderResendCache = !config.placeholderResendCache
@@ -1717,7 +1758,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				orphanQueue,
 				appStateBackend,
 				locationBackend,
-				statusBackend
+				statusBackend,
+				messageStoreBackend,
+				mediaBackend,
+				addOnBackend
 			})
 		])
 
