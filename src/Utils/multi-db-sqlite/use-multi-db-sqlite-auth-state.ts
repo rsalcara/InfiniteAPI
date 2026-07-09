@@ -7,6 +7,7 @@ import { prepareInClause } from './in-statement-cache'
 import { JidMapBackend } from './lid-mapping-backend'
 import { SignalTypedBackend } from './signal-typed-backend'
 import { isMirroredSignalType, mirrorSignalEntry } from './signal-typed-mirror'
+import { SignalTypedSourceStore, type TypedSignalType } from './signal-typed-source'
 import { MultiDbSqliteStore, type MultiDbSqliteStoreOptions } from './store'
 
 const CREDS_ROW_KEY = '__creds__'
@@ -35,6 +36,35 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
 	 * everything as before.
 	 */
 	store?: unknown
+	/**
+	 * When true, the typed `axolotl.db` tables (`sessions`/`prekeys`/
+	 * `sender_keys`/`identities`) become the PRIMARY read/write surface for
+	 * the Signal key store — read on every `keys.get`, written atomically
+	 * alongside `signal_kv` on every `keys.set` — the way WhatsApp Android
+	 * uses those structured tables instead of an opaque blob.
+	 *
+	 * Safe by construction:
+	 *   - `signal_kv` is still written in the SAME transaction (both tables
+	 *     live in axolotl.db, so the dual-write commits or rolls back as a
+	 *     unit — no partial write), and acts as a guaranteed fallback +
+	 *     instant rollback. `signal_kv` is always the complete superset; the
+	 *     typed table may legitimately lack a row (an id whose structured key
+	 *     can't be parsed is written to signal_kv only), which the read-time
+	 *     fallback below covers — never a data-losing divergence.
+	 *   - `keys.get` reads the typed table first and falls back to
+	 *     `signal_kv` on any miss (or on an unparseable legacy mirror row),
+	 *     so sessions written before this flag was enabled keep resolving
+	 *     (and heal to the authoritative format on their next write).
+	 *   - `keys.list`/`listIds` continue to operate on `signal_kv` (kept
+	 *     complete by the dual-write); `clear()` wipes the typed tables too,
+	 *     so a reset can't leave stale key material the typed read would find.
+	 *
+	 * Default `false`: existing behavior is unchanged (opaque `signal_kv`
+	 * authoritative + the best-effort typed mirror). Flip to `true` to make
+	 * the typed tables authoritative; flip back to `false` to roll back
+	 * instantly (signal_kv still holds every value).
+	 */
+	signalSourceOfTruth?: boolean
 }
 
 /**
@@ -94,12 +124,15 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	const ownsStore = !opts.store
 	const store = ownsStore ? new MultiDbSqliteStore(opts) : (opts.store as MultiDbSqliteStore)
 
+	const sourceOfTruth = opts.signalSourceOfTruth === true
+
 	let creds: AuthenticationCreds
 	let credsStmts: ReturnType<typeof prepareCredsStatements>
 	let signalStmts: ReturnType<typeof prepareSignalStatements>
 	let appStateSyncKeyStmts: ReturnType<typeof prepareAppStateSyncKeyStatements>
 	let signalTypedBackend: SignalTypedBackend
 	let signalMirrorJidMap: JidMapBackend
+	let signalTypedSource: SignalTypedSourceStore
 
 	try {
 		// store.open() now lives INSIDE the try/catch so any open-time error
@@ -118,12 +151,14 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		appStateSyncKeyStmts = prepareAppStateSyncKeyStatements(store)
 		migrateLegacyAppStateSyncKeys(store, opts.logger)
 		creds = loadCreds(credsStmts, opts.logger)
-		// Best-effort mirror target for session/pre-key/sender-key/identity-key
-		// — see signal-typed-mirror.ts. axolotl.db.signal_kv (above) remains
-		// the one source the Signal Protocol read path actually uses; these
-		// two are only ever read by the mirror write path below.
+		// Typed-table backend for session/pre-key/sender-key/identity-key.
+		// In default mode it's the write target for the best-effort mirror
+		// (signal-typed-mirror.ts); when `signalSourceOfTruth` is on it backs
+		// the authoritative SignalTypedSourceStore below. `signalMirrorJidMap`
+		// resolves identity-key jids to `msgstore.db.jid` row ids either way.
 		signalTypedBackend = new SignalTypedBackend(store.handle('axolotl.db'))
 		signalMirrorJidMap = new JidMapBackend(store.handle('msgstore.db'))
+		signalTypedSource = new SignalTypedSourceStore(signalTypedBackend, signalMirrorJidMap, opts.logger)
 	} catch (err) {
 		// Only close the store if WE opened it — injected stores belong to
 		// the caller.
@@ -157,6 +192,39 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		')'
 	)
 
+	// Handles the typed-table side of one `session`/`pre-key`/`sender-key`/
+	// `identity-key` write, inside the applySetTx transaction. Extracted from
+	// the loop body to keep nesting shallow. `serialized` is null iff delete.
+	const writeTypedSignal = (
+		type: TypedSignalType,
+		id: string,
+		value: SignalDataTypeMap[keyof SignalDataTypeMap] | null | undefined,
+		serialized: string | null
+	): void => {
+		if (sourceOfTruth) {
+			// Authoritative typed write — same transaction as the signal_kv
+			// write, so they can never diverge. On delete, remove the typed row
+			// too: reads hit the typed table first, so a surviving row would
+			// shadow the delete and resurrect stale key material.
+			if (serialized === null) {
+				signalTypedSource.del(type, id)
+			} else {
+				signalTypedSource.set(type, id, serialized)
+			}
+
+			return
+		}
+
+		// Best-effort introspection mirror — signal_kv stays the authoritative
+		// read source; mirrorSignalEntry swallows its own errors and never
+		// affects the signal_kv write.
+		mirrorSignalEntry(type, id, value as Uint8Array | { public: Uint8Array } | null | undefined, {
+			signalTypedBackend,
+			jidMapBackend: signalMirrorJidMap,
+			logger: opts.logger
+		})
+	}
+
 	const applySetTx = store.handle('axolotl.db').transaction((data: SignalDataSet) => {
 		for (const category in data) {
 			const type = category as keyof SignalDataTypeMap
@@ -180,21 +248,21 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 					continue
 				}
 
-				if (value === null || value === undefined) {
+				const isDelete = value === null || value === undefined
+				const serialized = isDelete ? null : JSON.stringify(value, BufferJSON.replacer)
+
+				// signal_kv is written in EVERY mode: authoritative by default,
+				// and (when sourceOfTruth is on) the atomic fallback/rollback
+				// copy alongside the typed write below. Both writes hit the same
+				// axolotl.db transaction, so they can never diverge.
+				if (isDelete) {
 					signalStmts.del.run(type, id)
 				} else {
-					signalStmts.upsert.run(type, id, JSON.stringify(value, BufferJSON.replacer))
+					signalStmts.upsert.run(type, id, serialized!)
 				}
 
-				// Best-effort typed-table mirror — never allowed to affect the
-				// signal_kv write above (already committed by the time this
-				// runs; mirrorSignalEntry catches its own errors internally).
 				if (isMirroredSignalType(type)) {
-					mirrorSignalEntry(type, id, value as Uint8Array | { public: Uint8Array } | null | undefined, {
-						signalTypedBackend,
-						jidMapBackend: signalMirrorJidMap,
-						logger: opts.logger
-					})
+					writeTypedSignal(type, id, value, serialized)
 				}
 			}
 		}
@@ -243,17 +311,71 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			get: async (type, ids) => {
 				const out: { [_: string]: SignalDataTypeMap[typeof type] } = {}
 				if (ids.length === 0) return out
-				const rows =
-					type === 'app-state-sync-key'
-						? (appStateSyncKeyGetIn.all([], ids) as Array<{ id: string; value: string }>)
-						: (signalGetIn.all([type], ids) as Array<{ id: string; value: string }>)
-				for (const row of rows) {
-					let parsed = JSON.parse(row.value, BufferJSON.reviver)
-					if (type === 'app-state-sync-key' && parsed) {
-						parsed = proto.Message.AppStateSyncKeyData.fromObject(parsed)
+
+				// `app-state-sync-key` lives in its own creds.db table and needs
+				// the AppStateSyncKeyData proto rehydration — kept separate.
+				if (type === 'app-state-sync-key') {
+					const rows = appStateSyncKeyGetIn.all([], ids) as Array<{ id: string; value: string }>
+					for (const row of rows) {
+						const parsed = JSON.parse(row.value, BufferJSON.reviver)
+						out[row.id] = (
+							parsed ? proto.Message.AppStateSyncKeyData.fromObject(parsed) : parsed
+						) as SignalDataTypeMap[typeof type]
 					}
 
-					out[row.id] = parsed as SignalDataTypeMap[typeof type]
+					return out
+				}
+
+				// Source-of-truth: read the typed table first, fall back to
+				// signal_kv for any id it doesn't have yet (rows written before
+				// the flag was enabled). Both stores hold the identical
+				// serialized value, so a typed hit and a signal_kv hit are
+				// interchangeable — the fallback only covers pre-migration rows.
+				//
+				// This does one indexed point-query per id rather than the
+				// batched IN-clause the signal_kv path uses. That's fine: the
+				// four typed tables are keyed on different structured columns
+				// (no single IN batches them), and better-sqlite3 is a
+				// synchronous in-process call — the IN-batching win is
+				// round-trip amortization, which doesn't apply here. Each
+				// lookup hits a unique index, so a multi-id get stays O(n)
+				// cheap point-queries. Batched typed reads are a possible later
+				// optimization, not a correctness concern.
+				if (sourceOfTruth && isMirroredSignalType(type)) {
+					const missing: string[] = []
+					for (const id of ids) {
+						const serialized = signalTypedSource.get(type, id)
+						if (serialized === null) {
+							missing.push(id)
+							continue
+						}
+
+						try {
+							out[id] = JSON.parse(serialized, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
+						} catch {
+							// A typed row left by the pre-flag best-effort mirror is
+							// raw session/sender-key bytes or a public-only pre-key —
+							// NOT the BufferJSON string this path expects. Treat the
+							// unparseable row as a miss and resolve via signal_kv,
+							// which still holds the valid value; the row heals to the
+							// authoritative format on its next write.
+							missing.push(id)
+						}
+					}
+
+					if (missing.length > 0) {
+						const rows = signalGetIn.all([type], missing) as Array<{ id: string; value: string }>
+						for (const row of rows) {
+							out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
+						}
+					}
+
+					return out
+				}
+
+				const rows = signalGetIn.all([type], ids) as Array<{ id: string; value: string }>
+				for (const row of rows) {
+					out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
 				}
 
 				return out
@@ -306,6 +428,15 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 					msgstoreDb.exec('DELETE FROM jid_map;')
 					signalStmts.clear.run()
 					appStateSyncKeyStmts.clear.run()
+					// The typed Signal tables must be wiped too. In
+					// `signalSourceOfTruth` mode `keys.get` reads them BEFORE
+					// signal_kv, so a surviving row would resurrect key material
+					// this clear() was meant to erase. Cleared unconditionally
+					// (harmless when the flag is off — the mirror also populates
+					// these tables, and a leftover mirror row after a reset is
+					// equally undesirable). All four live in axolotl.db.
+					const axolotlDb = store.handle('axolotl.db')
+					axolotlDb.exec('DELETE FROM sessions; DELETE FROM prekeys; DELETE FROM sender_keys; DELETE FROM identities;')
 				})
 			},
 			list: async function* <T extends keyof SignalDataTypeMap>(

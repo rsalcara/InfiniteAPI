@@ -13,7 +13,12 @@
 import { jidDecode } from '../../WABinary'
 import type { ILogger } from '../logger'
 import type { JidMapBackend } from './lid-mapping-backend'
-import { domainTypeToAccountType, parseProtocolAddressId, parseSenderKeyId } from './signal-id-parsing'
+import {
+	domainTypeToAccountType,
+	parseNonNegativeInt,
+	parseProtocolAddressId,
+	parseSenderKeyId
+} from './signal-id-parsing'
 import type { SignalTypedBackend } from './signal-typed-backend'
 
 export type SignalMirrorDeps = {
@@ -61,8 +66,8 @@ export function mirrorSignalEntry(
 			}
 
 			case 'pre-key': {
-				const prekeyId = Number(id)
-				if (!Number.isInteger(prekeyId)) {
+				const prekeyId = parseNonNegativeInt(id)
+				if (prekeyId === null) {
 					deps.logger?.debug?.({ id }, 'multi-db-sqlite: non-numeric pre-key id for typed mirror, skipping')
 					return
 				}

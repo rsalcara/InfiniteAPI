@@ -46,18 +46,34 @@ export type ParsedSignalUser = {
 /**
  * Splits the `signalUser` component `jidToSignalProtocolAddress` builds
  * (`user` or `user_domainType`) back into its parts. Returns `null` when
- * the trailing `_<digits>` isn't a valid integer — treated as "can't mirror
- * this one" rather than a fabricated guess.
+ * the trailing `_<digits>` isn't a plain non-negative decimal — treated as
+ * "can't mirror this one" rather than a fabricated guess. Uses the same
+ * strict `parseNonNegativeInt` gate as the device/pre-key ids: a bare
+ * `Number()` would coerce an empty suffix to 0 and accept negative /
+ * exponential / hex forms, silently fabricating a domainType from junk.
  */
 export function parseSignalUser(signalUser: string): ParsedSignalUser | null {
 	const underscoreIdx = signalUser.indexOf('_')
 	if (underscoreIdx < 0) return { user: signalUser, domainType: WAJIDDomains.WHATSAPP }
 
-	const domainTypeStr = signalUser.slice(underscoreIdx + 1)
-	const domainType = Number(domainTypeStr)
-	if (!Number.isInteger(domainType)) return null
+	const domainType = parseNonNegativeInt(signalUser.slice(underscoreIdx + 1))
+	if (domainType === null) return null
 
 	return { user: signalUser.slice(0, underscoreIdx), domainType }
+}
+
+/**
+ * Parses a base-10 non-negative integer, or `null` for anything else.
+ *
+ * Uses `Number()` ONLY after a strict `/^\d+$/` gate because `Number('')`
+ * and `Number('  ')` both return `0` (and pass `Number.isInteger`), which
+ * would silently fabricate a device/pre-key id of 0 from an empty or
+ * whitespace string. `Number('0x1f')`/`Number('1e3')` are likewise rejected
+ * — Signal ids are always plain decimal.
+ */
+export function parseNonNegativeInt(s: string): number | null {
+	if (!/^\d+$/.test(s)) return null
+	return Number(s)
 }
 
 export type ParsedProtocolAddressId = ParsedSignalUser & { deviceId: number }
@@ -67,8 +83,8 @@ export function parseProtocolAddressId(id: string): ParsedProtocolAddressId | nu
 	const lastDot = id.lastIndexOf('.')
 	if (lastDot < 0) return null
 
-	const deviceId = Number(id.slice(lastDot + 1))
-	if (!Number.isInteger(deviceId)) return null
+	const deviceId = parseNonNegativeInt(id.slice(lastDot + 1))
+	if (deviceId === null) return null
 
 	const parsedUser = parseSignalUser(id.slice(0, lastDot))
 	if (!parsedUser) return null
@@ -87,8 +103,8 @@ export function parseSenderKeyId(id: string): ParsedSenderKeyId | null {
 	if (parts.length !== 3) return null
 
 	const [groupId, signalUser, deviceIdStr] = parts as [string, string, string]
-	const deviceId = Number(deviceIdStr)
-	if (!Number.isInteger(deviceId)) return null
+	const deviceId = parseNonNegativeInt(deviceIdStr)
+	if (deviceId === null) return null
 
 	const parsedUser = parseSignalUser(signalUser)
 	if (!parsedUser) return null
