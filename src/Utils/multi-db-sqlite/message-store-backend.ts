@@ -147,11 +147,19 @@ export class MessageStoreBackend {
 		this.db = db
 		this.jidMap = jidMap
 		this.stmts = {
-			upsertChatStub: this.db.prepare('INSERT INTO chat (jid_row_id) VALUES (?) ON CONFLICT(jid_row_id) DO NOTHING'),
+			// `unseen_message_count` starts NULL (the real Android schema has no
+			// DEFAULT on it either — a real chat row only exists there once WA
+			// itself writes a full ~48-column row on first contact, something
+			// this gateway's lazy stub can't replicate). Seeded to 0 here so
+			// updateChatAggregate's `+= ?` below never hits SQL's
+			// NULL + number = NULL trap.
+			upsertChatStub: this.db.prepare(
+				'INSERT INTO chat (jid_row_id, unseen_message_count) VALUES (?, 0) ON CONFLICT(jid_row_id) DO NOTHING'
+			),
 			getChatRowIdByJidRowId: this.db.prepare('SELECT _id FROM chat WHERE jid_row_id = ?'),
 			updateChatAggregate: this.db.prepare(
 				'UPDATE chat SET last_message_row_id = ?, sort_timestamp = ?, last_message_sort_id = ?, ' +
-					'unseen_message_count = unseen_message_count + ? WHERE _id = ?'
+					'unseen_message_count = COALESCE(unseen_message_count, 0) + ? WHERE _id = ?'
 			),
 			upsertMessage: this.db.prepare(
 				'INSERT INTO message (chat_row_id, from_me, key_id, sender_jid_row_id, status, timestamp, ' +
