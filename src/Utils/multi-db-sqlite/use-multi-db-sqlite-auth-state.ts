@@ -37,32 +37,35 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
 	 */
 	store?: unknown
 	/**
-	 * When true, the typed `axolotl.db` tables (`sessions`/`prekeys`/
-	 * `sender_keys`/`identities`) become the PRIMARY read/write surface for
-	 * the Signal key store — read on every `keys.get`, written atomically
+	 * Controls whether the typed `axolotl.db` tables (`sessions`/`prekeys`/
+	 * `sender_keys`/`identities`) are the PRIMARY read/write surface for the
+	 * Signal key store — read on every `keys.get`, written atomically
 	 * alongside `signal_kv` on every `keys.set` — the way WhatsApp Android
 	 * uses those structured tables instead of an opaque blob.
 	 *
-	 * Safe by construction:
-	 *   - `signal_kv` is still written in the SAME transaction (both tables
-	 *     live in axolotl.db, so the dual-write commits or rolls back as a
-	 *     unit — no partial write), and acts as a guaranteed fallback +
-	 *     instant rollback. `signal_kv` is always the complete superset; the
-	 *     typed table may legitimately lack a row (an id whose structured key
-	 *     can't be parsed is written to signal_kv only), which the read-time
-	 *     fallback below covers — never a data-losing divergence.
-	 *   - `keys.get` reads the typed table first and falls back to
-	 *     `signal_kv` on any miss (or on an unparseable legacy mirror row),
-	 *     so sessions written before this flag was enabled keep resolving
-	 *     (and heal to the authoritative format on their next write).
-	 *   - `keys.list`/`listIds` continue to operate on `signal_kv` (kept
-	 *     complete by the dual-write); `clear()` wipes the typed tables too,
-	 *     so a reset can't leave stale key material the typed read would find.
+	 * **Default `true`** (typed tables authoritative). This is the normal
+	 * mode. `signalSourceOfTruth: false` is a KILL SWITCH: it reverts to the
+	 * legacy behavior (opaque `signal_kv` authoritative + a best-effort typed
+	 * mirror) with no redeploy — kept as an instant escape hatch until the
+	 * typed path is proven and `signal_kv` is eventually retired.
 	 *
-	 * Default `false`: existing behavior is unchanged (opaque `signal_kv`
-	 * authoritative + the best-effort typed mirror). Flip to `true` to make
-	 * the typed tables authoritative; flip back to `false` to roll back
-	 * instantly (signal_kv still holds every value).
+	 * Safe by construction (default mode):
+	 *   - `signal_kv` is ALWAYS written in the SAME transaction (both tables
+	 *     live in axolotl.db, so the dual-write commits or rolls back as a
+	 *     unit — no partial write). It stays the complete superset and the
+	 *     guaranteed fallback + rollback target. The typed table may
+	 *     legitimately lack a row (an id whose structured key can't be parsed
+	 *     is written to signal_kv only), which the read-time fallback covers —
+	 *     never a data-losing divergence.
+	 *   - `keys.get` reads the typed table first and falls back to `signal_kv`
+	 *     on any miss (or an unparseable legacy mirror row), logging the
+	 *     fallback for analysis (see the `logger.debug` in `keys.get`). Rows
+	 *     written before the typed path existed keep resolving and heal to the
+	 *     authoritative format on their next write; the cumulative fallback
+	 *     counter should trend to ~0 once a session has fully migrated.
+	 *   - `keys.list`/`listIds` operate on `signal_kv` (kept complete by the
+	 *     dual-write); `clear()` wipes the typed tables too, so a reset can't
+	 *     leave stale key material the typed read would find.
 	 */
 	signalSourceOfTruth?: boolean
 }
@@ -124,7 +127,18 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	const ownsStore = !opts.store
 	const store = ownsStore ? new MultiDbSqliteStore(opts) : (opts.store as MultiDbSqliteStore)
 
-	const sourceOfTruth = opts.signalSourceOfTruth === true
+	// Default ON: typed tables authoritative. `signalSourceOfTruth: false` is
+	// the kill switch back to legacy signal_kv-authoritative mode.
+	const sourceOfTruth = opts.signalSourceOfTruth !== false
+
+	// Observability for the typed→signal_kv fallback. `total` counts reads the
+	// typed table couldn't serve but signal_kv could (real fallbacks, not
+	// plain "key not found"); `legacyUnparseable` is the subset where a typed
+	// row existed but wasn't the authoritative BufferJSON format (a pre-typed
+	// mirror row). Right after enabling, these climb as existing sessions
+	// migrate, then should plateau near 0 — a sustained climb is the signal
+	// that something on the typed path is actually failing.
+	const signalFallbackStats = { total: 0, legacyUnparseable: 0 }
 
 	let creds: AuthenticationCreds
 	let credsStmts: ReturnType<typeof prepareCredsStatements>
@@ -343,6 +357,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				// optimization, not a correctness concern.
 				if (sourceOfTruth && isMirroredSignalType(type)) {
 					const missing: string[] = []
+					let legacyUnparseable = 0
 					for (const id of ids) {
 						const serialized = signalTypedSource.get(type, id)
 						if (serialized === null) {
@@ -353,12 +368,13 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 						try {
 							out[id] = JSON.parse(serialized, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
 						} catch {
-							// A typed row left by the pre-flag best-effort mirror is
+							// A typed row left by the pre-typed best-effort mirror is
 							// raw session/sender-key bytes or a public-only pre-key —
 							// NOT the BufferJSON string this path expects. Treat the
 							// unparseable row as a miss and resolve via signal_kv,
 							// which still holds the valid value; the row heals to the
 							// authoritative format on its next write.
+							legacyUnparseable++
 							missing.push(id)
 						}
 					}
@@ -367,6 +383,25 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 						const rows = signalGetIn.all([type], missing) as Array<{ id: string; value: string }>
 						for (const row of rows) {
 							out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
+						}
+
+						// Only rows signal_kv actually served count as a real
+						// fallback (the typed table lacked a value the legacy store
+						// had). An id absent from BOTH is just "not found", not a
+						// fallback — don't inflate the counter with it.
+						if (rows.length > 0) {
+							signalFallbackStats.total += rows.length
+							signalFallbackStats.legacyUnparseable += legacyUnparseable
+							opts.logger?.debug?.(
+								{
+									type,
+									servedByLegacy: rows.length,
+									legacyUnparseable,
+									cumulativeFallbacks: signalFallbackStats.total,
+									cumulativeLegacyUnparseable: signalFallbackStats.legacyUnparseable
+								},
+								'multi-db-sqlite: typed signal read fell back to signal_kv'
+							)
 						}
 					}
 

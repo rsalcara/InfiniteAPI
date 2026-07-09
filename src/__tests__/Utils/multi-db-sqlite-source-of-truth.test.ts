@@ -20,6 +20,7 @@ import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { KeyPair, SignalDataTypeMap } from '../../Types'
+import type { ILogger } from '../../Utils/logger'
 import { useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
 
 const sess = (b: number): SignalDataTypeMap['session'] => Buffer.from([b]) as Uint8Array
@@ -27,6 +28,24 @@ const keyPair = (pub: number, priv: number): KeyPair => ({
 	public: Buffer.from([pub]) as Uint8Array,
 	private: Buffer.from([priv]) as Uint8Array
 })
+
+/** Minimal ILogger that records its `debug` calls for assertions. */
+const makeRecordingLogger = (): ILogger & { debugCalls: Array<{ obj: unknown; msg?: string }> } => {
+	const debugCalls: Array<{ obj: unknown; msg?: string }> = []
+	const logger: ILogger & { debugCalls: typeof debugCalls } = {
+		level: 'debug',
+		debugCalls,
+		child: () => logger,
+		trace: () => {},
+		debug: (obj: unknown, msg?: string) => {
+			debugCalls.push({ obj, msg })
+		},
+		info: () => {},
+		warn: () => {},
+		error: () => {}
+	}
+	return logger
+}
 
 // ProtocolAddress.toString() shape for a plain PN user (no domain suffix).
 const SESSION_ID = '5511999999999.0'
@@ -147,12 +166,12 @@ describe('useMultiDbSqliteAuthState — signalSourceOfTruth', () => {
 		close()
 	})
 
-	it('falls back to signal_kv for a row written before the flag was enabled', async () => {
-		// First session: flag OFF — value lands in signal_kv (+ best-effort
-		// mirror), but not necessarily in the authoritative typed format.
+	it('falls back to signal_kv when the typed table lacks a row it holds', async () => {
+		// Write normally (default ON → typed + signal_kv), then wipe ONLY the
+		// typed table to simulate a row that exists in signal_kv but not (yet)
+		// in the typed table — e.g. data from before the typed path existed.
 		const first = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		await first.state.keys.set({ session: { [SESSION_ID]: sess(0x33) } })
-		// Wipe the typed table to simulate "typed has no authoritative row yet".
 		first.store.handle('axolotl.db').prepare('DELETE FROM sessions').run()
 		first.close()
 
@@ -237,5 +256,65 @@ describe('useMultiDbSqliteAuthState — signalSourceOfTruth', () => {
 		const jidRow = store.handle('msgstore.db').prepare('SELECT _id FROM jid WHERE raw_string = ?').get(unknownJid)
 		expect(jidRow).toBeUndefined() // read path must not materialize the jid row
 		close()
+	})
+
+	it('is ON by default (no flag): a session write lands in the typed sessions table', async () => {
+		// No signalSourceOfTruth passed → default true.
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		await state.keys.set({ session: { [SESSION_ID]: sess(0x5c) } })
+
+		const typedRow = store
+			.handle('axolotl.db')
+			.prepare('SELECT record FROM sessions WHERE recipient_account_id = ? AND device_id = ?')
+			.get('5511999999999', 0) as { record: Buffer } | undefined
+		expect(typedRow).toBeDefined()
+		// Authoritative format is the BufferJSON string, not raw bytes — so the
+		// stored record parses back to the value (round-trips via the typed path).
+		const got = await state.keys.get('session', [SESSION_ID])
+		expect(Buffer.from(got[SESSION_ID] as Uint8Array).toString('hex')).toBe('5c')
+		close()
+	})
+
+	it('kill switch (signalSourceOfTruth:false) reverts to the mirror: prekeys stores only the public half', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: false })
+		await state.keys.set({ 'pre-key': { '9': keyPair(0xab, 0xcd) } })
+
+		// In mirror mode the prekeys.record is the raw PUBLIC half (0xab), not a
+		// serialized full KeyPair — proving the kill switch bypassed the source
+		// store. (Authoritative mode would store the JSON of both halves.)
+		const row = store.handle('axolotl.db').prepare('SELECT record FROM prekeys WHERE prekey_id = ?').get(9) as
+			| { record: Buffer }
+			| undefined
+		expect(row).toBeDefined()
+		expect(Buffer.from(row!.record).toString('hex')).toBe('ab')
+
+		// signal_kv is authoritative in this mode, so get still returns the full pair.
+		const got = await state.keys.get('pre-key', ['9'])
+		const kp = got['9'] as KeyPair
+		expect(Buffer.from(kp.public).toString('hex')).toBe('ab')
+		expect(Buffer.from(kp.private).toString('hex')).toBe('cd')
+		close()
+	})
+
+	it('logs a fallback with a cumulative counter when a read is served by signal_kv', async () => {
+		// Seed a session with the flag OFF (mirror writes raw bytes; signal_kv
+		// authoritative). Then reopen with the default (ON) + a recording logger:
+		// the typed read misses/can't-parse the mirror row → served by signal_kv
+		// → a fallback debug log is emitted with the cumulative counter.
+		const first = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: false })
+		await first.state.keys.set({ session: { [SESSION_ID]: sess(0x42) } })
+		first.close()
+
+		const logger = makeRecordingLogger()
+		const second = await useMultiDbSqliteAuthState({ sessionDir: dir, logger })
+		const got = await second.state.keys.get('session', [SESSION_ID])
+		expect(Buffer.from(got[SESSION_ID] as Uint8Array).toString('hex')).toBe('42')
+
+		const fallbackLog = logger.debugCalls.find(
+			c => c.msg === 'multi-db-sqlite: typed signal read fell back to signal_kv'
+		)
+		expect(fallbackLog).toBeDefined()
+		expect((fallbackLog!.obj as { cumulativeFallbacks: number }).cumulativeFallbacks).toBeGreaterThanOrEqual(1)
+		second.close()
 	})
 })
