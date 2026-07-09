@@ -22,7 +22,6 @@ import {
 	MsgRetryCounterSqliteAdapter,
 	MultiDbSqliteStore,
 	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
-	PrometheusBackend,
 	StatusBackend,
 	TrustedContactsBackend
 } from '../../Utils/multi-db-sqlite'
@@ -387,50 +386,6 @@ describe('Phase 9 backends', () => {
 			// correctly invisible to listSeenReceiptsForStatus (which itself
 			// resolves by uuid) even though the row was inserted with a null FK.
 			expect(backend.listSeenReceiptsForStatus('unknown-status')).toEqual([])
-		})
-	})
-
-	describe('PrometheusBackend', () => {
-		it('recordBatch inserts every sample in one transaction', () => {
-			const backend = new PrometheusBackend(store.handle('prometheus.db'))
-			backend.recordBatch([
-				{ metricName: 'reqs_total', metricType: 'counter', labelsJson: '{}', value: 1, timestamp: 100 },
-				{ metricName: 'queue_size', metricType: 'gauge', labelsJson: '{}', value: 5, timestamp: 100 }
-			])
-
-			const rows = store.handle('prometheus.db').prepare('SELECT * FROM metric_samples ORDER BY _id').all() as any[]
-			expect(rows).toHaveLength(2)
-			expect(rows[0]).toMatchObject({ metric_name: 'reqs_total', value: 1 })
-			expect(rows[1]).toMatchObject({ metric_name: 'queue_size', value: 5 })
-		})
-
-		it('pruneOldMetrics removes only samples older than the configured retention and logs it', () => {
-			const backend = new PrometheusBackend(store.handle('prometheus.db'))
-			const now = 1_000_000
-			backend.recordBatch([
-				{ metricName: 'm', metricType: 'counter', labelsJson: '{}', value: 1, timestamp: now - 10_000 },
-				{ metricName: 'm', metricType: 'counter', labelsJson: '{}', value: 2, timestamp: now - 1_000 }
-			])
-
-			// no retention policy set yet — pruning is a no-op
-			expect(backend.pruneOldMetrics('m', now)).toBe(0)
-
-			backend.setRetentionPolicy('m', 5, now) // keep only the last 5 seconds
-			const pruned = backend.pruneOldMetrics('m', now)
-			expect(pruned).toBe(1) // only the (now - 10_000ms) sample is older than 5s
-
-			const remaining = store
-				.handle('prometheus.db')
-				.prepare('SELECT value FROM metric_samples WHERE metric_name = ?')
-				.all('m') as any[]
-			expect(remaining).toHaveLength(1)
-			expect(remaining[0].value).toBe(2)
-
-			const log = store.handle('prometheus.db').prepare('SELECT * FROM pruning_log').all() as any[]
-			expect(log).toHaveLength(1)
-			// oldest_kept_ts must be the surviving sample's actual timestamp
-			// (now - 1_000), not the cutoff used to decide what to prune.
-			expect(log[0]).toMatchObject({ metric_name: 'm', rows_pruned: 1, oldest_kept_ts: now - 1_000 })
 		})
 	})
 })

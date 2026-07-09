@@ -119,7 +119,7 @@ describe('msgstore.db message-store backends', () => {
 	describe('ReceiptBackend', () => {
 		it('records a user receipt progression (delivery then read)', () => {
 			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
-			const receipts = new ReceiptBackend(store.handle('msgstore.db'), jidMap)
+			const receipts = new ReceiptBackend(store.handle('msgstore.db'), jidMap, messageStore)
 			const chatJid = '5515991426667@s.whatsapp.net'
 			messageStore.recordMessage({ chatJid, fromMe: true, keyId: 'MSG-R1', timestamp: 1_000 })
 
@@ -148,7 +148,7 @@ describe('msgstore.db message-store backends', () => {
 
 		it('records a device receipt', () => {
 			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
-			const receipts = new ReceiptBackend(store.handle('msgstore.db'), jidMap)
+			const receipts = new ReceiptBackend(store.handle('msgstore.db'), jidMap, messageStore)
 			const chatJid = '5515991426667@s.whatsapp.net'
 			messageStore.recordMessage({ chatJid, fromMe: true, keyId: 'MSG-D1', timestamp: 1_000 })
 
@@ -165,7 +165,8 @@ describe('msgstore.db message-store backends', () => {
 		})
 
 		it('falls back to receipt_orphaned when the target message is unknown', () => {
-			const receipts = new ReceiptBackend(store.handle('msgstore.db'), jidMap)
+			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const receipts = new ReceiptBackend(store.handle('msgstore.db'), jidMap, messageStore)
 			const chatJid = 'unknown@s.whatsapp.net'
 
 			expect(() =>
@@ -229,7 +230,7 @@ describe('msgstore.db message-store backends', () => {
 	describe('MessageAddOnBackend', () => {
 		it('records a reaction linked to its parent message', () => {
 			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
-			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap)
+			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap, messageStore)
 			const chatJid = '5515991426667@s.whatsapp.net'
 			const parentRowId = messageStore.recordMessage({ chatJid, fromMe: false, keyId: 'MSG-PARENT', timestamp: 1_000 })
 
@@ -259,7 +260,7 @@ describe('msgstore.db message-store backends', () => {
 
 		it('records a poll, its options, and a vote that updates vote_total', () => {
 			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
-			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap)
+			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap, messageStore)
 			const chatJid = '5515991426667@s.whatsapp.net'
 			const pollRowId = messageStore.recordMessage({ chatJid, fromMe: true, keyId: 'MSG-POLL', timestamp: 1_000 })
 
@@ -307,7 +308,7 @@ describe('msgstore.db message-store backends', () => {
 
 		it('records a location and a vcard attached to a message', () => {
 			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
-			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap)
+			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap, messageStore)
 			const chatJid = '5515991426667@s.whatsapp.net'
 			const locRowId = messageStore.recordMessage({ chatJid, fromMe: false, keyId: 'MSG-LOC', timestamp: 1_000 })
 			const vcardRowId = messageStore.recordMessage({ chatJid, fromMe: false, keyId: 'MSG-VCARD', timestamp: 1_001 })

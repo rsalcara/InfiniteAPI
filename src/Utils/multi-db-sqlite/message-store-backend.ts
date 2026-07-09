@@ -124,7 +124,28 @@ export interface JidResolver {
 	resolveJidRowId(jid: string): number
 }
 
-export class MessageStoreBackend {
+/**
+ * Resolves a chat jid to its `chat._id` — NOT the same value as
+ * `JidResolver.resolveJidRowId`'s `jid._id` (a separate autoincrement
+ * sequence; confirmed real bug in an earlier revision of this file where
+ * `ReceiptBackend`/`MessageAddOnBackend` used a bare `jidMap.resolveJidRowId`
+ * result as if it were `message.chat_row_id`). Any backend that needs to
+ * look up or create rows keyed by `chat_row_id` must go through this, not
+ * `JidResolver` directly.
+ */
+export interface ChatRowResolver {
+	resolveChatRowId(jid: string): number
+}
+
+/** `jid._id` is a 1-based autoincrement, so 0 is safe as a "no sender known"
+ * sentinel — SQLite's UNIQUE index treats NULL as distinct from every other
+ * NULL, so a nullable sender column silently defeats `ON CONFLICT` upserts
+ * (confirmed real bug: retried decode of a fromMe/no-sender message inserted
+ * a duplicate `message`/`message_add_on` row every time instead of
+ * upserting). Same sentinel convention as `quarantine-backend.ts`. */
+const NO_SENDER_SENTINEL = 0
+
+export class MessageStoreBackend implements ChatRowResolver {
 	private readonly stmts: {
 		upsertChatStub: SqliteStatementLike
 		getChatRowIdByJidRowId: SqliteStatementLike
@@ -187,7 +208,7 @@ export class MessageStoreBackend {
 					'revoked_key_id = excluded.revoked_key_id, revoke_timestamp = excluded.revoke_timestamp'
 			),
 			upsertMessageSendCount: this.db.prepare(
-				'INSERT INTO message_send_count (message_row_id, send_count) VALUES (?, 1) ' +
+				'INSERT INTO message_send_count (message_row_id, send_count) VALUES (?, 0) ' +
 					'ON CONFLICT(message_row_id) DO NOTHING'
 			),
 			incrementMessageSendCount: this.db.prepare(
@@ -208,13 +229,43 @@ export class MessageStoreBackend {
 	}
 
 	/**
+	 * Read-only counterpart to `resolveChatRowId` — does NOT create a `chat`
+	 * row as a side effect. Used by lookups (`getMessageByKeyId`) that should
+	 * behave as pure reads: without this, e.g. `recordRevoke` on an unknown
+	 * message materialized a phantom `chat` row for a jid we've never
+	 * actually messaged (confirmed real bug).
+	 */
+	private tryGetChatRowId(jid: string): number | null {
+		const jidRowId = this.jidMap.resolveJidRowId(jid)
+		const row = this.stmts.getChatRowIdByJidRowId.get(jidRowId) as { _id: number } | undefined
+		return row?._id ?? null
+	}
+
+	/**
 	 * Records one message, upserting its chat's aggregate counters.
 	 * Returns the message's `_id` for satellite-table wiring (media, add-ons).
 	 */
 	recordMessage(input: RecordMessageInput): number {
 		return this.db.transaction((): number => {
 			const chatRowId = this.resolveChatRowId(input.chatJid)
-			const senderRowId = input.senderJid ? this.jidMap.resolveJidRowId(input.senderJid) : null
+			// `jid._id` is 1-based, so 0 is a safe "no sender" sentinel — see
+			// NO_SENDER_SENTINEL doc. Using `null` here defeated the natural-key
+			// ON CONFLICT upsert (confirmed real bug: every retry of a fromMe/
+			// no-sender message inserted a fresh duplicate row).
+			const senderRowId = input.senderJid ? this.jidMap.resolveJidRowId(input.senderJid) : NO_SENDER_SENTINEL
+
+			// Existence check BEFORE the upsert — `incrementUnread` must only
+			// apply the first time this natural key is recorded. Without this,
+			// a retried decode of the same message (same key_id) re-ran
+			// updateChatAggregate's increment on every call and inflated
+			// unseen_message_count on every reprocess (confirmed real bug).
+			const existing = this.stmts.getMessageByNaturalKey.get(
+				chatRowId,
+				input.fromMe ? 1 : 0,
+				input.keyId,
+				senderRowId
+			) as MessageRow | undefined
+			const isNewMessage = !existing
 
 			this.stmts.upsertMessage.run(
 				chatRowId,
@@ -247,7 +298,7 @@ export class MessageStoreBackend {
 				row._id,
 				input.timestamp ?? 0,
 				input.timestamp ?? 0,
-				input.incrementUnread ? 1 : 0,
+				isNewMessage && input.incrementUnread ? 1 : 0,
 				chatRowId
 			)
 
@@ -255,9 +306,10 @@ export class MessageStoreBackend {
 		})()
 	}
 
-	/** Looks up a message by its natural (chat, direction, key) identity, ignoring sender. */
+	/** Looks up a message by its natural (chat, direction, key) identity, ignoring sender. Pure read — never creates a `chat` row. */
 	getMessageByKeyId(chatJid: string, fromMe: boolean, keyId: string): MessageRow | null {
-		const chatRowId = this.resolveChatRowId(chatJid)
+		const chatRowId = this.tryGetChatRowId(chatJid)
+		if (chatRowId === null) return null
 		const row = this.stmts.getMessageByKeyId.get(chatRowId, fromMe ? 1 : 0, keyId) as MessageRow | undefined
 		return row ?? null
 	}

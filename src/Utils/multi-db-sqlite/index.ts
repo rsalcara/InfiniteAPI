@@ -42,11 +42,11 @@ export {
 	STATUS_TYPE_STANDARD,
 	type ReceivedStatusInput
 } from './status-backend'
-export { PrometheusBackend, type MetricSampleInput } from './prometheus-backend'
 export {
 	ANDROID_MESSAGE_TYPE,
 	mapContentTypeToMessageType,
 	MessageStoreBackend,
+	type ChatRowResolver,
 	type JidResolver,
 	type MessageRow,
 	type RecordMessageInput,

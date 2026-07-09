@@ -262,12 +262,14 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// (message_add_on(+_reaction)/message_poll(+_option)/message_location/
 	// message_vcard) into msgstore.db. Same boundary-cast + fresh-
 	// JidMapBackend rationale as messageStoreBackend above.
-	const addOnBackend = config.multiDbStore
-		? new MessageAddOnBackend(
-				(config.multiDbStore as any).handle('msgstore.db'),
-				new JidMapBackend((config.multiDbStore as any).handle('msgstore.db'))
-			)
-		: undefined
+	const addOnBackend =
+		config.multiDbStore && messageStoreBackend
+			? new MessageAddOnBackend(
+					(config.multiDbStore as any).handle('msgstore.db'),
+					new JidMapBackend((config.multiDbStore as any).handle('msgstore.db')),
+					messageStoreBackend
+				)
+			: undefined
 
 	const ownsPlaceholderResendCache = !config.placeholderResendCache
 	const placeholderResendCache =

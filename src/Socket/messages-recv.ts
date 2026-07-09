@@ -73,7 +73,13 @@ import {
 import { logMessageReceived, logTcToken } from '../Utils/baileys-logger'
 import { makeLockManager } from '../Utils/lock-manager'
 import { makeMutex } from '../Utils/make-mutex'
-import { JidMapBackend, ReceiptBackend, StatusBackend } from '../Utils/multi-db-sqlite'
+import {
+	JidMapBackend,
+	MessageStoreBackend,
+	ReceiptBackend,
+	type ReceiptKind,
+	StatusBackend
+} from '../Utils/multi-db-sqlite'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
 import {
 	metrics,
@@ -119,6 +125,20 @@ import { makeMessagesSocket } from './messages-send'
 const ENFORCEMENT_TYPE_VALUES = new Set<string>(Object.values(ReachoutTimelockEnforcementType))
 const isValidEnforcementType = (value: string | undefined): value is ReachoutTimelockEnforcementType =>
 	value !== undefined && ENFORCEMENT_TYPE_VALUES.has(value)
+
+/**
+ * Maps a decoded receipt status to the msgstore.db receipt_user/_device
+ * "kind" it should populate. Collapsing everything that isn't
+ * DELIVERY_ACK into 'read' (an earlier revision's shortcut) silently
+ * dropped PLAYED (voice-note listen) receipts into read_timestamp instead
+ * of played_timestamp — confirmed real bug.
+ */
+const receiptKindFromStatus = (status: proto.WebMessageInfo.Status | undefined): ReceiptKind =>
+	status === proto.WebMessageInfo.Status.PLAYED
+		? 'played'
+		: status === proto.WebMessageInfo.Status.DELIVERY_ACK
+			? 'delivery'
+			: 'read'
 
 export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const {
@@ -210,13 +230,25 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	// Mirrors message receipts (receipt_user/receipt_device) into
 	// msgstore.db when a multi-db-sqlite store is configured. Same
 	// boundary-cast + fresh-JidMapBackend rationale as chats.ts's own
-	// messageStoreBackend instantiation.
-	const receiptBackend = config.multiDbStore
-		? new ReceiptBackend(
+	// messageStoreBackend instantiation. A second, cheap MessageStoreBackend
+	// wrapper (same underlying connection as chats.ts's own instance) is
+	// needed here too — ReceiptBackend resolves `chat._id` through it rather
+	// than a bare JidMapBackend (see ChatRowResolver's doc for why those are
+	// different values).
+	const receiptChatResolver = config.multiDbStore
+		? new MessageStoreBackend(
 				(config.multiDbStore as any).handle('msgstore.db'),
 				new JidMapBackend((config.multiDbStore as any).handle('msgstore.db'))
 			)
 		: undefined
+	const receiptBackend =
+		config.multiDbStore && receiptChatResolver
+			? new ReceiptBackend(
+					(config.multiDbStore as any).handle('msgstore.db'),
+					new JidMapBackend((config.multiDbStore as any).handle('msgstore.db')),
+					receiptChatResolver
+				)
+			: undefined
 
 	// Per-socket cache of Meta AI / FBID bot message secrets (msmsg). Bounded by
 	// DEFAULT_CACHE_MAX_KEYS.MSMSG_SECRET (500) + 1h TTL. Cleared AND closed on
@@ -2981,7 +3013,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								// not msgstore.db's receipt tables.
 								if (receiptBackend && isJidGroup(remoteJid) && key.remoteJid) {
 									try {
-										const receiptKind = updateKey === 'receiptTimestamp' ? 'delivery' : 'read'
+										const receiptKind = receiptKindFromStatus(status)
 										for (const id of ids) {
 											receiptBackend.recordUserReceipt({
 												chatJid: key.remoteJid,
@@ -2991,12 +3023,20 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 												kind: receiptKind,
 												timestamp: +attrs.t!
 											})
-											if (attrs.from) {
+											// Device-level ack: `attrs.from` is the GROUP's own jid
+											// for a group receipt (the group member is only
+											// identified by `attrs.participant`), so it can't be
+											// used here the way the 1:1 branch below uses it. This
+											// keys by the participant's bare jid instead of a true
+											// per-device jid — not device-granular, but far more
+											// correct than collapsing every member into one row
+											// under the group's jid (confirmed real bug).
+											if (attrs.participant) {
 												receiptBackend.recordDeviceReceipt({
 													chatJid: key.remoteJid,
 													fromMe: !!key.fromMe,
 													keyId: id,
-													receiptDeviceJid: attrs.from,
+													receiptDeviceJid: normalizedReceiptUserJid,
 													timestamp: +attrs.t!
 												})
 											}
@@ -3020,7 +3060,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							// participant field the way group/status receipts have one).
 							if (receiptBackend && key.remoteJid) {
 								try {
-									const receiptKind = status === proto.WebMessageInfo.Status.DELIVERY_ACK ? 'delivery' : 'read'
+									const receiptKind = receiptKindFromStatus(status)
 									for (const id of ids) {
 										receiptBackend.recordUserReceipt({
 											chatJid: key.remoteJid,

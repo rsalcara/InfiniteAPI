@@ -63,12 +63,18 @@ export class LocationBackend {
 	constructor(db: SqliteDbLike) {
 		this.db = db
 		this.stmts = {
+			// `WHERE excluded.location_ts >= location_cache.location_ts` guards
+			// against out-of-order delivery: a live-location update that
+			// arrives late (common over unreliable delivery) must not
+			// overwrite a newer position with a stale one. Confirmed real bug
+			// in an earlier revision (unconditional overwrite).
 			upsertLocationCache: this.db.prepare(
 				'INSERT INTO location_cache (jid, latitude, longitude, accuracy, speed, bearing, location_ts) ' +
 					'VALUES (?, ?, ?, ?, ?, ?, ?) ' +
 					'ON CONFLICT(jid) DO UPDATE SET ' +
 					'  latitude = excluded.latitude, longitude = excluded.longitude, accuracy = excluded.accuracy, ' +
-					'  speed = excluded.speed, bearing = excluded.bearing, location_ts = excluded.location_ts'
+					'  speed = excluded.speed, bearing = excluded.bearing, location_ts = excluded.location_ts ' +
+					'WHERE excluded.location_ts >= location_cache.location_ts'
 			),
 			getLocationCache: this.db.prepare(
 				'SELECT jid, latitude, longitude, accuracy, speed, bearing, location_ts FROM location_cache WHERE jid = ?'

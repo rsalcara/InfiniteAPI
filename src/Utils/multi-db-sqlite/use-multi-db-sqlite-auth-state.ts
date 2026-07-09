@@ -38,9 +38,9 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
  * Multi-DB authentication state for Baileys.
  *
  * Same API as `useMultiFileAuthState` / `useSqliteAuthState`, but the
- * underlying persistence is split across 14 physical SQLite files, one per
+ * underlying persistence is split across 13 physical SQLite files, one per
  * concern (creds, axolotl, msgstore, wa, sync, media, companion_devices,
- * chatsettings, location, payments, stickers, smb, status, prometheus):
+ * chatsettings, location, payments, stickers, smb, status):
  *
  *   sessionDir/
  *     creds.db        — auth credentials (the `app_state_sync_keys` table
@@ -55,8 +55,6 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
  *     status.db       — Status (24h feed) + channel-crosspost state
  *                       (schema ships ahead of callers — no Baileys feature
  *                       consumes it today)
- *     prometheus.db   — metrics history; isolated so high-frequency writes
- *                       never contend with the message-send hot path
  *
  * **v1 contract:** behaves exactly like `useSqliteAuthState` — auth creds
  * in `creds.db`, signal data in `axolotl.db.signal_kv` (opaque, JSON-encoded
@@ -64,10 +62,10 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
  * schemas but their typed tables remain empty until the corresponding
  * follow-up phases route the respective components to them.
  *
- * Why open all 14 files up front instead of lazily? Disk allocation + WAL
+ * Why open all 13 files up front instead of lazily? Disk allocation + WAL
  * checkpointing both have one-time costs; doing them at startup means the
- * first message flow doesn't pay them. The cost is ~210 KB per session
- * for empty WAL files (14 files × ~15 KB each) — negligible.
+ * first message flow doesn't pay them. The cost is ~195 KB per session
+ * for empty WAL files (13 files × ~15 KB each) — negligible.
  */
 export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateOptions): Promise<{
 	state: AuthenticationState

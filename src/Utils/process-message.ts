@@ -719,8 +719,12 @@ const processMessage = async (
 	}
 
 	// Phase 9.15 — mirror received status/story updates into status.db when
-	// configured. Never allowed to affect message processing.
-	if (statusBackend && isJidStatusBroadcast(message.key.remoteJid ?? '') && message.key.id) {
+	// configured. Never allowed to affect message processing. `isRealMsg`
+	// excludes protocolMessage/reactionMessage/pollUpdateMessage (see its
+	// own doc) — without this guard, a REVOKE or reaction addressed to
+	// status@broadcast was recorded as if it were new status content
+	// (confirmed real bug).
+	if (statusBackend && isRealMsg && isJidStatusBroadcast(message.key.remoteJid ?? '') && message.key.id) {
 		try {
 			const senderJid = getKeyAuthor(message.key, meId)
 			statusBackend.recordReceivedStatus({

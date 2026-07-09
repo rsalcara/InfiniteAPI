@@ -21,8 +21,11 @@
  * capture with high confidence, so it's accepted as an optional caller-
  * supplied int rather than guessed here.
  */
-import type { JidResolver } from './message-store-backend'
+import type { ChatRowResolver, JidResolver } from './message-store-backend'
 import type { SqliteDbLike, SqliteStatementLike } from './types'
+
+/** Same sentinel convention as message-store-backend.ts's NO_SENDER_SENTINEL — see that file's doc. */
+const NO_SENDER_SENTINEL = 0
 
 export type RecordAddOnInput = {
 	chatJid: string
@@ -89,14 +92,17 @@ export class MessageAddOnBackend {
 		getPollOptionRowId: SqliteStatementLike
 		upsertLocation: SqliteStatementLike
 		insertVcard: SqliteStatementLike
+		getVcardRowId: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
 	private readonly jidMap: JidResolver
+	private readonly chatResolver: ChatRowResolver
 
-	constructor(db: SqliteDbLike, jidMap: JidResolver) {
+	constructor(db: SqliteDbLike, jidMap: JidResolver, chatResolver: ChatRowResolver) {
 		this.db = db
 		this.jidMap = jidMap
+		this.chatResolver = chatResolver
 		this.stmts = {
 			upsertAddOn: this.db.prepare(
 				'INSERT INTO message_add_on (chat_row_id, from_me, key_id, sender_jid_row_id, parent_message_row_id, ' +
@@ -145,13 +151,18 @@ export class MessageAddOnBackend {
 					'latitude = excluded.latitude, longitude = excluded.longitude, ' +
 					'live_location_sequence_number = excluded.live_location_sequence_number'
 			),
-			insertVcard: this.db.prepare('INSERT INTO message_vcard (message_row_id, vcard) VALUES (?, ?)')
+			insertVcard: this.db.prepare('INSERT INTO message_vcard (message_row_id, vcard) VALUES (?, ?)'),
+			getVcardRowId: this.db.prepare('SELECT _id FROM message_vcard WHERE message_row_id = ? AND vcard = ?')
 		}
 	}
 
 	private upsertAddOnRow(input: RecordAddOnInput): number {
-		const chatRowId = this.jidMap.resolveJidRowId(input.chatJid)
-		const senderRowId = input.senderJid ? this.jidMap.resolveJidRowId(input.senderJid) : null
+		// NOT a bare jidMap.resolveJidRowId(chatJid) — that returns jid._id,
+		// a different autoincrement sequence than message_add_on.chat_row_id
+		// (which is chat._id). Confirmed real bug in an earlier revision: see
+		// ChatRowResolver's doc in message-store-backend.ts.
+		const chatRowId = this.chatResolver.resolveChatRowId(input.chatJid)
+		const senderRowId = input.senderJid ? this.jidMap.resolveJidRowId(input.senderJid) : NO_SENDER_SENTINEL
 		this.stmts.upsertAddOn.run(
 			chatRowId,
 			input.fromMe ? 1 : 0,
@@ -230,7 +241,8 @@ export class MessageAddOnBackend {
 	}
 
 	recordLocation(input: RecordLocationInput): void {
-		const chatRowId = this.jidMap.resolveJidRowId(input.chatJid)
+		// See upsertAddOnRow's comment — chatResolver, not jidMap, resolves chat_row_id.
+		const chatRowId = this.chatResolver.resolveChatRowId(input.chatJid)
 		this.stmts.upsertLocation.run(
 			input.messageRowId,
 			chatRowId,
@@ -244,7 +256,17 @@ export class MessageAddOnBackend {
 		)
 	}
 
+	/**
+	 * Records a vcard attached to a message. Deduplicates on the exact
+	 * (message_row_id, vcard) pair — a retried decode must not duplicate the
+	 * row (confirmed real bug), but a genuine `contactsArrayMessage` sending
+	 * several DIFFERENT vcards for the same message_row_id is legitimate and
+	 * must still insert each one, so this can't be a plain unique index on
+	 * message_row_id alone.
+	 */
 	recordVcard(input: RecordVcardInput): void {
+		const existing = this.stmts.getVcardRowId.get(input.messageRowId, input.vcard) as { _id: number } | undefined
+		if (existing) return
 		this.stmts.insertVcard.run(input.messageRowId, input.vcard)
 	}
 }

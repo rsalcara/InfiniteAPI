@@ -42,10 +42,11 @@ sessionDir/
 ├── payments.db          (payment state — consumer + merchant)
 ├── stickers.db          (sticker pack catalog and recent state)
 ├── smb.db               (Small Business / Marketing Messages state)
-└── prometheus.db        (observability — metric samples with retention
-                          policies; isolated so high-frequency writes never
-                          contend with the message-send hot path)
+└── status.db            (Status/24h feed + channel-crosspost state)
 ```
+
+`prometheus.db` (observability/metrics history) was removed — discontinued,
+not part of this multi-DB set.
 
 Each file carries:
 

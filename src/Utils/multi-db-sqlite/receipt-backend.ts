@@ -21,7 +21,7 @@
  * cross-referencing sender isn't needed and isn't always known at receipt
  * time.
  */
-import type { JidResolver } from './message-store-backend'
+import type { ChatRowResolver, JidResolver } from './message-store-backend'
 import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 export type ReceiptKind = 'delivery' | 'read' | 'played'
@@ -57,10 +57,12 @@ export class ReceiptBackend {
 
 	private readonly db: SqliteDbLike
 	private readonly jidMap: JidResolver
+	private readonly chatResolver: ChatRowResolver
 
-	constructor(db: SqliteDbLike, jidMap: JidResolver) {
+	constructor(db: SqliteDbLike, jidMap: JidResolver, chatResolver: ChatRowResolver) {
 		this.db = db
 		this.jidMap = jidMap
+		this.chatResolver = chatResolver
 		this.stmts = {
 			getMessageRowId: this.db.prepare('SELECT _id FROM message WHERE chat_row_id = ? AND from_me = ? AND key_id = ?'),
 			upsertUserReceiptDelivery: this.db.prepare(
@@ -94,8 +96,17 @@ export class ReceiptBackend {
 		}
 	}
 
+	/**
+	 * `chatResolver.resolveChatRowId`, NOT a bare `jidMap.resolveJidRowId` —
+	 * `message.chat_row_id` is `chat._id`, a different autoincrement
+	 * sequence than `jid._id`. Confirmed real bug in an earlier revision:
+	 * every receipt resolved to the wrong (coincidentally matching only in
+	 * single-row test scenarios) row and fell through to receipt_orphaned
+	 * even when the target message existed. See ChatRowResolver's doc in
+	 * message-store-backend.ts.
+	 */
 	private resolveMessageRowId(chatJid: string, fromMe: boolean, keyId: string): number | null {
-		const chatRowId = this.jidMap.resolveJidRowId(chatJid)
+		const chatRowId = this.chatResolver.resolveChatRowId(chatJid)
 		const row = this.stmts.getMessageRowId.get(chatRowId, fromMe ? 1 : 0, keyId) as { _id: number } | undefined
 		return row?._id ?? null
 	}
@@ -107,7 +118,7 @@ export class ReceiptBackend {
 			const receiptUserRowId = this.jidMap.resolveJidRowId(input.receiptUserJid)
 
 			if (messageRowId === null) {
-				const chatRowId = this.jidMap.resolveJidRowId(input.chatJid)
+				const chatRowId = this.chatResolver.resolveChatRowId(input.chatJid)
 				this.stmts.insertOrphaned.run(
 					chatRowId,
 					input.fromMe ? 1 : 0,
@@ -136,7 +147,7 @@ export class ReceiptBackend {
 			const receiptDeviceRowId = this.jidMap.resolveJidRowId(input.receiptDeviceJid)
 
 			if (messageRowId === null) {
-				const chatRowId = this.jidMap.resolveJidRowId(input.chatJid)
+				const chatRowId = this.chatResolver.resolveChatRowId(input.chatJid)
 				this.stmts.insertOrphaned.run(
 					chatRowId,
 					input.fromMe ? 1 : 0,

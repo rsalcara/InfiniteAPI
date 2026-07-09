@@ -37,9 +37,6 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from 'http'
 import * as os from 'os'
 import * as promClient from 'prom-client'
-// Type-only — does not eagerly load better-sqlite3. Same rationale as the
-// LID-mapping wiring in Signal/libsignal.ts.
-import type { MetricSampleInput, PrometheusBackend } from './multi-db-sqlite/prometheus-backend'
 import { intFromEnv } from './env-utils'
 
 // Create a custom registry to avoid conflicts with global registry
@@ -866,6 +863,7 @@ export class Summary implements BaseMetric {
 
 		for (const v of metric.values) {
 			const vLabels = { ...v.labels } as Labels
+			const hasQuantileLabel = 'quantile' in vLabels
 			delete (vLabels as Record<string, unknown>)['quantile']
 			const key = this.labelsToKey(vLabels)
 
@@ -883,6 +881,13 @@ export class Summary implements BaseMetric {
 				summaryValue.sum = v.value
 			} else if (v.metricName?.endsWith('_count')) {
 				summaryValue.count = v.value
+			} else if (hasQuantileLabel) {
+				// The per-quantile sample (e.g. p50/p90/p99) — every other
+				// branch above matches the _sum/_count synthetic series, so
+				// anything left is a real quantile value. Previously dropped
+				// entirely, leaving `values` (and downstream `quantiles_json`)
+				// permanently empty — confirmed real bug.
+				summaryValue.values.push(v.value)
 			}
 		}
 
@@ -2247,83 +2252,6 @@ export async function shutdownMetrics(): Promise<void> {
 		await globalMetricsManager.shutdown()
 		globalMetricsManager = null
 	}
-}
-
-// ============================================
-// Phase 9.16 — prometheus.db snapshot (opt-in, caller-scheduled)
-// ============================================
-
-/**
- * Snapshots every metric currently in `registry` into `backend`'s
- * `metric_samples` table as one batched transaction. Deliberately NOT
- * called automatically anywhere in this codebase — see PrometheusBackend's
- * class doc for why a new auto-ticker wasn't added this late against a
- * codebase with a prior interval-leak incident. Callers that want periodic
- * persistence should invoke this on their own `setInterval`/cron and own
- * that interval's teardown themselves (clearInterval on socket end).
- */
-export async function snapshotRegistryToPrometheusDb(
-	registry: MetricsRegistry,
-	backend: PrometheusBackend,
-	timestamp: number = Date.now()
-): Promise<number> {
-	const samples: MetricSampleInput[] = []
-
-	for (const [fullName, metric] of registry.getAll()) {
-		// `unit` has no source on these metric classes — left null rather than
-		// fabricated. `help` is the constructor-supplied description every
-		// Counter/Gauge/Histogram/Summary already carries.
-		backend.upsertDescriptor(fullName, metric.type, metric.help, null, timestamp)
-
-		if (metric.type === 'histogram') {
-			const values = await metric.getValues()
-			for (const v of values) {
-				samples.push({
-					metricName: fullName,
-					metricType: metric.type,
-					labelsJson: JSON.stringify(v.labels),
-					// `value` has no single-number meaning for a histogram — mirror
-					// `sum` into it so a plain `SELECT value` still returns something
-					// usable; `sum`/`count`/`bucketsJson` carry the real distribution.
-					value: v.sum,
-					timestamp,
-					bucketsJson: JSON.stringify(Object.fromEntries(v.buckets)),
-					sum: v.sum,
-					count: v.count
-				})
-			}
-		} else if (metric.type === 'summary') {
-			const values = await metric.getValues()
-			for (const v of values) {
-				samples.push({
-					metricName: fullName,
-					metricType: metric.type,
-					labelsJson: JSON.stringify(v.labels),
-					// same rationale as the histogram branch above.
-					value: v.sum,
-					timestamp,
-					quantilesJson: JSON.stringify(v.values),
-					sum: v.sum,
-					count: v.count
-				})
-			}
-		} else {
-			// counter / gauge
-			const values = await metric.getValues()
-			for (const v of values) {
-				samples.push({
-					metricName: fullName,
-					metricType: metric.type,
-					labelsJson: JSON.stringify(v.labels),
-					value: v.value,
-					timestamp
-				})
-			}
-		}
-	}
-
-	backend.recordBatch(samples)
-	return samples.length
 }
 
 // ============================================
