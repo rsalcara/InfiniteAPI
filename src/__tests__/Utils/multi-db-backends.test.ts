@@ -344,6 +344,50 @@ describe('Phase 9 backends', () => {
 			expect(backend.listStatusesForSender('a@s.whatsapp.net').map(r => r.sort_id)).toEqual([1, 2])
 			expect(backend.listStatusesForSender('b@s.whatsapp.net').map(r => r.sort_id)).toEqual([1])
 		})
+
+		it('recordSeenReceipt resolves status_row_id by uuid and upserts on repeated views', () => {
+			const backend = new StatusBackend(store.handle('status.db'))
+			backend.recordReceivedStatus({ senderUserJid: 'me@s.whatsapp.net', uuid: 'my-status-1', timestamp: 1_000 })
+
+			backend.recordSeenReceipt({
+				statusUuid: 'my-status-1',
+				receiptUserJid: 'viewer1@s.whatsapp.net',
+				seenTimestamp: 5_000
+			})
+			backend.recordSeenReceipt({
+				statusUuid: 'my-status-1',
+				receiptUserJid: 'viewer1@s.whatsapp.net',
+				seenTimestamp: 6_000
+			})
+			backend.recordSeenReceipt({
+				statusUuid: 'my-status-1',
+				receiptUserJid: 'viewer2@s.whatsapp.net',
+				seenTimestamp: 5_500
+			})
+
+			const receipts = backend.listSeenReceiptsForStatus('my-status-1')
+			expect(receipts).toHaveLength(2) // viewer1's repeat view upserted, not duplicated
+			expect(receipts.find(r => r.receipt_user_jid === 'viewer1@s.whatsapp.net')?.seen_timestamp).toBe(6_000)
+			expect(receipts.find(r => r.receipt_user_jid === 'viewer2@s.whatsapp.net')?.seen_timestamp).toBe(5_500)
+			expect(receipts.every(r => typeof r.status_row_id === 'number')).toBe(true)
+		})
+
+		it('recordSeenReceipt does not throw when the status uuid has no local row (own posted status)', () => {
+			const backend = new StatusBackend(store.handle('status.db'))
+			// No recordReceivedStatus call for this uuid — mirrors a receipt for
+			// a status this gateway never recorded (e.g. the user's own post).
+			expect(() =>
+				backend.recordSeenReceipt({
+					statusUuid: 'unknown-status',
+					receiptUserJid: 'viewer@s.whatsapp.net',
+					seenTimestamp: 1_000
+				})
+			).not.toThrow()
+			// Not resolvable by uuid lookup (no matching `status` row), so it's
+			// correctly invisible to listSeenReceiptsForStatus (which itself
+			// resolves by uuid) even though the row was inserted with a null FK.
+			expect(backend.listSeenReceiptsForStatus('unknown-status')).toEqual([])
+		})
 	})
 
 	describe('PrometheusBackend', () => {

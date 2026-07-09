@@ -21,6 +21,21 @@
  * (chat-opened-in-UI activity) has no Baileys equivalent — a headless
  * library has no concept of "the user opened this chat" — so it's schema-only.
  *
+ * The remaining ~34 columns (wallpaper_*, theme_id, transcription_locale,
+ * message_tone/vibrate/popup/light, call_*, snooze_end_time, etc.) are
+ * PERMANENTLY unreachable by any companion device, not just unimplemented —
+ * confirmed by live investigation (2026-07-08/09): CDP on WhatsApp
+ * Desktop/Web (JS-level IndexedDB + WebSocket hooks) and Frida on a real
+ * Android primary device (SQLiteDatabase.insert/update hooks + direct
+ * chatsettings.db read) both show these fields are written ONLY on the
+ * Android primary device's local storage — they never appear as an
+ * app-state sync action, never touch IndexedDB/localStorage on a linked
+ * device, and generate no correlated network traffic. mute/pin are the
+ * ONLY per-chat settings WhatsApp actually syncs across devices; wallpaper/
+ * theme/notification-tone/transcription are device-local by protocol
+ * design. Do not treat the sparse population here as a gap to fill in —
+ * there is no wire-level source to fill it from.
+ *
  * Column names match the canonical schema verbatim.
  */
 import type { SqliteDbLike, SqliteStatementLike } from './types'

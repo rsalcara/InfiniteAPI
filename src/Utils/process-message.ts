@@ -724,7 +724,6 @@ const processMessage = async (
 					}, meId)
 
 					if (appStateBackend && protocolMsg.appStateSyncKeyShare) {
-						// eslint-disable-next-line max-depth
 						try {
 							const peerMsgId = appStateBackend.recordPeerMessage({
 								messageType: PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,

@@ -73,6 +73,7 @@ import {
 import { logMessageReceived, logTcToken } from '../Utils/baileys-logger'
 import { makeLockManager } from '../Utils/lock-manager'
 import { makeMutex } from '../Utils/make-mutex'
+import { StatusBackend } from '../Utils/multi-db-sqlite'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
 import {
 	metrics,
@@ -194,6 +195,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			useClones: false,
 			maxKeys: DEFAULT_CACHE_MAX_KEYS.PLACEHOLDER_RESEND
 		})
+
+	// Mirrors status-view receipts (status_seen_receipt) into status.db when a
+	// multi-db-sqlite store is configured. Same boundary-cast rationale as
+	// chats.ts's appStateBackend — `multiDbStore` is typed `unknown` on
+	// SocketConfig so this module doesn't need a hard dependency on the
+	// SQLite types. `MultiDbSqliteStore.handle()` is idempotent (cached), so
+	// this is the same underlying connection chats.ts's own StatusBackend
+	// instance uses — just a second, cheap wrapper over it.
+	const statusBackend = config.multiDbStore
+		? new StatusBackend((config.multiDbStore as any).handle('status.db'))
+		: undefined
 
 	// Per-socket cache of Meta AI / FBID bot message secrets (msmsg). Bounded by
 	// DEFAULT_CACHE_MAX_KEYS.MSMSG_SECRET (500) + 1h TTL. Cleared AND closed on
@@ -2921,16 +2933,35 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 									status === proto.WebMessageInfo.Status.DELIVERY_ACK ? 'receiptTimestamp' : 'readTimestamp'
 								const resolvedReceiptUserJid =
 									(await resolveLidToPn(attrs.participant, lidMapping, logger)) || jidNormalizedUser(attrs.participant)
+								const normalizedReceiptUserJid = jidNormalizedUser(resolvedReceiptUserJid)
 								ev.emit(
 									'message-receipt.update',
 									ids.map(id => ({
 										key: { ...key, id },
 										receipt: {
-											userJid: jidNormalizedUser(resolvedReceiptUserJid),
+											userJid: normalizedReceiptUserJid,
 											[updateKey]: +attrs.t!
 										}
 									}))
 								)
+
+								// Phase 9.18 — mirror status-view receipts into status.db.
+								// Never allowed to affect receipt processing: best-effort
+								// side channel, same rule as the other optional
+								// multi-db-sqlite mirrors in this codebase.
+								if (statusBackend && isJidStatusBroadcast(remoteJid!) && updateKey === 'readTimestamp') {
+									try {
+										for (const id of ids) {
+											statusBackend.recordSeenReceipt({
+												statusUuid: id,
+												receiptUserJid: normalizedReceiptUserJid,
+												seenTimestamp: +attrs.t!
+											})
+										}
+									} catch (err) {
+										logger.warn({ err }, 'Phase 9.18: failed to record status_seen_receipt row')
+									}
+								}
 							}
 						} else {
 							ev.emit(

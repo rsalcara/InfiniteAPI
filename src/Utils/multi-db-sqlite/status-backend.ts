@@ -11,12 +11,26 @@
  *   - `status` — one row per received status update, FK'd to its sender's
  *     `status_info.row_id`.
  *
- * The other 7 tables in status.ts (`status_attribution`/`status_crossposting_v3`
- * for channel-crosspost, `status_text` for rich-link metadata,
- * `status_media_link`/`status_thumbnail` for media, `status_seen_receipt`
- * for read receipts, `status_privacy_custom_list` for the separate privacy-
- * list feature) are intentionally NOT wired here — they need data Baileys
- * doesn't decode/expose confidently today (crosspost session state, WA's own
+ * `status_seen_receipt` — who has viewed a status, and when — IS also wired
+ * (`recordSeenReceipt`), confirmed reachable via live Frida capture
+ * (2026-07-09): a real Android primary device writes this same table off
+ * the ordinary `<receipt>` stanza for `status@broadcast`, which Baileys
+ * ALREADY parses and emits as `message-receipt.update` (see
+ * `messages-recv.ts`'s `handleReceipt` — no new wire-level decoding needed,
+ * just routing an existing event). `status_row_id` is looked up by `uuid`
+ * and will be `null` when the referenced status isn't one this gateway has
+ * recorded locally (e.g. a receipt for the user's OWN posted status, which
+ * `recordReceivedStatus` never captures today since that only tracks
+ * statuses received FROM others) — the row is still inserted with a null
+ * FK rather than dropped, matching this file's "best-effort, never blocks
+ * on missing context" convention elsewhere.
+ *
+ * The remaining 6 tables in status.ts (`status_attribution`/
+ * `status_crossposting_v3` for channel-crosspost, `status_text` for
+ * rich-link metadata, `status_media_link`/`status_thumbnail` for media,
+ * `status_privacy_custom_list` for the separate privacy-list feature) are
+ * intentionally NOT wired here — they need data Baileys doesn't decode/
+ * expose confidently today (crosspost session state, WA's own
  * media-content-row indirection, a full privacy-list management feature).
  * Left schema-only rather than guessed at.
  *
@@ -49,6 +63,12 @@ export type ReceivedStatusInput = {
 	textData?: string | null
 }
 
+export type SeenReceiptInput = {
+	statusUuid: string
+	receiptUserJid: string
+	seenTimestamp: number
+}
+
 export class StatusBackend {
 	private readonly stmts: {
 		upsertStatusInfo: SqliteStatementLike
@@ -57,6 +77,9 @@ export class StatusBackend {
 		nextSortId: SqliteStatementLike
 		insertStatus: SqliteStatementLike
 		listStatusesForSender: SqliteStatementLike
+		getStatusRowIdByUuid: SqliteStatementLike
+		upsertSeenReceipt: SqliteStatementLike
+		listSeenReceiptsForStatus: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
@@ -83,6 +106,15 @@ export class StatusBackend {
 			listStatusesForSender: this.db.prepare(
 				'SELECT row_id, sort_id, uuid, sender_user_jid, status_info_row_id, type, timestamp, text_data, state ' +
 					'FROM status WHERE sender_user_jid = ? ORDER BY sort_id ASC'
+			),
+			getStatusRowIdByUuid: this.db.prepare('SELECT row_id FROM status WHERE uuid = ?'),
+			upsertSeenReceipt: this.db.prepare(
+				'INSERT INTO status_seen_receipt (status_row_id, receipt_user_jid, seen_timestamp) VALUES (?, ?, ?) ' +
+					'ON CONFLICT(status_row_id, receipt_user_jid) DO UPDATE SET seen_timestamp = excluded.seen_timestamp'
+			),
+			listSeenReceiptsForStatus: this.db.prepare(
+				'SELECT row_id, status_row_id, receipt_user_jid, received_timestamp, seen_timestamp ' +
+					'FROM status_seen_receipt WHERE status_row_id = ?'
 			)
 		}
 	}
@@ -127,6 +159,30 @@ export class StatusBackend {
 			timestamp: number
 			text_data: string | null
 			state: number
+		}>
+	}
+
+	/**
+	 * Records that `receiptUserJid` has seen the status identified by
+	 * `statusUuid`. `status_row_id` is resolved by uuid lookup — left `null`
+	 * when this gateway has no local `status` row for that uuid (see class
+	 * doc). Upsert keyed on (status_row_id, receipt_user_jid) so a repeated
+	 * receipt for the same viewer just refreshes `seen_timestamp`.
+	 */
+	recordSeenReceipt(input: SeenReceiptInput): void {
+		const statusRow = this.stmts.getStatusRowIdByUuid.get(input.statusUuid) as { row_id: number } | undefined
+		this.stmts.upsertSeenReceipt.run(statusRow?.row_id ?? null, input.receiptUserJid, input.seenTimestamp)
+	}
+
+	listSeenReceiptsForStatus(statusUuid: string) {
+		const statusRow = this.stmts.getStatusRowIdByUuid.get(statusUuid) as { row_id: number } | undefined
+		if (!statusRow) return []
+		return this.stmts.listSeenReceiptsForStatus.all(statusRow.row_id) as Array<{
+			row_id: number
+			status_row_id: number
+			receipt_user_jid: string
+			received_timestamp: number | null
+			seen_timestamp: number | null
 		}>
 	}
 }
