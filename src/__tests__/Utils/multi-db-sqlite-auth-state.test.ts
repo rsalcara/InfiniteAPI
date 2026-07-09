@@ -307,8 +307,10 @@ describe('useMultiDbSqliteAuthState', () => {
 		second.close()
 	})
 
-	it('mirrors a session write into axolotl.db.sessions alongside signal_kv', async () => {
-		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+	it('mirrors a session write into axolotl.db.sessions alongside signal_kv (legacy/kill-switch mode)', async () => {
+		// signalSourceOfTruth:false is the legacy/kill-switch mode where the
+		// best-effort mirror writes raw bytes and signal_kv stays authoritative.
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: false })
 		// Matches ProtocolAddress.toString() = "signalUser.deviceId" — a bare
 		// PN user has no domainType suffix (see signal-id-parsing.ts doc).
 		await state.keys.set({ session: { '5511999999999.0': sampleSession(7) } })
@@ -330,8 +332,8 @@ describe('useMultiDbSqliteAuthState', () => {
 		close()
 	})
 
-	it('mirrors a LID identity-key write into axolotl.db.identities with recipient_type=1', async () => {
-		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+	it('mirrors a LID identity-key write into axolotl.db.identities with recipient_type=1 (legacy mode)', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: false })
 		await state.keys.set({ 'identity-key': { '123456789@lid': Buffer.from([0xaa]) as Uint8Array } })
 
 		const jidRowId = store
@@ -350,8 +352,8 @@ describe('useMultiDbSqliteAuthState', () => {
 		close()
 	})
 
-	it('mirrors a sender-key write into axolotl.db.sender_keys', async () => {
-		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+	it('mirrors a sender-key write into axolotl.db.sender_keys (legacy mode)', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: false })
 		// Matches SenderKeyName.serialize() = "groupId::signalUser::deviceId".
 		await state.keys.set({
 			'sender-key': { '123456-789@g.us::5511999999999::0': Buffer.from([0xbb]) as Uint8Array }
@@ -366,8 +368,8 @@ describe('useMultiDbSqliteAuthState', () => {
 		close()
 	})
 
-	it('mirrors a pre-key write into axolotl.db.prekeys (public half) and honors delete', async () => {
-		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+	it('mirrors a pre-key write into axolotl.db.prekeys (public half) and honors delete (legacy mode)', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: false })
 		await state.keys.set({
 			'pre-key': { '42': { public: Buffer.from([0xcc]), private: Buffer.from([0xdd]) } }
 		})
@@ -384,8 +386,8 @@ describe('useMultiDbSqliteAuthState', () => {
 		close()
 	})
 
-	it('does not throw and leaves signal_kv intact when a session id cannot be parsed for the mirror', async () => {
-		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+	it('does not throw and leaves signal_kv intact when a session id cannot be parsed for the mirror (legacy mode)', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: false })
 		// No "." device separator — parseProtocolAddressId returns null.
 		await expect(state.keys.set({ session: { 'not-a-valid-address': sampleSession(1) } })).resolves.not.toThrow()
 
