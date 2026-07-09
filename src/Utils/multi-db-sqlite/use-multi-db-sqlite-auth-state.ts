@@ -357,7 +357,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				// optimization, not a correctness concern.
 				if (sourceOfTruth && isMirroredSignalType(type)) {
 					const missing: string[] = []
-					let legacyUnparseable = 0
+					const unparseableIds = new Set<string>()
 					for (const id of ids) {
 						const serialized = signalTypedSource.get(type, id)
 						if (serialized === null) {
@@ -374,7 +374,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 							// unparseable row as a miss and resolve via signal_kv,
 							// which still holds the valid value; the row heals to the
 							// authoritative format on its next write.
-							legacyUnparseable++
+							unparseableIds.add(id)
 							missing.push(id)
 						}
 					}
@@ -388,15 +388,18 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 						// Only rows signal_kv actually served count as a real
 						// fallback (the typed table lacked a value the legacy store
 						// had). An id absent from BOTH is just "not found", not a
-						// fallback — don't inflate the counter with it.
+						// fallback — don't inflate the counter with it. `legacyServed`
+						// is the subset of served fallbacks whose typed row existed
+						// but was unparseable, so it's always ≤ servedByLegacy.
 						if (rows.length > 0) {
+							const legacyServed = rows.reduce((n, row) => (unparseableIds.has(row.id) ? n + 1 : n), 0)
 							signalFallbackStats.total += rows.length
-							signalFallbackStats.legacyUnparseable += legacyUnparseable
+							signalFallbackStats.legacyUnparseable += legacyServed
 							opts.logger?.debug?.(
 								{
 									type,
 									servedByLegacy: rows.length,
-									legacyUnparseable,
+									legacyUnparseable: legacyServed,
 									cumulativeFallbacks: signalFallbackStats.total,
 									cumulativeLegacyUnparseable: signalFallbackStats.legacyUnparseable
 								},
