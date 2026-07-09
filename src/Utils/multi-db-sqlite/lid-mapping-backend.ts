@@ -187,6 +187,19 @@ export class JidMapBackend {
 	}
 
 	/**
+	 * Read-only counterpart to {@link resolveJidRowId}: returns the existing
+	 * `jid` row id, or `null` if the JID has never been seen — WITHOUT the
+	 * insert-or-create side effect. For read paths (e.g. an identity-key
+	 * lookup) that must not materialize a `jid` row for an unknown contact,
+	 * which would both mutate `msgstore.db` on a pure read and bloat the
+	 * table with junk rows for every unknown JID queried.
+	 */
+	lookupJidRowId(jid: string): number | null {
+		const row = this.stmts.selectJidIdByRaw.get(jid) as { _id: number } | undefined
+		return row?._id ?? null
+	}
+
+	/**
 	 * Stores a single PN↔LID mapping. Idempotent.
 	 *
 	 * Wrapped in a transaction so the three operations (materialise LID row,

@@ -191,4 +191,51 @@ describe('useMultiDbSqliteAuthState — signalSourceOfTruth', () => {
 		expect(got['5511999999999']).toBe('99887766554433')
 		close()
 	})
+
+	it('falls back to signal_kv (no throw) when the typed row is legacy mirror bytes, not BufferJSON', async () => {
+		// Flag OFF: the best-effort mirror writes RAW session bytes into
+		// sessions.record — not the BufferJSON string the source-of-truth read
+		// path expects. Use bytes that are not valid JSON.
+		const first = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		await first.state.keys.set({ session: { [SESSION_ID]: Buffer.from([0x00, 0x01, 0xff]) as Uint8Array } })
+		const rawRow = first.store
+			.handle('axolotl.db')
+			.prepare('SELECT record FROM sessions WHERE recipient_account_id = ? AND device_id = ?')
+			.get('5511999999999', 0)
+		expect(rawRow).toBeDefined() // legacy raw-bytes typed row is present
+		first.close()
+
+		// Flag ON: the typed hit fails to parse → treated as a miss → resolved
+		// via signal_kv. Must NOT throw, must return the correct value.
+		const second = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: true })
+		const got = await second.state.keys.get('session', [SESSION_ID])
+		expect(Buffer.from(got[SESSION_ID] as Uint8Array).toString('hex')).toBe('0001ff')
+		second.close()
+	})
+
+	it('clear() wipes the typed tables too, so a later typed get returns nothing', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: true })
+		await state.keys.set({ session: { [SESSION_ID]: sess(0x77) }, 'pre-key': { '3': keyPair(1, 2) } })
+		if (!state.keys.clear) throw new Error('clear not implemented')
+		await state.keys.clear()
+
+		const sessRow = store.handle('axolotl.db').prepare('SELECT record FROM sessions').get()
+		expect(sessRow).toBeUndefined()
+		const preRow = store.handle('axolotl.db').prepare('SELECT record FROM prekeys').get()
+		expect(preRow).toBeUndefined()
+
+		const got = await state.keys.get('session', [SESSION_ID])
+		expect(got[SESSION_ID]).toBeUndefined()
+		close()
+	})
+
+	it('does not create a jid row on an identity-key get for an unknown contact', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: true })
+		const unknownJid = '5500000000000@s.whatsapp.net'
+		await state.keys.get('identity-key', [unknownJid])
+
+		const jidRow = store.handle('msgstore.db').prepare('SELECT _id FROM jid WHERE raw_string = ?').get(unknownJid)
+		expect(jidRow).toBeUndefined() // read path must not materialize the jid row
+		close()
+	})
 })

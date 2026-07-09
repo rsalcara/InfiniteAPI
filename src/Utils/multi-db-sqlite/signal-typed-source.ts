@@ -33,6 +33,8 @@ import type { SignalTypedBackend } from './signal-typed-backend'
 
 export type TypedSignalType = 'session' | 'pre-key' | 'sender-key' | 'identity-key'
 
+type IdentityKeyRow = { recipientId: number; recipientType: number; deviceId: number | null }
+
 const toBuffer = (valueString: string): Buffer => Buffer.from(valueString, 'utf-8')
 
 export class SignalTypedSourceStore {
@@ -86,7 +88,10 @@ export class SignalTypedSourceStore {
 				}
 
 				case 'identity-key': {
-					const key = this.identityKey(id)
+					// Read-only jid resolution: an unknown jid returns null (→
+					// caller falls back to signal_kv) instead of materializing a
+					// junk `jid` row on a pure read.
+					const key = this.identityKeyForRead(id)
 					if (!key) return null
 					const row = this.backend.getIdentity(key)
 					return row ? row.publicKey.toString('utf-8') : null
@@ -148,7 +153,10 @@ export class SignalTypedSourceStore {
 			}
 
 			case 'identity-key': {
-				const key = this.identityKey(id)
+				// Write path: resolve-or-create the jid row — storing an identity
+				// for a not-yet-seen contact must materialize its jid row (same
+				// as the mirror does).
+				const key = this.identityKeyForWrite(id)
 				if (!key) return this.warnUnparsed(type, id)
 				this.backend.putIdentity(key, record)
 				return
@@ -195,8 +203,11 @@ export class SignalTypedSourceStore {
 			}
 
 			case 'identity-key': {
-				const key = this.identityKey(id)
-				if (!key) return this.warnUnparsed(type, id)
+				// Read-only jid resolution: an unknown jid means there is
+				// nothing to delete (no-op) rather than materializing a junk
+				// jid row just to issue a DELETE that matches nothing.
+				const key = this.identityKeyForRead(id)
+				if (!key) return
 				this.backend.deleteIdentity(key)
 				return
 			}
@@ -205,16 +216,34 @@ export class SignalTypedSourceStore {
 
 	/**
 	 * Resolves an `identity-key` id (a raw jid string) into the structured
-	 * `identities` key. `recipient_id` is the local `jid` row id (resolved
-	 * via the shared JidMapBackend, same as the mirror), `recipient_type`
-	 * is 0=PN / 1=LID from the jid's domain, `device_id` from the jid.
-	 * Returns `null` when the jid can't be decoded.
+	 * `identities` key for a WRITE. `recipient_id` is the local `jid` row id,
+	 * resolve-or-created via the shared JidMapBackend (storing an identity for
+	 * a new contact must materialize its jid row, same as the mirror);
+	 * `recipient_type` is 0=PN / 1=LID from the jid's domain, `device_id` from
+	 * the jid. Returns `null` when the jid can't be decoded.
 	 */
-	private identityKey(id: string): { recipientId: number; recipientType: number; deviceId: number | null } | null {
+	private identityKeyForWrite(id: string): IdentityKeyRow | null {
 		const decoded = jidDecode(id)
 		if (!decoded) return null
 		return {
 			recipientId: this.jidMap.resolveJidRowId(id),
+			recipientType: domainTypeToAccountType(decoded.domainType ?? 0),
+			deviceId: decoded.device ?? null
+		}
+	}
+
+	/**
+	 * Read-only variant of {@link identityKeyForWrite} for get/del: resolves
+	 * the jid row id via a pure lookup, returning `null` if the jid was never
+	 * seen — so a read never mutates `msgstore.db.jid`.
+	 */
+	private identityKeyForRead(id: string): IdentityKeyRow | null {
+		const decoded = jidDecode(id)
+		if (!decoded) return null
+		const recipientId = this.jidMap.lookupJidRowId(id)
+		if (recipientId === null) return null
+		return {
+			recipientId,
 			recipientType: domainTypeToAccountType(decoded.domainType ?? 0),
 			deviceId: decoded.device ?? null
 		}

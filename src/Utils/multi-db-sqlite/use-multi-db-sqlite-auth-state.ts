@@ -45,14 +45,19 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
 	 *
 	 * Safe by construction:
 	 *   - `signal_kv` is still written in the SAME transaction (both tables
-	 *     live in axolotl.db, so the dual-write is atomic — they can never
-	 *     diverge), and acts as a guaranteed fallback + instant rollback.
+	 *     live in axolotl.db, so the dual-write commits or rolls back as a
+	 *     unit — no partial write), and acts as a guaranteed fallback +
+	 *     instant rollback. `signal_kv` is always the complete superset; the
+	 *     typed table may legitimately lack a row (an id whose structured key
+	 *     can't be parsed is written to signal_kv only), which the read-time
+	 *     fallback below covers — never a data-losing divergence.
 	 *   - `keys.get` reads the typed table first and falls back to
-	 *     `signal_kv` on any miss, so sessions written before this flag was
-	 *     enabled keep resolving (and are healed on their next write).
-	 *   - `keys.list`/`listIds`/`clear` continue to operate on `signal_kv`
-	 *     (kept complete by the atomic dual-write), so enumeration is
-	 *     unaffected.
+	 *     `signal_kv` on any miss (or on an unparseable legacy mirror row),
+	 *     so sessions written before this flag was enabled keep resolving
+	 *     (and heal to the authoritative format on their next write).
+	 *   - `keys.list`/`listIds` continue to operate on `signal_kv` (kept
+	 *     complete by the dual-write); `clear()` wipes the typed tables too,
+	 *     so a reset can't leave stale key material the typed read would find.
 	 *
 	 * Default `false`: existing behavior is unchanged (opaque `signal_kv`
 	 * authoritative + the best-effort typed mirror). Flip to `true` to make
@@ -334,14 +339,35 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				// the flag was enabled). Both stores hold the identical
 				// serialized value, so a typed hit and a signal_kv hit are
 				// interchangeable — the fallback only covers pre-migration rows.
+				//
+				// This does one indexed point-query per id rather than the
+				// batched IN-clause the signal_kv path uses. That's fine: the
+				// four typed tables are keyed on different structured columns
+				// (no single IN batches them), and better-sqlite3 is a
+				// synchronous in-process call — the IN-batching win is
+				// round-trip amortization, which doesn't apply here. Each
+				// lookup hits a unique index, so a multi-id get stays O(n)
+				// cheap point-queries. Batched typed reads are a possible later
+				// optimization, not a correctness concern.
 				if (sourceOfTruth && TYPED_SIGNAL_TYPES.has(type)) {
 					const missing: string[] = []
 					for (const id of ids) {
 						const serialized = signalTypedSource.get(type as TypedSignalType, id)
 						if (serialized === null) {
 							missing.push(id)
-						} else {
+							continue
+						}
+
+						try {
 							out[id] = JSON.parse(serialized, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
+						} catch {
+							// A typed row left by the pre-flag best-effort mirror is
+							// raw session/sender-key bytes or a public-only pre-key —
+							// NOT the BufferJSON string this path expects. Treat the
+							// unparseable row as a miss and resolve via signal_kv,
+							// which still holds the valid value; the row heals to the
+							// authoritative format on its next write.
+							missing.push(id)
 						}
 					}
 
@@ -410,6 +436,15 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 					msgstoreDb.exec('DELETE FROM jid_map;')
 					signalStmts.clear.run()
 					appStateSyncKeyStmts.clear.run()
+					// The typed Signal tables must be wiped too. In
+					// `signalSourceOfTruth` mode `keys.get` reads them BEFORE
+					// signal_kv, so a surviving row would resurrect key material
+					// this clear() was meant to erase. Cleared unconditionally
+					// (harmless when the flag is off — the mirror also populates
+					// these tables, and a leftover mirror row after a reset is
+					// equally undesirable). All four live in axolotl.db.
+					const axolotlDb = store.handle('axolotl.db')
+					axolotlDb.exec('DELETE FROM sessions; DELETE FROM prekeys; DELETE FROM sender_keys; DELETE FROM identities;')
 				})
 			},
 			list: async function* <T extends keyof SignalDataTypeMap>(
