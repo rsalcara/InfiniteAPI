@@ -46,16 +46,18 @@ export type ParsedSignalUser = {
 /**
  * Splits the `signalUser` component `jidToSignalProtocolAddress` builds
  * (`user` or `user_domainType`) back into its parts. Returns `null` when
- * the trailing `_<digits>` isn't a valid integer — treated as "can't mirror
- * this one" rather than a fabricated guess.
+ * the trailing `_<digits>` isn't a plain non-negative decimal — treated as
+ * "can't mirror this one" rather than a fabricated guess. Uses the same
+ * strict `parseNonNegativeInt` gate as the device/pre-key ids: a bare
+ * `Number()` would coerce an empty suffix to 0 and accept negative /
+ * exponential / hex forms, silently fabricating a domainType from junk.
  */
 export function parseSignalUser(signalUser: string): ParsedSignalUser | null {
 	const underscoreIdx = signalUser.indexOf('_')
 	if (underscoreIdx < 0) return { user: signalUser, domainType: WAJIDDomains.WHATSAPP }
 
-	const domainTypeStr = signalUser.slice(underscoreIdx + 1)
-	const domainType = Number(domainTypeStr)
-	if (!Number.isInteger(domainType)) return null
+	const domainType = parseNonNegativeInt(signalUser.slice(underscoreIdx + 1))
+	if (domainType === null) return null
 
 	return { user: signalUser.slice(0, underscoreIdx), domainType }
 }

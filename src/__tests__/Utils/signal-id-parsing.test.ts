@@ -50,6 +50,13 @@ describe('parseSignalUser', () => {
 	it('returns null for a non-numeric domainType suffix', () => {
 		expect(parseSignalUser('123456789_notanumber')).toBeNull()
 	})
+
+	it('returns null for an empty / negative / exponential / hex domainType suffix (no fabricated 0)', () => {
+		expect(parseSignalUser('123456789_')).toBeNull()
+		expect(parseSignalUser('123456789_-5')).toBeNull()
+		expect(parseSignalUser('123456789_1e2')).toBeNull()
+		expect(parseSignalUser('123456789_0x1')).toBeNull()
+	})
 })
 
 describe('domainTypeToAccountType', () => {
