@@ -9,6 +9,8 @@
  *   - creds round-trip via creds.db;
  *   - signal data round-trip via axolotl.db.signal_kv (opaque key-value
  *     until phase 9.5 splits to typed tables);
+ *   - app-state-sync-key round-trips via creds.db.app_state_sync_keys
+ *     instead of signal_kv, including the legacy-row migration path;
  *   - close + reopen preserves all data.
  *
  * Uses on-disk DBs in a tmp directory because the multi-file layout
@@ -22,6 +24,14 @@ import type { SignalDataTypeMap } from '../../Types'
 import { useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
 
 const sampleSession = (b: number): SignalDataTypeMap['session'] => Buffer.from([b]) as Uint8Array
+
+const sampleAppStateSyncKey = (n: number): SignalDataTypeMap['app-state-sync-key'] =>
+	({
+		keyData: Buffer.from([n]),
+		fingerprint: { rawId: n, currentIndex: n, deviceIndexes: [n] },
+		timestamp: String(1_700_000_000 + n)
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	}) as any
 
 describe('useMultiDbSqliteAuthState', () => {
 	let dir: string
@@ -101,6 +111,13 @@ describe('useMultiDbSqliteAuthState', () => {
 				'message_quarantine'
 			])
 		)
+
+		const credsTables = (
+			store.handle('creds.db').prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{
+				name: string
+			}>
+		).map(r => r.name)
+		expect(credsTables).toEqual(expect.arrayContaining(['creds', 'app_state_sync_keys']))
 
 		const waTables = (
 			store.handle('wa.db').prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{
@@ -199,5 +216,90 @@ describe('useMultiDbSqliteAuthState', () => {
 		for await (const id of listIds('session')) ids.push(id)
 		expect(ids.sort()).toEqual(['a', 'b', 'c'])
 		close()
+	})
+
+	it('routes app-state-sync-key to creds.db.app_state_sync_keys, not axolotl.signal_kv', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		await state.keys.set({
+			'app-state-sync-key': { 'key-1': sampleAppStateSyncKey(9) }
+		})
+
+		const credsRow = store
+			.handle('creds.db')
+			.prepare('SELECT key_id FROM app_state_sync_keys WHERE key_id = ?')
+			.get('key-1')
+		expect(credsRow).toBeDefined()
+
+		const signalKvRow = store
+			.handle('axolotl.db')
+			.prepare("SELECT id FROM signal_kv WHERE type = 'app-state-sync-key' AND id = ?")
+			.get('key-1')
+		expect(signalKvRow).toBeUndefined()
+
+		const got = await state.keys.get('app-state-sync-key', ['key-1'])
+		expect(got['key-1']?.keyData).toBeDefined()
+		expect(Buffer.from(got['key-1']!.keyData as Uint8Array).toString('hex')).toBe('09')
+		close()
+	})
+
+	it('lists app-state-sync-key ids/entries from creds.db.app_state_sync_keys', async () => {
+		const { state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		await state.keys.set({
+			'app-state-sync-key': { a: sampleAppStateSyncKey(1), b: sampleAppStateSyncKey(2) }
+		})
+
+		const listIds = state.keys.listIds
+		if (!listIds) throw new Error('listIds not implemented')
+		const ids: string[] = []
+		for await (const id of listIds('app-state-sync-key')) ids.push(id)
+		expect(ids.sort()).toEqual(['a', 'b'])
+
+		const list = state.keys.list
+		if (!list) throw new Error('list not implemented')
+		const entries: string[] = []
+		for await (const [id] of list('app-state-sync-key')) entries.push(id)
+		expect(entries.sort()).toEqual(['a', 'b'])
+		close()
+	})
+
+	it('clear() wipes app_state_sync_keys along with signal_kv and jid_map', async () => {
+		const { state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		await state.keys.set({ 'app-state-sync-key': { x: sampleAppStateSyncKey(1) } })
+		if (!state.keys.clear) throw new Error('clear not implemented')
+		await state.keys.clear()
+
+		const got = await state.keys.get('app-state-sync-key', ['x'])
+		expect(got['x']).toBeUndefined()
+		close()
+	})
+
+	it('migrates legacy app-state-sync-key rows from axolotl.signal_kv on open()', async () => {
+		// Simulate a session persisted by a prior version of this adapter,
+		// before app-state-sync-key had its own table — write directly into
+		// axolotl.signal_kv the way the old code path did.
+		const first = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		first.store
+			.handle('axolotl.db')
+			.prepare("INSERT INTO signal_kv (type, id, value) VALUES ('app-state-sync-key', ?, ?)")
+			.run('legacy-key', JSON.stringify(sampleAppStateSyncKey(5)))
+		first.close()
+
+		const second = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		const migratedRow = second.store
+			.handle('creds.db')
+			.prepare('SELECT key_id FROM app_state_sync_keys WHERE key_id = ?')
+			.get('legacy-key')
+		expect(migratedRow).toBeDefined()
+
+		const leftoverRow = second.store
+			.handle('axolotl.db')
+			.prepare("SELECT id FROM signal_kv WHERE type = 'app-state-sync-key' AND id = ?")
+			.get('legacy-key')
+		expect(leftoverRow).toBeUndefined()
+
+		const got = await second.state.keys.get('app-state-sync-key', ['legacy-key'])
+		expect(got['legacy-key']?.keyData).toBeDefined()
+		expect(Buffer.from(got['legacy-key']!.keyData as Uint8Array).toString('hex')).toBe('05')
+		second.close()
 	})
 })

@@ -43,9 +43,10 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
  * chatsettings, location, payments, stickers, smb, status):
  *
  *   sessionDir/
- *     creds.db        — auth credentials (the `app_state_sync_keys` table
- *                       is reserved for a later phase; v1 still routes
- *                       `app-state-sync-key` to axolotl.signal_kv)
+ *     creds.db        — auth credentials + `app_state_sync_keys` (the
+ *                       decoded app-state-sync-key material routes here,
+ *                       not to axolotl.signal_kv — see the migration note
+ *                       below)
  *     axolotl.db      — Signal Protocol (opaque `signal_kv` in v1; typed
  *                       tables reserved for phase 9.5 integration)
  *     msgstore.db     — JID routing, device cache, quarantine, retry counters
@@ -56,11 +57,20 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
  *                       (schema ships ahead of callers — no Baileys feature
  *                       consumes it today)
  *
- * **v1 contract:** behaves exactly like `useSqliteAuthState` — auth creds
- * in `creds.db`, signal data in `axolotl.db.signal_kv` (opaque, JSON-encoded
- * via BufferJSON). The msgstore/wa/sync DB files are created with their
- * schemas but their typed tables remain empty until the corresponding
- * follow-up phases route the respective components to them.
+ * **v1 contract:** behaves like `useSqliteAuthState` for every signal data
+ * type EXCEPT `app-state-sync-key`, which routes to the typed
+ * `creds.db.app_state_sync_keys` table instead of the opaque
+ * `axolotl.db.signal_kv` — same JSON-via-BufferJSON encoding as before,
+ * just a dedicated table instead of a shared opaque one, since this key
+ * material has no analog in WhatsApp Android's own schema to mirror (it's
+ * a companion-only concept: the primary phone never needs to persist keys
+ * it hands out, so there's nothing to be schema-faithful to here — this is
+ * InfiniteAPI's own bookkeeping). Existing rows already sitting in
+ * `axolotl.signal_kv` from a prior version are migrated automatically on
+ * first `open()` (idempotent — safe to run every startup). The msgstore/
+ * wa/sync DB files are created with their schemas but their typed tables
+ * remain empty until the corresponding follow-up phases route the
+ * respective components to them.
  *
  * Why open all 13 files up front instead of lazily? Disk allocation + WAL
  * checkpointing both have one-time costs; doing them at startup means the
@@ -84,6 +94,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	let creds: AuthenticationCreds
 	let credsStmts: ReturnType<typeof prepareCredsStatements>
 	let signalStmts: ReturnType<typeof prepareSignalStatements>
+	let appStateSyncKeyStmts: ReturnType<typeof prepareAppStateSyncKeyStatements>
 
 	try {
 		// store.open() now lives INSIDE the try/catch so any open-time error
@@ -99,6 +110,8 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		await store.open()
 		credsStmts = prepareCredsStatements(store)
 		signalStmts = prepareSignalStatements(store)
+		appStateSyncKeyStmts = prepareAppStateSyncKeyStatements(store)
+		migrateLegacyAppStateSyncKeys(store, opts.logger)
 		creds = loadCreds(credsStmts, opts.logger)
 	} catch (err) {
 		// Only close the store if WE opened it — injected stores belong to
@@ -124,6 +137,15 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		')'
 	)
 
+	// `app-state-sync-key` has its own dedicated table (see the class doc
+	// above), so its batched get has no `type =` prefix to bind — hence the
+	// separate query/leadingParams shape from `signalGetIn`.
+	const appStateSyncKeyGetIn = prepareInClause(
+		store.handle('creds.db'),
+		'SELECT key_id AS id, value FROM app_state_sync_keys WHERE key_id IN (',
+		')'
+	)
+
 	const applySetTx = store.handle('axolotl.db').transaction((data: SignalDataSet) => {
 		for (const category in data) {
 			const type = category as keyof SignalDataTypeMap
@@ -131,6 +153,22 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			if (!bucket) continue
 			for (const id in bucket) {
 				const value = bucket[id]
+				if (type === 'app-state-sync-key') {
+					// Routed to creds.db, a DIFFERENT physical file/connection
+					// than the axolotl.db transaction this callback runs inside
+					// — so this write is not part of that transaction's
+					// atomicity and autocommits on its own. Same non-atomic-
+					// across-files trade-off already accepted by clear() below;
+					// harmless at the write volume app-state-sync-key sees.
+					if (value === null || value === undefined) {
+						appStateSyncKeyStmts.del.run(id)
+					} else {
+						appStateSyncKeyStmts.upsert.run(id, JSON.stringify(value, BufferJSON.replacer), Date.now())
+					}
+
+					continue
+				}
+
 				if (value === null || value === undefined) {
 					signalStmts.del.run(type, id)
 				} else {
@@ -183,7 +221,10 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			get: async (type, ids) => {
 				const out: { [_: string]: SignalDataTypeMap[typeof type] } = {}
 				if (ids.length === 0) return out
-				const rows = signalGetIn.all([type], ids) as Array<{ id: string; value: string }>
+				const rows =
+					type === 'app-state-sync-key'
+						? (appStateSyncKeyGetIn.all([], ids) as Array<{ id: string; value: string }>)
+						: (signalGetIn.all([type], ids) as Array<{ id: string; value: string }>)
 				for (const row of rows) {
 					let parsed = JSON.parse(row.value, BufferJSON.reviver)
 					if (type === 'app-state-sync-key' && parsed) {
@@ -242,12 +283,17 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				await runWithBusyRetry('clear', () => {
 					msgstoreDb.exec('DELETE FROM jid_map;')
 					signalStmts.clear.run()
+					appStateSyncKeyStmts.clear.run()
 				})
 			},
 			list: async function* <T extends keyof SignalDataTypeMap>(
 				type: T
 			): AsyncIterable<readonly [string, SignalDataTypeMap[T]]> {
-				for (const row of signalStmts.list.iterate(type) as Iterable<{ id: string; value: string }>) {
+				const rows =
+					type === 'app-state-sync-key'
+						? (appStateSyncKeyStmts.list.iterate() as Iterable<{ id: string; value: string }>)
+						: (signalStmts.list.iterate(type) as Iterable<{ id: string; value: string }>)
+				for (const row of rows) {
 					// eslint-disable-next-line @typescript-eslint/no-explicit-any
 					let value: any = JSON.parse(row.value, BufferJSON.reviver)
 					if (type === 'app-state-sync-key' && value) {
@@ -258,7 +304,11 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				}
 			},
 			listIds: async function* <T extends keyof SignalDataTypeMap>(type: T): AsyncIterable<string> {
-				for (const row of signalStmts.listIds.iterate(type) as Iterable<{ id: string }>) {
+				const rows =
+					type === 'app-state-sync-key'
+						? (appStateSyncKeyStmts.listIds.iterate() as Iterable<{ id: string }>)
+						: (signalStmts.listIds.iterate(type) as Iterable<{ id: string }>)
+				for (const row of rows) {
 					yield row.id
 				}
 			}
@@ -310,6 +360,62 @@ function prepareSignalStatements(store: MultiDbSqliteStore) {
 		list: db.prepare('SELECT id, value FROM signal_kv WHERE type = ?'),
 		clear: db.prepare('DELETE FROM signal_kv')
 	}
+}
+
+/**
+ * Typed operations on `creds.db.app_state_sync_keys` — the dedicated table
+ * `app-state-sync-key` data routes to instead of the opaque
+ * `axolotl.db.signal_kv`. Same `key_id`-only shape signal_kv's `(type, id)`
+ * key would have had with `type` fixed to `'app-state-sync-key'`, since
+ * this table only ever holds that one data type.
+ */
+function prepareAppStateSyncKeyStatements(store: MultiDbSqliteStore) {
+	const db = store.handle('creds.db')
+	return {
+		select: db.prepare('SELECT value FROM app_state_sync_keys WHERE key_id = ?'),
+		upsert: db.prepare(
+			'INSERT INTO app_state_sync_keys (key_id, value, created_at) VALUES (?, ?, ?) ' +
+				'ON CONFLICT(key_id) DO UPDATE SET value = excluded.value, created_at = excluded.created_at'
+		),
+		del: db.prepare('DELETE FROM app_state_sync_keys WHERE key_id = ?'),
+		listIds: db.prepare('SELECT key_id AS id FROM app_state_sync_keys'),
+		list: db.prepare('SELECT key_id AS id, value FROM app_state_sync_keys'),
+		clear: db.prepare('DELETE FROM app_state_sync_keys')
+	}
+}
+
+/**
+ * One-time (per open()) migration of `app-state-sync-key` rows a prior
+ * version of this adapter left in the opaque `axolotl.db.signal_kv` table
+ * into the dedicated `creds.db.app_state_sync_keys` table. Idempotent: a
+ * session with nothing left to migrate does one cheap SELECT and returns.
+ *
+ * Insert-then-delete ordering matters for crash safety, same reasoning as
+ * `clear()`'s jid_map/signal_kv ordering below: if the process dies between
+ * the two steps, the legacy rows are still in signal_kv (nothing lost) and
+ * this function simply runs again — and does nothing extra — on the next
+ * open() because the upsert is idempotent.
+ */
+function migrateLegacyAppStateSyncKeys(store: MultiDbSqliteStore, logger: ILogger | undefined): void {
+	const axolotlDb = store.handle('axolotl.db')
+	const legacyRows = axolotlDb
+		.prepare("SELECT id, value FROM signal_kv WHERE type = 'app-state-sync-key'")
+		.all() as Array<{ id: string; value: string }>
+	if (legacyRows.length === 0) return
+
+	const credsDb = store.handle('creds.db')
+	const upsert = credsDb.prepare(
+		'INSERT INTO app_state_sync_keys (key_id, value, created_at) VALUES (?, ?, ?) ' +
+			'ON CONFLICT(key_id) DO UPDATE SET value = excluded.value, created_at = excluded.created_at'
+	)
+	const now = Date.now()
+	for (const row of legacyRows) upsert.run(row.id, row.value, now)
+
+	axolotlDb.prepare("DELETE FROM signal_kv WHERE type = 'app-state-sync-key'").run()
+	logger?.info?.(
+		{ count: legacyRows.length },
+		'multi-db-sqlite: migrated app-state-sync-key rows from axolotl.signal_kv to creds.app_state_sync_keys'
+	)
 }
 
 function loadCreds(stmts: ReturnType<typeof prepareCredsStatements>, logger: ILogger | undefined): AuthenticationCreds {
