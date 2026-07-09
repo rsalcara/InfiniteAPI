@@ -5,6 +5,7 @@ import { attachMeUsernameSync } from '../Utils/me-username-sync'
 import {
 	createMessageQuarantineRecorder,
 	MsgRetryCounterSqliteAdapter,
+	type MultiDbSqliteStore,
 	UserDeviceCacheSqliteAdapter
 } from '../Utils/multi-db-sqlite'
 import type { VersionCacheLogger } from '../Utils/version-cache'
@@ -24,8 +25,7 @@ import { makeCommunitiesSocket } from './communities'
  */
 const wireRemainingMsgstoreAdapters = (config: SocketConfig): void => {
 	if (!config.multiDbStore) return
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	const store = config.multiDbStore as any
+	const store = config.multiDbStore as MultiDbSqliteStore
 	const msgstoreHandle = store.handle('msgstore.db')
 	config.onMessageQuarantine ??= createMessageQuarantineRecorder({ store })
 	config.msgRetryCounterCache ??= new MsgRetryCounterSqliteAdapter(msgstoreHandle)
