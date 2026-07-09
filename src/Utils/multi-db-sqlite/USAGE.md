@@ -7,14 +7,7 @@ the legacy in-memory + multi-file behavior.
 ## Quick start
 
 ```typescript
-import {
-	MultiDbSqliteStore,
-	useMultiDbSqliteAuthState,
-	UserDeviceCacheSqliteAdapter,
-	MsgRetryCounterSqliteAdapter,
-	createMessageQuarantineRecorder,
-	makeWASocket
-} from 'baileys'
+import { MultiDbSqliteStore, useMultiDbSqliteAuthState, makeWASocket } from 'baileys'
 
 const sessionDir = '/var/lib/infiniteapi/sessions/main'
 
@@ -37,16 +30,18 @@ const {
 	store
 })
 
-// 3) Wire the SocketConfig. Passing `multiDbStore` activates phase 9.1
-//    LID mapping persistence via msgstore.jid_map; the cache adapters
-//    activate phases 9.2 + 9.3 (they reuse the same `store.handle(...)`);
-//    `onMessageQuarantine` activates phase 9.4 (Bad MAC quarantine).
+// 3) Wire the SocketConfig. Passing `multiDbStore` is the ONLY step
+//    needed: LID mapping (jid/jid_map), the message-store mirror
+//    (message/chat/receipts/media/add-ons), the user-device cache, the
+//    retry counter, and Bad MAC quarantine all activate automatically off
+//    this single field — `makeWASocket` injects the matching SQLite
+//    adapter into `userDevicesCache`/`msgRetryCounterCache`/
+//    `onMessageQuarantine` whenever you haven't already supplied your own.
+//    Pass one of those three explicitly only if you want a DIFFERENT
+//    backend for that specific slot (e.g. Redis) instead of SQLite.
 const sock = makeWASocket({
 	auth: state,
-	multiDbStore: store,
-	userDevicesCache: new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db')),
-	msgRetryCounterCache: new MsgRetryCounterSqliteAdapter(store.handle('msgstore.db')),
-	onMessageQuarantine: createMessageQuarantineRecorder({ store })
+	multiDbStore: store
 })
 
 sock.ev.on('creds.update', saveCreds)
@@ -89,11 +84,17 @@ Wired automatically when `SocketConfig.multiDbStore` is supplied.
 | `UserDeviceBackend`            | Typed `replaceDevices` / `listDevices` / `getInfo` / `isFresh` / `setPrimaryDeviceVersion`. |
 | `UserDeviceCacheSqliteAdapter` | `NodeCache`-compat drop-in for `SocketConfig.userDevicesCache` (`get/set/del/mget`).        |
 
+Wired automatically when `SocketConfig.multiDbStore` is supplied and no
+`userDevicesCache` override is passed.
+
 ### Phase 9.3 — message retry counters
 
 | Export                         | Purpose                                                                                                      |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------ |
 | `MsgRetryCounterSqliteAdapter` | `NodeCache`-compat drop-in for `SocketConfig.msgRetryCounterCache`. Persists retry counters across restarts. |
+
+Wired automatically when `SocketConfig.multiDbStore` is supplied and no
+`msgRetryCounterCache` override is passed.
 
 ### Phase 9.4 — Bad MAC quarantine (wired)
 
@@ -102,18 +103,21 @@ Wired automatically when `SocketConfig.multiDbStore` is supplied.
 | `MessageQuarantineBackend`          | `quarantine` (upsert with retry_count increment on duplicate natural key), `findByKey`, `listByChat`, `listSince`, `dismiss`, `pruneOlderThan`. |
 | `createMessageQuarantineRecorder`   | One-call factory: resolves chat/sender JIDs to `jid` row ids and persists via `MessageQuarantineBackend`. Returns the plain callback `SocketConfig.onMessageQuarantine` expects. |
 
+Wired automatically when `SocketConfig.multiDbStore` is supplied and no
+`onMessageQuarantine` override is passed:
+
 ```typescript
 const sock = makeWASocket({
 	auth: state,
-	multiDbStore: store,
-	onMessageQuarantine: createMessageQuarantineRecorder({ store })
+	multiDbStore: store
 })
 ```
 
 Fires only for confirmed Bad MAC / corrupted-session failures once retries
 are exhausted (`decode-wa-message.ts`'s `isCorruptedSessionError` branch) —
-not on every transient decrypt retry. Omit `onMessageQuarantine` to keep the
-pre-9.4 behavior (log + drop) unchanged.
+not on every transient decrypt retry. Pass your own `onMessageQuarantine` to
+override, or omit `multiDbStore` entirely to keep the pre-9.4 behavior
+(log + drop) unchanged.
 
 ### Phase 9.5 — typed Signal Protocol tables
 

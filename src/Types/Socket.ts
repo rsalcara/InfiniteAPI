@@ -290,21 +290,27 @@ export type SocketConfig = {
 	/**
 	 * Optional multi-DB SQLite store (`MultiDbSqliteStore`).
 	 *
-	 * Currently wired components (phase 9.1):
+	 * Wired automatically the moment this field is set (no other config
+	 * needed):
 	 *   - **LID mapping** — `LIDMappingStore` persists `'lid-mapping'` rows
 	 *     into `msgstore.db.jid_map` (typed) instead of opaque key-value
 	 *     rows on the shared signal key store. Cache, coalescing, retry,
 	 *     and statistics on top of the store are unchanged.
+	 *   - **Message store** — `message`/`chat`/`receipt_user`/
+	 *     `receipt_device`/`message_media`/`message_add_on`/`message_poll`/
+	 *     `message_location`/`message_vcard` mirror every real inbound
+	 *     message (see `chats.ts`'s `messageStoreBackend`/`addOnBackend`).
+	 *   - **User device cache** (`UserDeviceCacheSqliteAdapter` →
+	 *     `userDevicesCache`), **retry counter**
+	 *     (`MsgRetryCounterSqliteAdapter` → `msgRetryCounterCache`), and
+	 *     **Bad MAC quarantine** (`createMessageQuarantineRecorder` →
+	 *     `onMessageQuarantine`) — injected by `Socket/index.ts`'s
+	 *     `wireRemainingMsgstoreAdapters` only when the matching slot below
+	 *     is still unset, so passing your own adapter for any of the three
+	 *     (e.g. a Redis-backed cache) always wins.
 	 *
-	 * Also wired (phase 9.4, via the separate `onMessageQuarantine` slot
-	 * below): Bad MAC quarantine.
-	 *
-	 * Components with adapters / backends READY but NOT wired here yet
-	 * (the caller passes the adapter explicitly to the matching
-	 * `SocketConfig` slot — `userDevicesCache`, `msgRetryCounterCache`,
-	 * etc.):
-	 *   - User device cache (`UserDeviceCacheSqliteAdapter`)
-	 *   - Retry counter (`MsgRetryCounterSqliteAdapter`)
+	 * Not auto-wired (the caller passes the adapter explicitly to its own
+	 * `SocketConfig` slot):
 	 *   - Trusted Contact tokens (`TrustedContactsBackend`)
 	 *   - App-state sync (`AppStateBackend`)
 	 *

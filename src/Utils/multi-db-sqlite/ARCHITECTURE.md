@@ -83,7 +83,11 @@ forms become rows in `jid`, with `jid_map` as the lookup table.
 
 ### Phase 9.2 — `userDevicesCache` → `user_device(_info)`
 
-**Replaces:** the in-RAM device list cache.
+**Replaces:** the in-RAM device list cache. **Wired automatically**
+(`Socket/index.ts`'s `wireRemainingMsgstoreAdapters`) whenever
+`SocketConfig.multiDbStore` is supplied and no `userDevicesCache` override
+is passed — the consumer no longer has to construct
+`UserDeviceCacheSqliteAdapter` themselves.
 **Schema target:** `user_device(user_jid_row_id, device_jid_row_id, key_index)`
 
 - `user_device_info(user_jid_row_id, raw_id, timestamp, expected_timestamp)`.
@@ -92,7 +96,8 @@ forms become rows in `jid`, with `jid_map` as the lookup table.
 
 ### Phase 9.3 — `msgRetryCounterCache` → `msg_retry_counter` (aux)
 
-**Replaces:** the in-RAM retry counter.
+**Replaces:** the in-RAM retry counter. **Wired automatically** alongside
+`userDevicesCache` above — same condition, same injection point.
 
 **Current schema target (shipped in this PR):** `MsgRetryCounterSqliteAdapter`
 creates and uses a dedicated auxiliary table on `msgstore.db`:
@@ -130,18 +135,20 @@ via a live Frida runtime schema dump against `com.whatsapp.w4b`, including
 its cascade-delete triggers on `chat`/`message`), which is the actual prior
 art this phase ports — not a prior InfiniteAPI mechanism.
 
-**Wiring:** `SocketConfig.onMessageQuarantine` — construct with
-`createMessageQuarantineRecorder({ store })` and pass the result. Hooked into
-`decode-wa-message.ts`'s decrypt-failure catch, scoped specifically to
-`isCorruptedSessionError` (Bad MAC / counter-error / key-already-used) after
-retries are exhausted — the same condition that today only produces a
-`logger.warn` and a `CIPHERTEXT` stub. `chat_row_id` / `sender_jid_row_id`
-are resolved through the same `jid` table `JidMapBackend` uses for phase 9.1,
-so quarantine rows join cleanly against existing LID/PN mappings.
+**Wiring:** `SocketConfig.onMessageQuarantine` — **wired automatically**
+(same injection point and condition as phases 9.2/9.3 above) with
+`createMessageQuarantineRecorder({ store })` whenever `multiDbStore` is
+supplied and no override is passed. Hooked into `decode-wa-message.ts`'s
+decrypt-failure catch, scoped specifically to `isCorruptedSessionError`
+(Bad MAC / counter-error / key-already-used) after retries are exhausted —
+the same condition that today only produces a `logger.warn` and a
+`CIPHERTEXT` stub. `chat_row_id` / `sender_jid_row_id` are resolved through
+the same `jid` table `JidMapBackend` uses for phase 9.1, so quarantine rows
+join cleanly against existing LID/PN mappings.
 
-**Additive:** omitting `onMessageQuarantine` (the default) is byte-for-byte
-identical to pre-9.4 behavior. A caller that never wires `multiDbStore` /
-`onMessageQuarantine` — including every `useSqliteAuthState` (single-bank)
+**Additive:** omitting `multiDbStore` entirely keeps `onMessageQuarantine`
+unset and behavior byte-for-byte identical to pre-9.4. A caller that never
+wires `multiDbStore` — including every `useSqliteAuthState` (single-bank)
 deployment — sees zero change.
 
 **Schema:** `message_quarantine(... original_protobuf BLOB,

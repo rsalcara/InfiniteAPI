@@ -1,10 +1,36 @@
 import { DEFAULT_CONNECTION_CONFIG } from '../Defaults'
-import type { UserFacingSocketConfig, WAVersion } from '../Types'
+import type { SocketConfig, UserFacingSocketConfig, WAVersion } from '../Types'
 import { attachAdminAbuseDetector } from '../Utils/admin-abuse-detector'
 import { attachMeUsernameSync } from '../Utils/me-username-sync'
+import {
+	createMessageQuarantineRecorder,
+	MsgRetryCounterSqliteAdapter,
+	UserDeviceCacheSqliteAdapter
+} from '../Utils/multi-db-sqlite'
 import type { VersionCacheLogger } from '../Utils/version-cache'
 import { clearVersionCache, getCachedVersion, getVersionCacheStatus, refreshVersionCache } from '../Utils/version-cache'
 import { makeCommunitiesSocket } from './communities'
+
+/**
+ * The message-store mirror (jid/jid_map, message/chat/receipts/media/
+ * add-ons) wires itself automatically off `config.multiDbStore` inside
+ * libsignal.ts/chats.ts. These three slots don't work that way: they're
+ * consumed as `config.X || <in-memory default>` deep inside
+ * messages-send.ts/messages-recv.ts/decode-wa-message.ts, so the SQLite
+ * adapter has to be injected here — before any socket layer reads the
+ * field — for it to ever be picked up instead of the in-memory default.
+ * Never overrides a caller-supplied cache/hook (`??=`), and only engages
+ * when `multiDbStore` is configured.
+ */
+const wireRemainingMsgstoreAdapters = (config: SocketConfig): void => {
+	if (!config.multiDbStore) return
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const store = config.multiDbStore as any
+	const msgstoreHandle = store.handle('msgstore.db')
+	config.onMessageQuarantine ??= createMessageQuarantineRecorder({ store })
+	config.msgRetryCounterCache ??= new MsgRetryCounterSqliteAdapter(msgstoreHandle)
+	config.userDevicesCache ??= new UserDeviceCacheSqliteAdapter(msgstoreHandle)
+}
 
 /**
  * Adapts Baileys logger to VersionCacheLogger interface
@@ -40,6 +66,8 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		...DEFAULT_CONNECTION_CONFIG,
 		...config
 	}
+
+	wireRemainingMsgstoreAdapters(newConfig)
 
 	const sock = makeCommunitiesSocket(newConfig)
 
