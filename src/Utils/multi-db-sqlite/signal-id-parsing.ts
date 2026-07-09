@@ -60,6 +60,20 @@ export function parseSignalUser(signalUser: string): ParsedSignalUser | null {
 	return { user: signalUser.slice(0, underscoreIdx), domainType }
 }
 
+/**
+ * Parses a base-10 non-negative integer, or `null` for anything else.
+ *
+ * Uses `Number()` ONLY after a strict `/^\d+$/` gate because `Number('')`
+ * and `Number('  ')` both return `0` (and pass `Number.isInteger`), which
+ * would silently fabricate a device/pre-key id of 0 from an empty or
+ * whitespace string. `Number('0x1f')`/`Number('1e3')` are likewise rejected
+ * — Signal ids are always plain decimal.
+ */
+export function parseNonNegativeInt(s: string): number | null {
+	if (!/^\d+$/.test(s)) return null
+	return Number(s)
+}
+
 export type ParsedProtocolAddressId = ParsedSignalUser & { deviceId: number }
 
 /** Parses a `session` key id (`ProtocolAddress.toString()` = `"signalUser.deviceId"`). */
@@ -67,8 +81,8 @@ export function parseProtocolAddressId(id: string): ParsedProtocolAddressId | nu
 	const lastDot = id.lastIndexOf('.')
 	if (lastDot < 0) return null
 
-	const deviceId = Number(id.slice(lastDot + 1))
-	if (!Number.isInteger(deviceId)) return null
+	const deviceId = parseNonNegativeInt(id.slice(lastDot + 1))
+	if (deviceId === null) return null
 
 	const parsedUser = parseSignalUser(id.slice(0, lastDot))
 	if (!parsedUser) return null
@@ -87,8 +101,8 @@ export function parseSenderKeyId(id: string): ParsedSenderKeyId | null {
 	if (parts.length !== 3) return null
 
 	const [groupId, signalUser, deviceIdStr] = parts as [string, string, string]
-	const deviceId = Number(deviceIdStr)
-	if (!Number.isInteger(deviceId)) return null
+	const deviceId = parseNonNegativeInt(deviceIdStr)
+	if (deviceId === null) return null
 
 	const parsedUser = parseSignalUser(signalUser)
 	if (!parsedUser) return null

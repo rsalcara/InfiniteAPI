@@ -28,7 +28,12 @@
 import { jidDecode } from '../../WABinary'
 import type { ILogger } from '../logger'
 import type { JidMapBackend } from './lid-mapping-backend'
-import { domainTypeToAccountType, parseProtocolAddressId, parseSenderKeyId } from './signal-id-parsing'
+import {
+	domainTypeToAccountType,
+	parseNonNegativeInt,
+	parseProtocolAddressId,
+	parseSenderKeyId
+} from './signal-id-parsing'
 import type { SignalTypedBackend } from './signal-typed-backend'
 
 export type TypedSignalType = 'session' | 'pre-key' | 'sender-key' | 'identity-key'
@@ -69,8 +74,8 @@ export class SignalTypedSourceStore {
 				}
 
 				case 'pre-key': {
-					const prekeyId = Number(id)
-					if (!Number.isInteger(prekeyId)) return null
+					const prekeyId = parseNonNegativeInt(id)
+					if (prekeyId === null) return null
 					const record = this.backend.getPrekey(prekeyId)
 					return record ? record.toString('utf-8') : null
 				}
@@ -131,8 +136,8 @@ export class SignalTypedSourceStore {
 			}
 
 			case 'pre-key': {
-				const prekeyId = Number(id)
-				if (!Number.isInteger(prekeyId)) return this.warnUnparsed(type, id)
+				const prekeyId = parseNonNegativeInt(id)
+				if (prekeyId === null) return this.warnUnparsed(type, id)
 				this.backend.putPrekey(prekeyId, record)
 				return
 			}
@@ -184,8 +189,8 @@ export class SignalTypedSourceStore {
 			}
 
 			case 'pre-key': {
-				const prekeyId = Number(id)
-				if (!Number.isInteger(prekeyId)) return this.warnUnparsed(type, id)
+				const prekeyId = parseNonNegativeInt(id)
+				if (prekeyId === null) return this.warnUnparsed(type, id)
 				this.backend.deletePrekey(prekeyId)
 				return
 			}

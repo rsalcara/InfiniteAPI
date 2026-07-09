@@ -6,11 +6,34 @@
  */
 import {
 	domainTypeToAccountType,
+	parseNonNegativeInt,
 	parseProtocolAddressId,
 	parseSenderKeyId,
 	parseSignalUser
 } from '../../Utils/multi-db-sqlite/signal-id-parsing'
 import { WAJIDDomains } from '../../WABinary'
+
+describe('parseNonNegativeInt', () => {
+	it('parses plain decimal non-negative integers', () => {
+		expect(parseNonNegativeInt('0')).toBe(0)
+		expect(parseNonNegativeInt('42')).toBe(42)
+		expect(parseNonNegativeInt('1000000')).toBe(1000000)
+	})
+
+	it('returns null for empty / whitespace strings (Number() would coerce these to 0)', () => {
+		expect(parseNonNegativeInt('')).toBeNull()
+		expect(parseNonNegativeInt('   ')).toBeNull()
+		expect(parseNonNegativeInt('\t')).toBeNull()
+	})
+
+	it('returns null for non-decimal numeric forms Number() would otherwise accept', () => {
+		expect(parseNonNegativeInt('0x1f')).toBeNull()
+		expect(parseNonNegativeInt('1e3')).toBeNull()
+		expect(parseNonNegativeInt('-1')).toBeNull()
+		expect(parseNonNegativeInt('1.5')).toBeNull()
+		expect(parseNonNegativeInt('12abc')).toBeNull()
+	})
+})
 
 describe('parseSignalUser', () => {
 	it('parses a plain PN user with no domain suffix', () => {

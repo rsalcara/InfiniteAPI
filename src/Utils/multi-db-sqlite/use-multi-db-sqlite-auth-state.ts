@@ -67,14 +67,6 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
 	signalSourceOfTruth?: boolean
 }
 
-/** Signal data types that have a typed `axolotl.db` table backing them. */
-const TYPED_SIGNAL_TYPES: ReadonlySet<string> = new Set<TypedSignalType>([
-	'session',
-	'pre-key',
-	'sender-key',
-	'identity-key'
-])
-
 /**
  * Multi-DB authentication state for Baileys.
  *
@@ -349,10 +341,10 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				// lookup hits a unique index, so a multi-id get stays O(n)
 				// cheap point-queries. Batched typed reads are a possible later
 				// optimization, not a correctness concern.
-				if (sourceOfTruth && TYPED_SIGNAL_TYPES.has(type)) {
+				if (sourceOfTruth && isMirroredSignalType(type)) {
 					const missing: string[] = []
 					for (const id of ids) {
-						const serialized = signalTypedSource.get(type as TypedSignalType, id)
+						const serialized = signalTypedSource.get(type, id)
 						if (serialized === null) {
 							missing.push(id)
 							continue
