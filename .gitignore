@@ -16,6 +16,8 @@ auth-*/
 # Local-only docs (snapshots, internal reports — not for the public repo)
 docs-zpro*/
 AUDIT_PROMPT_*.md
+src/Utils/multi-db-sqlite/USAGE.md
+src/Utils/multi-db-sqlite/ARCHITECTURE.md
 *.rar
 browser-messages.json
 browser-token.json
