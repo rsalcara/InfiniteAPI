@@ -4,6 +4,9 @@ import { initAuthCreds } from '../auth-utils'
 import { BufferJSON } from '../generics'
 import type { ILogger } from '../logger'
 import { prepareInClause } from './in-statement-cache'
+import { JidMapBackend } from './lid-mapping-backend'
+import { SignalTypedBackend } from './signal-typed-backend'
+import { isMirroredSignalType, mirrorSignalEntry } from './signal-typed-mirror'
 import { MultiDbSqliteStore, type MultiDbSqliteStoreOptions } from './store'
 
 const CREDS_ROW_KEY = '__creds__'
@@ -95,6 +98,8 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	let credsStmts: ReturnType<typeof prepareCredsStatements>
 	let signalStmts: ReturnType<typeof prepareSignalStatements>
 	let appStateSyncKeyStmts: ReturnType<typeof prepareAppStateSyncKeyStatements>
+	let signalTypedBackend: SignalTypedBackend
+	let signalMirrorJidMap: JidMapBackend
 
 	try {
 		// store.open() now lives INSIDE the try/catch so any open-time error
@@ -113,6 +118,12 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		appStateSyncKeyStmts = prepareAppStateSyncKeyStatements(store)
 		migrateLegacyAppStateSyncKeys(store, opts.logger)
 		creds = loadCreds(credsStmts, opts.logger)
+		// Best-effort mirror target for session/pre-key/sender-key/identity-key
+		// — see signal-typed-mirror.ts. axolotl.db.signal_kv (above) remains
+		// the one source the Signal Protocol read path actually uses; these
+		// two are only ever read by the mirror write path below.
+		signalTypedBackend = new SignalTypedBackend(store.handle('axolotl.db'))
+		signalMirrorJidMap = new JidMapBackend(store.handle('msgstore.db'))
 	} catch (err) {
 		// Only close the store if WE opened it — injected stores belong to
 		// the caller.
@@ -173,6 +184,17 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 					signalStmts.del.run(type, id)
 				} else {
 					signalStmts.upsert.run(type, id, JSON.stringify(value, BufferJSON.replacer))
+				}
+
+				// Best-effort typed-table mirror — never allowed to affect the
+				// signal_kv write above (already committed by the time this
+				// runs; mirrorSignalEntry catches its own errors internally).
+				if (isMirroredSignalType(type)) {
+					mirrorSignalEntry(type, id, value as Uint8Array | { public: Uint8Array } | null | undefined, {
+						signalTypedBackend,
+						jidMapBackend: signalMirrorJidMap,
+						logger: opts.logger
+					})
 				}
 			}
 		}
