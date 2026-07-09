@@ -81,6 +81,8 @@ export class SignalTypedBackend {
 		selectIdentity: SqliteStatementLike
 		upsertSenderKey: SqliteStatementLike
 		selectSenderKey: SqliteStatementLike
+		deleteSenderKey: SqliteStatementLike
+		deleteIdentity: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
@@ -153,6 +155,13 @@ export class SignalTypedBackend {
 			selectSenderKey: this.db.prepare(
 				'SELECT record, timestamp FROM sender_keys ' +
 					'WHERE group_id = ? AND device_id = ? AND sender_account_id = ? AND sender_account_type = ?'
+			),
+			deleteSenderKey: this.db.prepare(
+				'DELETE FROM sender_keys ' +
+					'WHERE group_id = ? AND device_id = ? AND sender_account_id = ? AND sender_account_type = ?'
+			),
+			deleteIdentity: this.db.prepare(
+				'DELETE FROM identities WHERE recipient_id = ? AND recipient_type = ? AND device_id = ?'
 			)
 		}
 	}
@@ -277,5 +286,19 @@ export class SignalTypedBackend {
 			| { record: Buffer; timestamp: number }
 			| undefined
 		return r ?? null
+	}
+
+	deleteSenderKey(key: SignalSenderKeyKey): boolean {
+		const r = this.stmts.deleteSenderKey.run(key.groupId, key.deviceId, key.senderAccountId, key.senderAccountType)
+		return r.changes > 0
+	}
+
+	deleteIdentity(key: SignalIdentityKey): boolean {
+		const r = this.stmts.deleteIdentity.run(
+			key.recipientId,
+			key.recipientType,
+			key.deviceId ?? IDENTITY_DEVICE_ID_SENTINEL
+		)
+		return r.changes > 0
 	}
 }

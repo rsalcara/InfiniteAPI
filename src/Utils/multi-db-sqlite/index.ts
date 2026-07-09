@@ -34,6 +34,7 @@ export {
 	type SignalIdentityKey,
 	type SignalSenderKeyKey
 } from './signal-typed-backend'
+export { SignalTypedSourceStore, type TypedSignalType } from './signal-typed-source'
 export { LocationBackend, type LocationCacheRow, type LocationSharerRow } from './location-backend'
 export { ChatSettingsBackend, type ChatSettingsRow } from './chatsettings-backend'
 export {
