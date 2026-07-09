@@ -6,11 +6,13 @@
  * any other concern's `.db` does not take down the entire session — the
  * gateway can recover its credentials and restart.
  *
- * The `app_state_sync_keys` table is RESERVED for a later phase that will
- * route `app-state-sync-key` signal data here directly. In phase 9.0 the
- * adapter still persists those into `axolotl.db.signal_kv` (under the
- * opaque `type='app-state-sync-key'` rows) along with the other Signal
- * data types. Phase 9.5/9.7 will split the typed targets out.
+ * `app_state_sync_keys` holds the decoded `app-state-sync-key` signal data
+ * (`use-multi-db-sqlite-auth-state.ts` routes it here instead of the
+ * opaque `axolotl.db.signal_kv`, migrating any legacy rows on open()).
+ * This table has no WhatsApp Android equivalent to mirror — the primary
+ * phone hands these keys out to companions but never needs to persist
+ * them itself, so `key_id`/`value`/`created_at` is InfiniteAPI's own
+ * bookkeeping shape, not a ported mobile schema.
  */
 export const CREDS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS creds (
