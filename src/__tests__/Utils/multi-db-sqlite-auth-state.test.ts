@@ -24,6 +24,7 @@ import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { SignalDataTypeMap } from '../../Types'
+import { BufferJSON } from '../../Utils/generics'
 import { useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
 
 const sampleSession = (b: number): SignalDataTypeMap['session'] => Buffer.from([b]) as Uint8Array
@@ -284,7 +285,7 @@ describe('useMultiDbSqliteAuthState', () => {
 		first.store
 			.handle('axolotl.db')
 			.prepare("INSERT INTO signal_kv (type, id, value) VALUES ('app-state-sync-key', ?, ?)")
-			.run('legacy-key', JSON.stringify(sampleAppStateSyncKey(5)))
+			.run('legacy-key', JSON.stringify(sampleAppStateSyncKey(5), BufferJSON.replacer))
 		first.close()
 
 		const second = await useMultiDbSqliteAuthState({ sessionDir: dir })

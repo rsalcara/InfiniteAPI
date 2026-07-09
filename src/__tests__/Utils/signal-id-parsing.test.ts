@@ -4,13 +4,13 @@
  * Signal/libsignal.ts's jidToSignalProtocolAddress/jidToSignalSenderKeyName
  * construct them.
  */
-import { WAJIDDomains } from '../../WABinary'
 import {
 	domainTypeToAccountType,
 	parseProtocolAddressId,
 	parseSenderKeyId,
 	parseSignalUser
 } from '../../Utils/multi-db-sqlite/signal-id-parsing'
+import { WAJIDDomains } from '../../WABinary'
 
 describe('parseSignalUser', () => {
 	it('parses a plain PN user with no domain suffix', () => {
