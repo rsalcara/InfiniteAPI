@@ -49,6 +49,14 @@ type DebugLogger = { debug?: (obj: unknown, msg: string) => void }
 const CANDIDATE_SERVERS = ['s.whatsapp.net', 'lid'] as const
 
 /**
+ * primary_device_version value written per user. The real msgstore.db capture
+ * shows this uniformly at 1 (the ADV primary-device version) for every user,
+ * so 1 is the faithful default until the true USync device-list version is
+ * plumbed through to this cache boundary.
+ */
+const PRIMARY_DEVICE_VERSION_DEFAULT = 1
+
+/**
  * Type guard: a cached value usable by the typed path — a non-empty array of
  * `{ user, server }`-shaped device records. Anything else (unexpected shape,
  * empty list) is written to the JSON mirror only.
@@ -266,6 +274,12 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 			timestamp: Date.now(),
 			expectedTimestamp: expiresAt
 		})
+		// primary_device_version: one row per user, the ADV primary-device
+		// version. The real msgstore.db capture shows this uniformly at 1 for
+		// every user (6085 rows), so 1 is the faithful value; the true version
+		// isn't exposed at this cache boundary (would need the USync device-list
+		// version plumbed through). Populated here to match the mobile schema.
+		this.deviceBackend.setPrimaryDeviceVersion(userRowId, PRIMARY_DEVICE_VERSION_DEFAULT)
 	}
 
 	/** Removes the typed rows for a bare user key (both candidate domains). */

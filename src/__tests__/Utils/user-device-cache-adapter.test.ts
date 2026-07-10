@@ -163,9 +163,13 @@ describe('UserDeviceCacheSqliteAdapter — source of truth (typed tables)', () =
 		const deviceCount = db.prepare('SELECT COUNT(*) AS n FROM user_device').get() as { n: number }
 		const infoCount = db.prepare('SELECT COUNT(*) AS n FROM user_device_info').get() as { n: number }
 		const jsonCount = db.prepare('SELECT COUNT(*) AS n FROM user_device_cache_json').get() as { n: number }
+		const versionRow = db
+			.prepare('SELECT version FROM primary_device_version WHERE user_jid_row_id = (SELECT MIN(user_jid_row_id) FROM user_device_info)')
+			.get() as { version: number } | undefined
 		expect(deviceCount.n).toBe(2)
 		expect(infoCount.n).toBe(1)
 		expect(jsonCount.n).toBe(1) // JSON mirror written too
+		expect(versionRow?.version).toBe(1) // primary_device_version populated (matches real-device value)
 	})
 
 	it('reads back from the typed tables even when the JSON mirror is gone', () => {

@@ -577,14 +577,12 @@ const processMessage = async (
 				incrementUnread: shouldIncrementChatUnread(message)
 			})
 
-			// Outbound transmission counter (message_send_count). Mirrors the
-			// mobile client's per-message send tally. We observe the send once —
-			// when the server echoes our own message back — so this records the
-			// baseline attempt; pre-delivery retries aren't separately visible
-			// on this path, matching what the echo can tell us.
-			if (message.key.fromMe) {
-				messageStoreBackend.recordSendAttempt(messageRowId)
-			}
+			// NOTE: message_send_count is intentionally NOT written here. The
+			// real msgstore.db capture keeps it at 0 rows — the mobile client
+			// uses send_count transiently during send retries and clears it on
+			// success, so persisting a count at the (successful) echo would
+			// DIVERGE from the device. `MessageStoreBackend.recordSendAttempt`
+			// stays available for a consumer that tracks its own retries.
 
 			if (mediaBackend) {
 				const media =
