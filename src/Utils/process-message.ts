@@ -48,7 +48,8 @@ import {
 	type MessageMediaBackend,
 	type MessageStoreBackend,
 	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
-	type StatusBackend
+	type StatusBackend,
+	UI_ELEMENT_TYPE
 } from './multi-db-sqlite'
 import { type OrphanEntry, OrphanQueue } from './orphan-queue'
 import { metrics, recordHistorySyncMessages } from './prometheus-metrics.js'
@@ -389,6 +390,82 @@ export function decryptEventResponse(
 	}
 }
 
+type UiElement = Omit<import('./multi-db-sqlite').RecordUiElementInput, 'messageRowId'>
+
+/**
+ * Extracts renderable UI elements (quick-reply buttons, list rows, template
+ * buttons, native-flow CTAs) from an interactive message's content. Returns
+ * an empty array for non-interactive messages. Pure — the message proto stays
+ * the source of truth; this is just a derived render-mirror.
+ */
+const extractUiElements = (content: proto.IMessage | undefined | null): UiElement[] => {
+	if (!content) return []
+	const out: UiElement[] = []
+
+	const bm = content.buttonsMessage
+	if (bm) {
+		const description = bm.contentText ?? bm.text ?? null
+		for (const btn of bm.buttons ?? []) {
+			out.push({
+				elementType: UI_ELEMENT_TYPE.QUICK_REPLY,
+				buttonText: btn.buttonText?.displayText ?? null,
+				elementContent: btn.buttonId ?? null,
+				footerText: bm.footerText ?? null,
+				description
+			})
+		}
+	}
+
+	const lm = content.listMessage
+	if (lm) {
+		for (const section of lm.sections ?? []) {
+			for (const row of section.rows ?? []) {
+				out.push({
+					elementType: UI_ELEMENT_TYPE.LIST,
+					buttonText: lm.buttonText ?? null,
+					elementContent: row.rowId ?? null,
+					description: row.description ?? row.title ?? null,
+					footerText: lm.footerText ?? null
+				})
+			}
+		}
+	}
+
+	const tm = content.templateMessage
+	const hydrated = tm?.hydratedTemplate ?? tm?.hydratedFourRowTemplate
+	if (tm && hydrated) {
+		for (const btn of hydrated.hydratedButtons ?? []) {
+			const label =
+				btn.quickReplyButton?.displayText ?? btn.urlButton?.displayText ?? btn.callButton?.displayText ?? null
+			const value = btn.quickReplyButton?.id ?? btn.urlButton?.url ?? btn.callButton?.phoneNumber ?? null
+			out.push({
+				elementType: UI_ELEMENT_TYPE.TEMPLATE,
+				templateId: tm.templateId ?? null,
+				buttonText: label,
+				elementContent: value,
+				footerText: hydrated.hydratedFooterText ?? null,
+				description: hydrated.hydratedContentText ?? null
+			})
+		}
+	}
+
+	const im = content.interactiveMessage
+	const nativeFlow = im?.nativeFlowMessage
+	if (im && nativeFlow) {
+		for (const btn of nativeFlow.buttons ?? []) {
+			out.push({
+				elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
+				buttonText: btn.name ?? null,
+				elementContent: btn.buttonParamsJson ?? null,
+				footerText: im.footer?.text ?? null,
+				description: im.body?.text ?? null
+			})
+		}
+	}
+
+	return out
+}
+
 const processMessage = async (
 	message: WAMessage,
 	{
@@ -670,6 +747,14 @@ const processMessage = async (
 				// each is recorded (and deduped) under the same message_row_id.
 				for (const contact of content?.contactsArrayMessage?.contacts ?? []) {
 					if (contact.vcard) addOnBackend.recordVcard({ messageRowId, vcard: contact.vcard })
+				}
+
+				// Interactive-message UI (buttons/list/template/native-flow) →
+				// message_ui_elements, for rendering. Derived from the proto (the
+				// source of truth), replace-on-redecode. Skipped for plain messages.
+				const uiElements = extractUiElements(content)
+				if (uiElements.length) {
+					addOnBackend.recordUiElements(messageRowId, uiElements)
 				}
 			}
 		} catch (err) {

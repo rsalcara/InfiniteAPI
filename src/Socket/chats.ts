@@ -69,6 +69,7 @@ import {
 	AppStateBackend,
 	ChatSettingsBackend,
 	JidMapBackend,
+	LidChatStateBackend,
 	LocationBackend,
 	MessageAddOnBackend,
 	MessageMediaBackend,
@@ -270,6 +271,17 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					messageStoreBackend
 				)
 			: undefined
+
+	// Mirrors per-jid LID/PN coexistence state (lid_chat_state) into
+	// msgstore.db. Marked when a LID→PN mapping is persisted (the PN for that
+	// LID identity becomes known/shared). Same boundary-cast + fresh-
+	// JidMapBackend rationale as messageStoreBackend above.
+	const lidChatStateBackend = config.multiDbStore
+		? new LidChatStateBackend(
+				(config.multiDbStore as any).handle('msgstore.db'),
+				new JidMapBackend((config.multiDbStore as any).handle('msgstore.db'))
+			)
+		: undefined
 
 	const ownsPlaceholderResendCache = !config.placeholderResendCache
 	const placeholderResendCache =
@@ -1964,6 +1976,14 @@ export const makeChatsSocket = (config: SocketConfig) => {
 						previousId: lidUser,
 						mergedAt
 					})
+
+					// The PN for this LID identity is now known/shared → mirror the
+					// coexistence state. Best-effort: never affects mapping storage.
+					try {
+						lidChatStateBackend?.markPnShared(lidUser)
+					} catch (err) {
+						logger.warn({ err, lid: lidUser }, 'failed to mirror lid_chat_state.is_pn_shared')
+					}
 				}
 			}
 

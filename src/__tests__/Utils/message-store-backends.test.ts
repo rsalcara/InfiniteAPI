@@ -14,11 +14,13 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import {
 	JidMapBackend,
+	LidChatStateBackend,
 	MessageAddOnBackend,
 	MessageMediaBackend,
 	MessageStoreBackend,
 	MultiDbSqliteStore,
-	ReceiptBackend
+	ReceiptBackend,
+	UI_ELEMENT_TYPE
 } from '../../Utils/multi-db-sqlite'
 
 describe('msgstore.db message-store backends', () => {
@@ -439,6 +441,53 @@ describe('msgstore.db message-store backends', () => {
 				.handle('msgstore.db')
 				.prepare('SELECT COUNT(*) AS n FROM message_vcard_jid WHERE message_row_id = ?')
 				.get(rowId) as { n: number }
+			expect(count.n).toBe(1)
+		})
+
+		it('records interactive UI elements and reads them back (replace-on-redecode)', () => {
+			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap, messageStore)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const rowId = messageStore.recordMessage({ chatJid, fromMe: false, keyId: 'MSG-UI', timestamp: 3_000 })
+
+			addOns.recordUiElements(rowId, [
+				{ elementType: UI_ELEMENT_TYPE.QUICK_REPLY, buttonText: 'Yes', elementContent: 'id-yes', footerText: 'ft' },
+				{ elementType: UI_ELEMENT_TYPE.QUICK_REPLY, buttonText: 'No', elementContent: 'id-no', footerText: 'ft' }
+			])
+
+			const read = addOns.getUiElements(rowId)
+			expect(read.map(e => e.buttonText)).toEqual(['Yes', 'No'])
+			expect(read[0]).toMatchObject({
+				elementType: UI_ELEMENT_TYPE.QUICK_REPLY,
+				elementContent: 'id-yes',
+				footerText: 'ft'
+			})
+
+			// Replace-on-redecode: re-recording swaps the set, never duplicates.
+			addOns.recordUiElements(rowId, [{ elementType: UI_ELEMENT_TYPE.LIST, buttonText: 'Open' }])
+			expect(addOns.getUiElements(rowId).map(e => e.buttonText)).toEqual(['Open'])
+		})
+	})
+
+	describe('LidChatStateBackend', () => {
+		it('marks is_pn_shared and reads coexistence state back', () => {
+			const backend = new LidChatStateBackend(store.handle('msgstore.db'), jidMap)
+			const lid = '123456789@lid'
+
+			expect(backend.getState(lid)).toMatchObject({ isPnShared: false, pnRequestedTs: 0 })
+
+			backend.markPnShared(lid)
+			expect(backend.getState(lid).isPnShared).toBe(true)
+
+			backend.markPnRequested(lid, 1_770_000_000)
+			const state = backend.getState(lid)
+			expect(state).toMatchObject({ isPnShared: true, pnRequestedTs: 1_770_000_000 })
+
+			// Idempotent — a second markPnShared keeps a single row.
+			backend.markPnShared(lid)
+			const count = store.handle('msgstore.db').prepare('SELECT COUNT(*) AS n FROM lid_chat_state').get() as {
+				n: number
+			}
 			expect(count.n).toBe(1)
 		})
 	})
