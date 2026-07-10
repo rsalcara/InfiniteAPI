@@ -372,11 +372,11 @@ export class MessageAddOnBackend {
 	 * Records the parsed interactive-UI elements (buttons / list rows /
 	 * template) of a message. Replace-on-redecode: a re-processed stanza wipes
 	 * the prior rows for this message and re-inserts, so a retry can't
-	 * duplicate. The message proto stays the ultimate source — this is a
-	 * derived render-mirror, safe to rebuild from the proto at any time.
+	 * duplicate. An EMPTY `elements` still clears — a re-decode that yields no
+	 * UI must not leave stale rows behind. The message proto stays the ultimate
+	 * source; this is a derived render-mirror, safe to rebuild at any time.
 	 */
 	recordUiElements(messageRowId: number, elements: ReadonlyArray<Omit<RecordUiElementInput, 'messageRowId'>>): void {
-		if (elements.length === 0) return
 		this.db.transaction(() => {
 			this.stmts.deleteUiElements.run(messageRowId)
 			for (const el of elements) {

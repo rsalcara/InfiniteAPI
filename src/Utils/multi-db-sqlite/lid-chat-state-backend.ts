@@ -3,14 +3,14 @@
  * coexistence state (whether the phone number has been shared in a LID
  * thread, when it was requested, and the duplicate-LID-thread flag).
  *
- * The `jid` table (via {@link JidResolver}) is the ultimate source of
+ * The `jid` table (via {@link JidMapBackend}) is the ultimate source of
  * identity; this table is a derived state-mirror. `is_pn_shared` is marked
  * whenever a LID→PN mapping is persisted (the PN for that LID identity is now
  * known/shared) — a defensible signal for the coexistence state, though the
  * mobile client's exact trigger (PN shared specifically inside a 1:1 LID
  * thread) isn't Frida-confirmed, so this is a best-effort approximation.
  */
-import type { JidResolver } from './message-store-backend'
+import type { JidMapBackend } from './lid-mapping-backend'
 import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 export type LidChatState = {
@@ -27,9 +27,9 @@ export class LidChatStateBackend {
 		getByRowId: SqliteStatementLike
 	}
 
-	private readonly jidMap: JidResolver
+	private readonly jidMap: JidMapBackend
 
-	constructor(db: SqliteDbLike, jidMap: JidResolver) {
+	constructor(db: SqliteDbLike, jidMap: JidMapBackend) {
 		this.jidMap = jidMap
 		this.stmts = {
 			markPnShared: db.prepare(
@@ -67,9 +67,15 @@ export class LidChatStateBackend {
 
 	/** Reads the coexistence state for a jid (defaults when no row exists). */
 	getState(jid: string): LidChatState {
-		const row = this.stmts.getByRowId.get(this.jidMap.resolveJidRowId(jid)) as
-			| { is_pn_shared: number; pn_requested_ts: number; pnh_duplicate_lid_thread: number }
-			| undefined
+		// Read-only: `lookupJidRowId` (never `resolveJidRowId`) so querying the
+		// state of an unknown jid doesn't materialize a phantom `jid` row.
+		const rowId = this.jidMap.lookupJidRowId(jid)
+		const row =
+			rowId === null
+				? undefined
+				: (this.stmts.getByRowId.get(rowId) as
+						| { is_pn_shared: number; pn_requested_ts: number; pnh_duplicate_lid_thread: number }
+						| undefined)
 		return {
 			isPnShared: !!row?.is_pn_shared,
 			pnRequestedTs: row?.pn_requested_ts ?? 0,

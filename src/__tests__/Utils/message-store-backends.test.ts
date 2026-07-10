@@ -466,6 +466,11 @@ describe('msgstore.db message-store backends', () => {
 			// Replace-on-redecode: re-recording swaps the set, never duplicates.
 			addOns.recordUiElements(rowId, [{ elementType: UI_ELEMENT_TYPE.LIST, buttonText: 'Open' }])
 			expect(addOns.getUiElements(rowId).map(e => e.buttonText)).toEqual(['Open'])
+
+			// An empty set CLEARS — a re-decode that yields no UI must not leave
+			// stale rows behind.
+			addOns.recordUiElements(rowId, [])
+			expect(addOns.getUiElements(rowId)).toHaveLength(0)
 		})
 	})
 
@@ -489,6 +494,17 @@ describe('msgstore.db message-store backends', () => {
 				n: number
 			}
 			expect(count.n).toBe(1)
+		})
+
+		it('getState is a pure read — never materializes a jid row for an unknown jid', () => {
+			const backend = new LidChatStateBackend(store.handle('msgstore.db'), jidMap)
+			const db = store.handle('msgstore.db')
+			const before = (db.prepare('SELECT COUNT(*) AS n FROM jid').get() as { n: number }).n
+
+			expect(backend.getState('999999999@lid')).toMatchObject({ isPnShared: false, pnRequestedTs: 0 })
+
+			const after = (db.prepare('SELECT COUNT(*) AS n FROM jid').get() as { n: number }).n
+			expect(after).toBe(before) // no phantom jid row created
 		})
 	})
 })

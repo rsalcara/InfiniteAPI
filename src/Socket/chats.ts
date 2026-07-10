@@ -1963,6 +1963,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			const mergeNotifications: ChatUpdate[] = []
 			const mergedAt = Date.now()
 
+			const sharedLids: string[] = []
 			for (const mapping of mappings) {
 				const lidUser = jidNormalizedUser(mapping.lid)
 				const pnUser = jidNormalizedUser(mapping.pn)
@@ -1976,11 +1977,19 @@ export const makeChatsSocket = (config: SocketConfig) => {
 						previousId: lidUser,
 						mergedAt
 					})
+					sharedLids.push(lidUser)
+				}
+			}
 
-					// The PN for this LID identity is now known/shared → mirror the
-					// coexistence state. Best-effort: never affects mapping storage.
+			// Mirror the LID/PN coexistence state (lid_chat_state.is_pn_shared),
+			// but ONLY when the mapping storage reported no failures — marking a
+			// mapping that failed to persist would claim a PN link the jid_map
+			// lacks; a later successful sync marks it. Best-effort, out of the
+			// loop so the batch-level success check runs once.
+			if (result.errors === 0 && lidChatStateBackend) {
+				for (const lidUser of sharedLids) {
 					try {
-						lidChatStateBackend?.markPnShared(lidUser)
+						lidChatStateBackend.markPnShared(lidUser)
 					} catch (err) {
 						logger.warn({ err, lid: lidUser }, 'failed to mirror lid_chat_state.is_pn_shared')
 					}

@@ -751,10 +751,13 @@ const processMessage = async (
 
 				// Interactive-message UI (buttons/list/template/native-flow) →
 				// message_ui_elements, for rendering. Derived from the proto (the
-				// source of truth), replace-on-redecode. Skipped for plain messages.
-				const uiElements = extractUiElements(content)
-				if (uiElements.length) {
-					addOnBackend.recordUiElements(messageRowId, uiElements)
+				// source of truth), replace-on-redecode. Called for any interactive
+				// container (not gated on element count) so a re-decode that yields
+				// none clears stale rows; plain messages are skipped entirely.
+				const isInteractive =
+					content?.buttonsMessage || content?.listMessage || content?.templateMessage || content?.interactiveMessage
+				if (isInteractive) {
+					addOnBackend.recordUiElements(messageRowId, extractUiElements(content))
 				}
 			}
 		} catch (err) {
