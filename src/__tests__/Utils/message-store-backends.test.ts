@@ -190,7 +190,12 @@ describe('msgstore.db message-store backends', () => {
 			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap, messageStore)
 			const receipts = new ReceiptBackend(store.handle('msgstore.db'), jidMap, messageStore)
 			const chatJid = '5515991426667@s.whatsapp.net'
-			const parentRowId = messageStore.recordMessage({ chatJid, fromMe: true, keyId: 'MSG-PARENT-AR', timestamp: 1_000 })
+			const parentRowId = messageStore.recordMessage({
+				chatJid,
+				fromMe: true,
+				keyId: 'MSG-PARENT-AR',
+				timestamp: 1_000
+			})
 
 			// A reaction we sent, addressed by its OWN key id (a message_add_on row,
 			// not a message row).
@@ -397,9 +402,9 @@ describe('msgstore.db message-store backends', () => {
 
 			// Idempotent: re-recording the same vcard must not duplicate jids.
 			addOns.recordVcard({ messageRowId: rowId, vcard })
-			const count = db
-				.prepare('SELECT COUNT(*) AS n FROM message_vcard_jid WHERE message_row_id = ?')
-				.get(rowId) as { n: number }
+			const count = db.prepare('SELECT COUNT(*) AS n FROM message_vcard_jid WHERE message_row_id = ?').get(rowId) as {
+				n: number
+			}
 			expect(count.n).toBe(2)
 		})
 	})

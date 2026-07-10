@@ -668,11 +668,8 @@ const processMessage = async (
 
 				// A contactsArrayMessage carries several vcards on one message —
 				// each is recorded (and deduped) under the same message_row_id.
-				const arrayContacts = content?.contactsArrayMessage?.contacts
-				if (arrayContacts?.length) {
-					for (const contact of arrayContacts) {
-						if (contact.vcard) addOnBackend.recordVcard({ messageRowId, vcard: contact.vcard })
-					}
+				for (const contact of content?.contactsArrayMessage?.contacts ?? []) {
+					if (contact.vcard) addOnBackend.recordVcard({ messageRowId, vcard: contact.vcard })
 				}
 			}
 		} catch (err) {
@@ -690,10 +687,7 @@ const processMessage = async (
 		try {
 			const pollKey = content.pollUpdateMessage.pollCreationMessageKey
 			const chatJid = jidNormalizedUser(message.key.remoteJid ?? '')
-			const pollRow =
-				pollKey?.id != null
-					? messageStoreBackend.getMessageByKeyId(chatJid, !!pollKey.fromMe, pollKey.id)
-					: null
+			const pollRow = pollKey?.id ? messageStoreBackend.getMessageByKeyId(chatJid, !!pollKey.fromMe, pollKey.id) : null
 			const pollEncKey = pollRow ? messageStoreBackend.getMessageSecret(pollRow._id) : null
 			if (pollRow && pollEncKey && pollKey?.id) {
 				const meIdNorm = jidNormalizedUser(meId)

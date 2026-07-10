@@ -164,7 +164,9 @@ describe('UserDeviceCacheSqliteAdapter — source of truth (typed tables)', () =
 		const infoCount = db.prepare('SELECT COUNT(*) AS n FROM user_device_info').get() as { n: number }
 		const jsonCount = db.prepare('SELECT COUNT(*) AS n FROM user_device_cache_json').get() as { n: number }
 		const versionRow = db
-			.prepare('SELECT version FROM primary_device_version WHERE user_jid_row_id = (SELECT MIN(user_jid_row_id) FROM user_device_info)')
+			.prepare(
+				'SELECT version FROM primary_device_version WHERE user_jid_row_id = (SELECT MIN(user_jid_row_id) FROM user_device_info)'
+			)
 			.get() as { version: number } | undefined
 		expect(deviceCount.n).toBe(2)
 		expect(infoCount.n).toBe(1)
@@ -216,9 +218,15 @@ describe('UserDeviceCacheSqliteAdapter — source of truth (typed tables)', () =
 		})
 		adapter.set('5515991426667', devices, 1) // 1s TTL → expected_timestamp ~now+1s
 		// Force the typed info row stale without waiting on a real timer.
-		store.handle('msgstore.db').prepare('UPDATE user_device_info SET expected_timestamp = ?').run(Date.now() - 1000)
+		store
+			.handle('msgstore.db')
+			.prepare('UPDATE user_device_info SET expected_timestamp = ?')
+			.run(Date.now() - 1000)
 		// JSON mirror also stale → overall miss (caller refetches via USync).
-		store.handle('msgstore.db').prepare('UPDATE user_device_cache_json SET expires_at = ?').run(Date.now() - 1000)
+		store
+			.handle('msgstore.db')
+			.prepare('UPDATE user_device_cache_json SET expires_at = ?')
+			.run(Date.now() - 1000)
 
 		expect(adapter.get('5515991426667')).toBeUndefined()
 	})
