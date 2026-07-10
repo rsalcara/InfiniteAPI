@@ -579,7 +579,11 @@ const processMessage = async (
 
 			if (mediaBackend) {
 				const media =
-					content?.imageMessage || content?.videoMessage || content?.audioMessage || content?.documentMessage
+					content?.imageMessage ||
+					content?.videoMessage ||
+					content?.audioMessage ||
+					content?.documentMessage ||
+					content?.stickerMessage
 				if (media) {
 					mediaBackend.recordMedia({
 						messageRowId,
@@ -916,7 +920,34 @@ const processMessage = async (
 				const targetKey: WAMessageKey = { ...message.key, id: protocolMsg.key.id }
 
 				const original = await getMessage(targetKey)
-				if (original) {
+				// The consumer's `getMessage` defaults to `() => undefined`, so a
+				// caller that doesn't maintain its own message cache would never
+				// record the revoke — even though the multi-db message store DOES
+				// have the target. Treat the store as an independent "target known"
+				// source: if either the consumer or our own store has the original,
+				// process the revoke now instead of queueing it as an orphan.
+				//
+				// Wrapped in try/catch so a store read error (closed handle,
+				// transient I/O) can NEVER reject REVOKE processing — the same
+				// "the mirror must never affect message handling" invariant every
+				// other multi-db write in this file follows. On failure we fall
+				// back to `knownToStore = false` (relies on getMessage / orphan
+				// queue), never breaking the delete-for-everyone core path.
+				let knownToStore = false
+				try {
+					knownToStore =
+						!!messageStoreBackend &&
+						!!targetKey.id &&
+						messageStoreBackend.getMessageByKeyId(
+							jidNormalizedUser(targetKey.remoteJid ?? ''),
+							!!targetKey.fromMe,
+							targetKey.id
+						) !== null
+				} catch (err) {
+					logger?.warn({ err, targetKey }, 'processMessage: REVOKE store lookup failed, treating target as unknown')
+				}
+
+				if (original || knownToStore) {
 					emitRevokeUpdate(message, protocolMsg)
 				} else if (orphanQueue) {
 					// Out-of-order arrival (common during history sync / offline catch-up):
