@@ -135,4 +135,32 @@ describe('processMessage — sticker media + store-driven revoke', () => {
 
 		expect(messageStoreBackend.recordRevoke).not.toHaveBeenCalled()
 	})
+
+	it('does not reject processMessage when the store lookup for a REVOKE throws', async () => {
+		const messageStoreBackend = {
+			recordMessage: jest.fn(() => 42),
+			getMessageByKeyId: jest.fn(() => {
+				throw new Error('database connection is not open')
+			}),
+			recordRevoke: jest.fn()
+		}
+		const { ctx } = makeContext({ messageStoreBackend })
+
+		const revoke = inbound(
+			'revoke-stanza-3',
+			{
+				protocolMessage: {
+					type: proto.Message.ProtocolMessage.Type.REVOKE,
+					key: { id: 'target-msg-id', remoteJid: 'chat@s.whatsapp.net', fromMe: true }
+				}
+			},
+			true
+		)
+
+		// A store read error must NEVER reject REVOKE processing (mirror-never-
+		// breaks-processing invariant). Falls back to knownToStore=false.
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		await expect(processMessage(revoke, ctx as any)).resolves.not.toThrow()
+		expect(messageStoreBackend.recordRevoke).not.toHaveBeenCalled()
+	})
 })
