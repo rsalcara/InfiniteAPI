@@ -157,6 +157,7 @@ export class MessageStoreBackend implements ChatRowResolver {
 		upsertMessageSecret: SqliteStatementLike
 		updateMessageForRevoke: SqliteStatementLike
 		upsertMessageRevoked: SqliteStatementLike
+		getMessageSecret: SqliteStatementLike
 		upsertMessageSendCount: SqliteStatementLike
 		incrementMessageSendCount: SqliteStatementLike
 	}
@@ -213,8 +214,19 @@ export class MessageStoreBackend implements ChatRowResolver {
 			),
 			incrementMessageSendCount: this.db.prepare(
 				'UPDATE message_send_count SET send_count = send_count + 1 WHERE message_row_id = ?'
-			)
+			),
+			getMessageSecret: this.db.prepare('SELECT message_secret FROM message_secret WHERE message_row_id = ?')
 		}
+	}
+
+	/**
+	 * Returns the `messageSecret` stored for a message row (e.g. a poll
+	 * creation message), or `null` if none. Used by the poll-vote mirror to
+	 * decrypt votes in-house, without a consumer `getMessage`.
+	 */
+	getMessageSecret(messageRowId: number): Buffer | null {
+		const row = this.stmts.getMessageSecret.get(messageRowId) as { message_secret: Buffer | null } | undefined
+		return row?.message_secret ?? null
 	}
 
 	/** Resolves (creating if needed) the `chat._id` for a jid. */

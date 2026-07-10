@@ -29,7 +29,9 @@ const wireRemainingMsgstoreAdapters = (config: SocketConfig): void => {
 	const msgstoreHandle = store.handle('msgstore.db')
 	config.onMessageQuarantine ??= createMessageQuarantineRecorder({ store })
 	config.msgRetryCounterCache ??= new MsgRetryCounterSqliteAdapter(msgstoreHandle)
-	config.userDevicesCache ??= new UserDeviceCacheSqliteAdapter(msgstoreHandle)
+	// Typed user_device tables authoritative by default (the mobile schema),
+	// with the JSON mirror kept as fallback — same pattern as signalSourceOfTruth.
+	config.userDevicesCache ??= new UserDeviceCacheSqliteAdapter(msgstoreHandle, { logger: config.logger })
 }
 
 /**

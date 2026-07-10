@@ -126,3 +126,106 @@ describe('UserDeviceCacheSqliteAdapter', () => {
 		expect(remaining.n).toBe(0)
 	})
 })
+
+describe('UserDeviceCacheSqliteAdapter — source of truth (typed tables)', () => {
+	let dir: string
+	let store: MultiDbSqliteStore
+
+	beforeEach(async () => {
+		dir = await mkdtemp(join(tmpdir(), 'user-device-sot-test-'))
+		store = new MultiDbSqliteStore({ sessionDir: dir })
+		await store.open()
+	})
+
+	afterEach(async () => {
+		store.close()
+		await rm(dir, { recursive: true, force: true })
+	})
+
+	// Server-bearing FullJid[] (the real gateway shape) — this is what makes
+	// the typed path engage; `device 0` encodes to no `:device` suffix and
+	// decodes back to `device: undefined`, both addressing the primary device.
+	const devices = [
+		{ user: '5515991426667', server: 's.whatsapp.net', device: 0 },
+		{ user: '5515991426667', server: 's.whatsapp.net', device: 2 }
+	]
+	const normalize = (d: { user: string; server: string; device?: number }) => ({
+		user: d.user,
+		server: d.server,
+		device: d.device || 0
+	})
+
+	it('writes the typed tables on set (dual-write with the JSON mirror)', () => {
+		const adapter = new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db'), { sourceOfTruth: true })
+		adapter.set('5515991426667', devices)
+
+		const db = store.handle('msgstore.db')
+		const deviceCount = db.prepare('SELECT COUNT(*) AS n FROM user_device').get() as { n: number }
+		const infoCount = db.prepare('SELECT COUNT(*) AS n FROM user_device_info').get() as { n: number }
+		const jsonCount = db.prepare('SELECT COUNT(*) AS n FROM user_device_cache_json').get() as { n: number }
+		expect(deviceCount.n).toBe(2)
+		expect(infoCount.n).toBe(1)
+		expect(jsonCount.n).toBe(1) // JSON mirror written too
+	})
+
+	it('reads back from the typed tables even when the JSON mirror is gone', () => {
+		const adapter = new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db'), { sourceOfTruth: true })
+		adapter.set('5515991426667', devices)
+
+		// Corruption test (mirrors the signal source-of-truth proof): destroy the
+		// JSON fallback, keep the typed tables intact — a read must still succeed,
+		// proving it comes from the typed tables, not the JSON mirror.
+		store.handle('msgstore.db').prepare('DELETE FROM user_device_cache_json').run()
+
+		const got = adapter.get<typeof devices>('5515991426667')!
+		expect(got.map(normalize)).toEqual(devices.map(normalize))
+		expect(adapter.fallbackStats.total).toBe(0) // served by typed, no fallback
+	})
+
+	it('del removes the typed rows too (no resurrection on next read)', () => {
+		const adapter = new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db'), { sourceOfTruth: true })
+		adapter.set('5515991426667', devices)
+		adapter.del('5515991426667')
+
+		const db = store.handle('msgstore.db')
+		expect((db.prepare('SELECT COUNT(*) AS n FROM user_device').get() as { n: number }).n).toBe(0)
+		expect((db.prepare('SELECT COUNT(*) AS n FROM user_device_info').get() as { n: number }).n).toBe(0)
+		expect(adapter.get('5515991426667')).toBeUndefined()
+	})
+
+	it('falls back to the JSON mirror for a pre-typed entry and counts it', () => {
+		const adapter = new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db'), { sourceOfTruth: true })
+		// A JSON-only row (as written before the typed split) with no typed row.
+		store
+			.handle('msgstore.db')
+			.prepare('INSERT INTO user_device_cache_json (user_jid, devices_json, expires_at) VALUES (?, ?, ?)')
+			.run('legacyuser', JSON.stringify(devices), Date.now() + 60_000)
+
+		expect(adapter.get('legacyuser')).toEqual(devices)
+		expect(adapter.fallbackStats.total).toBe(1)
+	})
+
+	it('treats a stale typed entry as a miss (expected_timestamp elapsed)', () => {
+		const adapter = new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db'), {
+			sourceOfTruth: true,
+			defaultTtlSeconds: 1
+		})
+		adapter.set('5515991426667', devices, 1) // 1s TTL → expected_timestamp ~now+1s
+		// Force the typed info row stale without waiting on a real timer.
+		store.handle('msgstore.db').prepare('UPDATE user_device_info SET expected_timestamp = ?').run(Date.now() - 1000)
+		// JSON mirror also stale → overall miss (caller refetches via USync).
+		store.handle('msgstore.db').prepare('UPDATE user_device_cache_json SET expires_at = ?').run(Date.now() - 1000)
+
+		expect(adapter.get('5515991426667')).toBeUndefined()
+	})
+
+	it('kill switch (sourceOfTruth:false) writes JSON only', () => {
+		const adapter = new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db'), { sourceOfTruth: false })
+		adapter.set('5515991426667', devices)
+
+		const db = store.handle('msgstore.db')
+		expect((db.prepare('SELECT COUNT(*) AS n FROM user_device').get() as { n: number }).n).toBe(0)
+		expect((db.prepare('SELECT COUNT(*) AS n FROM user_device_cache_json').get() as { n: number }).n).toBe(1)
+		expect(adapter.get('5515991426667')).toEqual(devices)
+	})
+})

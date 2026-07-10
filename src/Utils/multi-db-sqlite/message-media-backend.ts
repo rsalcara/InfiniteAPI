@@ -46,6 +46,27 @@ export type RecordStreamingSidecarInput = {
 	timestamp: number
 }
 
+/**
+ * Pre-download thumbnail metadata — the low-res preview that arrives inside
+ * the media stanza before the full file is fetched. Every field maps to a
+ * proto field Baileys already decodes on `imageMessage`/`videoMessage`
+ * (`thumbnailDirectPath`, `thumbnailSha256`, `thumbnailEncSha256`,
+ * `mediaKey`, `mediaKeyTimestamp`, `jpegThumbnail`). Columns with no proto
+ * source on inbound (`thumb_width`/`thumb_height`/`transferred`/`handle`)
+ * are left null/0 — they are download-side bookkeeping the mobile client
+ * fills in only after fetching.
+ */
+export type RecordMmsThumbnailInput = {
+	messageRowId: number
+	directPath?: string | null
+	mediaKey?: Buffer | null
+	mediaKeyTimestamp?: number | null
+	thumbSha256?: Buffer | null
+	thumbEncSha256?: Buffer | null
+	microThumbnail?: Buffer | null
+	insertTimestamp?: number | null
+}
+
 /** base64 matches the canonical mobile schema's own encoding for these hash columns. */
 const toBase64 = (buf: Buffer | null | undefined): string | null => (buf ? buf.toString('base64') : null)
 
@@ -55,6 +76,7 @@ export class MessageMediaBackend {
 		upsertThumbnail: SqliteStatementLike
 		upsertAudioData: SqliteStatementLike
 		upsertStreamingSidecar: SqliteStatementLike
+		upsertMmsThumbnail: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
@@ -83,6 +105,15 @@ export class MessageMediaBackend {
 			upsertStreamingSidecar: this.db.prepare(
 				'INSERT INTO message_streaming_sidecar (message_row_id, sidecar, timestamp) VALUES (?, ?, ?) ' +
 					'ON CONFLICT(message_row_id) DO UPDATE SET sidecar = excluded.sidecar, timestamp = excluded.timestamp'
+			),
+			upsertMmsThumbnail: this.db.prepare(
+				'INSERT INTO mms_thumbnail_metadata (message_row_id, direct_path, media_key, media_key_timestamp, ' +
+					'enc_thumb_hash, thumb_hash, transferred, micro_thumbnail, insert_timestamp) ' +
+					'VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?) ON CONFLICT(message_row_id) DO UPDATE SET ' +
+					'direct_path = excluded.direct_path, media_key = excluded.media_key, ' +
+					'media_key_timestamp = excluded.media_key_timestamp, enc_thumb_hash = excluded.enc_thumb_hash, ' +
+					'thumb_hash = excluded.thumb_hash, micro_thumbnail = excluded.micro_thumbnail, ' +
+					'insert_timestamp = excluded.insert_timestamp'
 			)
 		}
 	}
@@ -115,5 +146,22 @@ export class MessageMediaBackend {
 
 	recordStreamingSidecar(input: RecordStreamingSidecarInput): void {
 		this.stmts.upsertStreamingSidecar.run(input.messageRowId, input.sidecar, input.timestamp)
+	}
+
+	recordMmsThumbnail(input: RecordMmsThumbnailInput): void {
+		// Nothing worth a row if there's no thumbnail payload at all — a bare
+		// message_row_id would just be noise. Require at least a direct_path or
+		// the embedded micro-thumbnail before writing.
+		if (!input.directPath && !input.microThumbnail) return
+		this.stmts.upsertMmsThumbnail.run(
+			input.messageRowId,
+			input.directPath ?? null,
+			input.mediaKey ?? null,
+			input.mediaKeyTimestamp ?? null,
+			toBase64(input.thumbEncSha256),
+			toBase64(input.thumbSha256),
+			input.microThumbnail ?? null,
+			input.insertTimestamp ?? null
+		)
 	}
 }
