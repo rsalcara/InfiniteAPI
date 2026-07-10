@@ -69,9 +69,13 @@ export class ReceiptBackend {
 			getMessageRowId: this.db.prepare('SELECT _id FROM message WHERE chat_row_id = ? AND from_me = ? AND key_id = ?'),
 			// A receipt whose id matches a message_add_on (reaction / poll vote)
 			// rather than a main message — its device acks live in
-			// message_add_on_receipt_device, not receipt_device.
+			// message_add_on_receipt_device, not receipt_device. Matched by
+			// (chat, from_me, key_id) without sender: a receipt carries only the
+			// target key_id, which is a globally-unique message id, so it already
+			// identifies a single add-on. `ORDER BY _id DESC LIMIT 1` makes the
+			// pick deterministic even in the degenerate case of a reused key_id.
 			getAddOnRowId: this.db.prepare(
-				'SELECT _id FROM message_add_on WHERE chat_row_id = ? AND from_me = ? AND key_id = ?'
+				'SELECT _id FROM message_add_on WHERE chat_row_id = ? AND from_me = ? AND key_id = ? ORDER BY _id DESC LIMIT 1'
 			),
 			upsertUserReceiptDelivery: this.db.prepare(
 				'INSERT INTO receipt_user (message_row_id, receipt_user_jid_row_id, receipt_timestamp) VALUES (?, ?, ?) ' +

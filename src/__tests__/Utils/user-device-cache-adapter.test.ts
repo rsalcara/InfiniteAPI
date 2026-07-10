@@ -143,8 +143,9 @@ describe('UserDeviceCacheSqliteAdapter — source of truth (typed tables)', () =
 	})
 
 	// Server-bearing FullJid[] (the real gateway shape) — this is what makes
-	// the typed path engage; `device 0` encodes to no `:device` suffix and
-	// decodes back to `device: undefined`, both addressing the primary device.
+	// the typed path engage. `device 0` encodes to no `:device` suffix; the
+	// typed read normalizes it back to `0` (not `undefined`) so it stays
+	// value-identical to the JSON mirror.
 	const devices = [
 		{ user: '5515991426667', server: 's.whatsapp.net', device: 0 },
 		{ user: '5515991426667', server: 's.whatsapp.net', device: 2 }
@@ -172,6 +173,43 @@ describe('UserDeviceCacheSqliteAdapter — source of truth (typed tables)', () =
 		expect(infoCount.n).toBe(1)
 		expect(jsonCount.n).toBe(1) // JSON mirror written too
 		expect(versionRow?.version).toBe(1) // primary_device_version populated (matches real-device value)
+	})
+
+	it('typed read is value-identical to the JSON mirror (device 0 + domainType, no divergence)', () => {
+		const adapter = new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db'), { sourceOfTruth: true })
+		// The real gateway shape carries user + device + domainType + server.
+		const full = [
+			{ user: '5515991426667', device: 0, domainType: 0, server: 's.whatsapp.net' },
+			{ user: '5515991426667', device: 2, domainType: 0, server: 's.whatsapp.net' }
+		]
+		adapter.set('5515991426667', full)
+
+		const db = store.handle('msgstore.db')
+		const jsonValue = JSON.parse(
+			(
+				db.prepare('SELECT devices_json FROM user_device_cache_json WHERE user_jid = ?').get('5515991426667') as {
+					devices_json: string
+				}
+			).devices_json
+		)
+		// Wipe the JSON mirror so the read must be served by the typed tables.
+		db.prepare('DELETE FROM user_device_cache_json').run()
+
+		// Byte-identical: primary device stays `0` (not undefined) and domainType
+		// is preserved — the invariant the dual-write relies on.
+		expect(adapter.get('5515991426667')).toEqual(jsonValue)
+	})
+
+	it('a non-device set clears the stale typed row (no shadowing)', () => {
+		const adapter = new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db'), { sourceOfTruth: true })
+		adapter.set('5515991426667', devices) // writes the typed tables
+		// Overwrite with an empty list (asDeviceList → null): the typed row MUST
+		// be cleared, or the typed-first read would shadow this fresh value.
+		adapter.set('5515991426667', [])
+
+		const db = store.handle('msgstore.db')
+		expect((db.prepare('SELECT COUNT(*) AS n FROM user_device').get() as { n: number }).n).toBe(0)
+		expect(adapter.get('5515991426667')).toEqual([]) // fresh value, not the stale devices
 	})
 
 	it('reads back from the typed tables even when the JSON mirror is gone', () => {

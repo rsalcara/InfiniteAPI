@@ -116,6 +116,7 @@ export class MessageAddOnBackend {
 		insertVcard: SqliteStatementLike
 		getVcardRowId: SqliteStatementLike
 		insertVcardJid: SqliteStatementLike
+		countVcardJids: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
@@ -178,7 +179,8 @@ export class MessageAddOnBackend {
 			getVcardRowId: this.db.prepare('SELECT _id FROM message_vcard WHERE message_row_id = ? AND vcard = ?'),
 			insertVcardJid: this.db.prepare(
 				'INSERT INTO message_vcard_jid (vcard_jid_row_id, vcard_row_id, message_row_id) VALUES (?, ?, ?)'
-			)
+			),
+			countVcardJids: this.db.prepare('SELECT COUNT(*) AS n FROM message_vcard_jid WHERE vcard_row_id = ?')
 		}
 	}
 
@@ -308,15 +310,22 @@ export class MessageAddOnBackend {
 	 */
 	recordVcard(input: RecordVcardInput): void {
 		this.db.transaction(() => {
-			const existing = this.stmts.getVcardRowId.get(input.messageRowId, input.vcard) as { _id: number } | undefined
-			if (existing) return
-			this.stmts.insertVcard.run(input.messageRowId, input.vcard)
-			const row = this.stmts.getVcardRowId.get(input.messageRowId, input.vcard) as { _id: number } | undefined
-			if (!row) throw new Error('MessageAddOnBackend: failed to materialize message_vcard row')
+			let row = this.stmts.getVcardRowId.get(input.messageRowId, input.vcard) as { _id: number } | undefined
+			if (!row) {
+				this.stmts.insertVcard.run(input.messageRowId, input.vcard)
+				row = this.stmts.getVcardRowId.get(input.messageRowId, input.vcard) as { _id: number } | undefined
+				if (!row) throw new Error('MessageAddOnBackend: failed to materialize message_vcard row')
+			}
 
-			for (const jid of parseVcardWaids(input.vcard)) {
-				const jidRowId = this.jidMap.resolveJidRowId(jid)
-				this.stmts.insertVcardJid.run(jidRowId, row._id, input.messageRowId)
+			// Backfill the jids when this card has none yet — covers both the
+			// first insert AND a card recorded before jid extraction existed. The
+			// count gate keeps it idempotent (a reprocess never duplicates), so
+			// the early-return-on-existing card no longer strands its jids.
+			const jidCount = (this.stmts.countVcardJids.get(row._id) as { n: number }).n
+			if (jidCount === 0) {
+				for (const jid of parseVcardWaids(input.vcard)) {
+					this.stmts.insertVcardJid.run(this.jidMap.resolveJidRowId(jid), row._id, input.messageRowId)
+				}
 			}
 		})()
 	}

@@ -407,5 +407,28 @@ describe('msgstore.db message-store backends', () => {
 			}
 			expect(count.n).toBe(2)
 		})
+
+		it('backfills message_vcard_jid for a card that exists without jids', () => {
+			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap, messageStore)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const rowId = messageStore.recordMessage({ chatJid, fromMe: false, keyId: 'MSG-VCARD-BF', timestamp: 2_500 })
+			const vcard = 'BEGIN:VCARD\nTEL;type=CELL;waid=5511777777777:+55 11 77777-7777\nEND:VCARD'
+
+			// Simulate a card recorded before jid extraction existed: insert the
+			// message_vcard row directly, with NO jids.
+			store
+				.handle('msgstore.db')
+				.prepare('INSERT INTO message_vcard (message_row_id, vcard) VALUES (?, ?)')
+				.run(rowId, vcard)
+
+			// A later reprocess must backfill the jids (not early-return).
+			addOns.recordVcard({ messageRowId: rowId, vcard })
+			const count = store
+				.handle('msgstore.db')
+				.prepare('SELECT COUNT(*) AS n FROM message_vcard_jid WHERE message_row_id = ?')
+				.get(rowId) as { n: number }
+			expect(count.n).toBe(1)
+		})
 	})
 })

@@ -251,7 +251,20 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 			// A row we can't decode means the typed table is inconsistent — bail
 			// to the JSON mirror rather than serve a partial device list.
 			if (!decoded) return null
-			devices.push(decoded)
+			// Rebuild the exact FullJid shape the JSON mirror / USync stores
+			// (`extractDeviceJids`: user + device + domainType + server). Two
+			// normalizations are required so the typed read is value-identical to
+			// the JSON mirror (the invariant this dual-write relies on):
+			//   - `device`: `jidEncode` drops a `0` suffix, so `jidDecode` returns
+			//     `undefined` for the primary — the JSON path stores `0`.
+			//   - `domainType`: present on every cached device, re-derived by
+			//     `jidDecode` from the server, so carry it through.
+			devices.push({
+				user: decoded.user,
+				device: decoded.device ?? 0,
+				domainType: decoded.domainType,
+				server: decoded.server
+			})
 		}
 
 		return devices
@@ -353,6 +366,16 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 			this.db.transaction(() => {
 				this.stmts.upsert.run(key, json, expiresAt)
 				this.typedSet(key, devices, expiresAt)
+			})()
+		} else if (this.sourceOfTruth) {
+			// Non-device value (or an empty list) in source-of-truth mode: the
+			// JSON mirror is updated AND any prior typed row is cleared in the
+			// same transaction. Without the clear, a stale typed row would shadow
+			// the fresh JSON value on the next typed-first read — the divergence
+			// the dual-write exists to prevent.
+			this.db.transaction(() => {
+				this.stmts.upsert.run(key, json, expiresAt)
+				this.typedDelete(key)
 			})()
 		} else {
 			this.stmts.upsert.run(key, json, expiresAt)
