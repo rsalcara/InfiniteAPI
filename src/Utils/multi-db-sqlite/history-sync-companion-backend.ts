@@ -83,8 +83,8 @@ export class HistorySyncCompanionBackend {
 					'sync_type = excluded.sync_type, chunk_order = excluded.chunk_order, media_key = excluded.media_key, ' +
 					'media_hash = excluded.media_hash, media_enc_hash = excluded.media_enc_hash, ' +
 					'file_size = excluded.file_size, direct_path = excluded.direct_path, ' +
-					'start_time = excluded.start_time, inline_payload = excluded.inline_payload, ' +
-					'enc_handle = excluded.enc_handle'
+					'local_path = excluded.local_path, start_time = excluded.start_time, ' +
+					'inline_payload = excluded.inline_payload, enc_handle = excluded.enc_handle'
 			),
 			updateLocalPath: this.db.prepare('UPDATE history_sync_companion SET local_path = ? WHERE message_id = ?'),
 			delete: this.db.prepare('DELETE FROM history_sync_companion WHERE message_id = ?'),

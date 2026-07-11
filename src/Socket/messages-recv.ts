@@ -1783,9 +1783,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// Best-effort mirror: this stanza could not be decrypted in order, so
 			// we are asking the peer to resend — the exact condition the mobile
 			// client parks a stanza in `unordered_stanza_queue`. Persist the raw
-			// encoded stanza keyed by message id with the current process count;
-			// the row is dropped by the retry manager's counter dispose once the
-			// retry resolves/fails (or on socket close). Never blocks the retry.
+			// encoded stanza keyed by message id with the current process count.
+			// The row is dropped by the retry manager's counter dispose: promptly
+			// on retry exhaustion (markRetryFailed), otherwise by the 15-min TTL
+			// or the socket-close wipe — it is NOT deleted the instant the resend
+			// decrypts (see UnorderedStanzaMirror). Bounded, and never blocks the
+			// retry.
 			if (signalTypedBackend) {
 				try {
 					const senderJid = msgKey.participant

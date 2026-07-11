@@ -58,11 +58,16 @@ describe('HistorySyncCompanionBackend', () => {
 		expect(backend.get('HSC-1')).toBeNull()
 	})
 
-	it('upserts on the same message_id (no duplicate chunk row)', () => {
-		backend.put({ messageId: 'HSC-2', syncType: 1, chunkOrder: 0 })
+	it('upserts on the same message_id (no duplicate chunk row, local_path replaced)', () => {
+		backend.put({ messageId: 'HSC-2', syncType: 1, chunkOrder: 0, localPath: '/old/path' })
+		expect(backend.get('HSC-2')!.local_path).toBe('/old/path')
+
+		// The conflict update covers local_path too — a re-delivered notification
+		// (no local_path) replaces the stale value rather than retaining it.
 		backend.put({ messageId: 'HSC-2', syncType: 1, chunkOrder: 5 })
 		expect(countRows()).toBe(1)
 		expect(backend.get('HSC-2')!.chunk_order).toBe(5)
+		expect(backend.get('HSC-2')!.local_path).toBeNull()
 	})
 
 	it('stores an inline_payload chunk (no media)', () => {

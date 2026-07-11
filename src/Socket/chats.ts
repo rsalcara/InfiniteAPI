@@ -2023,6 +2023,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 
 		orphanQueue.clear()
+		// Wipe any straggler history-sync chunk rows. In normal operation the
+		// `finally` in process-message deletes each row after its download, but a
+		// swallowed delete error (best-effort) could leave one behind — this
+		// closes that gap on teardown, mirroring the retry manager's own clear().
+		try {
+			historySyncCompanionBackend?.clear()
+		} catch (err) {
+			logger.debug({ err }, 'history_sync_companion clear on socket-end failed (non-fatal)')
+		}
 	})
 
 	return {
