@@ -78,6 +78,7 @@ import {
 	MessageStoreBackend,
 	ReceiptBackend,
 	type ReceiptKind,
+	SignalTypedBackend,
 	StatusBackend
 } from '../Utils/multi-db-sqlite'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
@@ -99,6 +100,7 @@ import {
 	areJidsSameUser,
 	type BinaryNode,
 	binaryNodeToString,
+	encodeBinaryNode,
 	getAllBinaryNodeChildren,
 	getBinaryNodeChild,
 	getBinaryNodeChildBuffer,
@@ -249,6 +251,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					receiptChatResolver
 				)
 			: undefined
+
+	// Best-effort typed mirror of the axolotl.db pre-decrypt/pre-ack tables:
+	//   - `preacks`               — pending pre-ack buffer (sendMessageAck)
+	//   - `unordered_stanza_queue`— stanza held because it could not be
+	//                               decrypted in order yet (sendRetryRequest)
+	// Same boundary-cast + idempotent-handle rationale as the receipt/status
+	// backends above. Every write is wrapped in try/catch at the call site so a
+	// mirror failure never blocks the real ack / retry flow (fallback = legacy).
+	const signalTypedBackend = config.multiDbStore
+		? new SignalTypedBackend((config.multiDbStore as any).handle('axolotl.db'))
+		: undefined
 
 	// Per-socket cache of Meta AI / FBID bot message secrets (msmsg). Bounded by
 	// DEFAULT_CACHE_MAX_KEYS.MSMSG_SECRET (500) + 1h TTL. Cleared AND closed on
@@ -997,7 +1010,30 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const meId = authState.creds.me?.id
 		const stanza = buildAckStanza(node, errorCode, meId)
 		logger.debug({ recv: { tag: node.tag, attrs: node.attrs }, sent: stanza.attrs }, 'sent ack')
+
+		// Best-effort pre-ack mirror (axolotl.db `preacks`): persist the encoded
+		// ack BEFORE sending, drain the contiguous prefix AFTER it goes out — the
+		// mobile pre-ack lifecycle. Gated to message-class stanzas (what the
+		// mobile client pre-acks) and fully wrapped: any mirror error is logged
+		// and the ack still sends (fallback = legacy inline ack).
+		let preackId: number | undefined
+		if (signalTypedBackend && node.tag === 'message') {
+			try {
+				preackId = signalTypedBackend.enqueuePreack(encodeBinaryNode(stanza))
+			} catch (err) {
+				logger.debug({ err, msgId: node.attrs.id }, 'preacks mirror: enqueue failed (ignored)')
+			}
+		}
+
 		await sendNode(stanza)
+
+		if (signalTypedBackend && preackId !== undefined) {
+			try {
+				signalTypedBackend.drainPreacksUpTo(preackId)
+			} catch (err) {
+				logger.debug({ err, msgId: node.attrs.id }, 'preacks mirror: drain failed (ignored)')
+			}
+		}
 	}
 
 	const rejectCall = async (callId: string, callFrom: string) => {
@@ -1741,6 +1777,30 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 
 			recordMessageRetry('retry')
+
+			// Best-effort mirror: this stanza could not be decrypted in order, so
+			// we are asking the peer to resend — the exact condition the mobile
+			// client parks a stanza in `unordered_stanza_queue`. Persist the raw
+			// encoded stanza keyed by message id with the current process count;
+			// the row is dropped by the retry manager's counter dispose once the
+			// retry resolves/fails (or on socket close). Never blocks the retry.
+			if (signalTypedBackend) {
+				try {
+					const senderJid = msgKey.participant
+						? jidNormalizedUser(msgKey.participant)
+						: jidNormalizedUser(node.attrs.from)
+					signalTypedBackend.enqueueUnorderedStanza({
+						stanzaId: msgId,
+						stanzaPayload: encodeBinaryNode(node),
+						chatJid: msgKey.remoteJid ?? undefined,
+						senderJid,
+						chatType: isJidGroup(msgKey.remoteJid ?? undefined) ? 1 : 0,
+						processCount: attempt.count
+					})
+				} catch (err) {
+					logger.debug({ err, msgId }, 'unordered_stanza_queue mirror: enqueue failed (ignored)')
+				}
+			}
 
 			// Stage 6 H9 (upstream #2576): mirror the retry count to the durable
 			// cache via `retryLocks` so this set cannot race against

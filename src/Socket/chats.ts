@@ -68,6 +68,7 @@ import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
 import {
 	AppStateBackend,
 	ChatSettingsBackend,
+	HistorySyncCompanionBackend,
 	JidMapBackend,
 	LocationBackend,
 	MessageAddOnBackend,
@@ -211,6 +212,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	const appStateBackend = config.multiDbStore
 		? new AppStateBackend((config.multiDbStore as any).handle('sync.db'))
+		: undefined
+
+	// Mirrors companion history-sync chunk tracking into `history_sync_companion`
+	// (sync.db) when a multi-db-sqlite store is configured. Best-effort: the
+	// existing download/process flow stays authoritative; the table just tracks
+	// each chunk's lifecycle (insert on notification, mark on process, delete on
+	// consume). Same boundary-cast rationale as appStateBackend above.
+	const historySyncCompanionBackend = config.multiDbStore
+		? new HistorySyncCompanionBackend((config.multiDbStore as any).handle('sync.db'))
 		: undefined
 
 	// Phase 9.8 — mirrors static/live location (location_cache/location_sharer)
@@ -1763,7 +1773,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				statusBackend,
 				messageStoreBackend,
 				mediaBackend,
-				addOnBackend
+				addOnBackend,
+				historySyncCompanionBackend
 			})
 		])
 

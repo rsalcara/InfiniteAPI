@@ -32,8 +32,14 @@ export {
 	SignalTypedBackend,
 	type SignalSessionKey,
 	type SignalIdentityKey,
-	type SignalSenderKeyKey
+	type SignalSenderKeyKey,
+	type UnorderedStanzaRow
 } from './signal-typed-backend'
+export {
+	HistorySyncCompanionBackend,
+	type HistorySyncCompanionRow,
+	type StoredHistorySyncCompanionRow
+} from './history-sync-companion-backend'
 export { SignalTypedSourceStore, type TypedSignalType } from './signal-typed-source'
 export { LocationBackend, type LocationCacheRow, type LocationSharerRow } from './location-backend'
 export { ChatSettingsBackend, type ChatSettingsRow } from './chatsettings-backend'

@@ -108,6 +108,19 @@ export interface MessageBaseKeyMirror {
 	clearMessageBaseKeys(): void
 }
 
+/**
+ * Minimal structural mirror for the `unordered_stanza_queue` typed table.
+ * Satisfied by `SignalTypedBackend`. The retry counter LRU (keyed by message
+ * id) drives the DELETE: when a counter is removed (success/failure) or
+ * expires, the held-stanza row for that message id is dropped too — so the
+ * mirror follows the in-memory retry lifetime exactly, the same way the
+ * base-key mirror does.
+ */
+export interface UnorderedStanzaMirror {
+	deleteUnorderedStanza(msgId: string): void
+	clearUnorderedStanzas(): void
+}
+
 export class MessageRetryManager {
 	private recentMessagesMap = new LRUCache<string, RecentMessage>({
 		max: RECENT_MESSAGES_SIZE,
@@ -136,7 +149,23 @@ export class MessageRetryManager {
 		max: 10_000,
 		ttl: 15 * 60 * 1000,
 		ttlAutopurge: true,
-		updateAgeOnGet: true
+		updateAgeOnGet: true,
+		// The typed `unordered_stanza_queue` mirror follows this LRU's lifetime.
+		// A held stanza is enqueued at `sendRetryRequest` (keyed by message id);
+		// once its retry counter is removed — success/failure both call
+		// `retryCounters.delete`, and a 15-min TTL evicts stragglers — drop the
+		// mirror row too. `reason === 'set'` is skipped: `tryIncrement`
+		// overwrites the counter on every retry, and that must bump
+		// `process_count`, not delete the row. Wrapped so a mirror-delete
+		// failure never disrupts the retry cache.
+		dispose: (_value: number, key: string, reason: LRUCache.DisposeReason) => {
+			if (reason === 'set' || !this.unorderedQueueBackend) return
+			try {
+				this.unorderedQueueBackend.deleteUnorderedStanza(key)
+			} catch {
+				/* mirror-delete failure never affects the retry cache */
+			}
+		}
 	}) // 15 minutes TTL
 	/**
 	 * Tracks the open-session base key per `(addr, msgId)` for retry-collision
@@ -193,7 +222,14 @@ export class MessageRetryManager {
 		 * affects it. `addr` (the signal session id) is used as `remoteJid` and
 		 * `fromMe` is true — these anchors are for OUTBOUND messages we resend.
 		 */
-		private baseKeyBackend?: MessageBaseKeyMirror
+		private baseKeyBackend?: MessageBaseKeyMirror,
+		/**
+		 * Optional best-effort mirror of held (undecryptable-in-order) stanzas
+		 * into the typed `unordered_stanza_queue` table. Populated at
+		 * `sendRetryRequest`; rows are dropped by this manager's retry-counter
+		 * dispose (success/failure/TTL). A mirror failure never affects retries.
+		 */
+		private unorderedQueueBackend?: UnorderedStanzaMirror
 	) {
 		this.maxMsgRetryCount = maxMsgRetryCount
 	}
@@ -553,6 +589,14 @@ export class MessageRetryManager {
 			this.baseKeyBackend?.clearMessageBaseKeys()
 		} catch (err) {
 			this.logger.debug({ err }, 'multi-db-sqlite: message_base_key mirror (clear) failed (non-fatal)')
+		}
+
+		// Same as above: `retryCounters.clear()` (line above) does not fire
+		// dispose, so wipe the held-stanza mirror explicitly.
+		try {
+			this.unorderedQueueBackend?.clearUnorderedStanzas()
+		} catch (err) {
+			this.logger.debug({ err }, 'multi-db-sqlite: unordered_stanza_queue mirror (clear) failed (non-fatal)')
 		}
 	}
 }

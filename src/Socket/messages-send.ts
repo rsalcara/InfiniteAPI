@@ -214,15 +214,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 	// Initialize message retry manager if enabled. Pass a typed backend when a
 	// multi-db-sqlite store is wired so base-key anchors mirror into the
-	// `message_base_key` table (best-effort; the in-memory cache stays primary).
+	// `message_base_key` table AND held stanzas mirror into
+	// `unordered_stanza_queue` (both best-effort; the in-memory caches stay
+	// primary). One SignalTypedBackend satisfies both mirror interfaces.
+	const retryTypedBackend = config.multiDbStore
+		? new SignalTypedBackend((config.multiDbStore as MultiDbSqliteStore).handle('axolotl.db'))
+		: undefined
 	const messageRetryManager = enableRecentMessageCache
-		? new MessageRetryManager(
-				logger,
-				maxMsgRetryCount,
-				config.multiDbStore
-					? new SignalTypedBackend((config.multiDbStore as MultiDbSqliteStore).handle('axolotl.db'))
-					: undefined
-			)
+		? new MessageRetryManager(logger, maxMsgRetryCount, retryTypedBackend, retryTypedBackend)
 		: null
 
 	// Prevent race conditions in Signal session encryption by user
