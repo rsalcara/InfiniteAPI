@@ -122,6 +122,8 @@ export type RecordRevokeInput = {
 
 export interface JidResolver {
 	resolveJidRowId(jid: string): number
+	/** Read-only lookup: the existing `jid` row id, or null — never creates a row. */
+	lookupJidRowId(jid: string): number | null
 }
 
 /**
@@ -157,6 +159,7 @@ export class MessageStoreBackend implements ChatRowResolver {
 		upsertMessageSecret: SqliteStatementLike
 		updateMessageForRevoke: SqliteStatementLike
 		upsertMessageRevoked: SqliteStatementLike
+		getMessageSecret: SqliteStatementLike
 		upsertMessageSendCount: SqliteStatementLike
 		incrementMessageSendCount: SqliteStatementLike
 	}
@@ -213,8 +216,19 @@ export class MessageStoreBackend implements ChatRowResolver {
 			),
 			incrementMessageSendCount: this.db.prepare(
 				'UPDATE message_send_count SET send_count = send_count + 1 WHERE message_row_id = ?'
-			)
+			),
+			getMessageSecret: this.db.prepare('SELECT message_secret FROM message_secret WHERE message_row_id = ?')
 		}
+	}
+
+	/**
+	 * Returns the `messageSecret` stored for a message row (e.g. a poll
+	 * creation message), or `null` if none. Used by the poll-vote mirror to
+	 * decrypt votes in-house, without a consumer `getMessage`.
+	 */
+	getMessageSecret(messageRowId: number): Buffer | null {
+		const row = this.stmts.getMessageSecret.get(messageRowId) as { message_secret: Buffer | null } | undefined
+		return row?.message_secret ?? null
 	}
 
 	/** Resolves (creating if needed) the `chat._id` for a jid. */
@@ -236,7 +250,12 @@ export class MessageStoreBackend implements ChatRowResolver {
 	 * actually messaged (confirmed real bug).
 	 */
 	private tryGetChatRowId(jid: string): number | null {
-		const jidRowId = this.jidMap.resolveJidRowId(jid)
+		// `lookupJidRowId` (read-only), NOT `resolveJidRowId` — a pure read like
+		// `getMessageByKeyId` must not materialize a phantom `jid` row for an
+		// unknown contact (which would mutate msgstore.db on a read and bloat the
+		// table). No jid row → no chat row either → null.
+		const jidRowId = this.jidMap.lookupJidRowId(jid)
+		if (jidRowId === null) return null
 		const row = this.stmts.getChatRowIdByJidRowId.get(jidRowId) as { _id: number } | undefined
 		return row?._id ?? null
 	}

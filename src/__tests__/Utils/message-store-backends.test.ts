@@ -114,6 +114,17 @@ describe('msgstore.db message-store backends', () => {
 				})
 			).not.toThrow()
 		})
+
+		it('getMessageByKeyId is a pure read — never materializes a jid row for an unknown chat', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const db = store.handle('msgstore.db')
+			const before = (db.prepare('SELECT COUNT(*) AS n FROM jid').get() as { n: number }).n
+
+			expect(backend.getMessageByKeyId('never-messaged@s.whatsapp.net', false, 'NO-MSG')).toBeNull()
+
+			const after = (db.prepare('SELECT COUNT(*) AS n FROM jid').get() as { n: number }).n
+			expect(after).toBe(before) // no phantom jid row created on a read miss
+		})
 	})
 
 	describe('ReceiptBackend', () => {
@@ -183,6 +194,55 @@ describe('msgstore.db message-store backends', () => {
 			const orphaned = store.handle('msgstore.db').prepare('SELECT * FROM receipt_orphaned').all() as any[]
 			expect(orphaned).toHaveLength(1)
 			expect(orphaned[0]).toMatchObject({ key_id: 'NEVER-SEEN' })
+		})
+
+		it('routes a device receipt for an add-on (reaction) to message_add_on_receipt_device', () => {
+			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap, messageStore)
+			const receipts = new ReceiptBackend(store.handle('msgstore.db'), jidMap, messageStore)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const parentRowId = messageStore.recordMessage({
+				chatJid,
+				fromMe: true,
+				keyId: 'MSG-PARENT-AR',
+				timestamp: 1_000
+			})
+
+			// A reaction we sent, addressed by its OWN key id (a message_add_on row,
+			// not a message row).
+			addOns.recordReaction({
+				chatJid,
+				fromMe: true,
+				keyId: 'REACT-1',
+				parentMessageRowId: parentRowId,
+				timestamp: 1_050,
+				reaction: '👍',
+				senderTimestamp: 1_050
+			})
+
+			// A device receipt whose target is the reaction — must land in the
+			// add-on receipt table, NOT receipt_orphaned.
+			receipts.recordDeviceReceipt({
+				chatJid,
+				fromMe: true,
+				keyId: 'REACT-1',
+				receiptDeviceJid: `${chatJid.split('@')[0]}:5@s.whatsapp.net`,
+				timestamp: 1_100
+			})
+
+			const db = store.handle('msgstore.db')
+			expect(db.prepare('SELECT COUNT(*) AS n FROM message_add_on_receipt_device').get()).toMatchObject({ n: 1 })
+			expect(db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({ n: 0 })
+
+			// Idempotent per device (upsert, not a duplicate row).
+			receipts.recordDeviceReceipt({
+				chatJid,
+				fromMe: true,
+				keyId: 'REACT-1',
+				receiptDeviceJid: `${chatJid.split('@')[0]}:5@s.whatsapp.net`,
+				timestamp: 1_200
+			})
+			expect(db.prepare('SELECT COUNT(*) AS n FROM message_add_on_receipt_device').get()).toMatchObject({ n: 1 })
 		})
 	})
 
@@ -327,6 +387,59 @@ describe('msgstore.db message-store backends', () => {
 				.prepare('SELECT * FROM message_vcard WHERE message_row_id = ?')
 				.get(vcardRowId) as any
 			expect(vcardRow.vcard).toContain('BEGIN:VCARD')
+		})
+
+		it('materializes the vCard embedded WA jids into message_vcard_jid', () => {
+			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap, messageStore)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const rowId = messageStore.recordMessage({ chatJid, fromMe: false, keyId: 'MSG-VCARD-JIDS', timestamp: 2_000 })
+
+			// A vCard carrying two contactable numbers (two `waid=` params).
+			const vcard =
+				'BEGIN:VCARD\nVERSION:3.0\nFN:Ana\n' +
+				'TEL;type=CELL;waid=5511999999999:+55 11 99999-9999\n' +
+				'TEL;type=CELL;waid=5511888888888:+55 11 88888-8888\nEND:VCARD'
+			addOns.recordVcard({ messageRowId: rowId, vcard })
+
+			const db = store.handle('msgstore.db')
+			const jidRows = db
+				.prepare(
+					'SELECT j.raw_string AS raw FROM message_vcard_jid mvj ' +
+						'JOIN jid j ON j._id = mvj.vcard_jid_row_id WHERE mvj.message_row_id = ? ORDER BY mvj._id'
+				)
+				.all(rowId) as Array<{ raw: string }>
+			expect(jidRows.map(r => r.raw)).toEqual(['5511999999999@s.whatsapp.net', '5511888888888@s.whatsapp.net'])
+
+			// Idempotent: re-recording the same vcard must not duplicate jids.
+			addOns.recordVcard({ messageRowId: rowId, vcard })
+			const count = db.prepare('SELECT COUNT(*) AS n FROM message_vcard_jid WHERE message_row_id = ?').get(rowId) as {
+				n: number
+			}
+			expect(count.n).toBe(2)
+		})
+
+		it('backfills message_vcard_jid for a card that exists without jids', () => {
+			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap, messageStore)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const rowId = messageStore.recordMessage({ chatJid, fromMe: false, keyId: 'MSG-VCARD-BF', timestamp: 2_500 })
+			const vcard = 'BEGIN:VCARD\nTEL;type=CELL;waid=5511777777777:+55 11 77777-7777\nEND:VCARD'
+
+			// Simulate a card recorded before jid extraction existed: insert the
+			// message_vcard row directly, with NO jids.
+			store
+				.handle('msgstore.db')
+				.prepare('INSERT INTO message_vcard (message_row_id, vcard) VALUES (?, ?)')
+				.run(rowId, vcard)
+
+			// A later reprocess must backfill the jids (not early-return).
+			addOns.recordVcard({ messageRowId: rowId, vcard })
+			const count = store
+				.handle('msgstore.db')
+				.prepare('SELECT COUNT(*) AS n FROM message_vcard_jid WHERE message_row_id = ?')
+				.get(rowId) as { n: number }
+			expect(count.n).toBe(1)
 		})
 	})
 })

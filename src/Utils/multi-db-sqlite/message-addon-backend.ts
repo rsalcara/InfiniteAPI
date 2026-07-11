@@ -77,6 +77,28 @@ export type RecordVcardInput = {
 	vcard: string
 }
 
+/**
+ * Extracts the WhatsApp JIDs embedded in a vCard's TEL lines. WhatsApp tags
+ * each contactable number with a `waid=<e164>` parameter, e.g.
+ * `TEL;type=CELL;waid=5511999999999:+55 11 99999-9999`. Each `waid` is the
+ * user part of an `@s.whatsapp.net` JID. Deduplicated, order-preserving.
+ */
+const parseVcardWaids = (vcard: string): string[] => {
+	const jids: string[] = []
+	const seen = new Set<string>()
+	const re = /waid=(\d+)/g
+	let m: RegExpExecArray | null
+	while ((m = re.exec(vcard)) !== null) {
+		const jid = `${m[1]}@s.whatsapp.net`
+		if (!seen.has(jid)) {
+			seen.add(jid)
+			jids.push(jid)
+		}
+	}
+
+	return jids
+}
+
 export class MessageAddOnBackend {
 	private readonly stmts: {
 		upsertAddOn: SqliteStatementLike
@@ -93,6 +115,8 @@ export class MessageAddOnBackend {
 		upsertLocation: SqliteStatementLike
 		insertVcard: SqliteStatementLike
 		getVcardRowId: SqliteStatementLike
+		insertVcardJid: SqliteStatementLike
+		countVcardJids: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
@@ -152,7 +176,11 @@ export class MessageAddOnBackend {
 					'live_location_sequence_number = excluded.live_location_sequence_number'
 			),
 			insertVcard: this.db.prepare('INSERT INTO message_vcard (message_row_id, vcard) VALUES (?, ?)'),
-			getVcardRowId: this.db.prepare('SELECT _id FROM message_vcard WHERE message_row_id = ? AND vcard = ?')
+			getVcardRowId: this.db.prepare('SELECT _id FROM message_vcard WHERE message_row_id = ? AND vcard = ?'),
+			insertVcardJid: this.db.prepare(
+				'INSERT INTO message_vcard_jid (vcard_jid_row_id, vcard_row_id, message_row_id) VALUES (?, ?, ?)'
+			),
+			countVcardJids: this.db.prepare('SELECT COUNT(*) AS n FROM message_vcard_jid WHERE vcard_row_id = ?')
 		}
 	}
 
@@ -223,6 +251,16 @@ export class MessageAddOnBackend {
 		this.stmts.upsertPoll.run(input.messageRowId, input.encKey ?? null, input.selectableOptionsCount ?? null)
 	}
 
+	/**
+	 * Resolves an existing poll option's row id by its option hash, or null if
+	 * unknown. Lets the poll-vote mirror map a decrypted vote's selected-option
+	 * hashes back to their `message_poll_option` rows without re-inserting.
+	 */
+	resolvePollOptionRowId(messageRowId: number, optionSha256: string): number | null {
+		const row = this.stmts.getPollOptionRowId.get(messageRowId, optionSha256) as { _id: number } | undefined
+		return row?._id ?? null
+	}
+
 	/** Records one poll option, returning its row id (needed by `recordPollVote`'s `selectedOptionRowIds`). */
 	recordPollOption(input: RecordPollOptionInput): number {
 		return this.db.transaction((): number => {
@@ -263,10 +301,32 @@ export class MessageAddOnBackend {
 	 * several DIFFERENT vcards for the same message_row_id is legitimate and
 	 * must still insert each one, so this can't be a plain unique index on
 	 * message_row_id alone.
+	 *
+	 * Also materializes the vCard's embedded WhatsApp JIDs into
+	 * `message_vcard_jid` (one satellite row per `waid=` in the card), linked
+	 * to both the vcard row and the parent message — the same shape the mobile
+	 * client stores. The whole thing is one transaction so a card and its jids
+	 * commit together.
 	 */
 	recordVcard(input: RecordVcardInput): void {
-		const existing = this.stmts.getVcardRowId.get(input.messageRowId, input.vcard) as { _id: number } | undefined
-		if (existing) return
-		this.stmts.insertVcard.run(input.messageRowId, input.vcard)
+		this.db.transaction(() => {
+			let row = this.stmts.getVcardRowId.get(input.messageRowId, input.vcard) as { _id: number } | undefined
+			if (!row) {
+				this.stmts.insertVcard.run(input.messageRowId, input.vcard)
+				row = this.stmts.getVcardRowId.get(input.messageRowId, input.vcard) as { _id: number } | undefined
+				if (!row) throw new Error('MessageAddOnBackend: failed to materialize message_vcard row')
+			}
+
+			// Backfill the jids when this card has none yet — covers both the
+			// first insert AND a card recorded before jid extraction existed. The
+			// count gate keeps it idempotent (a reprocess never duplicates), so
+			// the early-return-on-existing card no longer strands its jids.
+			const jidCount = (this.stmts.countVcardJids.get(row._id) as { n: number }).n
+			if (jidCount === 0) {
+				for (const jid of parseVcardWaids(input.vcard)) {
+					this.stmts.insertVcardJid.run(this.jidMap.resolveJidRowId(jid), row._id, input.messageRowId)
+				}
+			}
+		})()
 	}
 }

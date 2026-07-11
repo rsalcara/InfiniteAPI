@@ -46,10 +46,12 @@ export type RecordDeviceReceiptInput = {
 export class ReceiptBackend {
 	private readonly stmts: {
 		getMessageRowId: SqliteStatementLike
+		getAddOnRowId: SqliteStatementLike
 		upsertUserReceiptDelivery: SqliteStatementLike
 		upsertUserReceiptRead: SqliteStatementLike
 		upsertUserReceiptPlayed: SqliteStatementLike
 		upsertDeviceReceipt: SqliteStatementLike
+		upsertAddOnDeviceReceipt: SqliteStatementLike
 		insertOrphaned: SqliteStatementLike
 		listUserReceipts: SqliteStatementLike
 		listDeviceReceipts: SqliteStatementLike
@@ -65,6 +67,16 @@ export class ReceiptBackend {
 		this.chatResolver = chatResolver
 		this.stmts = {
 			getMessageRowId: this.db.prepare('SELECT _id FROM message WHERE chat_row_id = ? AND from_me = ? AND key_id = ?'),
+			// A receipt whose id matches a message_add_on (reaction / poll vote)
+			// rather than a main message — its device acks live in
+			// message_add_on_receipt_device, not receipt_device. Matched by
+			// (chat, from_me, key_id) without sender: a receipt carries only the
+			// target key_id, which is a globally-unique message id, so it already
+			// identifies a single add-on. `ORDER BY _id DESC LIMIT 1` makes the
+			// pick deterministic even in the degenerate case of a reused key_id.
+			getAddOnRowId: this.db.prepare(
+				'SELECT _id FROM message_add_on WHERE chat_row_id = ? AND from_me = ? AND key_id = ? ORDER BY _id DESC LIMIT 1'
+			),
 			upsertUserReceiptDelivery: this.db.prepare(
 				'INSERT INTO receipt_user (message_row_id, receipt_user_jid_row_id, receipt_timestamp) VALUES (?, ?, ?) ' +
 					'ON CONFLICT(message_row_id, receipt_user_jid_row_id) DO UPDATE SET receipt_timestamp = excluded.receipt_timestamp'
@@ -80,6 +92,11 @@ export class ReceiptBackend {
 			upsertDeviceReceipt: this.db.prepare(
 				'INSERT INTO receipt_device (message_row_id, receipt_device_jid_row_id, receipt_device_timestamp) VALUES (?, ?, ?) ' +
 					'ON CONFLICT(message_row_id, receipt_device_jid_row_id) DO UPDATE SET receipt_device_timestamp = excluded.receipt_device_timestamp'
+			),
+			upsertAddOnDeviceReceipt: this.db.prepare(
+				'INSERT INTO message_add_on_receipt_device (message_add_on_row_id, receipt_device_jid_row_id, receipt_device_timestamp) ' +
+					'VALUES (?, ?, ?) ON CONFLICT(message_add_on_row_id, receipt_device_jid_row_id) DO UPDATE SET ' +
+					'receipt_device_timestamp = excluded.receipt_device_timestamp'
 			),
 			insertOrphaned: this.db.prepare(
 				'INSERT INTO receipt_orphaned (chat_row_id, from_me, key_id, receipt_device_jid_row_id, status, timestamp) ' +
@@ -111,6 +128,13 @@ export class ReceiptBackend {
 		return row?._id ?? null
 	}
 
+	/** Resolves a receipt target to a `message_add_on` row (reaction/vote), or null. */
+	private resolveAddOnRowId(chatJid: string, fromMe: boolean, keyId: string): number | null {
+		const chatRowId = this.chatResolver.resolveChatRowId(chatJid)
+		const row = this.stmts.getAddOnRowId.get(chatRowId, fromMe ? 1 : 0, keyId) as { _id: number } | undefined
+		return row?._id ?? null
+	}
+
 	/** Records a delivery/read/played receipt for a recipient (user-level, no device suffix). */
 	recordUserReceipt(input: RecordUserReceiptInput): void {
 		this.db.transaction(() => {
@@ -118,6 +142,10 @@ export class ReceiptBackend {
 			const receiptUserRowId = this.jidMap.resolveJidRowId(input.receiptUserJid)
 
 			if (messageRowId === null) {
+				// A receipt targeting a known add-on (reaction/vote) isn't orphaned:
+				// there's no user-level add-on receipt table (only the per-device
+				// one), so it's simply not stored here — matching the mobile schema.
+				if (this.resolveAddOnRowId(input.chatJid, input.fromMe, input.keyId) !== null) return
 				const chatRowId = this.chatResolver.resolveChatRowId(input.chatJid)
 				this.stmts.insertOrphaned.run(
 					chatRowId,
@@ -147,6 +175,14 @@ export class ReceiptBackend {
 			const receiptDeviceRowId = this.jidMap.resolveJidRowId(input.receiptDeviceJid)
 
 			if (messageRowId === null) {
+				// Target is an add-on (reaction/vote), not a main message → its
+				// per-device ack belongs in message_add_on_receipt_device.
+				const addOnRowId = this.resolveAddOnRowId(input.chatJid, input.fromMe, input.keyId)
+				if (addOnRowId !== null) {
+					this.stmts.upsertAddOnDeviceReceipt.run(addOnRowId, receiptDeviceRowId, input.timestamp)
+					return
+				}
+
 				const chatRowId = this.chatResolver.resolveChatRowId(input.chatJid)
 				this.stmts.insertOrphaned.run(
 					chatRowId,

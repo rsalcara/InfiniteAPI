@@ -577,6 +577,13 @@ const processMessage = async (
 				incrementUnread: shouldIncrementChatUnread(message)
 			})
 
+			// NOTE: message_send_count is intentionally NOT written here. The
+			// real msgstore.db capture keeps it at 0 rows — the mobile client
+			// uses send_count transiently during send retries and clears it on
+			// success, so persisting a count at the (successful) echo would
+			// DIVERGE from the device. `MessageStoreBackend.recordSendAttempt`
+			// stays available for a consumer that tracks its own retries.
+
 			if (mediaBackend) {
 				const media =
 					content?.imageMessage ||
@@ -603,6 +610,22 @@ const processMessage = async (
 					const thumbnail = content?.imageMessage?.jpegThumbnail || content?.videoMessage?.jpegThumbnail
 					if (thumbnail) {
 						mediaBackend.recordThumbnail({ messageRowId, thumbnail: Buffer.from(thumbnail) })
+					}
+
+					// Pre-download thumbnail metadata (direct_path/mediaKey/hashes) —
+					// only image/video carry the dedicated thumbnail fields.
+					const thumbSource = content?.imageMessage || content?.videoMessage
+					if (thumbSource?.thumbnailDirectPath || thumbnail) {
+						mediaBackend.recordMmsThumbnail({
+							messageRowId,
+							directPath: thumbSource?.thumbnailDirectPath ?? null,
+							mediaKey: thumbSource?.mediaKey ? Buffer.from(thumbSource.mediaKey) : null,
+							mediaKeyTimestamp: thumbSource?.mediaKeyTimestamp ? toNumber(thumbSource.mediaKeyTimestamp) : null,
+							thumbSha256: thumbSource?.thumbnailSha256 ? Buffer.from(thumbSource.thumbnailSha256) : null,
+							thumbEncSha256: thumbSource?.thumbnailEncSha256 ? Buffer.from(thumbSource.thumbnailEncSha256) : null,
+							microThumbnail: thumbnail ? Buffer.from(thumbnail) : null,
+							insertTimestamp: toNumber(message.messageTimestamp ?? 0)
+						})
 					}
 
 					if (content?.audioMessage?.waveform) {
@@ -642,9 +665,61 @@ const processMessage = async (
 				if (content?.contactMessage?.vcard) {
 					addOnBackend.recordVcard({ messageRowId, vcard: content.contactMessage.vcard })
 				}
+
+				// A contactsArrayMessage carries several vcards on one message —
+				// each is recorded (and deduped) under the same message_row_id.
+				for (const contact of content?.contactsArrayMessage?.contacts ?? []) {
+					if (contact.vcard) addOnBackend.recordVcard({ messageRowId, vcard: contact.vcard })
+				}
 			}
 		} catch (err) {
 			logger?.warn({ err }, 'failed to record message.db row')
+		}
+	}
+
+	// Poll vote mirror (message_add_on_poll_vote + selected options). Decrypted
+	// in-house using the poll creation message's own messageSecret — which we
+	// already persisted (message_secret) — so no consumer getMessage is needed.
+	// This ONLY populates the typed mirror; the decrypted vote is deliberately
+	// NOT re-emitted as a messages.update (event delivery stays a consumer
+	// responsibility, per the upstream decision). Best-effort, never throws.
+	if (addOnBackend && messageStoreBackend && content?.pollUpdateMessage?.vote && message.key.id) {
+		try {
+			const pollKey = content.pollUpdateMessage.pollCreationMessageKey
+			const chatJid = jidNormalizedUser(message.key.remoteJid ?? '')
+			const pollRow = pollKey?.id ? messageStoreBackend.getMessageByKeyId(chatJid, !!pollKey.fromMe, pollKey.id) : null
+			const pollEncKey = pollRow ? messageStoreBackend.getMessageSecret(pollRow._id) : null
+			if (pollRow && pollEncKey && pollKey?.id) {
+				const meIdNorm = jidNormalizedUser(meId)
+				const voterJid = getKeyAuthor(message.key, meIdNorm)
+				const voteMsg = decryptPollVote(content.pollUpdateMessage.vote, {
+					pollEncKey,
+					pollCreatorJid: getKeyAuthor(pollKey, meIdNorm),
+					pollMsgId: pollKey.id,
+					voterJid
+				})
+
+				const selectedOptionRowIds: number[] = []
+				for (const opt of voteMsg.selectedOptions ?? []) {
+					const optRowId = addOnBackend.resolvePollOptionRowId(pollRow._id, Buffer.from(opt).toString('base64'))
+					if (optRowId !== null) selectedOptionRowIds.push(optRowId)
+				}
+
+				addOnBackend.recordPollVote({
+					chatJid,
+					fromMe: !!message.key.fromMe,
+					keyId: message.key.id,
+					senderJid: message.key.fromMe ? null : voterJid,
+					parentMessageRowId: pollRow._id,
+					timestamp: toNumber(message.messageTimestamp ?? 0),
+					senderTimestamp: content.pollUpdateMessage.senderTimestampMs
+						? toNumber(content.pollUpdateMessage.senderTimestampMs)
+						: toNumber(message.messageTimestamp ?? 0),
+					selectedOptionRowIds
+				})
+			}
+		} catch (err) {
+			logger?.warn({ err }, 'failed to record poll vote mirror')
 		}
 	}
 

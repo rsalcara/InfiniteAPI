@@ -471,6 +471,9 @@ CREATE TABLE IF NOT EXISTS message_add_on_receipt_device (
   primary_device_version INTEGER
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS message_add_on_receipt_device_unique_idx
+  ON message_add_on_receipt_device (message_add_on_row_id, receipt_device_jid_row_id);
+
 CREATE TABLE IF NOT EXISTS message_poll (
   message_row_id INTEGER PRIMARY KEY,
   enc_key BLOB,

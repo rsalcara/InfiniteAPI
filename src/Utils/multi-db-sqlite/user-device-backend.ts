@@ -44,10 +44,13 @@ export class UserDeviceBackend {
 		insertDevice: SqliteStatementLike
 		deleteByUser: SqliteStatementLike
 		selectByUser: SqliteStatementLike
+		selectDeviceJidsByUser: SqliteStatementLike
 		upsertInfo: SqliteStatementLike
 		selectInfo: SqliteStatementLike
+		deleteInfoByUser: SqliteStatementLike
 		upsertPrimaryVersion: SqliteStatementLike
 		selectPrimaryVersion: SqliteStatementLike
+		deletePrimaryVersionByUser: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
@@ -62,6 +65,13 @@ export class UserDeviceBackend {
 			selectByUser: this.db.prepare(
 				'SELECT user_jid_row_id, device_jid_row_id, key_index FROM user_device WHERE user_jid_row_id = ?'
 			),
+			// Reconstruction read: the device rows joined back to their raw JID
+			// strings in the `jid` table, so a caller can rebuild the original
+			// FullJid[] without a second per-row lookup.
+			selectDeviceJidsByUser: this.db.prepare(
+				'SELECT j.raw_string AS raw, ud.key_index AS key_index FROM user_device ud ' +
+					'JOIN jid j ON j._id = ud.device_jid_row_id WHERE ud.user_jid_row_id = ?'
+			),
 			upsertInfo: this.db.prepare(
 				'INSERT INTO user_device_info (user_jid_row_id, raw_id, timestamp, expected_timestamp) ' +
 					'VALUES (?, ?, ?, ?) ' +
@@ -72,11 +82,13 @@ export class UserDeviceBackend {
 				'SELECT user_jid_row_id, raw_id, timestamp, expected_timestamp FROM user_device_info ' +
 					'WHERE user_jid_row_id = ?'
 			),
+			deleteInfoByUser: this.db.prepare('DELETE FROM user_device_info WHERE user_jid_row_id = ?'),
 			upsertPrimaryVersion: this.db.prepare(
 				'INSERT INTO primary_device_version (user_jid_row_id, version) VALUES (?, ?) ' +
 					'ON CONFLICT(user_jid_row_id) DO UPDATE SET version = excluded.version'
 			),
-			selectPrimaryVersion: this.db.prepare('SELECT version FROM primary_device_version WHERE user_jid_row_id = ?')
+			selectPrimaryVersion: this.db.prepare('SELECT version FROM primary_device_version WHERE user_jid_row_id = ?'),
+			deletePrimaryVersionByUser: this.db.prepare('DELETE FROM primary_device_version WHERE user_jid_row_id = ?')
 		}
 	}
 
@@ -96,6 +108,31 @@ export class UserDeviceBackend {
 			}
 
 			this.stmts.upsertInfo.run(userJidRowId, info.rawId, info.timestamp, info.expectedTimestamp)
+		})()
+	}
+
+	/**
+	 * Returns the device JIDs for a user as their raw JID strings (joined back
+	 * from the `jid` table), so a caller can rebuild the original FullJid[] via
+	 * `jidDecode`. Empty array if the user has no stored devices.
+	 */
+	listDeviceJids(userJidRowId: number): Array<{ rawJid: string; keyIndex: number }> {
+		const rows = this.stmts.selectDeviceJidsByUser.all(userJidRowId) as Array<{ raw: string; key_index: number }>
+		return rows.map(r => ({ rawJid: r.raw, keyIndex: r.key_index }))
+	}
+
+	/**
+	 * Removes every stored trace of a user's device list — the device rows,
+	 * the freshness/info row, and the primary-version short-circuit — in a
+	 * single transaction. Used by the cache `del`/`flushAll` paths so an
+	 * invalidation can't leave a stale typed row that a later typed-first read
+	 * would resurrect.
+	 */
+	deleteDevices(userJidRowId: number): void {
+		this.db.transaction(() => {
+			this.stmts.deleteByUser.run(userJidRowId)
+			this.stmts.deleteInfoByUser.run(userJidRowId)
+			this.stmts.deletePrimaryVersionByUser.run(userJidRowId)
 		})()
 	}
 
