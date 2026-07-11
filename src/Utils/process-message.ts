@@ -883,6 +883,18 @@ const processMessage = async (
 					// the mobile INSERT. Keyed by the notification message id. Wrapped
 					// so a mirror failure never blocks the real download/process flow.
 					const histMirrorId = message.key.id ?? undefined
+					// Best-effort drop of the transient tracking row. A named helper
+					// keeps the `finally` below a single call (avoids a 5th nesting
+					// level) and centralizes the swallow-and-log.
+					const dropHistMirror = (id: string | undefined) => {
+						if (!historySyncCompanionBackend || !id) return
+						try {
+							historySyncCompanionBackend.delete(id)
+						} catch (err) {
+							logger?.debug({ err, id }, 'history_sync_companion mirror: delete failed (ignored)')
+						}
+					}
+
 					if (historySyncCompanionBackend && histMirrorId) {
 						try {
 							historySyncCompanionBackend.put({
@@ -909,17 +921,11 @@ const processMessage = async (
 					try {
 						data = await downloadAndProcessHistorySyncNotification(histNotification, options, logger)
 					} finally {
-						// Drop the transient tracking row whether the chunk was consumed
-						// OR the download threw — `finally` prevents an orphan row when
+						// Drop the tracking row whether the chunk was consumed OR the
+						// download threw — `finally` prevents an orphan row when
 						// `downloadAndProcessHistorySyncNotification` rejects (the delete
 						// used to sit after the await, so a throw skipped it).
-						if (historySyncCompanionBackend && histMirrorId) {
-							try {
-								historySyncCompanionBackend.delete(histMirrorId)
-							} catch (err) {
-								logger?.debug({ err, id: histMirrorId }, 'history_sync_companion mirror: delete failed (ignored)')
-							}
-						}
+						dropHistMirror(histMirrorId)
 					}
 
 					// Emit LID-PN mappings from history sync
