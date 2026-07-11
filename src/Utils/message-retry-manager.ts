@@ -105,6 +105,7 @@ export interface RetryStatistics {
 export interface MessageBaseKeyMirror {
 	putMessageBaseKey(key: { remoteJid: string; fromMe: boolean; msgId: string }, baseKey: Uint8Array): void
 	deleteMessageBaseKey(key: { remoteJid: string; fromMe: boolean; msgId: string }): void
+	clearMessageBaseKeys(): void
 }
 
 export class MessageRetryManager {
@@ -146,7 +147,30 @@ export class MessageRetryManager {
 	private baseKeys = new LRUCache<string, Uint8Array>({
 		max: 1024,
 		ttl: 15 * 60 * 1000,
-		ttlAutopurge: true
+		ttlAutopurge: true,
+		// The typed `message_base_key` mirror follows the in-memory lifetime
+		// EXACTLY: when an entry is evicted, expires (15-min TTL), overwritten,
+		// or deleted, drop the mirror row too. Without this, a base key saved at
+		// retry==2 that then delivers successfully (no retry>2 → deleteBaseKey
+		// never fires) would leak a row forever, contradicting the table's
+		// transient nature and growing axolotl.db unbounded. Wrapped so a
+		// mirror-delete failure never disrupts the retry cache itself.
+		dispose: (_value: Uint8Array, key: string) => {
+			if (!this.baseKeyBackend) return
+			// key is `${addr}:${msgId}`; split on the LAST ':' since addr may
+			// contain ':' (device address) but a message id never does.
+			const sep = key.lastIndexOf(':')
+			if (sep < 0) return
+			try {
+				this.baseKeyBackend.deleteMessageBaseKey({
+					remoteJid: key.slice(0, sep),
+					fromMe: true,
+					msgId: key.slice(sep + 1)
+				})
+			} catch {
+				/* mirror-delete failure never affects the retry cache */
+			}
+		}
 	})
 	private pendingPhoneRequests: PendingPhoneRequest = {}
 	private readonly maxMsgRetryCount: number = 5
@@ -492,12 +516,9 @@ export class MessageRetryManager {
 	}
 
 	deleteBaseKey(addr: string, msgId: string): void {
+		// The mirror row is dropped by the LRU `dispose` hook this `.delete()`
+		// triggers — no separate mirror call needed (keeps the two in lockstep).
 		this.baseKeys.delete(`${addr}:${msgId}`)
-		try {
-			this.baseKeyBackend?.deleteMessageBaseKey({ remoteJid: addr, fromMe: true, msgId })
-		} catch (err) {
-			this.logger.debug({ err }, 'multi-db-sqlite: message_base_key mirror (delete) failed (non-fatal)')
-		}
 	}
 
 	private keyToString(key: RecentMessageKey): string {
@@ -525,6 +546,13 @@ export class MessageRetryManager {
 		this.messageKeyIndex.clear()
 		this.sessionRecreateHistory.clear()
 		this.retryCounters.clear()
+		// `LRUCache.clear()` does NOT fire `dispose`, so wipe the typed mirror
+		// explicitly — the in-memory base keys are gone, the table must follow.
 		this.baseKeys.clear()
+		try {
+			this.baseKeyBackend?.clearMessageBaseKeys()
+		} catch (err) {
+			this.logger.debug({ err }, 'multi-db-sqlite: message_base_key mirror (clear) failed (non-fatal)')
+		}
 	}
 }

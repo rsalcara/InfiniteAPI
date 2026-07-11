@@ -105,6 +105,7 @@ export class SignalTypedBackend {
 		upsertMessageBaseKey: SqliteStatementLike
 		deleteMessageBaseKey: SqliteStatementLike
 		selectMessageBaseKey: SqliteStatementLike
+		clearMessageBaseKeys: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
@@ -138,7 +139,8 @@ export class SignalTypedBackend {
 			deletePrekey: this.db.prepare('DELETE FROM prekeys WHERE prekey_id = ?'),
 			upsertSignedPrekey: this.db.prepare(
 				'INSERT INTO signed_prekeys (prekey_id, record, timestamp, key_type) VALUES (?, ?, ?, ?) ' +
-					'ON CONFLICT(prekey_id) DO UPDATE SET record = excluded.record, timestamp = excluded.timestamp'
+					'ON CONFLICT(prekey_id) DO UPDATE SET ' +
+					'record = excluded.record, timestamp = excluded.timestamp, key_type = excluded.key_type'
 			),
 			selectSignedPrekey: this.db.prepare('SELECT record, timestamp FROM signed_prekeys WHERE prekey_id = ?'),
 			upsertKyberPrekey: this.db.prepare(
@@ -204,7 +206,8 @@ export class SignalTypedBackend {
 			selectMessageBaseKey: this.db.prepare(
 				'SELECT last_alice_base_key, timestamp FROM message_base_key WHERE msg_key_remote_jid = ? ' +
 					'AND msg_key_from_me = ? AND msg_key_id = ? AND recipient_id IS ? AND recipient_type = ? AND device_id = ?'
-			)
+			),
+			clearMessageBaseKeys: this.db.prepare('DELETE FROM message_base_key')
 		}
 	}
 
@@ -395,5 +398,10 @@ export class SignalTypedBackend {
 			key.deviceId ?? 0
 		) as { last_alice_base_key: Buffer; timestamp: number } | undefined
 		return r ? { baseKey: r.last_alice_base_key, timestamp: r.timestamp } : null
+	}
+
+	/** Wipes every message_base_key row (socket close — the in-memory cache is gone). */
+	clearMessageBaseKeys(): void {
+		this.stmts.clearMessageBaseKeys.run()
 	}
 }
