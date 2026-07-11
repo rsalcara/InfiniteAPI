@@ -1012,10 +1012,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		logger.debug({ recv: { tag: node.tag, attrs: node.attrs }, sent: stanza.attrs }, 'sent ack')
 
 		// Best-effort pre-ack mirror (axolotl.db `preacks`): persist the encoded
-		// ack BEFORE sending, drain the contiguous prefix AFTER it goes out — the
-		// mobile pre-ack lifecycle. Gated to message-class stanzas (what the
-		// mobile client pre-acks) and fully wrapped: any mirror error is logged
-		// and the ack still sends (fallback = legacy inline ack).
+		// ack BEFORE sending, drop THIS ack's row AFTER it goes out — the mobile
+		// pre-ack lifecycle. Deleting by exact row id (not a `_id <= ?` prefix
+		// drain) so a concurrent ack cannot remove another ack's not-yet-sent
+		// pre-ack. Gated to message-class stanzas (what the mobile client
+		// pre-acks) and fully wrapped: any mirror error is logged and the ack
+		// still sends (fallback = legacy inline ack).
 		let preackId: number | undefined
 		if (signalTypedBackend && node.tag === 'message') {
 			try {
@@ -1029,9 +1031,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		if (signalTypedBackend && preackId !== undefined) {
 			try {
-				signalTypedBackend.drainPreacksUpTo(preackId)
+				signalTypedBackend.deletePreack(preackId)
 			} catch (err) {
-				logger.debug({ err, msgId: node.attrs.id }, 'preacks mirror: drain failed (ignored)')
+				logger.debug({ err, msgId: node.attrs.id }, 'preacks mirror: delete failed (ignored)')
 			}
 		}
 	}

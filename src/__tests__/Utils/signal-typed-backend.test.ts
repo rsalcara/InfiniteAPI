@@ -173,4 +173,25 @@ describe('SignalTypedBackend', () => {
 		backend.drainPreacksUpTo(id3)
 		expect(remaining()).toBe(0)
 	})
+
+	it('deletes a single preack by exact id (concurrent-safe, leaves others)', () => {
+		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
+		const remaining = () =>
+			(store.handle('axolotl.db').prepare('SELECT COUNT(*) AS n FROM preacks').get() as { n: number }).n
+
+		const id1 = backend.enqueuePreack(Buffer.from([0xb1]))
+		const id2 = backend.enqueuePreack(Buffer.from([0xb2]))
+		backend.enqueuePreack(Buffer.from([0xb3]))
+		expect(remaining()).toBe(3)
+
+		// Deleting the middle id drops ONLY that row — the earlier (id1) and
+		// later (id3) not-yet-sent pre-acks survive (unlike a prefix drain).
+		expect(backend.deletePreack(id2)).toBe(true)
+		expect(remaining()).toBe(2)
+		const ids = (
+			store.handle('axolotl.db').prepare('SELECT _id FROM preacks ORDER BY _id').all() as Array<{ _id: number }>
+		).map(r => r._id)
+		expect(ids).toContain(id1)
+		expect(ids).not.toContain(id2)
+	})
 })

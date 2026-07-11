@@ -133,6 +133,7 @@ export class SignalTypedBackend {
 		deleteUnorderedStanza: SqliteStatementLike
 		clearUnorderedStanzas: SqliteStatementLike
 		insertPreack: SqliteStatementLike
+		deletePreack: SqliteStatementLike
 		drainPreacksUpTo: SqliteStatementLike
 		clearPreacks: SqliteStatementLike
 	}
@@ -250,9 +251,11 @@ export class SignalTypedBackend {
 			deleteUnorderedStanza: this.db.prepare('DELETE FROM unordered_stanza_queue WHERE stanza_key = ?'),
 			clearUnorderedStanzas: this.db.prepare('DELETE FROM unordered_stanza_queue'),
 			// preacks: append-only buffer of pending pre-acknowledgements (`ptn`
-			// blob). Drained by contiguous `_id` prefix, matching the mobile
-			// `DELETE ... WHERE _id <= ?`.
+			// blob). Each ack drops its OWN row by exact `_id` once sent
+			// (`deletePreack`); `drainPreacksUpTo` keeps the mobile prefix-drain
+			// (`DELETE ... WHERE _id <= ?`) for a future startup/batch drain.
 			insertPreack: this.db.prepare('INSERT INTO preacks (ptn) VALUES (?)'),
+			deletePreack: this.db.prepare('DELETE FROM preacks WHERE _id = ?'),
 			drainPreacksUpTo: this.db.prepare('DELETE FROM preacks WHERE _id <= ?'),
 			clearPreacks: this.db.prepare('DELETE FROM preacks')
 		}
@@ -492,19 +495,29 @@ export class SignalTypedBackend {
 
 	/**
 	 * Appends one pending pre-acknowledgement (`ptn` blob) before the ack is
-	 * flushed to the server. Returns the row id so the caller can drain the
-	 * contiguous prefix with {@link drainPreacksUpTo} once the ack is sent.
+	 * flushed to the server. Returns the row id so the caller can drop THIS
+	 * ack's row with {@link deletePreack} once it is sent.
 	 *
 	 * Wired from `sendMessageAck` for message-class stanzas: INSERT before
-	 * `sendNode`, drain after — mirroring the mobile pre-ack buffer and giving
-	 * the same crash-safety (a pre-ack persisted but not yet sent survives a
-	 * restart). Best-effort: a mirror failure never blocks the ack itself.
+	 * `sendNode`, {@link deletePreack} after — mirroring the mobile pre-ack
+	 * buffer and giving the same crash-safety (a pre-ack persisted but not yet
+	 * sent survives a restart). Best-effort: a mirror failure never blocks the
+	 * ack itself.
 	 */
 	enqueuePreack(ptn: Buffer | Uint8Array): number {
 		return Number(this.stmts.insertPreack.run(toBuf(ptn)).lastInsertRowid)
 	}
 
-	/** Drains the contiguous prefix `_id <= id`, mirroring the mobile drain. */
+	/**
+	 * Drops a single sent pre-ack by exact `_id`. Preferred over
+	 * {@link drainPreacksUpTo} on the concurrent ack hot path: a prefix drain
+	 * could delete another ack's row that was enqueued but not yet sent.
+	 */
+	deletePreack(id: number): boolean {
+		return this.stmts.deletePreack.run(id).changes > 0
+	}
+
+	/** Drains the contiguous prefix `_id <= id`, mirroring the mobile batch drain. */
 	drainPreacksUpTo(id: number): number {
 		return this.stmts.drainPreacksUpTo.run(id).changes
 	}

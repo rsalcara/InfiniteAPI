@@ -896,7 +896,7 @@ const processMessage = async (
 								mediaEncHash: histNotification.fileEncSha256
 									? Buffer.from(histNotification.fileEncSha256).toString('base64')
 									: '',
-								fileSize: toNumber(histNotification.fileLength),
+								fileSize: histNotification.fileLength ? toNumber(histNotification.fileLength) : 0,
 								directPath: histNotification.directPath ?? '',
 								inlinePayload: histNotification.initialHistBootstrapInlinePayload ?? null
 							})
@@ -905,17 +905,20 @@ const processMessage = async (
 						}
 					}
 
-					const data = await downloadAndProcessHistorySyncNotification(histNotification, options, logger)
-
-					// Chunk consumed — mirror the mobile UPDATE(local_path) then DELETE.
-					// InfiniteAPI inflates in memory (no local file), so `local_path`
-					// is only a marker; the row is transient either way.
-					if (historySyncCompanionBackend && histMirrorId) {
-						try {
-							historySyncCompanionBackend.markProcessed(histMirrorId, 'in-memory')
-							historySyncCompanionBackend.delete(histMirrorId)
-						} catch (err) {
-							logger?.debug({ err, id: histMirrorId }, 'history_sync_companion mirror: consume failed (ignored)')
+					let data: Awaited<ReturnType<typeof downloadAndProcessHistorySyncNotification>>
+					try {
+						data = await downloadAndProcessHistorySyncNotification(histNotification, options, logger)
+					} finally {
+						// Drop the transient tracking row whether the chunk was consumed
+						// OR the download threw — `finally` prevents an orphan row when
+						// `downloadAndProcessHistorySyncNotification` rejects (the delete
+						// used to sit after the await, so a throw skipped it).
+						if (historySyncCompanionBackend && histMirrorId) {
+							try {
+								historySyncCompanionBackend.delete(histMirrorId)
+							} catch (err) {
+								logger?.debug({ err, id: histMirrorId }, 'history_sync_companion mirror: delete failed (ignored)')
+							}
 						}
 					}
 
