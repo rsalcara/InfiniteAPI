@@ -122,6 +122,8 @@ export type RecordRevokeInput = {
 
 export interface JidResolver {
 	resolveJidRowId(jid: string): number
+	/** Read-only lookup: the existing `jid` row id, or null — never creates a row. */
+	lookupJidRowId(jid: string): number | null
 }
 
 /**
@@ -248,7 +250,12 @@ export class MessageStoreBackend implements ChatRowResolver {
 	 * actually messaged (confirmed real bug).
 	 */
 	private tryGetChatRowId(jid: string): number | null {
-		const jidRowId = this.jidMap.resolveJidRowId(jid)
+		// `lookupJidRowId` (read-only), NOT `resolveJidRowId` — a pure read like
+		// `getMessageByKeyId` must not materialize a phantom `jid` row for an
+		// unknown contact (which would mutate msgstore.db on a read and bloat the
+		// table). No jid row → no chat row either → null.
+		const jidRowId = this.jidMap.lookupJidRowId(jid)
+		if (jidRowId === null) return null
 		const row = this.stmts.getChatRowIdByJidRowId.get(jidRowId) as { _id: number } | undefined
 		return row?._id ?? null
 	}

@@ -114,6 +114,17 @@ describe('msgstore.db message-store backends', () => {
 				})
 			).not.toThrow()
 		})
+
+		it('getMessageByKeyId is a pure read — never materializes a jid row for an unknown chat', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const db = store.handle('msgstore.db')
+			const before = (db.prepare('SELECT COUNT(*) AS n FROM jid').get() as { n: number }).n
+
+			expect(backend.getMessageByKeyId('never-messaged@s.whatsapp.net', false, 'NO-MSG')).toBeNull()
+
+			const after = (db.prepare('SELECT COUNT(*) AS n FROM jid').get() as { n: number }).n
+			expect(after).toBe(before) // no phantom jid row created on a read miss
+		})
 	})
 
 	describe('ReceiptBackend', () => {
