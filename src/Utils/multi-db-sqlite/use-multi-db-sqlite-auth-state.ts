@@ -185,9 +185,34 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	// `saveCreds()`. Without this indirection, `persistCreds(creds)` would
 	// always serialize the originally-loaded credentials object.
 	const credsRef: { current: AuthenticationCreds } = { current: creds }
+
+	// Best-effort mirror of the current signed pre-key into the typed
+	// `signed_prekeys` table. WhatsApp Android keeps it there (1 row, the
+	// current rotation); the authoritative copy stays in `creds.db`
+	// (`creds.signedPreKey`, which the Signal handshake reads directly), so
+	// this is introspection parity only — a failure never affects auth
+	// persistence. `record` is the same BufferJSON encoding the signal_kv
+	// values use, round-trippable. Baileys keeps `keyId` stable (no rotation),
+	// so the upsert stays a single row, matching the mobile client.
+	const mirrorSignedPrekey = (): void => {
+		const sp = credsRef.current?.signedPreKey
+		if (!sp || !signalTypedBackend) return
+		try {
+			const record = Buffer.from(JSON.stringify(sp, BufferJSON.replacer))
+			signalTypedBackend.putSignedPrekey(sp.keyId, record, sp.timestampS ? sp.timestampS * 1000 : Date.now())
+		} catch (err) {
+			opts.logger?.debug?.({ err }, 'multi-db-sqlite: signed_prekeys mirror failed (non-fatal)')
+		}
+	}
+
 	const persistCreds = (): void => {
 		credsStmts.upsert.run(CREDS_ROW_KEY, JSON.stringify(credsRef.current, BufferJSON.replacer), Date.now())
+		mirrorSignedPrekey()
 	}
+
+	// Initial mirror on load — covers a session that reconnects but never
+	// re-saves creds.
+	mirrorSignedPrekey()
 
 	// Cached batched `IN (…)` SELECT — see use-sqlite-auth-state.ts for
 	// rationale (one round-trip per batched get instead of N).
