@@ -114,15 +114,13 @@ export interface MessageBaseKeyMirror {
  * id) drives the DELETE: when a counter is removed or expires, the held-stanza
  * row for that message id is dropped too.
  *
- * Cleanup timing (be precise — the mirror follows the counter's lifetime, NOT
- * the "stanza processed" event): a held stanza is an INBOUND stanza we could
- * not decrypt, enqueued at `sendRetryRequest`. Its counter is removed by
- * `markRetrySuccess`/`markRetryFailed` — but those fire on the OUTBOUND
- * retry-receipt path, not when the inbound resend finally decrypts. So for the
- * inbound case the row is dropped by the 15-min TTL eviction or the
- * socket-close wipe, whichever comes first — bounded, never unbounded, but NOT
- * deleted the instant the stanza is processed. `markRetryFailed` on retry
- * exhaustion does drop it promptly.
+ * Cleanup: a held stanza is an INBOUND stanza we could not decrypt, enqueued
+ * at `sendRetryRequest`. Its row is dropped at the canonical "stanza processed"
+ * trigger — the receive handler calls `deleteUnorderedStanza` on the
+ * decrypt-success branch. This `dispose` is the backstop for the paths that
+ * never reach success: `markRetryFailed` on retry exhaustion (prompt), the
+ * 15-min TTL eviction, and the socket-close wipe. `reason === 'set'` is skipped
+ * so `tryIncrement`'s per-retry overwrite bumps process_count instead.
  */
 export interface UnorderedStanzaMirror {
 	deleteUnorderedStanza(msgId: string): void
@@ -158,12 +156,11 @@ export class MessageRetryManager {
 		ttl: 15 * 60 * 1000,
 		ttlAutopurge: true,
 		updateAgeOnGet: true,
-		// The typed `unordered_stanza_queue` mirror follows this LRU's lifetime
-		// (NOT the "stanza processed" event — see UnorderedStanzaMirror doc). A
-		// held stanza is enqueued at `sendRetryRequest` (keyed by message id);
-		// its row is dropped when the counter leaves the cache: `markRetryFailed`
-		// on exhaustion (prompt), else the 15-min TTL eviction, else the
-		// socket-close wipe. `reason === 'set'` is skipped: `tryIncrement`
+		// Backstop for the `unordered_stanza_queue` mirror. The primary delete is
+		// at the decrypt-success branch of the receive handler (canonical "stanza
+		// processed"); this dispose covers the paths that never reach success:
+		// `markRetryFailed` on exhaustion (prompt), the 15-min TTL eviction, and
+		// the socket-close wipe. `reason === 'set'` is skipped: `tryIncrement`
 		// overwrites the counter on every retry, and that must bump
 		// `process_count`, not delete the row. Wrapped so a mirror-delete
 		// failure never disrupts the retry cache.

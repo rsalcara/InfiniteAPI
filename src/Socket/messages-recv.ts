@@ -1784,11 +1784,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// we are asking the peer to resend — the exact condition the mobile
 			// client parks a stanza in `unordered_stanza_queue`. Persist the raw
 			// encoded stanza keyed by message id with the current process count.
-			// The row is dropped by the retry manager's counter dispose: promptly
-			// on retry exhaustion (markRetryFailed), otherwise by the 15-min TTL
-			// or the socket-close wipe — it is NOT deleted the instant the resend
-			// decrypts (see UnorderedStanzaMirror). Bounded, and never blocks the
-			// retry.
+			// The row is dropped when the resend decrypts (the success branch of
+			// this handler calls `deleteUnorderedStanza`), or promptly on retry
+			// exhaustion (markRetryFailed dispose); the 15-min TTL / socket-close
+			// wipe are backstops. Never blocks the retry.
 			if (signalTypedBackend) {
 				try {
 					const senderJid = msgKey.participant
@@ -3609,6 +3608,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				} else {
 					if (messageRetryManager && msg.key.id) {
 						messageRetryManager.cancelPendingPhoneRequest(msg.key.id)
+					}
+
+					// Best-effort: a previously-held stanza's resend just decrypted —
+					// drop its `unordered_stanza_queue` row at the canonical "stanza
+					// processed" trigger. This is the SUCCESS-only branch, so it never
+					// runs on a decrypt failure (where `sendRetryRequest` re-enqueues
+					// and bumps process_count) — placing it before the CIPHERTEXT check
+					// would reset process_count on every retry. The retry-counter TTL /
+					// socket-close wipe remain as backstops for the exhaustion path.
+					if (signalTypedBackend && msg.key.id) {
+						try {
+							signalTypedBackend.deleteUnorderedStanza(msg.key.id)
+						} catch (err) {
+							logger.debug({ err, msgId: msg.key.id }, 'unordered_stanza_queue mirror: success-delete failed (ignored)')
+						}
 					}
 
 					const isNewsletter = isJidNewsletter(msg.key.remoteJid!)
