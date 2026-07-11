@@ -92,4 +92,37 @@ describe('SignalTypedBackend', () => {
 		expect(Buffer.from(got!.record).toString('hex')).toBe('5566')
 		expect(got!.timestamp).toBe(999)
 	})
+
+	it('appends prekey_uploads rows (one per upload batch)', () => {
+		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
+		backend.recordPrekeyUpload(1_000, 0)
+		backend.recordPrekeyUpload(2_000, 0)
+
+		const rows = store
+			.handle('axolotl.db')
+			.prepare('SELECT upload_timestamp, key_type FROM prekey_uploads ORDER BY _id')
+			.all() as Array<{ upload_timestamp: number; key_type: number }>
+		expect(rows.map(r => r.upload_timestamp)).toEqual([1_000, 2_000])
+	})
+
+	it('round-trips + deletes a message_base_key (dedupes on the natural key)', () => {
+		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
+		const key = { remoteJid: '5515991426667.0', fromMe: true, msgId: 'MSG-BK-1' }
+
+		backend.putMessageBaseKey(key, Buffer.from([0xba, 0x5e]), 500)
+		expect(Buffer.from(backend.getMessageBaseKey(key)!.baseKey).toString('hex')).toBe('ba5e')
+
+		// Upsert on the same natural key replaces (no duplicate row) — the
+		// recipient_id sentinel keeps the unique index effective.
+		backend.putMessageBaseKey(key, Buffer.from([0xff]), 600)
+		const count = store.handle('axolotl.db').prepare('SELECT COUNT(*) AS n FROM message_base_key').get() as {
+			n: number
+		}
+		expect(count.n).toBe(1)
+		expect(Buffer.from(backend.getMessageBaseKey(key)!.baseKey).toString('hex')).toBe('ff')
+
+		// Delete-on-ack removes it.
+		expect(backend.deleteMessageBaseKey(key)).toBe(true)
+		expect(backend.getMessageBaseKey(key)).toBeNull()
+	})
 })

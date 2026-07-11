@@ -44,6 +44,24 @@ import type { SqliteDbLike, SqliteStatementLike } from './types'
  */
 const IDENTITY_DEVICE_ID_SENTINEL = 0
 
+/**
+ * Sentinel `recipient_id` for a message-base-key row whose recipient jid row
+ * id isn't resolved at the retry site. Same NULL-distinct-under-UNIQUE reason
+ * as {@link IDENTITY_DEVICE_ID_SENTINEL}: the `message_base_key_idx` unique
+ * index includes `recipient_id`, so `0` (not NULL) keeps the conflict target
+ * meaningful and lets the upsert/delete dedupe by natural key.
+ */
+const MESSAGE_BASE_KEY_RECIPIENT_SENTINEL = 0
+
+export type SignalMessageBaseKey = {
+	remoteJid: string
+	fromMe: boolean
+	msgId: string
+	recipientId?: number | null
+	recipientType?: number
+	deviceId?: number
+}
+
 export type SignalSessionKey = {
 	deviceId: number
 	recipientAccountId: string
@@ -83,6 +101,10 @@ export class SignalTypedBackend {
 		selectSenderKey: SqliteStatementLike
 		deleteSenderKey: SqliteStatementLike
 		deleteIdentity: SqliteStatementLike
+		insertPrekeyUpload: SqliteStatementLike
+		upsertMessageBaseKey: SqliteStatementLike
+		deleteMessageBaseKey: SqliteStatementLike
+		selectMessageBaseKey: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
@@ -162,6 +184,26 @@ export class SignalTypedBackend {
 			),
 			deleteIdentity: this.db.prepare(
 				'DELETE FROM identities WHERE recipient_id = ? AND recipient_type = ? AND device_id = ?'
+			),
+			// prekey_uploads: append-only log of pre-key upload batches to the
+			// server (upload_timestamp + key_type), one row per upload.
+			insertPrekeyUpload: this.db.prepare('INSERT INTO prekey_uploads (upload_timestamp, key_type) VALUES (?, ?)'),
+			// message_base_key: per-message ratchet anchor for retry re-derivation.
+			// Natural key matches the mobile unique index; DELETE-on-ack mirrors
+			// the captured WhatsApp behavior.
+			upsertMessageBaseKey: this.db.prepare(
+				'INSERT INTO message_base_key (msg_key_remote_jid, msg_key_from_me, msg_key_id, recipient_id, ' +
+					'recipient_type, device_id, last_alice_base_key, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ' +
+					'ON CONFLICT(msg_key_remote_jid, msg_key_from_me, msg_key_id, recipient_id, recipient_type, device_id) ' +
+					'DO UPDATE SET last_alice_base_key = excluded.last_alice_base_key, timestamp = excluded.timestamp'
+			),
+			deleteMessageBaseKey: this.db.prepare(
+				'DELETE FROM message_base_key WHERE msg_key_remote_jid = ? AND msg_key_from_me = ? AND msg_key_id = ? ' +
+					'AND recipient_id IS ? AND recipient_type = ? AND device_id = ?'
+			),
+			selectMessageBaseKey: this.db.prepare(
+				'SELECT last_alice_base_key, timestamp FROM message_base_key WHERE msg_key_remote_jid = ? ' +
+					'AND msg_key_from_me = ? AND msg_key_id = ? AND recipient_id IS ? AND recipient_type = ? AND device_id = ?'
 			)
 		}
 	}
@@ -300,5 +342,58 @@ export class SignalTypedBackend {
 			key.deviceId ?? IDENTITY_DEVICE_ID_SENTINEL
 		)
 		return r.changes > 0
+	}
+
+	// ============ prekey_uploads ============
+
+	/** Appends one pre-key upload-batch record (upload_timestamp + key_type). */
+	recordPrekeyUpload(uploadTimestamp: number = Date.now(), keyType = 0): void {
+		this.stmts.insertPrekeyUpload.run(uploadTimestamp, keyType)
+	}
+
+	// ============ message_base_key ============
+
+	/**
+	 * Records the per-message ratchet anchor (last Alice base key) for retry
+	 * re-derivation. `recipientId` defaults to a `0` sentinel (not NULL) so the
+	 * unique index — which includes it — dedupes properly (SQLite treats NULLs
+	 * as distinct). Deleted on ack via {@link deleteMessageBaseKey}, matching
+	 * the mobile client.
+	 */
+	putMessageBaseKey(key: SignalMessageBaseKey, baseKey: Buffer | Uint8Array, timestamp: number = Date.now()): void {
+		this.stmts.upsertMessageBaseKey.run(
+			key.remoteJid,
+			key.fromMe ? 1 : 0,
+			key.msgId,
+			key.recipientId ?? MESSAGE_BASE_KEY_RECIPIENT_SENTINEL,
+			key.recipientType ?? 0,
+			key.deviceId ?? 0,
+			Buffer.isBuffer(baseKey) ? baseKey : Buffer.from(baseKey),
+			timestamp
+		)
+	}
+
+	deleteMessageBaseKey(key: SignalMessageBaseKey): boolean {
+		const r = this.stmts.deleteMessageBaseKey.run(
+			key.remoteJid,
+			key.fromMe ? 1 : 0,
+			key.msgId,
+			key.recipientId ?? MESSAGE_BASE_KEY_RECIPIENT_SENTINEL,
+			key.recipientType ?? 0,
+			key.deviceId ?? 0
+		)
+		return r.changes > 0
+	}
+
+	getMessageBaseKey(key: SignalMessageBaseKey): { baseKey: Buffer; timestamp: number } | null {
+		const r = this.stmts.selectMessageBaseKey.get(
+			key.remoteJid,
+			key.fromMe ? 1 : 0,
+			key.msgId,
+			key.recipientId ?? MESSAGE_BASE_KEY_RECIPIENT_SENTINEL,
+			key.recipientType ?? 0,
+			key.deviceId ?? 0
+		) as { last_alice_base_key: Buffer; timestamp: number } | undefined
+		return r ? { baseKey: r.last_alice_base_key, timestamp: r.timestamp } : null
 	}
 }

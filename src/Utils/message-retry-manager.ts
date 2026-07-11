@@ -97,6 +97,16 @@ export interface RetryStatistics {
 	phoneRequests: number
 }
 
+/**
+ * Minimal structural mirror for the `message_base_key` typed table. Satisfied
+ * by `SignalTypedBackend` (its methods accept a superset key). Kept structural
+ * so message-retry-manager doesn't depend on the multi-db-sqlite backend.
+ */
+export interface MessageBaseKeyMirror {
+	putMessageBaseKey(key: { remoteJid: string; fromMe: boolean; msgId: string }, baseKey: Uint8Array): void
+	deleteMessageBaseKey(key: { remoteJid: string; fromMe: boolean; msgId: string }): void
+}
+
 export class MessageRetryManager {
 	private recentMessagesMap = new LRUCache<string, RecentMessage>({
 		max: RECENT_MESSAGES_SIZE,
@@ -151,7 +161,15 @@ export class MessageRetryManager {
 
 	constructor(
 		private logger: ILogger,
-		maxMsgRetryCount: number
+		maxMsgRetryCount: number,
+		/**
+		 * Optional best-effort mirror of the base-key cache into the typed
+		 * `message_base_key` table (WhatsApp parity). The in-memory LRU stays
+		 * authoritative for retry-collision detection; a mirror failure never
+		 * affects it. `addr` (the signal session id) is used as `remoteJid` and
+		 * `fromMe` is true — these anchors are for OUTBOUND messages we resend.
+		 */
+		private baseKeyBackend?: MessageBaseKeyMirror
 	) {
 		this.maxMsgRetryCount = maxMsgRetryCount
 	}
@@ -446,6 +464,11 @@ export class MessageRetryManager {
 	 */
 	saveBaseKey(addr: string, msgId: string, baseKey: Uint8Array): void {
 		this.baseKeys.set(`${addr}:${msgId}`, baseKey)
+		try {
+			this.baseKeyBackend?.putMessageBaseKey({ remoteJid: addr, fromMe: true, msgId }, baseKey)
+		} catch (err) {
+			this.logger.debug({ err }, 'multi-db-sqlite: message_base_key mirror (put) failed (non-fatal)')
+		}
 	}
 
 	/**
@@ -470,6 +493,11 @@ export class MessageRetryManager {
 
 	deleteBaseKey(addr: string, msgId: string): void {
 		this.baseKeys.delete(`${addr}:${msgId}`)
+		try {
+			this.baseKeyBackend?.deleteMessageBaseKey({ remoteJid: addr, fromMe: true, msgId })
+		} catch (err) {
+			this.logger.debug({ err }, 'multi-db-sqlite: message_base_key mirror (delete) failed (non-fatal)')
+		}
 	}
 
 	private keyToString(key: RecentMessageKey): string {

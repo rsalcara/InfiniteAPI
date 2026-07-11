@@ -40,6 +40,7 @@ import {
 	xmppSignedPreKey
 } from '../Utils'
 import { getPlatformId, isAndroidBrowser } from '../Utils/browser-utils'
+import { type MultiDbSqliteStore, SignalTypedBackend } from '../Utils/multi-db-sqlite'
 import {
 	markConnectionActive,
 	markConnectionInactive,
@@ -612,6 +613,23 @@ export const makeSocket = (config: SocketConfig) => {
 	let uploadPreKeysPromise: Promise<void> | null = null
 	let lastUploadTime = 0
 
+	// Lazily-built typed backend for the `prekey_uploads` mirror (only when a
+	// multi-db-sqlite store is wired). One row per successful upload batch —
+	// best-effort introspection parity, never affects the upload itself.
+	let prekeyUploadBackend: SignalTypedBackend | null | undefined
+	const recordPrekeyUpload = (): void => {
+		if (!config.multiDbStore) return
+		try {
+			if (prekeyUploadBackend === undefined) {
+				prekeyUploadBackend = new SignalTypedBackend((config.multiDbStore as MultiDbSqliteStore).handle('axolotl.db'))
+			}
+
+			prekeyUploadBackend?.recordPrekeyUpload(Date.now(), 0)
+		} catch (err) {
+			logger.debug({ err }, 'multi-db-sqlite: prekey_uploads mirror failed (non-fatal)')
+		}
+	}
+
 	/** generates and uploads a set of pre-keys to the server */
 	const uploadPreKeys = async (count = MIN_PREKEY_COUNT, retryCount = 0) => {
 		// Check minimum interval (except for retries)
@@ -645,6 +663,7 @@ export const makeSocket = (config: SocketConfig) => {
 				await query(node)
 				logger.info({ count }, 'uploaded pre-keys successfully')
 				lastUploadTime = Date.now()
+				recordPrekeyUpload()
 			} catch (uploadError) {
 				logger.error({ uploadError: (uploadError as Error).toString(), count }, 'Failed to upload pre-keys to server')
 

@@ -46,6 +46,7 @@ import {
 import { logMessageSent, logTcToken } from '../Utils/baileys-logger'
 import { getUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
+import { type MultiDbSqliteStore, SignalTypedBackend } from '../Utils/multi-db-sqlite'
 import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prometheus-metrics'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import {
@@ -211,8 +212,18 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	/** Serializes writes to userDevicesCache across USync refresh and device-notification handling. */
 	const devicesMutex = makeMutex()
 
-	// Initialize message retry manager if enabled
-	const messageRetryManager = enableRecentMessageCache ? new MessageRetryManager(logger, maxMsgRetryCount) : null
+	// Initialize message retry manager if enabled. Pass a typed backend when a
+	// multi-db-sqlite store is wired so base-key anchors mirror into the
+	// `message_base_key` table (best-effort; the in-memory cache stays primary).
+	const messageRetryManager = enableRecentMessageCache
+		? new MessageRetryManager(
+				logger,
+				maxMsgRetryCount,
+				config.multiDbStore
+					? new SignalTypedBackend((config.multiDbStore as MultiDbSqliteStore).handle('axolotl.db'))
+					: undefined
+			)
+		: null
 
 	// Prevent race conditions in Signal session encryption by user
 	const encryptionMutex = makeKeyedMutex()
