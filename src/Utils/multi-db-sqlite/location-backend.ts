@@ -1,30 +1,42 @@
 /**
  * Phase 9.8 — typed live/static location storage backed by `location.db`.
  *
- * Real Android capture (2026-05/06 Frida dump) confirms the schema below but
- * — unlike sync.db/axolotl.db/wa.db — location.db was "gap total" in every
- * available capture (byte-identical snapshots across the whole session, zero
- * write activity observed). Schema fidelity is confirmed; write-trigger
- * *timing* here is a reasonable inference from Baileys' own decoded message
- * shape (`ILocationMessage`/`ILiveLocationMessage`), not reverse-engineered
- * from a real sequence the way Phase 9.7's sync.db was.
+ * Live-location parity was reverse-engineered end-to-end against a real paired
+ * companion (raw decrypted-plaintext capture + delivery-receipt testing). The
+ * decisive finding: **WhatsApp live location is a PRIMARY-DEVICE-ONLY feature.**
+ * A linked/companion client (which every Baileys socket is) participates only
+ * partially, and that shapes what these tables can hold:
  *
- *   - `location_cache` — latest known position per jid. UNIQUE(jid) on the
- *     real schema — one row per contact, always the newest report — so
- *     `upsertLocationCache` is an upsert.
- *   - `location_sharer` — one row per active "share my live location"
- *     session, keyed by (remote_jid, from_me, remote_resource, message_id).
- *     `expires` is intentionally left at the schema default (0/unknown)
- *     here: WhatsApp's "share for 15min/1h/8h" duration is chosen by the
- *     SENDING client and isn't part of `ILiveLocationMessage`'s decoded
- *     fields (no `shareDuration`/expiry field exists on it) — computing a
- *     fake expiry would be fabricating data with no confirmed source. Real
- *     Android's own `expires` column is itself state the app *queries*, not
- *     a SQL-enforced TTL (confirmed: no DELETE trigger on it).
- *   - `location_key_distribution` — group-live-location sender-key ACK
- *     tracking. NOT wired: Baileys exposes no group-live-location key
- *     distribution concept today, so there's no confident write path —
- *     left as schema-only rather than guessed at.
+ *   - `location_cache` — latest known position per jid. UNIQUE(jid) on the real
+ *     schema — one row per contact, always the newest report — so
+ *     `upsertLocationCache` is an upsert. Populated from each received
+ *     `liveLocationMessage` (lat/lng) and from our own `sendLiveLocation`.
+ *   - `location_sharer` — one row per active "share my live location" session,
+ *     keyed by (remote_jid, from_me, remote_resource, message_id).
+ *     `expires` is asymmetric by direction, and this is CORRECT parity, not a
+ *     gap:
+ *       • RECEIVED (from_me=0): `expires` stays 0. Proven by decoding the raw
+ *         plaintext bytes of a real received share — the wire carries ONLY
+ *         `degreesLatitude`, `degreesLongitude`, `sequenceNumber`,
+ *         `jpegThumbnail`. There is NO duration/expiry field anywhere in the
+ *         E2E proto (`LiveLocationMessage` = fields 1-8,16,17; `LocationMessage`
+ *         = 1-9,11,16,17), and WA Web/Desktop confirm it (they show "live
+ *         location unavailable", `expiredTimestamp=null`). The share duration is
+ *         a primary-device datum never delivered to a companion — a real
+ *         `expires` here is simply unobtainable.
+ *       • SENT (from_me=1): `expires` is real. We originate the share in
+ *         `sendLiveLocation`, so we know the chosen `durationSecs` and write
+ *         `expires = now + durationSecs`.
+ *   - `location_key_distribution` — group-live-location sender-key ACK tracking.
+ *     NOT wired: Baileys exposes no group-live-location key distribution concept
+ *     today, so there's no confident write path — left as schema-only.
+ *
+ * Note on sending: a companion cannot originate a NATIVE live-location card.
+ * Empirically, the server accepts a relayed `liveLocationMessage` (server ack)
+ * but does NOT fan it out to the recipient (zero delivery receipt) — the live
+ * session it needs is registered only by the primary device. `sendLiveLocation`
+ * is kept complete for schema parity + consumer↔consumer rendering; see its doc
+ * in messages-send.ts. A plain `locationMessage` IS delivered (static map).
  *
  * Column names match the canonical schema verbatim.
  */

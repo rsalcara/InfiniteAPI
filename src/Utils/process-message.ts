@@ -752,8 +752,12 @@ const processMessage = async (
 			}
 
 			if (content?.liveLocationMessage && message.key.id) {
-				// `expires` intentionally 0/unknown — see LocationBackend's class doc:
-				// the share duration isn't part of the decoded proto fields.
+				// `expires` = 0 on the receive path is CORRECT parity, not a gap:
+				// the share duration is a primary-device-only datum, never on the
+				// companion wire. Proven by decoding the raw plaintext of a real
+				// received share (only lat/lng/sequenceNumber/jpegThumbnail present;
+				// no duration field in the E2E proto) — see LocationBackend's doc.
+				// A SENT share carries a real expires (see sendLiveLocation).
 				locationBackend.upsertLocationSharer({
 					remoteJid: jidNormalizedUser(message.key.remoteJid ?? ''),
 					fromMe: message.key.fromMe ? 1 : 0,
@@ -786,9 +790,9 @@ const processMessage = async (
 						placeName: content?.locationMessage?.name ?? null,
 						placeAddress: content?.locationMessage?.address ?? null,
 						url: content?.locationMessage?.url ?? null,
-						// LiveLocationMessage carries no share-duration field (only
-						// caption/sequenceNumber/timeOffset) — left null rather than
-						// fabricated, matching LocationBackend's own note above.
+						// Null for received shares: the share-duration is never on the
+						// companion wire (raw-plaintext-proven — only lat/lng/
+						// sequenceNumber/jpegThumbnail arrive). See LocationBackend doc.
 						liveLocationShareDurationSecs: null,
 						liveLocationSequenceNumber: content?.liveLocationMessage?.sequenceNumber
 							? toNumber(content.liveLocationMessage.sequenceNumber)

@@ -75,6 +75,8 @@ import {
 	HistorySyncCompanionBackend,
 	JidMapBackend,
 	LocationBackend,
+	type LocationCacheRow,
+	type LocationSharerRow,
 	MessageAddOnBackend,
 	MessageMediaBackend,
 	MessageStoreBackend,
@@ -2280,6 +2282,38 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	}
 
+	// Phase 9.8 consume — reads the location.db live-location mirror. Best-effort:
+	// returns null/[] on miss or error so the consumer falls back to the live
+	// `messages.upsert` stream (each liveLocationMessage arrives as a message).
+	// Note: for a RECEIVED share the `expires` is always 0 (companion never gets
+	// the peer's duration — see LocationBackend docs); a SENT share (from_me=1)
+	// carries the real `expires` we chose in `sendLiveLocation`.
+	const getLiveLocation = (jid: string): LocationCacheRow | null => {
+		if (!locationBackend || !jid) {
+			return null
+		}
+
+		try {
+			return locationBackend.getLocationCache(jidNormalizedUser(jid))
+		} catch (err) {
+			logger.debug({ err, jid }, 'location getLiveLocation failed (fallback to legacy)')
+			return null
+		}
+	}
+
+	const getActiveLiveLocations = (): LocationSharerRow[] => {
+		if (!locationBackend) {
+			return []
+		}
+
+		try {
+			return locationBackend.listLocationSharers()
+		} catch (err) {
+			logger.debug({ err }, 'location getActiveLiveLocations failed (fallback to legacy)')
+			return []
+		}
+	}
+
 	return {
 		...sock,
 		createCallLink,
@@ -2287,6 +2321,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		getStoredContact,
 		getOwnDeviceRegistration,
 		getChatSettings,
+		getLiveLocation,
+		getActiveLiveLocations,
 		orphanQueue,
 		messageMutex,
 		receiptMutex,

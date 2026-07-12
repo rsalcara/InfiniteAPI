@@ -286,6 +286,33 @@ describe('Phase 9 backends', () => {
 			expect(backend.endLocationSharer('chat@s.whatsapp.net', 0, '', 'live-loc-1')).toBe(true)
 			expect(backend.listLocationSharers()).toHaveLength(0)
 		})
+
+		it('SENT share (from_me=1) carries a real expires; RECEIVED (from_me=0) stays 0', () => {
+			// The send/receive asymmetry is the crux of Phase 9.8: a companion never
+			// gets the peer's duration on the wire (received → expires 0), but WE
+			// choose the duration when originating a share (sent → real expires).
+			const backend = new LocationBackend(store.handle('location.db'))
+			const now = 1_700_000_000_000
+			backend.upsertLocationSharer({
+				remoteJid: 'peer@s.whatsapp.net',
+				fromMe: 0,
+				remoteResource: 'peer@s.whatsapp.net',
+				expires: 0,
+				messageId: 'rx-1'
+			})
+			backend.upsertLocationSharer({
+				remoteJid: 'peer@s.whatsapp.net',
+				fromMe: 1,
+				remoteResource: '',
+				expires: now + 900_000, // now + 15min
+				messageId: 'tx-1'
+			})
+
+			const sharers = backend.listLocationSharers()
+			expect(sharers).toHaveLength(2)
+			expect(sharers.find(s => s.fromMe === 1)?.expires).toBe(now + 900_000)
+			expect(sharers.find(s => s.fromMe === 0)?.expires).toBe(0)
+		})
 	})
 
 	describe('ChatSettingsBackend', () => {
