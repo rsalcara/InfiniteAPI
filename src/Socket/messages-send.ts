@@ -2511,6 +2511,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			logger.warn({ err }, 'media.db backend init failed — media_job mirror disabled')
 		}
 	}
+
 	const waUploadToServer: typeof rawWaUploadToServer = mediaJobBackend
 		? async (filePath, opts) => {
 				const uuid = randomUUID()
