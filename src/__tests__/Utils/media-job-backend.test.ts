@@ -89,5 +89,11 @@ describe('MediaJobBackend', () => {
 		expect(backend.getJob('DL-1')).toBeNull()
 		expect(backend.getJob('UP-1')).not.toBeNull()
 		expect(backend.listInProgress().map(j => j.uuid)).toEqual(['UP-1'])
+
+		// clear() is scoped too: wipes our uploads, leaves the foreign row.
+		backend.clear()
+		expect(backend.listInProgress()).toEqual([])
+		const remaining = store.handle('media.db').prepare('SELECT uuid FROM media_job').all() as Array<{ uuid: string }>
+		expect(remaining.map(r => r.uuid)).toEqual(['DL-1'])
 	})
 })

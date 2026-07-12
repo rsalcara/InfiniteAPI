@@ -75,7 +75,10 @@ export class MediaJobBackend {
 				'SELECT uuid, job_type, create_time, transfer_start_time, transferred_bytes, reupload_attempt_count ' +
 					'FROM media_job WHERE job_type = ? ORDER BY transfer_start_time'
 			),
-			clear: this.db.prepare('DELETE FROM media_job')
+			// Scoped to uploads too, for symmetry with the reads above: the
+			// teardown wipe only clears the rows this backend owns, never a
+			// foreign job_type it didn't create.
+			clear: this.db.prepare('DELETE FROM media_job WHERE job_type = ?')
 		}
 	}
 
@@ -99,8 +102,8 @@ export class MediaJobBackend {
 		return this.stmts.listInProgress.all(MEDIA_JOB_TYPE_UPLOAD) as StoredMediaJobRow[]
 	}
 
-	/** Wipes every row (e.g. socket close — an in-flight transfer does not survive). */
+	/** Wipes our in-flight upload rows (e.g. socket close — a transfer does not survive). */
 	clear(): void {
-		this.stmts.clear.run()
+		this.stmts.clear.run(MEDIA_JOB_TYPE_UPLOAD)
 	}
 }
