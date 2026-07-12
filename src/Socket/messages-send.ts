@@ -32,6 +32,7 @@ import {
 	generateMessageIDV2,
 	generateParticipantHashV2,
 	generateWAMessage,
+	generateWAMessageFromContent,
 	getStatusCodeForMediaRetry,
 	getUrlFromDirectPath,
 	getWAUploadToServer,
@@ -46,7 +47,7 @@ import {
 import { logMessageSent, logTcToken } from '../Utils/baileys-logger'
 import { getUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
-import { MediaJobBackend, type MultiDbSqliteStore, SignalTypedBackend } from '../Utils/multi-db-sqlite'
+import { LocationBackend, MediaJobBackend, type MultiDbSqliteStore, SignalTypedBackend } from '../Utils/multi-db-sqlite'
 import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prometheus-metrics'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import {
@@ -223,6 +224,23 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const messageRetryManager = enableRecentMessageCache
 		? new MessageRetryManager(logger, maxMsgRetryCount, retryTypedBackend, retryTypedBackend)
 		: null
+
+	// Phase 9.8 — send-side location.db mirror. On a SENT live location the
+	// duration is chosen by us (the originator), so unlike the receive path
+	// (companion never gets the peer's duration — proven: the wire only carries
+	// lat/lng/sequenceNumber/jpegThumbnail) we CAN populate the real
+	// `expires`/share window on the `from_me=1` sharer row. Same shared
+	// `location.db` handle as the receive/consume backend in chats.ts.
+	let sendLocationBackend: LocationBackend | undefined
+	if (config.multiDbStore) {
+		try {
+			sendLocationBackend = new LocationBackend((config.multiDbStore as MultiDbSqliteStore).handle('location.db'))
+		} catch (err) {
+			// A bad handle / failed `prepare` must not break socket setup — the
+			// mirror is best-effort; sends keep working without it.
+			logger.warn({ err }, 'location.db backend init failed — sent-live-location mirror disabled')
+		}
+	}
 
 	// Prevent race conditions in Signal session encryption by user
 	const encryptionMutex = makeKeyedMutex()
@@ -3098,6 +3116,111 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				return fullMsg
 			}
+		},
+		/**
+		 * Sends a live-location message (`liveLocationMessage`) and mirrors the
+		 * `from_me=1` share into `location.db` with the real `expires` — unlike a
+		 * RECEIVED share (where the companion never gets the peer's duration:
+		 * proven, the wire only carries lat/lng/sequenceNumber/jpegThumbnail),
+		 * on a SEND we are the originator and know the duration.
+		 *
+		 * COMPANION LIMITATION (empirically proven, kept intentionally): WhatsApp's
+		 * native "live location" is a PRIMARY-DEVICE-ONLY server session. A linked
+		 * companion (every Baileys socket) cannot register that session, so the
+		 * server does NOT fan a bare `liveLocationMessage` out to the recipient
+		 * (server ack but zero delivery receipt in testing) and no "view live
+		 * location" card renders. A plain `locationMessage` (`sendMessage({ location })`)
+		 * IS delivered as a static map. This method is kept complete for schema
+		 * parity/mirroring and for consumer↔consumer flows that render the
+		 * position stream themselves — it will not produce a native live card.
+		 */
+		sendLiveLocation: async (
+			jid: string,
+			location: {
+				degreesLatitude: number
+				degreesLongitude: number
+				/** Share window in seconds — populates the `from_me=1` sharer `expires`. */
+				durationSecs?: number
+				caption?: string
+				accuracyInMeters?: number
+				speedInMps?: number
+				degreesClockwiseFromMagneticNorth?: number
+				sequenceNumber?: number
+				jpegThumbnail?: Uint8Array
+			},
+			options: MiscMessageGenerationOptions = {}
+		) => {
+			const userJid = authState.creds.me!.id
+			const content: proto.IMessage = {
+				liveLocationMessage: {
+					degreesLatitude: location.degreesLatitude,
+					degreesLongitude: location.degreesLongitude,
+					accuracyInMeters: location.accuracyInMeters,
+					speedInMps: location.speedInMps,
+					degreesClockwiseFromMagneticNorth: location.degreesClockwiseFromMagneticNorth,
+					caption: location.caption,
+					sequenceNumber: location.sequenceNumber ?? unixTimestampSeconds() * 1000,
+					jpegThumbnail: location.jpegThumbnail
+				}
+			}
+
+			const fullMsg = generateWAMessageFromContent(jid, content, {
+				userJid,
+				messageId: generateMessageIDV2(sock.user?.id),
+				...options
+			})
+
+			await relayMessage(jid, fullMsg.message!, {
+				messageId: fullMsg.key.id!,
+				useCachedGroupMetadata: options.useCachedGroupMetadata,
+				statusJidList: options.statusJidList
+			})
+
+			// Best-effort from_me=1 mirror — never blocks the send. We know the
+			// duration here, so `expires` is real (0 = open-ended when unset).
+			// UNITS: seconds, to match the receive path (`message.messageTimestamp`
+			// is unix seconds). Using ms here would leave the sent row's
+			// `location_ts` permanently ahead of any received update and the
+			// `location_cache` guard (`excluded.location_ts >= …`) would then never
+			// let a received position overwrite it.
+			if (sendLocationBackend) {
+				try {
+					const nowSecs = unixTimestampSeconds()
+					sendLocationBackend.upsertLocationCache({
+						jid: jidNormalizedUser(userJid),
+						latitude: location.degreesLatitude,
+						longitude: location.degreesLongitude,
+						accuracy: location.accuracyInMeters ?? 0,
+						speed: location.speedInMps ?? 0,
+						bearing: location.degreesClockwiseFromMagneticNorth ?? 0,
+						locationTs: nowSecs
+					})
+					sendLocationBackend.upsertLocationSharer({
+						remoteJid: jidNormalizedUser(jid),
+						fromMe: 1,
+						remoteResource: '',
+						expires: location.durationSecs ? nowSecs + location.durationSecs : 0,
+						messageId: fullMsg.key.id!
+					})
+				} catch (err) {
+					logger.debug({ err, jid }, 'location.db sent-live-location mirror failed (best-effort)')
+				}
+			}
+
+			if (config.emitOwnEvents) {
+				process.nextTick(() =>
+					runDetached(
+						() =>
+							messageMutex.mutex(fullMsg.key.remoteJid || fullMsg.key.id || 'unknown', () =>
+								upsertMessage(fullMsg, 'append')
+							),
+						logger,
+						{ op: 'emitOwnEvents.upsertMessage.liveLocation', msgId: fullMsg.key.id }
+					)
+				)
+			}
+
+			return fullMsg
 		}
 	}
 }
