@@ -64,13 +64,16 @@ export class MediaJobBackend {
 			),
 			// Same natural key as mobile: (uuid, job_type).
 			delete: this.db.prepare('DELETE FROM media_job WHERE uuid = ? AND job_type = ?'),
+			// job_type is part of the natural key (a uuid can in principle recur
+			// across a different job_type); scope both reads to uploads — the only
+			// flow this backend drives — so we never hand back a foreign job.
 			select: this.db.prepare(
 				'SELECT uuid, job_type, create_time, transfer_start_time, transferred_bytes, reupload_attempt_count ' +
-					'FROM media_job WHERE uuid = ?'
+					'FROM media_job WHERE uuid = ? AND job_type = ?'
 			),
 			listInProgress: this.db.prepare(
 				'SELECT uuid, job_type, create_time, transfer_start_time, transferred_bytes, reupload_attempt_count ' +
-					'FROM media_job ORDER BY transfer_start_time'
+					'FROM media_job WHERE job_type = ? ORDER BY transfer_start_time'
 			),
 			clear: this.db.prepare('DELETE FROM media_job')
 		}
@@ -88,12 +91,12 @@ export class MediaJobBackend {
 	}
 
 	getJob(uuid: string): StoredMediaJobRow | null {
-		return (this.stmts.select.get(uuid) as StoredMediaJobRow | undefined) ?? null
+		return (this.stmts.select.get(uuid, MEDIA_JOB_TYPE_UPLOAD) as StoredMediaJobRow | undefined) ?? null
 	}
 
-	/** Lists the transfers currently in flight (media_job is transient). */
+	/** Lists the upload transfers currently in flight (media_job is transient). */
 	listInProgress(): StoredMediaJobRow[] {
-		return this.stmts.listInProgress.all() as StoredMediaJobRow[]
+		return this.stmts.listInProgress.all(MEDIA_JOB_TYPE_UPLOAD) as StoredMediaJobRow[]
 	}
 
 	/** Wipes every row (e.g. socket close — an in-flight transfer does not survive). */

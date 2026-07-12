@@ -70,4 +70,24 @@ describe('MediaJobBackend', () => {
 		backend.clear()
 		expect(backend.listInProgress()).toEqual([])
 	})
+
+	it('scopes reads to uploads (job_type=1) — a foreign job_type row is ignored', () => {
+		// A non-upload row (e.g. job_type=2) inserted directly must be invisible to
+		// getJob/listInProgress, which only drive uploads.
+		store
+			.handle('media.db')
+			.prepare(
+				'INSERT INTO media_job (uuid, job_type, create_time, transfer_start_time, last_update_time, ' +
+					'transferred_bytes, reupload_attempt_count, user_initiated_attempt_count, overall_cumulative_time, ' +
+					'overall_cumulative_user_visible_time, streaming_playback_count, media_key_reuse_type, ' +
+					'last_reupload_attempt_timestamp, last_reupload_success_timestamp) ' +
+					'VALUES (?, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)'
+			)
+			.run('DL-1')
+		backend.insertUpload({ uuid: 'UP-1' })
+
+		expect(backend.getJob('DL-1')).toBeNull()
+		expect(backend.getJob('UP-1')).not.toBeNull()
+		expect(backend.listInProgress().map(j => j.uuid)).toEqual(['UP-1'])
+	})
 })

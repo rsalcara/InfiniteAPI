@@ -2501,9 +2501,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	// INSERT before the transfer, DELETE in `finally` (success OR failure). Only
 	// job_type=1 (upload) — the flow InfiniteAPI drives. A mirror failure never
 	// affects the upload (fallback = the raw upload runs regardless).
-	const mediaJobBackend = config.multiDbStore
-		? new MediaJobBackend((config.multiDbStore as MultiDbSqliteStore).handle('media.db'))
-		: undefined
+	let mediaJobBackend: MediaJobBackend | undefined
+	if (config.multiDbStore) {
+		try {
+			mediaJobBackend = new MediaJobBackend((config.multiDbStore as MultiDbSqliteStore).handle('media.db'))
+		} catch (err) {
+			// A bad handle / failed `prepare` must not break socket setup — the
+			// mirror is best-effort; uploads keep working without it.
+			logger.warn({ err }, 'media.db backend init failed — media_job mirror disabled')
+		}
+	}
 	const waUploadToServer: typeof rawWaUploadToServer = mediaJobBackend
 		? async (filePath, opts) => {
 				const uuid = randomUUID()
@@ -2539,6 +2546,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 
 		messageRetryManager?.clear()
+
+		// media_job is transient (INSERT before an upload, DELETE in `finally`).
+		// If the socket dies between those — a crash mid-transfer — the row is
+		// orphaned. Wipe on socket end so a reconnect doesn't inherit stale
+		// in-flight rows (best-effort; a raw-upload path has no rows to leak).
+		try {
+			mediaJobBackend?.clear()
+		} catch (err) {
+			logger.debug({ err }, 'media_job mirror: clear on socket end failed (ignored)')
+		}
 	})
 
 	return {
