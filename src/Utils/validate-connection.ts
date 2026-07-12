@@ -99,6 +99,41 @@ const getPlatformType = (platform: string): proto.DeviceProps.PlatformType => {
 	)
 }
 
+/**
+ * The `DeviceProps` this client declares to the server during pairing — os /
+ * platform type / requireFullSync + the full history-sync capability set.
+ * Exported so the `companion_devices.db` mirror can persist EXACTLY what was
+ * sent (single source of truth — no drift between the wire payload and the
+ * mirrored row).
+ */
+export const buildCompanionDeviceProps = (config: SocketConfig): proto.IDeviceProps => ({
+	os: config.browser[0],
+	platformType: getPlatformType(config.browser[1]),
+	requireFullSync: config.syncFullHistory,
+	historySyncConfig: {
+		storageQuotaMb: 10240,
+		inlineInitialPayloadInE2EeMsg: true,
+		recentSyncDaysLimit: undefined,
+		supportCallLogHistory: false,
+		supportBotUserAgentChatHistory: true,
+		supportCagReactionsAndPolls: true,
+		supportBizHostedMsg: true,
+		supportRecentSyncChunkMessageCountTuning: true,
+		supportHostedGroupMsg: true,
+		supportFbidBotChatHistory: true,
+		supportAddOnHistorySyncMigration: undefined,
+		supportMessageAssociation: true,
+		supportGroupHistory: false,
+		onDemandReady: undefined,
+		supportGuestChat: undefined
+	},
+	version: {
+		primary: 10,
+		secondary: 15,
+		tertiary: 7
+	}
+})
+
 export const generateRegistrationNode = (
 	{ registrationId, signedPreKey, signedIdentityKey }: SignalCreds,
 	config: SocketConfig
@@ -109,33 +144,7 @@ export const generateRegistrationNode = (
 		.update(config.version.join('.')) // join as string
 		.digest()
 
-	const companion: proto.IDeviceProps = {
-		os: config.browser[0],
-		platformType: getPlatformType(config.browser[1]),
-		requireFullSync: config.syncFullHistory,
-		historySyncConfig: {
-			storageQuotaMb: 10240,
-			inlineInitialPayloadInE2EeMsg: true,
-			recentSyncDaysLimit: undefined,
-			supportCallLogHistory: false,
-			supportBotUserAgentChatHistory: true,
-			supportCagReactionsAndPolls: true,
-			supportBizHostedMsg: true,
-			supportRecentSyncChunkMessageCountTuning: true,
-			supportHostedGroupMsg: true,
-			supportFbidBotChatHistory: true,
-			supportAddOnHistorySyncMigration: undefined,
-			supportMessageAssociation: true,
-			supportGroupHistory: false,
-			onDemandReady: undefined,
-			supportGuestChat: undefined
-		},
-		version: {
-			primary: 10,
-			secondary: 15,
-			tertiary: 7
-		}
-	}
+	const companion = buildCompanionDeviceProps(config)
 
 	const companionProto = proto.DeviceProps.encode(companion).finish()
 

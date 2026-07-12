@@ -22,6 +22,7 @@ export {
 export { MessageQuarantineBackend, type QuarantineRecord, type StoredQuarantineRow } from './quarantine-backend'
 export { TrustedContactsBackend, type TrustedContactsBackendStats } from './trusted-contacts-backend'
 export { WaContactsBackend, type WaContactRow, type StoredWaContactRow } from './wa-contacts-backend'
+export { CompanionDevicesBackend, type OwnDeviceRow, type StoredCompanionDeviceRow } from './companion-devices-backend'
 export {
 	AppStateBackend,
 	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,

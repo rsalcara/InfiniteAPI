@@ -46,6 +46,7 @@ import type {
 } from '../Types/Username'
 import { UsernameQueryIds, XWAUsernamePaths } from '../Types/Username'
 import {
+	buildCompanionDeviceProps,
 	chatModificationToAppPatch,
 	type ChatMutationMap,
 	decodePatches,
@@ -69,6 +70,7 @@ import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
 import {
 	AppStateBackend,
 	ChatSettingsBackend,
+	CompanionDevicesBackend,
 	HistorySyncCompanionBackend,
 	JidMapBackend,
 	LocationBackend,
@@ -76,6 +78,7 @@ import {
 	MessageMediaBackend,
 	MessageStoreBackend,
 	StatusBackend,
+	type StoredCompanionDeviceRow,
 	WaContactsBackend
 } from '../Utils/multi-db-sqlite'
 import processMessage from '../Utils/process-message'
@@ -233,6 +236,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// event-driven handling). Same boundary-cast rationale as appStateBackend.
 	const waContactsBackend = config.multiDbStore
 		? new WaContactsBackend((config.multiDbStore as any).handle('wa.db'))
+		: undefined
+
+	// Mirrors THIS client's own device registration into `companion_devices.db`
+	// on connection open. InfiniteAPI is a companion (not the primary that owns
+	// companions), so it stores a single row: itself, with the DeviceProps it
+	// declared at pairing. Best-effort; the reconnect session lives in creds.db,
+	// not here. Same boundary-cast rationale as appStateBackend.
+	const companionDevicesBackend = config.multiDbStore
+		? new CompanionDevicesBackend((config.multiDbStore as any).handle('companion_devices.db'))
 		: undefined
 
 	// Phase 9.8 — mirrors static/live location (location_cache/location_sharer)
@@ -1829,8 +1841,62 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	})
 
+	/**
+	 * Persists THIS client's own device registration into `companion_devices.db`
+	 * on connection open — the DeviceProps declared at pairing (same source as
+	 * the wire payload, via buildCompanionDeviceProps) plus its device jid and
+	 * ADV key index. Single row, upserted per connection. Best-effort: a mirror
+	 * failure never affects the connection.
+	 */
+	const mirrorOwnDevice = () => {
+		if (!companionDevicesBackend || !authState.creds.me?.id) {
+			return
+		}
+
+		try {
+			const props = buildCompanionDeviceProps(config)
+			const hsc = props.historySyncConfig || {}
+			let advKeyIndex = 0
+			try {
+				const details = authState.creds.account?.details
+				if (details) {
+					advKeyIndex = proto.ADVDeviceIdentity.decode(details).keyIndex ?? 0
+				}
+			} catch {
+				/* keyIndex stays 0 if the account identity can't be decoded */
+			}
+
+			companionDevicesBackend.upsertOwnDevice({
+				deviceId: authState.creds.me.id,
+				deviceOs: props.os,
+				platformType: props.platformType,
+				loginTime: Math.floor(Date.now() / 1000),
+				advKeyIndex,
+				fullSyncRequired: props.requireFullSync ?? undefined,
+				storageQuotaMb: hsc.storageQuotaMb ?? undefined,
+				inlineInitialHistSyncPayloadEnabled: hsc.inlineInitialPayloadInE2EeMsg ?? undefined,
+				recentSyncDaysLimit: hsc.recentSyncDaysLimit ?? undefined,
+				supportCallLogHistory: hsc.supportCallLogHistory ?? undefined,
+				supportBotUserAgentChatHistory: hsc.supportBotUserAgentChatHistory ?? undefined,
+				supportCagReactionsAndPollsHistory: hsc.supportCagReactionsAndPolls ?? undefined,
+				supportRecentSyncChunkMessageTuning: hsc.supportRecentSyncChunkMessageCountTuning ?? undefined,
+				supportHostedGroupMsg: hsc.supportHostedGroupMsg ?? undefined,
+				supportFbidBotChatHistory: hsc.supportFbidBotChatHistory ?? undefined,
+				supportBizHostedMsg: hsc.supportBizHostedMsg ?? undefined,
+				supportAddOnHistorySyncMigration: hsc.supportAddOnHistorySyncMigration ?? undefined,
+				supportMessageAssociation: hsc.supportMessageAssociation ?? undefined,
+				supportGroupHistory: hsc.supportGroupHistory ?? undefined,
+				supportGuestChat: hsc.supportGuestChat ?? undefined
+			})
+		} catch (err) {
+			logger.debug({ err }, 'companion_devices mirror: own-device upsert failed (ignored)')
+		}
+	}
+
 	ev.on('connection.update', ({ connection, receivedPendingNotifications }) => {
 		if (connection === 'open') {
+			mirrorOwnDevice()
+
 			if (fireInitQueries) {
 				executeInitQueries().catch(error => onUnexpectedError(error, 'init queries'))
 			}
@@ -2175,11 +2241,29 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	}
 
+	/**
+	 * Reads this client's own device registration from `companion_devices.db`.
+	 * Returns the stored row or `null` on miss / no store / error — the caller
+	 * falls back to the live `buildCompanionDeviceProps(config)` source.
+	 */
+	const getOwnDeviceRegistration = (): StoredCompanionDeviceRow | null => {
+		if (!companionDevicesBackend || !authState.creds.me?.id) {
+			return null
+		}
+
+		try {
+			return companionDevicesBackend.getByDeviceId(authState.creds.me.id)
+		} catch {
+			return null
+		}
+	}
+
 	return {
 		...sock,
 		createCallLink,
 		getBotListV2,
 		getStoredContact,
+		getOwnDeviceRegistration,
 		orphanQueue,
 		messageMutex,
 		receiptMutex,
