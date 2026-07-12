@@ -58,6 +58,20 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 				CREATE INDEX IF NOT EXISTS wa_contacts_username_idx ON wa_contacts (username);
 			`
 		}
+	],
+	'axolotl.db': [
+		{
+			// Schema-fidelity only: the canonical mobile `sender_keys` carries a
+			// `bucket_id` column (part of its natural key alongside group/device/
+			// sender). InfiniteAPI keys sender-keys by the 4-tuple (Baileys'
+			// SenderKeyName has no bucket concept), so this column stays empty and
+			// is deliberately NOT added to `sender_keys_idx_v26` — adding it would
+			// change the live crypto key. Present purely so introspection/dumps
+			// match the mobile layout.
+			version: 1,
+			name: 'add sender_keys.bucket_id (schema fidelity)',
+			sql: `ALTER TABLE sender_keys ADD COLUMN bucket_id TEXT NOT NULL DEFAULT '';`
+		}
 	]
 }
 
