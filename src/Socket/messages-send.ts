@@ -231,9 +231,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	// lat/lng/sequenceNumber/jpegThumbnail) we CAN populate the real
 	// `expires`/share window on the `from_me=1` sharer row. Same shared
 	// `location.db` handle as the receive/consume backend in chats.ts.
-	const sendLocationBackend = config.multiDbStore
-		? new LocationBackend((config.multiDbStore as MultiDbSqliteStore).handle('location.db'))
-		: undefined
+	let sendLocationBackend: LocationBackend | undefined
+	if (config.multiDbStore) {
+		try {
+			sendLocationBackend = new LocationBackend((config.multiDbStore as MultiDbSqliteStore).handle('location.db'))
+		} catch (err) {
+			// A bad handle / failed `prepare` must not break socket setup — the
+			// mirror is best-effort; sends keep working without it.
+			logger.warn({ err }, 'location.db backend init failed — sent-live-location mirror disabled')
+		}
+	}
 
 	// Prevent race conditions in Signal session encryption by user
 	const encryptionMutex = makeKeyedMutex()
@@ -3165,14 +3172,20 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			await relayMessage(jid, fullMsg.message!, {
 				messageId: fullMsg.key.id!,
-				useCachedGroupMetadata: options.useCachedGroupMetadata
+				useCachedGroupMetadata: options.useCachedGroupMetadata,
+				statusJidList: options.statusJidList
 			})
 
 			// Best-effort from_me=1 mirror — never blocks the send. We know the
 			// duration here, so `expires` is real (0 = open-ended when unset).
+			// UNITS: seconds, to match the receive path (`message.messageTimestamp`
+			// is unix seconds). Using ms here would leave the sent row's
+			// `location_ts` permanently ahead of any received update and the
+			// `location_cache` guard (`excluded.location_ts >= …`) would then never
+			// let a received position overwrite it.
 			if (sendLocationBackend) {
 				try {
-					const now = Date.now()
+					const nowSecs = unixTimestampSeconds()
 					sendLocationBackend.upsertLocationCache({
 						jid: jidNormalizedUser(userJid),
 						latitude: location.degreesLatitude,
@@ -3180,13 +3193,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						accuracy: location.accuracyInMeters ?? 0,
 						speed: location.speedInMps ?? 0,
 						bearing: location.degreesClockwiseFromMagneticNorth ?? 0,
-						locationTs: now
+						locationTs: nowSecs
 					})
 					sendLocationBackend.upsertLocationSharer({
 						remoteJid: jidNormalizedUser(jid),
 						fromMe: 1,
 						remoteResource: '',
-						expires: location.durationSecs ? now + location.durationSecs * 1000 : 0,
+						expires: location.durationSecs ? nowSecs + location.durationSecs : 0,
 						messageId: fullMsg.key.id!
 					})
 				} catch (err) {

@@ -2307,7 +2307,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 
 		try {
-			return locationBackend.listLocationSharers()
+			// Only non-expired shares (expires in unix seconds, matching the
+			// receive/send mirror). Open-ended rows (expires=0) stay included.
+			return locationBackend.listActiveLocationSharers(Math.floor(Date.now() / 1000))
 		} catch (err) {
 			logger.debug({ err }, 'location getActiveLiveLocations failed (fallback to legacy)')
 			return []

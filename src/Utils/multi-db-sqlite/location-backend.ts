@@ -67,6 +67,7 @@ export class LocationBackend {
 		upsertLocationSharer: SqliteStatementLike
 		getLocationSharer: SqliteStatementLike
 		listLocationSharers: SqliteStatementLike
+		listActiveLocationSharers: SqliteStatementLike
 		endLocationSharer: SqliteStatementLike
 	}
 
@@ -91,11 +92,18 @@ export class LocationBackend {
 			getLocationCache: this.db.prepare(
 				'SELECT jid, latitude, longitude, accuracy, speed, bearing, location_ts FROM location_cache WHERE jid = ?'
 			),
+			// `CASE WHEN excluded.expires = 0 …` preserves a real `expires`: a
+			// SENT share writes the true expiry (from_me=1), but the own-event
+			// replay (emitOwnEvents → upsertMessage → processMessage re-enters the
+			// receive mirror) re-upserts the SAME key with `expires=0`. An
+			// unconditional overwrite would wipe the duration almost immediately —
+			// the whole point of the send path. A received update legitimately
+			// only ever carries `expires=0`, so keeping the existing value is safe.
 			upsertLocationSharer: this.db.prepare(
 				'INSERT INTO location_sharer (remote_jid, from_me, remote_resource, expires, message_id) ' +
 					'VALUES (?, ?, ?, ?, ?) ' +
 					'ON CONFLICT(remote_jid, from_me, remote_resource, message_id) DO UPDATE SET ' +
-					'  expires = excluded.expires'
+					'  expires = CASE WHEN excluded.expires = 0 THEN location_sharer.expires ELSE excluded.expires END'
 			),
 			getLocationSharer: this.db.prepare(
 				'SELECT remote_jid, from_me, remote_resource, expires, message_id FROM location_sharer ' +
@@ -103,6 +111,12 @@ export class LocationBackend {
 			),
 			listLocationSharers: this.db.prepare(
 				'SELECT remote_jid, from_me, remote_resource, expires, message_id FROM location_sharer'
+			),
+			// Active = open-ended (expires=0, e.g. a received share whose duration
+			// the companion never got) OR not yet expired (expires > now, seconds).
+			listActiveLocationSharers: this.db.prepare(
+				'SELECT remote_jid, from_me, remote_resource, expires, message_id FROM location_sharer ' +
+					'WHERE expires = 0 OR expires > ?'
 			),
 			endLocationSharer: this.db.prepare(
 				'DELETE FROM location_sharer WHERE remote_jid = ? AND from_me = ? AND remote_resource = ? AND message_id = ?'
@@ -171,6 +185,28 @@ export class LocationBackend {
 
 	listLocationSharers(): LocationSharerRow[] {
 		const rows = this.stmts.listLocationSharers.all() as Array<{
+			remote_jid: string
+			from_me: number
+			remote_resource: string
+			expires: number
+			message_id: string
+		}>
+		return rows.map(r => ({
+			remoteJid: r.remote_jid,
+			fromMe: r.from_me,
+			remoteResource: r.remote_resource,
+			expires: r.expires,
+			messageId: r.message_id
+		}))
+	}
+
+	/**
+	 * Sharers that are still active at `nowSecs` (unix seconds): open-ended
+	 * (`expires=0`) or not yet expired. Backs `getActiveLiveLocations()` so it
+	 * doesn't hand back stale/expired shares.
+	 */
+	listActiveLocationSharers(nowSecs: number): LocationSharerRow[] {
+		const rows = this.stmts.listActiveLocationSharers.all(nowSecs) as Array<{
 			remote_jid: string
 			from_me: number
 			remote_resource: string

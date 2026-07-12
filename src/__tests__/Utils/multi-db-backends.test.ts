@@ -291,12 +291,14 @@ describe('Phase 9 backends', () => {
 			// The send/receive asymmetry is the crux of Phase 9.8: a companion never
 			// gets the peer's duration on the wire (received → expires 0), but WE
 			// choose the duration when originating a share (sent → real expires).
+			// Units are UNIX SECONDS on both paths (receive uses messageTimestamp;
+			// send uses unixTimestampSeconds), and 1:1 remote_resource is ''.
 			const backend = new LocationBackend(store.handle('location.db'))
-			const now = 1_700_000_000_000
+			const nowSecs = 1_700_000_000 // seconds, as production writes
 			backend.upsertLocationSharer({
 				remoteJid: 'peer@s.whatsapp.net',
 				fromMe: 0,
-				remoteResource: 'peer@s.whatsapp.net',
+				remoteResource: '',
 				expires: 0,
 				messageId: 'rx-1'
 			})
@@ -304,14 +306,63 @@ describe('Phase 9 backends', () => {
 				remoteJid: 'peer@s.whatsapp.net',
 				fromMe: 1,
 				remoteResource: '',
-				expires: now + 900_000, // now + 15min
+				expires: nowSecs + 900, // now + 15min, in seconds
 				messageId: 'tx-1'
 			})
 
 			const sharers = backend.listLocationSharers()
 			expect(sharers).toHaveLength(2)
-			expect(sharers.find(s => s.fromMe === 1)?.expires).toBe(now + 900_000)
+			expect(sharers.find(s => s.fromMe === 1)?.expires).toBe(nowSecs + 900)
 			expect(sharers.find(s => s.fromMe === 0)?.expires).toBe(0)
+		})
+
+		it('re-upsert with expires=0 (own-event replay) does NOT wipe a real expires', () => {
+			// emitOwnEvents replays a SENT liveLocationMessage through the receive
+			// mirror, which re-upserts the SAME key with expires=0. That must not
+			// erase the duration written by the send path.
+			const backend = new LocationBackend(store.handle('location.db'))
+			const nowSecs = 1_700_000_000
+			const key = { remoteJid: 'peer@s.whatsapp.net', fromMe: 1 as const, remoteResource: '', messageId: 'tx-1' }
+			backend.upsertLocationSharer({ ...key, expires: nowSecs + 3600 })
+			// replay: same key, expires=0 (receive path always writes 0)
+			backend.upsertLocationSharer({ ...key, expires: 0 })
+			expect(backend.getLocationSharer(key.remoteJid, 1, '', 'tx-1')?.expires).toBe(nowSecs + 3600)
+			// but a real new expires (e.g. a later explicit send) still updates
+			backend.upsertLocationSharer({ ...key, expires: nowSecs + 7200 })
+			expect(backend.getLocationSharer(key.remoteJid, 1, '', 'tx-1')?.expires).toBe(nowSecs + 7200)
+		})
+
+		it('listActiveLocationSharers filters out expired shares (expires>0 && <= now)', () => {
+			const backend = new LocationBackend(store.handle('location.db'))
+			const nowSecs = 1_700_000_000
+			backend.upsertLocationSharer({
+				remoteJid: 'a@s.whatsapp.net',
+				fromMe: 1,
+				remoteResource: '',
+				expires: nowSecs - 10,
+				messageId: 'expired'
+			})
+			backend.upsertLocationSharer({
+				remoteJid: 'b@s.whatsapp.net',
+				fromMe: 1,
+				remoteResource: '',
+				expires: nowSecs + 900,
+				messageId: 'active'
+			})
+			backend.upsertLocationSharer({
+				remoteJid: 'c@s.whatsapp.net',
+				fromMe: 0,
+				remoteResource: '',
+				expires: 0,
+				messageId: 'open-ended'
+			})
+
+			expect(backend.listLocationSharers()).toHaveLength(3)
+			const active = backend
+				.listActiveLocationSharers(nowSecs)
+				.map(s => s.messageId)
+				.sort()
+			expect(active).toEqual(['active', 'open-ended'])
 		})
 	})
 
