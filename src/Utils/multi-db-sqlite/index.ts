@@ -24,6 +24,12 @@ export { TrustedContactsBackend, type TrustedContactsBackendStats } from './trus
 export { WaContactsBackend, type WaContactRow, type StoredWaContactRow } from './wa-contacts-backend'
 export { CompanionDevicesBackend, type OwnDeviceRow, type StoredCompanionDeviceRow } from './companion-devices-backend'
 export {
+	MediaJobBackend,
+	MEDIA_JOB_TYPE_UPLOAD,
+	type MediaUploadJob,
+	type StoredMediaJobRow
+} from './media-job-backend'
+export {
 	AppStateBackend,
 	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
 	type CollectionVersionRow,
