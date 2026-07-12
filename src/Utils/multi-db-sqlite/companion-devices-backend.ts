@@ -112,7 +112,7 @@ export class CompanionDevicesBackend {
 			b(row.supportAddOnHistorySyncMigration) ?? 0,
 			b(row.supportMessageAssociation) ?? 0,
 			b(row.supportGroupHistory) ?? 0,
-			b(row.supportGuestChat)
+			b(row.supportGuestChat) ?? 0
 		)
 	}
 
