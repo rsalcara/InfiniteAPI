@@ -78,6 +78,7 @@ import {
 	MessageStoreBackend,
 	ReceiptBackend,
 	type ReceiptKind,
+	SignalTypedBackend,
 	StatusBackend
 } from '../Utils/multi-db-sqlite'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
@@ -99,6 +100,7 @@ import {
 	areJidsSameUser,
 	type BinaryNode,
 	binaryNodeToString,
+	encodeBinaryNode,
 	getAllBinaryNodeChildren,
 	getBinaryNodeChild,
 	getBinaryNodeChildBuffer,
@@ -249,6 +251,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					receiptChatResolver
 				)
 			: undefined
+
+	// Best-effort typed mirror of the axolotl.db pre-decrypt/pre-ack tables:
+	//   - `preacks`               — pending pre-ack buffer (sendMessageAck)
+	//   - `unordered_stanza_queue`— stanza held because it could not be
+	//                               decrypted in order yet (sendRetryRequest)
+	// Same boundary-cast + idempotent-handle rationale as the receipt/status
+	// backends above. Every write is wrapped in try/catch at the call site so a
+	// mirror failure never blocks the real ack / retry flow (fallback = legacy).
+	const signalTypedBackend = config.multiDbStore
+		? new SignalTypedBackend((config.multiDbStore as any).handle('axolotl.db'))
+		: undefined
 
 	// Per-socket cache of Meta AI / FBID bot message secrets (msmsg). Bounded by
 	// DEFAULT_CACHE_MAX_KEYS.MSMSG_SECRET (500) + 1h TTL. Cleared AND closed on
@@ -997,7 +1010,32 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const meId = authState.creds.me?.id
 		const stanza = buildAckStanza(node, errorCode, meId)
 		logger.debug({ recv: { tag: node.tag, attrs: node.attrs }, sent: stanza.attrs }, 'sent ack')
+
+		// Best-effort pre-ack mirror (axolotl.db `preacks`): persist the encoded
+		// ack BEFORE sending, drop THIS ack's row AFTER it goes out — the mobile
+		// pre-ack lifecycle. Deleting by exact row id (not a `_id <= ?` prefix
+		// drain) so a concurrent ack cannot remove another ack's not-yet-sent
+		// pre-ack. Gated to message-class stanzas (what the mobile client
+		// pre-acks) and fully wrapped: any mirror error is logged and the ack
+		// still sends (fallback = legacy inline ack).
+		let preackId: number | undefined
+		if (signalTypedBackend && node.tag === 'message') {
+			try {
+				preackId = signalTypedBackend.enqueuePreack(encodeBinaryNode(stanza))
+			} catch (err) {
+				logger.debug({ err, msgId: node.attrs.id }, 'preacks mirror: enqueue failed (ignored)')
+			}
+		}
+
 		await sendNode(stanza)
+
+		if (signalTypedBackend && preackId !== undefined) {
+			try {
+				signalTypedBackend.deletePreack(preackId)
+			} catch (err) {
+				logger.debug({ err, msgId: node.attrs.id }, 'preacks mirror: delete failed (ignored)')
+			}
+		}
 	}
 
 	const rejectCall = async (callId: string, callFrom: string) => {
@@ -1741,6 +1779,32 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 
 			recordMessageRetry('retry')
+
+			// Best-effort mirror: this stanza could not be decrypted in order, so
+			// we are asking the peer to resend — the exact condition the mobile
+			// client parks a stanza in `unordered_stanza_queue`. Persist the raw
+			// encoded stanza keyed by message id with the current process count.
+			// The row is dropped when the resend decrypts (the success branch of
+			// this handler calls `deleteUnorderedStanza`), or promptly on retry
+			// exhaustion (markRetryFailed dispose); the 15-min TTL / socket-close
+			// wipe are backstops. Never blocks the retry.
+			if (signalTypedBackend) {
+				try {
+					const senderJid = msgKey.participant
+						? jidNormalizedUser(msgKey.participant)
+						: jidNormalizedUser(node.attrs.from)
+					signalTypedBackend.enqueueUnorderedStanza({
+						stanzaId: msgId,
+						stanzaPayload: encodeBinaryNode(node),
+						chatJid: msgKey.remoteJid ?? undefined,
+						senderJid,
+						chatType: isJidGroup(msgKey.remoteJid ?? undefined) ? 1 : 0,
+						processCount: attempt.count
+					})
+				} catch (err) {
+					logger.debug({ err, msgId }, 'unordered_stanza_queue mirror: enqueue failed (ignored)')
+				}
+			}
 
 			// Stage 6 H9 (upstream #2576): mirror the retry count to the durable
 			// cache via `retryLocks` so this set cannot race against
@@ -3544,6 +3608,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				} else {
 					if (messageRetryManager && msg.key.id) {
 						messageRetryManager.cancelPendingPhoneRequest(msg.key.id)
+					}
+
+					// Best-effort: a previously-held stanza's resend just decrypted —
+					// drop its `unordered_stanza_queue` row at the canonical "stanza
+					// processed" trigger. This is the SUCCESS-only branch, so it never
+					// runs on a decrypt failure (where `sendRetryRequest` re-enqueues
+					// and bumps process_count) — placing it before the CIPHERTEXT check
+					// would reset process_count on every retry. The retry-counter TTL /
+					// socket-close wipe remain as backstops for the exhaustion path.
+					if (signalTypedBackend && msg.key.id) {
+						try {
+							signalTypedBackend.deleteUnorderedStanza(msg.key.id)
+						} catch (err) {
+							logger.debug({ err, msgId: msg.key.id }, 'unordered_stanza_queue mirror: success-delete failed (ignored)')
+						}
 					}
 
 					const isNewsletter = isJidNewsletter(msg.key.remoteJid!)

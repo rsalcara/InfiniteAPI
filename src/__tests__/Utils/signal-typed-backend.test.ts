@@ -125,4 +125,73 @@ describe('SignalTypedBackend', () => {
 		expect(backend.deleteMessageBaseKey(key)).toBe(true)
 		expect(backend.getMessageBaseKey(key)).toBeNull()
 	})
+
+	it('enqueues, bumps process_count, and drops an unordered_stanza_queue row', () => {
+		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
+		const axolotl = store.handle('axolotl.db')
+		const row = (id: string) =>
+			axolotl.prepare('SELECT process_count, stanza_id FROM unordered_stanza_queue WHERE stanza_id = ?').get(id) as
+				| { process_count: number; stanza_id: string }
+				| undefined
+
+		backend.enqueueUnorderedStanza({
+			stanzaId: 'MSG-U-1',
+			stanzaPayload: Buffer.from([0x01, 0x02]),
+			chatJid: '120363044055005321@g.us',
+			chatType: 1,
+			processCount: 1
+		})
+		expect(row('MSG-U-1')?.process_count).toBe(1)
+
+		// Re-enqueue of the same id bumps process_count (no duplicate row).
+		backend.enqueueUnorderedStanza({ stanzaId: 'MSG-U-1', stanzaPayload: Buffer.from([0x03]) })
+		const count = axolotl.prepare('SELECT COUNT(*) AS n FROM unordered_stanza_queue').get() as { n: number }
+		expect(count.n).toBe(1)
+		expect(row('MSG-U-1')?.process_count).toBe(2)
+
+		// Delete by message id (retry resolved).
+		expect(backend.deleteUnorderedStanza('MSG-U-1')).toBe(true)
+		expect(row('MSG-U-1')).toBeUndefined()
+	})
+
+	it('appends preacks and drains a contiguous prefix', () => {
+		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
+		const remaining = () =>
+			(store.handle('axolotl.db').prepare('SELECT COUNT(*) AS n FROM preacks').get() as { n: number }).n
+
+		const id1 = backend.enqueuePreack(Buffer.from([0xa1]))
+		backend.enqueuePreack(Buffer.from([0xa2]))
+		const id3 = backend.enqueuePreack(Buffer.from([0xa3]))
+		expect(remaining()).toBe(3)
+		expect(id3).toBeGreaterThan(id1)
+
+		// Drain up to the first id removes only that prefix.
+		expect(backend.drainPreacksUpTo(id1)).toBe(1)
+		expect(remaining()).toBe(2)
+
+		// Drain up to the last id removes the rest.
+		backend.drainPreacksUpTo(id3)
+		expect(remaining()).toBe(0)
+	})
+
+	it('deletes a single preack by exact id (concurrent-safe, leaves others)', () => {
+		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
+		const remaining = () =>
+			(store.handle('axolotl.db').prepare('SELECT COUNT(*) AS n FROM preacks').get() as { n: number }).n
+
+		const id1 = backend.enqueuePreack(Buffer.from([0xb1]))
+		const id2 = backend.enqueuePreack(Buffer.from([0xb2]))
+		backend.enqueuePreack(Buffer.from([0xb3]))
+		expect(remaining()).toBe(3)
+
+		// Deleting the middle id drops ONLY that row — the earlier (id1) and
+		// later (id3) not-yet-sent pre-acks survive (unlike a prefix drain).
+		expect(backend.deletePreack(id2)).toBe(true)
+		expect(remaining()).toBe(2)
+		const ids = (
+			store.handle('axolotl.db').prepare('SELECT _id FROM preacks ORDER BY _id').all() as Array<{ _id: number }>
+		).map(r => r._id)
+		expect(ids).toContain(id1)
+		expect(ids).not.toContain(id2)
+	})
 })

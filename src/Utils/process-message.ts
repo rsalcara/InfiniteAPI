@@ -42,6 +42,7 @@ import { downloadAndProcessHistorySyncNotification } from './history'
 import type { ILogger } from './logger'
 import {
 	type AppStateBackend,
+	type HistorySyncCompanionBackend,
 	type LocationBackend,
 	mapContentTypeToMessageType,
 	type MessageAddOnBackend,
@@ -79,6 +80,8 @@ type ProcessMessageContext = {
 	mediaBackend?: MessageMediaBackend
 	/** Optional msgstore.db mirror — reactions/polls/locations/vcards attached to a message. */
 	addOnBackend?: MessageAddOnBackend
+	/** Optional sync.db mirror — per-chunk companion history-sync tracking (history_sync_companion). */
+	historySyncCompanionBackend?: HistorySyncCompanionBackend
 }
 
 const REAL_MSG_STUB_TYPES = new Set([
@@ -407,7 +410,8 @@ const processMessage = async (
 		statusBackend,
 		messageStoreBackend,
 		mediaBackend,
-		addOnBackend
+		addOnBackend,
+		historySyncCompanionBackend
 	}: ProcessMessageContext
 ) => {
 	const meUser = creds.me
@@ -874,7 +878,55 @@ const processMessage = async (
 						})
 					}
 
-					const data = await downloadAndProcessHistorySyncNotification(histNotification, options, logger)
+					// Best-effort mirror: record this history-sync chunk in
+					// `history_sync_companion` (sync.db) before the download, mirroring
+					// the mobile INSERT. Keyed by the notification message id. Wrapped
+					// so a mirror failure never blocks the real download/process flow.
+					const histMirrorId = message.key.id ?? undefined
+					// Best-effort drop of the transient tracking row. A named helper
+					// keeps the `finally` below a single call (avoids a 5th nesting
+					// level) and centralizes the swallow-and-log.
+					const dropHistMirror = (id: string | undefined) => {
+						if (!historySyncCompanionBackend || !id) return
+						try {
+							historySyncCompanionBackend.delete(id)
+						} catch (err) {
+							logger?.debug({ err, id }, 'history_sync_companion mirror: delete failed (ignored)')
+						}
+					}
+
+					if (historySyncCompanionBackend && histMirrorId) {
+						try {
+							historySyncCompanionBackend.put({
+								messageId: histMirrorId,
+								syncType: histNotification.syncType ?? 0,
+								chunkOrder: histNotification.chunkOrder ?? 0,
+								mediaKey: histNotification.mediaKey ?? null,
+								mediaHash: histNotification.fileSha256
+									? Buffer.from(histNotification.fileSha256).toString('base64')
+									: '',
+								mediaEncHash: histNotification.fileEncSha256
+									? Buffer.from(histNotification.fileEncSha256).toString('base64')
+									: '',
+								fileSize: histNotification.fileLength ? toNumber(histNotification.fileLength) : 0,
+								directPath: histNotification.directPath ?? '',
+								inlinePayload: histNotification.initialHistBootstrapInlinePayload ?? null
+							})
+						} catch (err) {
+							logger?.debug({ err, id: histMirrorId }, 'history_sync_companion mirror: put failed (ignored)')
+						}
+					}
+
+					let data: Awaited<ReturnType<typeof downloadAndProcessHistorySyncNotification>>
+					try {
+						data = await downloadAndProcessHistorySyncNotification(histNotification, options, logger)
+					} finally {
+						// Drop the tracking row whether the chunk was consumed OR the
+						// download threw — `finally` prevents an orphan row when
+						// `downloadAndProcessHistorySyncNotification` rejects (the delete
+						// used to sit after the await, so a throw skipped it).
+						dropHistMirror(histMirrorId)
+					}
 
 					// Emit LID-PN mappings from history sync
 					// This is how WhatsApp Web learns mappings for chats with non-contacts

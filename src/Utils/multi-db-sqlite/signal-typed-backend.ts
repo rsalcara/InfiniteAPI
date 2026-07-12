@@ -53,6 +53,29 @@ const IDENTITY_DEVICE_ID_SENTINEL = 0
  */
 const MESSAGE_BASE_KEY_RECIPIENT_SENTINEL = 0
 
+const toBuf = (v: Buffer | Uint8Array): Buffer => (Buffer.isBuffer(v) ? v : Buffer.from(v))
+
+/**
+ * A raw stanza held in `unordered_stanza_queue` because it could not be
+ * processed in order yet. Keyed by `stanzaId` (the message id) — the UNIQUE
+ * `stanza_key` BLOB is derived from it so enqueue and delete agree on the key
+ * without the caller threading a second value.
+ */
+export type UnorderedStanzaRow = {
+	stanzaId: string
+	stanzaClass?: number
+	stanzaType?: number
+	stanzaPayload: Buffer | Uint8Array
+	protobuf?: Buffer | Uint8Array | null
+	decryptMetadata?: Buffer | Uint8Array | null
+	chatType?: number | null
+	chatJid?: string | null
+	senderJid?: string | null
+	timeSec?: number
+	createTimeMs?: number
+	processCount?: number
+}
+
 export type SignalMessageBaseKey = {
 	remoteJid: string
 	fromMe: boolean
@@ -106,6 +129,13 @@ export class SignalTypedBackend {
 		deleteMessageBaseKey: SqliteStatementLike
 		selectMessageBaseKey: SqliteStatementLike
 		clearMessageBaseKeys: SqliteStatementLike
+		enqueueUnorderedStanza: SqliteStatementLike
+		deleteUnorderedStanza: SqliteStatementLike
+		clearUnorderedStanzas: SqliteStatementLike
+		insertPreack: SqliteStatementLike
+		deletePreack: SqliteStatementLike
+		drainPreacksUpTo: SqliteStatementLike
+		clearPreacks: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
@@ -207,7 +237,27 @@ export class SignalTypedBackend {
 				'SELECT last_alice_base_key, timestamp FROM message_base_key WHERE msg_key_remote_jid = ? ' +
 					'AND msg_key_from_me = ? AND msg_key_id = ? AND recipient_id IS ? AND recipient_type = ? AND device_id = ?'
 			),
-			clearMessageBaseKeys: this.db.prepare('DELETE FROM message_base_key')
+			clearMessageBaseKeys: this.db.prepare('DELETE FROM message_base_key'),
+			// unordered_stanza_queue: raw stanza held because it could not be
+			// processed/decrypted in order yet. `stanza_key` is the UNIQUE dedupe
+			// key; re-enqueuing the same stanza bumps `process_count`, folding the
+			// mobile INSERT-then-UPDATE(process_count) steps into one upsert.
+			enqueueUnorderedStanza: this.db.prepare(
+				'INSERT INTO unordered_stanza_queue (stanza_id, stanza_key, stanza_class, stanza_type, stanza_payload, ' +
+					'protobuf, decrypt_metadata, chat_type, chat_jid, sender_jid, time_sec, create_time_ms, process_count) ' +
+					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+					'ON CONFLICT(stanza_key) DO UPDATE SET process_count = process_count + 1'
+			),
+			deleteUnorderedStanza: this.db.prepare('DELETE FROM unordered_stanza_queue WHERE stanza_key = ?'),
+			clearUnorderedStanzas: this.db.prepare('DELETE FROM unordered_stanza_queue'),
+			// preacks: append-only buffer of pending pre-acknowledgements (`ptn`
+			// blob). Each ack drops its OWN row by exact `_id` once sent
+			// (`deletePreack`); `drainPreacksUpTo` keeps the mobile prefix-drain
+			// (`DELETE ... WHERE _id <= ?`) for a future startup/batch drain.
+			insertPreack: this.db.prepare('INSERT INTO preacks (ptn) VALUES (?)'),
+			deletePreack: this.db.prepare('DELETE FROM preacks WHERE _id = ?'),
+			drainPreacksUpTo: this.db.prepare('DELETE FROM preacks WHERE _id <= ?'),
+			clearPreacks: this.db.prepare('DELETE FROM preacks')
 		}
 	}
 
@@ -403,5 +453,77 @@ export class SignalTypedBackend {
 	/** Wipes every message_base_key row (socket close — the in-memory cache is gone). */
 	clearMessageBaseKeys(): void {
 		this.stmts.clearMessageBaseKeys.run()
+	}
+
+	// ============ unordered_stanza_queue ============
+
+	/**
+	 * Records a stanza that could not be processed in order yet (best-effort
+	 * mirror of the mobile out-of-order holding pen). Re-enqueuing the same
+	 * `stanzaId` bumps `process_count` instead of inserting a duplicate — the
+	 * `stanza_key` UNIQUE column is derived from `stanzaId`.
+	 */
+	enqueueUnorderedStanza(row: UnorderedStanzaRow): void {
+		this.stmts.enqueueUnorderedStanza.run(
+			row.stanzaId,
+			Buffer.from(row.stanzaId),
+			row.stanzaClass ?? 0,
+			row.stanzaType ?? 0,
+			toBuf(row.stanzaPayload),
+			row.protobuf ? toBuf(row.protobuf) : null,
+			row.decryptMetadata ? toBuf(row.decryptMetadata) : null,
+			row.chatType ?? null,
+			row.chatJid ?? null,
+			row.senderJid ?? null,
+			row.timeSec ?? Math.floor(Date.now() / 1000),
+			row.createTimeMs ?? Date.now(),
+			row.processCount ?? 1
+		)
+	}
+
+	/** Drops a held stanza once it is finally processed (retry resolved/failed). */
+	deleteUnorderedStanza(msgId: string): boolean {
+		return this.stmts.deleteUnorderedStanza.run(Buffer.from(msgId)).changes > 0
+	}
+
+	/** Wipes every held stanza (socket close). */
+	clearUnorderedStanzas(): void {
+		this.stmts.clearUnorderedStanzas.run()
+	}
+
+	// ============ preacks ============
+
+	/**
+	 * Appends one pending pre-acknowledgement (`ptn` blob) before the ack is
+	 * flushed to the server. Returns the row id so the caller can drop THIS
+	 * ack's row with {@link deletePreack} once it is sent.
+	 *
+	 * Wired from `sendMessageAck` for message-class stanzas: INSERT before
+	 * `sendNode`, {@link deletePreack} after — mirroring the mobile pre-ack
+	 * buffer and giving the same crash-safety (a pre-ack persisted but not yet
+	 * sent survives a restart). Best-effort: a mirror failure never blocks the
+	 * ack itself.
+	 */
+	enqueuePreack(ptn: Buffer | Uint8Array): number {
+		return Number(this.stmts.insertPreack.run(toBuf(ptn)).lastInsertRowid)
+	}
+
+	/**
+	 * Drops a single sent pre-ack by exact `_id`. Preferred over
+	 * {@link drainPreacksUpTo} on the concurrent ack hot path: a prefix drain
+	 * could delete another ack's row that was enqueued but not yet sent.
+	 */
+	deletePreack(id: number): boolean {
+		return this.stmts.deletePreack.run(id).changes > 0
+	}
+
+	/** Drains the contiguous prefix `_id <= id`, mirroring the mobile batch drain. */
+	drainPreacksUpTo(id: number): number {
+		return this.stmts.drainPreacksUpTo.run(id).changes
+	}
+
+	/** Wipes every buffered pre-ack (socket close). */
+	clearPreacks(): void {
+		this.stmts.clearPreacks.run()
 	}
 }
