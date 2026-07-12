@@ -70,6 +70,7 @@ import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
 import {
 	AppStateBackend,
 	ChatSettingsBackend,
+	type ChatSettingsRow,
 	CompanionDevicesBackend,
 	HistorySyncCompanionBackend,
 	JidMapBackend,
@@ -2258,12 +2259,34 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	}
 
+	/**
+	 * Reads a chat's synced per-chat settings (mute end + pin) from
+	 * `chatsettings.db`. Returns the stored row or `null` on miss / no store /
+	 * error — the caller falls back to the legacy `chats.update` event state.
+	 * Keyed by the chat jid. Only mute/pin are stored (the only per-chat
+	 * settings WhatsApp syncs across devices — wallpaper/tone/etc. are
+	 * device-local by protocol design; see ChatSettingsBackend).
+	 */
+	const getChatSettings = (jid: string): ChatSettingsRow | null => {
+		if (!chatSettingsBackend || !jid) {
+			return null
+		}
+
+		try {
+			return chatSettingsBackend.getSettings(jidNormalizedUser(jid))
+		} catch (err) {
+			logger.debug({ err, jid }, 'chatsettings getChatSettings failed (fallback to legacy)')
+			return null
+		}
+	}
+
 	return {
 		...sock,
 		createCallLink,
 		getBotListV2,
 		getStoredContact,
 		getOwnDeviceRegistration,
+		getChatSettings,
 		orphanQueue,
 		messageMutex,
 		receiptMutex,
