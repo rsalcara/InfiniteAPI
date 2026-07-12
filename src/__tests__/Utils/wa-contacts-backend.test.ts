@@ -57,6 +57,33 @@ describe('WaContactsBackend', () => {
 		expect(row.username).toBe('renato')
 	})
 
+	it('username tri-state: undefined keeps, explicit null clears, string sets', () => {
+		backend.upsertRow({ jid: PN, username: 'renato' })
+		expect(backend.getByJid(PN)!.username).toBe('renato')
+
+		// undefined → keep (a pushName-only update must NOT clear the username)
+		backend.upsertRow({ jid: PN, waName: 'Renato' })
+		expect(backend.getByJid(PN)!.username).toBe('renato')
+
+		// explicit null → clear (the username-delete signal)
+		backend.upsertRow({ jid: PN, username: null })
+		expect(backend.getByJid(PN)!.username).toBeNull()
+
+		// string → set again
+		backend.upsertRow({ jid: PN, username: 'renato2' })
+		expect(backend.getByJid(PN)!.username).toBe('renato2')
+	})
+
+	it('copyFieldsTo backfill never clears the target username when source has none', () => {
+		// PN row has a username; LID row will be created with a different set later.
+		backend.upsertRow({ jid: LID, username: 'lidname' })
+		backend.upsertRow({ jid: PN, waName: 'Renato' }) // PN has NO username
+		// Backfill PN → LID must NOT wipe LID's username (source username is null).
+		backend.copyFieldsTo(PN, LID)
+		expect(backend.getByJid(LID)!.username).toBe('lidname')
+		expect(backend.getByJid(LID)!.wa_name).toBe('Renato')
+	})
+
 	it('backfills the LID↔PN pair via copyFieldsTo', () => {
 		// Only the PN side was written (mapping unknown at event time).
 		backend.upsertRow({ jid: PN, waName: 'Renato', username: 'renato' })

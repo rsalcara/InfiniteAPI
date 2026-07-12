@@ -1966,6 +1966,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		if (!waContactsBackend || !c.id) return
 		try {
 			const id = jidNormalizedUser(c.id)
+			// Only mirror real user contacts. Group / @newsletter / @bot jids also
+			// arrive on contacts.update (e.g. group picture notifications) — without
+			// this guard the else-branch below would treat them as PN and store them
+			// with is_whatsapp_user=1, and getStoredContact(groupJid) would then
+			// serve a bogus contact instead of falling back.
+			if (!isAnyPnUser(id) && !isAnyLidUser(id)) {
+				return
+			}
+
 			let pn: string | undefined
 			let lid: string | undefined
 			if (isAnyLidUser(id)) {
@@ -2017,6 +2026,14 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		})
 		ev.on('contacts.update', updates => {
 			for (const c of updates) {
+				void mirrorContactToWaDb(c)
+			}
+		})
+		// Contacts learned during history sync arrive here (not via
+		// contacts.upsert), so a session whose contacts come only from history
+		// sync would otherwise leave wa_contacts empty until a live event.
+		ev.on('messaging-history.set', ({ contacts }) => {
+			for (const c of contacts) {
 				void mirrorContactToWaDb(c)
 			}
 		})
@@ -2150,7 +2167,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				status: row.status ?? undefined,
 				username: row.username ?? undefined
 			}
-		} catch {
+		} catch (err) {
+			// Logged (not silent) so a schema/migration issue is diagnosable; the
+			// caller still falls back to the legacy path on the null return.
+			logger.debug({ err, jid }, 'wa_contacts getStoredContact failed (fallback to legacy)')
 			return null
 		}
 	}

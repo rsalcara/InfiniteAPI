@@ -28,7 +28,11 @@ export type WaContactRow = {
 	/** the name saved locally (mobile `display_name`). */
 	displayName?: string | null
 	status?: string | null
-	/** @username — the column is added by wa.db migration v1. */
+	/**
+	 * @username (column added by wa.db migration v1). Distinct tri-state:
+	 * `undefined` = keep the stored value, `null` = explicit clear (the
+	 * username-delete signal), string = set.
+	 */
 	username?: string | null
 }
 
@@ -55,11 +59,15 @@ export class WaContactsBackend {
 	constructor(db: SqliteDbLike) {
 		this.db = db
 		this.stmts = {
-			// Partial-update semantics: a field passed as NULL means "not provided,
-			// keep what's there" (COALESCE(excluded, existing)) — so a pushName-only
-			// update never clobbers a previously stored username/status, matching
-			// the mobile per-field UPDATEs. is_whatsapp_user is always 1 (these come
-			// from WA contact events). Requires the UNIQUE jid index (wa.db mig v2).
+			// Partial-update semantics: for wa_name/display_name/status a value of
+			// NULL/undefined means "not provided, keep what's there"
+			// (COALESCE(excluded, existing)) — a pushName-only update never clobbers
+			// a stored status. `username` is different: it supports an EXPLICIT
+			// clear (the username-delete notification emits `username: null` as the
+			// signal). So it is driven by a separate "provided" flag —
+			// `CASE WHEN <provided> THEN excluded.username ELSE username END` — where
+			// `undefined` → keep, `null` → clear, string → set. is_whatsapp_user is
+			// always 1. Requires the UNIQUE jid index (wa.db mig v2).
 			upsert: this.db.prepare(
 				'INSERT INTO wa_contacts (jid, is_whatsapp_user, wa_name, display_name, status, username) ' +
 					'VALUES (?, 1, ?, ?, ?, ?) ' +
@@ -68,7 +76,7 @@ export class WaContactsBackend {
 					'  wa_name = COALESCE(excluded.wa_name, wa_name), ' +
 					'  display_name = COALESCE(excluded.display_name, display_name), ' +
 					'  status = COALESCE(excluded.status, status), ' +
-					'  username = COALESCE(excluded.username, username)'
+					'  username = CASE WHEN ? = 1 THEN excluded.username ELSE username END'
 			),
 			select: this.db.prepare(
 				'SELECT jid, is_whatsapp_user, wa_name, display_name, status, username FROM wa_contacts WHERE jid = ?'
@@ -77,9 +85,22 @@ export class WaContactsBackend {
 		}
 	}
 
-	/** Upsert one contact row by jid. Undefined fields are left untouched. */
+	/**
+	 * Upsert one contact row by jid. For wa_name/display_name/status, an omitted
+	 * (undefined) OR null field is left untouched. For `username`, `undefined`
+	 * leaves it untouched while an explicit `null` CLEARS it (the username-delete
+	 * signal) — distinguished by the `username_provided` flag.
+	 */
 	upsertRow(row: WaContactRow): void {
-		this.stmts.upsert.run(row.jid, nz(row.waName), nz(row.displayName), nz(row.status), nz(row.username))
+		const usernameProvided = row.username !== undefined ? 1 : 0
+		this.stmts.upsert.run(
+			row.jid,
+			nz(row.waName),
+			nz(row.displayName),
+			nz(row.status),
+			nz(row.username),
+			usernameProvided
+		)
 	}
 
 	/** Reads a single row by exact jid. Returns null on miss (→ legacy fallback). */
@@ -88,9 +109,12 @@ export class WaContactsBackend {
 	}
 
 	/**
-	 * Copies the stored fields of `fromJid` onto `toJid` (upsert), used to
-	 * backfill the LID↔PN pair once a mapping resolves. No-op if `fromJid` has
-	 * no row yet.
+	 * Merges the stored fields of `fromJid` onto `toJid` to backfill the LID↔PN
+	 * pair once a mapping resolves. This is a MERGE, not a strict copy: it goes
+	 * through {@link upsertRow}, so a NULL field on the source leaves the target's
+	 * value intact (it never overwrites with NULL). No-op if `fromJid` has no row
+	 * yet. `username` is passed as `undefined` when the source has none, so a
+	 * backfill never clears the target's username.
 	 */
 	copyFieldsTo(fromJid: string, toJid: string): void {
 		const src = this.getByJid(fromJid)
@@ -100,7 +124,7 @@ export class WaContactsBackend {
 			waName: src.wa_name,
 			displayName: src.display_name,
 			status: src.status,
-			username: src.username
+			username: src.username ?? undefined
 		})
 	}
 
