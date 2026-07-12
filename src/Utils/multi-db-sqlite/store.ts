@@ -57,6 +57,16 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 				ALTER TABLE wa_contacts ADD COLUMN username TEXT;
 				CREATE INDEX IF NOT EXISTS wa_contacts_username_idx ON wa_contacts (username);
 			`
+		},
+		{
+			// The contact mirror upserts by jid (ON CONFLICT(jid)); the base
+			// schema only ships a NON-unique jid index, so add a UNIQUE one. jid
+			// is unique per row on mobile too (a contact's LID row and PN row have
+			// distinct jids). Safe: wa_contacts had no writer before this, so no
+			// pre-existing duplicate jids can break the unique build.
+			version: 2,
+			name: 'add wa_contacts unique jid index (contact upsert)',
+			sql: `CREATE UNIQUE INDEX IF NOT EXISTS wa_contacts_jid_unique_idx ON wa_contacts (jid);`
 		}
 	],
 	'axolotl.db': [

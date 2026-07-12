@@ -15,6 +15,7 @@ import type {
 	ChatModification,
 	ChatMutation,
 	ChatUpdate,
+	Contact,
 	LTHashState,
 	MessageUpsertType,
 	PresenceData,
@@ -74,7 +75,8 @@ import {
 	MessageAddOnBackend,
 	MessageMediaBackend,
 	MessageStoreBackend,
-	StatusBackend
+	StatusBackend,
+	WaContactsBackend
 } from '../Utils/multi-db-sqlite'
 import processMessage from '../Utils/process-message'
 import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
@@ -221,6 +223,16 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// consume). Same boundary-cast rationale as appStateBackend above.
 	const historySyncCompanionBackend = config.multiDbStore
 		? new HistorySyncCompanionBackend((config.multiDbStore as any).handle('sync.db'))
+		: undefined
+
+	// Mirrors contact events into `wa_contacts` (wa.db) — the canonical mobile
+	// central contact table. Persistent (no socket-close wipe). Populated from
+	// every `contacts.upsert`/`contacts.update` and backfilled on
+	// `lid-mapping.update`; read back PN-transparently. All writes best-effort:
+	// a mirror failure never blocks the contact event flow (fallback = legacy
+	// event-driven handling). Same boundary-cast rationale as appStateBackend.
+	const waContactsBackend = config.multiDbStore
+		? new WaContactsBackend((config.multiDbStore as any).handle('wa.db'))
 		: undefined
 
 	// Phase 9.8 — mirrors static/live location (location_cache/location_sharer)
@@ -1942,6 +1954,74 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		resyncAppState(collections, false).catch(error => onUnexpectedError(error, 'blocked collections resync'))
 	})
 
+	/**
+	 * Best-effort mirror of a contact event into `wa_contacts` as the LID+PN
+	 * pair, matching how the mobile client stores two rows per contact. The side
+	 * carried by the event is written directly; the other side is resolved via
+	 * the LID↔PN mapping (or backfilled later by the `lid-mapping.update`
+	 * listener below when the mapping first becomes known). Wrapped so a mirror
+	 * failure never disrupts the contact event delivered to the consumer.
+	 */
+	const mirrorContactToWaDb = async (c: Partial<Contact>) => {
+		if (!waContactsBackend || !c.id) return
+		try {
+			const id = jidNormalizedUser(c.id)
+			let pn: string | undefined
+			let lid: string | undefined
+			if (isAnyLidUser(id)) {
+				lid = id
+				pn = c.phoneNumber
+					? jidNormalizedUser(c.phoneNumber)
+					: (await signalRepository.lidMapping.getPNForLID(id)) || undefined
+			} else {
+				pn = id
+				lid = c.lid ? jidNormalizedUser(c.lid) : (await signalRepository.lidMapping.getLIDForPN(id)) || undefined
+			}
+
+			const fields = { waName: c.notify, displayName: c.name, status: c.status, username: c.username }
+			if (pn) {
+				waContactsBackend.upsertRow({ jid: pn, ...fields })
+			}
+
+			if (lid) {
+				waContactsBackend.upsertRow({ jid: lid, ...fields })
+			}
+		} catch (err) {
+			logger.debug({ err, id: c.id }, 'wa_contacts mirror: upsert failed (ignored)')
+		}
+	}
+
+	/**
+	 * Copies whichever wa_contacts row exists onto its pair, so the store holds
+	 * both the LID and PN rows like the mobile client once the mapping is known.
+	 * Best-effort; a named helper keeps the `lid-mapping.update` loop shallow.
+	 */
+	const backfillWaContactPair = (pnUser: string, lidUser: string) => {
+		if (!waContactsBackend) {
+			return
+		}
+
+		try {
+			waContactsBackend.copyFieldsTo(pnUser, lidUser)
+			waContactsBackend.copyFieldsTo(lidUser, pnUser)
+		} catch (err) {
+			logger.debug({ err, lid: lidUser, pn: pnUser }, 'wa_contacts mirror: backfill failed (ignored)')
+		}
+	}
+
+	if (waContactsBackend) {
+		ev.on('contacts.upsert', contacts => {
+			for (const c of contacts) {
+				void mirrorContactToWaDb(c)
+			}
+		})
+		ev.on('contacts.update', updates => {
+			for (const c of updates) {
+				void mirrorContactToWaDb(c)
+			}
+		})
+	}
+
 	ev.on('lid-mapping.update', async mappings => {
 		try {
 			const result = await signalRepository.lidMapping.storeLIDPNMappings(mappings)
@@ -1975,6 +2055,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 						previousId: lidUser,
 						mergedAt
 					})
+
+					// Backfill the wa_contacts pair now that the mapping is known (an
+					// earlier contact event may have written only one side). Helper
+					// keeps this out of a 5th nesting level.
+					backfillWaContactPair(pnUser, lidUser)
 				}
 			}
 
@@ -2034,10 +2119,47 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	})
 
+	/**
+	 * PN-transparent contact read from the `wa_contacts` mirror. Given any jid
+	 * (LID or PN), resolves to PN first, then reads the PN row — so the consumer
+	 * always gets the PN-keyed contact, matching the legacy delivery. Returns
+	 * `null` on miss, missing store, or error, so the caller falls back to the
+	 * legacy event-driven contact handling.
+	 */
+	const getStoredContact = async (jid: string): Promise<Contact | null> => {
+		if (!waContactsBackend || !jid) {
+			return null
+		}
+
+		try {
+			const id = jidNormalizedUser(jid)
+			const pn = isAnyLidUser(id) ? (await signalRepository.lidMapping.getPNForLID(id)) || undefined : id
+			if (!pn) {
+				return null
+			}
+
+			const row = waContactsBackend.getByJid(pn)
+			if (!row) {
+				return null
+			}
+
+			return {
+				id: pn,
+				name: row.display_name ?? undefined,
+				notify: row.wa_name ?? undefined,
+				status: row.status ?? undefined,
+				username: row.username ?? undefined
+			}
+		} catch {
+			return null
+		}
+	}
+
 	return {
 		...sock,
 		createCallLink,
 		getBotListV2,
+		getStoredContact,
 		orphanQueue,
 		messageMutex,
 		receiptMutex,
