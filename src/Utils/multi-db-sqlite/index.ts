@@ -21,6 +21,7 @@ export {
 } from './msg-retry-counter-adapter'
 export { MessageQuarantineBackend, type QuarantineRecord, type StoredQuarantineRow } from './quarantine-backend'
 export { TrustedContactsBackend, type TrustedContactsBackendStats } from './trusted-contacts-backend'
+export { WaContactsBackend, type WaContactRow, type StoredWaContactRow } from './wa-contacts-backend'
 export {
 	AppStateBackend,
 	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
