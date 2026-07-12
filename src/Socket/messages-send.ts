@@ -1,6 +1,6 @@
 import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
-import { randomBytes } from 'crypto'
+import { randomBytes, randomUUID } from 'crypto'
 import { proto } from '../../WAProto/index.js'
 import { DEFAULT_CACHE_MAX_KEYS, DEFAULT_CACHE_TTLS, URL_REGEX, WA_DEFAULT_EPHEMERAL } from '../Defaults'
 import type {
@@ -46,7 +46,7 @@ import {
 import { logMessageSent, logTcToken } from '../Utils/baileys-logger'
 import { getUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
-import { type MultiDbSqliteStore, SignalTypedBackend } from '../Utils/multi-db-sqlite'
+import { MediaJobBackend, type MultiDbSqliteStore, SignalTypedBackend } from '../Utils/multi-db-sqlite'
 import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prometheus-metrics'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import {
@@ -2492,7 +2492,38 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return result
 	}
 
-	const waUploadToServer = getWAUploadToServer(config, refreshMediaConn)
+	const rawWaUploadToServer = getWAUploadToServer(config, refreshMediaConn)
+
+	// Best-effort `media_job` mirror (media.db): the mobile client tracks an
+	// in-flight media transfer as a transient row — INSERT on start, DELETE on
+	// completion, keyed by (uuid, job_type). InfiniteAPI uploads inline, so we
+	// mirror the same lifecycle around each upload: generate a client uuid,
+	// INSERT before the transfer, DELETE in `finally` (success OR failure). Only
+	// job_type=1 (upload) — the flow InfiniteAPI drives. A mirror failure never
+	// affects the upload (fallback = the raw upload runs regardless).
+	const mediaJobBackend = config.multiDbStore
+		? new MediaJobBackend((config.multiDbStore as MultiDbSqliteStore).handle('media.db'))
+		: undefined
+	const waUploadToServer: typeof rawWaUploadToServer = mediaJobBackend
+		? async (filePath, opts) => {
+				const uuid = randomUUID()
+				try {
+					mediaJobBackend.insertUpload({ uuid })
+				} catch (err) {
+					logger.debug({ err }, 'media_job mirror: insert failed (ignored)')
+				}
+
+				try {
+					return await rawWaUploadToServer(filePath, opts)
+				} finally {
+					try {
+						mediaJobBackend.deleteUpload(uuid)
+					} catch (err) {
+						logger.debug({ err }, 'media_job mirror: delete failed (ignored)')
+					}
+				}
+			}
+		: rawWaUploadToServer
 
 	const waitForMsgMediaUpdate = bindWaitForEvent(ev, 'messages.media-update')
 
@@ -2527,6 +2558,19 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		// (not getter) so the spread in chats.ts preserves the live closure binding.
 		getMediaHost: () => mediaHost,
 		waUploadToServer,
+		/**
+		 * Media transfers currently in flight (the transient `media.db.media_job`
+		 * mirror). Empty in steady state — a row exists only while an upload is
+		 * running. Returns `[]` when no multi-db store is configured or on error
+		 * (fallback: the consumer has no in-progress view, same as legacy).
+		 */
+		getMediaUploadsInProgress: () => {
+			try {
+				return mediaJobBackend?.listInProgress() ?? []
+			} catch {
+				return []
+			}
+		},
 		fetchPrivacySettings,
 		sendPeerDataOperationMessage,
 		createParticipantNodes,
