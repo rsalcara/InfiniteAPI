@@ -110,21 +110,28 @@ export class WaContactsBackend {
 
 	/**
 	 * Merges the stored fields of `fromJid` onto `toJid` to backfill the LID↔PN
-	 * pair once a mapping resolves. This is a MERGE, not a strict copy: it goes
-	 * through {@link upsertRow}, so a NULL field on the source leaves the target's
-	 * value intact (it never overwrites with NULL). No-op if `fromJid` has no row
-	 * yet. `username` is passed as `undefined` when the source has none, so a
-	 * backfill never clears the target's username.
+	 * pair once a mapping resolves. A MERGE, not a strict copy: it goes through
+	 * {@link upsertRow}, so a NULL wa_name/display_name/status on the source
+	 * leaves the target's value intact (never overwrites with NULL). No-op if
+	 * `fromJid` has no row yet.
+	 *
+	 * `username` is SEED-ONLY: it is written only when this call CREATES the
+	 * target row, never merged into an existing one. Merging it would resurrect a
+	 * username that was explicitly cleared on the target (the delete signal) from
+	 * the stale other side — the bidirectional backfill would let whichever side
+	 * still holds a non-null username win over a correct deletion. Seeding on
+	 * creation still propagates a username to a brand-new pair row.
 	 */
 	copyFieldsTo(fromJid: string, toJid: string): void {
 		const src = this.getByJid(fromJid)
 		if (!src) return
+		const targetExists = this.getByJid(toJid) !== null
 		this.upsertRow({
 			jid: toJid,
 			waName: src.wa_name,
 			displayName: src.display_name,
 			status: src.status,
-			username: src.username ?? undefined
+			username: targetExists ? undefined : (src.username ?? undefined)
 		})
 	}
 

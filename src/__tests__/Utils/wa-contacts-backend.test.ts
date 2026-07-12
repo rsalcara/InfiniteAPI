@@ -102,6 +102,28 @@ describe('WaContactsBackend', () => {
 		expect(countRows()).toBe(2)
 	})
 
+	it('backfill does NOT resurrect a username cleared on the target (seed-only)', () => {
+		// Both sides had a username; the delete reached the PN row (cleared it) but
+		// the LID row still holds the stale value (pair not reconciled at delete).
+		backend.upsertRow({ jid: LID, username: 'old', waName: 'Renato' })
+		backend.upsertRow({ jid: PN, username: 'old' })
+		backend.upsertRow({ jid: PN, username: null }) // delete reaches PN → cleared
+		expect(backend.getByJid(PN)!.username).toBeNull()
+
+		// The bidirectional backfill must NOT copy the stale LID username back onto
+		// the correctly-cleared PN row (username is seed-only, not merged).
+		backend.copyFieldsTo(LID, PN)
+		backend.copyFieldsTo(PN, LID)
+		expect(backend.getByJid(PN)!.username).toBeNull()
+	})
+
+	it('backfill still seeds username onto a newly CREATED pair row', () => {
+		backend.upsertRow({ jid: LID, username: 'x', waName: 'R' })
+		expect(backend.getByJid(PN)).toBeNull()
+		backend.copyFieldsTo(LID, PN) // creates the PN row
+		expect(backend.getByJid(PN)!.username).toBe('x')
+	})
+
 	it('clear wipes every row', () => {
 		backend.upsertRow({ jid: PN, waName: 'a' })
 		backend.upsertRow({ jid: LID, waName: 'a' })
