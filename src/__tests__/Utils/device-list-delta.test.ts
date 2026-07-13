@@ -23,6 +23,26 @@ describe('applyDeviceListDelta (#621 device-0 normalization)', () => {
 		expect(result.map(d => d.device ?? 0).sort()).toEqual([0, 1])
 	})
 
+	it('add: returns the canonical shape (device: 0, never undefined) for the primary', () => {
+		// The helper must normalize what it RETURNS, not only what it compares —
+		// otherwise a downstream re-diff against a device:0 cache misses it again.
+		const entries = [{ user: '5511999', server: 's.whatsapp.net', device: undefined }]
+		const result = applyDeviceListDelta([], entries, 'add')
+		expect(result.find(d => d.user === '5511999')?.device).toBe(0)
+	})
+
+	it('remove: legacy cache with device: undefined is dropped by a normalized (device: 0) notification', () => {
+		// The inverse direction: an older/legacy cache holds the primary as
+		// `undefined` while the current notification carries the normalized `0`.
+		const legacyCache = [
+			{ user: '5511999', server: 's.whatsapp.net', device: undefined },
+			{ user: '5511999', server: 's.whatsapp.net', device: 1 }
+		]
+		const entries = [{ user: '5511999', server: 's.whatsapp.net', device: 0 }]
+		const result = applyDeviceListDelta(legacyCache, entries, 'remove')
+		expect(result.map(d => d.device ?? 0)).toEqual([1]) // primary removed despite undefined-vs-0
+	})
+
 	it('remove: drops a non-primary device normally', () => {
 		const entries = [{ user: '5511999', server: 's.whatsapp.net', device: 1 }]
 		expect(applyDeviceListDelta(cache, entries, 'remove').map(d => d.device ?? 0)).toEqual([0])

@@ -17,9 +17,15 @@ export const applyDeviceListDelta = (
 	entries: readonly JidWithDevice[],
 	tag: 'add' | 'remove'
 ): JidWithDevice[] => {
-	const affected = new Set(entries.map(e => e.device ?? 0))
+	// Normalize the primary (`device ?? 0`) up front so the helper ALWAYS emits
+	// the canonical shape (`device: 0`, never `undefined`) — not just compares by
+	// it. Returning an un-normalized `{ device: undefined }` from `add` would
+	// weaken the redundant defense this helper promises (a downstream re-diff
+	// against a `device: 0` cache would miss it again).
+	const normalized = entries.map(e => ({ ...e, device: e.device ?? 0 }))
+	const affected = new Set(normalized.map(e => e.device))
 	const kept = existing.filter(d => !affected.has(d.device ?? 0))
 	// `add`: drop any stale entry for an affected device, then append the fresh
-	// ones. `remove`: just drop the affected devices.
-	return tag === 'remove' ? kept : [...kept, ...entries]
+	// (normalized) ones. `remove`: just drop the affected devices.
+	return tag === 'remove' ? kept : [...kept, ...normalized]
 }
