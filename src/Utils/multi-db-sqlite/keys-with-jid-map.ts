@@ -21,6 +21,7 @@
  *   message-routing code paths.
  */
 import type { SignalDataSet, SignalDataTypeMap, SignalKeyStoreWithTransaction } from '../../Types'
+import type { LidChatStateBackend } from './lid-chat-state-backend'
 import { JidMapBackend, REVERSE_SUFFIX, stripReverse } from './lid-mapping-backend'
 
 /**
@@ -33,7 +34,8 @@ import { JidMapBackend, REVERSE_SUFFIX, stripReverse } from './lid-mapping-backe
  */
 export function wrapKeysWithJidMap(
 	inner: SignalKeyStoreWithTransaction,
-	jidMap: JidMapBackend
+	jidMap: JidMapBackend,
+	lidChatState?: LidChatStateBackend
 ): SignalKeyStoreWithTransaction {
 	return {
 		isInTransaction: () => inner.isInTransaction(),
@@ -254,6 +256,22 @@ export function wrapKeysWithJidMap(
 				if (pairs.length > 0) jidMap.storeMappingsBatch(pairs)
 				for (const m of forwardOnly) jidMap.storeMapping(m.pnUser, m.lidUser)
 				for (const m of reverseOnly) jidMap.storeMapping(m.pnUser, m.lidUser)
+
+				// Mirror lid_chat_state.is_pn_shared for every LID whose PN was just
+				// persisted — this `set` is the SINGLE choke point every
+				// storeLIDPNMappings caller funnels through, so marking here covers
+				// all of them at once (not just the app-state merge path). Best-effort
+				// in its OWN try/catch: a mirror failure must never fail the critical
+				// jid_map/Signal write. Deletes are excluded — they remove the link.
+				if (lidChatState) {
+					try {
+						for (const m of pairs) lidChatState.markPnShared(m.lidUser)
+						for (const m of forwardOnly) lidChatState.markPnShared(m.lidUser)
+						for (const m of reverseOnly) lidChatState.markPnShared(m.lidUser)
+					} catch {
+						// best-effort coexistence-state mirror — swallow
+					}
+				}
 			} catch (err) {
 				// Re-raise SQLITE_BUSY so caller-level retry (e.g.
 				// `runSetWithBusyRetry` in `use-multi-db-sqlite-auth-state`)

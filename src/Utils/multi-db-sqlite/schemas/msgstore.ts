@@ -617,4 +617,7 @@ CREATE TABLE IF NOT EXISTS message_ui_elements (
   button_text TEXT,
   message_type INTEGER
 );
+
+CREATE INDEX IF NOT EXISTS message_ui_elements_message_row_id_idx
+  ON message_ui_elements (message_row_id);
 `

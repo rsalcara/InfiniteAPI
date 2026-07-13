@@ -9,6 +9,7 @@ export {
 	type QuarantineNodeRecord
 } from './factories'
 export { UserDeviceBackend, type StoredDeviceRow } from './user-device-backend'
+export { LidChatStateBackend } from './lid-chat-state-backend'
 export {
 	UserDeviceCacheSqliteAdapter,
 	type NodeCacheLike,
@@ -95,5 +96,7 @@ export {
 	type RecordPollOptionInput,
 	type RecordPollVoteInput,
 	type RecordReactionInput,
-	type RecordVcardInput
+	type RecordUiElementInput,
+	type RecordVcardInput,
+	UI_ELEMENT_TYPE
 } from './message-addon-backend'
