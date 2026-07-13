@@ -80,7 +80,6 @@ import {
 	MessageAddOnBackend,
 	MessageMediaBackend,
 	MessageStoreBackend,
-	resolveStoredContact,
 	StatusBackend,
 	StickersBackend,
 	type StoredCompanionDeviceRow,
@@ -88,6 +87,7 @@ import {
 	type StoredStarredStickerRow,
 	WaContactsBackend
 } from '../Utils/multi-db-sqlite'
+import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
 import processMessage from '../Utils/process-message'
 import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
 import {
@@ -2218,10 +2218,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	/**
 	 * PN-transparent contact read from the `wa_contacts` mirror. Given any jid
-	 * (LID or PN), resolves to PN first, then reads the PN row — so the consumer
-	 * always gets the PN-keyed contact, matching the legacy delivery. Returns
-	 * `null` on miss, missing store, or error, so the caller falls back to the
-	 * legacy event-driven contact handling.
+	 * (LID or PN), it prefers the mapped PN row and falls back to the original
+	 * LID row when that PN row is absent. The returned id is the known PN, or the
+	 * original LID when no mapping exists. Returns `null` on miss, missing store,
+	 * or error so the caller falls back to legacy event-driven handling.
 	 */
 	const getStoredContact = async (jid: string): Promise<Contact | null> => {
 		if (!waContactsBackend || !jid) {

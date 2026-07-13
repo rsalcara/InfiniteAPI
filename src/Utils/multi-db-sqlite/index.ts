@@ -21,13 +21,7 @@ export {
 } from './msg-retry-counter-adapter'
 export { MessageQuarantineBackend, type QuarantineRecord, type StoredQuarantineRow } from './quarantine-backend'
 export { TrustedContactsBackend, type TrustedContactsBackendStats } from './trusted-contacts-backend'
-export {
-	resolveStoredContact,
-	type StoredContactView,
-	type StoredWaContactRow,
-	type WaContactRow,
-	WaContactsBackend
-} from './wa-contacts-backend'
+export { type StoredWaContactRow, type WaContactRow, WaContactsBackend } from './wa-contacts-backend'
 export { CompanionDevicesBackend, type OwnDeviceRow, type StoredCompanionDeviceRow } from './companion-devices-backend'
 export {
 	MediaJobBackend,

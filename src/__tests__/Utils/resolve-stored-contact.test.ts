@@ -36,6 +36,7 @@ describe('resolveStoredContact (#630 PN→LID fallback)', () => {
 			calls++
 			return table([])(jid)
 		}
+
 		expect(await resolveStoredContact(PN, getByJid, noMapping)).toBeNull()
 		expect(calls).toBe(1) // pn === id, so the fallback lookup is skipped
 	})
