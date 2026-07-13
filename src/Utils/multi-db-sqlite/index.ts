@@ -1,4 +1,4 @@
-export { MultiDbSqliteStore, type MultiDbSqliteStoreOptions, STATUS_BACKFILL_LAST_TIMESTAMP_SQL } from './store'
+export { MultiDbSqliteStore, type MultiDbSqliteStoreOptions } from './store'
 export { useMultiDbSqliteAuthState, type UseMultiDbSqliteAuthStateOptions } from './use-multi-db-sqlite-auth-state'
 export { MULTI_DB_FILES, SCHEMAS, type MultiDbFile } from './schemas'
 export { JidMapBackend, REVERSE_SUFFIX, stripReverse } from './lid-mapping-backend'

@@ -22,11 +22,11 @@ import {
 	MsgRetryCounterSqliteAdapter,
 	MultiDbSqliteStore,
 	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
-	STATUS_BACKFILL_LAST_TIMESTAMP_SQL,
 	StatusBackend,
 	StickersBackend,
 	TrustedContactsBackend
 } from '../../Utils/multi-db-sqlite'
+import { STATUS_BACKFILL_LAST_TIMESTAMP_SQL } from '../../Utils/multi-db-sqlite/store'
 
 describe('Phase 9 backends', () => {
 	let dir: string
@@ -562,8 +562,7 @@ describe('Phase 9 backends', () => {
 			db.prepare('DELETE FROM status WHERE uuid=?').run('h2')
 			db.prepare('UPDATE status_info SET last_status_timestamp = 2_000 WHERE chat_jid=?').run(sender)
 			const readTs = () =>
-				(db.prepare('SELECT last_status_timestamp t FROM status_info WHERE chat_jid=?').get(sender) as { t: number })
-					.t
+				(db.prepare('SELECT last_status_timestamp t FROM status_info WHERE chat_jid=?').get(sender) as { t: number }).t
 			expect(readTs()).toBe(2_000) // corrupted: points at the deleted h2
 
 			// Run the migration's backfill → repairs to the newest REMAINING status (h1).
