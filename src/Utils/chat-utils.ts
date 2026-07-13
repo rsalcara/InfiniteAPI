@@ -1227,17 +1227,20 @@ export const processSyncAction = (
 			setting: 'channelsPersonalisedRecommendation',
 			value: action.privacySettingChannelsPersonalisedRecommendationAction
 		})
-	} else if (action?.stickerAction) {
+	} else if (action?.stickerAction && id) {
 		// Phase 9.16 — favourite/unfavourite a sticker. `id` (mutation index) is
 		// the sticker's plaintext SHA-256 (base64) = stickers.db PK. Fields map
-		// 1:1 onto `starred_stickers` (validated against a real device).
+		// 1:1 onto `starred_stickers` (validated against a real device). The `&& id`
+		// guard keeps the mirror + event from firing with an undefined hash.
 		const sa = action.stickerAction
-		if (stickersBackend && id) {
+		if (stickersBackend) {
 			try {
 				if (sa.isFavorite) {
 					stickersBackend.upsertStarred({
 						plaintextHash: id,
-						timestamp: toNumber(syncAction.syncAction.timestamp ?? 0) || null,
+						// The mutation timestamp lives on SyncActionValue (`action`),
+						// not on SyncActionData.
+						timestamp: toNumber(action.timestamp ?? 0) || null,
 						url: sa.url ?? null,
 						encHash: sa.fileEncSha256 ? Buffer.from(sa.fileEncSha256).toString('base64') : null,
 						directPath: sa.directPath ?? null,
@@ -1258,7 +1261,7 @@ export const processSyncAction = (
 			}
 		}
 
-		ev.emit('stickers.update', { plaintextHash: id!, isFavorite: !!sa.isFavorite })
+		ev.emit('stickers.update', { plaintextHash: id, isFavorite: !!sa.isFavorite })
 	} else if (action?.removeRecentStickerAction) {
 		// Phase 9.16 — drop a recently-used sticker, keyed by its send timestamp.
 		const lastTs = toNumber(action.removeRecentStickerAction.lastStickerSentTs ?? 0)

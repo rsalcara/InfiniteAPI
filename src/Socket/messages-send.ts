@@ -42,12 +42,19 @@ import {
 	parseAndInjectE2ESessions,
 	runDetached,
 	safeCacheSet,
+	toNumber,
 	unixTimestampSeconds
 } from '../Utils'
 import { logMessageSent, logTcToken } from '../Utils/baileys-logger'
 import { getUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
-import { LocationBackend, MediaJobBackend, type MultiDbSqliteStore, SignalTypedBackend } from '../Utils/multi-db-sqlite'
+import {
+	LocationBackend,
+	MediaJobBackend,
+	type MultiDbSqliteStore,
+	SignalTypedBackend,
+	StickersBackend
+} from '../Utils/multi-db-sqlite'
 import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prometheus-metrics'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import {
@@ -239,6 +246,17 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// A bad handle / failed `prepare` must not break socket setup — the
 			// mirror is best-effort; sends keep working without it.
 			logger.warn({ err }, 'location.db backend init failed — sent-live-location mirror disabled')
+		}
+	}
+
+	// Phase 9.16 — recent_stickers mirror: sending a sticker makes it "recent"
+	// (mirrors the mobile). Best-effort; a bad handle just disables the mirror.
+	let sendStickersBackend: StickersBackend | undefined
+	if (config.multiDbStore) {
+		try {
+			sendStickersBackend = new StickersBackend((config.multiDbStore as MultiDbSqliteStore).handle('stickers.db'))
+		} catch (err) {
+			logger.warn({ err }, 'stickers.db backend init failed — recent-sticker mirror disabled')
 		}
 	}
 
@@ -3095,6 +3113,34 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					statusJidList: options.statusJidList,
 					additionalNodes
 				})
+
+				// Phase 9.16 — a SENT sticker becomes "recent" (mobile parity).
+				// Best-effort; never blocks the send (relay already happened).
+				const sentSticker = fullMsg.message?.stickerMessage
+				if (sendStickersBackend && sentSticker?.fileSha256) {
+					try {
+						const sentTs = sentSticker.stickerSentTs ? toNumber(sentSticker.stickerSentTs) : Date.now()
+						sendStickersBackend.upsertRecent({
+							plaintextHash: Buffer.from(sentSticker.fileSha256).toString('base64'),
+							// entry_weight: newest-first ordering; WA's real weighting algo
+							// isn't exposed, so we approximate with the send timestamp.
+							entryWeight: sentTs,
+							lastStickerSentTs: sentTs,
+							url: sentSticker.url ?? null,
+							encHash: sentSticker.fileEncSha256 ? Buffer.from(sentSticker.fileEncSha256).toString('base64') : null,
+							mediaKey: sentSticker.mediaKey ? Buffer.from(sentSticker.mediaKey).toString('base64') : null,
+							directPath: sentSticker.directPath ?? null,
+							mimetype: sentSticker.mimetype ?? null,
+							fileSize: sentSticker.fileLength ? toNumber(sentSticker.fileLength) : null,
+							width: sentSticker.width ?? null,
+							height: sentSticker.height ?? null,
+							isLottie: sentSticker.isLottie ? 1 : 0
+						})
+					} catch (err) {
+						logger.debug({ err }, 'recent-sticker mirror failed (best-effort)')
+					}
+				}
+
 				// Stage 9 hybrid: runDetached for structured logging + preserve mutex-key fallback
 				if (config.emitOwnEvents) {
 					process.nextTick(() =>

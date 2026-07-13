@@ -62,9 +62,31 @@ export type StoredStarredStickerRow = {
 	is_avatar: number
 }
 
-export type StoredRecentStickerRow = StoredStarredStickerRow & {
+// NOTE: recent_stickers has a DIFFERENT shape from starred_stickers — no
+// `timestamp`/`is_avatar`; it has `entry_weight`, `last_sticker_sent_ts` and
+// `is_avocado`. Declared independently so consumers of `listRecent()` (a
+// `SELECT *`) get an accurate type.
+export type StoredRecentStickerRow = {
+	plaintext_hash: string
 	entry_weight: number
 	last_sticker_sent_ts: number
+	url: string | null
+	enc_hash: string | null
+	direct_path: string | null
+	mimetype: string | null
+	media_key: string | null
+	file_size: number | null
+	width: number | null
+	height: number | null
+	hash_of_image_part: string | null
+	emojis: string | null
+	is_first_party: number | null
+	is_avocado: number
+	avatar_template_id: string | null
+	is_fun_sticker: number | null
+	is_lottie: number | null
+	accessibility_text: string | null
+	premium: number | null
 }
 
 export class StickersBackend {
@@ -87,12 +109,17 @@ export class StickersBackend {
 				'INSERT INTO starred_stickers (plaintext_hash, timestamp, url, enc_hash, direct_path, mimetype, ' +
 					'media_key, file_size, width, height, hash_of_image_part, is_lottie, is_avatar) ' +
 					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+					// COALESCE(excluded.col, col): a re-star that omits a field (NULL)
+					// keeps the stored value instead of wiping it. A real update (a
+					// non-null new value) still overwrites.
 					'ON CONFLICT(plaintext_hash) DO UPDATE SET ' +
-					'  timestamp = excluded.timestamp, url = excluded.url, enc_hash = excluded.enc_hash, ' +
-					'  direct_path = excluded.direct_path, mimetype = excluded.mimetype, media_key = excluded.media_key, ' +
-					'  file_size = excluded.file_size, width = excluded.width, height = excluded.height, ' +
-					'  hash_of_image_part = excluded.hash_of_image_part, is_lottie = excluded.is_lottie, ' +
-					'  is_avatar = excluded.is_avatar'
+					'  timestamp = COALESCE(excluded.timestamp, timestamp), url = COALESCE(excluded.url, url), ' +
+					'  enc_hash = COALESCE(excluded.enc_hash, enc_hash), direct_path = COALESCE(excluded.direct_path, direct_path), ' +
+					'  mimetype = COALESCE(excluded.mimetype, mimetype), media_key = COALESCE(excluded.media_key, media_key), ' +
+					'  file_size = COALESCE(excluded.file_size, file_size), width = COALESCE(excluded.width, width), ' +
+					'  height = COALESCE(excluded.height, height), ' +
+					'  hash_of_image_part = COALESCE(excluded.hash_of_image_part, hash_of_image_part), ' +
+					'  is_lottie = COALESCE(excluded.is_lottie, is_lottie), is_avatar = COALESCE(excluded.is_avatar, is_avatar)'
 			),
 			removeStarred: this.db.prepare('DELETE FROM starred_stickers WHERE plaintext_hash = ?'),
 			getStarred: this.db.prepare('SELECT * FROM starred_stickers WHERE plaintext_hash = ?'),
@@ -101,12 +128,16 @@ export class StickersBackend {
 				'INSERT INTO recent_stickers (plaintext_hash, entry_weight, last_sticker_sent_ts, url, enc_hash, ' +
 					'direct_path, mimetype, media_key, file_size, width, height, hash_of_image_part, is_lottie) ' +
 					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+					// entry_weight/last_sticker_sent_ts always refresh on re-use; the
+					// metadata columns COALESCE so a partial upsert never wipes them.
 					'ON CONFLICT(plaintext_hash) DO UPDATE SET ' +
 					'  entry_weight = excluded.entry_weight, last_sticker_sent_ts = excluded.last_sticker_sent_ts, ' +
-					'  url = excluded.url, enc_hash = excluded.enc_hash, direct_path = excluded.direct_path, ' +
-					'  mimetype = excluded.mimetype, media_key = excluded.media_key, file_size = excluded.file_size, ' +
-					'  width = excluded.width, height = excluded.height, hash_of_image_part = excluded.hash_of_image_part, ' +
-					'  is_lottie = excluded.is_lottie'
+					'  url = COALESCE(excluded.url, url), enc_hash = COALESCE(excluded.enc_hash, enc_hash), ' +
+					'  direct_path = COALESCE(excluded.direct_path, direct_path), mimetype = COALESCE(excluded.mimetype, mimetype), ' +
+					'  media_key = COALESCE(excluded.media_key, media_key), file_size = COALESCE(excluded.file_size, file_size), ' +
+					'  width = COALESCE(excluded.width, width), height = COALESCE(excluded.height, height), ' +
+					'  hash_of_image_part = COALESCE(excluded.hash_of_image_part, hash_of_image_part), ' +
+					'  is_lottie = COALESCE(excluded.is_lottie, is_lottie)'
 			),
 			// removeRecentStickerAction identifies the row by its lastStickerSentTs.
 			removeRecentByTs: this.db.prepare('DELETE FROM recent_stickers WHERE last_sticker_sent_ts = ?'),
