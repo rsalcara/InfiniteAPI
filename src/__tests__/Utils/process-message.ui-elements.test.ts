@@ -117,6 +117,25 @@ describe('processMessage — message_ui_elements extraction', () => {
 				description: 'Choose',
 				footerText: 'Footer'
 			}
+		},
+		{
+			name: 'interactiveMessage nested in a template',
+			message: {
+				templateMessage: {
+					interactiveMessageTemplate: {
+						body: { text: 'Nested' },
+						footer: { text: 'Template footer' },
+						nativeFlowMessage: { buttons: [{ name: 'cta_url', buttonParamsJson: '{"url":"/nested"}' }] }
+					}
+				}
+			},
+			expected: {
+				elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
+				buttonText: 'cta_url',
+				elementContent: '{"url":"/nested"}',
+				description: 'Nested',
+				footerText: 'Template footer'
+			}
 		}
 	])('wires $name through the real processMessage path', async ({ message, expected }) => {
 		const { addOnBackend, ctx } = makeContext()

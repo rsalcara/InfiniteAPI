@@ -498,29 +498,31 @@ const extractUiElements = (content: proto.IMessage | undefined | null): UiElemen
 		}
 	}
 
-	const im = content.interactiveMessage
-	const nativeFlow = im?.nativeFlowMessage
-	if (im && nativeFlow) {
-		for (const btn of nativeFlow.buttons ?? []) {
-			out.push({
-				elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
-				buttonText: btn.name ?? null,
-				elementContent: btn.buttonParamsJson ?? null,
-				footerText: im.footer?.text ?? null,
-				description: im.body?.text ?? null
-			})
-		}
-	} else if (im?.carouselMessage) {
-		for (const [cardIndex, card] of (im.carouselMessage.cards ?? []).entries()) {
-			for (const [buttonIndex, btn] of (card.nativeFlowMessage?.buttons ?? []).entries()) {
+	for (const im of [content.interactiveMessage, tm?.interactiveMessageTemplate]) {
+		if (!im) continue
+		const nativeFlow = im.nativeFlowMessage
+		if (nativeFlow) {
+			for (const btn of nativeFlow.buttons ?? []) {
 				out.push({
 					elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
 					buttonText: btn.name ?? null,
 					elementContent: btn.buttonParamsJson ?? null,
-					footerText: card.footer?.text ?? im.footer?.text ?? null,
-					description: card.body?.text ?? im.body?.text ?? null,
-					context: { containerType: 'carousel', cardIndex, buttonIndex }
+					footerText: im.footer?.text ?? null,
+					description: im.body?.text ?? null
 				})
+			}
+		} else if (im.carouselMessage) {
+			for (const [cardIndex, card] of (im.carouselMessage.cards ?? []).entries()) {
+				for (const [buttonIndex, btn] of (card.nativeFlowMessage?.buttons ?? []).entries()) {
+					out.push({
+						elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
+						buttonText: btn.name ?? null,
+						elementContent: btn.buttonParamsJson ?? null,
+						footerText: card.footer?.text ?? im.footer?.text ?? null,
+						description: card.body?.text ?? im.body?.text ?? null,
+						context: { containerType: 'carousel', cardIndex, buttonIndex }
+					})
+				}
 			}
 		}
 	}
