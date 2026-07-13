@@ -81,6 +81,12 @@ CREATE TABLE IF NOT EXISTS status (
 CREATE INDEX IF NOT EXISTS status_is_archived_index ON status (is_archived);
 CREATE UNIQUE INDEX IF NOT EXISTS status_info_sort_id_index
   ON status (status_info_row_id, sort_id);
+-- Serves the 24h retention prune (\`DELETE FROM status WHERE timestamp < ?\`) and
+-- the per-sender active-window read (\`WHERE sender_user_jid = ? AND timestamp >= ?\`)
+-- so neither scans the whole table as the feed grows. New index — CREATE INDEX IF
+-- NOT EXISTS is re-exec'd on every open, so existing status.db files pick it up.
+CREATE INDEX IF NOT EXISTS status_timestamp_index ON status (timestamp);
+CREATE INDEX IF NOT EXISTS status_sender_timestamp_index ON status (sender_user_jid, timestamp);
 
 CREATE TABLE IF NOT EXISTS status_attribution (
   row_id INTEGER PRIMARY KEY AUTOINCREMENT,
