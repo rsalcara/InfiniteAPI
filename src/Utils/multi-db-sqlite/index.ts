@@ -97,6 +97,8 @@ export {
 	type RecordPollVoteInput,
 	type RecordReactionInput,
 	type RecordUiElementInput,
+	type RecordUiElementWithContextInput,
 	type RecordVcardInput,
+	type UiElementContext,
 	UI_ELEMENT_TYPE
 } from './message-addon-backend'

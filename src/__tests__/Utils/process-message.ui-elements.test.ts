@@ -125,5 +125,107 @@ describe('processMessage — message_ui_elements extraction', () => {
 		await processMessage(inbound('interactive-1', message as proto.IMessage), ctx as any)
 
 		expect(addOnBackend.recordUiElements).toHaveBeenCalledWith(42, [expect.objectContaining(expected)])
+		const recorded = addOnBackend.recordUiElements.mock.calls[0]?.[1] as Array<Record<string, unknown>>
+		expect(recorded[0]).not.toHaveProperty('context')
+	})
+
+	it('preserves carousel card and button order without changing button payloads', async () => {
+		const { addOnBackend, ctx } = makeContext()
+		const message: proto.IMessage = {
+			interactiveMessage: {
+				body: { text: 'Carousel' },
+				carouselMessage: {
+					cards: [
+						{
+							body: { text: 'Card 1' },
+							nativeFlowMessage: {
+								buttons: [
+									{ name: 'cta_url', buttonParamsJson: '{"url":"https://example.com/1"}' },
+									{ name: 'quick_reply', buttonParamsJson: '{"id":"first"}' }
+								]
+							}
+						},
+						{
+							body: { text: 'Card 2' },
+							nativeFlowMessage: {
+								buttons: [{ name: 'quick_reply', buttonParamsJson: '{"id":"second"}' }]
+							}
+						}
+					]
+				}
+			}
+		}
+
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		await processMessage(inbound('carousel-1', message), ctx as any)
+
+		expect(addOnBackend.recordUiElements).toHaveBeenCalledWith(42, [
+			expect.objectContaining({
+				buttonText: 'cta_url',
+				elementContent: '{"url":"https://example.com/1"}',
+				description: 'Card 1',
+				context: { containerType: 'carousel', cardIndex: 0, buttonIndex: 0 }
+			}),
+			expect.objectContaining({
+				buttonText: 'quick_reply',
+				elementContent: '{"id":"first"}',
+				context: { containerType: 'carousel', cardIndex: 0, buttonIndex: 1 }
+			}),
+			expect.objectContaining({
+				buttonText: 'quick_reply',
+				elementContent: '{"id":"second"}',
+				description: 'Card 2',
+				context: { containerType: 'carousel', cardIndex: 1, buttonIndex: 0 }
+			})
+		])
+	})
+
+	it('clears stale rows when an interactive container has no extractable controls', async () => {
+		const { addOnBackend, ctx } = makeContext()
+
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		await processMessage(inbound('empty-1', { interactiveMessage: { nativeFlowMessage: { buttons: [] } } }), ctx as any)
+
+		expect(addOnBackend.recordUiElements).toHaveBeenCalledWith(42, [])
+	})
+
+	it('keeps legacy processing alive and logs an exact schema failure reason', async () => {
+		const { addOnBackend, ctx } = makeContext()
+		const dbError = Object.assign(new Error('no such table: message_ui_element_context'), {
+			code: 'SQLITE_ERROR'
+		})
+		addOnBackend.recordUiElements.mockImplementation(() => {
+			throw dbError
+		})
+		const warn = jest.spyOn(silent, 'warn')
+		try {
+			await expect(
+				processMessage(
+					inbound('fallback-1', {
+						interactiveMessage: {
+							nativeFlowMessage: { buttons: [{ name: 'quick_reply', buttonParamsJson: '{"id":"x"}' }] }
+						}
+					}),
+					// eslint-disable-next-line @typescript-eslint/no-explicit-any
+					ctx as any
+				)
+			).resolves.not.toThrow()
+
+			expect(warn).toHaveBeenCalledWith(
+				expect.objectContaining({
+					reason: 'MESSAGE_MIRROR_UI_ELEMENTS_REPLACE_SCHEMA_MISMATCH',
+					sqliteCode: 'SQLITE_ERROR',
+					errorMessage: 'no such table: message_ui_element_context',
+					operation: 'ui_elements_replace',
+					table: 'message_ui_elements,message_ui_element_context',
+					messageId: 'fallback-1',
+					primary: 'multi_db_sqlite',
+					fallback: 'legacy_message_proto'
+				}),
+				'multi-db-sqlite: message mirror fallback'
+			)
+		} finally {
+			warn.mockRestore()
+		}
 	})
 })

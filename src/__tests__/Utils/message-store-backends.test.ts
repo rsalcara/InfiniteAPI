@@ -463,9 +463,52 @@ describe('msgstore.db message-store backends', () => {
 				footerText: 'ft'
 			})
 
+			addOns.recordUiElements(rowId, [
+				{
+					elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
+					buttonText: 'First',
+					elementContent: '{"id":"first"}',
+					context: { containerType: 'carousel', cardIndex: 0, buttonIndex: 0 }
+				},
+				{
+					elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
+					buttonText: 'Second',
+					elementContent: '{"id":"second"}',
+					context: { containerType: 'carousel', cardIndex: 1, buttonIndex: 0 }
+				}
+			])
+			expect(addOns.getUiElementsWithContext(rowId).map(e => e.context)).toEqual([
+				{ containerType: 'carousel', cardIndex: 0, buttonIndex: 0 },
+				{ containerType: 'carousel', cardIndex: 1, buttonIndex: 0 }
+			])
+			// The compatibility reader retains its original row shape.
+			expect(addOns.getUiElements(rowId)[0]).not.toHaveProperty('context')
+
+			// A context failure rolls the entire replacement back. Existing buttons
+			// remain available to both readers instead of exposing a partial layout.
+			expect(() =>
+				addOns.recordUiElements(rowId, [
+					{
+						elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
+						buttonText: 'Invalid',
+						context: { containerType: 'carousel', cardIndex: -1, buttonIndex: 0 }
+					}
+				])
+			).toThrow()
+			expect(addOns.getUiElements(rowId).map(e => e.buttonText)).toEqual(['First', 'Second'])
+			expect(addOns.getUiElementsWithContext(rowId).map(e => e.context)).toEqual([
+				{ containerType: 'carousel', cardIndex: 0, buttonIndex: 0 },
+				{ containerType: 'carousel', cardIndex: 1, buttonIndex: 0 }
+			])
+
 			// Replace-on-redecode: re-recording swaps the set, never duplicates.
 			addOns.recordUiElements(rowId, [{ elementType: UI_ELEMENT_TYPE.LIST, buttonText: 'Open' }])
 			expect(addOns.getUiElements(rowId).map(e => e.buttonText)).toEqual(['Open'])
+			const contextCount = store
+				.handle('msgstore.db')
+				.prepare('SELECT COUNT(*) AS n FROM message_ui_element_context')
+				.get() as { n: number }
+			expect(contextCount.n).toBe(0)
 
 			// An empty set CLEARS — a re-decode that yields no UI must not leave
 			// stale rows behind.

@@ -95,6 +95,16 @@ export type RecordUiElementInput = {
 	messageType?: number | null
 }
 
+export type UiElementContext = {
+	containerType: 'carousel'
+	cardIndex: number
+	buttonIndex: number
+}
+
+export type RecordUiElementWithContextInput = RecordUiElementInput & {
+	context?: UiElementContext
+}
+
 /** Best-effort element_type classifier for message_ui_elements. */
 export const UI_ELEMENT_TYPE = {
 	QUICK_REPLY: 1,
@@ -144,8 +154,11 @@ export class MessageAddOnBackend {
 		insertVcardJid: SqliteStatementLike
 		countVcardJids: SqliteStatementLike
 		insertUiElement: SqliteStatementLike
+		insertUiElementContext: SqliteStatementLike
+		deleteUiElementContexts: SqliteStatementLike
 		deleteUiElements: SqliteStatementLike
 		getUiElements: SqliteStatementLike
+		getUiElementsWithContext: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
@@ -214,10 +227,24 @@ export class MessageAddOnBackend {
 				'INSERT INTO message_ui_elements (message_row_id, element_type, element_content, description, ' +
 					'template_id, hsm_tag, footer_text, button_text, message_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
 			),
+			insertUiElementContext: this.db.prepare(
+				'INSERT INTO message_ui_element_context (ui_element_row_id, container_type, card_index, button_index) ' +
+					'VALUES (?, ?, ?, ?)'
+			),
+			deleteUiElementContexts: this.db.prepare(
+				'DELETE FROM message_ui_element_context WHERE ui_element_row_id IN ' +
+					'(SELECT _id FROM message_ui_elements WHERE message_row_id = ?)'
+			),
 			deleteUiElements: this.db.prepare('DELETE FROM message_ui_elements WHERE message_row_id = ?'),
 			getUiElements: this.db.prepare(
 				'SELECT element_type, element_content, description, template_id, hsm_tag, footer_text, ' +
 					'button_text, message_type FROM message_ui_elements WHERE message_row_id = ? ORDER BY _id'
+			),
+			getUiElementsWithContext: this.db.prepare(
+				'SELECT e.element_type, e.element_content, e.description, e.template_id, e.hsm_tag, e.footer_text, ' +
+					'e.button_text, e.message_type, c.container_type, c.card_index, c.button_index ' +
+					'FROM message_ui_elements e LEFT JOIN message_ui_element_context c ON c.ui_element_row_id = e._id ' +
+					'WHERE e.message_row_id = ? ORDER BY c.card_index, c.button_index, e._id'
 			)
 		}
 	}
@@ -373,14 +400,20 @@ export class MessageAddOnBackend {
 	 * template) of a message. Replace-on-redecode: a re-processed stanza wipes
 	 * the prior rows for this message and re-inserts, so a retry can't
 	 * duplicate. An EMPTY `elements` still clears — a re-decode that yields no
-	 * UI must not leave stale rows behind. The message proto stays the ultimate
+	 * UI must not leave stale rows behind. Carousel context is replaced in the
+	 * same transaction as the mobile-compatible rows, so readers never observe
+	 * a partially rebuilt card layout. The message proto stays the ultimate
 	 * source; this is a derived render-mirror, safe to rebuild at any time.
 	 */
-	recordUiElements(messageRowId: number, elements: ReadonlyArray<Omit<RecordUiElementInput, 'messageRowId'>>): void {
+	recordUiElements(
+		messageRowId: number,
+		elements: ReadonlyArray<Omit<RecordUiElementWithContextInput, 'messageRowId'>>
+	): void {
 		this.db.transaction(() => {
+			this.stmts.deleteUiElementContexts.run(messageRowId)
 			this.stmts.deleteUiElements.run(messageRowId)
 			for (const el of elements) {
-				this.stmts.insertUiElement.run(
+				const inserted = this.stmts.insertUiElement.run(
 					messageRowId,
 					el.elementType ?? null,
 					el.elementContent ?? null,
@@ -391,6 +424,14 @@ export class MessageAddOnBackend {
 					el.buttonText ?? null,
 					el.messageType ?? null
 				)
+				if (el.context) {
+					this.stmts.insertUiElementContext.run(
+						inserted.lastInsertRowid,
+						el.context.containerType,
+						el.context.cardIndex,
+						el.context.buttonIndex
+					)
+				}
 			}
 		})()
 	}
@@ -416,6 +457,44 @@ export class MessageAddOnBackend {
 			footerText: r.footer_text,
 			buttonText: r.button_text,
 			messageType: r.message_type
+		}))
+	}
+
+	/** Context-aware read for consumers that render carousel buttons by card. */
+	getUiElementsWithContext(
+		messageRowId: number
+	): Array<Omit<RecordUiElementInput, 'messageRowId'> & { context?: UiElementContext }> {
+		const rows = this.stmts.getUiElementsWithContext.all(messageRowId) as Array<{
+			element_type: number | null
+			element_content: string | null
+			description: string | null
+			template_id: string | null
+			hsm_tag: string | null
+			footer_text: string | null
+			button_text: string | null
+			message_type: number | null
+			container_type: 'carousel' | null
+			card_index: number | null
+			button_index: number | null
+		}>
+		return rows.map(r => ({
+			elementType: r.element_type,
+			elementContent: r.element_content,
+			description: r.description,
+			templateId: r.template_id,
+			hsmTag: r.hsm_tag,
+			footerText: r.footer_text,
+			buttonText: r.button_text,
+			messageType: r.message_type,
+			...(r.container_type !== null && r.card_index !== null && r.button_index !== null
+				? {
+						context: {
+							containerType: r.container_type,
+							cardIndex: r.card_index,
+							buttonIndex: r.button_index
+						}
+					}
+				: {})
 		}))
 	}
 }

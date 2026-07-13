@@ -56,6 +56,8 @@
  *   - `composition` — outbound-compose draft state (typing/recording)
  *   - `message_ui_elements` — parsed interactive-message UI (buttons,
  *     templates) for rendering
+ *   - `message_ui_element_context` — gateway-only carousel card/button
+ *     ordering attached 1:1 to a `message_ui_elements` row
  *
  * Explicitly NOT ported (same rationale as the original scoping note):
  * `message_ftsv2`/`wa_contacts_fts` (FTS virtual tables, no direct value
@@ -620,4 +622,15 @@ CREATE TABLE IF NOT EXISTS message_ui_elements (
 
 CREATE INDEX IF NOT EXISTS message_ui_elements_message_row_id_idx
   ON message_ui_elements (message_row_id);
+
+-- Gateway-only context for interactive carousel buttons. Kept separate from
+-- message_ui_elements so the mobile-compatible row shape and every existing
+-- consumer remain unchanged. One context row belongs to one UI-element row.
+CREATE TABLE IF NOT EXISTS message_ui_element_context (
+  ui_element_row_id INTEGER PRIMARY KEY NOT NULL,
+  container_type TEXT NOT NULL CHECK (container_type = 'carousel'),
+  card_index INTEGER NOT NULL CHECK (card_index >= 0),
+  button_index INTEGER NOT NULL CHECK (button_index >= 0),
+  FOREIGN KEY (ui_element_row_id) REFERENCES message_ui_elements (_id) ON DELETE CASCADE
+);
 `
