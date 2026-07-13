@@ -471,7 +471,7 @@ const extractUiElements = (content: proto.IMessage | undefined | null): UiElemen
 			for (const row of section.rows ?? []) {
 				out.push({
 					elementType: UI_ELEMENT_TYPE.LIST,
-					buttonText: lm.buttonText ?? null,
+					buttonText: row.title ?? lm.buttonText ?? null,
 					elementContent: row.rowId ?? null,
 					description: row.description ?? row.title ?? null,
 					footerText: lm.footerText ?? null

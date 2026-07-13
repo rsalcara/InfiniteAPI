@@ -74,7 +74,7 @@ describe('processMessage — message_ui_elements extraction', () => {
 			},
 			expected: {
 				elementType: UI_ELEMENT_TYPE.LIST,
-				buttonText: 'Open',
+				buttonText: 'First',
 				elementContent: 'row-1',
 				description: 'First row',
 				footerText: 'Footer'
