@@ -56,4 +56,25 @@ describe('applyDeviceListDelta (#621 device-0 normalization)', () => {
 				.sort()
 		).toEqual([0, 1, 2])
 	})
+
+	it('does not leak the transient `jid` field into the returned entries', () => {
+		// The notification parser yields `DecodedDevice` (with a `jid`); the cache
+		// persists only `{ user, server, device }`. Spreading `...e` would leak it.
+		const entries = [{ jid: '5511999@s.whatsapp.net', user: '5511999', server: 's.whatsapp.net', device: 2 }]
+		const result = applyDeviceListDelta(cache, entries as never, 'add')
+		expect(result.every(d => !('jid' in d))).toBe(true)
+		expect(result.every(d => Object.keys(d).sort().join(',') === 'device,server,user')).toBe(true)
+	})
+
+	it('canonicalizes preserved (kept) legacy entries to device: 0, not undefined', () => {
+		// A legacy cache entry with `device: undefined` that is NOT affected by the
+		// delta must still come out canonical (device: 0), not pass through as-is.
+		const legacyCache = [
+			{ user: '5511999', server: 's.whatsapp.net', device: undefined }, // legacy primary
+			{ user: '5511999', server: 's.whatsapp.net', device: 1 }
+		]
+		const entries = [{ user: '5511999', server: 's.whatsapp.net', device: 1 }] // touches only device 1
+		const result = applyDeviceListDelta(legacyCache, entries, 'remove')
+		expect(result.find(d => d.user === '5511999')?.device).toBe(0) // kept primary canonicalized
+	})
 })

@@ -17,14 +17,26 @@ export const applyDeviceListDelta = (
 	entries: readonly JidWithDevice[],
 	tag: 'add' | 'remove'
 ): JidWithDevice[] => {
-	// Normalize the primary (`device ?? 0`) up front so the helper ALWAYS emits
-	// the canonical shape (`device: 0`, never `undefined`) — not just compares by
-	// it. Returning an un-normalized `{ device: undefined }` from `add` would
-	// weaken the redundant defense this helper promises (a downstream re-diff
-	// against a `device: 0` cache would miss it again).
-	const normalized = entries.map(e => ({ ...e, device: e.device ?? 0 }))
+	// Canonicalize EVERY entry the helper emits to exactly `{ user, server,
+	// device }` with `device: 0` for the primary (never `undefined`), on both the
+	// fresh (`normalized`) and passed-through (`kept`) sides:
+	//   - `device ?? 0` — a downstream re-diff against a `device: 0` cache must
+	//     not miss the primary again (the redundant defense this helper promises).
+	//   - strip to 3 fields — `entries` arrives as `DecodedDevice` (carrying a
+	//     transient `jid`); the cache persists only `{ user, server, device }`
+	//     (matching the pre-refactor shape), so spreading `...e` would leak `jid`.
+	// `server` is carried at runtime (the cache persists `{ user, server, device }`)
+	// even though it isn't on `JidWithDevice`; keep it, drop everything else (e.g.
+	// the parser's transient `jid`).
+	type CachedDevice = JidWithDevice & { server?: string }
+	const canonicalize = ({ user, server, device }: CachedDevice): CachedDevice => ({
+		user,
+		server,
+		device: device ?? 0
+	})
+	const normalized = entries.map(canonicalize)
 	const affected = new Set(normalized.map(e => e.device))
-	const kept = existing.filter(d => !affected.has(d.device ?? 0))
+	const kept = existing.filter(d => !affected.has(d.device ?? 0)).map(canonicalize)
 	// `add`: drop any stale entry for an affected device, then append the fresh
 	// (normalized) ones. `remove`: just drop the affected devices.
 	return tag === 'remove' ? kept : [...kept, ...normalized]
