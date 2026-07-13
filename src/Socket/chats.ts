@@ -80,6 +80,7 @@ import {
 	MessageAddOnBackend,
 	MessageMediaBackend,
 	MessageStoreBackend,
+	resolveStoredContact,
 	StatusBackend,
 	StickersBackend,
 	type StoredCompanionDeviceRow,
@@ -2228,24 +2229,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 
 		try {
-			const id = jidNormalizedUser(jid)
-			const pn = isAnyLidUser(id) ? (await signalRepository.lidMapping.getPNForLID(id)) || undefined : id
-			if (!pn) {
-				return null
-			}
-
-			const row = waContactsBackend.getByJid(pn)
-			if (!row) {
-				return null
-			}
-
-			return {
-				id: pn,
-				name: row.display_name ?? undefined,
-				notify: row.wa_name ?? undefined,
-				status: row.status ?? undefined,
-				username: row.username ?? undefined
-			}
+			// PN-transparent read with LID-row fallback (#630) — see
+			// resolveStoredContact.
+			return await resolveStoredContact(
+				jid,
+				j => waContactsBackend.getByJid(j),
+				async lid => (await signalRepository.lidMapping.getPNForLID(lid)) || undefined
+			)
 		} catch (err) {
 			// Logged (not silent) so a schema/migration issue is diagnosable; the
 			// caller still falls back to the legacy path on the null return.
