@@ -398,7 +398,9 @@ describe('Phase 9 backends', () => {
 
 	describe('StatusBackend', () => {
 		it('creates status_info lazily and increments its aggregate counters per received status', () => {
-			const backend = new StatusBackend(store.handle('status.db'))
+			// Disable the opportunistic 24h prune: these fixtures use tiny synthetic
+			// timestamps that would all be "expired" and swept on the first write.
+			const backend = new StatusBackend(store.handle('status.db'), { pruneIntervalMs: Number.MAX_SAFE_INTEGER })
 			const sender = '5515991426667@s.whatsapp.net'
 
 			backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'status-1', timestamp: 1_000, textData: 'oi' })
@@ -413,7 +415,7 @@ describe('Phase 9 backends', () => {
 		})
 
 		it('keeps separate sort_id sequences per sender', () => {
-			const backend = new StatusBackend(store.handle('status.db'))
+			const backend = new StatusBackend(store.handle('status.db'), { pruneIntervalMs: Number.MAX_SAFE_INTEGER })
 			backend.recordReceivedStatus({ senderUserJid: 'a@s.whatsapp.net', uuid: 'a-1', timestamp: 1 })
 			backend.recordReceivedStatus({ senderUserJid: 'b@s.whatsapp.net', uuid: 'b-1', timestamp: 1 })
 			backend.recordReceivedStatus({ senderUserJid: 'a@s.whatsapp.net', uuid: 'a-2', timestamp: 2 })
@@ -423,7 +425,7 @@ describe('Phase 9 backends', () => {
 		})
 
 		it('recordSeenReceipt resolves status_row_id by uuid and upserts on repeated views', () => {
-			const backend = new StatusBackend(store.handle('status.db'))
+			const backend = new StatusBackend(store.handle('status.db'), { pruneIntervalMs: Number.MAX_SAFE_INTEGER })
 			backend.recordReceivedStatus({ senderUserJid: 'me@s.whatsapp.net', uuid: 'my-status-1', timestamp: 1_000 })
 
 			backend.recordSeenReceipt({
@@ -449,21 +451,47 @@ describe('Phase 9 backends', () => {
 			expect(receipts.every(r => typeof r.status_row_id === 'number')).toBe(true)
 		})
 
-		it('recordSeenReceipt does not throw when the status uuid has no local row (own posted status)', () => {
+		it('recordSeenReceipt SKIPS (no null-FK orphan) when the status uuid has no local row', () => {
 			const backend = new StatusBackend(store.handle('status.db'))
 			// No recordReceivedStatus call for this uuid — mirrors a receipt for
 			// a status this gateway never recorded (e.g. the user's own post).
-			expect(() =>
-				backend.recordSeenReceipt({
-					statusUuid: 'unknown-status',
-					receiptUserJid: 'viewer@s.whatsapp.net',
-					seenTimestamp: 1_000
-				})
-			).not.toThrow()
-			// Not resolvable by uuid lookup (no matching `status` row), so it's
-			// correctly invisible to listSeenReceiptsForStatus (which itself
-			// resolves by uuid) even though the row was inserted with a null FK.
-			expect(backend.listSeenReceiptsForStatus('unknown-status')).toEqual([])
+			// It must be skipped, not stored as a null-FK orphan (which would be
+			// unretrievable, un-pruned and un-dedupable).
+			expect(
+				backend.recordSeenReceipt({ statusUuid: 'unknown', receiptUserJid: 'v@s.whatsapp.net', seenTimestamp: 1 })
+			).toBe(false)
+			// Repeated skips do not accumulate rows.
+			backend.recordSeenReceipt({ statusUuid: 'unknown', receiptUserJid: 'v@s.whatsapp.net', seenTimestamp: 2 })
+			const total = (
+				store.handle('status.db').prepare('SELECT COUNT(*) c FROM status_seen_receipt').get() as { c: number }
+			).c
+			expect(total).toBe(0)
+			expect(backend.listSeenReceiptsForStatus('unknown')).toEqual([])
+		})
+
+		it('pruneExpired deletes old statuses; triggers keep status_info counters + cascade seen_receipt', () => {
+			const backend = new StatusBackend(store.handle('status.db'), { pruneIntervalMs: Number.MAX_SAFE_INTEGER })
+			const sender = 'alice@s.whatsapp.net'
+			backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'old', timestamp: 1_000 })
+			backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'new', timestamp: 9_000 })
+			backend.recordSeenReceipt({ statusUuid: 'old', receiptUserJid: 'bob@s.whatsapp.net', seenTimestamp: 1_500 })
+
+			const db = store.handle('status.db')
+			const info = () =>
+				db.prepare('SELECT total_count, unread_count FROM status_info WHERE chat_jid=?').get(sender) as {
+					total_count: number
+					unread_count: number
+				}
+			expect(info()).toMatchObject({ total_count: 2, unread_count: 2 })
+			expect(backend.listSeenReceiptsForStatus('old')).toHaveLength(1)
+
+			// Prune everything older than 5000 → 'old' goes, 'new' stays.
+			expect(backend.pruneExpired(5_000)).toBe(1)
+			expect(backend.listStatusesForSender(sender).map(s => s.uuid)).toEqual(['new'])
+			// AFTER DELETE triggers decremented the aggregates …
+			expect(info()).toMatchObject({ total_count: 1, unread_count: 1 })
+			// … and the BEFORE DELETE trigger cascaded the seen receipt away.
+			expect((db.prepare('SELECT COUNT(*) c FROM status_seen_receipt').get() as { c: number }).c).toBe(0)
 		})
 	})
 })

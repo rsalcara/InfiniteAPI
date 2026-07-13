@@ -2316,6 +2316,41 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	}
 
+	// Phase 9.15 consume — reads the status.db mirror. Best-effort: `[]` on miss
+	// or error → the consumer falls back to the live `messages.upsert` stream
+	// (each received status@broadcast arrives as a message).
+	const getStatusFeed = (jid: string): ReturnType<StatusBackend['listStatusesForSender']> => {
+		if (!statusBackend || !jid) {
+			return []
+		}
+
+		try {
+			return statusBackend.listStatusesForSender(jidNormalizedUser(jid))
+		} catch (err) {
+			logger.debug({ err, jid }, 'status getStatusFeed failed (fallback to legacy)')
+			return []
+		}
+	}
+
+	// Who has viewed a given status (by its uuid = the status message id).
+	// NOTE: only resolves viewers for statuses recorded locally (received, or own
+	// posts that flowed through processMessage while connected). For a status not
+	// in the mirror, returns [] — consume viewer info live via
+	// `message-receipt.update` instead. (We deliberately don't store null-FK
+	// receipts; see StatusBackend.recordSeenReceipt.)
+	const getStatusViewers = (statusUuid: string): ReturnType<StatusBackend['listSeenReceiptsForStatus']> => {
+		if (!statusBackend || !statusUuid) {
+			return []
+		}
+
+		try {
+			return statusBackend.listSeenReceiptsForStatus(statusUuid)
+		} catch (err) {
+			logger.debug({ err, statusUuid }, 'status getStatusViewers failed (fallback to legacy)')
+			return []
+		}
+	}
+
 	return {
 		...sock,
 		createCallLink,
@@ -2325,6 +2360,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		getChatSettings,
 		getLiveLocation,
 		getActiveLiveLocations,
+		getStatusFeed,
+		getStatusViewers,
 		orphanQueue,
 		messageMutex,
 		receiptMutex,
