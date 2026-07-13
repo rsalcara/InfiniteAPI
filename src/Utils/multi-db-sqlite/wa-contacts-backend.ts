@@ -13,13 +13,63 @@
  * Populate + consume, both best-effort with fallback: writes are wrapped at the
  * call site so a mirror failure never blocks the contact event flow, and the
  * read returns `null` on miss so the caller falls back to the legacy
- * event-driven contact handling. The consumer always receives PN — the read
- * side is keyed by the PN jid (the wiring resolves LID→PN first).
+ * event-driven contact handling. Reads go through {@link resolveStoredContact},
+ * which prefers the PN row but falls back to the original jid's (LID) row when
+ * the PN row is absent (#630), so a contact stored only under its LID is still
+ * found.
  *
  * `wa_contacts` is PERSISTENT (contacts survive a reconnect), so — unlike the
  * transient mirrors — there is no socket-close wipe.
  */
+import { isAnyLidUser, jidNormalizedUser } from '../../WABinary/jid-utils'
 import type { SqliteDbLike, SqliteStatementLike } from './types'
+
+/** The consumer-facing shape returned by {@link resolveStoredContact}. */
+export type StoredContactView = {
+	id: string
+	name?: string
+	notify?: string
+	status?: string
+	username?: string
+}
+
+/**
+ * Resolves a stored contact for any `jid`, PN-transparently. Pure + injectable
+ * (row getter + LID→PN resolver passed in) so the socket wiring stays thin and
+ * this is unit-testable.
+ *
+ * Lookup order (audit #630): prefer the PN row (canonical identity), then fall
+ * back to the ORIGINAL jid when the PN is unknown OR is known but has no stored
+ * row. `wa_contacts` keys by jid and holds a contact's LID row and PN row
+ * independently (they are backfilled separately once a mapping resolves), so a
+ * PN-only lookup would return `null` for a contact we DO have under its LID —
+ * dropping it. Returns `null` only when neither jid has a row.
+ */
+export async function resolveStoredContact(
+	jid: string,
+	getByJid: (jid: string) => StoredWaContactRow | null,
+	getPnForLid: (lid: string) => Promise<string | undefined>
+): Promise<StoredContactView | null> {
+	const id = jidNormalizedUser(jid)
+	const pn = isAnyLidUser(id) ? (await getPnForLid(id)) || undefined : id
+
+	let row = pn ? getByJid(pn) : null
+	if (!row && pn !== id) {
+		row = getByJid(id)
+	}
+
+	if (!row) {
+		return null
+	}
+
+	return {
+		id: pn ?? id,
+		name: row.display_name ?? undefined,
+		notify: row.wa_name ?? undefined,
+		status: row.status ?? undefined,
+		username: row.username ?? undefined
+	}
+}
 
 export type WaContactRow = {
 	jid: string

@@ -87,6 +87,7 @@ import {
 	type StoredStarredStickerRow,
 	WaContactsBackend
 } from '../Utils/multi-db-sqlite'
+import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
 import processMessage from '../Utils/process-message'
 import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
 import {
@@ -2217,10 +2218,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	/**
 	 * PN-transparent contact read from the `wa_contacts` mirror. Given any jid
-	 * (LID or PN), resolves to PN first, then reads the PN row — so the consumer
-	 * always gets the PN-keyed contact, matching the legacy delivery. Returns
-	 * `null` on miss, missing store, or error, so the caller falls back to the
-	 * legacy event-driven contact handling.
+	 * (LID or PN), it prefers the mapped PN row and falls back to the original
+	 * LID row when that PN row is absent. The returned id is the known PN, or the
+	 * original LID when no mapping exists. Returns `null` on miss, missing store,
+	 * or error so the caller falls back to legacy event-driven handling.
 	 */
 	const getStoredContact = async (jid: string): Promise<Contact | null> => {
 		if (!waContactsBackend || !jid) {
@@ -2228,24 +2229,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 
 		try {
-			const id = jidNormalizedUser(jid)
-			const pn = isAnyLidUser(id) ? (await signalRepository.lidMapping.getPNForLID(id)) || undefined : id
-			if (!pn) {
-				return null
-			}
-
-			const row = waContactsBackend.getByJid(pn)
-			if (!row) {
-				return null
-			}
-
-			return {
-				id: pn,
-				name: row.display_name ?? undefined,
-				notify: row.wa_name ?? undefined,
-				status: row.status ?? undefined,
-				username: row.username ?? undefined
-			}
+			// PN-transparent read with LID-row fallback (#630) — see
+			// resolveStoredContact.
+			return await resolveStoredContact(
+				jid,
+				j => waContactsBackend.getByJid(j),
+				async lid => (await signalRepository.lidMapping.getPNForLID(lid)) || undefined
+			)
 		} catch (err) {
 			// Logged (not silent) so a schema/migration issue is diagnosable; the
 			// caller still falls back to the legacy path on the null return.
