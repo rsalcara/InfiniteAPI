@@ -390,7 +390,11 @@ describe('processSyncAction', () => {
 	})
 
 	describe('stickerAction (Phase 9.16)', () => {
-		const makeBackend = () => ({ upsertStarred: jest.fn(), removeStarred: jest.fn(), removeRecentByTs: jest.fn() })
+		const makeBackend = () => ({
+			upsertStarred: jest.fn(),
+			removeStarred: jest.fn(() => false),
+			removeRecentByTs: jest.fn(() => false)
+		})
 		const fullSticker = {
 			isFavorite: true,
 			url: 'https://cdn/s.webp',
