@@ -1,5 +1,5 @@
 /**
- * Phase 9.15 — verifies processMessage mirrors received status/story updates
+ * Verifies processMessage mirrors received status/story updates
  * into an injected `statusBackend` (status/status_info), without depending
  * on a real SQLite handle — mirrors process-message.location.test.ts's
  * mock-based pattern.
@@ -47,7 +47,7 @@ const inboundStatus = (id: string, message: proto.IMessage): WAMessage => ({
 	messageTimestamp: 1770000000
 })
 
-describe('processMessage — status.db mirror (Phase 9.15)', () => {
+describe('processMessage — status.db mirror', () => {
 	it('records a received status update for a status-broadcast message', async () => {
 		const statusBackend = makeStatusBackendMock()
 		const { ctx } = makeContext(statusBackend)

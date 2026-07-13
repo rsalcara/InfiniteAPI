@@ -83,18 +83,14 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
  *                       decoded app-state-sync-key material routes here,
  *                       not to axolotl.signal_kv — see the migration note
  *                       below)
- *     axolotl.db      — Signal Protocol (opaque `signal_kv` in v1; typed
- *                       tables reserved for phase 9.5 integration)
+ *     axolotl.db      — Signal Protocol typed tables for mirrored key types,
+ *                       with `signal_kv` retained as compatibility fallback
  *     msgstore.db     — JID routing, device cache, quarantine, retry counters
- *                       (schemas reserved for phases 9.1–9.4)
- *     wa.db           — contacts + TC tokens (schemas reserved for phase 9.6)
- *     sync.db         — app-state sync (schemas reserved for phase 9.7)
- *     status.db       — Status (24h feed) + channel-crosspost state
- *                       (schema ships ahead of callers — no Baileys feature
- *                       consumes it today)
+ *     wa.db           — contacts + TC tokens
+ *     sync.db         — app-state sync
+ *     status.db       — status feed/viewer mirror + channel-crosspost state
  *
- * **v1 contract:** behaves like `useSqliteAuthState` for every signal data
- * type EXCEPT `app-state-sync-key`, which routes to the typed
+ * **Compatibility contract:** `app-state-sync-key` routes to the typed
  * `creds.db.app_state_sync_keys` table instead of the opaque
  * `axolotl.db.signal_kv` — same JSON-via-BufferJSON encoding as before,
  * just a dedicated table instead of a shared opaque one, since this key
@@ -103,10 +99,10 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
  * it hands out, so there's nothing to be schema-faithful to here — this is
  * InfiniteAPI's own bookkeeping). Existing rows already sitting in
  * `axolotl.signal_kv` from a prior version are migrated automatically on
- * first `open()` (idempotent — safe to run every startup). The msgstore/
- * wa/sync DB files are created with their schemas but their typed tables
- * remain empty until the corresponding follow-up phases route the
- * respective components to them.
+ * first `open()` (idempotent — safe to run every startup). Mirrored Signal
+ * types use their typed tables as the primary surface when enabled and retain
+ * `signal_kv` as an atomic compatibility fallback. The remaining database
+ * backends are wired by the socket when `multiDbStore` is configured.
  *
  * Why open all 13 files up front instead of lazily? Disk allocation + WAL
  * checkpointing both have one-time costs; doing them at startup means the
@@ -117,7 +113,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	state: AuthenticationState
 	saveCreds: () => Promise<void>
 	close: () => void
-	/** Exposed for advanced consumers and the upcoming phase 9.1+ integrations. */
+	/** Exposed for advanced consumers and optional integrations. */
 	store: MultiDbSqliteStore
 }> {
 	// Reuse an injected store when supplied; otherwise open our own. The

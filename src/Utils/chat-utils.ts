@@ -35,7 +35,7 @@ export type ChatMutationMap = { [index: string]: ChatMutation }
 /**
  * Raw wire-level fields for a single decoded app-state mutation, in addition
  * to the already-decoded `ChatMutation` — this is what a `sync.db`-style
- * persistence layer (Phase 9.7) needs, since the real mobile schema stores
+ * persistence layer needs, since the real mobile schema stores
  * the record's index/value MACs verbatim rather than the friendly decoded
  * value. `index[0]` is always the action name, and for most actions
  * `index[1]` is the target chat jid — verified against
@@ -568,7 +568,7 @@ export const decodeSyncdSnapshot = async (
 		validateMacs,
 		// Persisted regardless of `areMutationsRequired` — that flag only gates
 		// the in-memory diff used for THIS sync's immediate event emission, not
-		// whether a Phase 9.7 sync.db mirror should see the mutation at all.
+		// whether a sync.db mirror should see the mutation at all.
 		onRawMutation ? raw => onRawMutation({ ...raw, version: newState.version }) : undefined
 	)
 	newState.hash = hash
@@ -993,7 +993,7 @@ export const processSyncAction = (
 	me: Contact,
 	initialSyncOpts?: InitialAppStateSyncOptions,
 	logger?: ILogger,
-	// Phase 9.10 — optional chatsettings.db mirror. Only mute/pin are wired:
+	// Optional chatsettings.db mirror. Only mute/pin are wired:
 	// they're the only chat-level app-state actions here with a confirmed
 	// column in the real schema (archive lives in msgstore.db's `chat` table,
 	// out of scope). Never allowed to affect sync processing.
@@ -1001,7 +1001,7 @@ export const processSyncAction = (
 		setMuteEnd(jid: string, muteEnd: number | null): void
 		setPinned(jid: string, pinned: boolean, pinnedTime: number | null): void
 	},
-	// Phase 9.16 — optional stickers.db mirror. `stickerAction`/
+	// Optional stickers.db mirror. `stickerAction`/
 	// `removeRecentStickerAction` are the two sticker app-state actions with a
 	// confirmed companion source + real-schema columns. Never affects sync
 	// processing (structural type to avoid a circular import).
@@ -1041,7 +1041,7 @@ export const processSyncAction = (
 			try {
 				chatSettingsBackend.setMuteEnd(id, muteEndTime)
 			} catch (err) {
-				logger?.warn({ err, id }, 'Phase 9.10: failed to record chatsettings.db mute_end')
+				logger?.warn({ err, id }, 'failed to record chatsettings.db mute_end')
 			}
 		}
 
@@ -1119,7 +1119,7 @@ export const processSyncAction = (
 			try {
 				chatSettingsBackend.setPinned(id, !!action.pinAction?.pinned, pinnedTime)
 			} catch (err) {
-				logger?.warn({ err, id }, 'Phase 9.10: failed to record chatsettings.db pinned')
+				logger?.warn({ err, id }, 'failed to record chatsettings.db pinned')
 			}
 		}
 
@@ -1228,7 +1228,7 @@ export const processSyncAction = (
 			value: action.privacySettingChannelsPersonalisedRecommendationAction
 		})
 	} else if (action?.stickerAction && id) {
-		// Phase 9.16 — favourite/unfavourite a sticker. `id` (mutation index) is
+		// Favourite/unfavourite a sticker. `id` (mutation index) is
 		// the sticker's plaintext SHA-256 (base64) = stickers.db PK. Fields map
 		// 1:1 onto `starred_stickers` (validated against a real device). The `&& id`
 		// guard keeps the mirror + event from firing with an undefined hash.
@@ -1257,19 +1257,19 @@ export const processSyncAction = (
 					stickersBackend.removeStarred(id)
 				}
 			} catch (err) {
-				logger?.warn({ err, id }, 'Phase 9.16: failed to mirror stickerAction to stickers.db')
+				logger?.warn({ err, id }, 'failed to mirror stickerAction to stickers.db')
 			}
 		}
 
 		ev.emit('stickers.update', { plaintextHash: id, isFavorite: !!sa.isFavorite })
 	} else if (action?.removeRecentStickerAction) {
-		// Phase 9.16 — drop a recently-used sticker, keyed by its send timestamp.
+		// Drop a recently-used sticker, keyed by its send timestamp.
 		const lastTs = toNumber(action.removeRecentStickerAction.lastStickerSentTs ?? 0)
 		if (stickersBackend && lastTs) {
 			try {
 				stickersBackend.removeRecentByTs(lastTs)
 			} catch (err) {
-				logger?.warn({ err }, 'Phase 9.16: failed to remove recent sticker from stickers.db')
+				logger?.warn({ err }, 'failed to remove recent sticker from stickers.db')
 			}
 		}
 	} else {

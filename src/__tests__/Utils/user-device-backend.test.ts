@@ -1,5 +1,5 @@
 /**
- * Phase 9.2 — `UserDeviceBackend` test.
+ * `UserDeviceBackend` test.
  *
  * Verifies device list replacement (atomic delete-insert-upsert), TTL
  * staleness check via `expected_timestamp`, and the

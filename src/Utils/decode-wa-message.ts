@@ -465,7 +465,7 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 }
 
 /**
- * Phase 9.4 — shape of the optional `SocketConfig.onMessageQuarantine` hook,
+ * Shape of the optional `SocketConfig.onMessageQuarantine` hook,
  * duplicated structurally here (not imported from `Types/Socket`) to avoid a
  * circular import; TypeScript structural typing makes the two interchangeable
  * at the `messages-recv.ts` call site.
@@ -497,7 +497,7 @@ export const decryptMessageNode = (
 	 */
 	msmsgCache?: MsmsgSecretCache,
 	/**
-	 * Optional Phase 9.4 hook — see `SocketConfig.onMessageQuarantine`.
+	 * Optional hook — see `SocketConfig.onMessageQuarantine`.
 	 * Invoked only for confirmed Bad MAC / corrupted-session failures after
 	 * all retries are exhausted (the same condition that today only produces
 	 * a `logger.warn` and a `CIPHERTEXT` stub). Omitted by default; when
@@ -707,7 +707,7 @@ export const decryptMessageNode = (
 							// multiple messages from the same contact arrive simultaneously.
 							// See: messages-recv.ts sendRetryRequest() for deferred cleanup.
 
-							// Phase 9.4 — mirror WhatsApp Android's own behavior: a Bad MAC /
+							// Mirror WhatsApp Android's own behavior: a Bad MAC /
 							// corrupted-session stanza that exhausted retries is quarantined
 							// (`msgstore.message_quarantine` on real WA) instead of vanishing
 							// once the CIPHERTEXT stub is written. Scoped to `isCorrupted` only

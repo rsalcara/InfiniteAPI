@@ -1,5 +1,5 @@
 /**
- * Phase 9.2 — typed `user_device` + `user_device_info` + `primary_device_version`
+ * Typed `user_device` + `user_device_info` + `primary_device_version`
  * SQLite-backed storage for the device-list cache.
  *
  * Replaces the in-RAM `userDevicesCache` (Map<userJid, { devices, expiry }>)

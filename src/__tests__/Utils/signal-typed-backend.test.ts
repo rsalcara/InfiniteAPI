@@ -1,5 +1,5 @@
 /**
- * Phase 9.5 — `SignalTypedBackend` smoke tests.
+ * `SignalTypedBackend` smoke tests.
  *
  * Covers session / prekey / signed_prekey / kyber_prekey / identity /
  * sender_key round-trip on the typed Signal Protocol tables. Identity

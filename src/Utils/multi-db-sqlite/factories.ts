@@ -1,5 +1,5 @@
 /**
- * Phase 9.1+ — factories that wire existing in-memory components onto the
+ * Factories that wire existing in-memory components onto the
  * multi-DB SQLite backend. Each factory preserves the component's public
  * API and InfiniteAPI customizations (cache coalescing, retry, metrics,
  * grace periods, etc.) — only the persistence layer is rerouted.
@@ -52,7 +52,7 @@ export function createLIDMappingStoreWithSqlite(args: {
 }
 
 /**
- * Phase 9.4 — record handed to the quarantine recorder when an inbound
+ * Record handed to the quarantine recorder when an inbound
  * stanza's decryption permanently fails (all retries exhausted). Mirrors
  * the canonical WhatsApp Android `msgstore.message_quarantine` columns
  * (`original_protobuf`, `serialized_stanza`) plus the natural key InfiniteAPI
@@ -81,7 +81,7 @@ export type QuarantineNodeRecord = {
  * second `JidMapBackend` against the same `msgstore.db` handle is cheap
  * (its own prepared statements, same underlying tables) and this path only
  * runs on a permanent decrypt failure — nowhere near the per-message hot
- * path phase 9.1 optimizes for.
+ * path.
  */
 export function createMessageQuarantineRecorder(args: {
 	store: MultiDbSqliteStore

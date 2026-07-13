@@ -69,11 +69,11 @@ type ProcessMessageContext = {
 	 * hasn't arrived yet. Omitting it keeps today's behavior (no queueing);
 	 * `chats.ts` wires a real instance in production. */
 	orphanQueue?: OrphanQueue
-	/** Phase 9.7 — optional sync.db mirror (collection_versions/syncd_mutations/peer_messages). */
+	/** Optional sync.db mirror (collection_versions/syncd_mutations/peer_messages). */
 	appStateBackend?: AppStateBackend
-	/** Phase 9.8 — optional location.db mirror (location_cache/location_sharer). */
+	/** Optional location.db mirror (location_cache/location_sharer). */
 	locationBackend?: LocationBackend
-	/** Phase 9.15 — optional status.db mirror (status/status_info). */
+	/** Optional status.db mirror (status/status_info). */
 	statusBackend?: StatusBackend
 	/** Optional msgstore.db mirror — real message store (message/chat/revoke). */
 	messageStoreBackend?: MessageStoreBackend
@@ -915,7 +915,7 @@ const processMessage = async (
 		}
 	}
 
-	// Phase 9.8 — mirror static/live location into location.db when configured.
+	// Mirror static/live location into location.db when configured.
 	// Never allowed to affect message processing: best-effort side channel,
 	// same rule as the other optional multi-db-sqlite mirrors in this file.
 	if (locationBackend && (content?.locationMessage || content?.liveLocationMessage)) {
@@ -992,11 +992,11 @@ const processMessage = async (
 				}
 			}
 		} catch (err) {
-			logger?.warn({ err }, 'Phase 9.8: failed to record location.db row')
+			logger?.warn({ err }, 'failed to record location.db row')
 		}
 	}
 
-	// Phase 9.15 — mirror received status/story updates into status.db when
+	// Mirror received status/story updates into status.db when
 	// configured. Never allowed to affect message processing. `isRealMsg`
 	// excludes protocolMessage/reactionMessage/pollUpdateMessage (see its
 	// own doc) — without this guard, a REVOKE or reaction addressed to
@@ -1012,7 +1012,7 @@ const processMessage = async (
 				textData: content?.extendedTextMessage?.text ?? content?.conversation ?? null
 			})
 		} catch (err) {
-			logger?.warn({ err }, 'Phase 9.15: failed to record status.db row')
+			logger?.warn({ err }, 'failed to record status.db row')
 		}
 	}
 
@@ -1180,7 +1180,7 @@ const processMessage = async (
 							newKeys.push(strKeyId)
 
 							if (keyData) {
-								// Phase 9.7: "isNewlyGeneratedKey" — confirmed real field in
+								// "isNewlyGeneratedKey" — confirmed real field in
 								// sync.db.peer_messages' JSON payload (live Frida capture), but
 								// neither the server nor this protocolMessage transmit it as a
 								// flag — it's a local determination. Inferred here as "was this
@@ -1223,7 +1223,7 @@ const processMessage = async (
 							})
 							appStateBackend.ackPeerMessage(peerMsgId)
 						} catch (err) {
-							logger?.warn({ err }, 'Phase 9.7: failed to record peer_messages row for app-state-sync-key-share')
+							logger?.warn({ err }, 'failed to record peer_messages row for app-state-sync-key-share')
 						}
 					}
 

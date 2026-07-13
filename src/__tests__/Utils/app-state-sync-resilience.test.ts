@@ -112,7 +112,7 @@ describe('App State Sync', () => {
 		})
 	})
 
-	describe('onRawMutation wiring (Phase 9.7 — sync.db mirror)', () => {
+	describe('onRawMutation wiring (sync.db mirror)', () => {
 		// validateMacs=false (InfiniteAPI's own default) skips MAC verification,
 		// so the index/value MACs below can be arbitrary bytes — only the AES
 		// encryption of the value blob needs to be real, since aesDecrypt must

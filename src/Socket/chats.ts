@@ -106,7 +106,7 @@ import { executeWMexQuery as genericExecuteWMexQuery } from './mex'
 import { makeSocket } from './socket.js'
 
 /**
- * Phase 9.7 — mirror one decoded app-state mutation into `sync.db`'s
+ * Mirror one decoded app-state mutation into `sync.db`'s
  * `syncd_mutations` table. `index[0]` is always the action name, and for
  * MOST actions `index[1]` is the target chat jid — verified against
  * `chatModificationToAppPatch` in chat-utils.ts, which builds outgoing
@@ -119,7 +119,7 @@ import { makeSocket } from './socket.js'
  * than a mislabeled value.
  *
  * Never allowed to affect the sync flow: `appStateBackend` is a best-effort
- * side channel (same rule as Phase 9.4's `onQuarantine`), so any throw here
+ * side channel (same rule as `onQuarantine`), so any throw here
  * (e.g. a busy SQLite writer) is swallowed and logged, not propagated.
  */
 const recordRawMutation = (
@@ -147,7 +147,7 @@ const recordRawMutation = (
 			mutationName: index[0]
 		})
 	} catch (err) {
-		logger?.warn?.({ err, collectionName }, 'Phase 9.7: failed to record syncd_mutation')
+		logger?.warn?.({ err, collectionName }, 'failed to record syncd_mutation')
 	}
 }
 
@@ -216,7 +216,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// When a key arrives via APP_STATE_SYNC_KEY_SHARE, these are re-synced.
 	const blockedCollections = new Set<WAPatchName>()
 
-	// Phase 9.7 — mirrors app-state sync (collection_versions + syncd_mutations
+	// Mirrors app-state sync (collection_versions + syncd_mutations
 	// + peer_messages) into sync.db when a multi-db-sqlite store is configured.
 	// Boundary cast: `multiDbStore` is typed `unknown` on SocketConfig so
 	// consumers of this module don't need a hard dependency on the SQLite
@@ -254,7 +254,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		? new CompanionDevicesBackend((config.multiDbStore as any).handle('companion_devices.db'))
 		: undefined
 
-	// Phase 9.8 — mirrors static/live location (location_cache/location_sharer)
+	// Mirrors static/live location (location_cache/location_sharer)
 	// into location.db when a multi-db-sqlite store is configured. Same
 	// boundary-cast rationale as appStateBackend above.
 
@@ -262,7 +262,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		? new LocationBackend((config.multiDbStore as any).handle('location.db'))
 		: undefined
 
-	// Phase 9.10 — mirrors mute/pin chat settings into chatsettings.db when a
+	// Mirrors mute/pin chat settings into chatsettings.db when a
 	// multi-db-sqlite store is configured. Same boundary-cast rationale as
 	// appStateBackend above.
 
@@ -270,7 +270,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		? new ChatSettingsBackend((config.multiDbStore as any).handle('chatsettings.db'))
 		: undefined
 
-	// Phase 9.15 — mirrors received status/story updates (status/status_info)
+	// Mirrors received status/story updates (status/status_info)
 	// into status.db when a multi-db-sqlite store is configured. Same
 	// boundary-cast rationale as appStateBackend above.
 
@@ -278,7 +278,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		? new StatusBackend((config.multiDbStore as any).handle('status.db'))
 		: undefined
 
-	// Phase 9.16 — mirrors starred/recent stickers into stickers.db from the
+	// Mirrors starred/recent stickers into stickers.db from the
 	// app-state `stickerAction`/`removeRecentStickerAction` (validated source).
 	const stickersBackend = config.multiDbStore
 		? new StickersBackend((config.multiDbStore as any).handle('stickers.db'))
@@ -2282,7 +2282,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	}
 
-	// Phase 9.8 consume — reads the location.db live-location mirror. Best-effort:
+	// Reads the location.db live-location mirror. Best-effort:
 	// returns null/[] on miss or error so the consumer falls back to the live
 	// `messages.upsert` stream (each liveLocationMessage arrives as a message).
 	// Note: for a RECEIVED share the `expires` is always 0 (companion never gets
@@ -2316,7 +2316,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	}
 
-	// Phase 9.15 consume — reads the status.db mirror. Best-effort: `[]` on miss
+	// Reads the status.db mirror. Best-effort: `[]` on miss
 	// or error → the consumer falls back to the live `messages.upsert` stream
 	// (each received status@broadcast arrives as a message).
 	const getStatusFeed = (jid: string): ReturnType<StatusBackend['listActiveStatusesForSender']> => {
@@ -2353,7 +2353,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	}
 
-	// Phase 9.16 consume — the user's favourited stickers (from app-state, kept
+	// Reads the user's favourited stickers (from app-state, kept
 	// in sync via `stickerAction`). Best-effort: `[]` on miss/error.
 	const getStarredStickers = (): StoredStarredStickerRow[] => {
 		if (!stickersBackend) {

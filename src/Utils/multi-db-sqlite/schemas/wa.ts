@@ -3,10 +3,10 @@
  * business profile cache.
  *
  * Gateway scope:
- *   - `wa_contacts` — contact directory (target for phase 9.6 indirectly)
+ *   - `wa_contacts` — LID+PN contact directory mirror
  *   - `wa_trusted_contacts` / `wa_trusted_contacts_send` — TC token
  *     persistence (incoming + outgoing per-recipient state) for the biz
- *     `quality_control` envelope (phase 9.6)
+ *     `quality_control` envelope
  *
  * Column names match the canonical mobile schema verbatim.
  */

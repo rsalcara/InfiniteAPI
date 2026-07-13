@@ -1,5 +1,5 @@
 /**
- * Phase 9.8 — verifies processMessage mirrors locationMessage/liveLocationMessage
+ * Verifies processMessage mirrors locationMessage/liveLocationMessage
  * into an injected `locationBackend` (location_cache/location_sharer), without
  * depending on a real SQLite handle — a lightweight mock stands in for
  * `LocationBackend`, matching the pattern used elsewhere for this file's tests.
@@ -48,7 +48,7 @@ const inbound = (id: string, message: proto.IMessage, fromMe = false): WAMessage
 	messageTimestamp: 1770000000
 })
 
-describe('processMessage — location.db mirror (Phase 9.8)', () => {
+describe('processMessage — location.db mirror', () => {
 	it('upserts location_cache for a static locationMessage', async () => {
 		const locationBackend = makeLocationBackendMock()
 		const { ctx } = makeContext(locationBackend)

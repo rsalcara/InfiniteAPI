@@ -1,5 +1,5 @@
 /**
- * Phase 9.1 — `wrapKeysWithJidMap` plugs the typed {@link JidMapBackend}
+ * `wrapKeysWithJidMap` plugs the typed {@link JidMapBackend}
  * into any `SignalKeyStoreWithTransaction`-shaped store by intercepting
  * the `'lid-mapping'` type.
  *
@@ -145,7 +145,7 @@ export function wrapKeysWithJidMap(
 			const seenReverse = new Set<string>()
 			// Track which entries in the inner store ALSO need a delete request
 			// — used below to propagate the null sentinel down so legacy entries
-			// that landed in the inner store (pre-Phase-9) don't resurrect via
+			// that predate the typed backend don't resurrect via
 			// the `inner.get` fallback. (audit MDB-02)
 			const innerDeleteForward: string[] = []
 			const innerDeleteReverse: string[] = []
@@ -230,8 +230,8 @@ export function wrapKeysWithJidMap(
 			}
 
 			// Propagate deletes to the inner store as well — covers legacy
-			// lid-mapping entries that landed there before Phase 9 migrated
-			// the typed jid_map backend in. Without this they resurrect via
+			// lid-mapping entries that landed there before the typed jid_map
+			// backend was introduced. Without this they resurrect via
 			// `inner.get` fallback. (audit MDB-02)
 			if (innerDeleteForward.length > 0 || innerDeleteReverse.length > 0) {
 				const lidMappingDeletes: Record<string, null> = {}

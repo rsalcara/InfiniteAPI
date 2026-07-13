@@ -12,8 +12,8 @@
  *     sync (message_id → chunk metadata); rows are transient, dropped once
  *     the chunk is consumed
  *
- * Target for phase 9.7 (replaces multi-file blob storage). Column names
- * match the canonical mobile schema verbatim.
+ * This structured store replaces multi-file blob storage. Column names match
+ * the canonical mobile schema verbatim.
  */
 export const SYNC_SCHEMA = `
 CREATE TABLE IF NOT EXISTS android_metadata (locale TEXT);
