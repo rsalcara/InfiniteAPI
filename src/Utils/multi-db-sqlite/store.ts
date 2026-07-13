@@ -153,6 +153,22 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 				${STATUS_BACKFILL_LAST_TIMESTAMP_SQL}
 			`
 		}
+	],
+	'location.db': [
+		{
+			// Audit #636: a RECEIVED live-location sharer (from_me=0) carries
+			// `expires=0` — the companion never gets the share duration, correct
+			// parity — so `listActiveLocationSharers` treated it as perpetually
+			// active and the rows accumulated unbounded (a share that ended hours
+			// ago still showed up). Add a gateway-only `received_ts` bookkeeping
+			// column (orthogonal to `expires`, which keeps its parity meaning) so
+			// received shares can be aged out by last-activity time. The PRAGMA
+			// preflight keeps open() safe if the column already exists in
+			// a drifted/partially migrated database.
+			version: 1,
+			name: 'add location_sharer.received_ts (received-share retention)',
+			run: db => addColumnIfMissing(db, 'location_sharer', 'received_ts', 'INTEGER NOT NULL DEFAULT 0')
+		}
 	]
 }
 

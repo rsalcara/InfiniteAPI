@@ -951,7 +951,10 @@ const processMessage = async (
 					fromMe: message.key.fromMe ? 1 : 0,
 					remoteResource: message.key.participant ? jidNormalizedUser(message.key.participant) : '',
 					expires: 0,
-					messageId: message.key.id
+					messageId: message.key.id,
+					// Last-activity time drives received-share retention (#636): the
+					// share ages out this many seconds after its final update.
+					receivedTs: message.key.fromMe ? undefined : toNumber(message.messageTimestamp ?? 0) || undefined
 				})
 			}
 
