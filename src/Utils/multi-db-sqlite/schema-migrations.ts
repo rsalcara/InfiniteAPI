@@ -29,14 +29,43 @@
  */
 import type { SqliteDbLike } from './types'
 
-/** A single migration entry. */
+/** A single migration entry. Exactly one of `sql` / `run` must be provided. */
 export interface Migration {
 	/** Strictly monotonic per-DB version (1, 2, 3, …). */
 	version: number
 	/** Short human-readable name for logging. */
 	name: string
 	/** SQL applied via `db.exec()` (can contain multiple statements). */
-	sql: string
+	sql?: string
+	/**
+	 * Imperative migration body — for logic pure SQL can't express, e.g. an
+	 * idempotent `ADD COLUMN` that must first check `PRAGMA table_info`. Runs
+	 * inside the same IMMEDIATE transaction as an `sql` body. Mutually
+	 * exclusive with `sql`.
+	 */
+	run?: (db: SqliteDbLike) => void
+}
+
+/** True if `table` already has a column named `column`. */
+export function columnExists(db: SqliteDbLike, table: string, column: string): boolean {
+	// `table` is always a hardcoded schema constant here (never user input), so
+	// interpolating it into the PRAGMA — which cannot be parameterised — is safe.
+	const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+	return cols.some(c => c.name === column)
+}
+
+/**
+ * `ALTER TABLE ADD COLUMN`, but a no-op when the column already exists. SQLite
+ * has no `ADD COLUMN IF NOT EXISTS`, so a plain ADD throws `duplicate column
+ * name` on any DB where the column predates the migration — schema drift, a DB
+ * whose base `CREATE TABLE` once carried the column, or a half-applied upgrade.
+ * That thrown error rolls back the migration AND fails `open()`, bricking the
+ * whole store. The PRAGMA preflight makes the ADD idempotent; the caller
+ * migration is still recorded applied either way. (Audit #629.)
+ */
+export function addColumnIfMissing(db: SqliteDbLike, table: string, column: string, columnDef: string): void {
+	if (columnExists(db, table, column)) return
+	db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${columnDef}`)
 }
 
 const CREATE_BOOKKEEPING_SQL = `
@@ -88,7 +117,12 @@ export function runMigrations(db: SqliteDbLike, migrations: ReadonlyArray<Migrat
 			// the writer lock before executing SQL or inserting the PK again.
 			if (selectAppliedVersion.get(m.version)) return
 
-			db.exec(m.sql)
+			if (m.run) {
+				m.run(db)
+			} else if (m.sql) {
+				db.exec(m.sql)
+			}
+
 			insertApplied.run(m.version, m.name, Date.now())
 		})
 		tx.immediate()

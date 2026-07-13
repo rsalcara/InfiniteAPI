@@ -73,3 +73,54 @@ describe('runMigrations concurrency', () => {
 		expect(executedSql).not.toContain('MIGRATION BODY')
 	})
 })
+
+describe('runMigrations run() form (#629)', () => {
+	it('invokes the imperative run() body and records the version', () => {
+		const applied = new Set<number>()
+		let ran = 0
+
+		const db = {
+			prepare: (sql: string) => {
+				if (sql === 'SELECT version FROM schema_migrations ORDER BY version ASC') {
+					return statement({ all: () => [] })
+				}
+
+				if (sql === 'SELECT version FROM schema_migrations WHERE version = ?') {
+					return statement({ get: (...p: unknown[]) => (applied.has(p[0] as number) ? { version: p[0] } : undefined) })
+				}
+
+				if (sql.startsWith('INSERT INTO schema_migrations')) {
+					return statement({
+						run: (...p: unknown[]) => {
+							applied.add(p[0] as number)
+							return runResult
+						}
+					})
+				}
+
+				return statement()
+			},
+			exec: () => db,
+			transaction: (fn: () => void) => Object.assign(fn, { immediate: fn }),
+			pragma: () => undefined,
+			close: () => undefined
+		} as unknown as SqliteDbLike
+
+		const migrations: Migration[] = [
+			{
+				version: 1,
+				name: 'imperative',
+				run: () => {
+					ran++
+				}
+			}
+		]
+		runMigrations(db, migrations)
+		expect(ran).toBe(1)
+		expect(applied.has(1)).toBe(true)
+
+		// Second call is a no-op — version already recorded.
+		runMigrations(db, migrations)
+		expect(ran).toBe(1)
+	})
+})

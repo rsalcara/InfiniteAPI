@@ -95,6 +95,36 @@ describe('axolotl.db migration v1 — sender_keys.bucket_id', () => {
 		expect(applied.some(r => r.version === 1 && /bucket_id/.test(r.name))).toBe(true)
 	})
 
+	it('drift: a pre-existing bucket_id column (no bookkeeping) does NOT brick open (#629)', async () => {
+		// #629: a DB where `sender_keys.bucket_id` already exists but has no v1
+		// bookkeeping row. A raw ALTER would throw "duplicate column name" and
+		// fail open(); the PRAGMA preflight must make it a safe no-op.
+		const dbPath = join(dir, 'axolotl.db')
+		const pre = new Database(dbPath)
+		pre.exec(`
+			CREATE TABLE IF NOT EXISTS sender_keys (
+				_id INTEGER PRIMARY KEY AUTOINCREMENT,
+				group_id TEXT NOT NULL,
+				device_id INTEGER NOT NULL DEFAULT 0,
+				record BLOB NOT NULL,
+				timestamp INTEGER,
+				sender_account_id TEXT,
+				sender_account_type INTEGER,
+				bucket_id TEXT NOT NULL DEFAULT ''
+			);
+		`)
+		pre.close()
+
+		store = new MultiDbSqliteStore({ sessionDir: dir })
+		await expect(store.open()).resolves.not.toThrow()
+
+		const db = store.handle('axolotl.db')
+		const cols = db.prepare("PRAGMA table_info('sender_keys')").all() as Array<{ name: string }>
+		expect(cols.filter(c => c.name === 'bucket_id')).toHaveLength(1)
+		const applied = db.prepare('SELECT version FROM schema_migrations WHERE version = 1').all()
+		expect(applied).toHaveLength(1)
+	})
+
 	it('re-open after migration: v1 stays recorded exactly once (ALTER not re-run)', async () => {
 		store = new MultiDbSqliteStore({ sessionDir: dir })
 		await store.open()

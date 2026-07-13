@@ -20,7 +20,7 @@
  */
 import type { ILogger } from '../logger'
 import { STATUS_LAST_TIMESTAMP_TRIGGER_NAME, STATUS_LAST_TIMESTAMP_TRIGGER_SQL } from './schemas/status'
-import { type Migration, runMigrations } from './schema-migrations'
+import { addColumnIfMissing, type Migration, runMigrations } from './schema-migrations'
 import { MULTI_DB_FILES, type MultiDbFile, SCHEMAS } from './schemas'
 import type { SqliteDbLike } from './types'
 
@@ -30,12 +30,14 @@ import type { SqliteDbLike } from './types'
  *
  * Authoring rules:
  *   - Append; never re-number, never edit a shipped migration.
- *   - `ALTER TABLE ADD COLUMN` is the safe primitive for adding a
- *     nullable column to an existing table. It is NOT idempotent
- *     (`ADD COLUMN IF NOT EXISTS` does not exist in SQLite — a second
- *     run errors with "duplicate column name") — the per-DB
- *     `schema_migrations` bookkeeping in `runMigrations` is what
- *     guarantees the statement runs once per DB.
+ *   - To add a nullable column use the `run` form with
+ *     `addColumnIfMissing(db, table, col, def)`, NOT a raw `ALTER TABLE
+ *     ADD COLUMN` in `sql`. SQLite has no `ADD COLUMN IF NOT EXISTS`, so a
+ *     raw ADD throws "duplicate column name" — and fails `open()` — on any
+ *     DB where the column already exists (schema drift / half-applied
+ *     upgrade). The `schema_migrations` bookkeeping stops a re-run in the
+ *     common case, but the PRAGMA preflight is what keeps the migration
+ *     safe when the column predates the bookkeeping. (Audit #629.)
  *   - **Do NOT also add the column to the `_SCHEMA` `CREATE TABLE`.**
  *     Tempting (it'd let fresh DBs skip the migration) but breaks the
  *     contract: `runMigrations` runs v1 unconditionally on the first
@@ -72,10 +74,15 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 		{
 			version: 1,
 			name: 'add wa_contacts.username + index',
-			sql: `
-				ALTER TABLE wa_contacts ADD COLUMN username TEXT;
-				CREATE INDEX IF NOT EXISTS wa_contacts_username_idx ON wa_contacts (username);
-			`
+			// Idempotent ADD COLUMN (audit #629): a plain `ALTER TABLE ADD COLUMN`
+			// throws "duplicate column name" — and fails open() — on any DB where
+			// `username` already exists (schema drift / half-applied upgrade). The
+			// preflight makes it a no-op in that case; the index is already
+			// idempotent via IF NOT EXISTS.
+			run: db => {
+				addColumnIfMissing(db, 'wa_contacts', 'username', 'TEXT')
+				db.exec('CREATE INDEX IF NOT EXISTS wa_contacts_username_idx ON wa_contacts (username)')
+			}
 		},
 		{
 			// The contact mirror upserts by jid (ON CONFLICT(jid)); the base
@@ -99,7 +106,8 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 			// match the mobile layout.
 			version: 1,
 			name: 'add sender_keys.bucket_id (schema fidelity)',
-			sql: `ALTER TABLE sender_keys ADD COLUMN bucket_id TEXT NOT NULL DEFAULT '';`
+			// Idempotent ADD COLUMN (audit #629) — see wa_contacts.username above.
+			run: db => addColumnIfMissing(db, 'sender_keys', 'bucket_id', "TEXT NOT NULL DEFAULT ''")
 		}
 	],
 	'status.db': [
