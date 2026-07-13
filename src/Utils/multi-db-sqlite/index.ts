@@ -58,6 +58,13 @@ export {
 	type ReceivedStatusInput
 } from './status-backend'
 export {
+	StickersBackend,
+	type StarredStickerInput,
+	type RecentStickerInput,
+	type StoredStarredStickerRow,
+	type StoredRecentStickerRow
+} from './stickers-backend'
+export {
 	ANDROID_MESSAGE_TYPE,
 	mapContentTypeToMessageType,
 	MessageStoreBackend,

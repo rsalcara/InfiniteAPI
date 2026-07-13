@@ -1000,6 +1000,29 @@ export const processSyncAction = (
 	chatSettingsBackend?: {
 		setMuteEnd(jid: string, muteEnd: number | null): void
 		setPinned(jid: string, pinned: boolean, pinnedTime: number | null): void
+	},
+	// Phase 9.16 — optional stickers.db mirror. `stickerAction`/
+	// `removeRecentStickerAction` are the two sticker app-state actions with a
+	// confirmed companion source + real-schema columns. Never affects sync
+	// processing (structural type to avoid a circular import).
+	stickersBackend?: {
+		upsertStarred(s: {
+			plaintextHash: string
+			timestamp?: number | null
+			url?: string | null
+			encHash?: string | null
+			directPath?: string | null
+			mimetype?: string | null
+			mediaKey?: string | null
+			fileSize?: number | null
+			width?: number | null
+			height?: number | null
+			hashOfImagePart?: string | null
+			isLottie?: number | null
+			isAvatar?: number | null
+		}): void
+		removeStarred(plaintextHash: string): boolean
+		removeRecentByTs(lastStickerSentTs: number): boolean
 	}
 ) => {
 	const isInitialSync = !!initialSyncOpts
@@ -1204,6 +1227,51 @@ export const processSyncAction = (
 			setting: 'channelsPersonalisedRecommendation',
 			value: action.privacySettingChannelsPersonalisedRecommendationAction
 		})
+	} else if (action?.stickerAction && id) {
+		// Phase 9.16 — favourite/unfavourite a sticker. `id` (mutation index) is
+		// the sticker's plaintext SHA-256 (base64) = stickers.db PK. Fields map
+		// 1:1 onto `starred_stickers` (validated against a real device). The `&& id`
+		// guard keeps the mirror + event from firing with an undefined hash.
+		const sa = action.stickerAction
+		if (stickersBackend) {
+			try {
+				if (sa.isFavorite) {
+					stickersBackend.upsertStarred({
+						plaintextHash: id,
+						// The mutation timestamp lives on SyncActionValue (`action`),
+						// not on SyncActionData.
+						timestamp: toNumber(action.timestamp ?? 0) || null,
+						url: sa.url ?? null,
+						encHash: sa.fileEncSha256 ? Buffer.from(sa.fileEncSha256).toString('base64') : null,
+						directPath: sa.directPath ?? null,
+						mimetype: sa.mimetype ?? null,
+						mediaKey: sa.mediaKey ? Buffer.from(sa.mediaKey).toString('base64') : null,
+						fileSize: sa.fileLength ? toNumber(sa.fileLength) : null,
+						width: sa.width ?? null,
+						height: sa.height ?? null,
+						hashOfImagePart: sa.imageHash ?? null,
+						isLottie: sa.isLottie ? 1 : 0,
+						isAvatar: sa.isAvatarSticker ? 1 : 0
+					})
+				} else {
+					stickersBackend.removeStarred(id)
+				}
+			} catch (err) {
+				logger?.warn({ err, id }, 'Phase 9.16: failed to mirror stickerAction to stickers.db')
+			}
+		}
+
+		ev.emit('stickers.update', { plaintextHash: id, isFavorite: !!sa.isFavorite })
+	} else if (action?.removeRecentStickerAction) {
+		// Phase 9.16 — drop a recently-used sticker, keyed by its send timestamp.
+		const lastTs = toNumber(action.removeRecentStickerAction.lastStickerSentTs ?? 0)
+		if (stickersBackend && lastTs) {
+			try {
+				stickersBackend.removeRecentByTs(lastTs)
+			} catch (err) {
+				logger?.warn({ err }, 'Phase 9.16: failed to remove recent sticker from stickers.db')
+			}
+		}
 	} else {
 		logger?.debug({ syncAction, id }, 'unprocessable update')
 	}

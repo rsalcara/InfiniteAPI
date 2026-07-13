@@ -23,6 +23,7 @@ import {
 	MultiDbSqliteStore,
 	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
 	StatusBackend,
+	StickersBackend,
 	TrustedContactsBackend
 } from '../../Utils/multi-db-sqlite'
 
@@ -492,6 +493,47 @@ describe('Phase 9 backends', () => {
 			expect(info()).toMatchObject({ total_count: 1, unread_count: 1 })
 			// … and the BEFORE DELETE trigger cascaded the seen receipt away.
 			expect((db.prepare('SELECT COUNT(*) c FROM status_seen_receipt').get() as { c: number }).c).toBe(0)
+		})
+	})
+
+	describe('StickersBackend', () => {
+		it('upserts a starred sticker (dedup by plaintext_hash) and lists/removes it', () => {
+			const backend = new StickersBackend(store.handle('stickers.db'))
+			backend.upsertStarred({
+				plaintextHash: 'HASH1',
+				timestamp: 100,
+				url: 'https://cdn/s.webp',
+				encHash: 'ZW5j',
+				mediaKey: 'bWs=',
+				directPath: '/o1/v/t62/x',
+				mimetype: 'image/webp',
+				fileSize: 4096,
+				width: 512,
+				height: 512,
+				isLottie: 0,
+				isAvatar: 0
+			})
+			// same hash re-stars → upsert, not duplicate (refreshes timestamp)
+			backend.upsertStarred({ plaintextHash: 'HASH1', timestamp: 200 })
+
+			const starred = backend.listStarred()
+			expect(starred).toHaveLength(1)
+			expect(starred[0]).toMatchObject({ plaintext_hash: 'HASH1', timestamp: 200, mimetype: 'image/webp' })
+			expect(backend.getStarred('HASH1')?.media_key).toBe('bWs=')
+
+			expect(backend.removeStarred('HASH1')).toBe(true)
+			expect(backend.listStarred()).toEqual([])
+			expect(backend.removeStarred('HASH1')).toBe(false)
+		})
+
+		it('upserts recent stickers and removes by lastStickerSentTs (removeRecentStickerAction)', () => {
+			const backend = new StickersBackend(store.handle('stickers.db'))
+			backend.upsertRecent({ plaintextHash: 'R1', entryWeight: 1.5, lastStickerSentTs: 1_700_000_000 })
+			backend.upsertRecent({ plaintextHash: 'R2', entryWeight: 0.5, lastStickerSentTs: 1_700_000_100 })
+			expect(backend.listRecent().map(r => r.plaintext_hash)).toEqual(['R1', 'R2']) // by entry_weight DESC
+
+			expect(backend.removeRecentByTs(1_700_000_000)).toBe(true)
+			expect(backend.listRecent().map(r => r.plaintext_hash)).toEqual(['R2'])
 		})
 	})
 })
