@@ -74,6 +74,18 @@ export type SeenReceiptInput = {
 	seenTimestamp: number
 }
 
+export type StoredStatusRow = {
+	row_id: number
+	sort_id: number
+	uuid: string
+	sender_user_jid: string
+	status_info_row_id: number
+	type: number
+	timestamp: number
+	text_data: string | null
+	state: number
+}
+
 export class StatusBackend {
 	private readonly stmts: {
 		upsertStatusInfo: SqliteStatementLike
@@ -82,6 +94,7 @@ export class StatusBackend {
 		nextSortId: SqliteStatementLike
 		insertStatus: SqliteStatementLike
 		listStatusesForSender: SqliteStatementLike
+		listStatusesForSenderSince: SqliteStatementLike
 		getStatusRowIdByUuid: SqliteStatementLike
 		upsertSeenReceipt: SqliteStatementLike
 		listSeenReceiptsForStatus: SqliteStatementLike
@@ -118,6 +131,10 @@ export class StatusBackend {
 				'SELECT row_id, sort_id, uuid, sender_user_jid, status_info_row_id, type, timestamp, text_data, state ' +
 					'FROM status WHERE sender_user_jid = ? ORDER BY sort_id ASC'
 			),
+			listStatusesForSenderSince: this.db.prepare(
+				'SELECT row_id, sort_id, uuid, sender_user_jid, status_info_row_id, type, timestamp, text_data, state ' +
+					'FROM status WHERE sender_user_jid = ? AND timestamp >= ? ORDER BY sort_id ASC'
+			),
 			getStatusRowIdByUuid: this.db.prepare('SELECT row_id FROM status WHERE uuid = ?'),
 			upsertSeenReceipt: this.db.prepare(
 				'INSERT INTO status_seen_receipt (status_row_id, receipt_user_jid, seen_timestamp) VALUES (?, ?, ?) ' +
@@ -143,9 +160,24 @@ export class StatusBackend {
 	 * self-review): this is 4 dependent statements — a crash between
 	 * insertStatus and incrementCounts would leave status_info's counters
 	 * permanently out of sync with the actual status rows.
+	 *
+	 * IDEMPOTENT by `uuid` (audit #637): the same status is legitimately
+	 * delivered more than once — history-sync catch-up overlapping the live
+	 * stream, a retry/re-decrypt, an app-state replay. `uuid` == the status
+	 * message id is stable across those, so a second call for the same uuid MUST
+	 * NOT insert a duplicate `status` row (and double-count total_count/
+	 * unread_count, which have no de-dup of their own). The existence check runs
+	 * INSIDE the transaction so a concurrent writer can't slip a duplicate in
+	 * between the check and the insert. Returns `true` when a new row was
+	 * inserted, `false` when skipped as a duplicate.
 	 */
-	recordReceivedStatus(input: ReceivedStatusInput): void {
+	recordReceivedStatus(input: ReceivedStatusInput): boolean {
+		let inserted = false
 		const run = this.db.transaction(() => {
+			if (this.stmts.getStatusRowIdByUuid.get(input.uuid)) {
+				return // already recorded — skip insert + count to stay idempotent
+			}
+
 			this.stmts.upsertStatusInfo.run(input.senderUserJid)
 			const infoRow = this.stmts.getStatusInfoRowId.get(input.senderUserJid) as { row_id: number } | undefined
 			if (!infoRow) return // upsert+immediate select on the same PK — should never miss
@@ -162,11 +194,13 @@ export class StatusBackend {
 				STATUS_STATE_SERVER_CONFIRMED
 			)
 			this.stmts.incrementCounts.run(sortId, input.timestamp, infoRow.row_id)
+			inserted = true
 		})
 		run()
 		// Opportunistic, throttled expiry — keeps status.db bounded (24h feed)
 		// without a timer/socket wiring. Never throws into the caller.
 		this.maybePrune()
+		return inserted
 	}
 
 	/**
@@ -193,18 +227,26 @@ export class StatusBackend {
 		}
 	}
 
-	listStatusesForSender(senderUserJid: string) {
-		return this.stmts.listStatusesForSender.all(senderUserJid) as Array<{
-			row_id: number
-			sort_id: number
-			uuid: string
-			sender_user_jid: string
-			status_info_row_id: number
-			type: number
-			timestamp: number
-			text_data: string | null
-			state: number
-		}>
+	/** All recorded statuses for a sender, oldest→newest, WITHOUT the 24h filter. */
+	listStatusesForSender(senderUserJid: string): StoredStatusRow[] {
+		return this.stmts.listStatusesForSender.all(senderUserJid) as StoredStatusRow[]
+	}
+
+	/**
+	 * Like `listStatusesForSender` but drops rows past the 24h retention window
+	 * at READ time (audit #637). The write-path prune is throttled (hourly) and
+	 * best-effort, so a just-expired status can still be on disk between prunes —
+	 * filtering on read guarantees the consumer never sees a stale (>24h) status,
+	 * matching the mobile feed which only ever shows the live 24h window. Uses the
+	 * backend's own configured `retentionSecs` (same TTL as the prune). `nowSecs`
+	 * defaults to the current time in unix seconds; injectable for tests.
+	 */
+	listActiveStatusesForSender(
+		senderUserJid: string,
+		nowSecs: number = Math.floor(Date.now() / 1000)
+	): StoredStatusRow[] {
+		const cutoff = nowSecs - this.retentionSecs
+		return this.stmts.listStatusesForSenderSince.all(senderUserJid, cutoff) as StoredStatusRow[]
 	}
 
 	/**

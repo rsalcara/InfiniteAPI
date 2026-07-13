@@ -2329,13 +2329,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// Phase 9.15 consume — reads the status.db mirror. Best-effort: `[]` on miss
 	// or error → the consumer falls back to the live `messages.upsert` stream
 	// (each received status@broadcast arrives as a message).
-	const getStatusFeed = (jid: string): ReturnType<StatusBackend['listStatusesForSender']> => {
+	const getStatusFeed = (jid: string): ReturnType<StatusBackend['listActiveStatusesForSender']> => {
 		if (!statusBackend || !jid) {
 			return []
 		}
 
 		try {
-			return statusBackend.listStatusesForSender(jidNormalizedUser(jid))
+			// Active-only: the 24h window is enforced on READ too, so a status
+			// that expired between throttled prunes is never surfaced (audit #637).
+			return statusBackend.listActiveStatusesForSender(jidNormalizedUser(jid))
 		} catch (err) {
 			logger.debug({ err, jid }, 'status getStatusFeed failed (fallback to legacy)')
 			return []

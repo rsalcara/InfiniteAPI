@@ -26,6 +26,7 @@ import {
 	StickersBackend,
 	TrustedContactsBackend
 } from '../../Utils/multi-db-sqlite'
+import { STATUS_BACKFILL_LAST_TIMESTAMP_SQL } from '../../Utils/multi-db-sqlite/store'
 
 describe('Phase 9 backends', () => {
 	let dir: string
@@ -493,6 +494,94 @@ describe('Phase 9 backends', () => {
 			expect(info()).toMatchObject({ total_count: 1, unread_count: 1 })
 			// … and the BEFORE DELETE trigger cascaded the seen receipt away.
 			expect((db.prepare('SELECT COUNT(*) c FROM status_seen_receipt').get() as { c: number }).c).toBe(0)
+		})
+
+		it('recordReceivedStatus is idempotent by uuid (no duplicate row, no double-count)', () => {
+			// Audit #637: the same status is legitimately re-delivered (history sync
+			// overlapping the live stream, retry/re-decrypt). A second call for the
+			// same uuid must NOT insert a second row or double-count the aggregates.
+			const backend = new StatusBackend(store.handle('status.db'), { pruneIntervalMs: Number.MAX_SAFE_INTEGER })
+			const sender = 'dup@s.whatsapp.net'
+			expect(backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'u1', timestamp: 1_000 })).toBe(true)
+			expect(backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'u1', timestamp: 1_000 })).toBe(false)
+			expect(backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'u2', timestamp: 2_000 })).toBe(true)
+
+			expect(backend.listStatusesForSender(sender).map(r => r.uuid)).toEqual(['u1', 'u2'])
+			const info = store
+				.handle('status.db')
+				.prepare('SELECT total_count, unread_count FROM status_info WHERE chat_jid=?')
+				.get(sender) as { total_count: number; unread_count: number }
+			expect(info).toMatchObject({ total_count: 2, unread_count: 2 })
+		})
+
+		it('last_status_timestamp trigger is order-independent (falls back when newest is deleted)', () => {
+			// Audit #637: the mobile-verbatim trigger guarded on `last_status_sort_id
+			// = old.sort_id`, a column the sibling sort_id trigger overwrites — and
+			// SQLite doesn't define a fire order between them. The fixed body guards
+			// on `last_status_timestamp` (untouched by siblings) so deleting the
+			// newest status always refreshes the aggregate to the next-newest.
+			const backend = new StatusBackend(store.handle('status.db'), { pruneIntervalMs: Number.MAX_SAFE_INTEGER })
+			const db = store.handle('status.db')
+			const sender = 'ord@s.whatsapp.net'
+			backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'u1', timestamp: 1_000 })
+			backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'u2', timestamp: 2_000 })
+
+			const ts = () =>
+				(
+					db.prepare('SELECT last_status_timestamp t FROM status_info WHERE chat_jid=?').get(sender) as {
+						t: number
+					}
+				).t
+			expect(ts()).toBe(2_000)
+
+			// Deterministically prove the guard is the NEW one (on last_status_timestamp),
+			// not the old order-dependent one (on last_status_sort_id): force
+			// `last_status_sort_id` to a value that does NOT match u2's sort_id, so the
+			// OLD guard (`last_status_sort_id = old.sort_id`) would be false and leave
+			// the aggregate stale — while the NEW guard still fires. Independent of
+			// whichever order SQLite happens to run the sibling triggers in.
+			db.prepare('UPDATE status_info SET last_status_sort_id = 999 WHERE chat_jid=?').run(sender)
+
+			db.prepare('DELETE FROM status WHERE uuid=?').run('u2') // delete the newest
+			expect(ts()).toBe(1_000) // aggregate fell back to u1, not left stale at 2_000
+		})
+
+		it('status.db v1 migration backfills a stale last_status_timestamp (repairs old-trigger damage)', () => {
+			// Audit #637 follow-up: swapping the trigger only prevents FUTURE staleness.
+			// A DB that already ran the buggy trigger can hold a last_status_timestamp
+			// pointing at an already-deleted status. The migration must REPAIR it — this
+			// exercises the backfill SQL the migration runs.
+			const backend = new StatusBackend(store.handle('status.db'), { pruneIntervalMs: Number.MAX_SAFE_INTEGER })
+			const db = store.handle('status.db')
+			const sender = 'heal@s.whatsapp.net'
+			backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'h1', timestamp: 1_000 })
+			backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'h2', timestamp: 2_000 })
+
+			// Simulate the corruption the OLD trigger left behind: newest (h2) is gone
+			// from `status`, but `status_info.last_status_timestamp` still points at it.
+			db.prepare('DELETE FROM status WHERE uuid=?').run('h2')
+			db.prepare('UPDATE status_info SET last_status_timestamp = 2_000 WHERE chat_jid=?').run(sender)
+			const readTs = () =>
+				(db.prepare('SELECT last_status_timestamp t FROM status_info WHERE chat_jid=?').get(sender) as { t: number }).t
+			expect(readTs()).toBe(2_000) // corrupted: points at the deleted h2
+
+			// Run the migration's backfill → repairs to the newest REMAINING status (h1).
+			db.exec(STATUS_BACKFILL_LAST_TIMESTAMP_SQL)
+			expect(readTs()).toBe(1_000)
+		})
+
+		it('listActiveStatusesForSender drops rows past the 24h retention at read time', () => {
+			// Audit #637: the write-path prune is throttled/best-effort, so a just-
+			// expired status can still be on disk between prunes. The active read
+			// enforces the same 24h window so the consumer never sees a stale status.
+			const backend = new StatusBackend(store.handle('status.db'), { pruneIntervalMs: Number.MAX_SAFE_INTEGER })
+			const sender = 'ret@s.whatsapp.net'
+			const now = 2_000_000 // unix seconds; cutoff = now - 86400 = 1_913_600
+			backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'stale', timestamp: 1_000 })
+			backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'fresh', timestamp: 1_999_000 })
+
+			expect(backend.listStatusesForSender(sender).map(r => r.uuid)).toEqual(['stale', 'fresh'])
+			expect(backend.listActiveStatusesForSender(sender, now).map(r => r.uuid)).toEqual(['fresh'])
 		})
 	})
 

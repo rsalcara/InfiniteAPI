@@ -19,6 +19,7 @@
  * and those all live inside `axolotl.db`, so the trade-off is fine.
  */
 import type { ILogger } from '../logger'
+import { STATUS_LAST_TIMESTAMP_TRIGGER_NAME, STATUS_LAST_TIMESTAMP_TRIGGER_SQL } from './schemas/status'
 import { type Migration, runMigrations } from './schema-migrations'
 import { MULTI_DB_FILES, type MultiDbFile, SCHEMAS } from './schemas'
 import type { SqliteDbLike } from './types'
@@ -48,6 +49,24 @@ import type { SqliteDbLike } from './types'
  *     truth for additions; the base `_SCHEMA` only carries the
  *     ORIGINAL columns of the table.
  */
+/**
+ * Recomputes `status_info.last_status_timestamp` for every row to its correct
+ * newest-remaining status (same expression the AFTER DELETE trigger uses). Used
+ * by the status.db v1 migration to REPAIR rows the old order-dependent trigger
+ * may have left stale. Idempotent — rows already correct are recomputed to the
+ * same value; a `status_info` with no live statuses gets NULL. Exported so the
+ * repair is unit-testable without duplicating the SQL. (Audit #637.)
+ */
+export const STATUS_BACKFILL_LAST_TIMESTAMP_SQL = `
+UPDATE status_info
+  SET last_status_timestamp = (SELECT
+    CASE WHEN COALESCE(s.server_receipt_timestamp, 0) > 0 THEN s.server_receipt_timestamp ELSE s.timestamp END
+    FROM status s
+    WHERE s.status_info_row_id = status_info.row_id
+    AND s.type <> 8 AND s.type <> 2 AND s.is_archived = 0
+    ORDER BY s.sort_id DESC LIMIT 1);
+`
+
 const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 	'wa.db': [
 		{
@@ -81,6 +100,32 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 			version: 1,
 			name: 'add sender_keys.bucket_id (schema fidelity)',
 			sql: `ALTER TABLE sender_keys ADD COLUMN bucket_id TEXT NOT NULL DEFAULT '';`
+		}
+	],
+	'status.db': [
+		{
+			// Audit #637: the AFTER DELETE `...last_status_timestamp_trigger` guarded
+			// on `last_status_sort_id = old.sort_id`, a column the sibling
+			// `...last_status_sort_id_trigger` overwrites — and SQLite doesn't define
+			// a fire order between them, so the timestamp could be left stale. The
+			// base schema now ships an order-independent body (guard on
+			// `last_status_timestamp`), but `CREATE TRIGGER IF NOT EXISTS` won't
+			// replace an already-created trigger on existing status.db files. DROP +
+			// recreate here so upgraded DBs pick up the fixed body. Body kept
+			// byte-identical to the base schema's (single logical definition).
+			//
+			// Swapping the trigger only prevents FUTURE staleness — a DB that already
+			// ran the buggy trigger may hold a `last_status_timestamp` still pointing
+			// at an already-deleted status. So we also BACKFILL every `status_info`
+			// row to the correct newest-remaining status in the same (IMMEDIATE)
+			// migration transaction (audit follow-up: repair, not just prevent).
+			version: 1,
+			name: 'fix last_status_timestamp trigger order-dependency + backfill stale aggregates',
+			sql: `
+				DROP TRIGGER IF EXISTS ${STATUS_LAST_TIMESTAMP_TRIGGER_NAME};
+				${STATUS_LAST_TIMESTAMP_TRIGGER_SQL}
+				${STATUS_BACKFILL_LAST_TIMESTAMP_SQL}
+			`
 		}
 	]
 }
