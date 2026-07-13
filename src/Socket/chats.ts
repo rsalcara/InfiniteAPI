@@ -2333,6 +2333,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	// Who has viewed a given status (by its uuid = the status message id).
+	// NOTE: only resolves viewers for statuses recorded locally (received, or own
+	// posts that flowed through processMessage while connected). For a status not
+	// in the mirror, returns [] — consume viewer info live via
+	// `message-receipt.update` instead. (We deliberately don't store null-FK
+	// receipts; see StatusBackend.recordSeenReceipt.)
 	const getStatusViewers = (statusUuid: string): ReturnType<StatusBackend['listSeenReceiptsForStatus']> => {
 		if (!statusBackend || !statusUuid) {
 			return []

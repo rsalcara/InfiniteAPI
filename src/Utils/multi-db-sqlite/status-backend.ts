@@ -17,13 +17,13 @@
  * the ordinary `<receipt>` stanza for `status@broadcast`, which Baileys
  * ALREADY parses and emits as `message-receipt.update` (see
  * `messages-recv.ts`'s `handleReceipt` — no new wire-level decoding needed,
- * just routing an existing event). `status_row_id` is looked up by `uuid`
- * and will be `null` when the referenced status isn't one this gateway has
- * recorded locally (e.g. a receipt for the user's OWN posted status, which
- * `recordReceivedStatus` never captures today since that only tracks
- * statuses received FROM others) — the row is still inserted with a null
- * FK rather than dropped, matching this file's "best-effort, never blocks
- * on missing context" convention elsewhere.
+ * just routing an existing event). `status_row_id` is looked up by `uuid`;
+ * a receipt whose status isn't recorded locally (e.g. the user's OWN posted
+ * status, which `recordReceivedStatus` only captures if it flowed through
+ * processMessage while connected) is SKIPPED rather than stored with a null FK
+ * — a null-FK row is unretrievable by uuid, escapes the delete-cascade (so it
+ * would grow unbounded), and can't dedupe. Own-status view info still arrives
+ * live via `message-receipt.update`. See `recordSeenReceipt`.
  *
  * The remaining 6 tables in status.ts (`status_attribution`/
  * `status_crossposting_v3` for channel-crosspost, `status_text` for
@@ -56,6 +56,11 @@ import type { SqliteDbLike, SqliteStatementLike } from './types'
 export const STATUS_TYPE_STANDARD = 4
 export const STATUS_STATE_SERVER_CONFIRMED = 3
 
+/** Status feed is a 24h window on the mobile — mirror the same retention. */
+export const STATUS_RETENTION_SECS_DEFAULT = 24 * 60 * 60
+/** Prune at most this often (amortized, from the write path) — no timer needed. */
+export const STATUS_PRUNE_INTERVAL_MS_DEFAULT = 60 * 60 * 1000
+
 export type ReceivedStatusInput = {
 	senderUserJid: string
 	uuid: string
@@ -80,12 +85,18 @@ export class StatusBackend {
 		getStatusRowIdByUuid: SqliteStatementLike
 		upsertSeenReceipt: SqliteStatementLike
 		listSeenReceiptsForStatus: SqliteStatementLike
+		pruneExpired: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
+	private readonly retentionSecs: number
+	private readonly pruneIntervalMs: number
+	private lastPruneAtMs = 0
 
-	constructor(db: SqliteDbLike) {
+	constructor(db: SqliteDbLike, opts?: { retentionSecs?: number; pruneIntervalMs?: number }) {
 		this.db = db
+		this.retentionSecs = opts?.retentionSecs ?? STATUS_RETENTION_SECS_DEFAULT
+		this.pruneIntervalMs = opts?.pruneIntervalMs ?? STATUS_PRUNE_INTERVAL_MS_DEFAULT
 		this.stmts = {
 			upsertStatusInfo: this.db.prepare(
 				'INSERT INTO status_info (chat_jid, total_count, unread_count, is_muted, type) VALUES (?, 0, 0, 0, 0) ' +
@@ -115,7 +126,14 @@ export class StatusBackend {
 			listSeenReceiptsForStatus: this.db.prepare(
 				'SELECT row_id, status_row_id, receipt_user_jid, received_timestamp, seen_timestamp ' +
 					'FROM status_seen_receipt WHERE status_row_id = ?'
-			)
+			),
+			// Hard-delete expired statuses (24h window, mirroring the mobile). The
+			// canonical `AFTER DELETE`/`BEFORE DELETE` triggers (see status.ts) fire
+			// per row to keep `status_info` aggregates consistent and cascade to
+			// `status_seen_receipt` — exactly like the real app, so this is a plain
+			// bulk DELETE. `timestamp` is unix SECONDS here (recordReceivedStatus
+			// stores `message.messageTimestamp`), so the cutoff is in seconds too.
+			pruneExpired: this.db.prepare('DELETE FROM status WHERE timestamp < ?')
 		}
 	}
 
@@ -146,6 +164,33 @@ export class StatusBackend {
 			this.stmts.incrementCounts.run(sortId, input.timestamp, infoRow.row_id)
 		})
 		run()
+		// Opportunistic, throttled expiry — keeps status.db bounded (24h feed)
+		// without a timer/socket wiring. Never throws into the caller.
+		this.maybePrune()
+	}
+
+	/**
+	 * Hard-deletes statuses older than `cutoffTimestamp` (unix seconds). Returns
+	 * the number of `status` rows removed. The ported mobile triggers keep
+	 * `status_info` aggregates consistent and cascade to `status_seen_receipt`.
+	 */
+	pruneExpired(cutoffTimestamp: number): number {
+		return this.stmts.pruneExpired.run(cutoffTimestamp).changes as number
+	}
+
+	/** Throttled prune driven from the write path (default: hourly, 24h TTL). */
+	private maybePrune(): void {
+		const now = Date.now()
+		if (now - this.lastPruneAtMs < this.pruneIntervalMs) {
+			return
+		}
+
+		this.lastPruneAtMs = now
+		try {
+			this.pruneExpired(Math.floor(now / 1000) - this.retentionSecs)
+		} catch {
+			// best-effort: a prune failure must never break status recording.
+		}
 	}
 
 	listStatusesForSender(senderUserJid: string) {
@@ -164,14 +209,28 @@ export class StatusBackend {
 
 	/**
 	 * Records that `receiptUserJid` has seen the status identified by
-	 * `statusUuid`. `status_row_id` is resolved by uuid lookup — left `null`
-	 * when this gateway has no local `status` row for that uuid (see class
-	 * doc). Upsert keyed on (status_row_id, receipt_user_jid) so a repeated
-	 * receipt for the same viewer just refreshes `seen_timestamp`.
+	 * `statusUuid`. Returns `true` if stored, `false` if skipped.
+	 *
+	 * SKIPS (returns false) when no local `status` row matches the uuid — e.g. a
+	 * receipt for the user's OWN posted status that this gateway never recorded.
+	 * We used to insert a null-FK row, but that was a trap: it's unretrievable by
+	 * uuid (so `getStatusViewers` returns [] anyway), it's never reached by the
+	 * delete-cascade trigger (so it would accumulate UNBOUNDED), and it can't
+	 * dedupe (NULLs are distinct under the UNIQUE index → repeated views pile
+	 * up). Skipping keeps the schema mobile-identical (no synthetic `status_uuid`
+	 * column) — the real app never hits this because it records every status, so
+	 * its FK is always resolvable. Own-status view info is still delivered live
+	 * via `message-receipt.update`. Upsert keyed on (status_row_id,
+	 * receipt_user_jid) so a repeated view just refreshes `seen_timestamp`.
 	 */
-	recordSeenReceipt(input: SeenReceiptInput): void {
+	recordSeenReceipt(input: SeenReceiptInput): boolean {
 		const statusRow = this.stmts.getStatusRowIdByUuid.get(input.statusUuid) as { row_id: number } | undefined
-		this.stmts.upsertSeenReceipt.run(statusRow?.row_id ?? null, input.receiptUserJid, input.seenTimestamp)
+		if (!statusRow) {
+			return false
+		}
+
+		this.stmts.upsertSeenReceipt.run(statusRow.row_id, input.receiptUserJid, input.seenTimestamp)
+		return true
 	}
 
 	listSeenReceiptsForStatus(statusUuid: string) {
