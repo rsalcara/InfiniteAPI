@@ -35,8 +35,9 @@ export class LidChatStateBackend {
 
 	/**
 	 * Marks that the phone number for this LID identity is known/shared.
-	 * `lidUser` is the same value {@link JidMapBackend.storeMapping} resolves for
-	 * the LID side, so both land on one shared `jid` row. Idempotent.
+	 * `lidUser` is the same LID-side value passed to
+	 * {@link JidMapBackend.storeMapping}, so both land on one shared `jid` row.
+	 * Idempotent.
 	 */
 	markPnShared(lidUser: string): void {
 		this.stmts.markPnShared.run(this.jidMap.resolveJidRowId(lidUser))
