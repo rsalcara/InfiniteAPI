@@ -72,7 +72,7 @@ export type LocationSharerRow = {
  * Max WhatsApp live-location duration is 8h, so a RECEIVED share whose last
  * update is older than this is definitely over. Used to age out received rows.
  */
-export const LOCATION_SHARER_RECEIVED_RETENTION_SECS = 8 * 60 * 60
+const LOCATION_SHARER_RECEIVED_RETENTION_SECS = 8 * 60 * 60
 /** Throttle for the opportunistic received-share prune (amortized, from writes). */
 const LOCATION_PRUNE_INTERVAL_MS = 60 * 60 * 1000
 
@@ -137,14 +137,16 @@ export class LocationBackend {
 			listLocationSharers: this.db.prepare(
 				'SELECT remote_jid, from_me, remote_resource, expires, message_id FROM location_sharer'
 			),
-			// Active = a SENT share not yet expired (expires > now, seconds), OR a
-			// received/open-ended share (expires=0) whose last activity is within
-			// the retention window (received_ts > cutoff). The retention cutoff
+			// Active = a timed share not yet expired, a SENT open-ended share, OR a
+			// RECEIVED open-ended share whose last activity is within the retention
+			// window. The retention cutoff applies only to received rows and
 			// stops a received share that ended hours ago from showing as active
 			// forever (audit #636). Params: (nowSecs, retentionCutoffSecs).
 			listActiveLocationSharers: this.db.prepare(
 				'SELECT remote_jid, from_me, remote_resource, expires, message_id, received_ts FROM location_sharer ' +
-					'WHERE (expires > 0 AND expires > ?) OR (expires = 0 AND received_ts > ?)'
+					'WHERE (expires > 0 AND expires > ?) ' +
+					'OR (expires = 0 AND from_me = 1) ' +
+					'OR (expires = 0 AND from_me = 0 AND received_ts > ?)'
 			),
 			endLocationSharer: this.db.prepare(
 				'DELETE FROM location_sharer WHERE remote_jid = ? AND from_me = ? AND remote_resource = ? AND message_id = ?'
@@ -152,7 +154,9 @@ export class LocationBackend {
 			// Hard-delete received/open-ended shares older than the retention
 			// window, so the table stays bounded (received rows never get an
 			// explicit end from the companion wire).
-			pruneStaleReceivedSharers: this.db.prepare('DELETE FROM location_sharer WHERE expires = 0 AND received_ts < ?')
+			pruneStaleReceivedSharers: this.db.prepare(
+				'DELETE FROM location_sharer WHERE from_me = 0 AND expires = 0 AND received_ts <= ?'
+			)
 		}
 	}
 
@@ -199,16 +203,16 @@ export class LocationBackend {
 			row.remoteResource,
 			row.expires,
 			row.messageId,
-			row.receivedTs ?? 0
+			row.receivedTs ?? (row.fromMe === 0 ? Math.floor(Date.now() / 1000) : 0)
 		)
 		// Opportunistic, throttled retention sweep — keeps received/open-ended
 		// shares bounded without a timer. Never throws into the caller.
 		this.maybePrune()
 	}
 
-	/** Deletes received/open-ended shares whose last activity is before `cutoffSecs`. Returns rows removed. */
+	/** Deletes RECEIVED open-ended shares whose last activity is at or before `cutoffSecs`. Returns rows removed. */
 	pruneStaleReceivedSharers(cutoffSecs: number): number {
-		return this.stmts.pruneStaleReceivedSharers.run(cutoffSecs).changes as number
+		return this.stmts.pruneStaleReceivedSharers.run(cutoffSecs).changes
 	}
 
 	private maybePrune(): void {
@@ -217,11 +221,12 @@ export class LocationBackend {
 			return
 		}
 
-		this.lastPruneAtMs = now
 		try {
 			this.pruneStaleReceivedSharers(Math.floor(now / 1000) - this.retentionSecs)
+			this.lastPruneAtMs = now
 		} catch {
-			// best-effort: a prune failure must never break location recording.
+			// Best-effort: a prune failure must never break location recording. Do
+			// not advance the throttle so a later write can retry the transient fault.
 		}
 	}
 
@@ -262,11 +267,11 @@ export class LocationBackend {
 	}
 
 	/**
-	 * Sharers still active at `nowSecs` (unix seconds): a SENT share not yet
-	 * expired, OR a received/open-ended share whose last activity is within the
-	 * retention window. Backs `getActiveLiveLocations()` so it never hands back a
-	 * share that expired OR (for received shares, which have no `expires`) ended
-	 * hours ago (audit #636).
+	 * Sharers still active at `nowSecs` (unix seconds): a timed share not yet
+	 * expired, a SENT open-ended share, or a received/open-ended share whose last
+	 * activity is within the retention window. Backs `getActiveLiveLocations()`
+	 * so it never hands back a share that expired OR (for received shares, which
+	 * have no `expires`) ended hours ago (audit #636).
 	 */
 	listActiveLocationSharers(nowSecs: number): LocationSharerRow[] {
 		const cutoff = nowSecs - this.retentionSecs

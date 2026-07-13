@@ -11,6 +11,7 @@
  * One file covers all four since they share setup/teardown (a single
  * MultiDbSqliteStore handle).
  */
+import { jest } from '@jest/globals'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -369,13 +370,20 @@ describe('Phase 9 backends', () => {
 				messageId: 'open-ended',
 				receivedTs: nowSecs // received just now → within the retention window
 			})
+			backend.upsertLocationSharer({
+				remoteJid: 'd@s.whatsapp.net',
+				fromMe: 1,
+				remoteResource: '',
+				expires: 0,
+				messageId: 'sent-open-ended'
+			})
 
-			expect(backend.listLocationSharers()).toHaveLength(3)
+			expect(backend.listLocationSharers()).toHaveLength(4)
 			const active = backend
 				.listActiveLocationSharers(nowSecs)
 				.map(s => s.messageId)
 				.sort()
-			expect(active).toEqual(['active', 'open-ended'])
+			expect(active).toEqual(['active', 'open-ended', 'sent-open-ended'])
 		})
 
 		it('ages out a RECEIVED share whose last activity is past the retention window (#636)', () => {
@@ -384,14 +392,14 @@ describe('Phase 9 backends', () => {
 			})
 			const nowSecs = 1_700_000_000
 			const RETENTION = 8 * 60 * 60
-			// A received share last updated just over the window ago (share ended).
+			// A received share exactly at the cutoff is no longer active.
 			backend.upsertLocationSharer({
 				remoteJid: 'stale@s.whatsapp.net',
 				fromMe: 0,
 				remoteResource: '',
 				expires: 0,
 				messageId: 'stale',
-				receivedTs: nowSecs - RETENTION - 60
+				receivedTs: nowSecs - RETENTION
 			})
 			// A received share still within the window (share ongoing).
 			backend.upsertLocationSharer({
@@ -402,6 +410,15 @@ describe('Phase 9 backends', () => {
 				messageId: 'fresh',
 				receivedTs: nowSecs - 60
 			})
+			// Sent/open-ended rows do not use received retention and must survive
+			// both the active read and a hard prune even with received_ts=0.
+			backend.upsertLocationSharer({
+				remoteJid: 'sent@s.whatsapp.net',
+				fromMe: 1,
+				remoteResource: '',
+				expires: 0,
+				messageId: 'sent-open-ended'
+			})
 
 			// The stale one is filtered from the active read …
 			expect(
@@ -409,11 +426,37 @@ describe('Phase 9 backends', () => {
 					.listActiveLocationSharers(nowSecs)
 					.map(s => s.messageId)
 					.sort()
-			).toEqual(['fresh'])
+			).toEqual(['fresh', 'sent-open-ended'])
 
 			// … and hard-pruned so the table stays bounded.
 			expect(backend.pruneStaleReceivedSharers(nowSecs - RETENTION)).toBe(1)
-			expect(backend.listLocationSharers().map(s => s.messageId)).toEqual(['fresh'])
+			expect(
+				backend
+					.listLocationSharers()
+					.map(s => s.messageId)
+					.sort()
+			).toEqual(['fresh', 'sent-open-ended'])
+		})
+
+		it('defaults a received share activity timestamp to the current unix time', () => {
+			const nowSecs = 1_700_000_000
+			const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(nowSecs * 1000)
+			try {
+				const backend = new LocationBackend(store.handle('location.db'), {
+					pruneIntervalMs: Number.MAX_SAFE_INTEGER
+				})
+				backend.upsertLocationSharer({
+					remoteJid: 'received@s.whatsapp.net',
+					fromMe: 0,
+					remoteResource: '',
+					expires: 0,
+					messageId: 'received-with-default'
+				})
+
+				expect(backend.listActiveLocationSharers(nowSecs).map(s => s.messageId)).toEqual(['received-with-default'])
+			} finally {
+				nowSpy.mockRestore()
+			}
 		})
 
 		it('upsertLocationSharer keeps the NEWEST received_ts (out-of-order older update)', () => {

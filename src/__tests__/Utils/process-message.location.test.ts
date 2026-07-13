@@ -97,8 +97,24 @@ describe('processMessage — location.db mirror (Phase 9.8)', () => {
 				remoteJid: 'chat@s.whatsapp.net',
 				fromMe: 0,
 				messageId: 'live-loc-1',
-				expires: 0
+				expires: 0,
+				receivedTs: 1770000000
 			})
+		)
+	})
+
+	it('lets the backend use current time when a received live location has no message timestamp', async () => {
+		const locationBackend = makeLocationBackendMock()
+		const { ctx } = makeContext(locationBackend)
+		const msg = inbound('live-loc-without-ts', {
+			liveLocationMessage: { degreesLatitude: -23.5, degreesLongitude: -46.6 }
+		})
+		msg.messageTimestamp = undefined
+
+		await processMessage(msg, ctx as any)
+
+		expect(locationBackend.upsertLocationSharer).toHaveBeenCalledWith(
+			expect.objectContaining({ receivedTs: undefined })
 		)
 	})
 

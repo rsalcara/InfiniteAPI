@@ -162,11 +162,12 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 			// active and the rows accumulated unbounded (a share that ended hours
 			// ago still showed up). Add a gateway-only `received_ts` bookkeeping
 			// column (orthogonal to `expires`, which keeps its parity meaning) so
-			// received shares can be aged out by last-activity time. Brand-new
-			// column — no DB can already have it, so a plain ADD is drift-safe.
+			// received shares can be aged out by last-activity time. The PRAGMA
+			// preflight keeps open() safe if the column already exists in
+			// a drifted/partially migrated database.
 			version: 1,
 			name: 'add location_sharer.received_ts (received-share retention)',
-			sql: `ALTER TABLE location_sharer ADD COLUMN received_ts INTEGER NOT NULL DEFAULT 0;`
+			run: db => addColumnIfMissing(db, 'location_sharer', 'received_ts', 'INTEGER NOT NULL DEFAULT 0')
 		}
 	]
 }

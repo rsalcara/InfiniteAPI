@@ -954,7 +954,7 @@ const processMessage = async (
 					messageId: message.key.id,
 					// Last-activity time drives received-share retention (#636): the
 					// share ages out this many seconds after its final update.
-					receivedTs: toNumber(message.messageTimestamp ?? 0)
+					receivedTs: message.key.fromMe ? undefined : toNumber(message.messageTimestamp ?? 0) || undefined
 				})
 			}
 
