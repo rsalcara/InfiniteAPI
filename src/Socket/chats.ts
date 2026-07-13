@@ -81,7 +81,10 @@ import {
 	MessageMediaBackend,
 	MessageStoreBackend,
 	StatusBackend,
+	StickersBackend,
 	type StoredCompanionDeviceRow,
+	type StoredRecentStickerRow,
+	type StoredStarredStickerRow,
 	WaContactsBackend
 } from '../Utils/multi-db-sqlite'
 import processMessage from '../Utils/process-message'
@@ -272,6 +275,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	const statusBackend = config.multiDbStore
 		? new StatusBackend((config.multiDbStore as any).handle('status.db'))
+		: undefined
+
+	// Phase 9.16 — mirrors starred/recent stickers into stickers.db from the
+	// app-state `stickerAction`/`removeRecentStickerAction` (validated source).
+	const stickersBackend = config.multiDbStore
+		? new StickersBackend((config.multiDbStore as any).handle('stickers.db'))
 		: undefined
 
 	// Mirrors real messages (message/chat tables) + delete-for-everyone
@@ -927,7 +936,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					me,
 					isInitialSync ? { accountSettings: authState.creds.accountSettings } : undefined,
 					logger,
-					chatSettingsBackend
+					chatSettingsBackend,
+					stickersBackend
 				)
 			}
 		}
@@ -2351,6 +2361,34 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	}
 
+	// Phase 9.16 consume — the user's favourited stickers (from app-state, kept
+	// in sync via `stickerAction`). Best-effort: `[]` on miss/error.
+	const getStarredStickers = (): StoredStarredStickerRow[] => {
+		if (!stickersBackend) {
+			return []
+		}
+
+		try {
+			return stickersBackend.listStarred()
+		} catch (err) {
+			logger.debug({ err }, 'stickers getStarredStickers failed (fallback to legacy)')
+			return []
+		}
+	}
+
+	const getRecentStickers = (): StoredRecentStickerRow[] => {
+		if (!stickersBackend) {
+			return []
+		}
+
+		try {
+			return stickersBackend.listRecent()
+		} catch (err) {
+			logger.debug({ err }, 'stickers getRecentStickers failed (fallback to legacy)')
+			return []
+		}
+	}
+
 	return {
 		...sock,
 		createCallLink,
@@ -2362,6 +2400,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		getActiveLiveLocations,
 		getStatusFeed,
 		getStatusViewers,
+		getStarredStickers,
+		getRecentStickers,
 		orphanQueue,
 		messageMutex,
 		receiptMutex,
