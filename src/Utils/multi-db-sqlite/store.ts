@@ -172,6 +172,132 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 	]
 }
 
+/**
+ * Transient tables wiped once at {@link MultiDbSqliteStore.open} (i.e. on
+ * process start). Each mirrors IN-FLIGHT state that is meaningless after the
+ * process that owned it is gone — a live queue, a per-message ratchet anchor,
+ * an in-progress upload/history-sync job. The owning backends already clear
+ * these on a clean socket teardown, but a CRASH (or `kill -9`) skips teardown,
+ * so the stale rows would otherwise survive into the next start and accumulate
+ * across restarts (audit #627/#628/#633). None is a source of truth: the live
+ * protocol flow re-drives all of them, so wiping on start is always safe.
+ *
+ *   - axolotl.db `message_base_key`      — per-message retry ratchet anchor;
+ *                                          the in-memory cache is gone on start
+ *   - axolotl.db `unordered_stanza_queue`— raw stanzas parked awaiting an
+ *                                          earlier one; re-sent by the server
+ *   - axolotl.db `preacks`               — pending pre-ack buffer (ptn)
+ *   - media.db   `media_job`             — in-progress media upload jobs
+ *   - sync.db    `history_sync_companion`— history-sync progress mirror
+ */
+const TRANSIENT_TABLES: Partial<Record<MultiDbFile, ReadonlyArray<string>>> = {
+	'axolotl.db': ['message_base_key', 'unordered_stanza_queue', 'preacks'],
+	'media.db': ['media_job'],
+	'sync.db': ['history_sync_companion']
+}
+
+const SESSION_LOCK_FILE = '.multi-db-sqlite.lock'
+
+const isProcessAlive = (pid: number): boolean => {
+	if (!Number.isInteger(pid) || pid <= 0) return false
+	if (pid === process.pid) return true
+	try {
+		process.kill(pid, 0)
+		return true
+	} catch (err) {
+		// EPERM means the process exists but this account cannot signal it.
+		return (err as NodeJS.ErrnoException).code === 'EPERM'
+	}
+}
+
+const fileAgeMs = (fs: typeof import('node:fs'), filePath: string): number | undefined => {
+	try {
+		return Date.now() - fs.statSync(filePath).mtimeMs
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+		throw err
+	}
+}
+
+const acquireSessionLock = (
+	fs: typeof import('node:fs'),
+	path: typeof import('node:path'),
+	sessionDir: string
+): (() => void) => {
+	const lockPath = path.join(sessionDir, SESSION_LOCK_FILE)
+	const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+
+	for (;;) {
+		try {
+			const fd = fs.openSync(lockPath, 'wx')
+			try {
+				fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, token }))
+			} catch (writeErr) {
+				fs.closeSync(fd)
+				try {
+					fs.unlinkSync(lockPath)
+				} catch {
+					// Preserve the original write failure.
+				}
+
+				throw writeErr
+			}
+
+			return () => {
+				try {
+					fs.closeSync(fd)
+				} finally {
+					try {
+						const current = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { token?: string }
+						if (current.token === token) fs.unlinkSync(lockPath)
+					} catch (err) {
+						if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+					}
+				}
+			}
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+
+			let ownerPid = 0
+			let malformed = false
+			try {
+				ownerPid = (JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { pid?: number }).pid ?? 0
+			} catch {
+				malformed = true
+			}
+
+			if (isProcessAlive(ownerPid)) {
+				throw new Error(`MultiDbSqliteStore: sessionDir is already owned by process ${ownerPid}: ${sessionDir}`)
+			}
+
+			if (malformed) {
+				// Another process can observe the file in the tiny interval between
+				// O_EXCL creation and the owner metadata write. Treat a fresh malformed
+				// file as an acquisition in progress; only recover an old one left by a
+				// crash during that interval.
+				const ageMs = fileAgeMs(fs, lockPath)
+				// A competing stale-lock recovery may have moved the file after
+				// our failed read. Retry against whichever lock exists now.
+				if (ageMs === undefined) continue
+
+				if (ageMs < 10_000) {
+					throw new Error(`MultiDbSqliteStore: sessionDir lock is being acquired: ${sessionDir}`)
+				}
+			}
+
+			// Atomically move the stale lock away. If another contender won the
+			// rename, retry and inspect the lock it created rather than deleting it.
+			const stalePath = `${lockPath}.stale-${token}`
+			try {
+				fs.renameSync(lockPath, stalePath)
+				fs.unlinkSync(stalePath)
+			} catch (renameErr) {
+				if ((renameErr as NodeJS.ErrnoException).code !== 'ENOENT') throw renameErr
+			}
+		}
+	}
+}
+
 type DatabaseConstructor = typeof import('better-sqlite3')
 
 const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
@@ -254,6 +380,7 @@ export class MultiDbSqliteStore {
 	// mechanism close() uses to interrupt a concurrent open() without
 	// leaking handles or leaving `opened=true` after teardown.
 	private openGeneration = 0
+	private releaseSessionLock?: () => void
 
 	constructor(private readonly opts: MultiDbSqliteStoreOptions) {}
 
@@ -274,19 +401,17 @@ export class MultiDbSqliteStore {
 	}
 
 	private async runOpen(): Promise<void> {
+		// Capture this before the first await. A close() issued while the lazy
+		// imports or optional driver load are pending must still cancel this open.
+		const startGen = this.openGeneration
 		const fs = await import('node:fs')
 		const path = await import('node:path')
 
 		fs.mkdirSync(this.opts.sessionDir, { recursive: true })
 
 		const Database = await loadBetterSqlite3()
+		this.releaseSessionLock = acquireSessionLock(fs, path, this.opts.sessionDir)
 		const extra = this.opts.extraPragmas ?? []
-
-		// Capture the generation at the start. If close() runs while we
-		// are still here, it will increment this counter — we then know
-		// the caller has explicitly torn the store down and we must abort
-		// (closing the just-opened db) instead of stashing it.
-		const startGen = this.openGeneration
 
 		// On partial-initialization failure (bad extraPragma entry, missing
 		// directory permissions on one .db, schema error inside one of the
@@ -328,6 +453,19 @@ export class MultiDbSqliteStore {
 					runMigrations(db as unknown as SqliteDbLike, [])
 				}
 
+				// Prune-on-open: wipe transient in-flight tables that a crash would
+				// have left stale (see TRANSIENT_TABLES). The session lock is held
+				// for this store's full lifetime, so no other store can be writing
+				// this sessionDir while these deletes run. Best-effort per table — a
+				// prune failure must not block opening the store.
+				for (const table of TRANSIENT_TABLES[file] ?? []) {
+					try {
+						db.exec(`DELETE FROM ${table}`)
+					} catch (pruneErr) {
+						this.opts.logger?.warn?.({ file, table, err: pruneErr }, 'multi-db-sqlite: startup prune failed')
+					}
+				}
+
 				// Abort check: if close() bumped the generation while we were
 				// in here, close this brand-new handle and stop. close() has
 				// already cleared `this.handles` and reset `opened=false`;
@@ -340,6 +478,7 @@ export class MultiDbSqliteStore {
 					}
 
 					this.handles.delete(file)
+					this.unlockSession()
 					return
 				}
 
@@ -355,6 +494,7 @@ export class MultiDbSqliteStore {
 			}
 
 			this.handles.clear()
+			this.unlockSession()
 			throw err
 		}
 
@@ -373,10 +513,22 @@ export class MultiDbSqliteStore {
 			}
 
 			this.handles.clear()
+			this.unlockSession()
 			return
 		}
 
 		this.opened = true
+	}
+
+	private unlockSession(): void {
+		const release = this.releaseSessionLock
+		this.releaseSessionLock = undefined
+		if (!release) return
+		try {
+			release()
+		} catch (err) {
+			this.opts.logger?.warn?.({ err }, 'multi-db-sqlite: session lock release failed')
+		}
 	}
 
 	/**
@@ -423,6 +575,7 @@ export class MultiDbSqliteStore {
 		// the handles currently in the map and close them — runOpen() may
 		// have added some between its last checkpoint and this point, but
 		// the generation bump guarantees it will not add MORE after this.
+		const wasOpened = this.opened
 		this.openGeneration++
 		const handlesToClose = Array.from(this.handles.entries())
 		this.handles.clear()
@@ -434,5 +587,9 @@ export class MultiDbSqliteStore {
 				this.opts.logger?.warn?.({ file, err }, 'multi-db-sqlite: close failed')
 			}
 		}
+
+		// If runOpen() has not completed, it owns lock release on its abort
+		// checkpoint. An already-open store releases synchronously here.
+		if (wasOpened) this.unlockSession()
 	}
 }
