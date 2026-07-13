@@ -1,5 +1,5 @@
 /**
- * Phase 9.3–9.10 — backend smoke tests for the remaining components:
+ * Backend smoke tests for the remaining components:
  *
  *   - `MsgRetryCounterSqliteAdapter` — retry counter persistence with TTL
  *   - `MessageQuarantineBackend` — quarantine row inserts + upsert-on-retry
@@ -29,7 +29,7 @@ import {
 } from '../../Utils/multi-db-sqlite'
 import { STATUS_BACKFILL_LAST_TIMESTAMP_SQL } from '../../Utils/multi-db-sqlite/store'
 
-describe('Phase 9 backends', () => {
+describe('backends', () => {
 	let dir: string
 	let store: MultiDbSqliteStore
 
@@ -295,7 +295,7 @@ describe('Phase 9 backends', () => {
 		})
 
 		it('SENT share (from_me=1) carries a real expires; RECEIVED (from_me=0) stays 0', () => {
-			// The send/receive asymmetry is the crux of Phase 9.8: a companion never
+			// The send/receive asymmetry is the crux of this feature: a companion never
 			// gets the peer's duration on the wire (received → expires 0), but WE
 			// choose the duration when originating a share (sent → real expires).
 			// Units are UNIX SECONDS on both paths (receive uses messageTimestamp;

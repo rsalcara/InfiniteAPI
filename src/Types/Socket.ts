@@ -323,7 +323,7 @@ export type SocketConfig = {
 	multiDbStore?: unknown
 
 	/**
-	 * Phase 9.4 — optional hook invoked when an inbound stanza permanently
+	 * Optional hook invoked when an inbound stanza permanently
 	 * fails Signal Protocol decryption (Bad MAC / corrupted session, retries
 	 * exhausted). Mirrors WhatsApp Android's own `msgstore.message_quarantine`
 	 * table: the raw ciphertext + stanza survive so they can be inspected or

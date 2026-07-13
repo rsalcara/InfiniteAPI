@@ -1,5 +1,5 @@
 /**
- * Phase 9.4 — typed `message_quarantine` storage.
+ * Typed `message_quarantine` storage.
  *
  * Stanzas that fail to decrypt (typically Bad MAC errors) are quarantined
  * here so they survive a gateway restart and can be replayed forensically

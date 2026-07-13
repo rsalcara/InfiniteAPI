@@ -1,5 +1,5 @@
 /**
- * Phase 9 — `useMultiDbSqliteAuthState` skeleton smoke test.
+ * `useMultiDbSqliteAuthState` skeleton smoke test.
  *
  * Covers:
  *   - creates all 13 physical .db files (creds, axolotl, msgstore, wa, sync,
@@ -7,13 +7,13 @@
  *     smb, status);
  *   - typed tables exist with expected names in the right .db files;
  *   - creds round-trip via creds.db;
- *   - signal data round-trip via axolotl.db.signal_kv (opaque key-value
- *     until phase 9.5 splits to typed tables);
+ *   - signal data round-trip via axolotl.db.signal_kv in legacy/kill-switch
+ *     mode;
  *   - app-state-sync-key round-trips via creds.db.app_state_sync_keys
  *     instead of signal_kv, including the legacy-row migration path;
  *   - session/pre-key/sender-key/identity-key writes best-effort MIRROR into
  *     axolotl.db's typed tables (sessions/prekeys/sender_keys/identities)
- *     alongside the signal_kv write, which stays authoritative;
+ *     alongside the authoritative signal_kv write in that mode;
  *   - close + reopen preserves all data.
  *
  * Uses on-disk DBs in a tmp directory because the multi-file layout

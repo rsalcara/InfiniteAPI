@@ -232,7 +232,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		? new MessageRetryManager(logger, maxMsgRetryCount, retryTypedBackend, retryTypedBackend)
 		: null
 
-	// Phase 9.8 — send-side location.db mirror. On a SENT live location the
+	// Send-side location.db mirror. On a SENT live location the
 	// duration is chosen by us (the originator), so unlike the receive path
 	// (companion never gets the peer's duration — proven: the wire only carries
 	// lat/lng/sequenceNumber/jpegThumbnail) we CAN populate the real
@@ -249,7 +249,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 	}
 
-	// Phase 9.16 — recent_stickers mirror: sending a sticker makes it "recent"
+	// Recent_stickers mirror: sending a sticker makes it "recent"
 	// (mirrors the mobile). Best-effort; a bad handle just disables the mirror.
 	let sendStickersBackend: StickersBackend | undefined
 	if (config.multiDbStore) {
@@ -3114,7 +3114,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					additionalNodes
 				})
 
-				// Phase 9.16 — a SENT sticker becomes "recent" (mobile parity).
+				// A SENT sticker becomes "recent" (mobile parity).
 				// Best-effort; never blocks the send (relay already happened).
 				const sentSticker = fullMsg.message?.stickerMessage
 				if (sendStickersBackend && sentSticker?.fileSha256) {

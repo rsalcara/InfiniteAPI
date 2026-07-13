@@ -1,5 +1,5 @@
 /**
- * Phase 9.10 — typed per-chat preference storage backed by `chatsettings.db`.
+ * Typed per-chat preference storage backed by `chatsettings.db`.
  *
  * Real Android capture confirms the schema below AND a "lazy creation"
  * write pattern: the `settings` row for a jid is only created the first

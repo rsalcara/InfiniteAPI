@@ -1,5 +1,5 @@
 /**
- * Phase 9.1 — typed `jid_map`-backed storage for LID↔PN mappings.
+ * Typed `jid_map`-backed storage for LID↔PN mappings.
  *
  * Stores both addressing forms as rows in the `jid` table (one row per
  * unique `raw_string`) and links them via `jid_map`. The mapping table
@@ -176,7 +176,7 @@ export class JidMapBackend {
 
 	/**
 	 * Public resolve-or-create entry point onto the same `jid` table, for
-	 * callers outside the LID↔PN mapping use case. Phase 9.4 uses this to
+	 * callers outside the LID↔PN mapping use case. The quarantine recorder uses this to
 	 * turn a chat/sender JID string into the `chat_row_id`/`sender_jid_row_id`
 	 * foreign keys that `message_quarantine` expects — the row is shared with
 	 * (and reused by) the LID mapping table, so quarantine rows join cleanly

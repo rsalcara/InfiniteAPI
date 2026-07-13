@@ -1,5 +1,5 @@
 /**
- * Phase 9.4 wiring — `createMessageQuarantineRecorder` glues
+ * Quarantine wiring — `createMessageQuarantineRecorder` glues
  * `JidMapBackend.resolveJidRowId` (chat/sender JID → `jid` row id) to
  * `MessageQuarantineBackend.quarantine` (the typed `message_quarantine`
  * insert). This is the function `SocketConfig.onMessageQuarantine` wraps —

@@ -5,15 +5,14 @@
  * Gateway scope (only tables that solve operational pain points; this is a
  * deliberate subset of the full mobile schema, which has ~292 tables):
  *
- *   - `jid` + `jid_map` — LID↔PN bidirectional mapping (target for phase
- *     9.1 `LIDMappingStore` migration)
+ *   - `jid` + `jid_map` — LID↔PN bidirectional mapping used by
+ *     `LIDMappingStore`
  *   - `user_device` + `user_device_info` — companion device list with
- *     native TTL via `expected_timestamp` (target for phase 9.2)
+ *     native TTL via `expected_timestamp`
  *   - `primary_device_version` — short-circuits device list refetch
  *   - `message_orphaned_edit` — `msgRetryCounterCache` persistence target
- *     (phase 9.3)
  *   - `message_quarantine` — quarantined stanzas survive restart for
- *     forensic replay or out-of-order retry (phase 9.4)
+ *     forensic replay or out-of-order retry
  *
  * Message store mirror — confirmed via live Frida capture on a real
  * Android primary device (2026-07-09, WhatsApp 2.26.22.8), cross-checked
@@ -189,7 +188,7 @@ CREATE INDEX IF NOT EXISTS message_quarantine_chat_row_id_idx
    are addressed by the same single-string key that messages-recv.ts /
    messages-send.ts already use, and live next to the routing tables
    (jid, jid_map, user_device) they cache. Owned by this schema file so
-   runMigrations can ALTER them in a future phase without a special-case
+   runMigrations can ALTER them later without a special-case
    for "table created in adapter constructor". */
 CREATE TABLE IF NOT EXISTS msg_retry_counter (
   key_id TEXT PRIMARY KEY,

@@ -1,5 +1,5 @@
 /**
- * Phase 9.2 — `NodeCache`-shaped adapter backed by `user_device(_info)` so
+ * `NodeCache`-shaped adapter backed by `user_device(_info)` so
  * the existing `userDevicesCache` plumbing in `messages-send.ts` /
  * `messages-recv.ts` keeps working unchanged when the multi-DB SQLite
  * store is wired up via `SocketConfig.multiDbStore`.
@@ -12,12 +12,12 @@
  * exact shape (incl. async-or-sync return contract) and stores devices
  * as JSON in `user_device_cache_json` — a small auxiliary table on
  * `msgstore.db` that keeps the typed `user_device` tables free for the
- * eventual full typed split (phase 9.2.1).
+ * eventual full typed split.
  *
  * Behavior preserved:
  *   - 5-minute default TTL via the auxiliary table's `expires_at` column
  *     (the typed `user_device_info.expected_timestamp` column stays
- *     reserved for the typed split in phase 9.2.1)
+ *     reserved for the future typed split)
  *   - `set` replaces previous entry atomically
  *   - `del` removes the entry
  *   - `mget` returns a `Record<user, devices>` for the requested users

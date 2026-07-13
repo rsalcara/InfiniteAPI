@@ -1,5 +1,5 @@
 /**
- * Phase 9.15 — typed status/stories feed storage backed by `status.db`.
+ * Typed status/stories feed storage backed by `status.db`.
  *
  * Real Android capture (WA Business 2.26.21.75, Frida) confirms this is a
  * "rica" (rich-evidence) database with a real empirical state machine — see
@@ -156,7 +156,7 @@ export class StatusBackend {
 
 	/**
 	 * Records one received status update, upserting its sender's status_info
-	 * aggregate row first. Wrapped in a transaction (audit finding, Phase 9
+	 * aggregate row first. Wrapped in a transaction (audit finding,
 	 * self-review): this is 4 dependent statements — a crash between
 	 * insertStatus and incrementCounts would leave status_info's counters
 	 * permanently out of sync with the actual status rows.

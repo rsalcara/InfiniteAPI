@@ -78,7 +78,7 @@ describe('processSyncAction', () => {
 			)
 		})
 
-		it('Phase 9.10: mirrors mute_end into chatSettingsBackend when configured', () => {
+		it('mirrors mute_end into chatSettingsBackend when configured', () => {
 			const chatSettingsBackend = { setMuteEnd: jest.fn(), setPinned: jest.fn() }
 			const syncAction = createSyncAction({ muteAction: { muted: true, muteEndTimestamp: 1700000000 } }, [
 				'mute',
@@ -89,7 +89,7 @@ describe('processSyncAction', () => {
 			expect(chatSettingsBackend.setPinned).not.toHaveBeenCalled()
 		})
 
-		it('Phase 9.10: is a no-op without chatSettingsBackend (additive/opt-in)', () => {
+		it('is a no-op without chatSettingsBackend (additive/opt-in)', () => {
 			const syncAction = createSyncAction({ muteAction: { muted: true, muteEndTimestamp: 1700000000 } }, [
 				'mute',
 				'chat123@s.whatsapp.net'
@@ -222,7 +222,7 @@ describe('processSyncAction', () => {
 			)
 		})
 
-		it('Phase 9.10: mirrors pinned/pinned_time into chatSettingsBackend when configured', () => {
+		it('mirrors pinned/pinned_time into chatSettingsBackend when configured', () => {
 			const chatSettingsBackend = { setMuteEnd: jest.fn(), setPinned: jest.fn() }
 			const syncAction: ChatMutation = {
 				syncAction: { value: { pinAction: { pinned: true }, timestamp: 1700000000 } },
@@ -389,7 +389,7 @@ describe('processSyncAction', () => {
 		})
 	})
 
-	describe('stickerAction (Phase 9.16)', () => {
+	describe('stickerAction', () => {
 		const makeBackend = () => ({
 			upsertStarred: jest.fn(),
 			removeStarred: jest.fn(() => false),

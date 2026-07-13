@@ -1,5 +1,5 @@
 /**
- * Phase 9.5 — typed Signal Protocol backend that migrates the opaque
+ * Typed Signal Protocol backend that migrates the opaque
  * `signal_kv(type, id, value)` rows in `axolotl.db` into their typed
  * counterparts (`sessions`, `prekeys`, `signed_prekeys`,
  * `kyber_prekeys`, `identities`, `sender_keys`).
@@ -20,17 +20,14 @@
  *       sender_account_type)` — 4 fields.
  *     - `identities` is dual-stored by `(recipient_id, recipient_type,
  *       device_id)` — 3 fields with the LID/PN type column meaningful.
- *   The wrapper pattern from phase 9.1 worked because LID mapping is a
+ *   The wrapper pattern worked for LID mapping because it is a
  *   simple key->value relation; the typed Signal tables need first-class
  *   structured operations.
  *
- * Migration sequencing:
- *   - Skeleton (this commit) — typed backend ships with insert + select
- *     primitives; opaque signal_kv stays primary.
- *   - Phase 9.5.1 (follow-up) — libsignal-side integration calls these
- *     primitives directly. The opaque signal_kv rows are migrated row by
- *     row into the typed tables, gated behind a version flag in the
- *     creds row so a partial migration is detectable on restart.
+ * For the mirrored Signal types, the auth-state integration uses these tables
+ * as its primary read/write surface and atomically keeps `signal_kv` as a
+ * compatibility fallback for pre-migration rows. Other Signal data types
+ * continue to use `signal_kv` directly.
  */
 import type { SqliteDbLike, SqliteStatementLike } from './types'
 

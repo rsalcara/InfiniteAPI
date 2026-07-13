@@ -1,5 +1,5 @@
 /**
- * Phase 9.7 — typed app-state sync storage backed by `sync.db`.
+ * Typed app-state sync storage backed by `sync.db`.
  *
  * Replaces the multi-file blob storage with the canonical mobile schema:
  *

@@ -1,5 +1,5 @@
 /**
- * Phase 9.16 — typed sticker library storage backed by `stickers.db`.
+ * Typed sticker library storage backed by `stickers.db`.
  *
  * A companion CAN populate two of the sticker tables, because WhatsApp syncs
  * them through **app-state** (confirmed: the E2E proto defines

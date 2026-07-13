@@ -1,5 +1,5 @@
 /**
- * Phase 9.2 — `UserDeviceCacheSqliteAdapter` test.
+ * `UserDeviceCacheSqliteAdapter` test.
  *
  * Confirms the NodeCache-compatible shape works as the existing
  * `userDevicesCache` plumbing expects: get/set/del/mget with TTL.

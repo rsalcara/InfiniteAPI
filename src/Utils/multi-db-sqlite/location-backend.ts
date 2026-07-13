@@ -1,5 +1,5 @@
 /**
- * Phase 9.8 — typed live/static location storage backed by `location.db`.
+ * Typed live/static location storage backed by `location.db`.
  *
  * Live-location parity was reverse-engineered end-to-end against a real paired
  * companion (raw decrypted-plaintext capture + delivery-receipt testing). The

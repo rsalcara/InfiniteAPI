@@ -12,10 +12,9 @@
  *
  * This helper introduces a per-DB `schema_migrations` bookkeeping
  * table and a `runMigrations(db, migrations)` function that applies
- * any pending migrations in order, idempotently. The Phase 9 PR ships
- * an EMPTY migration list per DB — the infrastructure is in place
- * so future PRs can append migrations without retrofitting the
- * bookkeeping at the point they need it.
+ * pending migrations in order and records each successful version. The
+ * bookkeeping table is also initialized for databases whose migration list
+ * is currently empty, so later migrations need no first-run special case.
  *
  * Conventions:
  *   - Versions are positive integers, strictly monotonic per DB.

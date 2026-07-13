@@ -12,7 +12,7 @@
  *
  * Mirrors the same shape as `intFromEnv` defined locally in
  * `src/Defaults/index.ts:318` — kept as a separate module so other call
- * sites (session-activity-tracker, prometheus-metrics, future Phase-9
+ * sites (session-activity-tracker, prometheus-metrics, future runtime
  * tunables) don't grow ad-hoc copies and drift apart. (audit ENV-01/02/03)
  */
 
