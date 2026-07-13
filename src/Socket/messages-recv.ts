@@ -102,6 +102,7 @@ import {
 	type BinaryNode,
 	binaryNodeToString,
 	encodeBinaryNode,
+	type FullJid,
 	getAllBinaryNodeChildren,
 	getBinaryNodeChild,
 	getBinaryNodeChildBuffer,
@@ -115,7 +116,6 @@ import {
 	isPnUser,
 	jidDecode,
 	jidNormalizedUser,
-	type JidWithDevice,
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { extractGroupMetadata } from './groups'
@@ -2363,7 +2363,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		type DecodedDevice = { jid: string; user: string; server: string; device: number }
+		type DecodedDevice = FullJid & { jid: string; device: number }
 		const decoded: DecodedDevice[] = []
 		for (const d of devices) {
 			const jid = d.attrs.jid
@@ -2380,7 +2380,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// primary as `0`. Comparing `undefined` against `0` in the add/remove
 			// delta below would miss the primary — `remove` wouldn't drop it and
 			// `add` would append a duplicate entry. (#621 audit.)
-			decoded.push({ jid, user: parts.user, server: parts.server, device: parts.device ?? 0 })
+			decoded.push({
+				jid,
+				user: parts.user,
+				server: parts.server,
+				domainType: parts.domainType,
+				device: parts.device ?? 0
+			})
 		}
 
 		if (!decoded.length) return
@@ -2404,7 +2410,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					await signalRepository.deleteSession(entries.map(e => e.jid))
 				}
 
-				const existingCache: JidWithDevice[] = (await userDevicesCache?.get<JidWithDevice[]>(user)) || []
+				const existingCache = ((await userDevicesCache?.get(user)) as FullJid[] | undefined) || []
 				if (!existingCache.length) {
 					// No baseline yet; skip applying the delta so getUSyncDevices can
 					// later fetch the full device list. Caching just the notification

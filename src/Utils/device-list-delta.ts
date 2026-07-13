@@ -1,4 +1,7 @@
-import type { JidWithDevice } from '../WABinary'
+import type { FullJid } from '../WABinary'
+
+/** A cached device plus the transient jid carried by device notifications. */
+export type DeviceListDeltaEntry = FullJid & { jid?: string }
 
 /**
  * Applies an `add`/`remove` device-list delta (from a `<notification
@@ -13,27 +16,25 @@ import type { JidWithDevice } from '../WABinary'
  * normalize `device ?? 0` on BOTH sides before diffing.
  */
 export const applyDeviceListDelta = (
-	existing: readonly JidWithDevice[],
-	entries: readonly JidWithDevice[],
+	existing: readonly FullJid[],
+	entries: readonly DeviceListDeltaEntry[],
 	tag: 'add' | 'remove'
-): JidWithDevice[] => {
-	// Canonicalize EVERY entry the helper emits to exactly `{ user, server,
-	// device }` with `device: 0` for the primary (never `undefined`), on both the
-	// fresh (`normalized`) and passed-through (`kept`) sides:
+): FullJid[] => {
+	// Canonicalize EVERY entry the helper emits with `device: 0` for the primary
+	// (never `undefined`), on both the fresh (`normalized`) and passed-through
+	// (`kept`) sides:
 	//   - `device ?? 0` — a downstream re-diff against a `device: 0` cache must
 	//     not miss the primary again (the redundant defense this helper promises).
-	//   - strip to 3 fields — `entries` arrives as `DecodedDevice` (carrying a
-	//     transient `jid`); the cache persists only `{ user, server, device }`
-	//     (matching the pre-refactor shape), so spreading `...e` would leak `jid`.
-	// `server` is carried at runtime (the cache persists `{ user, server, device }`)
-	// even though it isn't on `JidWithDevice`; keep it, drop everything else (e.g.
-	// the parser's transient `jid`).
-	type CachedDevice = JidWithDevice & { server?: string }
-	const canonicalize = ({ user, server, device }: CachedDevice): CachedDevice => ({
-		user,
-		server,
-		device: device ?? 0
-	})
+	//   - omit ONLY `jid` — it is a notification-parser artifact. All FullJid
+	//     fields, especially `domainType`, must survive so the JSON mirror remains
+	//     value-identical to the typed-first user-device cache read.
+	const canonicalize = ({ jid, ...device }: DeviceListDeltaEntry): FullJid => {
+		// Mark the intentionally omitted parser-only field as consumed.
+		void jid
+
+		return { ...device, device: device.device ?? 0 }
+	}
+
 	const normalized = entries.map(canonicalize)
 	const affected = new Set(normalized.map(e => e.device))
 	const kept = existing.filter(d => !affected.has(d.device ?? 0)).map(canonicalize)
