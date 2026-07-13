@@ -398,7 +398,9 @@ describe('Phase 9 backends', () => {
 
 	describe('StatusBackend', () => {
 		it('creates status_info lazily and increments its aggregate counters per received status', () => {
-			const backend = new StatusBackend(store.handle('status.db'))
+			// Disable the opportunistic 24h prune: these fixtures use tiny synthetic
+			// timestamps that would all be "expired" and swept on the first write.
+			const backend = new StatusBackend(store.handle('status.db'), { pruneIntervalMs: Number.MAX_SAFE_INTEGER })
 			const sender = '5515991426667@s.whatsapp.net'
 
 			backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'status-1', timestamp: 1_000, textData: 'oi' })
@@ -413,7 +415,7 @@ describe('Phase 9 backends', () => {
 		})
 
 		it('keeps separate sort_id sequences per sender', () => {
-			const backend = new StatusBackend(store.handle('status.db'))
+			const backend = new StatusBackend(store.handle('status.db'), { pruneIntervalMs: Number.MAX_SAFE_INTEGER })
 			backend.recordReceivedStatus({ senderUserJid: 'a@s.whatsapp.net', uuid: 'a-1', timestamp: 1 })
 			backend.recordReceivedStatus({ senderUserJid: 'b@s.whatsapp.net', uuid: 'b-1', timestamp: 1 })
 			backend.recordReceivedStatus({ senderUserJid: 'a@s.whatsapp.net', uuid: 'a-2', timestamp: 2 })
@@ -423,7 +425,7 @@ describe('Phase 9 backends', () => {
 		})
 
 		it('recordSeenReceipt resolves status_row_id by uuid and upserts on repeated views', () => {
-			const backend = new StatusBackend(store.handle('status.db'))
+			const backend = new StatusBackend(store.handle('status.db'), { pruneIntervalMs: Number.MAX_SAFE_INTEGER })
 			backend.recordReceivedStatus({ senderUserJid: 'me@s.whatsapp.net', uuid: 'my-status-1', timestamp: 1_000 })
 
 			backend.recordSeenReceipt({
