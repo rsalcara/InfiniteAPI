@@ -146,6 +146,7 @@ describe('runMigrations run() form (#629)', () => {
 						}
 					})
 				}
+
 				throw new Error(`unexpected statement: ${sql}`)
 			},
 			exec: () => db,
