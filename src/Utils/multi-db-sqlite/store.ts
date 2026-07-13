@@ -19,6 +19,7 @@
  * and those all live inside `axolotl.db`, so the trade-off is fine.
  */
 import type { ILogger } from '../logger'
+import { STATUS_LAST_TIMESTAMP_TRIGGER_NAME, STATUS_LAST_TIMESTAMP_TRIGGER_SQL } from './schemas/status'
 import { type Migration, runMigrations } from './schema-migrations'
 import { MULTI_DB_FILES, type MultiDbFile, SCHEMAS } from './schemas'
 import type { SqliteDbLike } from './types'
@@ -121,21 +122,8 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 			version: 1,
 			name: 'fix last_status_timestamp trigger order-dependency + backfill stale aggregates',
 			sql: `
-				DROP TRIGGER IF EXISTS status_ad_for_status_info_last_status_timestamp_trigger;
-				CREATE TRIGGER status_ad_for_status_info_last_status_timestamp_trigger
-				  AFTER DELETE ON status
-				  BEGIN
-				    UPDATE status_info
-				      SET last_status_timestamp = (SELECT
-				        CASE WHEN COALESCE(server_receipt_timestamp, 0) > 0 THEN server_receipt_timestamp ELSE timestamp END
-				        FROM status
-				        WHERE status_info_row_id = old.status_info_row_id
-				        AND type <> 8 AND type <> 2 AND is_archived = 0
-				        ORDER BY sort_id DESC LIMIT 1)
-				      WHERE row_id = old.status_info_row_id
-				        AND last_status_timestamp = (CASE WHEN COALESCE(old.server_receipt_timestamp, 0) > 0
-				              THEN old.server_receipt_timestamp ELSE old.timestamp END);
-				  END;
+				DROP TRIGGER IF EXISTS ${STATUS_LAST_TIMESTAMP_TRIGGER_NAME};
+				${STATUS_LAST_TIMESTAMP_TRIGGER_SQL}
 				${STATUS_BACKFILL_LAST_TIMESTAMP_SQL}
 			`
 		}
