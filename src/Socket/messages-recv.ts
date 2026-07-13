@@ -71,6 +71,7 @@ import {
 	xmppSignedPreKey
 } from '../Utils'
 import { logMessageReceived, logTcToken } from '../Utils/baileys-logger'
+import { applyDeviceListDelta } from '../Utils/device-list-delta'
 import { makeLockManager } from '../Utils/lock-manager'
 import { makeMutex } from '../Utils/make-mutex'
 import {
@@ -101,6 +102,7 @@ import {
 	type BinaryNode,
 	binaryNodeToString,
 	encodeBinaryNode,
+	type FullJid,
 	getAllBinaryNodeChildren,
 	getBinaryNodeChild,
 	getBinaryNodeChildBuffer,
@@ -114,7 +116,6 @@ import {
 	isPnUser,
 	jidDecode,
 	jidNormalizedUser,
-	type JidWithDevice,
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { extractGroupMetadata } from './groups'
@@ -2362,7 +2363,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		type DecodedDevice = { jid: string; user: string; server: string; device?: number }
+		type DecodedDevice = FullJid & { jid: string; device: number }
 		const decoded: DecodedDevice[] = []
 		for (const d of devices) {
 			const jid = d.attrs.jid
@@ -2373,7 +2374,19 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				continue
 			}
 
-			decoded.push({ jid, user: parts.user, server: parts.server, device: parts.device })
+			// Normalize the primary to `device: 0`. `jidDecode` returns `undefined`
+			// for a `0` device suffix, but the cached device list (both the JSON
+			// mirror and the typed store, which reads back `device: 0`) stores the
+			// primary as `0`. Comparing `undefined` against `0` in the add/remove
+			// delta below would miss the primary — `remove` wouldn't drop it and
+			// `add` would append a duplicate entry. (#621 audit.)
+			decoded.push({
+				jid,
+				user: parts.user,
+				server: parts.server,
+				domainType: parts.domainType,
+				device: parts.device ?? 0
+			})
 		}
 
 		if (!decoded.length) return
@@ -2397,7 +2410,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					await signalRepository.deleteSession(entries.map(e => e.jid))
 				}
 
-				const existingCache: JidWithDevice[] = (await userDevicesCache?.get<JidWithDevice[]>(user)) || []
+				const existingCache = ((await userDevicesCache?.get(user)) as FullJid[] | undefined) || []
 				if (!existingCache.length) {
 					// No baseline yet; skip applying the delta so getUSyncDevices can
 					// later fetch the full device list. Caching just the notification
@@ -2406,24 +2419,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					continue
 				}
 
-				const affected = new Set(entries.map(e => e.device))
-				let updatedDevices: JidWithDevice[]
-				switch (tag) {
-					case 'add':
-						logger.info({ deviceHash, count: entries.length }, 'devices added')
-						updatedDevices = [
-							...existingCache.filter(d => !affected.has(d.device)),
-							...entries.map(e => ({ user: e.user, server: e.server, device: e.device }))
-						]
-						break
-					case 'remove':
-						logger.info({ deviceHash, count: entries.length }, 'devices removed')
-						updatedDevices = existingCache.filter(d => !affected.has(d.device))
-						break
-					default:
-						logger.debug({ tag }, 'Unknown device list change tag')
-						continue
+				if (tag !== 'add' && tag !== 'remove') {
+					logger.debug({ tag }, 'Unknown device list change tag')
+					continue
 				}
+
+				logger.info({ deviceHash, count: entries.length }, tag === 'add' ? 'devices added' : 'devices removed')
+				// #621: normalized diff (primary = device 0 on both sides). See
+				// applyDeviceListDelta.
+				const updatedDevices = applyDeviceListDelta(existingCache, entries, tag)
 
 				if (updatedDevices.length === 0) {
 					await userDevicesCache?.del(user)
