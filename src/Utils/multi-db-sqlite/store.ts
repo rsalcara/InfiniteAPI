@@ -82,6 +82,38 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 			name: 'add sender_keys.bucket_id (schema fidelity)',
 			sql: `ALTER TABLE sender_keys ADD COLUMN bucket_id TEXT NOT NULL DEFAULT '';`
 		}
+	],
+	'status.db': [
+		{
+			// Audit #637: the AFTER DELETE `...last_status_timestamp_trigger` guarded
+			// on `last_status_sort_id = old.sort_id`, a column the sibling
+			// `...last_status_sort_id_trigger` overwrites — and SQLite doesn't define
+			// a fire order between them, so the timestamp could be left stale. The
+			// base schema now ships an order-independent body (guard on
+			// `last_status_timestamp`), but `CREATE TRIGGER IF NOT EXISTS` won't
+			// replace an already-created trigger on existing status.db files. DROP +
+			// recreate here so upgraded DBs pick up the fixed body. Body kept
+			// byte-identical to the base schema's (single logical definition).
+			version: 1,
+			name: 'fix last_status_timestamp trigger order-dependency',
+			sql: `
+				DROP TRIGGER IF EXISTS status_ad_for_status_info_last_status_timestamp_trigger;
+				CREATE TRIGGER status_ad_for_status_info_last_status_timestamp_trigger
+				  AFTER DELETE ON status
+				  BEGIN
+				    UPDATE status_info
+				      SET last_status_timestamp = (SELECT
+				        CASE WHEN COALESCE(server_receipt_timestamp, 0) > 0 THEN server_receipt_timestamp ELSE timestamp END
+				        FROM status
+				        WHERE status_info_row_id = old.status_info_row_id
+				        AND type <> 8 AND type <> 2 AND is_archived = 0
+				        ORDER BY sort_id DESC LIMIT 1)
+				      WHERE row_id = old.status_info_row_id
+				        AND last_status_timestamp = (CASE WHEN COALESCE(old.server_receipt_timestamp, 0) > 0
+				              THEN old.server_receipt_timestamp ELSE old.timestamp END);
+				  END;
+			`
+		}
 	]
 }
 

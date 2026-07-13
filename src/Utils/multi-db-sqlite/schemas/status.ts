@@ -222,6 +222,16 @@ CREATE TRIGGER IF NOT EXISTS status_ad_for_status_info_last_status_sort_id_trigg
       WHERE row_id = old.status_info_row_id AND last_status_sort_id = old.sort_id;
   END;
 
+-- DEVIATION FROM VERBATIM MOBILE (audit #637): the mobile trigger guards this
+-- UPDATE on \`last_status_sort_id = old.sort_id\`. But the sibling
+-- \`...last_status_sort_id_trigger\` (also AFTER DELETE on \`status\`) OVERWRITES
+-- \`last_status_sort_id\` to the new MAX, and SQLite does NOT define a firing
+-- order between multiple triggers of the same event — so if that trigger runs
+-- first, this one's guard is already false and \`last_status_timestamp\` is left
+-- pointing at the just-deleted row (stale aggregate). We instead guard on the
+-- deleted row being the one that CONTRIBUTED the current \`last_status_timestamp\`
+-- (a column no sibling trigger touches), making it order-independent. Same net
+-- effect on mobile-consistent data; robust regardless of trigger fire order.
 CREATE TRIGGER IF NOT EXISTS status_ad_for_status_info_last_status_timestamp_trigger
   AFTER DELETE ON status
   BEGIN
@@ -232,7 +242,9 @@ CREATE TRIGGER IF NOT EXISTS status_ad_for_status_info_last_status_timestamp_tri
         WHERE status_info_row_id = old.status_info_row_id
         AND type <> 8 AND type <> 2 AND is_archived = 0
         ORDER BY sort_id DESC LIMIT 1)
-      WHERE row_id = old.status_info_row_id AND last_status_sort_id = old.sort_id;
+      WHERE row_id = old.status_info_row_id
+        AND last_status_timestamp = (CASE WHEN COALESCE(old.server_receipt_timestamp, 0) > 0
+              THEN old.server_receipt_timestamp ELSE old.timestamp END);
   END;
 
 CREATE TRIGGER IF NOT EXISTS status_ad_for_status_info_first_unread_sort_id_trigger
