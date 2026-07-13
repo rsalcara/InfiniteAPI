@@ -441,6 +441,19 @@ const classifyMessageMirrorFailure = (operation: MessageMirrorOperation, err: un
 	return { reason: `${prefix}_${suffix}`, sqliteCode, errorMessage }
 }
 
+const nativeFlowButtonLabel = (buttonParamsJson: string | null | undefined): string | null => {
+	if (!buttonParamsJson) return null
+	try {
+		const params = JSON.parse(buttonParamsJson) as Record<string, unknown>
+		const label = params.display_text ?? params.displayText ?? params.title
+		return typeof label === 'string' && label.trim() ? label : null
+	} catch {
+		// The raw payload and action name are still preserved. A future primary
+		// consumer can detect the missing label and fall back to the legacy proto.
+		return null
+	}
+}
+
 /**
  * Extracts renderable UI elements (quick-reply buttons, list rows, template
  * buttons, native-flow CTAs) from an interactive message's content. Returns
@@ -505,10 +518,11 @@ const extractUiElements = (content: proto.IMessage | undefined | null): UiElemen
 			for (const btn of nativeFlow.buttons ?? []) {
 				out.push({
 					elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
-					buttonText: btn.name ?? null,
+					buttonText: nativeFlowButtonLabel(btn.buttonParamsJson),
 					elementContent: btn.buttonParamsJson ?? null,
 					footerText: im.footer?.text ?? null,
-					description: im.body?.text ?? null
+					description: im.body?.text ?? null,
+					nativeFlowName: btn.name ?? null
 				})
 			}
 		} else if (im.carouselMessage) {
@@ -516,10 +530,11 @@ const extractUiElements = (content: proto.IMessage | undefined | null): UiElemen
 				for (const [buttonIndex, btn] of (card.nativeFlowMessage?.buttons ?? []).entries()) {
 					out.push({
 						elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
-						buttonText: btn.name ?? null,
+						buttonText: nativeFlowButtonLabel(btn.buttonParamsJson),
 						elementContent: btn.buttonParamsJson ?? null,
 						footerText: card.footer?.text ?? im.footer?.text ?? null,
 						description: card.body?.text ?? im.body?.text ?? null,
+						nativeFlowName: btn.name ?? null,
 						context: { containerType: 'carousel', cardIndex, buttonIndex }
 					})
 				}

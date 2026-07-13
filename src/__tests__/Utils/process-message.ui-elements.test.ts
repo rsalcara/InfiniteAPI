@@ -107,13 +107,16 @@ describe('processMessage — message_ui_elements extraction', () => {
 				interactiveMessage: {
 					body: { text: 'Choose' },
 					footer: { text: 'Footer' },
-					nativeFlowMessage: { buttons: [{ name: 'single_select', buttonParamsJson: '{"id":"one"}' }] }
+					nativeFlowMessage: {
+						buttons: [{ name: 'single_select', buttonParamsJson: '{"title":"Choose one","sections":[]}' }]
+					}
 				}
 			},
 			expected: {
 				elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
-				buttonText: 'single_select',
-				elementContent: '{"id":"one"}',
+				buttonText: 'Choose one',
+				elementContent: '{"title":"Choose one","sections":[]}',
+				nativeFlowName: 'single_select',
 				description: 'Choose',
 				footerText: 'Footer'
 			}
@@ -125,14 +128,17 @@ describe('processMessage — message_ui_elements extraction', () => {
 					interactiveMessageTemplate: {
 						body: { text: 'Nested' },
 						footer: { text: 'Template footer' },
-						nativeFlowMessage: { buttons: [{ name: 'cta_url', buttonParamsJson: '{"url":"/nested"}' }] }
+						nativeFlowMessage: {
+							buttons: [{ name: 'cta_url', buttonParamsJson: '{"display_text":"Open","url":"/nested"}' }]
+						}
 					}
 				}
 			},
 			expected: {
 				elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
-				buttonText: 'cta_url',
-				elementContent: '{"url":"/nested"}',
+				buttonText: 'Open',
+				elementContent: '{"display_text":"Open","url":"/nested"}',
+				nativeFlowName: 'cta_url',
 				description: 'Nested',
 				footerText: 'Template footer'
 			}
@@ -159,15 +165,26 @@ describe('processMessage — message_ui_elements extraction', () => {
 							body: { text: 'Card 1' },
 							nativeFlowMessage: {
 								buttons: [
-									{ name: 'cta_url', buttonParamsJson: '{"url":"https://example.com/1"}' },
-									{ name: 'quick_reply', buttonParamsJson: '{"id":"first"}' }
+									{
+										name: 'cta_url',
+										buttonParamsJson: '{"display_text":"Visit","url":"https://example.com/1"}'
+									},
+									{
+										name: 'quick_reply',
+										buttonParamsJson: '{"display_text":"First","id":"first"}'
+									}
 								]
 							}
 						},
 						{
 							body: { text: 'Card 2' },
 							nativeFlowMessage: {
-								buttons: [{ name: 'quick_reply', buttonParamsJson: '{"id":"second"}' }]
+								buttons: [
+									{
+										name: 'quick_reply',
+										buttonParamsJson: '{"display_text":"Second","id":"second"}'
+									}
+								]
 							}
 						}
 					]
@@ -180,19 +197,22 @@ describe('processMessage — message_ui_elements extraction', () => {
 
 		expect(addOnBackend.recordUiElements).toHaveBeenCalledWith(42, [
 			expect.objectContaining({
-				buttonText: 'cta_url',
-				elementContent: '{"url":"https://example.com/1"}',
+				buttonText: 'Visit',
+				nativeFlowName: 'cta_url',
+				elementContent: '{"display_text":"Visit","url":"https://example.com/1"}',
 				description: 'Card 1',
 				context: { containerType: 'carousel', cardIndex: 0, buttonIndex: 0 }
 			}),
 			expect.objectContaining({
-				buttonText: 'quick_reply',
-				elementContent: '{"id":"first"}',
+				buttonText: 'First',
+				nativeFlowName: 'quick_reply',
+				elementContent: '{"display_text":"First","id":"first"}',
 				context: { containerType: 'carousel', cardIndex: 0, buttonIndex: 1 }
 			}),
 			expect.objectContaining({
-				buttonText: 'quick_reply',
-				elementContent: '{"id":"second"}',
+				buttonText: 'Second',
+				nativeFlowName: 'quick_reply',
+				elementContent: '{"display_text":"Second","id":"second"}',
 				description: 'Card 2',
 				context: { containerType: 'carousel', cardIndex: 1, buttonIndex: 0 }
 			})
@@ -222,7 +242,9 @@ describe('processMessage — message_ui_elements extraction', () => {
 				processMessage(
 					inbound('fallback-1', {
 						interactiveMessage: {
-							nativeFlowMessage: { buttons: [{ name: 'quick_reply', buttonParamsJson: '{"id":"x"}' }] }
+							nativeFlowMessage: {
+								buttons: [{ name: 'quick_reply', buttonParamsJson: '{"display_text":"X","id":"x"}' }]
+							}
 						}
 					}),
 					// eslint-disable-next-line @typescript-eslint/no-explicit-any

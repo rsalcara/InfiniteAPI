@@ -103,6 +103,8 @@ export type UiElementContext = {
 
 export type RecordUiElementWithContextInput = RecordUiElementInput & {
 	context?: UiElementContext
+	/** Native-flow action key (for example quick_reply or cta_url). */
+	nativeFlowName?: string | null
 }
 
 /** Best-effort element_type classifier for message_ui_elements. */
@@ -228,8 +230,8 @@ export class MessageAddOnBackend {
 					'template_id, hsm_tag, footer_text, button_text, message_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
 			),
 			insertUiElementContext: this.db.prepare(
-				'INSERT INTO message_ui_element_context (ui_element_row_id, container_type, card_index, button_index) ' +
-					'VALUES (?, ?, ?, ?)'
+				'INSERT INTO message_ui_element_context ' +
+					'(ui_element_row_id, container_type, card_index, button_index, native_flow_name) VALUES (?, ?, ?, ?, ?)'
 			),
 			deleteUiElementContexts: this.db.prepare(
 				'DELETE FROM message_ui_element_context WHERE ui_element_row_id IN ' +
@@ -242,7 +244,7 @@ export class MessageAddOnBackend {
 			),
 			getUiElementsWithContext: this.db.prepare(
 				'SELECT e.element_type, e.element_content, e.description, e.template_id, e.hsm_tag, e.footer_text, ' +
-					'e.button_text, e.message_type, c.container_type, c.card_index, c.button_index ' +
+					'e.button_text, e.message_type, c.container_type, c.card_index, c.button_index, c.native_flow_name ' +
 					'FROM message_ui_elements e LEFT JOIN message_ui_element_context c ON c.ui_element_row_id = e._id ' +
 					'WHERE e.message_row_id = ? ORDER BY c.card_index, c.button_index, e._id'
 			)
@@ -424,12 +426,13 @@ export class MessageAddOnBackend {
 					el.buttonText ?? null,
 					el.messageType ?? null
 				)
-				if (el.context) {
+				if (el.context || el.nativeFlowName) {
 					this.stmts.insertUiElementContext.run(
 						inserted.lastInsertRowid,
-						el.context.containerType,
-						el.context.cardIndex,
-						el.context.buttonIndex
+						el.context?.containerType ?? null,
+						el.context?.cardIndex ?? null,
+						el.context?.buttonIndex ?? null,
+						el.nativeFlowName ?? null
 					)
 				}
 			}
@@ -460,10 +463,10 @@ export class MessageAddOnBackend {
 		}))
 	}
 
-	/** Context-aware read for consumers that render carousel buttons by card. */
+	/** Context-aware read for native-flow action types and carousel ordering. */
 	getUiElementsWithContext(
 		messageRowId: number
-	): Array<Omit<RecordUiElementInput, 'messageRowId'> & { context?: UiElementContext }> {
+	): Array<Omit<RecordUiElementInput, 'messageRowId'> & { context?: UiElementContext; nativeFlowName?: string }> {
 		const rows = this.stmts.getUiElementsWithContext.all(messageRowId) as Array<{
 			element_type: number | null
 			element_content: string | null
@@ -476,6 +479,7 @@ export class MessageAddOnBackend {
 			container_type: 'carousel' | null
 			card_index: number | null
 			button_index: number | null
+			native_flow_name: string | null
 		}>
 		return rows.map(r => ({
 			elementType: r.element_type,
@@ -486,6 +490,7 @@ export class MessageAddOnBackend {
 			footerText: r.footer_text,
 			buttonText: r.button_text,
 			messageType: r.message_type,
+			...(r.native_flow_name !== null ? { nativeFlowName: r.native_flow_name } : {}),
 			...(r.container_type !== null && r.card_index !== null && r.button_index !== null
 				? {
 						context: {

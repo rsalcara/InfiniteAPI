@@ -468,12 +468,14 @@ describe('msgstore.db message-store backends', () => {
 					elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
 					buttonText: 'First',
 					elementContent: '{"id":"first"}',
+					nativeFlowName: 'quick_reply',
 					context: { containerType: 'carousel', cardIndex: 0, buttonIndex: 0 }
 				},
 				{
 					elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
 					buttonText: 'Second',
 					elementContent: '{"id":"second"}',
+					nativeFlowName: 'quick_reply',
 					context: { containerType: 'carousel', cardIndex: 1, buttonIndex: 0 }
 				}
 			])
@@ -481,6 +483,7 @@ describe('msgstore.db message-store backends', () => {
 				{ containerType: 'carousel', cardIndex: 0, buttonIndex: 0 },
 				{ containerType: 'carousel', cardIndex: 1, buttonIndex: 0 }
 			])
+			expect(addOns.getUiElementsWithContext(rowId).map(e => e.nativeFlowName)).toEqual(['quick_reply', 'quick_reply'])
 			// The compatibility reader retains its original row shape.
 			expect(addOns.getUiElements(rowId)[0]).not.toHaveProperty('context')
 
@@ -509,6 +512,20 @@ describe('msgstore.db message-store backends', () => {
 				.prepare('SELECT COUNT(*) AS n FROM message_ui_element_context')
 				.get() as { n: number }
 			expect(contextCount.n).toBe(0)
+
+			// Root native-flow buttons preserve their internal action key without
+			// pretending it is the user-visible label or carousel context.
+			addOns.recordUiElements(rowId, [
+				{
+					elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
+					buttonText: 'Visit',
+					elementContent: '{"display_text":"Visit","url":"https://example.com"}',
+					nativeFlowName: 'cta_url'
+				}
+			])
+			const rootNative = addOns.getUiElementsWithContext(rowId)[0]
+			expect(rootNative).toMatchObject({ buttonText: 'Visit', nativeFlowName: 'cta_url' })
+			expect(rootNative).not.toHaveProperty('context')
 
 			// An empty set CLEARS — a re-decode that yields no UI must not leave
 			// stale rows behind.
