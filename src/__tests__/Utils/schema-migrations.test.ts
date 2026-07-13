@@ -1,4 +1,9 @@
-import { type Migration, runMigrations } from '../../Utils/multi-db-sqlite/schema-migrations'
+import {
+	addColumnIfMissing,
+	columnExists,
+	type Migration,
+	runMigrations
+} from '../../Utils/multi-db-sqlite/schema-migrations'
 import type { SqliteDbLike, SqliteStatementLike } from '../../Utils/multi-db-sqlite/types'
 
 const runResult = { changes: 1, lastInsertRowid: 1 }
@@ -122,5 +127,60 @@ describe('runMigrations run() form (#629)', () => {
 		// Second call is a no-op — version already recorded.
 		runMigrations(db, migrations)
 		expect(ran).toBe(1)
+	})
+
+	it.each([
+		['neither body', { version: 1, name: 'invalid' }],
+		['both bodies', { version: 1, name: 'invalid', sql: 'SELECT 1', run: () => undefined }]
+	])('rejects a migration with %s before recording it', (_label, invalid) => {
+		let recorded = false
+		const db = {
+			prepare: (sql: string) => {
+				if (sql === 'SELECT version FROM schema_migrations ORDER BY version ASC') return statement()
+				if (sql === 'SELECT version FROM schema_migrations WHERE version = ?') return statement()
+				if (sql.startsWith('INSERT INTO schema_migrations')) {
+					return statement({
+						run: () => {
+							recorded = true
+							return runResult
+						}
+					})
+				}
+				throw new Error(`unexpected statement: ${sql}`)
+			},
+			exec: () => db,
+			transaction: (fn: () => void) => Object.assign(fn, { immediate: fn }),
+			pragma: () => undefined,
+			close: () => undefined
+		} as unknown as SqliteDbLike
+
+		expect(() => runMigrations(db, [invalid as Migration])).toThrow('must define exactly one of sql/run')
+		expect(recorded).toBe(false)
+	})
+})
+
+describe('ADD COLUMN identifier quoting', () => {
+	it('quotes embedded double-quotes in PRAGMA and ALTER TABLE identifiers', () => {
+		const prepared: string[] = []
+		const executed: string[] = []
+		const db = {
+			prepare: (sql: string) => {
+				prepared.push(sql)
+				return statement({ all: () => [] })
+			},
+			exec: (sql: string) => {
+				executed.push(sql)
+				return db
+			},
+			transaction: (fn: () => void) => Object.assign(fn, { immediate: fn }),
+			pragma: () => undefined,
+			close: () => undefined
+		} as unknown as SqliteDbLike
+
+		expect(columnExists(db, 'odd"table', 'new"column')).toBe(false)
+		addColumnIfMissing(db, 'odd"table', 'new"column', 'TEXT NOT NULL')
+
+		expect(prepared).toEqual(['PRAGMA table_info("odd""table")', 'PRAGMA table_info("odd""table")'])
+		expect(executed).toEqual(['ALTER TABLE "odd""table" ADD COLUMN "new""column" TEXT NOT NULL'])
 	})
 })
