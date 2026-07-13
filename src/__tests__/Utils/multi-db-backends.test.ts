@@ -240,7 +240,9 @@ describe('Phase 9 backends', () => {
 
 	describe('LocationBackend', () => {
 		it('upserts location_cache — one row per jid, newest report wins', () => {
-			const backend = new LocationBackend(store.handle('location.db'))
+			const backend = new LocationBackend(store.handle('location.db'), {
+				pruneIntervalMs: Number.MAX_SAFE_INTEGER
+			})
 			backend.upsertLocationCache({
 				jid: '5515991426667@s.whatsapp.net',
 				latitude: -23.55,
@@ -265,7 +267,9 @@ describe('Phase 9 backends', () => {
 		})
 
 		it('upserts location_sharer keyed by (remote_jid, from_me, remote_resource, message_id)', () => {
-			const backend = new LocationBackend(store.handle('location.db'))
+			const backend = new LocationBackend(store.handle('location.db'), {
+				pruneIntervalMs: Number.MAX_SAFE_INTEGER
+			})
 			backend.upsertLocationSharer({
 				remoteJid: 'chat@s.whatsapp.net',
 				fromMe: 0,
@@ -295,7 +299,9 @@ describe('Phase 9 backends', () => {
 			// choose the duration when originating a share (sent → real expires).
 			// Units are UNIX SECONDS on both paths (receive uses messageTimestamp;
 			// send uses unixTimestampSeconds), and 1:1 remote_resource is ''.
-			const backend = new LocationBackend(store.handle('location.db'))
+			const backend = new LocationBackend(store.handle('location.db'), {
+				pruneIntervalMs: Number.MAX_SAFE_INTEGER
+			})
 			const nowSecs = 1_700_000_000 // seconds, as production writes
 			backend.upsertLocationSharer({
 				remoteJid: 'peer@s.whatsapp.net',
@@ -322,7 +328,9 @@ describe('Phase 9 backends', () => {
 			// emitOwnEvents replays a SENT liveLocationMessage through the receive
 			// mirror, which re-upserts the SAME key with expires=0. That must not
 			// erase the duration written by the send path.
-			const backend = new LocationBackend(store.handle('location.db'))
+			const backend = new LocationBackend(store.handle('location.db'), {
+				pruneIntervalMs: Number.MAX_SAFE_INTEGER
+			})
 			const nowSecs = 1_700_000_000
 			const key = { remoteJid: 'peer@s.whatsapp.net', fromMe: 1 as const, remoteResource: '', messageId: 'tx-1' }
 			backend.upsertLocationSharer({ ...key, expires: nowSecs + 3600 })
@@ -335,7 +343,9 @@ describe('Phase 9 backends', () => {
 		})
 
 		it('listActiveLocationSharers filters out expired shares (expires>0 && <= now)', () => {
-			const backend = new LocationBackend(store.handle('location.db'))
+			const backend = new LocationBackend(store.handle('location.db'), {
+				pruneIntervalMs: Number.MAX_SAFE_INTEGER
+			})
 			const nowSecs = 1_700_000_000
 			backend.upsertLocationSharer({
 				remoteJid: 'a@s.whatsapp.net',
@@ -356,7 +366,8 @@ describe('Phase 9 backends', () => {
 				fromMe: 0,
 				remoteResource: '',
 				expires: 0,
-				messageId: 'open-ended'
+				messageId: 'open-ended',
+				receivedTs: nowSecs // received just now → within the retention window
 			})
 
 			expect(backend.listLocationSharers()).toHaveLength(3)
@@ -365,6 +376,56 @@ describe('Phase 9 backends', () => {
 				.map(s => s.messageId)
 				.sort()
 			expect(active).toEqual(['active', 'open-ended'])
+		})
+
+		it('ages out a RECEIVED share whose last activity is past the retention window (#636)', () => {
+			const backend = new LocationBackend(store.handle('location.db'), {
+				pruneIntervalMs: Number.MAX_SAFE_INTEGER
+			})
+			const nowSecs = 1_700_000_000
+			const RETENTION = 8 * 60 * 60
+			// A received share last updated just over the window ago (share ended).
+			backend.upsertLocationSharer({
+				remoteJid: 'stale@s.whatsapp.net',
+				fromMe: 0,
+				remoteResource: '',
+				expires: 0,
+				messageId: 'stale',
+				receivedTs: nowSecs - RETENTION - 60
+			})
+			// A received share still within the window (share ongoing).
+			backend.upsertLocationSharer({
+				remoteJid: 'fresh@s.whatsapp.net',
+				fromMe: 0,
+				remoteResource: '',
+				expires: 0,
+				messageId: 'fresh',
+				receivedTs: nowSecs - 60
+			})
+
+			// The stale one is filtered from the active read …
+			expect(
+				backend
+					.listActiveLocationSharers(nowSecs)
+					.map(s => s.messageId)
+					.sort()
+			).toEqual(['fresh'])
+
+			// … and hard-pruned so the table stays bounded.
+			expect(backend.pruneStaleReceivedSharers(nowSecs - RETENTION)).toBe(1)
+			expect(backend.listLocationSharers().map(s => s.messageId)).toEqual(['fresh'])
+		})
+
+		it('upsertLocationSharer keeps the NEWEST received_ts (out-of-order older update)', () => {
+			const backend = new LocationBackend(store.handle('location.db'), {
+				pruneIntervalMs: Number.MAX_SAFE_INTEGER
+			})
+			const key = { remoteJid: 'peer@s.whatsapp.net', fromMe: 0 as const, remoteResource: '', messageId: 'live' }
+			backend.upsertLocationSharer({ ...key, expires: 0, receivedTs: 2_000 })
+			backend.upsertLocationSharer({ ...key, expires: 0, receivedTs: 1_000 }) // older, out of order
+			// received_ts must NOT roll back — the share is still active at t=2500
+			// (cutoff far below) via the newest activity.
+			expect(backend.listActiveLocationSharers(2_500).map(s => s.receivedTs)).toEqual([2_000])
 		})
 	})
 

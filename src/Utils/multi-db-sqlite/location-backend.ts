@@ -58,7 +58,23 @@ export type LocationSharerRow = {
 	remoteResource: string
 	expires: number
 	messageId: string
+	/**
+	 * Gateway-only last-activity time (unix seconds) for RECEIVED shares, which
+	 * carry no `expires` (companion never gets the duration). Used purely for
+	 * retention — a received share with no update within the retention window is
+	 * aged out. Orthogonal to `expires`, which keeps its parity meaning. Optional
+	 * on write; defaults to 0 (sent rows don't need it — they use `expires`).
+	 */
+	receivedTs?: number
 }
+
+/**
+ * Max WhatsApp live-location duration is 8h, so a RECEIVED share whose last
+ * update is older than this is definitely over. Used to age out received rows.
+ */
+export const LOCATION_SHARER_RECEIVED_RETENTION_SECS = 8 * 60 * 60
+/** Throttle for the opportunistic received-share prune (amortized, from writes). */
+const LOCATION_PRUNE_INTERVAL_MS = 60 * 60 * 1000
 
 export class LocationBackend {
 	private readonly stmts: {
@@ -69,12 +85,18 @@ export class LocationBackend {
 		listLocationSharers: SqliteStatementLike
 		listActiveLocationSharers: SqliteStatementLike
 		endLocationSharer: SqliteStatementLike
+		pruneStaleReceivedSharers: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
+	private readonly retentionSecs: number
+	private readonly pruneIntervalMs: number
+	private lastPruneAtMs = 0
 
-	constructor(db: SqliteDbLike) {
+	constructor(db: SqliteDbLike, opts?: { retentionSecs?: number; pruneIntervalMs?: number }) {
 		this.db = db
+		this.retentionSecs = opts?.retentionSecs ?? LOCATION_SHARER_RECEIVED_RETENTION_SECS
+		this.pruneIntervalMs = opts?.pruneIntervalMs ?? LOCATION_PRUNE_INTERVAL_MS
 		this.stmts = {
 			// `WHERE excluded.location_ts >= location_cache.location_ts` guards
 			// against out-of-order delivery: a live-location update that
@@ -100,10 +122,13 @@ export class LocationBackend {
 			// the whole point of the send path. A received update legitimately
 			// only ever carries `expires=0`, so keeping the existing value is safe.
 			upsertLocationSharer: this.db.prepare(
-				'INSERT INTO location_sharer (remote_jid, from_me, remote_resource, expires, message_id) ' +
-					'VALUES (?, ?, ?, ?, ?) ' +
+				'INSERT INTO location_sharer (remote_jid, from_me, remote_resource, expires, message_id, received_ts) ' +
+					'VALUES (?, ?, ?, ?, ?, ?) ' +
 					'ON CONFLICT(remote_jid, from_me, remote_resource, message_id) DO UPDATE SET ' +
-					'  expires = CASE WHEN excluded.expires = 0 THEN location_sharer.expires ELSE excluded.expires END'
+					'  expires = CASE WHEN excluded.expires = 0 THEN location_sharer.expires ELSE excluded.expires END, ' +
+					// Keep the NEWEST activity time — an out-of-order older update must
+					// not roll the retention window backwards.
+					'  received_ts = MAX(location_sharer.received_ts, excluded.received_ts)'
 			),
 			getLocationSharer: this.db.prepare(
 				'SELECT remote_jid, from_me, remote_resource, expires, message_id FROM location_sharer ' +
@@ -112,15 +137,22 @@ export class LocationBackend {
 			listLocationSharers: this.db.prepare(
 				'SELECT remote_jid, from_me, remote_resource, expires, message_id FROM location_sharer'
 			),
-			// Active = open-ended (expires=0, e.g. a received share whose duration
-			// the companion never got) OR not yet expired (expires > now, seconds).
+			// Active = a SENT share not yet expired (expires > now, seconds), OR a
+			// received/open-ended share (expires=0) whose last activity is within
+			// the retention window (received_ts > cutoff). The retention cutoff
+			// stops a received share that ended hours ago from showing as active
+			// forever (audit #636). Params: (nowSecs, retentionCutoffSecs).
 			listActiveLocationSharers: this.db.prepare(
-				'SELECT remote_jid, from_me, remote_resource, expires, message_id FROM location_sharer ' +
-					'WHERE expires = 0 OR expires > ?'
+				'SELECT remote_jid, from_me, remote_resource, expires, message_id, received_ts FROM location_sharer ' +
+					'WHERE (expires > 0 AND expires > ?) OR (expires = 0 AND received_ts > ?)'
 			),
 			endLocationSharer: this.db.prepare(
 				'DELETE FROM location_sharer WHERE remote_jid = ? AND from_me = ? AND remote_resource = ? AND message_id = ?'
-			)
+			),
+			// Hard-delete received/open-ended shares older than the retention
+			// window, so the table stays bounded (received rows never get an
+			// explicit end from the companion wire).
+			pruneStaleReceivedSharers: this.db.prepare('DELETE FROM location_sharer WHERE expires = 0 AND received_ts < ?')
 		}
 	}
 
@@ -161,7 +193,36 @@ export class LocationBackend {
 	}
 
 	upsertLocationSharer(row: LocationSharerRow): void {
-		this.stmts.upsertLocationSharer.run(row.remoteJid, row.fromMe, row.remoteResource, row.expires, row.messageId)
+		this.stmts.upsertLocationSharer.run(
+			row.remoteJid,
+			row.fromMe,
+			row.remoteResource,
+			row.expires,
+			row.messageId,
+			row.receivedTs ?? 0
+		)
+		// Opportunistic, throttled retention sweep — keeps received/open-ended
+		// shares bounded without a timer. Never throws into the caller.
+		this.maybePrune()
+	}
+
+	/** Deletes received/open-ended shares whose last activity is before `cutoffSecs`. Returns rows removed. */
+	pruneStaleReceivedSharers(cutoffSecs: number): number {
+		return this.stmts.pruneStaleReceivedSharers.run(cutoffSecs).changes as number
+	}
+
+	private maybePrune(): void {
+		const now = Date.now()
+		if (now - this.lastPruneAtMs < this.pruneIntervalMs) {
+			return
+		}
+
+		this.lastPruneAtMs = now
+		try {
+			this.pruneStaleReceivedSharers(Math.floor(now / 1000) - this.retentionSecs)
+		} catch {
+			// best-effort: a prune failure must never break location recording.
+		}
 	}
 
 	getLocationSharer(
@@ -201,24 +262,29 @@ export class LocationBackend {
 	}
 
 	/**
-	 * Sharers that are still active at `nowSecs` (unix seconds): open-ended
-	 * (`expires=0`) or not yet expired. Backs `getActiveLiveLocations()` so it
-	 * doesn't hand back stale/expired shares.
+	 * Sharers still active at `nowSecs` (unix seconds): a SENT share not yet
+	 * expired, OR a received/open-ended share whose last activity is within the
+	 * retention window. Backs `getActiveLiveLocations()` so it never hands back a
+	 * share that expired OR (for received shares, which have no `expires`) ended
+	 * hours ago (audit #636).
 	 */
 	listActiveLocationSharers(nowSecs: number): LocationSharerRow[] {
-		const rows = this.stmts.listActiveLocationSharers.all(nowSecs) as Array<{
+		const cutoff = nowSecs - this.retentionSecs
+		const rows = this.stmts.listActiveLocationSharers.all(nowSecs, cutoff) as Array<{
 			remote_jid: string
 			from_me: number
 			remote_resource: string
 			expires: number
 			message_id: string
+			received_ts: number
 		}>
 		return rows.map(r => ({
 			remoteJid: r.remote_jid,
 			fromMe: r.from_me,
 			remoteResource: r.remote_resource,
 			expires: r.expires,
-			messageId: r.message_id
+			messageId: r.message_id,
+			receivedTs: r.received_ts
 		}))
 	}
 

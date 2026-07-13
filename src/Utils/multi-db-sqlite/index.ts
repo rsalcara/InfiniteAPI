@@ -50,7 +50,12 @@ export {
 	type StoredHistorySyncCompanionRow
 } from './history-sync-companion-backend'
 export { SignalTypedSourceStore, type TypedSignalType } from './signal-typed-source'
-export { LocationBackend, type LocationCacheRow, type LocationSharerRow } from './location-backend'
+export {
+	LOCATION_SHARER_RECEIVED_RETENTION_SECS,
+	LocationBackend,
+	type LocationCacheRow,
+	type LocationSharerRow
+} from './location-backend'
 export { ChatSettingsBackend, type ChatSettingsRow } from './chatsettings-backend'
 export {
 	StatusBackend,
