@@ -78,6 +78,44 @@ export type RecordVcardInput = {
 }
 
 /**
+ * One parsed interactive-UI element (a button / list / template row) attached
+ * to a message, for rendering. Mirrors msgstore.db's `message_ui_elements`.
+ * `elementType` is a best-effort classifier (not reverse-engineering-confirmed
+ * against the mobile enum), same caveat as `message_add_on.message_add_on_type`.
+ */
+export type RecordUiElementInput = {
+	messageRowId: number
+	elementType?: number | null
+	elementContent?: string | null
+	description?: string | null
+	templateId?: string | null
+	hsmTag?: string | null
+	footerText?: string | null
+	buttonText?: string | null
+	messageType?: number | null
+}
+
+export type UiElementContext = {
+	containerType: 'carousel'
+	cardIndex: number
+	buttonIndex: number
+}
+
+export type RecordUiElementWithContextInput = RecordUiElementInput & {
+	context?: UiElementContext
+	/** Native-flow action key (for example quick_reply or cta_url). */
+	nativeFlowName?: string | null
+}
+
+/** Best-effort element_type classifier for message_ui_elements. */
+export const UI_ELEMENT_TYPE = {
+	QUICK_REPLY: 1,
+	LIST: 2,
+	TEMPLATE: 3,
+	NATIVE_FLOW: 4
+} as const
+
+/**
  * Extracts the WhatsApp JIDs embedded in a vCard's TEL lines. WhatsApp tags
  * each contactable number with a `waid=<e164>` parameter, e.g.
  * `TEL;type=CELL;waid=5511999999999:+55 11 99999-9999`. Each `waid` is the
@@ -117,6 +155,12 @@ export class MessageAddOnBackend {
 		getVcardRowId: SqliteStatementLike
 		insertVcardJid: SqliteStatementLike
 		countVcardJids: SqliteStatementLike
+		insertUiElement: SqliteStatementLike
+		insertUiElementContext: SqliteStatementLike
+		deleteUiElementContexts: SqliteStatementLike
+		deleteUiElements: SqliteStatementLike
+		getUiElements: SqliteStatementLike
+		getUiElementsWithContext: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
@@ -180,7 +224,30 @@ export class MessageAddOnBackend {
 			insertVcardJid: this.db.prepare(
 				'INSERT INTO message_vcard_jid (vcard_jid_row_id, vcard_row_id, message_row_id) VALUES (?, ?, ?)'
 			),
-			countVcardJids: this.db.prepare('SELECT COUNT(*) AS n FROM message_vcard_jid WHERE vcard_row_id = ?')
+			countVcardJids: this.db.prepare('SELECT COUNT(*) AS n FROM message_vcard_jid WHERE vcard_row_id = ?'),
+			insertUiElement: this.db.prepare(
+				'INSERT INTO message_ui_elements (message_row_id, element_type, element_content, description, ' +
+					'template_id, hsm_tag, footer_text, button_text, message_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+			),
+			insertUiElementContext: this.db.prepare(
+				'INSERT INTO message_ui_element_context ' +
+					'(ui_element_row_id, container_type, card_index, button_index, native_flow_name) VALUES (?, ?, ?, ?, ?)'
+			),
+			deleteUiElementContexts: this.db.prepare(
+				'DELETE FROM message_ui_element_context WHERE ui_element_row_id IN ' +
+					'(SELECT _id FROM message_ui_elements WHERE message_row_id = ?)'
+			),
+			deleteUiElements: this.db.prepare('DELETE FROM message_ui_elements WHERE message_row_id = ?'),
+			getUiElements: this.db.prepare(
+				'SELECT element_type, element_content, description, template_id, hsm_tag, footer_text, ' +
+					'button_text, message_type FROM message_ui_elements WHERE message_row_id = ? ORDER BY _id'
+			),
+			getUiElementsWithContext: this.db.prepare(
+				'SELECT e.element_type, e.element_content, e.description, e.template_id, e.hsm_tag, e.footer_text, ' +
+					'e.button_text, e.message_type, c.container_type, c.card_index, c.button_index, c.native_flow_name ' +
+					'FROM message_ui_elements e LEFT JOIN message_ui_element_context c ON c.ui_element_row_id = e._id ' +
+					'WHERE e.message_row_id = ? ORDER BY c.card_index, c.button_index, e._id'
+			)
 		}
 	}
 
@@ -328,5 +395,111 @@ export class MessageAddOnBackend {
 				}
 			}
 		})()
+	}
+
+	/**
+	 * Records the parsed interactive-UI elements (buttons / list rows /
+	 * template) of a message. Replace-on-redecode: a re-processed stanza wipes
+	 * the prior rows for this message and re-inserts, so a retry can't
+	 * duplicate. An EMPTY `elements` still clears — a re-decode that yields no
+	 * UI must not leave stale rows behind. Carousel context is replaced in the
+	 * same transaction as the mobile-compatible rows, so readers never observe
+	 * a partially rebuilt card layout. The message proto stays the ultimate
+	 * source; this is a derived render-mirror, safe to rebuild at any time.
+	 */
+	recordUiElements(
+		messageRowId: number,
+		elements: ReadonlyArray<Omit<RecordUiElementWithContextInput, 'messageRowId'>>
+	): void {
+		this.db.transaction(() => {
+			this.stmts.deleteUiElementContexts.run(messageRowId)
+			this.stmts.deleteUiElements.run(messageRowId)
+			for (const el of elements) {
+				const inserted = this.stmts.insertUiElement.run(
+					messageRowId,
+					el.elementType ?? null,
+					el.elementContent ?? null,
+					el.description ?? null,
+					el.templateId ?? null,
+					el.hsmTag ?? null,
+					el.footerText ?? null,
+					el.buttonText ?? null,
+					el.messageType ?? null
+				)
+				if (el.context || el.nativeFlowName) {
+					this.stmts.insertUiElementContext.run(
+						inserted.lastInsertRowid,
+						el.context?.containerType ?? null,
+						el.context?.cardIndex ?? null,
+						el.context?.buttonIndex ?? null,
+						el.nativeFlowName ?? null
+					)
+				}
+			}
+		})()
+	}
+
+	/** Reads back the stored UI elements for a message (empty if none). */
+	getUiElements(messageRowId: number): Array<Omit<RecordUiElementInput, 'messageRowId'>> {
+		const rows = this.stmts.getUiElements.all(messageRowId) as Array<{
+			element_type: number | null
+			element_content: string | null
+			description: string | null
+			template_id: string | null
+			hsm_tag: string | null
+			footer_text: string | null
+			button_text: string | null
+			message_type: number | null
+		}>
+		return rows.map(r => ({
+			elementType: r.element_type,
+			elementContent: r.element_content,
+			description: r.description,
+			templateId: r.template_id,
+			hsmTag: r.hsm_tag,
+			footerText: r.footer_text,
+			buttonText: r.button_text,
+			messageType: r.message_type
+		}))
+	}
+
+	/** Context-aware read for native-flow action types and carousel ordering. */
+	getUiElementsWithContext(
+		messageRowId: number
+	): Array<Omit<RecordUiElementInput, 'messageRowId'> & { context?: UiElementContext; nativeFlowName?: string }> {
+		const rows = this.stmts.getUiElementsWithContext.all(messageRowId) as Array<{
+			element_type: number | null
+			element_content: string | null
+			description: string | null
+			template_id: string | null
+			hsm_tag: string | null
+			footer_text: string | null
+			button_text: string | null
+			message_type: number | null
+			container_type: 'carousel' | null
+			card_index: number | null
+			button_index: number | null
+			native_flow_name: string | null
+		}>
+		return rows.map(r => ({
+			elementType: r.element_type,
+			elementContent: r.element_content,
+			description: r.description,
+			templateId: r.template_id,
+			hsmTag: r.hsm_tag,
+			footerText: r.footer_text,
+			buttonText: r.button_text,
+			messageType: r.message_type,
+			...(r.native_flow_name !== null ? { nativeFlowName: r.native_flow_name } : {}),
+			...(r.container_type !== null && r.card_index !== null && r.button_index !== null
+				? {
+						context: {
+							containerType: r.container_type,
+							cardIndex: r.card_index,
+							buttonIndex: r.button_index
+						}
+					}
+				: {})
+		}))
 	}
 }

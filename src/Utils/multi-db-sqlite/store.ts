@@ -110,6 +110,24 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 			run: db => addColumnIfMissing(db, 'sender_keys', 'bucket_id', "TEXT NOT NULL DEFAULT ''")
 		}
 	],
+	'msgstore.db': [
+		{
+			// Existing jid_map rows predate the lid_chat_state mirror. The live
+			// wrapper only marks mappings that flow through a later set(), and the
+			// mapping store skips unchanged pairs, so those rows would otherwise
+			// remain permanently absent. Backfill every known LID idempotently while
+			// preserving the other coexistence-state columns.
+			version: 1,
+			name: 'backfill lid_chat_state from existing jid_map rows',
+			sql: `
+				INSERT OR IGNORE INTO lid_chat_state (jid_row_id, is_pn_shared)
+				SELECT lid_row_id, 1 FROM jid_map;
+				UPDATE lid_chat_state
+				SET is_pn_shared = 1
+				WHERE jid_row_id IN (SELECT lid_row_id FROM jid_map);
+			`
+		}
+	],
 	'status.db': [
 		{
 			// Audit #637: the AFTER DELETE `...last_status_timestamp_trigger` guarded

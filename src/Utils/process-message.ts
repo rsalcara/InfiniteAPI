@@ -49,7 +49,8 @@ import {
 	type MessageMediaBackend,
 	type MessageStoreBackend,
 	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
-	type StatusBackend
+	type StatusBackend,
+	UI_ELEMENT_TYPE
 } from './multi-db-sqlite'
 import { type OrphanEntry, OrphanQueue } from './orphan-queue'
 import { metrics, recordHistorySyncMessages } from './prometheus-metrics.js'
@@ -392,6 +393,158 @@ export function decryptEventResponse(
 	}
 }
 
+type UiElement = Omit<import('./multi-db-sqlite').RecordUiElementWithContextInput, 'messageRowId'>
+
+type MessageMirrorOperation =
+	| 'message_record'
+	| 'media_record'
+	| 'media_thumbnail'
+	| 'media_mms_thumbnail'
+	| 'media_audio_data'
+	| 'media_streaming_sidecar'
+	| 'poll_record'
+	| 'poll_option_record'
+	| 'vcard_record'
+	| 'ui_elements_replace'
+
+const MESSAGE_MIRROR_TABLE: Record<MessageMirrorOperation, string> = {
+	message_record: 'message,chat',
+	media_record: 'message_media',
+	media_thumbnail: 'message_thumbnail',
+	media_mms_thumbnail: 'mms_thumbnail_metadata',
+	media_audio_data: 'audio_data',
+	media_streaming_sidecar: 'message_streaming_sidecar',
+	poll_record: 'message_poll',
+	poll_option_record: 'message_poll_option',
+	vcard_record: 'message_vcard,message_vcard_jid',
+	ui_elements_replace: 'message_ui_elements,message_ui_element_context'
+}
+
+const classifyMessageMirrorFailure = (operation: MessageMirrorOperation, err: unknown) => {
+	const errorMessage = err instanceof Error ? err.message : String(err)
+	const sqliteCode =
+		typeof err === 'object' && err !== null && 'code' in err && typeof err.code === 'string' ? err.code : undefined
+	const prefix = `MESSAGE_MIRROR_${operation.toUpperCase()}`
+	let suffix = 'WRITE_FAILED'
+	if (/no such (table|column)/i.test(errorMessage)) suffix = 'SCHEMA_MISMATCH'
+	else if (sqliteCode?.startsWith('SQLITE_BUSY') || sqliteCode?.startsWith('SQLITE_LOCKED')) suffix = 'DB_LOCKED'
+	else if (sqliteCode?.startsWith('SQLITE_CORRUPT') || sqliteCode?.startsWith('SQLITE_NOTADB')) suffix = 'DB_CORRUPT'
+	else if (sqliteCode?.startsWith('SQLITE_READONLY')) suffix = 'DB_READ_ONLY'
+	else if (
+		sqliteCode?.startsWith('SQLITE_IOERR') ||
+		sqliteCode?.startsWith('SQLITE_FULL') ||
+		sqliteCode?.startsWith('SQLITE_CANTOPEN')
+	)
+		suffix = 'DB_IO_FAILURE'
+	else if (sqliteCode?.startsWith('SQLITE_CONSTRAINT')) suffix = 'DB_CONSTRAINT'
+
+	return { reason: `${prefix}_${suffix}`, sqliteCode, errorMessage }
+}
+
+const nativeFlowButtonLabel = (buttonParamsJson: string | null | undefined): string | null => {
+	if (!buttonParamsJson) return null
+	try {
+		const params = JSON.parse(buttonParamsJson) as Record<string, unknown>
+		const label = params.display_text ?? params.displayText ?? params.title
+		return typeof label === 'string' && label.trim() ? label : null
+	} catch {
+		// The raw payload and action name are still preserved. A future primary
+		// consumer can detect the missing label and fall back to the legacy proto.
+		return null
+	}
+}
+
+/**
+ * Extracts renderable UI elements (quick-reply buttons, list rows, template
+ * buttons, native-flow CTAs) from an interactive message's content. Returns
+ * an empty array for non-interactive messages. Pure — the message proto stays
+ * the source of truth; this is just a derived render-mirror.
+ */
+const extractUiElements = (content: proto.IMessage | undefined | null): UiElement[] => {
+	if (!content) return []
+	const out: UiElement[] = []
+
+	const bm = content.buttonsMessage
+	if (bm) {
+		const description = bm.contentText ?? bm.text ?? null
+		for (const btn of bm.buttons ?? []) {
+			out.push({
+				elementType: UI_ELEMENT_TYPE.QUICK_REPLY,
+				buttonText: btn.buttonText?.displayText ?? null,
+				elementContent: btn.buttonId ?? null,
+				footerText: bm.footerText ?? null,
+				description
+			})
+		}
+	}
+
+	const lm = content.listMessage
+	if (lm) {
+		for (const section of lm.sections ?? []) {
+			for (const row of section.rows ?? []) {
+				out.push({
+					elementType: UI_ELEMENT_TYPE.LIST,
+					buttonText: row.title ?? lm.buttonText ?? null,
+					elementContent: row.rowId ?? null,
+					description: row.description ?? row.title ?? null,
+					footerText: lm.footerText ?? null
+				})
+			}
+		}
+	}
+
+	const tm = content.templateMessage
+	const hydrated = tm?.hydratedTemplate ?? tm?.hydratedFourRowTemplate
+	if (tm && hydrated) {
+		for (const btn of hydrated.hydratedButtons ?? []) {
+			const label =
+				btn.quickReplyButton?.displayText ?? btn.urlButton?.displayText ?? btn.callButton?.displayText ?? null
+			const value = btn.quickReplyButton?.id ?? btn.urlButton?.url ?? btn.callButton?.phoneNumber ?? null
+			out.push({
+				elementType: UI_ELEMENT_TYPE.TEMPLATE,
+				templateId: tm.templateId ?? null,
+				buttonText: label,
+				elementContent: value,
+				footerText: hydrated.hydratedFooterText ?? null,
+				description: hydrated.hydratedContentText ?? null
+			})
+		}
+	}
+
+	for (const im of [content.interactiveMessage, tm?.interactiveMessageTemplate]) {
+		if (!im) continue
+		const nativeFlow = im.nativeFlowMessage
+		if (nativeFlow) {
+			for (const btn of nativeFlow.buttons ?? []) {
+				out.push({
+					elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
+					buttonText: nativeFlowButtonLabel(btn.buttonParamsJson),
+					elementContent: btn.buttonParamsJson ?? null,
+					footerText: im.footer?.text ?? null,
+					description: im.body?.text ?? null,
+					nativeFlowName: btn.name ?? null
+				})
+			}
+		} else if (im.carouselMessage) {
+			for (const [cardIndex, card] of (im.carouselMessage.cards ?? []).entries()) {
+				for (const [buttonIndex, btn] of (card.nativeFlowMessage?.buttons ?? []).entries()) {
+					out.push({
+						elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
+						buttonText: nativeFlowButtonLabel(btn.buttonParamsJson),
+						elementContent: btn.buttonParamsJson ?? null,
+						footerText: card.footer?.text ?? im.footer?.text ?? null,
+						description: card.body?.text ?? im.body?.text ?? null,
+						nativeFlowName: btn.name ?? null,
+						context: { containerType: 'carousel', cardIndex, buttonIndex }
+					})
+				}
+			}
+		}
+	}
+
+	return out
+}
+
 const processMessage = async (
 	message: WAMessage,
 	{
@@ -563,6 +716,7 @@ const processMessage = async (
 	// in this file. Also mirrors media metadata and poll-creation options
 	// via the same messageRowId, since both hang off the message row.
 	if (messageStoreBackend && isRealMsg && message.key.id) {
+		let mirrorOperation: MessageMirrorOperation = 'message_record'
 		try {
 			const senderJid = getKeyAuthor(message.key, meId)
 			const messageRowId = messageStoreBackend.recordMessage({
@@ -596,6 +750,7 @@ const processMessage = async (
 					content?.documentMessage ||
 					content?.stickerMessage
 				if (media) {
+					mirrorOperation = 'media_record'
 					mediaBackend.recordMedia({
 						messageRowId,
 						mimeType: media.mimetype ?? null,
@@ -613,6 +768,7 @@ const processMessage = async (
 
 					const thumbnail = content?.imageMessage?.jpegThumbnail || content?.videoMessage?.jpegThumbnail
 					if (thumbnail) {
+						mirrorOperation = 'media_thumbnail'
 						mediaBackend.recordThumbnail({ messageRowId, thumbnail: Buffer.from(thumbnail) })
 					}
 
@@ -620,6 +776,7 @@ const processMessage = async (
 					// only image/video carry the dedicated thumbnail fields.
 					const thumbSource = content?.imageMessage || content?.videoMessage
 					if (thumbSource?.thumbnailDirectPath || thumbnail) {
+						mirrorOperation = 'media_mms_thumbnail'
 						mediaBackend.recordMmsThumbnail({
 							messageRowId,
 							directPath: thumbSource?.thumbnailDirectPath ?? null,
@@ -633,11 +790,13 @@ const processMessage = async (
 					}
 
 					if (content?.audioMessage?.waveform) {
+						mirrorOperation = 'media_audio_data'
 						mediaBackend.recordAudioData({ messageRowId, waveform: Buffer.from(content.audioMessage.waveform) })
 					}
 
 					const streamingSidecar = content?.videoMessage?.streamingSidecar || content?.audioMessage?.streamingSidecar
 					if (streamingSidecar) {
+						mirrorOperation = 'media_streaming_sidecar'
 						mediaBackend.recordStreamingSidecar({
 							messageRowId,
 							sidecar: Buffer.from(streamingSidecar),
@@ -650,6 +809,7 @@ const processMessage = async (
 			if (addOnBackend) {
 				const poll = content?.pollCreationMessage || content?.pollCreationMessageV2 || content?.pollCreationMessageV3
 				if (poll) {
+					mirrorOperation = 'poll_record'
 					addOnBackend.recordPoll({
 						messageRowId,
 						encKey: poll.encKey ? Buffer.from(poll.encKey) : null,
@@ -658,6 +818,7 @@ const processMessage = async (
 					for (const option of poll.options ?? []) {
 						// eslint-disable-next-line max-depth
 						if (!option.optionName) continue
+						mirrorOperation = 'poll_option_record'
 						addOnBackend.recordPollOption({
 							messageRowId,
 							optionSha256: sha256(Buffer.from(option.optionName)).toString('base64'),
@@ -667,17 +828,44 @@ const processMessage = async (
 				}
 
 				if (content?.contactMessage?.vcard) {
+					mirrorOperation = 'vcard_record'
 					addOnBackend.recordVcard({ messageRowId, vcard: content.contactMessage.vcard })
 				}
 
 				// A contactsArrayMessage carries several vcards on one message —
 				// each is recorded (and deduped) under the same message_row_id.
 				for (const contact of content?.contactsArrayMessage?.contacts ?? []) {
-					if (contact.vcard) addOnBackend.recordVcard({ messageRowId, vcard: contact.vcard })
+					if (contact.vcard) {
+						mirrorOperation = 'vcard_record'
+						addOnBackend.recordVcard({ messageRowId, vcard: contact.vcard })
+					}
+				}
+
+				// Interactive-message UI (buttons/list/template/native-flow) →
+				// message_ui_elements, for rendering. Derived from the proto (the
+				// source of truth), replace-on-redecode. Called for any interactive
+				// container (not gated on element count) so a re-decode that yields
+				// none clears stale rows; plain messages are skipped entirely.
+				const isInteractive =
+					content?.buttonsMessage || content?.listMessage || content?.templateMessage || content?.interactiveMessage
+				if (isInteractive) {
+					mirrorOperation = 'ui_elements_replace'
+					addOnBackend.recordUiElements(messageRowId, extractUiElements(content))
 				}
 			}
 		} catch (err) {
-			logger?.warn({ err }, 'failed to record message.db row')
+			logger?.warn(
+				{
+					err,
+					...classifyMessageMirrorFailure(mirrorOperation, err),
+					operation: mirrorOperation,
+					table: MESSAGE_MIRROR_TABLE[mirrorOperation],
+					messageId: message.key.id,
+					primary: 'multi_db_sqlite',
+					fallback: 'legacy_message_proto'
+				},
+				'multi-db-sqlite: message mirror fallback'
+			)
 		}
 	}
 

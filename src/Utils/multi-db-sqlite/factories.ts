@@ -16,6 +16,7 @@ import { type LIDMappingConfig, LIDMappingStore } from '../../Signal/lid-mapping
 import type { LIDMapping, SignalKeyStoreWithTransaction } from '../../Types'
 import type { ILogger } from '../logger'
 import { wrapKeysWithJidMap } from './keys-with-jid-map'
+import { LidChatStateBackend } from './lid-chat-state-backend'
 import { JidMapBackend } from './lid-mapping-backend'
 import { MessageQuarantineBackend } from './quarantine-backend'
 import type { MultiDbSqliteStore } from './store'
@@ -42,7 +43,11 @@ export function createLIDMappingStoreWithSqlite(args: {
 	configOverride?: Partial<LIDMappingConfig>
 }): LIDMappingStore {
 	const backend = new JidMapBackend(args.store.handle('msgstore.db'))
-	const wrapped = wrapKeysWithJidMap(args.innerKeys, backend)
+	// Mirror per-jid LID/PN coexistence state (lid_chat_state.is_pn_shared)
+	// through the same wrapper — it sees every mapping-store write and marks the
+	// LID whose PN just became known. Shares the jid table with `backend`.
+	const lidChatState = new LidChatStateBackend(args.store.handle('msgstore.db'), backend)
+	const wrapped = wrapKeysWithJidMap(args.innerKeys, backend, lidChatState)
 	return new LIDMappingStore(wrapped, args.logger, args.pnToLIDFunc, args.configOverride)
 }
 

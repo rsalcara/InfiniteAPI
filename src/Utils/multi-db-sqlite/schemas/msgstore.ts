@@ -56,6 +56,8 @@
  *   - `composition` — outbound-compose draft state (typing/recording)
  *   - `message_ui_elements` — parsed interactive-message UI (buttons,
  *     templates) for rendering
+ *   - `message_ui_element_context` — gateway-only native-flow action metadata
+ *     plus carousel card/button ordering, attached 1:1 to a UI-element row
  *
  * Explicitly NOT ported (same rationale as the original scoping note):
  * `message_ftsv2`/`wa_contacts_fts` (FTS virtual tables, no direct value
@@ -616,5 +618,25 @@ CREATE TABLE IF NOT EXISTS message_ui_elements (
   footer_text TEXT,
   button_text TEXT,
   message_type INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS message_ui_elements_message_row_id_idx
+  ON message_ui_elements (message_row_id);
+
+-- Gateway-only context for native-flow buttons (the action key, plus card and
+-- button order for carousels). Kept separate from message_ui_elements so the
+-- mobile-compatible row shape and every existing consumer remain unchanged.
+CREATE TABLE IF NOT EXISTS message_ui_element_context (
+  ui_element_row_id INTEGER PRIMARY KEY NOT NULL,
+  container_type TEXT CHECK (container_type = 'carousel'),
+  card_index INTEGER CHECK (card_index >= 0),
+  button_index INTEGER CHECK (button_index >= 0),
+  native_flow_name TEXT,
+  CHECK (
+    (container_type IS NULL AND card_index IS NULL AND button_index IS NULL)
+    OR (container_type = 'carousel' AND card_index IS NOT NULL AND button_index IS NOT NULL)
+  ),
+  CHECK (container_type IS NOT NULL OR native_flow_name IS NOT NULL),
+  FOREIGN KEY (ui_element_row_id) REFERENCES message_ui_elements (_id) ON DELETE CASCADE
 );
 `
