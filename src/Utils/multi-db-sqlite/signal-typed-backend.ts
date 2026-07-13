@@ -55,6 +55,38 @@ const MESSAGE_BASE_KEY_RECIPIENT_SENTINEL = 0
 
 const toBuf = (v: Buffer | Uint8Array): Buffer => (Buffer.isBuffer(v) ? v : Buffer.from(v))
 
+/** Keep every statement below SQLite's default 999-variable ceiling. */
+const SQLITE_VARIABLE_LIMIT = 999
+
+const queryTupleChunks = <Key, Row>(
+	db: SqliteDbLike,
+	statementCache: Map<number, SqliteStatementLike>,
+	keys: ReadonlyArray<Key>,
+	tupleWidth: number,
+	sqlBeforeValues: string,
+	valuesForKey: (key: Key) => ReadonlyArray<unknown>
+): Row[] => {
+	if (keys.length === 0) return []
+	const chunkSize = Math.floor(SQLITE_VARIABLE_LIMIT / tupleWidth)
+	const rows: Row[] = []
+
+	for (let offset = 0; offset < keys.length; offset += chunkSize) {
+		const chunk = keys.slice(offset, offset + chunkSize)
+		let statement = statementCache.get(chunk.length)
+		if (!statement) {
+			const tuple = `(${new Array(tupleWidth).fill('?').join(', ')})`
+			statement = db.prepare(`${sqlBeforeValues}${new Array(chunk.length).fill(tuple).join(', ')})`)
+			statementCache.set(chunk.length, statement)
+		}
+
+		const params: unknown[] = []
+		for (const key of chunk) params.push(...valuesForKey(key))
+		rows.push(...(statement.all(...params) as Row[]))
+	}
+
+	return rows
+}
+
 /**
  * A raw stanza held in `unordered_stanza_queue` because it could not be
  * processed in order yet. Keyed by `stanzaId` (the message id) — the UNIQUE
@@ -139,6 +171,10 @@ export class SignalTypedBackend {
 	}
 
 	private readonly db: SqliteDbLike
+	private readonly manySessionStmts = new Map<number, SqliteStatementLike>()
+	private readonly manyPrekeyStmts = new Map<number, SqliteStatementLike>()
+	private readonly manyIdentityStmts = new Map<number, SqliteStatementLike>()
+	private readonly manySenderKeyStmts = new Map<number, SqliteStatementLike>()
 
 	constructor(db: SqliteDbLike) {
 		this.db = db
@@ -297,6 +333,44 @@ export class SignalTypedBackend {
 		return r.changes > 0
 	}
 
+	/**
+	 * Batched {@link getSession}: one row-value `IN` query for N keys instead of
+	 * N point lookups. Returns each hit with its key columns so the caller can
+	 * map rows back to its original ids; misses are simply absent. The
+	 * (session_type, session_scope) pair is matched per-key exactly like the
+	 * single get.
+	 */
+	getManySessions(keys: ReadonlyArray<SignalSessionKey>): Array<{
+		device_id: number
+		recipient_account_id: string
+		recipient_account_type: number
+		record: Buffer
+	}> {
+		return queryTupleChunks<
+			SignalSessionKey,
+			{
+				device_id: number
+				recipient_account_id: string
+				recipient_account_type: number
+				record: Buffer
+			}
+		>(
+			this.db,
+			this.manySessionStmts,
+			keys,
+			5,
+			'SELECT device_id, recipient_account_id, recipient_account_type, record FROM sessions ' +
+				'WHERE (device_id, recipient_account_id, recipient_account_type, session_type, session_scope) IN (VALUES ',
+			key => [
+				key.deviceId,
+				key.recipientAccountId,
+				key.recipientAccountType,
+				key.sessionType ?? 0,
+				key.sessionScope ?? 0
+			]
+		)
+	}
+
 	// ============ prekeys ============
 
 	putPrekey(prekeyId: number, record: Buffer | Uint8Array, keyType = 0): void {
@@ -306,6 +380,18 @@ export class SignalTypedBackend {
 	getPrekey(prekeyId: number): Buffer | null {
 		const r = this.stmts.selectPrekey.get(prekeyId) as { record: Buffer } | undefined
 		return r?.record ?? null
+	}
+
+	/** Batched {@link getPrekey}: one `IN` query for N prekey ids. */
+	getManyPrekeys(prekeyIds: ReadonlyArray<number>): Array<{ prekey_id: number; record: Buffer }> {
+		return queryTupleChunks<number, { prekey_id: number; record: Buffer }>(
+			this.db,
+			this.manyPrekeyStmts,
+			prekeyIds,
+			1,
+			'SELECT prekey_id, record FROM prekeys WHERE prekey_id IN (VALUES ',
+			prekeyId => [prekeyId]
+		)
 	}
 
 	deletePrekey(prekeyId: number): boolean {
@@ -363,6 +449,31 @@ export class SignalTypedBackend {
 		return { publicKey: r.public_key, timestamp: r.timestamp }
 	}
 
+	/**
+	 * Batched {@link getIdentity}: one row-value `IN` query. `device_id` is
+	 * coerced to the sentinel exactly like the single get so a null-device key
+	 * still matches its stored row.
+	 */
+	getManyIdentities(keys: ReadonlyArray<SignalIdentityKey>): Array<{
+		recipient_id: number
+		recipient_type: number
+		device_id: number
+		public_key: Buffer
+	}> {
+		return queryTupleChunks<
+			SignalIdentityKey,
+			{ recipient_id: number; recipient_type: number; device_id: number; public_key: Buffer }
+		>(
+			this.db,
+			this.manyIdentityStmts,
+			keys,
+			3,
+			'SELECT recipient_id, recipient_type, device_id, public_key FROM identities ' +
+				'WHERE (recipient_id, recipient_type, device_id) IN (VALUES ',
+			key => [key.recipientId, key.recipientType, key.deviceId ?? IDENTITY_DEVICE_ID_SENTINEL]
+		)
+	}
+
 	// ============ sender keys ============
 
 	putSenderKey(key: SignalSenderKeyKey, record: Buffer | Uint8Array, timestamp: number = Date.now()): void {
@@ -381,6 +492,34 @@ export class SignalTypedBackend {
 			| { record: Buffer; timestamp: number }
 			| undefined
 		return r ?? null
+	}
+
+	/** Batched {@link getSenderKey}: one row-value `IN` query for N keys. */
+	getManySenderKeys(keys: ReadonlyArray<SignalSenderKeyKey>): Array<{
+		group_id: string
+		device_id: number
+		sender_account_id: string
+		sender_account_type: number
+		record: Buffer
+	}> {
+		return queryTupleChunks<
+			SignalSenderKeyKey,
+			{
+				group_id: string
+				device_id: number
+				sender_account_id: string
+				sender_account_type: number
+				record: Buffer
+			}
+		>(
+			this.db,
+			this.manySenderKeyStmts,
+			keys,
+			4,
+			'SELECT group_id, device_id, sender_account_id, sender_account_type, record FROM sender_keys ' +
+				'WHERE (group_id, device_id, sender_account_id, sender_account_type) IN (VALUES ',
+			key => [key.groupId, key.deviceId, key.senderAccountId, key.senderAccountType]
+		)
 	}
 
 	deleteSenderKey(key: SignalSenderKeyKey): boolean {

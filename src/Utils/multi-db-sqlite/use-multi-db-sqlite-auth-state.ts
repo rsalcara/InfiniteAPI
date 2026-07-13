@@ -371,24 +371,21 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				// serialized value, so a typed hit and a signal_kv hit are
 				// interchangeable — the fallback only covers pre-migration rows.
 				//
-				// This does one indexed point-query per id rather than the
-				// batched IN-clause the signal_kv path uses. That's fine: the
-				// four typed tables are keyed on different structured columns
-				// (no single IN batches them), and better-sqlite3 is a
-				// synchronous in-process call — the IN-batching win is
-				// round-trip amortization, which doesn't apply here. Each
-				// lookup hits a unique index, so a multi-id get stays O(n)
-				// cheap point-queries. Batched typed reads are a possible later
-				// optimization, not a correctness concern.
+				// `getMany` batches the typed read into cached, parameter-bounded
+				// row-value IN queries (was one point-query per id). Semantics are identical
+				// to looping `get` per id — an id absent from the batch result is
+				// a miss and resolves via the signal_kv fallback below. (#618/#619)
 				if (sourceOfTruth && isMirroredSignalType(type)) {
 					const missing: string[] = []
 					const unparseableIds = new Set<string>()
+					const serializedById = signalTypedSource.getMany(type, ids)
 					for (const id of ids) {
-						const serialized = signalTypedSource.get(type, id)
-						if (serialized === null) {
+						if (!Object.prototype.hasOwnProperty.call(serializedById, id)) {
 							missing.push(id)
 							continue
 						}
+
+						const serialized = serializedById[id]!
 
 						try {
 							out[id] = JSON.parse(serialized, BufferJSON.reviver) as SignalDataTypeMap[typeof type]

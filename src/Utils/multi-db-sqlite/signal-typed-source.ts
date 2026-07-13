@@ -42,6 +42,25 @@ type IdentityKeyRow = { recipientId: number; recipientType: number; deviceId: nu
 
 const toBuffer = (valueString: string): Buffer => Buffer.from(valueString, 'utf-8')
 
+const tupleKey = (...values: ReadonlyArray<string | number>): string => JSON.stringify(values)
+
+/** Adds an original id to a parsed key and reports whether the key is new. */
+const addAlias = <Key>(aliasesByKey: Map<Key, string[]>, key: Key, id: string): boolean => {
+	const aliases = aliasesByKey.get(key)
+	if (aliases) {
+		aliases.push(id)
+		return false
+	}
+
+	aliasesByKey.set(key, [id])
+	return true
+}
+
+const writeAliases = (out: { [id: string]: string }, aliases: string[] | undefined, value: string): void => {
+	if (!aliases) return
+	for (const id of aliases) out[id] = value
+}
+
 export class SignalTypedSourceStore {
 	private readonly backend: SignalTypedBackend
 	private readonly jidMap: JidMapBackend
@@ -108,6 +127,123 @@ export class SignalTypedSourceStore {
 				'multi-db-sqlite: typed signal store get failed, caller falls back to signal_kv'
 			)
 			return null
+		}
+	}
+
+	/**
+	 * Batched {@link get}: resolves N ids with cached, bounded row-value `IN`
+	 * queries instead of N point lookups — the round-trip amortization matters
+	 * most for the session/sender-key fanout on a group send. Returns a map of
+	 * id→serialized string for HITS only; an id that misses or can't be parsed
+	 * is simply absent (the caller treats absent as a miss and falls back to
+	 * `signal_kv`, identical to the per-id path). Semantics are byte-identical
+	 * to calling {@link get} for each id — verified by an equivalence test.
+	 * Never throws — degrades to an empty prototype-less result.
+	 */
+	getMany(type: TypedSignalType, ids: ReadonlyArray<string>): { [id: string]: string } {
+		const out = Object.create(null) as { [id: string]: string }
+		if (ids.length === 0) return out
+		try {
+			switch (type) {
+				case 'session': {
+					const aliasesByKey = new Map<string, string[]>()
+					const keys: Array<{ deviceId: number; recipientAccountId: string; recipientAccountType: number }> = []
+					for (const id of ids) {
+						const parsed = parseProtocolAddressId(id)
+						if (!parsed) continue
+						const k = {
+							deviceId: parsed.deviceId,
+							recipientAccountId: parsed.user,
+							recipientAccountType: domainTypeToAccountType(parsed.domainType)
+						}
+						const key = tupleKey(k.deviceId, k.recipientAccountId, k.recipientAccountType)
+						if (addAlias(aliasesByKey, key, id)) keys.push(k)
+					}
+
+					for (const row of this.backend.getManySessions(keys)) {
+						const aliases = aliasesByKey.get(
+							tupleKey(row.device_id, row.recipient_account_id, row.recipient_account_type)
+						)
+						writeAliases(out, aliases, row.record.toString('utf-8'))
+					}
+
+					return out
+				}
+
+				case 'pre-key': {
+					const aliasesByKey = new Map<number, string[]>()
+					const prekeyIds: number[] = []
+					for (const id of ids) {
+						const prekeyId = parseNonNegativeInt(id)
+						if (prekeyId === null) continue
+						if (addAlias(aliasesByKey, prekeyId, id)) prekeyIds.push(prekeyId)
+					}
+
+					for (const row of this.backend.getManyPrekeys(prekeyIds)) {
+						const aliases = aliasesByKey.get(row.prekey_id)
+						writeAliases(out, aliases, row.record.toString('utf-8'))
+					}
+
+					return out
+				}
+
+				case 'sender-key': {
+					const aliasesByKey = new Map<string, string[]>()
+					const keys: Array<{
+						groupId: string
+						deviceId: number
+						senderAccountId: string
+						senderAccountType: number
+					}> = []
+					for (const id of ids) {
+						const parsed = parseSenderKeyId(id)
+						if (!parsed) continue
+						const k = {
+							groupId: parsed.groupId,
+							deviceId: parsed.sender.deviceId,
+							senderAccountId: parsed.sender.user,
+							senderAccountType: domainTypeToAccountType(parsed.sender.domainType)
+						}
+						const key = tupleKey(k.groupId, k.deviceId, k.senderAccountId, k.senderAccountType)
+						if (addAlias(aliasesByKey, key, id)) keys.push(k)
+					}
+
+					for (const row of this.backend.getManySenderKeys(keys)) {
+						const aliases = aliasesByKey.get(
+							tupleKey(row.group_id, row.device_id, row.sender_account_id, row.sender_account_type)
+						)
+						writeAliases(out, aliases, row.record.toString('utf-8'))
+					}
+
+					return out
+				}
+
+				case 'identity-key': {
+					const aliasesByKey = new Map<string, string[]>()
+					const keys: IdentityKeyRow[] = []
+					for (const id of ids) {
+						const key = this.identityKeyForRead(id)
+						if (!key) continue
+						// device_id null is coerced to the sentinel (0) both in the
+						// batch query and its returned column — mirror that here.
+						const tuple = tupleKey(key.recipientId, key.recipientType, key.deviceId ?? 0)
+						if (addAlias(aliasesByKey, tuple, id)) keys.push(key)
+					}
+
+					for (const row of this.backend.getManyIdentities(keys)) {
+						const aliases = aliasesByKey.get(tupleKey(row.recipient_id, row.recipient_type, row.device_id))
+						writeAliases(out, aliases, row.public_key.toString('utf-8'))
+					}
+
+					return out
+				}
+			}
+		} catch (err) {
+			this.logger?.warn?.(
+				{ err, type },
+				'multi-db-sqlite: typed signal store getMany failed, caller falls back to signal_kv'
+			)
+			return out
 		}
 	}
 
