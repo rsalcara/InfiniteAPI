@@ -25,7 +25,7 @@
  * falls back to `signal_kv` on a typed-table miss so pre-migration rows keep
  * resolving. See that file for the full read/write policy.
  */
-import { jidDecode } from '../../WABinary'
+import { jidDecode, jidEncode, WAJIDDomains } from '../../WABinary'
 import type { ILogger } from '../logger'
 import type { JidMapBackend } from './lid-mapping-backend'
 import {
@@ -356,20 +356,53 @@ export class SignalTypedSourceStore {
 	}
 
 	/**
-	 * Resolves an `identity-key` id (a raw jid string) into the structured
-	 * `identities` key for a WRITE. `recipient_id` is the local `jid` row id,
-	 * resolve-or-created via the shared JidMapBackend (storing an identity for
-	 * a new contact must materialize its jid row, same as the mirror);
-	 * `recipient_type` is 0=PN / 1=LID from the jid's domain, `device_id` from
-	 * the jid. Returns `null` when the jid can't be decoded.
+	 * Parses an `identity-key` id into `{ jid, recipientType, deviceId }`.
+	 *
+	 * The id arrives as a libsignal PROTOCOL ADDRESS (`user_domainType.device`,
+	 * e.g. `46802258641027_1.0`) — the SAME shape as a session id, NOT a jid.
+	 * `jidDecode` can't parse that (no `@server`), which is exactly why the typed
+	 * `identities` table was never populated: the write silently no-op'd and every
+	 * read fell back to `signal_kv`. So we parse it like sessions do
+	 * (`parseProtocolAddressId`) and reconstruct the canonical `user@server` jid
+	 * for the `jid`-table FK. A jid-shaped id (no device separator) still resolves
+	 * via the `jidDecode` fallback. Returns `null` when neither parses.
+	 */
+	private parseIdentityId(id: string): { jid: string; recipientType: number; deviceId: number | null } | null {
+		const addr = parseProtocolAddressId(id)
+		if (addr) {
+			const server = addr.domainType === WAJIDDomains.LID ? 'lid' : 's.whatsapp.net'
+			return {
+				jid: jidEncode(addr.user, server),
+				recipientType: domainTypeToAccountType(addr.domainType),
+				deviceId: addr.deviceId ?? null
+			}
+		}
+
+		const decoded = jidDecode(id)
+		if (decoded) {
+			return {
+				jid: id,
+				recipientType: domainTypeToAccountType(decoded.domainType ?? 0),
+				deviceId: decoded.device ?? null
+			}
+		}
+
+		return null
+	}
+
+	/**
+	 * Resolves an `identity-key` id into the structured `identities` key for a
+	 * WRITE. `recipient_id` is the local `jid` row id, resolve-or-created via the
+	 * shared JidMapBackend (storing an identity for a new contact must materialize
+	 * its jid row, same as the mirror). Returns `null` when the id can't be parsed.
 	 */
 	private identityKeyForWrite(id: string): IdentityKeyRow | null {
-		const decoded = jidDecode(id)
-		if (!decoded) return null
+		const parsed = this.parseIdentityId(id)
+		if (!parsed) return null
 		return {
-			recipientId: this.jidMap.resolveJidRowId(id),
-			recipientType: domainTypeToAccountType(decoded.domainType ?? 0),
-			deviceId: decoded.device ?? null
+			recipientId: this.jidMap.resolveJidRowId(parsed.jid),
+			recipientType: parsed.recipientType,
+			deviceId: parsed.deviceId
 		}
 	}
 
@@ -379,14 +412,14 @@ export class SignalTypedSourceStore {
 	 * seen — so a read never mutates `msgstore.db.jid`.
 	 */
 	private identityKeyForRead(id: string): IdentityKeyRow | null {
-		const decoded = jidDecode(id)
-		if (!decoded) return null
-		const recipientId = this.jidMap.lookupJidRowId(id)
+		const parsed = this.parseIdentityId(id)
+		if (!parsed) return null
+		const recipientId = this.jidMap.lookupJidRowId(parsed.jid)
 		if (recipientId === null) return null
 		return {
 			recipientId,
-			recipientType: domainTypeToAccountType(decoded.domainType ?? 0),
-			deviceId: decoded.device ?? null
+			recipientType: parsed.recipientType,
+			deviceId: parsed.deviceId
 		}
 	}
 
