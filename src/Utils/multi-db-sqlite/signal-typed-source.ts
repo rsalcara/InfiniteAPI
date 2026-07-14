@@ -25,11 +25,13 @@
  * falls back to `signal_kv` on a typed-table miss so pre-migration rows keep
  * resolving. See that file for the full read/write policy.
  */
-import { jidDecode } from '../../WABinary'
 import type { ILogger } from '../logger'
 import type { JidMapBackend } from './lid-mapping-backend'
+import type { IdentityKeyFallback } from './signal-id-parsing'
 import {
+	classifyIdentityKey,
 	domainTypeToAccountType,
+	parseIdentityKey,
 	parseNonNegativeInt,
 	parseProtocolAddressId,
 	parseSenderKeyId
@@ -297,9 +299,16 @@ export class SignalTypedSourceStore {
 				// Write path: resolve-or-create the jid row — storing an identity
 				// for a not-yet-seen contact must materialize its jid row (same
 				// as the mirror does).
-				const key = this.identityKeyForWrite(id)
-				if (!key) return this.warnUnparsed(type, id)
-				this.backend.putIdentity(key, record)
+				const parsed = classifyIdentityKey(id)
+				if (parsed.kind === 'fallback') return this.warnIdentityFallback(id, parsed)
+				this.backend.putIdentity(
+					{
+						recipientId: this.jidMap.resolveJidRowId(parsed.key.jid),
+						recipientType: parsed.key.recipientType,
+						deviceId: parsed.key.deviceId
+					},
+					record
+				)
 				return
 			}
 		}
@@ -356,37 +365,20 @@ export class SignalTypedSourceStore {
 	}
 
 	/**
-	 * Resolves an `identity-key` id (a raw jid string) into the structured
-	 * `identities` key for a WRITE. `recipient_id` is the local `jid` row id,
-	 * resolve-or-created via the shared JidMapBackend (storing an identity for
-	 * a new contact must materialize its jid row, same as the mirror);
-	 * `recipient_type` is 0=PN / 1=LID from the jid's domain, `device_id` from
-	 * the jid. Returns `null` when the jid can't be decoded.
-	 */
-	private identityKeyForWrite(id: string): IdentityKeyRow | null {
-		const decoded = jidDecode(id)
-		if (!decoded) return null
-		return {
-			recipientId: this.jidMap.resolveJidRowId(id),
-			recipientType: domainTypeToAccountType(decoded.domainType ?? 0),
-			deviceId: decoded.device ?? null
-		}
-	}
-
-	/**
-	 * Read-only variant of {@link identityKeyForWrite} for get/del: resolves
-	 * the jid row id via a pure lookup, returning `null` if the jid was never
-	 * seen — so a read never mutates `msgstore.db.jid`.
+	 * Read-only identity-key resolution for get/del: resolves the jid row id via
+	 * a pure lookup, returning `null` if the id is deliberately left to
+	 * signal_kv or the jid was never seen — so a read never mutates
+	 * `msgstore.db.jid`.
 	 */
 	private identityKeyForRead(id: string): IdentityKeyRow | null {
-		const decoded = jidDecode(id)
-		if (!decoded) return null
-		const recipientId = this.jidMap.lookupJidRowId(id)
+		const parsed = parseIdentityKey(id)
+		if (!parsed) return null
+		const recipientId = this.jidMap.lookupJidRowId(parsed.jid)
 		if (recipientId === null) return null
 		return {
 			recipientId,
-			recipientType: domainTypeToAccountType(decoded.domainType ?? 0),
-			deviceId: decoded.device ?? null
+			recipientType: parsed.recipientType,
+			deviceId: parsed.deviceId
 		}
 	}
 
@@ -394,6 +386,24 @@ export class SignalTypedSourceStore {
 		this.logger?.debug?.(
 			{ type, id },
 			'multi-db-sqlite: could not parse id for typed signal store, signal_kv still written'
+		)
+	}
+
+	/**
+	 * Identity-key writes can skip the typed table because the id is unparseable,
+	 * hosted, has an unknown domain, or uses an unsupported jid server. Preserve
+	 * that exact reason as structured context instead of collapsing expected
+	 * hosted fallback and malformed input into the same generic warning.
+	 */
+	private warnIdentityFallback(id: string, fallback: IdentityKeyFallback): void {
+		this.logger?.debug?.(
+			{
+				id,
+				reason: fallback.reason,
+				domainType: fallback.domainType,
+				server: fallback.server
+			},
+			'multi-db-sqlite: identity-key not mapped to a typed row, signal_kv still written'
 		)
 	}
 }

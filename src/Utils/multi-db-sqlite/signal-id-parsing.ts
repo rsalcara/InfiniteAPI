@@ -16,15 +16,16 @@
  *     `"${groupId}::${sender.id}::${sender.deviceId}"` — `sender.id` is the
  *     SAME `signalUser` shape as above, accessed as a property (not through
  *     `.toString()`), so it is NOT dot-encoded with the device id here.
- *   - `identity-key` id is a plain jid string (`jidDecode`-able directly) —
- *     no ProtocolAddress involved.
+ *   - `identity-key` id is ALSO a `ProtocolAddress.toString()` (`signalUser.
+ *     deviceId`, e.g. `46802258641027_1.0`), NOT a plain jid — libsignal keys
+ *     identities by protocol address, same as sessions. `jidDecode` can't parse
+ *     it (no `@server`); use {@link parseIdentityKey}.
  *
- * Only used to build a BEST-EFFORT MIRROR into the typed axolotl.db tables
- * (`sessions`/`sender_keys`/`identities`) — `axolotl.db.signal_kv` stays the
- * one source libsignal actually reads from. A parse miss here only means a
- * stale/missing mirror row, never a crypto-affecting outcome.
+ * A parse miss here only means the value resolves from `axolotl.db.signal_kv`
+ * (the source libsignal actually reads from) via the read-time fallback — never
+ * a crypto-affecting outcome.
  */
-import { WAJIDDomains } from '../../WABinary'
+import { jidDecode, jidEncode, WAJIDDomains } from '../../WABinary/jid-utils'
 
 /** Real Android's `recipient_account_type`/`recipient_type` columns are binary: 0=PN, 1=LID. */
 export type AccountType = 0 | 1
@@ -110,4 +111,98 @@ export function parseSenderKeyId(id: string): ParsedSenderKeyId | null {
 	if (!parsedUser) return null
 
 	return { groupId, sender: { ...parsedUser, deviceId } }
+}
+
+export type ParsedIdentityKey = { jid: string; recipientType: AccountType; deviceId: number | null }
+
+export type IdentityKeyFallbackReason = 'unparseable' | 'hosted-domain' | 'unknown-domain' | 'unsupported-jid-server'
+
+export type IdentityKeyFallback = {
+	kind: 'fallback'
+	reason: IdentityKeyFallbackReason
+	domainType?: number
+	server?: string
+}
+
+export type IdentityKeyParseResult = { kind: 'typed'; key: ParsedIdentityKey } | IdentityKeyFallback
+
+/**
+ * Parses an `identity-key` id into the structured `identities` key. Like a
+ * session id, this is a libsignal PROTOCOL ADDRESS (`signalUser.deviceId`), NOT a
+ * plain jid — so we parse it the same way and reconstruct the canonical
+ * `user@server` jid for the `jid`-table FK (a jid-shaped id, with no device
+ * separator, still resolves via the `jidDecode` fallback).
+ *
+ * ONLY PN and LID are mapped into the typed table; HOSTED / HOSTED_LID and any
+ * unknown domain return a classified fallback so they resolve via `signal_kv`.
+ * This is DELIBERATE and load-bearing: their `recipient_type`/server semantics
+ * aren't confirmed against real Android, and reconstructing a hosted id onto a
+ * shared server (`s.whatsapp.net`) would COLLIDE with a real PN identity on the
+ * `(recipient_id, recipient_type, device_id)` key — the upsert could then
+ * overwrite the PN public key, and a later PN read would hand back the wrong
+ * (hosted) key material as a typed hit. Leaving hosted to signal_kv is correct.
+ */
+export function classifyIdentityKey(id: string): IdentityKeyParseResult {
+	const addr = parseProtocolAddressId(id)
+	if (addr) {
+		if (!addr.user) return { kind: 'fallback', reason: 'unparseable' }
+
+		if (addr.domainType === WAJIDDomains.WHATSAPP) {
+			return {
+				kind: 'typed',
+				key: { jid: jidEncode(addr.user, 's.whatsapp.net'), recipientType: 0, deviceId: addr.deviceId }
+			}
+		}
+
+		if (addr.domainType === WAJIDDomains.LID) {
+			return {
+				kind: 'typed',
+				key: { jid: jidEncode(addr.user, 'lid'), recipientType: 1, deviceId: addr.deviceId }
+			}
+		}
+
+		if (addr.domainType === WAJIDDomains.HOSTED || addr.domainType === WAJIDDomains.HOSTED_LID) {
+			return { kind: 'fallback', reason: 'hosted-domain', domainType: addr.domainType }
+		}
+
+		return { kind: 'fallback', reason: 'unknown-domain', domainType: addr.domainType }
+	}
+
+	const decoded = jidDecode(id)
+	if (!decoded?.user) return { kind: 'fallback', reason: 'unparseable' }
+
+	const domainType = decoded.domainType ?? WAJIDDomains.WHATSAPP
+	if (decoded.server === 'hosted' || decoded.server === 'hosted.lid') {
+		return { kind: 'fallback', reason: 'hosted-domain', domainType, server: decoded.server }
+	}
+
+	if (decoded.server === 's.whatsapp.net') {
+		if (domainType !== WAJIDDomains.WHATSAPP) {
+			return { kind: 'fallback', reason: 'unknown-domain', domainType, server: decoded.server }
+		}
+
+		return {
+			kind: 'typed',
+			key: { jid: jidEncode(decoded.user, 's.whatsapp.net'), recipientType: 0, deviceId: decoded.device ?? null }
+		}
+	}
+
+	if (decoded.server === 'lid') {
+		return {
+			kind: 'typed',
+			key: { jid: jidEncode(decoded.user, 'lid'), recipientType: 1, deviceId: decoded.device ?? null }
+		}
+	}
+
+	// jidDecode intentionally accepts arbitrary `@server` values and defaults
+	// their domainType to WHATSAPP. Never use that default to canonicalize an
+	// unknown server onto s.whatsapp.net: doing so would let (for example)
+	// `123@g.us` overwrite the typed identity for `123@s.whatsapp.net`.
+	return { kind: 'fallback', reason: 'unsupported-jid-server', domainType, server: decoded.server }
+}
+
+/** Compatibility helper for callers that only need a typed key or a miss. */
+export function parseIdentityKey(id: string): ParsedIdentityKey | null {
+	const result = classifyIdentityKey(id)
+	return result.kind === 'typed' ? result.key : null
 }

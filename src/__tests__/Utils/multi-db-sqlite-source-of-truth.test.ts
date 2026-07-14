@@ -22,6 +22,7 @@ import { join } from 'path'
 import type { KeyPair, SignalDataTypeMap } from '../../Types'
 import type { ILogger } from '../../Utils/logger'
 import { useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
+import { WAJIDDomains } from '../../WABinary'
 
 const sess = (b: number): SignalDataTypeMap['session'] => Buffer.from([b]) as Uint8Array
 const keyPair = (pub: number, priv: number): KeyPair => ({
@@ -316,5 +317,62 @@ describe('useMultiDbSqliteAuthState — signalSourceOfTruth', () => {
 		expect(fallbackLog).toBeDefined()
 		expect((fallbackLog!.obj as { cumulativeFallbacks: number }).cumulativeFallbacks).toBeGreaterThanOrEqual(1)
 		second.close()
+	})
+
+	it('keeps hosted/unsupported identities in signal_kv without overwriting the typed PN identity', async () => {
+		const logger = makeRecordingLogger()
+		const { store, state, close } = await useMultiDbSqliteAuthState({
+			sessionDir: dir,
+			signalSourceOfTruth: true,
+			logger
+		})
+		const user = '123456789'
+		const pn = `${user}.0`
+		const hosted = `${user}_${WAJIDDomains.HOSTED}.0`
+		const unsupportedServer = `${user}@g.us`
+
+		await state.keys.set({
+			'identity-key': {
+				[pn]: Buffer.from([0xa1]) as Uint8Array,
+				[hosted]: Buffer.from([0xb2]) as Uint8Array,
+				[unsupportedServer]: Buffer.from([0xc3]) as Uint8Array
+			}
+		})
+
+		const typedRows = store.handle('axolotl.db').prepare('SELECT COUNT(*) AS n FROM identities').get() as {
+			n: number
+		}
+		expect(typedRows.n).toBe(1)
+
+		const kvRows = store
+			.handle('axolotl.db')
+			.prepare("SELECT id FROM signal_kv WHERE type = 'identity-key' ORDER BY id")
+			.all() as Array<{ id: string }>
+		expect(kvRows.map(row => row.id)).toEqual([hosted, pn, unsupportedServer].sort())
+
+		const got = await state.keys.get('identity-key', [pn, hosted, unsupportedServer])
+		expect(Buffer.from(got[pn] as Uint8Array).toString('hex')).toBe('a1')
+		expect(Buffer.from(got[hosted] as Uint8Array).toString('hex')).toBe('b2')
+		expect(Buffer.from(got[unsupportedServer] as Uint8Array).toString('hex')).toBe('c3')
+
+		const writeFallback = logger.debugCalls.find(
+			call => call.msg === 'multi-db-sqlite: identity-key not mapped to a typed row, signal_kv still written'
+		)
+		expect(writeFallback?.obj).toMatchObject({
+			id: hosted,
+			reason: 'hosted-domain',
+			domainType: WAJIDDomains.HOSTED
+		})
+		const unsupportedFallback = logger.debugCalls.find(
+			call =>
+				call.msg === 'multi-db-sqlite: identity-key not mapped to a typed row, signal_kv still written' &&
+				(call.obj as { id?: string }).id === unsupportedServer
+		)
+		expect(unsupportedFallback?.obj).toMatchObject({
+			id: unsupportedServer,
+			reason: 'unsupported-jid-server',
+			server: 'g.us'
+		})
+		close()
 	})
 })
