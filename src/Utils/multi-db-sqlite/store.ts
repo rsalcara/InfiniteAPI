@@ -220,16 +220,18 @@ type LockConnection = { pragma: (p: string) => unknown; exec: (sql: string) => u
  * (cross-process + same-process exclusion + auto-release on SIGKILL) on overlay
  * and 9p volumes.
  *
+ * Legacy upgrade: pre-upgrade builds wrote a JSON pidfile at this same path.
+ * Opened as a SQLite db it raises `SQLITE_NOTADB`; we FAIL CLOSED (throw an
+ * actionable error) rather than delete it — see the handler below.
+ *
  * Caveat (inherent to any advisory lock): cross-process exclusion relies on the
  * filesystem honoring POSIX locks. The correct deployment is ONE sessionDir per
  * instance — never a session shared across processes.
  */
 const acquireSessionLock = (
 	Database: DatabaseConstructor,
-	fs: typeof import('node:fs'),
 	path: typeof import('node:path'),
-	sessionDir: string,
-	logger?: ILogger
+	sessionDir: string
 ): (() => void) => {
 	const lockPath = path.join(sessionDir, SESSION_LOCK_FILE)
 
@@ -267,25 +269,24 @@ const acquireSessionLock = (
 
 		if (code !== 'SQLITE_NOTADB') throw err
 
-		// Legacy migration: pre-upgrade builds wrote a JSON `.multi-db-sqlite.lock`
-		// (a pidfile), which is not a SQLite database. A JSON file here is a leftover
-		// from the old mechanism; replace it with the SQLite lock. (A concurrent OLD
-		// instance would coordinate via the pidfile, not this — mixed old/new on the
-		// SAME sessionDir must not be run; the correct practice is one instance per
-		// sessionDir.)
-		logger?.warn?.({ sessionDir }, 'multi-db-sqlite: replacing a legacy (JSON) session lock file with the SQLite lock')
-		try {
-			fs.unlinkSync(lockPath)
-		} catch (unlinkErr) {
-			if ((unlinkErr as NodeJS.ErrnoException).code !== 'ENOENT') throw unlinkErr
-		}
-
-		try {
-			lockDb = tryAcquire()
-		} catch (retryErr) {
-			if ((retryErr as NodeJS.ErrnoException).code === 'SQLITE_BUSY') throw busyError()
-			throw retryErr
-		}
+		// FAIL CLOSED on a legacy JSON pidfile (pre-upgrade builds wrote one at this
+		// same path; it is not a SQLite db). We do NOT delete it automatically:
+		//   - it may belong to an OLD version STILL RUNNING on this sessionDir, and a
+		//     silent delete would drop that instance's mutual exclusion (both would
+		//     then write the same DBs → corruption); and
+		//   - two NEW processes hitting the stale file would race on delete→create
+		//     and end up holding EXCLUSIVE on different inodes at the same path (an
+		//     `unlink`+recreate is not an atomic ownership handoff).
+		// A stale JSON only lingers after an OLD version CRASHED (a clean shutdown
+		// removes its own pidfile), so this is a one-time, operator-visible upgrade
+		// step: stop old instances and remove the file. The new SQLite lock then
+		// reuses this path.
+		throw new Error(
+			`MultiDbSqliteStore: found a legacy JSON lock file at ${lockPath}. A previous version ` +
+				`used a different (pidfile) lock format. Stop any old instances still using this sessionDir ` +
+				`and delete this file to finish upgrading — it is deliberately NOT removed automatically, to ` +
+				`avoid dropping a lock a live old instance may still hold.`
+		)
 	}
 
 	return () => {
@@ -411,7 +412,7 @@ export class MultiDbSqliteStore {
 		fs.mkdirSync(this.opts.sessionDir, { recursive: true })
 
 		const Database = await loadBetterSqlite3()
-		this.releaseSessionLock = acquireSessionLock(Database, fs, path, this.opts.sessionDir, this.opts.logger)
+		this.releaseSessionLock = acquireSessionLock(Database, path, this.opts.sessionDir)
 		const extra = this.opts.extraPragmas ?? []
 
 		// On partial-initialization failure (bad extraPragma entry, missing

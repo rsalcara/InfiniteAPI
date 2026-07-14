@@ -5,13 +5,28 @@
  * restarts (audit #627/#628/#633). A persistent (source-of-truth) table must
  * survive the reopen — proving the prune is scoped, not a blanket wipe.
  */
-import { writeFileSync } from 'fs'
+import { spawn } from 'child_process'
+import { readFileSync, writeFileSync } from 'fs'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { MultiDbSqliteStore } from '../../Utils/multi-db-sqlite'
 
 const LOCK_FILE = '.multi-db-sqlite.lock'
+
+// Standalone holder: locks the SAME lock file the store uses, via a raw
+// better-sqlite3 `BEGIN EXCLUSIVE`, in a SEPARATE OS process. Signals `HELD` on
+// stdout, then holds until killed. Used to prove cross-process exclusion +
+// auto-release on death against a real, independent process.
+const HOLDER_SCRIPT = `
+const Database = require('better-sqlite3')
+const db = new Database(process.env.LOCK_PATH)
+db.pragma('busy_timeout = 0')
+db.pragma('journal_mode = DELETE')
+db.exec('BEGIN EXCLUSIVE')
+process.stdout.write('HELD')
+setInterval(() => {}, 100000)
+`
 
 describe('MultiDbSqliteStore startup prune', () => {
 	let dir: string
@@ -85,18 +100,21 @@ describe('MultiDbSqliteStore startup prune', () => {
 	})
 
 	// The session lock is an OS-held EXCLUSIVE SQLite lock. While one store holds
-	// it, a SECOND open on the same sessionDir must be REFUSED — no reclaim, no
-	// startup-prune clobbering the first store's in-flight rows. (SQLite's
-	// in-process lock coordination makes this deterministic same-process; the same
-	// fcntl lock also excludes other processes/containers — validated separately
-	// on overlay + 9p, incl. auto-release on SIGKILL, which a unit test can't
-	// portably kill.)
-	it('refuses a second store while the first holds the lock (no reclaim / no theft)', async () => {
+	// it, a SECOND open on the same sessionDir must be REFUSED — no reclaim. And
+	// because the refusal happens at lock acquisition, BEFORE the store opens the
+	// DBs and runs its startup-prune, the first store's in-flight rows are never
+	// touched (the `lock → prune` ordering, guarded by the media_job sentinel).
+	it('refuses a second store and does NOT prune the first store in-flight rows', async () => {
 		const first = new MultiDbSqliteStore({ sessionDir: dir })
 		await first.open()
+		first.handle('media.db').prepare('INSERT INTO media_job (uuid, job_type) VALUES (?, ?)').run('LIVE', 1)
+
 		const second = new MultiDbSqliteStore({ sessionDir: dir })
 		try {
 			await expect(second.open()).rejects.toThrow(/locked by another live store/)
+			// The second open never reached its prune → the first store's live
+			// media_job survives.
+			expect(count(first, 'media.db', 'media_job')).toBe(1)
 		} finally {
 			second.close()
 			first.close()
@@ -120,17 +138,61 @@ describe('MultiDbSqliteStore startup prune', () => {
 		}
 	})
 
-	// Migration: pre-upgrade builds wrote a JSON pidfile at the same path. Opened
-	// as a SQLite db it raises SQLITE_NOTADB; the store must replace it and take
-	// the lock, not crash. (A stale legacy file is the common upgrade case.)
-	it('replaces a legacy JSON pidfile lock and opens', async () => {
-		writeFileSync(join(dir, LOCK_FILE), JSON.stringify({ pid: 1, token: 'legacy' }))
+	// Legacy upgrade: a pre-upgrade build wrote a JSON pidfile at the same path.
+	// Opened as a SQLite db it raises SQLITE_NOTADB. We FAIL CLOSED (throw an
+	// actionable error) rather than delete it — a silent delete could drop a lock
+	// a live old instance still holds, and two migrators could race on
+	// delete→create. The operator removes the stale file to finish upgrading.
+	it('fails closed on a legacy JSON pidfile lock (does not delete it)', async () => {
+		const legacy = JSON.stringify({ pid: 1, token: 'legacy' })
+		writeFileSync(join(dir, LOCK_FILE), legacy)
 		const store = new MultiDbSqliteStore({ sessionDir: dir })
-		await expect(store.open()).resolves.toBeUndefined()
-		try {
-			expect(count(store, 'msgstore.db', 'jid')).toBe(0)
-		} finally {
-			store.close()
-		}
+		await expect(store.open()).rejects.toThrow(/legacy JSON lock file/)
+		// The legacy file is left intact (not silently removed).
+		expect(readFileSync(join(dir, LOCK_FILE), 'utf8')).toBe(legacy)
 	})
+
+	// Cross-process exclusion + auto-release on death, against a REAL independent
+	// process (raw better-sqlite3 holder). A store cannot open while the holder is
+	// alive; once the holder is SIGKILLed, the kernel releases the lock and a store
+	// opens cleanly — no pidfile liveness guessing.
+	it('excludes another live process and recovers after its death (SIGKILL)', async () => {
+		const lockPath = join(dir, LOCK_FILE)
+		const holder = spawn(process.execPath, ['-e', HOLDER_SCRIPT], {
+			env: { ...process.env, LOCK_PATH: lockPath },
+			stdio: ['ignore', 'pipe', 'ignore']
+		})
+		try {
+			await new Promise<void>((resolve, reject) => {
+				const t = setTimeout(() => reject(new Error('holder did not signal HELD in time')), 15000)
+				holder.stdout!.on('data', chunk => {
+					if (String(chunk).includes('HELD')) {
+						clearTimeout(t)
+						resolve()
+					}
+				})
+				holder.once('exit', () => {
+					clearTimeout(t)
+					reject(new Error('holder exited before acquiring the lock'))
+				})
+			})
+
+			// Holder is alive and holds the lock → a store must be refused.
+			const blocked = new MultiDbSqliteStore({ sessionDir: dir })
+			await expect(blocked.open()).rejects.toThrow(/locked by another live store/)
+			blocked.close()
+
+			// Kill the holder abruptly; the OS releases its lock on process death.
+			const exited = new Promise<void>(resolve => holder.once('exit', () => resolve()))
+			holder.kill('SIGKILL')
+			await exited
+			await new Promise(resolve => setTimeout(resolve, 300)) // let the OS reap the fd/lock
+
+			const recovered = new MultiDbSqliteStore({ sessionDir: dir })
+			await expect(recovered.open()).resolves.toBeUndefined()
+			recovered.close()
+		} finally {
+			holder.kill('SIGKILL')
+		}
+	}, 30000)
 })
