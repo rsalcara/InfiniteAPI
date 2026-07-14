@@ -694,12 +694,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 * The server enforces three rules independently of this client:
 	 *   - Format: lowercase ASCII letters/digits/underscore, length 3-30
 	 *   - Uniqueness: returns `result: 'TAKEN'` if claimed
-	 *   - Phase gate: while `username_reservation_only_mode` is set
+	 *   - Rollout gate: while `username_reservation_only_mode` is set
 	 *     server-side, an existing RESERVED handle cannot be transitioned
 	 *     to ACTIVE — the mutation may succeed but the state stays
 	 *     RESERVED until the global toggle flips
 	 *
-	 * `reserved` defaults to `true` (current rollout phase). Override to
+	 * `reserved` defaults to `true` (current rollout state). Override to
 	 * `false` once the public ACTIVE flow opens.
 	 */
 	const setMyUsername = async (

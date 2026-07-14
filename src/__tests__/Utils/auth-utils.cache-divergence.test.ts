@@ -29,8 +29,8 @@ const silentLogger = (): ILogger =>
 	}) as unknown as ILogger
 
 describe('makeCacheableSignalKeyStore — cache divergence on store failure (H6)', () => {
-	// PR #453: flipped from `it.failing` — H6 is closed in our tree by Phase 8
-	// Batch 2 commit 756a83be2b (`fix(cache): close H6 cache divergence on
+	// PR #453: flipped from `it.failing` — H6 is closed in our tree by commit
+	// 756a83be2b (`fix(cache): close H6 cache divergence on
 	// durable-write failure`). `makeCacheableSignalKeyStore.set` now writes
 	// through to the durable store FIRST, then updates the cache only on success.
 	it('does not return uncommitted cache value after store.set throws', async () => {
