@@ -2,9 +2,8 @@
  * `useMultiDbSqliteAuthState` skeleton smoke test.
  *
  * Covers:
- *   - creates all 13 physical .db files (creds, axolotl, msgstore, wa, sync,
- *     media, companion_devices, chatsettings, location, payments, stickers,
- *     smb, status);
+ *   - creates all 11 physical .db files (creds, axolotl, msgstore, wa, sync,
+ *     media, companion_devices, chatsettings, location, stickers, status);
  *   - typed tables exist with expected names in the right .db files;
  *   - creds round-trip via creds.db;
  *   - signal data round-trip via axolotl.db.signal_kv in legacy/kill-switch
@@ -18,7 +17,7 @@
  *
  * Uses on-disk DBs in a tmp directory because the multi-file layout
  * requires real files (`:memory:` is per-connection and doesn't apply
- * across the 14 handles).
+ * across the 11 handles).
  */
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
@@ -48,7 +47,7 @@ describe('useMultiDbSqliteAuthState', () => {
 		await rm(dir, { recursive: true, force: true })
 	})
 
-	it('opens all 13 physical .db files on first open', async () => {
+	it('opens all 11 physical .db files on first open', async () => {
 		const { close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		const { promises: fs } = await import('fs')
 		const files = await fs.readdir(dir)
@@ -63,12 +62,13 @@ describe('useMultiDbSqliteAuthState', () => {
 				'companion_devices.db',
 				'chatsettings.db',
 				'location.db',
-				'payments.db',
 				'stickers.db',
-				'smb.db',
 				'status.db'
 			])
 		)
+		// Discontinued DBs must NOT be created anymore.
+		expect(files).not.toContain('payments.db')
+		expect(files).not.toContain('smb.db')
 		close()
 	})
 
