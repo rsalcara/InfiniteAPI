@@ -147,7 +147,7 @@ describe('MultiDbSqliteStore startup prune', () => {
 		const legacy = JSON.stringify({ pid: 1, token: 'legacy' })
 		writeFileSync(join(dir, LOCK_FILE), legacy)
 		const store = new MultiDbSqliteStore({ sessionDir: dir })
-		await expect(store.open()).rejects.toThrow(/legacy JSON lock file/)
+		await expect(store.open()).rejects.toThrow(/not a SQLite database/)
 		// The legacy file is left intact (not silently removed).
 		expect(readFileSync(join(dir, LOCK_FILE), 'utf8')).toBe(legacy)
 	})

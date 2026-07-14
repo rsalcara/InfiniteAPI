@@ -269,35 +269,32 @@ const acquireSessionLock = (
 
 		if (code !== 'SQLITE_NOTADB') throw err
 
-		// FAIL CLOSED on a legacy JSON pidfile (pre-upgrade builds wrote one at this
-		// same path; it is not a SQLite db). We do NOT delete it automatically:
+		// FAIL CLOSED on a lock file that is not a SQLite db — either a legacy JSON
+		// pidfile (pre-upgrade builds wrote one at this same path) or a corrupted
+		// file. We do NOT delete it automatically:
 		//   - it may belong to an OLD version STILL RUNNING on this sessionDir, and a
 		//     silent delete would drop that instance's mutual exclusion (both would
 		//     then write the same DBs → corruption); and
 		//   - two NEW processes hitting the stale file would race on delete→create
 		//     and end up holding EXCLUSIVE on different inodes at the same path (an
 		//     `unlink`+recreate is not an atomic ownership handoff).
-		// A stale JSON only lingers after an OLD version CRASHED (a clean shutdown
-		// removes its own pidfile), so this is a one-time, operator-visible upgrade
-		// step: stop old instances and remove the file. The new SQLite lock then
-		// reuses this path.
+		// A stale legacy JSON only lingers after an OLD version CRASHED (a clean
+		// shutdown removes its own pidfile), so this is a one-time, operator-visible
+		// upgrade step: stop old instances and remove the file. The new SQLite lock
+		// then reuses this path.
 		throw new Error(
-			`MultiDbSqliteStore: found a legacy JSON lock file at ${lockPath}. A previous version ` +
-				`used a different (pidfile) lock format. Stop any old instances still using this sessionDir ` +
-				`and delete this file to finish upgrading — it is deliberately NOT removed automatically, to ` +
-				`avoid dropping a lock a live old instance may still hold.`
+			`MultiDbSqliteStore: the session lock file at ${lockPath} is not a SQLite database ` +
+				`(a legacy JSON pidfile from a previous version, or a corrupted file). Stop any old ` +
+				`instances still using this sessionDir and delete this file to recover — it is deliberately ` +
+				`NOT removed automatically, to avoid dropping a lock a live old instance may still hold.`
 		)
 	}
 
-	return () => {
-		try {
-			// close() rolls back the held EXCLUSIVE transaction and releases the OS
-			// lock (and removes the leftover `-journal`).
-			lockDb.close()
-		} catch {
-			// best-effort release
-		}
-	}
+	// close() rolls back the held EXCLUSIVE transaction and releases the OS lock
+	// (and removes the leftover `-journal`). Not wrapped here: the sole caller,
+	// `unlockSession()`, already try/catches and logs — swallowing the error in
+	// this closure would just hide the real cause from that logger.
+	return () => lockDb.close()
 }
 
 type DatabaseConstructor = typeof import('better-sqlite3')
