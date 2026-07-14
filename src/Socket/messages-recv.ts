@@ -82,6 +82,7 @@ import {
 	SignalTypedBackend,
 	StatusBackend
 } from '../Utils/multi-db-sqlite'
+import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
 import {
 	metrics,
@@ -188,18 +189,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
-	const initOptionalMirror = <T>(mirror: string, fallback: string, factory: () => T): T | undefined => {
-		if (!config.multiDbStore) return undefined
-		try {
-			return factory()
-		} catch (err) {
-			logger.warn(
-				{ err, mirror, primary: 'multi_db_sqlite', fallback, reason: err instanceof Error ? err.message : String(err) },
-				'multi-db-sqlite: optional receive mirror initialization failed; legacy path remains active'
-			)
-			return undefined
-		}
-	}
+	const initOptionalMirror = <T>(mirror: string, fallback: string, factory: () => T): T | undefined =>
+		initOptionalMirrorBase(config.multiDbStore, logger, mirror, fallback, factory)
 
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
 	const retryMutex = makeMutex()

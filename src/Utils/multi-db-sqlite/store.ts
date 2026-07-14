@@ -129,12 +129,18 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 		},
 		{
 			version: 2,
-			name: 'deduplicate poll selections and enforce natural key',
+			name: 'deduplicate poll selections, repair totals, and enforce natural key',
 			sql: `
 				DELETE FROM message_add_on_poll_vote_selected_option
 				WHERE _id NOT IN (
 					SELECT MIN(_id) FROM message_add_on_poll_vote_selected_option
 					GROUP BY message_add_on_row_id, message_poll_option_id
+				);
+				UPDATE message_poll_option
+				SET vote_total = (
+					SELECT COUNT(*)
+					FROM message_add_on_poll_vote_selected_option selected
+					WHERE selected.message_poll_option_id = message_poll_option._id
 				);
 				CREATE UNIQUE INDEX IF NOT EXISTS message_add_on_poll_vote_selected_option_unique_idx
 				ON message_add_on_poll_vote_selected_option (message_add_on_row_id, message_poll_option_id);
@@ -398,17 +404,27 @@ export class MultiDbSqliteStore {
 
 	async open(): Promise<void> {
 		if (this.opened) return
+		const requestedGeneration = this.openGeneration
 		// Concurrency-safe open: if a second caller hits open() while the first
 		// is still inside the async init below, return the in-flight promise so
 		// both end up sharing the same set of handles rather than racing to
 		// create duplicates.
-		if (this.openInFlight) return this.openInFlight
-
-		this.openInFlight = this.runOpen()
-		try {
+		if (this.openInFlight) {
 			await this.openInFlight
+			// close() may have cancelled the promise we just joined. Only a caller
+			// that started after that close (and therefore captured the current
+			// generation) should retry; callers from the cancelled generation keep
+			// the explicit close() postcondition and resolve with the store closed.
+			if (!this.opened && this.openGeneration === requestedGeneration) return this.open()
+			return
+		}
+
+		const inFlight = this.runOpen()
+		this.openInFlight = inFlight
+		try {
+			await inFlight
 		} finally {
-			this.openInFlight = undefined
+			if (this.openInFlight === inFlight) this.openInFlight = undefined
 		}
 	}
 

@@ -40,9 +40,10 @@ type DebugLogger = { debug?: (obj: unknown, msg: string) => void }
 /**
  * The device cache is keyed by a bare `user` string (no server), but the
  * typed `user_device` tables key by a `jid` row (which needs `user@server`).
- * A given bare user belongs to exactly one server, so on read we probe the
- * two real device-bearing domains; whichever has a fresh typed row wins, and
- * anything exotic (hosted, etc.) simply falls back to the JSON mirror.
+ * A given bare user belongs to exactly one server, so on read we probe every
+ * device-bearing domain currently emitted by WA (PN, LID and both hosted
+ * variants); whichever has a fresh typed row wins. The JSON mirror remains
+ * the fallback for a miss, expiry, malformed data, or a future unknown domain.
  */
 const CANDIDATE_SERVERS = ['s.whatsapp.net', 'lid', 'hosted', 'hosted.lid'] as const
 

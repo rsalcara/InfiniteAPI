@@ -254,6 +254,31 @@ describe('msgstore.db message-store backends', () => {
 			})
 		})
 
+		it('keeps the newest timestamp when orphan receipts replay out of order', () => {
+			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const receipts = new ReceiptBackend(store.handle('msgstore.db'), jidMap, messageStore)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			for (const timestamp of [1_500, 1_200]) {
+				receipts.recordUserReceipt({
+					chatJid,
+					fromMe: true,
+					keyId: 'LATE-ORDERED',
+					receiptUserJid: chatJid,
+					kind: 'read',
+					timestamp
+				})
+			}
+			const messageRowId = messageStore.recordMessage({
+				chatJid,
+				fromMe: true,
+				keyId: 'LATE-ORDERED',
+				timestamp: 1_000
+			})
+
+			expect(receipts.replayOrphaned(chatJid, true, 'LATE-ORDERED')).toBe(2)
+			expect(receipts.listUserReceipts(messageRowId)[0]).toMatchObject({ read_timestamp: 1_500 })
+		})
+
 		it('routes a device receipt for an add-on (reaction) to message_add_on_receipt_device', () => {
 			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
 			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap, messageStore)

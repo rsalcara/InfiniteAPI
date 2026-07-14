@@ -89,6 +89,7 @@ import {
 	WaContactsBackend
 } from '../Utils/multi-db-sqlite'
 import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
+import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import processMessage from '../Utils/process-message'
 import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
 import {
@@ -186,18 +187,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 * smells like a custom client.
 	 */
 	const getKnownLIDForPN = signalRepository.lidMapping.getKnownLIDForPN.bind(signalRepository.lidMapping)
-	const initOptionalMirror = <T>(mirror: string, fallback: string, factory: () => T): T | undefined => {
-		if (!config.multiDbStore) return undefined
-		try {
-			return factory()
-		} catch (err) {
-			logger.warn(
-				{ err, mirror, primary: 'multi_db_sqlite', fallback, reason: err instanceof Error ? err.message : String(err) },
-				'multi-db-sqlite: optional mirror initialization failed; legacy path remains active'
-			)
-			return undefined
-		}
-	}
+	const initOptionalMirror = <T>(mirror: string, fallback: string, factory: () => T): T | undefined =>
+		initOptionalMirrorBase(config.multiDbStore, logger, mirror, fallback, factory)
 
 	let privacySettings: { [_: string]: string } | undefined
 

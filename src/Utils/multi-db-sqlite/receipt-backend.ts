@@ -86,24 +86,35 @@ export class ReceiptBackend {
 			),
 			upsertUserReceiptDelivery: this.db.prepare(
 				'INSERT INTO receipt_user (message_row_id, receipt_user_jid_row_id, receipt_timestamp) VALUES (?, ?, ?) ' +
-					'ON CONFLICT(message_row_id, receipt_user_jid_row_id) DO UPDATE SET receipt_timestamp = excluded.receipt_timestamp'
+					'ON CONFLICT(message_row_id, receipt_user_jid_row_id) DO UPDATE SET receipt_timestamp = ' +
+					'CASE WHEN receipt_user.receipt_timestamp IS NULL OR excluded.receipt_timestamp > receipt_user.receipt_timestamp ' +
+					'THEN excluded.receipt_timestamp ELSE receipt_user.receipt_timestamp END'
 			),
 			upsertUserReceiptRead: this.db.prepare(
 				'INSERT INTO receipt_user (message_row_id, receipt_user_jid_row_id, read_timestamp) VALUES (?, ?, ?) ' +
-					'ON CONFLICT(message_row_id, receipt_user_jid_row_id) DO UPDATE SET read_timestamp = excluded.read_timestamp'
+					'ON CONFLICT(message_row_id, receipt_user_jid_row_id) DO UPDATE SET read_timestamp = ' +
+					'CASE WHEN receipt_user.read_timestamp IS NULL OR excluded.read_timestamp > receipt_user.read_timestamp ' +
+					'THEN excluded.read_timestamp ELSE receipt_user.read_timestamp END'
 			),
 			upsertUserReceiptPlayed: this.db.prepare(
 				'INSERT INTO receipt_user (message_row_id, receipt_user_jid_row_id, played_timestamp) VALUES (?, ?, ?) ' +
-					'ON CONFLICT(message_row_id, receipt_user_jid_row_id) DO UPDATE SET played_timestamp = excluded.played_timestamp'
+					'ON CONFLICT(message_row_id, receipt_user_jid_row_id) DO UPDATE SET played_timestamp = ' +
+					'CASE WHEN receipt_user.played_timestamp IS NULL OR excluded.played_timestamp > receipt_user.played_timestamp ' +
+					'THEN excluded.played_timestamp ELSE receipt_user.played_timestamp END'
 			),
 			upsertDeviceReceipt: this.db.prepare(
 				'INSERT INTO receipt_device (message_row_id, receipt_device_jid_row_id, receipt_device_timestamp) VALUES (?, ?, ?) ' +
-					'ON CONFLICT(message_row_id, receipt_device_jid_row_id) DO UPDATE SET receipt_device_timestamp = excluded.receipt_device_timestamp'
+					'ON CONFLICT(message_row_id, receipt_device_jid_row_id) DO UPDATE SET receipt_device_timestamp = ' +
+					'CASE WHEN receipt_device.receipt_device_timestamp IS NULL OR ' +
+					'excluded.receipt_device_timestamp > receipt_device.receipt_device_timestamp ' +
+					'THEN excluded.receipt_device_timestamp ELSE receipt_device.receipt_device_timestamp END'
 			),
 			upsertAddOnDeviceReceipt: this.db.prepare(
 				'INSERT INTO message_add_on_receipt_device (message_add_on_row_id, receipt_device_jid_row_id, receipt_device_timestamp) ' +
 					'VALUES (?, ?, ?) ON CONFLICT(message_add_on_row_id, receipt_device_jid_row_id) DO UPDATE SET ' +
-					'receipt_device_timestamp = excluded.receipt_device_timestamp'
+					'receipt_device_timestamp = CASE WHEN message_add_on_receipt_device.receipt_device_timestamp IS NULL OR ' +
+					'excluded.receipt_device_timestamp > message_add_on_receipt_device.receipt_device_timestamp ' +
+					'THEN excluded.receipt_device_timestamp ELSE message_add_on_receipt_device.receipt_device_timestamp END'
 			),
 			insertOrphaned: this.db.prepare(
 				'INSERT INTO receipt_orphaned (chat_row_id, from_me, key_id, receipt_device_jid_row_id, receipt_recipient_jid_row_id, status, timestamp) ' +
