@@ -6,12 +6,13 @@
  */
 import {
 	domainTypeToAccountType,
+	parseIdentityKey,
 	parseNonNegativeInt,
 	parseProtocolAddressId,
 	parseSenderKeyId,
 	parseSignalUser
 } from '../../Utils/multi-db-sqlite/signal-id-parsing'
-import { WAJIDDomains } from '../../WABinary'
+import { WAJIDDomains } from '../../WABinary/jid-utils'
 
 describe('parseNonNegativeInt', () => {
 	it('parses plain decimal non-negative integers', () => {
@@ -119,5 +120,61 @@ describe('parseSenderKeyId', () => {
 
 	it('returns null when the device id is not an integer', () => {
 		expect(parseSenderKeyId('group::user::notanumber')).toBeNull()
+	})
+})
+
+describe('parseIdentityKey', () => {
+	it('parses a PN protocol-address to a s.whatsapp.net jid, recipient_type 0', () => {
+		expect(parseIdentityKey('5511999999999.0')).toEqual({
+			jid: '5511999999999@s.whatsapp.net',
+			recipientType: 0,
+			deviceId: 0
+		})
+		// device is kept separate from the jid
+		expect(parseIdentityKey('5511999999999.3')).toEqual({
+			jid: '5511999999999@s.whatsapp.net',
+			recipientType: 0,
+			deviceId: 3
+		})
+	})
+
+	it('parses a LID protocol-address to a lid jid, recipient_type 1', () => {
+		expect(parseIdentityKey(`46802258641027_${WAJIDDomains.LID}.0`)).toEqual({
+			jid: '46802258641027@lid',
+			recipientType: 1,
+			deviceId: 0
+		})
+	})
+
+	// The load-bearing case (audit P1): HOSTED / HOSTED_LID must NOT be
+	// reconstructed onto a shared server — returning null sends them to the
+	// signal_kv fallback instead of colliding with a real PN identity.
+	it('returns null for HOSTED, HOSTED_LID, and unknown domains', () => {
+		expect(parseIdentityKey(`123_${WAJIDDomains.HOSTED}.0`)).toBeNull()
+		expect(parseIdentityKey(`123_${WAJIDDomains.HOSTED_LID}.0`)).toBeNull()
+		expect(parseIdentityKey('123_9999.0')).toBeNull() // unknown domainType
+	})
+
+	it('a PN and a LID for the same user never reconstruct to the same jid', () => {
+		const pn = parseIdentityKey('777.0')
+		const lid = parseIdentityKey(`777_${WAJIDDomains.LID}.0`)
+		expect(pn?.jid).not.toBe(lid?.jid) // s.whatsapp.net vs lid → no collision
+	})
+
+	it('falls back to jidDecode for a jid-shaped id (no device separator)', () => {
+		expect(parseIdentityKey('46802258641027@lid')).toEqual({
+			jid: '46802258641027@lid',
+			recipientType: 1,
+			deviceId: null
+		})
+		expect(parseIdentityKey('5511999999999@s.whatsapp.net')).toMatchObject({
+			jid: '5511999999999@s.whatsapp.net',
+			recipientType: 0
+		})
+	})
+
+	it('returns null for an unparseable id', () => {
+		expect(parseIdentityKey('totally-unparseable')).toBeNull()
+		expect(parseIdentityKey('')).toBeNull()
 	})
 })

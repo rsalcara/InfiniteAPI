@@ -88,4 +88,45 @@ describe('SignalTypedSourceStore identity typed-mirror (protocol-address ids)', 
 		expect(identityCount()).toBe(0)
 		expect(source.get('identity-key', 'totally-unparseable')).toBeNull()
 	})
+
+	// P1 (audit): HOSTED / HOSTED_LID must NOT be reconstructed onto a shared
+	// server (`s.whatsapp.net`) — that would collide with a real PN identity on
+	// the (recipient_id, recipient_type, device_id) key and let the hosted upsert
+	// overwrite the PN public key. They are left to the signal_kv fallback (null).
+	it('HOSTED / HOSTED_LID do not collide with a PN identity for the same user+device', () => {
+		const user = '123456789'
+		source.set('identity-key', `${user}.0`, 'PN-KEY') // WHATSAPP (PN)
+		source.set('identity-key', `${user}_${WAJIDDomains.HOSTED}.0`, 'HOSTED-KEY')
+		source.set('identity-key', `${user}_${WAJIDDomains.HOSTED_LID}.0`, 'HOSTED-LID-KEY')
+
+		// Only the PN identity is typed — hosted variants fall back to signal_kv.
+		expect(identityCount()).toBe(1)
+		// The PN key was NOT overwritten by a colliding hosted write.
+		expect(source.get('identity-key', `${user}.0`)).toBe('PN-KEY')
+		expect(source.get('identity-key', `${user}_${WAJIDDomains.HOSTED}.0`)).toBeNull()
+		expect(source.get('identity-key', `${user}_${WAJIDDomains.HOSTED_LID}.0`)).toBeNull()
+	})
+
+	// PN and LID for the same user+device are DISTINCT namespaces and must both
+	// be stored (different reconstructed servers → different jid rows).
+	it('PN and LID for the same user+device are stored as distinct identities', () => {
+		source.set('identity-key', '555.0', 'PN-KEY')
+		source.set('identity-key', `555_${WAJIDDomains.LID}.0`, 'LID-KEY')
+		expect(identityCount()).toBe(2)
+		expect(source.get('identity-key', '555.0')).toBe('PN-KEY')
+		expect(source.get('identity-key', `555_${WAJIDDomains.LID}.0`)).toBe('LID-KEY')
+	})
+
+	// P2 (audit): reads hit the typed table first, so a delete that failed to
+	// remove the typed row would shadow the signal_kv delete. del() must remove
+	// the typed identity for a protocol-address id.
+	it('del() removes the typed identity for a protocol-address id', () => {
+		const lid = `46802258641027_${WAJIDDomains.LID}.0`
+		source.set('identity-key', lid, 'PUBKEY-LID')
+		expect(identityCount()).toBe(1)
+
+		source.del('identity-key', lid)
+		expect(identityCount()).toBe(0)
+		expect(source.get('identity-key', lid)).toBeNull()
+	})
 })

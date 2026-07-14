@@ -25,11 +25,11 @@
  * falls back to `signal_kv` on a typed-table miss so pre-migration rows keep
  * resolving. See that file for the full read/write policy.
  */
-import { jidDecode, jidEncode, WAJIDDomains } from '../../WABinary'
 import type { ILogger } from '../logger'
 import type { JidMapBackend } from './lid-mapping-backend'
 import {
 	domainTypeToAccountType,
+	parseIdentityKey,
 	parseNonNegativeInt,
 	parseProtocolAddressId,
 	parseSenderKeyId
@@ -298,7 +298,7 @@ export class SignalTypedSourceStore {
 				// for a not-yet-seen contact must materialize its jid row (same
 				// as the mirror does).
 				const key = this.identityKeyForWrite(id)
-				if (!key) return this.warnUnparsed(type, id)
+				if (!key) return this.warnIdentityFallback(id)
 				this.backend.putIdentity(key, record)
 				return
 			}
@@ -356,48 +356,15 @@ export class SignalTypedSourceStore {
 	}
 
 	/**
-	 * Parses an `identity-key` id into `{ jid, recipientType, deviceId }`.
-	 *
-	 * The id arrives as a libsignal PROTOCOL ADDRESS (`user_domainType.device`,
-	 * e.g. `46802258641027_1.0`) — the SAME shape as a session id, NOT a jid.
-	 * `jidDecode` can't parse that (no `@server`), which is exactly why the typed
-	 * `identities` table was never populated: the write silently no-op'd and every
-	 * read fell back to `signal_kv`. So we parse it like sessions do
-	 * (`parseProtocolAddressId`) and reconstruct the canonical `user@server` jid
-	 * for the `jid`-table FK. A jid-shaped id (no device separator) still resolves
-	 * via the `jidDecode` fallback. Returns `null` when neither parses.
-	 */
-	private parseIdentityId(id: string): { jid: string; recipientType: number; deviceId: number | null } | null {
-		const addr = parseProtocolAddressId(id)
-		if (addr) {
-			const server = addr.domainType === WAJIDDomains.LID ? 'lid' : 's.whatsapp.net'
-			return {
-				jid: jidEncode(addr.user, server),
-				recipientType: domainTypeToAccountType(addr.domainType),
-				deviceId: addr.deviceId ?? null
-			}
-		}
-
-		const decoded = jidDecode(id)
-		if (decoded) {
-			return {
-				jid: id,
-				recipientType: domainTypeToAccountType(decoded.domainType ?? 0),
-				deviceId: decoded.device ?? null
-			}
-		}
-
-		return null
-	}
-
-	/**
 	 * Resolves an `identity-key` id into the structured `identities` key for a
 	 * WRITE. `recipient_id` is the local `jid` row id, resolve-or-created via the
 	 * shared JidMapBackend (storing an identity for a new contact must materialize
-	 * its jid row, same as the mirror). Returns `null` when the id can't be parsed.
+	 * its jid row, same as the mirror). Returns `null` when the id can't be parsed
+	 * into a PN/LID identity — see {@link parseIdentityKey} (hosted/unknown
+	 * deliberately fall back to `signal_kv`).
 	 */
 	private identityKeyForWrite(id: string): IdentityKeyRow | null {
-		const parsed = this.parseIdentityId(id)
+		const parsed = parseIdentityKey(id)
 		if (!parsed) return null
 		return {
 			recipientId: this.jidMap.resolveJidRowId(parsed.jid),
@@ -412,7 +379,7 @@ export class SignalTypedSourceStore {
 	 * seen — so a read never mutates `msgstore.db.jid`.
 	 */
 	private identityKeyForRead(id: string): IdentityKeyRow | null {
-		const parsed = this.parseIdentityId(id)
+		const parsed = parseIdentityKey(id)
 		if (!parsed) return null
 		const recipientId = this.jidMap.lookupJidRowId(parsed.jid)
 		if (recipientId === null) return null
@@ -427,6 +394,22 @@ export class SignalTypedSourceStore {
 		this.logger?.debug?.(
 			{ type, id },
 			'multi-db-sqlite: could not parse id for typed signal store, signal_kv still written'
+		)
+	}
+
+	/**
+	 * Identity-key writes have TWO reasons to skip the typed table, and neither is
+	 * an error: the id is genuinely unparseable, OR it decodes to a hosted/unknown
+	 * domain we deliberately do NOT reconstruct (its `recipient_type`/server
+	 * semantics aren't confirmed, and forcing it onto `s.whatsapp.net` would
+	 * collide with a real PN identity — see {@link parseIdentityKey}). Either way
+	 * `signal_kv` stays authoritative, so this is a debug-level observability line,
+	 * worded so a hosted skip doesn't read as a parse failure.
+	 */
+	private warnIdentityFallback(id: string): void {
+		this.logger?.debug?.(
+			{ id },
+			'multi-db-sqlite: identity-key not mapped to a typed row (unparseable, or a hosted/unknown domain deliberately left to signal_kv), signal_kv still written'
 		)
 	}
 }
