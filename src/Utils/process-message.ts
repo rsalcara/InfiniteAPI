@@ -874,7 +874,7 @@ const processMessage = async (
 						primary: 'multi_db_sqlite',
 						fallback: 'legacy_message_proto'
 					},
-					'multi-db-sqlite: interactive UI mirror fallback'
+					'multi-db-sqlite: message mirror fallback'
 				)
 			}
 		}
