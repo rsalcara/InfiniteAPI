@@ -88,8 +88,8 @@ import {
 	type StoredStarredStickerRow,
 	WaContactsBackend
 } from '../Utils/multi-db-sqlite'
-import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
+import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
 import processMessage from '../Utils/process-message'
 import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
 import {

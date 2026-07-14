@@ -268,6 +268,7 @@ describe('msgstore.db message-store backends', () => {
 					timestamp
 				})
 			}
+
 			const messageRowId = messageStore.recordMessage({
 				chatJid,
 				fromMe: true,
