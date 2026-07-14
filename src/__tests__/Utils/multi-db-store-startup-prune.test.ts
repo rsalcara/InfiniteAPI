@@ -138,6 +138,21 @@ describe('MultiDbSqliteStore startup prune', () => {
 		}
 	})
 
+	it('retries an open requested after close cancels an earlier in-flight open', async () => {
+		const store = new MultiDbSqliteStore({ sessionDir: dir })
+		const cancelledOpen = store.open()
+		store.close()
+		const reopened = store.open()
+
+		await expect(cancelledOpen).resolves.toBeUndefined()
+		await expect(reopened).resolves.toBeUndefined()
+		try {
+			expect(() => store.handle('msgstore.db')).not.toThrow()
+		} finally {
+			store.close()
+		}
+	})
+
 	// Legacy upgrade: a pre-upgrade build wrote a JSON pidfile at the same path.
 	// Opened as a SQLite db it raises SQLITE_NOTADB. We FAIL CLOSED (throw an
 	// actionable error) rather than delete it — a silent delete could drop a lock

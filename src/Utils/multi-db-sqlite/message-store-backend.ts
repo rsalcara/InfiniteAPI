@@ -182,7 +182,10 @@ export class MessageStoreBackend implements ChatRowResolver {
 			),
 			getChatRowIdByJidRowId: this.db.prepare('SELECT _id FROM chat WHERE jid_row_id = ?'),
 			updateChatAggregate: this.db.prepare(
-				'UPDATE chat SET last_message_row_id = ?, sort_timestamp = ?, last_message_sort_id = ?, ' +
+				'UPDATE chat SET ' +
+					'last_message_row_id = CASE WHEN ? >= COALESCE(sort_timestamp, -1) THEN ? ELSE last_message_row_id END, ' +
+					'sort_timestamp = MAX(COALESCE(sort_timestamp, 0), ?), ' +
+					'last_message_sort_id = CASE WHEN ? >= COALESCE(sort_timestamp, -1) THEN ? ELSE last_message_sort_id END, ' +
 					'unseen_message_count = COALESCE(unseen_message_count, 0) + ? WHERE _id = ?'
 			),
 			upsertMessage: this.db.prepare(
@@ -314,7 +317,9 @@ export class MessageStoreBackend implements ChatRowResolver {
 			}
 
 			this.stmts.updateChatAggregate.run(
+				input.timestamp ?? 0,
 				row._id,
+				input.timestamp ?? 0,
 				input.timestamp ?? 0,
 				input.timestamp ?? 0,
 				isNewMessage && input.incrementUnread ? 1 : 0,

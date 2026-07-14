@@ -530,6 +530,25 @@ describe('backends', () => {
 			expect(backend.listStatusesForSender('b@s.whatsapp.net').map(r => r.sort_id)).toEqual([1])
 		})
 
+		it('does not regress the last-status aggregate when older history arrives later', () => {
+			const backend = new StatusBackend(store.handle('status.db'), { pruneIntervalMs: Number.MAX_SAFE_INTEGER })
+			const sender = 'history@s.whatsapp.net'
+			backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'newer', timestamp: 2_000 })
+			backend.recordReceivedStatus({ senderUserJid: sender, uuid: 'older', timestamp: 1_000 })
+			const info = store
+				.handle('status.db')
+				.prepare(
+					'SELECT total_count, unread_count, last_status_sort_id, last_status_timestamp FROM status_info WHERE chat_jid = ?'
+				)
+				.get(sender)
+			expect(info).toMatchObject({
+				total_count: 2,
+				unread_count: 2,
+				last_status_sort_id: 1,
+				last_status_timestamp: 2_000
+			})
+		})
+
 		it('recordSeenReceipt resolves status_row_id by uuid and upserts on repeated views', () => {
 			const backend = new StatusBackend(store.handle('status.db'), { pruneIntervalMs: Number.MAX_SAFE_INTEGER })
 			backend.recordReceivedStatus({ senderUserJid: 'me@s.whatsapp.net', uuid: 'my-status-1', timestamp: 1_000 })

@@ -147,6 +147,7 @@ export class MessageAddOnBackend {
 		insertPollVoteSelectedOption: SqliteStatementLike
 		deletePollVoteSelectedOptions: SqliteStatementLike
 		incrementPollOptionVoteTotal: SqliteStatementLike
+		getPollOptionParent: SqliteStatementLike
 		upsertPoll: SqliteStatementLike
 		insertPollOption: SqliteStatementLike
 		getPollOptionRowId: SqliteStatementLike
@@ -201,6 +202,7 @@ export class MessageAddOnBackend {
 			incrementPollOptionVoteTotal: this.db.prepare(
 				'UPDATE message_poll_option SET vote_total = vote_total + ? WHERE _id = ?'
 			),
+			getPollOptionParent: this.db.prepare('SELECT message_row_id FROM message_poll_option WHERE _id = ?'),
 			upsertPoll: this.db.prepare(
 				'INSERT INTO message_poll (message_row_id, enc_key, selectable_options_count) VALUES (?, ?, ?) ' +
 					'ON CONFLICT(message_row_id) DO UPDATE SET enc_key = excluded.enc_key, ' +
@@ -290,6 +292,16 @@ export class MessageAddOnBackend {
 	 */
 	recordPollVote(input: RecordPollVoteInput): void {
 		this.db.transaction(() => {
+			const selectedOptionRowIds = [...new Set(input.selectedOptionRowIds)]
+			for (const optionRowId of selectedOptionRowIds) {
+				const option = this.stmts.getPollOptionParent.get(optionRowId) as { message_row_id: number } | undefined
+				if (option?.message_row_id !== input.parentMessageRowId) {
+					throw new Error(
+						`MessageAddOnBackend: poll option ${optionRowId} does not belong to parent message ${input.parentMessageRowId}`
+					)
+				}
+			}
+
 			const addOnRowId = this.upsertAddOnRow(input)
 			this.stmts.upsertPollVote.run(addOnRowId, input.senderTimestamp)
 
@@ -306,7 +318,7 @@ export class MessageAddOnBackend {
 			}
 
 			this.stmts.deletePollVoteSelectedOptions.run(addOnRowId)
-			for (const optionRowId of input.selectedOptionRowIds) {
+			for (const optionRowId of selectedOptionRowIds) {
 				this.stmts.insertPollVoteSelectedOption.run(addOnRowId, optionRowId)
 				this.stmts.incrementPollOptionVoteTotal.run(1, optionRowId)
 			}

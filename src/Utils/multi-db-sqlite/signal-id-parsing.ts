@@ -31,13 +31,15 @@ import { jidDecode, jidEncode, WAJIDDomains } from '../../WABinary/jid-utils'
 export type AccountType = 0 | 1
 
 /**
- * `WAJIDDomains.LID` maps to the real schema's `1`. Every other domain type
- * — including `HOSTED`/`HOSTED_LID`, which have no confirmed real-Android
- * capture for this column — collapses to `0`. This is a simplification,
- * not a confirmed mapping for hosted numbers; documented rather than
- * guessed as gospel.
+ * Only PN and LID have a confirmed mapping in the typed Android schema.
+ * Hosted and unknown domains must stay in `signal_kv`: collapsing them to
+ * PN would let their composite keys overwrite a legitimate PN row.
  */
-export const domainTypeToAccountType = (domainType: number): AccountType => (domainType === WAJIDDomains.LID ? 1 : 0)
+export const domainTypeToAccountType = (domainType: number): AccountType | null => {
+	if (domainType === WAJIDDomains.WHATSAPP) return 0
+	if (domainType === WAJIDDomains.LID) return 1
+	return null
+}
 
 export type ParsedSignalUser = {
 	user: string

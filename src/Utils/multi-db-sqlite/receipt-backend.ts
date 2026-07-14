@@ -26,6 +26,9 @@ import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 export type ReceiptKind = 'delivery' | 'read' | 'played'
 
+const ORPHAN_DEVICE_STATUS = 0
+const ORPHAN_USER_STATUS: Record<ReceiptKind, number> = { delivery: 1, read: 2, played: 3 }
+
 export type RecordUserReceiptInput = {
 	chatJid: string
 	fromMe: boolean
@@ -53,6 +56,8 @@ export class ReceiptBackend {
 		upsertDeviceReceipt: SqliteStatementLike
 		upsertAddOnDeviceReceipt: SqliteStatementLike
 		insertOrphaned: SqliteStatementLike
+		listOrphaned: SqliteStatementLike
+		deleteOrphaned: SqliteStatementLike
 		listUserReceipts: SqliteStatementLike
 		listDeviceReceipts: SqliteStatementLike
 	}
@@ -66,7 +71,9 @@ export class ReceiptBackend {
 		this.jidMap = jidMap
 		this.chatResolver = chatResolver
 		this.stmts = {
-			getMessageRowId: this.db.prepare('SELECT _id FROM message WHERE chat_row_id = ? AND from_me = ? AND key_id = ?'),
+			getMessageRowId: this.db.prepare(
+				'SELECT _id FROM message WHERE chat_row_id = ? AND from_me = ? AND key_id = ? ORDER BY _id DESC LIMIT 1'
+			),
 			// A receipt whose id matches a message_add_on (reaction / poll vote)
 			// rather than a main message — its device acks live in
 			// message_add_on_receipt_device, not receipt_device. Matched by
@@ -79,29 +86,45 @@ export class ReceiptBackend {
 			),
 			upsertUserReceiptDelivery: this.db.prepare(
 				'INSERT INTO receipt_user (message_row_id, receipt_user_jid_row_id, receipt_timestamp) VALUES (?, ?, ?) ' +
-					'ON CONFLICT(message_row_id, receipt_user_jid_row_id) DO UPDATE SET receipt_timestamp = excluded.receipt_timestamp'
+					'ON CONFLICT(message_row_id, receipt_user_jid_row_id) DO UPDATE SET receipt_timestamp = ' +
+					'CASE WHEN receipt_user.receipt_timestamp IS NULL OR excluded.receipt_timestamp > receipt_user.receipt_timestamp ' +
+					'THEN excluded.receipt_timestamp ELSE receipt_user.receipt_timestamp END'
 			),
 			upsertUserReceiptRead: this.db.prepare(
 				'INSERT INTO receipt_user (message_row_id, receipt_user_jid_row_id, read_timestamp) VALUES (?, ?, ?) ' +
-					'ON CONFLICT(message_row_id, receipt_user_jid_row_id) DO UPDATE SET read_timestamp = excluded.read_timestamp'
+					'ON CONFLICT(message_row_id, receipt_user_jid_row_id) DO UPDATE SET read_timestamp = ' +
+					'CASE WHEN receipt_user.read_timestamp IS NULL OR excluded.read_timestamp > receipt_user.read_timestamp ' +
+					'THEN excluded.read_timestamp ELSE receipt_user.read_timestamp END'
 			),
 			upsertUserReceiptPlayed: this.db.prepare(
 				'INSERT INTO receipt_user (message_row_id, receipt_user_jid_row_id, played_timestamp) VALUES (?, ?, ?) ' +
-					'ON CONFLICT(message_row_id, receipt_user_jid_row_id) DO UPDATE SET played_timestamp = excluded.played_timestamp'
+					'ON CONFLICT(message_row_id, receipt_user_jid_row_id) DO UPDATE SET played_timestamp = ' +
+					'CASE WHEN receipt_user.played_timestamp IS NULL OR excluded.played_timestamp > receipt_user.played_timestamp ' +
+					'THEN excluded.played_timestamp ELSE receipt_user.played_timestamp END'
 			),
 			upsertDeviceReceipt: this.db.prepare(
 				'INSERT INTO receipt_device (message_row_id, receipt_device_jid_row_id, receipt_device_timestamp) VALUES (?, ?, ?) ' +
-					'ON CONFLICT(message_row_id, receipt_device_jid_row_id) DO UPDATE SET receipt_device_timestamp = excluded.receipt_device_timestamp'
+					'ON CONFLICT(message_row_id, receipt_device_jid_row_id) DO UPDATE SET receipt_device_timestamp = ' +
+					'CASE WHEN receipt_device.receipt_device_timestamp IS NULL OR ' +
+					'excluded.receipt_device_timestamp > receipt_device.receipt_device_timestamp ' +
+					'THEN excluded.receipt_device_timestamp ELSE receipt_device.receipt_device_timestamp END'
 			),
 			upsertAddOnDeviceReceipt: this.db.prepare(
 				'INSERT INTO message_add_on_receipt_device (message_add_on_row_id, receipt_device_jid_row_id, receipt_device_timestamp) ' +
 					'VALUES (?, ?, ?) ON CONFLICT(message_add_on_row_id, receipt_device_jid_row_id) DO UPDATE SET ' +
-					'receipt_device_timestamp = excluded.receipt_device_timestamp'
+					'receipt_device_timestamp = CASE WHEN message_add_on_receipt_device.receipt_device_timestamp IS NULL OR ' +
+					'excluded.receipt_device_timestamp > message_add_on_receipt_device.receipt_device_timestamp ' +
+					'THEN excluded.receipt_device_timestamp ELSE message_add_on_receipt_device.receipt_device_timestamp END'
 			),
 			insertOrphaned: this.db.prepare(
-				'INSERT INTO receipt_orphaned (chat_row_id, from_me, key_id, receipt_device_jid_row_id, status, timestamp) ' +
-					'VALUES (?, ?, ?, ?, ?, ?)'
+				'INSERT INTO receipt_orphaned (chat_row_id, from_me, key_id, receipt_device_jid_row_id, receipt_recipient_jid_row_id, status, timestamp) ' +
+					'VALUES (?, ?, ?, ?, ?, ?, ?)'
 			),
+			listOrphaned: this.db.prepare(
+				'SELECT _id, receipt_device_jid_row_id, receipt_recipient_jid_row_id, status, timestamp ' +
+					'FROM receipt_orphaned WHERE chat_row_id = ? AND from_me = ? AND key_id = ? ORDER BY _id ASC'
+			),
+			deleteOrphaned: this.db.prepare('DELETE FROM receipt_orphaned WHERE _id = ?'),
 			listUserReceipts: this.db.prepare(
 				'SELECT _id, message_row_id, receipt_user_jid_row_id, receipt_timestamp, read_timestamp, played_timestamp ' +
 					'FROM receipt_user WHERE message_row_id = ?'
@@ -152,7 +175,8 @@ export class ReceiptBackend {
 					input.fromMe ? 1 : 0,
 					input.keyId,
 					receiptUserRowId,
-					null,
+					receiptUserRowId,
+					ORPHAN_USER_STATUS[input.kind],
 					input.timestamp
 				)
 				return
@@ -190,12 +214,57 @@ export class ReceiptBackend {
 					input.keyId,
 					receiptDeviceRowId,
 					null,
+					ORPHAN_DEVICE_STATUS,
 					input.timestamp
 				)
 				return
 			}
 
 			this.stmts.upsertDeviceReceipt.run(messageRowId, receiptDeviceRowId, input.timestamp)
+		})()
+	}
+
+	/** Replays receipts that arrived before their message row, then removes only rows successfully materialized. */
+	replayOrphaned(chatJid: string, fromMe: boolean, keyId: string): number {
+		return this.db.transaction(() => {
+			const chatRowId = this.chatResolver.resolveChatRowId(chatJid)
+			const messageRowId = this.resolveMessageRowId(chatJid, fromMe, keyId)
+			if (messageRowId === null) return 0
+			const rows = this.stmts.listOrphaned.all(chatRowId, fromMe ? 1 : 0, keyId) as Array<{
+				_id: number
+				receipt_device_jid_row_id: number
+				receipt_recipient_jid_row_id: number | null
+				status: number | null
+				timestamp: number | null
+			}>
+			let replayed = 0
+			for (const row of rows) {
+				// Pre-hardening rows stored NULL for both receipt forms. They cannot
+				// recover the user-level progression kind, but they did preserve the
+				// target jid and timestamp; materialize that legacy shape as the
+				// schema's generic per-device acknowledgement instead of leaking an
+				// unreplayable orphan forever.
+				if (row.status === null || row.status === ORPHAN_DEVICE_STATUS) {
+					this.stmts.upsertDeviceReceipt.run(messageRowId, row.receipt_device_jid_row_id, row.timestamp)
+				} else {
+					const recipientRowId = row.receipt_recipient_jid_row_id ?? row.receipt_device_jid_row_id
+					const stmt =
+						row.status === ORPHAN_USER_STATUS.delivery
+							? this.stmts.upsertUserReceiptDelivery
+							: row.status === ORPHAN_USER_STATUS.read
+								? this.stmts.upsertUserReceiptRead
+								: row.status === ORPHAN_USER_STATUS.played
+									? this.stmts.upsertUserReceiptPlayed
+									: null
+					if (!stmt) continue
+					stmt.run(messageRowId, recipientRowId, row.timestamp)
+				}
+
+				this.stmts.deleteOrphaned.run(row._id)
+				replayed += 1
+			}
+
+			return replayed
 		})()
 	}
 

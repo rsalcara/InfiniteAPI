@@ -246,6 +246,21 @@ describe('useMultiDbSqliteAuthState', () => {
 		close()
 	})
 
+	it('rejects a cross-database keys.set batch before either database is written', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		await expect(
+			state.keys.set({
+				'app-state-sync-key': { mixed: sampleAppStateSyncKey(9) },
+				session: { '5511999999999.0': sampleSession(7) }
+			})
+		).rejects.toThrow('cannot mix app-state-sync-key')
+		expect(
+			store.handle('creds.db').prepare('SELECT key_id FROM app_state_sync_keys WHERE key_id = ?').get('mixed')
+		).toBeUndefined()
+		expect(store.handle('axolotl.db').prepare("SELECT id FROM signal_kv WHERE type = 'session'").get()).toBeUndefined()
+		close()
+	})
+
 	it('lists app-state-sync-key ids/entries from creds.db.app_state_sync_keys', async () => {
 		const { state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		await state.keys.set({
@@ -398,6 +413,26 @@ describe('useMultiDbSqliteAuthState', () => {
 			n: number
 		}
 		expect(sessionsCount.n).toBe(0)
+		close()
+	})
+
+	it('keeps hosted sessions in signal_kv without colliding with a typed PN row', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		await state.keys.set({
+			session: {
+				'5511999999999.0': sampleSession(1),
+				'5511999999999_128.0': sampleSession(2)
+			}
+		})
+		const typedRows = store
+			.handle('axolotl.db')
+			.prepare('SELECT recipient_account_type, record FROM sessions WHERE recipient_account_id = ?')
+			.all('5511999999999') as Array<{ recipient_account_type: number; record: Buffer }>
+		expect(typedRows).toHaveLength(1)
+		expect(typedRows[0]?.recipient_account_type).toBe(0)
+		const got = await state.keys.get('session', ['5511999999999.0', '5511999999999_128.0'])
+		expect(Buffer.from(got['5511999999999.0'] as Uint8Array).toString('hex')).toBe('01')
+		expect(Buffer.from(got['5511999999999_128.0'] as Uint8Array).toString('hex')).toBe('02')
 		close()
 	})
 })

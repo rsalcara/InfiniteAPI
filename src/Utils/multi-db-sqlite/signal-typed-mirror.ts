@@ -51,10 +51,19 @@ export function mirrorSignalEntry(
 					return
 				}
 
+				const recipientAccountType = domainTypeToAccountType(parsed.domainType)
+				if (recipientAccountType === null) {
+					deps.logger?.debug?.(
+						{ id, domainType: parsed.domainType, reason: 'hosted-or-unknown-domain' },
+						'multi-db-sqlite: session not mirrored to typed table, signal_kv remains authoritative'
+					)
+					return
+				}
+
 				const key = {
 					deviceId: parsed.deviceId,
 					recipientAccountId: parsed.user,
-					recipientAccountType: domainTypeToAccountType(parsed.domainType)
+					recipientAccountType
 				}
 				if (value === null || value === undefined) {
 					deps.signalTypedBackend.deleteSession(key)
@@ -94,13 +103,22 @@ export function mirrorSignalEntry(
 					return
 				}
 
+				const senderAccountType = domainTypeToAccountType(parsed.sender.domainType)
+				if (senderAccountType === null) {
+					deps.logger?.debug?.(
+						{ id, domainType: parsed.sender.domainType, reason: 'hosted-or-unknown-domain' },
+						'multi-db-sqlite: sender-key not mirrored to typed table, signal_kv remains authoritative'
+					)
+					return
+				}
+
 				if (value === null || value === undefined) return // no delete primitive — see doc above
 				deps.signalTypedBackend.putSenderKey(
 					{
 						groupId: parsed.groupId,
 						deviceId: parsed.sender.deviceId,
 						senderAccountId: parsed.sender.user,
-						senderAccountType: domainTypeToAccountType(parsed.sender.domainType)
+						senderAccountType
 					},
 					value as Uint8Array
 				)
