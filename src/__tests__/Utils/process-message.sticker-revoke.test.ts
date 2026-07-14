@@ -28,6 +28,7 @@ const credsWithMe = (): AuthenticationCreds => ({
 const makeMediaBackendMock = () => ({
 	recordMedia: jest.fn(),
 	recordThumbnail: jest.fn(),
+	recordMmsThumbnail: jest.fn(),
 	recordAudioData: jest.fn(),
 	recordStreamingSidecar: jest.fn()
 })
@@ -88,6 +89,46 @@ describe('processMessage — sticker media + store-driven revoke', () => {
 		expect(mediaBackend.recordMedia).toHaveBeenCalledWith(
 			expect.objectContaining({ messageRowId: 42, mimeType: 'image/webp', fileLength: 12345, width: 512, height: 512 })
 		)
+	})
+
+	it('continues independent add-on and UI mirrors when a thumbnail mirror fails', async () => {
+		const messageStoreBackend = makeStoreBackendMock()
+		const mediaBackend = makeMediaBackendMock()
+		mediaBackend.recordThumbnail.mockImplementation(() => {
+			throw Object.assign(new Error('thumbnail table locked'), { code: 'SQLITE_BUSY' })
+		})
+		const addOnBackend = {
+			recordPoll: jest.fn(),
+			recordPollOption: jest.fn(),
+			recordVcard: jest.fn(),
+			recordUiElements: jest.fn()
+		}
+		const { ctx } = makeContext({ messageStoreBackend, mediaBackend, addOnBackend })
+
+		const msg = inbound('isolated-mirrors-1', {
+			imageMessage: { mimetype: 'image/jpeg', jpegThumbnail: new Uint8Array([1, 2, 3]) },
+			pollCreationMessage: {
+				name: 'Question',
+				options: [{ optionName: 'A' }],
+				selectableOptionsCount: 1
+			},
+			contactMessage: { displayName: 'Contact', vcard: 'BEGIN:VCARD\nEND:VCARD' },
+			interactiveMessage: {
+				nativeFlowMessage: {
+					buttons: [{ name: 'quick_reply', buttonParamsJson: '{"display_text":"A","id":"a"}' }]
+				}
+			}
+		})
+
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		await expect(processMessage(msg, ctx as any)).resolves.not.toThrow()
+
+		expect(mediaBackend.recordThumbnail).toHaveBeenCalled()
+		expect(mediaBackend.recordMmsThumbnail).toHaveBeenCalled()
+		expect(addOnBackend.recordPoll).toHaveBeenCalled()
+		expect(addOnBackend.recordPollOption).toHaveBeenCalled()
+		expect(addOnBackend.recordVcard).toHaveBeenCalled()
+		expect(addOnBackend.recordUiElements).toHaveBeenCalled()
 	})
 
 	it('records a REVOKE via the store when getMessage is undefined but the store has the target', async () => {
