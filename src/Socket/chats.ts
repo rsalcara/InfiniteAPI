@@ -1491,6 +1491,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 				await authState.keys.set({ 'app-state-sync-version': { [name]: state } })
 			}, authState?.creds?.me?.id || 'app-patch')
+
+			// Only publish to sync.db after the auth-state transaction has fully
+			// committed. A post-callback commit failure must never leave the mirror
+			// ahead of the authoritative version. The server already accepted this
+			// patch, and the helper remains best-effort/non-blocking.
+			mirrorAppStateVersion(name, encodeResult!.state, 'patch')
 		})
 
 		if (config.emitOwnEvents) {

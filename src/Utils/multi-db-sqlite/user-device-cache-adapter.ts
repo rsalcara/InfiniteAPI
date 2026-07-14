@@ -502,13 +502,15 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 	 */
 	flushAll(): void {
 		if (this.sourceOfTruth) {
-			// Wipe the JSON mirror AND the typed tables together — a surviving
+			// Wipe the JSON mirror AND the typed tables atomically — a surviving
 			// typed row would otherwise shadow the cleared JSON entry on the next
-			// typed-first read.
-			this.db.exec(
-				'DELETE FROM user_device_cache_json; DELETE FROM user_device; ' +
-					'DELETE FROM user_device_info; DELETE FROM primary_device_version'
-			)
+			// typed-first read, while a surviving JSON row would violate flushAll.
+			this.db.transaction(() => {
+				this.db.exec(
+					'DELETE FROM user_device_cache_json; DELETE FROM user_device; ' +
+						'DELETE FROM user_device_info; DELETE FROM primary_device_version'
+				)
+			})()
 			return
 		}
 

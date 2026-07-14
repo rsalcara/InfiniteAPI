@@ -174,6 +174,26 @@ describe('backends', () => {
 			expect(backend.listMutations('regular')).toHaveLength(0)
 		})
 
+		it('never lets a delayed collection-version mirror move the high-water mark backward', () => {
+			const backend = new AppStateBackend(store.handle('sync.db'))
+			backend.setCollectionVersion({
+				collectionName: 'regular',
+				version: 8,
+				ltHash: Buffer.from([0x08]),
+				dirtyVersion: -1
+			})
+			backend.setCollectionVersion({
+				collectionName: 'regular',
+				version: 7,
+				ltHash: Buffer.from([0x07]),
+				dirtyVersion: -1
+			})
+
+			const row = backend.getCollectionVersion('regular')
+			expect(row?.version).toBe(8)
+			expect(row?.ltHash).toEqual(Buffer.from([0x08]))
+		})
+
 		it('insertMutation upserts on a repeated mutation_index instead of throwing (real schema has it UNIQUE)', () => {
 			const backend = new AppStateBackend(store.handle('sync.db'))
 			backend.insertMutation({
