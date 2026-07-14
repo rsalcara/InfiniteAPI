@@ -198,6 +198,16 @@ const TRANSIENT_TABLES: Partial<Record<MultiDbFile, ReadonlyArray<string>>> = {
 
 const SESSION_LOCK_FILE = '.multi-db-sqlite.lock'
 
+/**
+ * Unique per PROCESS INSTANCE marker, generated once at module load. `pid`
+ * alone can't tell "a lock this running process still holds" from "a stale lock
+ * left by a previous, now-dead process that happened to reuse this pid" — and in
+ * a container the app is ALWAYS pid 1, so every restart reuses it. The nonce
+ * disambiguates: a lock whose nonce matches this constant was created by THIS
+ * running process; any other nonce is a different incarnation.
+ */
+const PROCESS_NONCE = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+
 const isProcessAlive = (pid: number): boolean => {
 	if (!Number.isInteger(pid) || pid <= 0) return false
 	if (pid === process.pid) return true
@@ -222,7 +232,8 @@ const fileAgeMs = (fs: typeof import('node:fs'), filePath: string): number | und
 const acquireSessionLock = (
 	fs: typeof import('node:fs'),
 	path: typeof import('node:path'),
-	sessionDir: string
+	sessionDir: string,
+	logger?: ILogger
 ): (() => void) => {
 	const lockPath = path.join(sessionDir, SESSION_LOCK_FILE)
 	const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -231,7 +242,7 @@ const acquireSessionLock = (
 		try {
 			const fd = fs.openSync(lockPath, 'wx')
 			try {
-				fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, token }))
+				fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, nonce: PROCESS_NONCE, token }))
 			} catch (writeErr) {
 				fs.closeSync(fd)
 				try {
@@ -259,15 +270,40 @@ const acquireSessionLock = (
 			if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
 
 			let ownerPid = 0
+			let ownerNonce: string | undefined
 			let malformed = false
 			try {
-				ownerPid = (JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { pid?: number }).pid ?? 0
+				const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { pid?: number; nonce?: string }
+				ownerPid = parsed.pid ?? 0
+				ownerNonce = parsed.nonce
 			} catch {
 				malformed = true
 			}
 
-			if (isProcessAlive(ownerPid)) {
+			// A lock held by a DIFFERENT, still-live OS process is a real
+			// cross-process conflict — refuse. But a lock whose pid is OURS is NOT
+			// reliably a live conflict: in a container the app is always pid 1, so a
+			// stale lock left by a previous (dead) incarnation carries `pid: 1` ==
+			// our pid and `process.kill(1, 0)` trivially succeeds — which used to
+			// make the lock unrecoverable FOREVER (it bricked QR pairing on the
+			// post-pair `restart_required` reconnect, and every container restart).
+			// So only a FOREIGN live pid throws; a same-pid lock falls through to
+			// recovery below.
+			if (ownerPid !== process.pid && isProcessAlive(ownerPid)) {
 				throw new Error(`MultiDbSqliteStore: sessionDir is already owned by process ${ownerPid}: ${sessionDir}`)
+			}
+
+			if (ownerPid === process.pid && ownerNonce === PROCESS_NONCE) {
+				// Same RUNNING process instance already holds this lock (nonce match):
+				// a second store was opened on this sessionDir before the first was
+				// closed — a reconnect that rebuilt the store is the common case. We
+				// recover so the reconnect isn't bricked, but warn: the previous
+				// store's file handles leak until GC, so consumers should close() the
+				// old store on disconnect.
+				logger?.warn?.(
+					{ sessionDir },
+					'multi-db-sqlite: recovering a session lock still held by this process — the previous store on this sessionDir was not closed (close it on disconnect to avoid leaking handles)'
+				)
 			}
 
 			if (malformed) {
@@ -410,7 +446,7 @@ export class MultiDbSqliteStore {
 		fs.mkdirSync(this.opts.sessionDir, { recursive: true })
 
 		const Database = await loadBetterSqlite3()
-		this.releaseSessionLock = acquireSessionLock(fs, path, this.opts.sessionDir)
+		this.releaseSessionLock = acquireSessionLock(fs, path, this.opts.sessionDir, this.opts.logger)
 		const extra = this.opts.extraPragmas ?? []
 
 		// On partial-initialization failure (bad extraPragma entry, missing
