@@ -198,104 +198,103 @@ const TRANSIENT_TABLES: Partial<Record<MultiDbFile, ReadonlyArray<string>>> = {
 
 const SESSION_LOCK_FILE = '.multi-db-sqlite.lock'
 
-const isProcessAlive = (pid: number): boolean => {
-	if (!Number.isInteger(pid) || pid <= 0) return false
-	if (pid === process.pid) return true
-	try {
-		process.kill(pid, 0)
-		return true
-	} catch (err) {
-		// EPERM means the process exists but this account cannot signal it.
-		return (err as NodeJS.ErrnoException).code === 'EPERM'
-	}
-}
+type LockConnection = { pragma: (p: string) => unknown; exec: (sql: string) => unknown; close: () => void }
 
-const fileAgeMs = (fs: typeof import('node:fs'), filePath: string): number | undefined => {
-	try {
-		return Date.now() - fs.statSync(filePath).mtimeMs
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined
-		throw err
-	}
-}
-
+/**
+ * Acquires an EXCLUSIVE, OS-held lock on the session directory and returns a
+ * release function.
+ *
+ * Mechanism: a dedicated better-sqlite3 connection to a `.multi-db-sqlite.lock`
+ * database that holds an open `BEGIN EXCLUSIVE` transaction for the store's
+ * lifetime. This is a REAL kernel-held file lock (fcntl), not a pidfile whose
+ * liveness has to be GUESSED:
+ *   - A second opener — another process/container on the same volume, OR a
+ *     second store in THIS process — hits `SQLITE_BUSY` and is refused. True
+ *     mutual exclusion; a previous holder can never have its lock "stolen".
+ *   - When the owning process dies (crash / kill -9 / OOM), the kernel closes
+ *     its fds and releases the lock automatically — so a restarted container
+ *     (always pid 1) recovers cleanly, WITHOUT the old pidfile's unrecoverable
+ *     "already owned by process 1" brick.
+ *
+ * `busy_timeout = 0` makes contention fail FAST. Verified empirically
+ * (cross-process + same-process exclusion + auto-release on SIGKILL) on overlay
+ * and 9p volumes.
+ *
+ * Legacy upgrade: pre-upgrade builds wrote a JSON pidfile at this same path.
+ * Opened as a SQLite db it raises `SQLITE_NOTADB`; we FAIL CLOSED (throw an
+ * actionable error) rather than delete it — see the handler below.
+ *
+ * Caveat (inherent to any advisory lock): cross-process exclusion relies on the
+ * filesystem honoring POSIX locks. The correct deployment is ONE sessionDir per
+ * instance — never a session shared across processes.
+ */
 const acquireSessionLock = (
-	fs: typeof import('node:fs'),
+	Database: DatabaseConstructor,
 	path: typeof import('node:path'),
 	sessionDir: string
 ): (() => void) => {
 	const lockPath = path.join(sessionDir, SESSION_LOCK_FILE)
-	const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
 
-	for (;;) {
+	const tryAcquire = (): LockConnection => {
+		const lockDb = new Database(lockPath) as unknown as LockConnection
 		try {
-			const fd = fs.openSync(lockPath, 'wx')
-			try {
-				fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, token }))
-			} catch (writeErr) {
-				fs.closeSync(fd)
-				try {
-					fs.unlinkSync(lockPath)
-				} catch {
-					// Preserve the original write failure.
-				}
-
-				throw writeErr
-			}
-
-			return () => {
-				try {
-					fs.closeSync(fd)
-				} finally {
-					try {
-						const current = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { token?: string }
-						if (current.token === token) fs.unlinkSync(lockPath)
-					} catch (err) {
-						if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
-					}
-				}
-			}
+			lockDb.pragma('busy_timeout = 0') // fail fast on contention
+			lockDb.pragma('journal_mode = DELETE') // rollback journal (NOT wal): EXCLUSIVE then blocks all access
+			lockDb.exec('BEGIN EXCLUSIVE') // acquire + HOLD the exclusive lock until close()
+			return lockDb
 		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
-
-			let ownerPid = 0
-			let malformed = false
 			try {
-				ownerPid = (JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { pid?: number }).pid ?? 0
+				lockDb.close()
 			} catch {
-				malformed = true
+				// ignore — surface the acquire error
 			}
 
-			if (isProcessAlive(ownerPid)) {
-				throw new Error(`MultiDbSqliteStore: sessionDir is already owned by process ${ownerPid}: ${sessionDir}`)
-			}
-
-			if (malformed) {
-				// Another process can observe the file in the tiny interval between
-				// O_EXCL creation and the owner metadata write. Treat a fresh malformed
-				// file as an acquisition in progress; only recover an old one left by a
-				// crash during that interval.
-				const ageMs = fileAgeMs(fs, lockPath)
-				// A competing stale-lock recovery may have moved the file after
-				// our failed read. Retry against whichever lock exists now.
-				if (ageMs === undefined) continue
-
-				if (ageMs < 10_000) {
-					throw new Error(`MultiDbSqliteStore: sessionDir lock is being acquired: ${sessionDir}`)
-				}
-			}
-
-			// Atomically move the stale lock away. If another contender won the
-			// rename, retry and inspect the lock it created rather than deleting it.
-			const stalePath = `${lockPath}.stale-${token}`
-			try {
-				fs.renameSync(lockPath, stalePath)
-				fs.unlinkSync(stalePath)
-			} catch (renameErr) {
-				if ((renameErr as NodeJS.ErrnoException).code !== 'ENOENT') throw renameErr
-			}
+			throw err
 		}
 	}
+
+	const busyError = () =>
+		new Error(
+			`MultiDbSqliteStore: sessionDir is locked by another live store — refusing to open a second one. ` +
+				`If this is a reconnect, close() the previous store first; otherwise another process/container is ` +
+				`using this session (use one sessionDir per instance): ${sessionDir}`
+		)
+
+	let lockDb: LockConnection
+	try {
+		lockDb = tryAcquire()
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code
+		if (code === 'SQLITE_BUSY') throw busyError()
+
+		if (code !== 'SQLITE_NOTADB') throw err
+
+		// FAIL CLOSED on a lock file that is not a SQLite db — either a legacy JSON
+		// pidfile (pre-upgrade builds wrote one at this same path) or a corrupted
+		// file. We do NOT delete it automatically:
+		//   - it may belong to an OLD version STILL RUNNING on this sessionDir, and a
+		//     silent delete would drop that instance's mutual exclusion (both would
+		//     then write the same DBs → corruption); and
+		//   - two NEW processes hitting the stale file would race on delete→create
+		//     and end up holding EXCLUSIVE on different inodes at the same path (an
+		//     `unlink`+recreate is not an atomic ownership handoff).
+		// A stale legacy JSON only lingers after an OLD version CRASHED (a clean
+		// shutdown removes its own pidfile), so this is a one-time, operator-visible
+		// upgrade step: stop old instances and remove the file. The new SQLite lock
+		// then reuses this path.
+		throw new Error(
+			`MultiDbSqliteStore: the session lock file at ${lockPath} is not a SQLite database ` +
+				`(a legacy JSON pidfile from a previous version, or a corrupted file). Stop any old ` +
+				`instances still using this sessionDir and delete this file to recover — it is deliberately ` +
+				`NOT removed automatically, to avoid dropping a lock a live old instance may still hold.`
+		)
+	}
+
+	// close() rolls back the held EXCLUSIVE transaction and releases the OS lock
+	// (and removes the leftover `-journal`). Not wrapped here: the sole caller,
+	// `unlockSession()`, already try/catches and logs — swallowing the error in
+	// this closure would just hide the real cause from that logger.
+	return () => lockDb.close()
 }
 
 type DatabaseConstructor = typeof import('better-sqlite3')
@@ -410,7 +409,7 @@ export class MultiDbSqliteStore {
 		fs.mkdirSync(this.opts.sessionDir, { recursive: true })
 
 		const Database = await loadBetterSqlite3()
-		this.releaseSessionLock = acquireSessionLock(fs, path, this.opts.sessionDir)
+		this.releaseSessionLock = acquireSessionLock(Database, path, this.opts.sessionDir)
 		const extra = this.opts.extraPragmas ?? []
 
 		// On partial-initialization failure (bad extraPragma entry, missing
