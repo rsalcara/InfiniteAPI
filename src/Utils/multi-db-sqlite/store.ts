@@ -1,8 +1,8 @@
 /**
  * `MultiDbSqliteStore` — multi-handle SQLite store with one physical
  * `.db` file per concern (creds, axolotl, msgstore, wa, sync, media,
- * companion_devices, chatsettings, location, payments, stickers, smb,
- * status, prometheus — 14 files total; see `MULTI_DB_FILES`).
+ * companion_devices, chatsettings, location, stickers, status — 11 files
+ * total; see `MULTI_DB_FILES`).
  *
  * Why multiple files instead of one consolidated DB?
  *
@@ -313,7 +313,7 @@ const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
 	// every opened handle — DEFAULT_PRAGMAS is the right place.
 	'foreign_keys = ON',
 	// Audit memory MEM-001 — sem esta pragma, SQLite cai no default de
-	// `-2000` (~2 MB de page cache por handle). Com 14 handles × N
+	// `-2000` (~2 MB de page cache por handle). Com 11 handles × N
 	// sessões, isso vira pressão de RSS desnecessária pro workload da
 	// lib (point reads em signal_kv/jid_map, sem joins grandes). `-512`
 	// = 512 KiB por handle → ~7 MB por sessão em vez de ~28 MB.

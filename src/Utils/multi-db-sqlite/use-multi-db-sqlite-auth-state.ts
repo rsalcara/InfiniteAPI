@@ -74,7 +74,7 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
  * Multi-DB authentication state for Baileys.
  *
  * Same API as `useMultiFileAuthState` / `useSqliteAuthState`, but the
- * underlying persistence is split across 13 physical SQLite files, one per
+ * underlying persistence is split across 11 physical SQLite files, one per
  * concern (creds, axolotl, msgstore, wa, sync, media, companion_devices,
  * chatsettings, location, payments, stickers, smb, status):
  *
@@ -104,10 +104,10 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
  * `signal_kv` as an atomic compatibility fallback. The remaining database
  * backends are wired by the socket when `multiDbStore` is configured.
  *
- * Why open all 13 files up front instead of lazily? Disk allocation + WAL
+ * Why open all 11 files up front instead of lazily? Disk allocation + WAL
  * checkpointing both have one-time costs; doing them at startup means the
  * first message flow doesn't pay them. The cost is ~195 KB per session
- * for empty WAL files (13 files × ~15 KB each) — negligible.
+ * for empty WAL files (11 files × ~15 KB each) — negligible.
  */
 export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateOptions): Promise<{
 	state: AuthenticationState
