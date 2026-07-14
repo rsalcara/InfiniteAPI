@@ -267,6 +267,17 @@ describe('backends', () => {
 			expect(row).toMatchObject({ latitude: -23.56, longitude: -46.64, locationTs: 2_000 })
 		})
 
+		it('keeps the first location received for an equal second-resolution timestamp', () => {
+			const backend = new LocationBackend(store.handle('location.db'), {
+				pruneIntervalMs: Number.MAX_SAFE_INTEGER
+			})
+			const base = { jid: 'equal@s.whatsapp.net', accuracy: 5, speed: 0, bearing: 0, locationTs: 2_000 }
+			backend.upsertLocationCache({ ...base, latitude: -23.55, longitude: -46.63 })
+			backend.upsertLocationCache({ ...base, latitude: 0, longitude: 0 })
+
+			expect(backend.getLocationCache(base.jid)).toMatchObject({ latitude: -23.55, longitude: -46.63 })
+		})
+
 		it('upserts location_sharer keyed by (remote_jid, from_me, remote_resource, message_id)', () => {
 			const backend = new LocationBackend(store.handle('location.db'), {
 				pruneIntervalMs: Number.MAX_SAFE_INTEGER
@@ -556,12 +567,26 @@ describe('backends', () => {
 			backend.recordSeenReceipt({
 				statusUuid: 'my-status-1',
 				receiptUserJid: 'viewer1@s.whatsapp.net',
-				seenTimestamp: 5_000
+				seenTimestamp: 5_000,
+				receivedTimestamp: 5_100
+			})
+			// Simulate a row written by the previous implementation, which left
+			// received_timestamp NULL. The next upsert repairs it once.
+			store
+				.handle('status.db')
+				.prepare('UPDATE status_seen_receipt SET received_timestamp = NULL WHERE receipt_user_jid = ?')
+				.run('viewer1@s.whatsapp.net')
+			backend.recordSeenReceipt({
+				statusUuid: 'my-status-1',
+				receiptUserJid: 'viewer1@s.whatsapp.net',
+				seenTimestamp: 6_000,
+				receivedTimestamp: 6_100
 			})
 			backend.recordSeenReceipt({
 				statusUuid: 'my-status-1',
 				receiptUserJid: 'viewer1@s.whatsapp.net',
-				seenTimestamp: 6_000
+				seenTimestamp: 5_500,
+				receivedTimestamp: 6_200
 			})
 			backend.recordSeenReceipt({
 				statusUuid: 'my-status-1',
@@ -572,6 +597,7 @@ describe('backends', () => {
 			const receipts = backend.listSeenReceiptsForStatus('my-status-1')
 			expect(receipts).toHaveLength(2) // viewer1's repeat view upserted, not duplicated
 			expect(receipts.find(r => r.receipt_user_jid === 'viewer1@s.whatsapp.net')?.seen_timestamp).toBe(6_000)
+			expect(receipts.find(r => r.receipt_user_jid === 'viewer1@s.whatsapp.net')?.received_timestamp).toBe(6_100)
 			expect(receipts.find(r => r.receipt_user_jid === 'viewer2@s.whatsapp.net')?.seen_timestamp).toBe(5_500)
 			expect(receipts.every(r => typeof r.status_row_id === 'number')).toBe(true)
 		})

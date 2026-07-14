@@ -58,8 +58,14 @@ export type StoredStarredStickerRow = {
 	width: number | null
 	height: number | null
 	hash_of_image_part: string | null
+	emojis: string | null
+	is_first_party: number | null
 	is_lottie: number | null
 	is_avatar: number
+	avatar_template_id: string | null
+	is_fun_sticker: number | null
+	accessibility_text: string | null
+	premium: number | null
 }
 
 // NOTE: recent_stickers has a DIFFERENT shape from starred_stickers — no

@@ -69,6 +69,7 @@ describe('useMultiDbSqliteAuthState', () => {
 		// Discontinued DBs must NOT be created anymore.
 		expect(files).not.toContain('payments.db')
 		expect(files).not.toContain('smb.db')
+		expect(files).not.toContain('prometheus.db')
 		close()
 	})
 
