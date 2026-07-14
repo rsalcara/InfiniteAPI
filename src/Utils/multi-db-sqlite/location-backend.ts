@@ -98,7 +98,7 @@ export class LocationBackend {
 		this.retentionSecs = opts?.retentionSecs ?? LOCATION_SHARER_RECEIVED_RETENTION_SECS
 		this.pruneIntervalMs = opts?.pruneIntervalMs ?? LOCATION_PRUNE_INTERVAL_MS
 		this.stmts = {
-			// `WHERE excluded.location_ts >= location_cache.location_ts` guards
+			// `WHERE excluded.location_ts > location_cache.location_ts` guards
 			// against out-of-order delivery: a live-location update that
 			// arrives late (common over unreliable delivery) must not
 			// overwrite a newer position with a stale one. Confirmed real bug
@@ -109,7 +109,7 @@ export class LocationBackend {
 					'ON CONFLICT(jid) DO UPDATE SET ' +
 					'  latitude = excluded.latitude, longitude = excluded.longitude, accuracy = excluded.accuracy, ' +
 					'  speed = excluded.speed, bearing = excluded.bearing, location_ts = excluded.location_ts ' +
-					'WHERE excluded.location_ts >= location_cache.location_ts'
+					'WHERE excluded.location_ts > location_cache.location_ts'
 			),
 			getLocationCache: this.db.prepare(
 				'SELECT jid, latitude, longitude, accuracy, speed, bearing, location_ts FROM location_cache WHERE jid = ?'

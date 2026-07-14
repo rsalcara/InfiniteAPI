@@ -72,6 +72,8 @@ export type SeenReceiptInput = {
 	statusUuid: string
 	receiptUserJid: string
 	seenTimestamp: number
+	/** Local arrival time in unix seconds. Defaults to now and is preserved on later upserts. */
+	receivedTimestamp?: number
 }
 
 export type StoredStatusRow = {
@@ -138,8 +140,14 @@ export class StatusBackend {
 			),
 			getStatusRowIdByUuid: this.db.prepare('SELECT row_id FROM status WHERE uuid = ?'),
 			upsertSeenReceipt: this.db.prepare(
-				'INSERT INTO status_seen_receipt (status_row_id, receipt_user_jid, seen_timestamp) VALUES (?, ?, ?) ' +
-					'ON CONFLICT(status_row_id, receipt_user_jid) DO UPDATE SET seen_timestamp = excluded.seen_timestamp'
+				'INSERT INTO status_seen_receipt (status_row_id, receipt_user_jid, received_timestamp, seen_timestamp) ' +
+					'VALUES (?, ?, ?, ?) ' +
+					'ON CONFLICT(status_row_id, receipt_user_jid) DO UPDATE SET ' +
+					'received_timestamp = COALESCE(status_seen_receipt.received_timestamp, excluded.received_timestamp), ' +
+					'seen_timestamp = ' +
+					'CASE WHEN status_seen_receipt.seen_timestamp IS NULL OR ' +
+					'excluded.seen_timestamp > status_seen_receipt.seen_timestamp ' +
+					'THEN excluded.seen_timestamp ELSE status_seen_receipt.seen_timestamp END'
 			),
 			listSeenReceiptsForStatus: this.db.prepare(
 				'SELECT row_id, status_row_id, receipt_user_jid, received_timestamp, seen_timestamp ' +
@@ -272,7 +280,12 @@ export class StatusBackend {
 			return false
 		}
 
-		this.stmts.upsertSeenReceipt.run(statusRow.row_id, input.receiptUserJid, input.seenTimestamp)
+		this.stmts.upsertSeenReceipt.run(
+			statusRow.row_id,
+			input.receiptUserJid,
+			input.receivedTimestamp ?? Math.floor(Date.now() / 1000),
+			input.seenTimestamp
+		)
 		return true
 	}
 

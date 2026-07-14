@@ -103,6 +103,7 @@ describe('SignalTypedBackend', () => {
 			.prepare('SELECT upload_timestamp, key_type FROM prekey_uploads ORDER BY _id')
 			.all() as Array<{ upload_timestamp: number; key_type: number }>
 		expect(rows.map(r => r.upload_timestamp)).toEqual([1_000, 2_000])
+		expect(rows.map(r => r.key_type)).toEqual([0, 0])
 	})
 
 	it('round-trips + deletes a message_base_key (dedupes on the natural key)', () => {
