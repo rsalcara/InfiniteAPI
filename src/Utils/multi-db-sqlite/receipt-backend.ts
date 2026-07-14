@@ -228,7 +228,12 @@ export class ReceiptBackend {
 			}>
 			let replayed = 0
 			for (const row of rows) {
-				if (row.status === ORPHAN_DEVICE_STATUS) {
+				// Pre-hardening rows stored NULL for both receipt forms. They cannot
+				// recover the user-level progression kind, but they did preserve the
+				// target jid and timestamp; materialize that legacy shape as the
+				// schema's generic per-device acknowledgement instead of leaking an
+				// unreplayable orphan forever.
+				if (row.status === null || row.status === ORPHAN_DEVICE_STATUS) {
 					this.stmts.upsertDeviceReceipt.run(messageRowId, row.receipt_device_jid_row_id, row.timestamp)
 				} else {
 					const recipientRowId = row.receipt_recipient_jid_row_id ?? row.receipt_device_jid_row_id

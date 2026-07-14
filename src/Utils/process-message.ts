@@ -598,6 +598,8 @@ const processMessage = async (
 		const targetKey: WAMessageKey = {
 			...revokeProtocolMsg.key,
 			remoteJid: revokeProtocolMsg.key?.remoteJid ?? revokeStanza.key.remoteJid,
+			fromMe: revokeProtocolMsg.key?.fromMe ?? revokeStanza.key.fromMe,
+			participant: revokeProtocolMsg.key?.participant ?? revokeStanza.key.participant,
 			id: revokeProtocolMsg.key?.id
 		}
 		ev.emit('messages.update', [
@@ -1273,6 +1275,8 @@ const processMessage = async (
 				const targetKey: WAMessageKey = {
 					...protocolMsg.key,
 					remoteJid: protocolMsg.key.remoteJid ?? message.key.remoteJid,
+					fromMe: protocolMsg.key.fromMe ?? message.key.fromMe,
+					participant: protocolMsg.key.participant ?? message.key.participant,
 					id: protocolMsg.key.id
 				}
 
