@@ -5,7 +5,6 @@
  * restarts (audit #627/#628/#633). A persistent (source-of-truth) table must
  * survive the reopen — proving the prune is scoped, not a blanket wipe.
  */
-import { type ChildProcess, spawn } from 'child_process'
 import { writeFileSync } from 'fs'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
@@ -85,62 +84,53 @@ describe('MultiDbSqliteStore startup prune', () => {
 		}
 	})
 
-	// The session lock's job is CROSS-PROCESS mutual exclusion. A lock owned by a
-	// different, still-live OS process must still be refused — that protection is
-	// preserved.
-	it('refuses a lock held by a DIFFERENT live process (cross-process protection)', async () => {
-		// Spawn a real, still-alive child (a different, guaranteed-live pid — more
-		// robust than process.ppid, which is 0 when the test runner is a container
-		// PID 1). open() must refuse rather than steal it.
-		let child: ChildProcess | undefined
-		try {
-			child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' })
-			await new Promise(resolve => setTimeout(resolve, 200)) // let it come up
-			expect(typeof child.pid).toBe('number')
-
-			writeFileSync(join(dir, LOCK_FILE), JSON.stringify({ pid: child.pid, nonce: 'someone-elses-nonce', token: 'x' }))
-			const store = new MultiDbSqliteStore({ sessionDir: dir })
-			await expect(store.open()).rejects.toThrow(/already owned by process/)
-		} finally {
-			child?.kill()
-		}
-	})
-
-	// The bug this fixes: in a container the app is ALWAYS pid 1, so a stale lock
-	// left by a previous (dead) incarnation carries `pid: 1` == our pid and looks
-	// "alive" — which made the lock unrecoverable forever (bricking QR pairing on
-	// the post-pair restart_required reconnect, and every container restart). A
-	// lock with our pid but a FOREIGN nonce is a previous incarnation → recover.
-	it('recovers a stale same-pid lock left by a previous incarnation (container restart)', async () => {
-		writeFileSync(
-			join(dir, LOCK_FILE),
-			JSON.stringify({ pid: process.pid, nonce: 'previous-incarnation-nonce', token: 'x' })
-		)
-		const store = new MultiDbSqliteStore({ sessionDir: dir })
-		await expect(store.open()).resolves.toBeUndefined() // no throw — lock recovered
-		try {
-			expect(count(store, 'msgstore.db', 'jid')).toBe(0) // opened & queryable
-		} finally {
-			store.close()
-		}
-	})
-
-	// A same-PROCESS reopen (a reconnect that rebuilt the store before closing the
-	// old one) must not brick either — the second open recovers (and warns). We
-	// can't distinguish it from a container pid-1 stale lock, and bricking the
-	// reconnect is worse than the leaked-handles hint. (This is why consumers
-	// should still close() the old store on disconnect — a resource concern, not a
-	// correctness one.)
-	it('recovers a same-process lock so a reconnect that rebuilt the store is not bricked', async () => {
+	// The session lock is an OS-held EXCLUSIVE SQLite lock. While one store holds
+	// it, a SECOND open on the same sessionDir must be REFUSED — no reclaim, no
+	// startup-prune clobbering the first store's in-flight rows. (SQLite's
+	// in-process lock coordination makes this deterministic same-process; the same
+	// fcntl lock also excludes other processes/containers — validated separately
+	// on overlay + 9p, incl. auto-release on SIGKILL, which a unit test can't
+	// portably kill.)
+	it('refuses a second store while the first holds the lock (no reclaim / no theft)', async () => {
 		const first = new MultiDbSqliteStore({ sessionDir: dir })
 		await first.open()
 		const second = new MultiDbSqliteStore({ sessionDir: dir })
 		try {
-			await expect(second.open()).resolves.toBeUndefined() // recovered, not thrown
-			expect(count(second, 'msgstore.db', 'jid')).toBe(0)
+			await expect(second.open()).rejects.toThrow(/locked by another live store/)
 		} finally {
 			second.close()
 			first.close()
+		}
+	})
+
+	// The lock is released on close() (the held EXCLUSIVE transaction rolls back),
+	// so a legitimate reopen — the correct reconnect flow: close() then rebuild —
+	// succeeds.
+	it('releases the lock on close so a reopen succeeds', async () => {
+		const first = new MultiDbSqliteStore({ sessionDir: dir })
+		await first.open()
+		first.close()
+
+		const second = new MultiDbSqliteStore({ sessionDir: dir })
+		await expect(second.open()).resolves.toBeUndefined()
+		try {
+			expect(count(second, 'msgstore.db', 'jid')).toBe(0)
+		} finally {
+			second.close()
+		}
+	})
+
+	// Migration: pre-upgrade builds wrote a JSON pidfile at the same path. Opened
+	// as a SQLite db it raises SQLITE_NOTADB; the store must replace it and take
+	// the lock, not crash. (A stale legacy file is the common upgrade case.)
+	it('replaces a legacy JSON pidfile lock and opens', async () => {
+		writeFileSync(join(dir, LOCK_FILE), JSON.stringify({ pid: 1, token: 'legacy' }))
+		const store = new MultiDbSqliteStore({ sessionDir: dir })
+		await expect(store.open()).resolves.toBeUndefined()
+		try {
+			expect(count(store, 'msgstore.db', 'jid')).toBe(0)
+		} finally {
+			store.close()
 		}
 	})
 })
