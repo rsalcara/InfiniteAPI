@@ -444,6 +444,34 @@ const classifyMessageMirrorFailure = (operation: MessageMirrorOperation, err: un
 	return { reason: `${prefix}_${suffix}`, sqliteCode, errorMessage }
 }
 
+/**
+ * Runs one optional message mirror without allowing its failure to suppress
+ * later, unrelated mirrors or the legacy message-processing path.
+ */
+const runOptionalMessageMirror = (
+	logger: ILogger | undefined,
+	operation: Exclude<MessageMirrorOperation, 'message_record'>,
+	messageId: string,
+	action: () => void
+): void => {
+	try {
+		action()
+	} catch (err) {
+		logger?.warn(
+			{
+				err,
+				...classifyMessageMirrorFailure(operation, err),
+				operation,
+				table: MESSAGE_MIRROR_TABLE[operation],
+				messageId,
+				primary: 'multi_db_sqlite',
+				fallback: 'legacy_message_proto'
+			},
+			'multi-db-sqlite: message mirror fallback'
+		)
+	}
+}
+
 const nativeFlowButtonLabel = (buttonParamsJson: string | null | undefined): string | null => {
 	if (!buttonParamsJson) return null
 	try {
@@ -706,7 +734,6 @@ const processMessage = async (
 	// via the same messageRowId, since both hang off the message row.
 	let canReplayOrphans = !messageStoreBackend
 	if (messageStoreBackend && isRealMsg && message.key.id) {
-		let mirrorOperation: MessageMirrorOperation = 'message_record'
 		let messageRowId: number | undefined
 		try {
 			const senderJid = getKeyAuthor(message.key, meId)
@@ -726,6 +753,22 @@ const processMessage = async (
 				incrementUnread: shouldIncrementChatUnread(message)
 			})
 			canReplayOrphans = true
+		} catch (err) {
+			logger?.warn(
+				{
+					err,
+					...classifyMessageMirrorFailure('message_record', err),
+					operation: 'message_record',
+					table: MESSAGE_MIRROR_TABLE.message_record,
+					messageId: message.key.id,
+					primary: 'multi_db_sqlite',
+					fallback: 'legacy_message_proto'
+				},
+				'multi-db-sqlite: message mirror fallback'
+			)
+		}
+
+		if (messageRowId !== undefined) {
 			try {
 				receiptBackend?.replayOrphaned(chat.id!, !!message.key.fromMe, message.key.id)
 			} catch (err) {
@@ -751,58 +794,63 @@ const processMessage = async (
 					content?.documentMessage ||
 					content?.stickerMessage
 				if (media) {
-					mirrorOperation = 'media_record'
-					mediaBackend.recordMedia({
-						messageRowId,
-						mimeType: media.mimetype ?? null,
-						fileLength: media.fileLength ? toNumber(media.fileLength) : null,
-						mediaKey: media.mediaKey ? Buffer.from(media.mediaKey) : null,
-						directPath: media.directPath ?? null,
-						fileSha256: media.fileSha256 ? Buffer.from(media.fileSha256) : null,
-						fileEncSha256: media.fileEncSha256 ? Buffer.from(media.fileEncSha256) : null,
-						width: 'width' in media ? (media.width ?? null) : null,
-						height: 'height' in media ? (media.height ?? null) : null,
-						mediaDurationSeconds: 'seconds' in media ? (media.seconds ?? null) : null,
-						caption: 'caption' in media ? (media.caption ?? null) : null,
-						mediaName: 'fileName' in media ? (media.fileName ?? null) : null
-					})
+					runOptionalMessageMirror(logger, 'media_record', message.key.id, () =>
+						mediaBackend.recordMedia({
+							messageRowId,
+							mimeType: media.mimetype ?? null,
+							fileLength: media.fileLength ? toNumber(media.fileLength) : null,
+							mediaKey: media.mediaKey ? Buffer.from(media.mediaKey) : null,
+							directPath: media.directPath ?? null,
+							fileSha256: media.fileSha256 ? Buffer.from(media.fileSha256) : null,
+							fileEncSha256: media.fileEncSha256 ? Buffer.from(media.fileEncSha256) : null,
+							width: 'width' in media ? (media.width ?? null) : null,
+							height: 'height' in media ? (media.height ?? null) : null,
+							mediaDurationSeconds: 'seconds' in media ? (media.seconds ?? null) : null,
+							caption: 'caption' in media ? (media.caption ?? null) : null,
+							mediaName: 'fileName' in media ? (media.fileName ?? null) : null
+						})
+					)
 
 					const thumbnail = content?.imageMessage?.jpegThumbnail || content?.videoMessage?.jpegThumbnail
 					if (thumbnail) {
-						mirrorOperation = 'media_thumbnail'
-						mediaBackend.recordThumbnail({ messageRowId, thumbnail: Buffer.from(thumbnail) })
+						runOptionalMessageMirror(logger, 'media_thumbnail', message.key.id, () =>
+							mediaBackend.recordThumbnail({ messageRowId, thumbnail: Buffer.from(thumbnail) })
+						)
 					}
 
 					// Pre-download thumbnail metadata (direct_path/mediaKey/hashes) —
 					// only image/video carry the dedicated thumbnail fields.
 					const thumbSource = content?.imageMessage || content?.videoMessage
 					if (thumbSource?.thumbnailDirectPath || thumbnail) {
-						mirrorOperation = 'media_mms_thumbnail'
-						mediaBackend.recordMmsThumbnail({
-							messageRowId,
-							directPath: thumbSource?.thumbnailDirectPath ?? null,
-							mediaKey: thumbSource?.mediaKey ? Buffer.from(thumbSource.mediaKey) : null,
-							mediaKeyTimestamp: thumbSource?.mediaKeyTimestamp ? toNumber(thumbSource.mediaKeyTimestamp) : null,
-							thumbSha256: thumbSource?.thumbnailSha256 ? Buffer.from(thumbSource.thumbnailSha256) : null,
-							thumbEncSha256: thumbSource?.thumbnailEncSha256 ? Buffer.from(thumbSource.thumbnailEncSha256) : null,
-							microThumbnail: thumbnail ? Buffer.from(thumbnail) : null,
-							insertTimestamp: toNumber(message.messageTimestamp ?? 0)
-						})
+						runOptionalMessageMirror(logger, 'media_mms_thumbnail', message.key.id, () =>
+							mediaBackend.recordMmsThumbnail({
+								messageRowId,
+								directPath: thumbSource?.thumbnailDirectPath ?? null,
+								mediaKey: thumbSource?.mediaKey ? Buffer.from(thumbSource.mediaKey) : null,
+								mediaKeyTimestamp: thumbSource?.mediaKeyTimestamp ? toNumber(thumbSource.mediaKeyTimestamp) : null,
+								thumbSha256: thumbSource?.thumbnailSha256 ? Buffer.from(thumbSource.thumbnailSha256) : null,
+								thumbEncSha256: thumbSource?.thumbnailEncSha256 ? Buffer.from(thumbSource.thumbnailEncSha256) : null,
+								microThumbnail: thumbnail ? Buffer.from(thumbnail) : null,
+								insertTimestamp: toNumber(message.messageTimestamp ?? 0)
+							})
+						)
 					}
 
 					if (content?.audioMessage?.waveform) {
-						mirrorOperation = 'media_audio_data'
-						mediaBackend.recordAudioData({ messageRowId, waveform: Buffer.from(content.audioMessage.waveform) })
+						runOptionalMessageMirror(logger, 'media_audio_data', message.key.id, () =>
+							mediaBackend.recordAudioData({ messageRowId, waveform: Buffer.from(content.audioMessage!.waveform!) })
+						)
 					}
 
 					const streamingSidecar = content?.videoMessage?.streamingSidecar || content?.audioMessage?.streamingSidecar
 					if (streamingSidecar) {
-						mirrorOperation = 'media_streaming_sidecar'
-						mediaBackend.recordStreamingSidecar({
-							messageRowId,
-							sidecar: Buffer.from(streamingSidecar),
-							timestamp: toNumber(message.messageTimestamp ?? 0)
-						})
+						runOptionalMessageMirror(logger, 'media_streaming_sidecar', message.key.id, () =>
+							mediaBackend.recordStreamingSidecar({
+								messageRowId,
+								sidecar: Buffer.from(streamingSidecar),
+								timestamp: toNumber(message.messageTimestamp ?? 0)
+							})
+						)
 					}
 				}
 			}
@@ -810,73 +858,51 @@ const processMessage = async (
 			if (addOnBackend) {
 				const poll = content?.pollCreationMessage || content?.pollCreationMessageV2 || content?.pollCreationMessageV3
 				if (poll) {
-					mirrorOperation = 'poll_record'
-					addOnBackend.recordPoll({
-						messageRowId,
-						encKey: poll.encKey ? Buffer.from(poll.encKey) : null,
-						selectableOptionsCount: poll.selectableOptionsCount ?? null
-					})
-					for (const option of poll.options ?? []) {
-						if (!option.optionName) continue
-						mirrorOperation = 'poll_option_record'
-						addOnBackend.recordPollOption({
+					runOptionalMessageMirror(logger, 'poll_record', message.key.id, () =>
+						addOnBackend.recordPoll({
 							messageRowId,
-							optionSha256: sha256(Buffer.from(option.optionName)).toString('base64'),
-							optionName: option.optionName
+							encKey: poll.encKey ? Buffer.from(poll.encKey) : null,
+							selectableOptionsCount: poll.selectableOptionsCount ?? null
 						})
+					)
+					for (const option of poll.options ?? []) {
+						const optionName = option.optionName
+						if (!optionName) continue
+						runOptionalMessageMirror(logger, 'poll_option_record', message.key.id, () =>
+							addOnBackend.recordPollOption({
+								messageRowId,
+								optionSha256: sha256(Buffer.from(optionName)).toString('base64'),
+								optionName
+							})
+						)
 					}
 				}
 
 				if (content?.contactMessage?.vcard) {
-					mirrorOperation = 'vcard_record'
-					addOnBackend.recordVcard({ messageRowId, vcard: content.contactMessage.vcard })
+					runOptionalMessageMirror(logger, 'vcard_record', message.key.id, () =>
+						addOnBackend.recordVcard({ messageRowId, vcard: content.contactMessage!.vcard! })
+					)
 				}
 
 				// A contactsArrayMessage carries several vcards on one message —
 				// each is recorded (and deduped) under the same message_row_id.
 				for (const contact of content?.contactsArrayMessage?.contacts ?? []) {
 					if (contact.vcard) {
-						mirrorOperation = 'vcard_record'
-						addOnBackend.recordVcard({ messageRowId, vcard: contact.vcard })
+						runOptionalMessageMirror(logger, 'vcard_record', message.key.id, () =>
+							addOnBackend.recordVcard({ messageRowId, vcard: contact.vcard! })
+						)
 					}
 				}
 			}
 			/* eslint-enable max-depth */
-		} catch (err) {
-			logger?.warn(
-				{
-					err,
-					...classifyMessageMirrorFailure(mirrorOperation, err),
-					operation: mirrorOperation,
-					table: MESSAGE_MIRROR_TABLE[mirrorOperation],
-					messageId: message.key.id,
-					primary: 'multi_db_sqlite',
-					fallback: 'legacy_message_proto'
-				},
-				'multi-db-sqlite: message mirror fallback'
-			)
-		}
 
-		// UI rendering data gets an independent failure boundary. A media,
-		// poll, vCard, or location mirror error above must not suppress buttons
-		// or carousel CTAs. The extractor and interactive payload are unchanged.
-		const isInteractive =
-			content?.buttonsMessage || content?.listMessage || content?.templateMessage || content?.interactiveMessage
-		if (addOnBackend && messageRowId !== undefined && isInteractive) {
-			try {
-				addOnBackend.recordUiElements(messageRowId, extractUiElements(content))
-			} catch (err) {
-				logger?.warn(
-					{
-						err,
-						...classifyMessageMirrorFailure('ui_elements_replace', err),
-						operation: 'ui_elements_replace',
-						table: MESSAGE_MIRROR_TABLE.ui_elements_replace,
-						messageId: message.key.id,
-						primary: 'multi_db_sqlite',
-						fallback: 'legacy_message_proto'
-					},
-					'multi-db-sqlite: message mirror fallback'
+			// UI rendering data keeps its own failure boundary. The extractor and
+			// interactive payload are unchanged, including carousel card order.
+			const isInteractive =
+				content?.buttonsMessage || content?.listMessage || content?.templateMessage || content?.interactiveMessage
+			if (addOnBackend && isInteractive) {
+				runOptionalMessageMirror(logger, 'ui_elements_replace', message.key.id, () =>
+					addOnBackend.recordUiElements(messageRowId, extractUiElements(content))
 				)
 			}
 		}
