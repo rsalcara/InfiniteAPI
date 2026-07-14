@@ -90,7 +90,8 @@ export class AppStateBackend {
 				'INSERT INTO collection_versions (collection_name, version, lt_hash, dirty_version) ' +
 					'VALUES (?, ?, ?, ?) ' +
 					'ON CONFLICT(collection_name) DO UPDATE SET ' +
-					'  version = excluded.version, lt_hash = excluded.lt_hash, dirty_version = excluded.dirty_version'
+					'  version = excluded.version, lt_hash = excluded.lt_hash, dirty_version = excluded.dirty_version ' +
+					'WHERE excluded.version >= collection_versions.version'
 			),
 			selectCollectionVersion: this.db.prepare(
 				'SELECT collection_name, version, lt_hash, dirty_version FROM collection_versions ' +
