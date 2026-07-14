@@ -135,11 +135,13 @@ export function runMigrations(db: SqliteDbLike, migrations: ReadonlyArray<Migrat
 	}
 
 	const selectApplied = db.prepare('SELECT version FROM schema_migrations ORDER BY version ASC')
-	const selectAppliedVersion = db.prepare('SELECT version FROM schema_migrations WHERE version = ?')
 	const appliedRows = selectApplied.all() as Array<{ version: number }>
 	const appliedVersions = new Set(appliedRows.map(r => r.version))
 
-	const insertApplied = db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)')
+	const insertApplied = db.prepare(
+		'INSERT OR IGNORE INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)'
+	)
+	const selectAppliedInTx = db.prepare('SELECT 1 FROM schema_migrations WHERE version = ?')
 
 	for (const m of migrations) {
 		if (appliedVersions.has(m.version)) continue
@@ -147,7 +149,7 @@ export function runMigrations(db: SqliteDbLike, migrations: ReadonlyArray<Migrat
 			// The outer read is only a fast path. Another process can commit this
 			// version while we wait for BEGIN IMMEDIATE, so re-check after acquiring
 			// the writer lock before executing SQL or inserting the PK again.
-			if (selectAppliedVersion.get(m.version)) return
+			if (selectAppliedInTx.get(m.version)) return
 
 			if (typeof m.run === 'function') {
 				m.run(db)

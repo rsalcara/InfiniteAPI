@@ -80,6 +80,7 @@ import {
 	MessageAddOnBackend,
 	MessageMediaBackend,
 	MessageStoreBackend,
+	ReceiptBackend,
 	StatusBackend,
 	StickersBackend,
 	type StoredCompanionDeviceRow,
@@ -185,6 +186,18 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 * smells like a custom client.
 	 */
 	const getKnownLIDForPN = signalRepository.lidMapping.getKnownLIDForPN.bind(signalRepository.lidMapping)
+	const initOptionalMirror = <T>(mirror: string, fallback: string, factory: () => T): T | undefined => {
+		if (!config.multiDbStore) return undefined
+		try {
+			return factory()
+		} catch (err) {
+			logger.warn(
+				{ err, mirror, primary: 'multi_db_sqlite', fallback, reason: err instanceof Error ? err.message : String(err) },
+				'multi-db-sqlite: optional mirror initialization failed; legacy path remains active'
+			)
+			return undefined
+		}
+	}
 
 	let privacySettings: { [_: string]: string } | undefined
 
@@ -222,18 +235,22 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// consumers of this module don't need a hard dependency on the SQLite
 	// types (same pattern as libsignal.ts's LID-mapping wiring).
 
-	const appStateBackend = config.multiDbStore
-		? new AppStateBackend((config.multiDbStore as any).handle('sync.db'))
-		: undefined
+	const appStateBackend = initOptionalMirror(
+		'sync.db.app_state',
+		'auth_state_keys',
+		() => new AppStateBackend((config.multiDbStore as any).handle('sync.db'))
+	)
 
 	// Mirrors companion history-sync chunk tracking into `history_sync_companion`
 	// (sync.db) when a multi-db-sqlite store is configured. Best-effort: the
 	// existing download/process flow stays authoritative; the table just tracks
 	// each chunk's lifecycle (insert on notification, mark on process, delete on
 	// consume). Same boundary-cast rationale as appStateBackend above.
-	const historySyncCompanionBackend = config.multiDbStore
-		? new HistorySyncCompanionBackend((config.multiDbStore as any).handle('sync.db'))
-		: undefined
+	const historySyncCompanionBackend = initOptionalMirror(
+		'sync.db.history_sync_companion',
+		'legacy_history_sync_flow',
+		() => new HistorySyncCompanionBackend((config.multiDbStore as any).handle('sync.db'))
+	)
 
 	// Mirrors contact events into `wa_contacts` (wa.db) — the canonical mobile
 	// central contact table. Persistent (no socket-close wipe). Populated from
@@ -241,48 +258,60 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// `lid-mapping.update`; read back PN-transparently. All writes best-effort:
 	// a mirror failure never blocks the contact event flow (fallback = legacy
 	// event-driven handling). Same boundary-cast rationale as appStateBackend.
-	const waContactsBackend = config.multiDbStore
-		? new WaContactsBackend((config.multiDbStore as any).handle('wa.db'))
-		: undefined
+	const waContactsBackend = initOptionalMirror(
+		'wa.db.wa_contacts',
+		'contacts_events',
+		() => new WaContactsBackend((config.multiDbStore as any).handle('wa.db'))
+	)
 
 	// Mirrors THIS client's own device registration into `companion_devices.db`
 	// on connection open. InfiniteAPI is a companion (not the primary that owns
 	// companions), so it stores a single row: itself, with the DeviceProps it
 	// declared at pairing. Best-effort; the reconnect session lives in creds.db,
 	// not here. Same boundary-cast rationale as appStateBackend.
-	const companionDevicesBackend = config.multiDbStore
-		? new CompanionDevicesBackend((config.multiDbStore as any).handle('companion_devices.db'))
-		: undefined
+	const companionDevicesBackend = initOptionalMirror(
+		'companion_devices.db.companion_devices',
+		'creds_device_state',
+		() => new CompanionDevicesBackend((config.multiDbStore as any).handle('companion_devices.db'))
+	)
 
 	// Mirrors static/live location (location_cache/location_sharer)
 	// into location.db when a multi-db-sqlite store is configured. Same
 	// boundary-cast rationale as appStateBackend above.
 
-	const locationBackend = config.multiDbStore
-		? new LocationBackend((config.multiDbStore as any).handle('location.db'))
-		: undefined
+	const locationBackend = initOptionalMirror(
+		'location.db.location',
+		'message_proto_location',
+		() => new LocationBackend((config.multiDbStore as any).handle('location.db'))
+	)
 
 	// Mirrors mute/pin chat settings into chatsettings.db when a
 	// multi-db-sqlite store is configured. Same boundary-cast rationale as
 	// appStateBackend above.
 
-	const chatSettingsBackend = config.multiDbStore
-		? new ChatSettingsBackend((config.multiDbStore as any).handle('chatsettings.db'))
-		: undefined
+	const chatSettingsBackend = initOptionalMirror(
+		'chatsettings.db.chat_settings',
+		'chat_events',
+		() => new ChatSettingsBackend((config.multiDbStore as any).handle('chatsettings.db'))
+	)
 
 	// Mirrors received status/story updates (status/status_info)
 	// into status.db when a multi-db-sqlite store is configured. Same
 	// boundary-cast rationale as appStateBackend above.
 
-	const statusBackend = config.multiDbStore
-		? new StatusBackend((config.multiDbStore as any).handle('status.db'))
-		: undefined
+	const statusBackend = initOptionalMirror(
+		'status.db.status',
+		'status_message_events',
+		() => new StatusBackend((config.multiDbStore as any).handle('status.db'))
+	)
 
 	// Mirrors starred/recent stickers into stickers.db from the
 	// app-state `stickerAction`/`removeRecentStickerAction` (validated source).
-	const stickersBackend = config.multiDbStore
-		? new StickersBackend((config.multiDbStore as any).handle('stickers.db'))
-		: undefined
+	const stickersBackend = initOptionalMirror(
+		'stickers.db.stickers',
+		'app_state_sticker_actions',
+		() => new StickersBackend((config.multiDbStore as any).handle('stickers.db'))
+	)
 
 	// Mirrors real messages (message/chat tables) + delete-for-everyone
 	// (message_revoked) into msgstore.db when a multi-db-sqlite store is
@@ -291,32 +320,53 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// for chat/sender jid_row_id lookups — cheap (stateless prepared-
 	// statement wrapper over the same connection the LID mapping already
 	// uses), same pattern as factories.ts's createMessageQuarantineRecorder.
-	const messageStoreBackend = config.multiDbStore
-		? new MessageStoreBackend(
+	const messageStoreBackend = initOptionalMirror(
+		'msgstore.db.message',
+		'legacy_message_proto',
+		() =>
+			new MessageStoreBackend(
 				(config.multiDbStore as any).handle('msgstore.db'),
 				new JidMapBackend((config.multiDbStore as any).handle('msgstore.db'))
+			)
+	)
+	const receiptReplayBackend = messageStoreBackend
+		? initOptionalMirror(
+				'msgstore.db.receipt_orphaned',
+				'live_receipt_events',
+				() =>
+					new ReceiptBackend(
+						(config.multiDbStore as any).handle('msgstore.db'),
+						new JidMapBackend((config.multiDbStore as any).handle('msgstore.db')),
+						messageStoreBackend
+					)
 			)
 		: undefined
 
 	// Mirrors media metadata (message_media/message_thumbnail/audio_data/
 	// message_streaming_sidecar) into msgstore.db. Same boundary-cast
 	// rationale as messageStoreBackend above.
-	const mediaBackend = config.multiDbStore
-		? new MessageMediaBackend((config.multiDbStore as any).handle('msgstore.db'))
-		: undefined
+	const mediaBackend = initOptionalMirror(
+		'msgstore.db.message_media',
+		'message_proto_media',
+		() => new MessageMediaBackend((config.multiDbStore as any).handle('msgstore.db'))
+	)
 
 	// Mirrors reactions/polls/locations/vcards attached to a message
 	// (message_add_on(+_reaction)/message_poll(+_option)/message_location/
 	// message_vcard) into msgstore.db. Same boundary-cast + fresh-
 	// JidMapBackend rationale as messageStoreBackend above.
-	const addOnBackend =
-		config.multiDbStore && messageStoreBackend
-			? new MessageAddOnBackend(
-					(config.multiDbStore as any).handle('msgstore.db'),
-					new JidMapBackend((config.multiDbStore as any).handle('msgstore.db')),
-					messageStoreBackend
-				)
-			: undefined
+	const addOnBackend = messageStoreBackend
+		? initOptionalMirror(
+				'msgstore.db.message_add_on',
+				'legacy_message_proto',
+				() =>
+					new MessageAddOnBackend(
+						(config.multiDbStore as any).handle('msgstore.db'),
+						new JidMapBackend((config.multiDbStore as any).handle('msgstore.db')),
+						messageStoreBackend
+					)
+			)
+		: undefined
 
 	const ownsPlaceholderResendCache = !config.placeholderResendCache
 	const placeholderResendCache =
@@ -1036,12 +1086,19 @@ export const makeChatsSocket = (config: SocketConfig) => {
 								// See AppStateBackend's class doc: `dirty_version=-1` mirrors the
 								// real schema's "converged" default — this gateway only persists
 								// server-confirmed state, never a pending local-first mutation.
-								appStateBackend?.setCollectionVersion({
-									collectionName: name,
-									version: newState.version,
-									ltHash: Buffer.from(newState.hash),
-									dirtyVersion: -1
-								})
+								try {
+									appStateBackend?.setCollectionVersion({
+										collectionName: name,
+										version: newState.version,
+										ltHash: Buffer.from(newState.hash),
+										dirtyVersion: -1
+									})
+								} catch (err) {
+									logger.warn(
+										{ err, collectionName: name, version: newState.version, mirror: 'sync.db.collection' },
+										'multi-db-sqlite: failed to mirror snapshot collection version; auth state remains authoritative'
+									)
+								}
 							}
 
 							// only process if there are syncd patches
@@ -1059,12 +1116,19 @@ export const makeChatsSocket = (config: SocketConfig) => {
 								)
 
 								await authState.keys.set({ 'app-state-sync-version': { [name]: newState } })
-								appStateBackend?.setCollectionVersion({
-									collectionName: name,
-									version: newState.version,
-									ltHash: Buffer.from(newState.hash),
-									dirtyVersion: -1
-								})
+								try {
+									appStateBackend?.setCollectionVersion({
+										collectionName: name,
+										version: newState.version,
+										ltHash: Buffer.from(newState.hash),
+										dirtyVersion: -1
+									})
+								} catch (err) {
+									logger.warn(
+										{ err, collectionName: name, version: newState.version, mirror: 'sync.db.collection' },
+										'multi-db-sqlite: failed to mirror patch collection version; auth state remains authoritative'
+									)
+								}
 
 								logger.info(`synced ${name} to v${newState.version}`)
 								initialVersionMap[name] = newState.version
@@ -1812,7 +1876,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				messageStoreBackend,
 				mediaBackend,
 				addOnBackend,
-				historySyncCompanionBackend
+				historySyncCompanionBackend,
+				receiptBackend: receiptReplayBackend
 			})
 		])
 
@@ -2079,6 +2144,19 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			logger.debug({ err, id: c.id }, 'wa_contacts mirror: upsert failed (ignored)')
 		}
 	}
+	const contactMirrorChains = new Map<string, Promise<void>>()
+	const enqueueContactMirror = (contact: Partial<Contact>): void => {
+		if (!contact.id) return
+		const key = jidNormalizedUser(contact.id)
+		const previous = contactMirrorChains.get(key) ?? Promise.resolve()
+		const next = previous
+			.catch(() => undefined)
+			.then(() => mirrorContactToWaDb(contact))
+			.finally(() => {
+				if (contactMirrorChains.get(key) === next) contactMirrorChains.delete(key)
+			})
+		contactMirrorChains.set(key, next)
+	}
 
 	/**
 	 * Copies whichever wa_contacts row exists onto its pair, so the store holds
@@ -2101,12 +2179,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	if (waContactsBackend) {
 		ev.on('contacts.upsert', contacts => {
 			for (const c of contacts) {
-				void mirrorContactToWaDb(c)
+				enqueueContactMirror(c)
 			}
 		})
 		ev.on('contacts.update', updates => {
 			for (const c of updates) {
-				void mirrorContactToWaDb(c)
+				enqueueContactMirror(c)
 			}
 		})
 		// Contacts learned during history sync arrive here (not via
@@ -2114,7 +2192,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		// sync would otherwise leave wa_contacts empty until a live event.
 		ev.on('messaging-history.set', ({ contacts }) => {
 			for (const c of contacts) {
-				void mirrorContactToWaDb(c)
+				enqueueContactMirror(c)
 			}
 		})
 	}

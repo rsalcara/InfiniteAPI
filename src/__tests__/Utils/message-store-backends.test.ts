@@ -87,6 +87,36 @@ describe('msgstore.db message-store backends', () => {
 			expect(chat.last_message_row_id).toBe(rowId)
 		})
 
+		it('does not move the chat last-message pointer backwards for older history', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const newest = backend.recordMessage({
+				chatJid,
+				fromMe: false,
+				keyId: 'NEWEST',
+				timestamp: 2_000,
+				incrementUnread: true
+			})
+			backend.recordMessage({
+				chatJid,
+				fromMe: false,
+				keyId: 'OLDER-HISTORY',
+				timestamp: 1_000,
+				incrementUnread: true
+			})
+
+			const chat = store
+				.handle('msgstore.db')
+				.prepare('SELECT last_message_row_id, sort_timestamp, last_message_sort_id, unseen_message_count FROM chat')
+				.get() as any
+			expect(chat).toMatchObject({
+				last_message_row_id: newest,
+				sort_timestamp: 2_000,
+				last_message_sort_id: 2_000,
+				unseen_message_count: 2
+			})
+		})
+
 		it('recordRevoke updates the target row to the tombstone type and links message_revoked', () => {
 			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
 			const chatJid = '5515991426667@s.whatsapp.net'
@@ -196,6 +226,32 @@ describe('msgstore.db message-store backends', () => {
 			const orphaned = store.handle('msgstore.db').prepare('SELECT * FROM receipt_orphaned').all() as any[]
 			expect(orphaned).toHaveLength(1)
 			expect(orphaned[0]).toMatchObject({ key_id: 'NEVER-SEEN' })
+		})
+
+		it('replays an orphaned receipt with its original kind after the message arrives', () => {
+			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const receipts = new ReceiptBackend(store.handle('msgstore.db'), jidMap, messageStore)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			receipts.recordUserReceipt({
+				chatJid,
+				fromMe: true,
+				keyId: 'LATE-MESSAGE',
+				receiptUserJid: chatJid,
+				kind: 'read',
+				timestamp: 1_200
+			})
+			const messageRowId = messageStore.recordMessage({
+				chatJid,
+				fromMe: true,
+				keyId: 'LATE-MESSAGE',
+				timestamp: 1_000
+			})
+
+			expect(receipts.replayOrphaned(chatJid, true, 'LATE-MESSAGE')).toBe(1)
+			expect(receipts.listUserReceipts(messageRowId)[0]).toMatchObject({ read_timestamp: 1_200 })
+			expect(store.handle('msgstore.db').prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({
+				n: 0
+			})
 		})
 
 		it('routes a device receipt for an add-on (reaction) to message_add_on_receipt_device', () => {
@@ -366,6 +422,43 @@ describe('msgstore.db message-store backends', () => {
 				.all(pollRowId) as any[]
 			expect(optionRows.find(r => r._id === optA)?.vote_total).toBe(0) // decremented — voter moved away from A
 			expect(optionRows.find(r => r._id === optB)?.vote_total).toBe(1)
+		})
+
+		it('deduplicates poll selections and rejects an option from another poll', () => {
+			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap, messageStore)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const pollA = messageStore.recordMessage({ chatJid, fromMe: true, keyId: 'POLL-A', timestamp: 1_000 })
+			const pollB = messageStore.recordMessage({ chatJid, fromMe: true, keyId: 'POLL-B', timestamp: 1_001 })
+			const optionA = addOns.recordPollOption({ messageRowId: pollA, optionSha256: 'a', optionName: 'A' })
+			const optionB = addOns.recordPollOption({ messageRowId: pollB, optionSha256: 'b', optionName: 'B' })
+
+			addOns.recordPollVote({
+				chatJid,
+				fromMe: false,
+				keyId: 'VOTE-DEDUP',
+				senderJid: chatJid,
+				parentMessageRowId: pollA,
+				timestamp: 1_100,
+				senderTimestamp: 1_100,
+				selectedOptionRowIds: [optionA, optionA]
+			})
+			expect(
+				store.handle('msgstore.db').prepare('SELECT vote_total FROM message_poll_option WHERE _id = ?').get(optionA)
+			).toMatchObject({ vote_total: 1 })
+
+			expect(() =>
+				addOns.recordPollVote({
+					chatJid,
+					fromMe: false,
+					keyId: 'VOTE-CROSS-POLL',
+					senderJid: chatJid,
+					parentMessageRowId: pollA,
+					timestamp: 1_200,
+					senderTimestamp: 1_200,
+					selectedOptionRowIds: [optionB]
+				})
+			).toThrow('does not belong to parent message')
 		})
 
 		it('records a location and a vcard attached to a message', () => {

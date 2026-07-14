@@ -260,6 +260,16 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		})
 	}
 
+	const isTypedSignalValue = (type: TypedSignalType, value: unknown): boolean => {
+		const isBytes = (candidate: unknown): boolean => Buffer.isBuffer(candidate) || candidate instanceof Uint8Array
+		if (type === 'pre-key') {
+			if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+			const pair = value as { public?: unknown; private?: unknown }
+			return isBytes(pair.public) && isBytes(pair.private)
+		}
+		return isBytes(value)
+	}
+
 	const applySetTx = store.handle('axolotl.db').transaction((data: SignalDataSet) => {
 		for (const category in data) {
 			const type = category as keyof SignalDataTypeMap
@@ -328,8 +338,20 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		throw lastError ?? new Error(`runWithBusyRetry(${label}): no attempts were made (MAX_BUSY_ATTEMPTS=0?)`)
 	}
 
-	const runSetWithBusyRetry = (data: SignalDataSet): Promise<void> =>
-		runWithBusyRetry('signal_kv set', () => applySetTx.immediate(data))
+	const runSetWithBusyRetry = (data: SignalDataSet): Promise<void> => {
+		const nonEmptyTypes = Object.keys(data).filter(type => {
+			const bucket = data[type as keyof SignalDataTypeMap]
+			return bucket && Object.keys(bucket).length > 0
+		})
+		if (nonEmptyTypes.includes('app-state-sync-key') && nonEmptyTypes.length > 1) {
+			throw new Error(
+				`multi-db-sqlite: one keys.set batch cannot mix app-state-sync-key (creds.db) with ${nonEmptyTypes
+					.filter(type => type !== 'app-state-sync-key')
+					.join(', ')} (axolotl.db); split the batch so each physical database commits independently`
+			)
+		}
+		return runWithBusyRetry('signal_kv set', () => applySetTx.immediate(data))
+	}
 
 	const state: AuthenticationState = {
 		// Getter/setter pair so `state.creds = newObj` mutations are
@@ -384,7 +406,9 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 						const serialized = serializedById[id]!
 
 						try {
-							out[id] = JSON.parse(serialized, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
+							const parsed = JSON.parse(serialized, BufferJSON.reviver) as unknown
+							if (!isTypedSignalValue(type, parsed)) throw new Error('typed row has an invalid runtime shape')
+							out[id] = parsed as SignalDataTypeMap[typeof type]
 						} catch {
 							// A typed row left by the pre-typed best-effort mirror is
 							// raw session/sender-key bytes or a public-only pre-key —

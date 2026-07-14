@@ -10,14 +10,12 @@
  * cache.mget). Rewriting all of them to a typed API is a much bigger
  * change than this PR can absorb without risk. The adapter preserves the
  * exact shape (incl. async-or-sync return contract) and stores devices
- * as JSON in `user_device_cache_json` — a small auxiliary table on
- * `msgstore.db` that keeps the typed `user_device` tables free for the
- * eventual full typed split.
+ * in the typed `user_device` family first, with `user_device_cache_json`
+ * retained as a byte-for-byte recovery fallback.
  *
  * Behavior preserved:
- *   - 5-minute default TTL via the auxiliary table's `expires_at` column
- *     (the typed `user_device_info.expected_timestamp` column stays
- *     reserved for the future typed split)
+ *   - 5-minute default TTL in both `expires_at` and the typed
+ *     `user_device_info.expected_timestamp`
  *   - `set` replaces previous entry atomically
  *   - `del` removes the entry
  *   - `mget` returns a `Record<user, devices>` for the requested users
@@ -46,7 +44,7 @@ type DebugLogger = { debug?: (obj: unknown, msg: string) => void }
  * two real device-bearing domains; whichever has a fresh typed row wins, and
  * anything exotic (hosted, etc.) simply falls back to the JSON mirror.
  */
-const CANDIDATE_SERVERS = ['s.whatsapp.net', 'lid'] as const
+const CANDIDATE_SERVERS = ['s.whatsapp.net', 'lid', 'hosted', 'hosted.lid'] as const
 
 /**
  * primary_device_version value written per user. The real msgstore.db capture
@@ -145,6 +143,7 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 		del: SqliteStatementLike
 		prune: SqliteStatementLike
 		flushAll: SqliteStatementLike
+		selectExpiredTyped: SqliteStatementLike
 	}
 
 	private readonly defaultTtlMs: number
@@ -184,7 +183,10 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 			),
 			del: this.db.prepare('DELETE FROM user_device_cache_json WHERE user_jid = ?'),
 			prune: this.db.prepare('DELETE FROM user_device_cache_json WHERE expires_at <= ?'),
-			flushAll: this.db.prepare(FLUSH_ALL_SQL)
+			flushAll: this.db.prepare(FLUSH_ALL_SQL),
+			selectExpiredTyped: this.db.prepare(
+				'SELECT user_jid_row_id FROM user_device_info WHERE expected_timestamp IS NOT NULL AND expected_timestamp <= ?'
+			)
 		}
 
 		this.mgetQuery = prepareInClause(
@@ -282,8 +284,9 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 		// `raw_id` (the mobile device-list version) isn't exposed at this cache
 		// boundary; 0 is a benign placeholder. `expected_timestamp` mirrors the
 		// JSON row's TTL so the typed freshness check matches JSON expiry.
+		const existingInfo = this.deviceBackend.getInfo(userRowId)
 		this.deviceBackend.replaceDevices(userRowId, deviceRows, {
-			rawId: 0,
+			rawId: existingInfo?.rawId ?? 0,
 			timestamp: Date.now(),
 			expectedTimestamp: expiresAt
 		})
@@ -292,14 +295,18 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 		// every user (6085 rows), so 1 is the faithful value; the true version
 		// isn't exposed at this cache boundary (would need the USync device-list
 		// version plumbed through). Populated here to match the mobile schema.
-		this.deviceBackend.setPrimaryDeviceVersion(userRowId, PRIMARY_DEVICE_VERSION_DEFAULT)
+		if (this.deviceBackend.getPrimaryDeviceVersion(userRowId) === null) {
+			this.deviceBackend.setPrimaryDeviceVersion(userRowId, PRIMARY_DEVICE_VERSION_DEFAULT)
+		}
 	}
 
 	/** Removes the typed rows for a bare user key (both candidate domains). */
 	private typedDelete(key: string): void {
-		if (!this.sourceOfTruth || !this.deviceBackend) return
-		const found = this.lookupUserRow(key)
-		if (found) this.deviceBackend.deleteDevices(found.rowId)
+		if (!this.sourceOfTruth || !this.deviceBackend || !this.jidMap) return
+		for (const server of CANDIDATE_SERVERS) {
+			const rowId = this.jidMap.lookupJidRowId(`${key}@${server}`)
+			if (rowId !== null) this.deviceBackend.deleteDevices(rowId)
+		}
 	}
 
 	get<T = NodeCacheCompatibleEntry>(key: string): T | undefined {
@@ -334,6 +341,7 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 			// which expects `undefined | number`, not an exception.
 			try {
 				this.stmts.del.run(key)
+				this.typedDelete(key)
 			} catch {
 				/* lazy expiry only — leave the stale row for the prune ticker */
 			}
@@ -475,8 +483,13 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 
 	/** Removes every entry whose `expires_at` has passed. Returns rows pruned. */
 	pruneExpired(now: number = Date.now()): number {
-		const r = this.stmts.prune.run(now)
-		return r.changes
+		return this.db.transaction(() => {
+			if (this.sourceOfTruth && this.deviceBackend) {
+				const rows = this.stmts.selectExpiredTyped.all(now) as Array<{ user_jid_row_id: number }>
+				for (const row of rows) this.deviceBackend.deleteDevices(row.user_jid_row_id)
+			}
+			return this.stmts.prune.run(now).changes
+		})()
 	}
 
 	/**

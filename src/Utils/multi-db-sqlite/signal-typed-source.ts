@@ -86,10 +86,12 @@ export class SignalTypedSourceStore {
 				case 'session': {
 					const parsed = parseProtocolAddressId(id)
 					if (!parsed) return null
+					const recipientAccountType = domainTypeToAccountType(parsed.domainType)
+					if (recipientAccountType === null) return null
 					const row = this.backend.getSession({
 						deviceId: parsed.deviceId,
 						recipientAccountId: parsed.user,
-						recipientAccountType: domainTypeToAccountType(parsed.domainType)
+						recipientAccountType
 					})
 					return row ? row.record.toString('utf-8') : null
 				}
@@ -104,11 +106,13 @@ export class SignalTypedSourceStore {
 				case 'sender-key': {
 					const parsed = parseSenderKeyId(id)
 					if (!parsed) return null
+					const senderAccountType = domainTypeToAccountType(parsed.sender.domainType)
+					if (senderAccountType === null) return null
 					const row = this.backend.getSenderKey({
 						groupId: parsed.groupId,
 						deviceId: parsed.sender.deviceId,
 						senderAccountId: parsed.sender.user,
-						senderAccountType: domainTypeToAccountType(parsed.sender.domainType)
+						senderAccountType
 					})
 					return row ? row.record.toString('utf-8') : null
 				}
@@ -153,10 +157,12 @@ export class SignalTypedSourceStore {
 					for (const id of ids) {
 						const parsed = parseProtocolAddressId(id)
 						if (!parsed) continue
+						const recipientAccountType = domainTypeToAccountType(parsed.domainType)
+						if (recipientAccountType === null) continue
 						const k = {
 							deviceId: parsed.deviceId,
 							recipientAccountId: parsed.user,
-							recipientAccountType: domainTypeToAccountType(parsed.domainType)
+							recipientAccountType
 						}
 						const key = tupleKey(k.deviceId, k.recipientAccountId, k.recipientAccountType)
 						if (addAlias(aliasesByKey, key, id)) keys.push(k)
@@ -200,11 +206,13 @@ export class SignalTypedSourceStore {
 					for (const id of ids) {
 						const parsed = parseSenderKeyId(id)
 						if (!parsed) continue
+						const senderAccountType = domainTypeToAccountType(parsed.sender.domainType)
+						if (senderAccountType === null) continue
 						const k = {
 							groupId: parsed.groupId,
 							deviceId: parsed.sender.deviceId,
 							senderAccountId: parsed.sender.user,
-							senderAccountType: domainTypeToAccountType(parsed.sender.domainType)
+							senderAccountType
 						}
 						const key = tupleKey(k.groupId, k.deviceId, k.senderAccountId, k.senderAccountType)
 						if (addAlias(aliasesByKey, key, id)) keys.push(k)
@@ -262,11 +270,13 @@ export class SignalTypedSourceStore {
 			case 'session': {
 				const parsed = parseProtocolAddressId(id)
 				if (!parsed) return this.warnUnparsed(type, id)
+				const recipientAccountType = domainTypeToAccountType(parsed.domainType)
+				if (recipientAccountType === null) return this.warnUnsupportedDomain(type, id, parsed.domainType)
 				this.backend.putSession(
 					{
 						deviceId: parsed.deviceId,
 						recipientAccountId: parsed.user,
-						recipientAccountType: domainTypeToAccountType(parsed.domainType)
+						recipientAccountType
 					},
 					record
 				)
@@ -283,12 +293,14 @@ export class SignalTypedSourceStore {
 			case 'sender-key': {
 				const parsed = parseSenderKeyId(id)
 				if (!parsed) return this.warnUnparsed(type, id)
+				const senderAccountType = domainTypeToAccountType(parsed.sender.domainType)
+				if (senderAccountType === null) return this.warnUnsupportedDomain(type, id, parsed.sender.domainType)
 				this.backend.putSenderKey(
 					{
 						groupId: parsed.groupId,
 						deviceId: parsed.sender.deviceId,
 						senderAccountId: parsed.sender.user,
-						senderAccountType: domainTypeToAccountType(parsed.sender.domainType)
+						senderAccountType
 					},
 					record
 				)
@@ -325,10 +337,12 @@ export class SignalTypedSourceStore {
 			case 'session': {
 				const parsed = parseProtocolAddressId(id)
 				if (!parsed) return this.warnUnparsed(type, id)
+				const recipientAccountType = domainTypeToAccountType(parsed.domainType)
+				if (recipientAccountType === null) return
 				this.backend.deleteSession({
 					deviceId: parsed.deviceId,
 					recipientAccountId: parsed.user,
-					recipientAccountType: domainTypeToAccountType(parsed.domainType)
+					recipientAccountType
 				})
 				return
 			}
@@ -343,11 +357,13 @@ export class SignalTypedSourceStore {
 			case 'sender-key': {
 				const parsed = parseSenderKeyId(id)
 				if (!parsed) return this.warnUnparsed(type, id)
+				const senderAccountType = domainTypeToAccountType(parsed.sender.domainType)
+				if (senderAccountType === null) return
 				this.backend.deleteSenderKey({
 					groupId: parsed.groupId,
 					deviceId: parsed.sender.deviceId,
 					senderAccountId: parsed.sender.user,
-					senderAccountType: domainTypeToAccountType(parsed.sender.domainType)
+					senderAccountType
 				})
 				return
 			}
@@ -386,6 +402,13 @@ export class SignalTypedSourceStore {
 		this.logger?.debug?.(
 			{ type, id },
 			'multi-db-sqlite: could not parse id for typed signal store, signal_kv still written'
+		)
+	}
+
+	private warnUnsupportedDomain(type: TypedSignalType, id: string, domainType: number): void {
+		this.logger?.debug?.(
+			{ type, id, domainType, reason: 'hosted-or-unknown-domain' },
+			'multi-db-sqlite: signal id not mapped to a typed row, signal_kv still written'
 		)
 	}
 

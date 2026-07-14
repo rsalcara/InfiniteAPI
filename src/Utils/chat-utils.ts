@@ -548,6 +548,7 @@ export const decodeSyncdSnapshot = async (
 	newState.version = toNumber(snapshotVersion)
 
 	const mutationMap: ChatMutationMap = {}
+	const pendingRawMutations: Array<RawSyncdMutation & { version: number }> = []
 	const areMutationsRequired = typeof minimumVersionNumber === 'undefined' || newState.version > minimumVersionNumber
 
 	const snapshotRecords = snapshot.records
@@ -569,7 +570,7 @@ export const decodeSyncdSnapshot = async (
 		// Persisted regardless of `areMutationsRequired` — that flag only gates
 		// the in-memory diff used for THIS sync's immediate event emission, not
 		// whether a sync.db mirror should see the mutation at all.
-		onRawMutation ? raw => onRawMutation({ ...raw, version: newState.version }) : undefined
+		onRawMutation ? raw => pendingRawMutations.push({ ...raw, version: newState.version }) : undefined
 	)
 	newState.hash = hash
 	newState.indexValueMap = indexValueMap
@@ -607,6 +608,13 @@ export const decodeSyncdSnapshot = async (
 			// persist an unverifiable high-water mark and break subsequent patches.
 			throw new Boom(`failed to verify LTHash at ${newState.version} of ${name} from snapshot`)
 		}
+	}
+
+	// A mutation-level MAC is not enough to trust the snapshot as a whole.
+	// Publish raw rows only after the aggregate LTHash MAC has succeeded, so a
+	// rejected snapshot can never leave durable sync.db rows behind.
+	if (onRawMutation) {
+		for (const raw of pendingRawMutations) onRawMutation(raw)
 	}
 
 	return {
@@ -648,6 +656,7 @@ export const decodePatches = async (
 		}
 
 		const patchVersion = toNumber(ver)
+		const pendingRawMutations: Array<RawSyncdMutation & { version: number }> = []
 
 		newState.version = patchVersion
 		const shouldMutate = typeof minimumVersionNumber === 'undefined' || patchVersion > minimumVersionNumber
@@ -671,7 +680,7 @@ export const decodePatches = async (
 					}
 				: () => {},
 			validateMacs,
-			onRawMutation ? raw => onRawMutation({ ...raw, version: patchVersion }) : undefined
+			onRawMutation ? raw => pendingRawMutations.push({ ...raw, version: patchVersion }) : undefined
 		)
 
 		newState.hash = decodeResult.hash
@@ -707,6 +716,13 @@ export const decodePatches = async (
 				// a known-divergent hash.
 				throw new Boom(`failed to verify LTHash at ${newState.version} of ${name}`)
 			}
+		}
+
+		// Do not persist a partially authenticated patch. Flush only after its
+		// aggregate snapshot MAC is accepted (or immediately when validation is
+		// explicitly disabled by the caller).
+		if (onRawMutation) {
+			for (const raw of pendingRawMutations) onRawMutation(raw)
 		}
 
 		// clear memory used up by the mutations

@@ -188,6 +188,18 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
+	const initOptionalMirror = <T>(mirror: string, fallback: string, factory: () => T): T | undefined => {
+		if (!config.multiDbStore) return undefined
+		try {
+			return factory()
+		} catch (err) {
+			logger.warn(
+				{ err, mirror, primary: 'multi_db_sqlite', fallback, reason: err instanceof Error ? err.message : String(err) },
+				'multi-db-sqlite: optional receive mirror initialization failed; legacy path remains active'
+			)
+			return undefined
+		}
+	}
 
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
 	const retryMutex = makeMutex()
@@ -226,9 +238,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	// SQLite types. `MultiDbSqliteStore.handle()` is idempotent (cached), so
 	// this is the same underlying connection chats.ts's own StatusBackend
 	// instance uses — just a second, cheap wrapper over it.
-	const statusBackend = config.multiDbStore
-		? new StatusBackend((config.multiDbStore as any).handle('status.db'))
-		: undefined
+	const statusBackend = initOptionalMirror(
+		'status.db.status_seen_receipt',
+		'message_receipt_events',
+		() => new StatusBackend((config.multiDbStore as any).handle('status.db'))
+	)
 
 	// Mirrors message receipts (receipt_user/receipt_device) into
 	// msgstore.db when a multi-db-sqlite store is configured. Same
@@ -238,20 +252,27 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	// needed here too — ReceiptBackend resolves `chat._id` through it rather
 	// than a bare JidMapBackend (see ChatRowResolver's doc for why those are
 	// different values).
-	const receiptChatResolver = config.multiDbStore
-		? new MessageStoreBackend(
+	const receiptChatResolver = initOptionalMirror(
+		'msgstore.db.receipt_chat_resolver',
+		'message_receipt_events',
+		() =>
+			new MessageStoreBackend(
 				(config.multiDbStore as any).handle('msgstore.db'),
 				new JidMapBackend((config.multiDbStore as any).handle('msgstore.db'))
 			)
+	)
+	const receiptBackend = receiptChatResolver
+		? initOptionalMirror(
+				'msgstore.db.receipts',
+				'message_receipt_events',
+				() =>
+					new ReceiptBackend(
+						(config.multiDbStore as any).handle('msgstore.db'),
+						new JidMapBackend((config.multiDbStore as any).handle('msgstore.db')),
+						receiptChatResolver
+					)
+			)
 		: undefined
-	const receiptBackend =
-		config.multiDbStore && receiptChatResolver
-			? new ReceiptBackend(
-					(config.multiDbStore as any).handle('msgstore.db'),
-					new JidMapBackend((config.multiDbStore as any).handle('msgstore.db')),
-					receiptChatResolver
-				)
-			: undefined
 
 	// Best-effort typed mirror of the axolotl.db pre-decrypt/pre-ack tables:
 	//   - `preacks`               — pending pre-ack buffer (sendMessageAck)
@@ -260,9 +281,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	// Same boundary-cast + idempotent-handle rationale as the receipt/status
 	// backends above. Every write is wrapped in try/catch at the call site so a
 	// mirror failure never blocks the real ack / retry flow (fallback = legacy).
-	const signalTypedBackend = config.multiDbStore
-		? new SignalTypedBackend((config.multiDbStore as any).handle('axolotl.db'))
-		: undefined
+	const signalTypedBackend = initOptionalMirror(
+		'axolotl.db.transient_signal_tables',
+		'legacy_signal_flow',
+		() => new SignalTypedBackend((config.multiDbStore as any).handle('axolotl.db'))
+	)
 
 	// Per-socket cache of Meta AI / FBID bot message secrets (msmsg). Bounded by
 	// DEFAULT_CACHE_MAX_KEYS.MSMSG_SECRET (500) + 1h TTL. Cleared AND closed on

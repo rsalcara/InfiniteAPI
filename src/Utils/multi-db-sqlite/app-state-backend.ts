@@ -177,8 +177,8 @@ export class AppStateBackend {
 		}))
 	}
 
-	insertMutation(row: Omit<SyncdMutationRow, 'id'>): number {
-		const res = this.stmts.insertSyncdMutation.run(
+	insertMutation(row: Omit<SyncdMutationRow, 'id'>): void {
+		this.stmts.insertSyncdMutation.run(
 			row.mutationIndex,
 			row.mutationValue ?? null,
 			row.mutationVersion,
@@ -190,7 +190,6 @@ export class AppStateBackend {
 			row.chatJid ?? null,
 			row.mutationName ?? null
 		)
-		return Number(res.lastInsertRowid)
 	}
 
 	listMutations(collectionName: string): SyncdMutationRow[] {

@@ -48,6 +48,7 @@ import {
 	type MessageAddOnBackend,
 	type MessageMediaBackend,
 	type MessageStoreBackend,
+	type ReceiptBackend,
 	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
 	type StatusBackend,
 	UI_ELEMENT_TYPE
@@ -77,6 +78,8 @@ type ProcessMessageContext = {
 	statusBackend?: StatusBackend
 	/** Optional msgstore.db mirror — real message store (message/chat/revoke). */
 	messageStoreBackend?: MessageStoreBackend
+	/** Optional msgstore.db receipt holding-pen replayer. */
+	receiptBackend?: ReceiptBackend
 	/** Optional msgstore.db mirror — media metadata (message_media/message_thumbnail/audio_data). */
 	mediaBackend?: MessageMediaBackend
 	/** Optional msgstore.db mirror — reactions/polls/locations/vcards attached to a message. */
@@ -562,6 +565,7 @@ const processMessage = async (
 		locationBackend,
 		statusBackend,
 		messageStoreBackend,
+		receiptBackend,
 		mediaBackend,
 		addOnBackend,
 		historySyncCompanionBackend
@@ -591,7 +595,11 @@ const processMessage = async (
 	/** Emits the REVOKE update once the target message is confirmed to exist —
 	 * shared by the live path (case REVOKE below) and orphan replay. */
 	const emitRevokeUpdate = (revokeStanza: WAMessage, revokeProtocolMsg: proto.Message.IProtocolMessage): void => {
-		const targetKey: WAMessageKey = { ...revokeStanza.key, id: revokeProtocolMsg.key?.id }
+		const targetKey: WAMessageKey = {
+			...revokeProtocolMsg.key,
+			remoteJid: revokeProtocolMsg.key?.remoteJid ?? revokeStanza.key.remoteJid,
+			id: revokeProtocolMsg.key?.id
+		}
 		ev.emit('messages.update', [
 			{ key: targetKey, update: { message: null, messageStubType: WAMessageStubType.REVOKE, key: revokeStanza.key } }
 		])
@@ -682,27 +690,6 @@ const processMessage = async (
 
 	const content = normalizeMessageContent(message.message)
 
-	// Replay any REVOKE/event-response that arrived before this (now-processed) real
-	// message did. isRealMsg is exactly the class of message that can ever be a
-	// parent for either — mutually exclusive with protocolMessage/reactionMessage/
-	// pollUpdateMessage by construction (see isRealMessage's exclusions above), so
-	// this never races with the branches below that handle those message kinds.
-	if (isRealMsg && orphanQueue) {
-		const drained = orphanQueue.drain(message.key)
-		for (const entry of drained) {
-			const entryContent = normalizeMessageContent(entry.message.message)
-			if (entry.kind === 'revoke' && entryContent?.protocolMessage) {
-				emitRevokeUpdate(entry.message, entryContent.protocolMessage)
-			} else if (entry.kind === 'event-response' && entryContent?.encEventResponseMessage) {
-				const encEventResponse = entryContent.encEventResponseMessage
-				const creationMsgKey = encEventResponse.eventCreationMessageKey
-				if (creationMsgKey) {
-					await decryptAndEmitEventResponse(entry.message, encEventResponse, creationMsgKey, content!)
-				}
-			}
-		}
-	}
-
 	// unarchive chat if it's a real message, or someone reacted to our message
 	// and we've the unarchive chats setting on
 	if ((isRealMsg || content?.reactionMessage?.key?.fromMe) && accountSettings?.unarchiveChats) {
@@ -715,11 +702,13 @@ const processMessage = async (
 	// side channel, same rule as the other optional multi-db-sqlite mirrors
 	// in this file. Also mirrors media metadata and poll-creation options
 	// via the same messageRowId, since both hang off the message row.
+	let canReplayOrphans = !messageStoreBackend
 	if (messageStoreBackend && isRealMsg && message.key.id) {
 		let mirrorOperation: MessageMirrorOperation = 'message_record'
+		let messageRowId: number | undefined
 		try {
 			const senderJid = getKeyAuthor(message.key, meId)
-			const messageRowId = messageStoreBackend.recordMessage({
+			messageRowId = messageStoreBackend.recordMessage({
 				chatJid: chat.id!,
 				fromMe: !!message.key.fromMe,
 				keyId: message.key.id,
@@ -734,6 +723,15 @@ const processMessage = async (
 					: null,
 				incrementUnread: shouldIncrementChatUnread(message)
 			})
+			canReplayOrphans = true
+			try {
+				receiptBackend?.replayOrphaned(chat.id!, !!message.key.fromMe, message.key.id)
+			} catch (err) {
+				logger?.warn(
+					{ err, messageId: message.key.id, table: 'receipt_orphaned', fallback: 'live_receipt_events' },
+					'multi-db-sqlite: failed to replay orphaned receipts; message processing continues'
+				)
+			}
 
 			// NOTE: message_send_count is intentionally NOT written here. The
 			// real msgstore.db capture keeps it at 0 rows — the mobile client
@@ -840,18 +838,6 @@ const processMessage = async (
 						addOnBackend.recordVcard({ messageRowId, vcard: contact.vcard })
 					}
 				}
-
-				// Interactive-message UI (buttons/list/template/native-flow) →
-				// message_ui_elements, for rendering. Derived from the proto (the
-				// source of truth), replace-on-redecode. Called for any interactive
-				// container (not gated on element count) so a re-decode that yields
-				// none clears stale rows; plain messages are skipped entirely.
-				const isInteractive =
-					content?.buttonsMessage || content?.listMessage || content?.templateMessage || content?.interactiveMessage
-				if (isInteractive) {
-					mirrorOperation = 'ui_elements_replace'
-					addOnBackend.recordUiElements(messageRowId, extractUiElements(content))
-				}
 			}
 		} catch (err) {
 			logger?.warn(
@@ -866,6 +852,50 @@ const processMessage = async (
 				},
 				'multi-db-sqlite: message mirror fallback'
 			)
+		}
+
+		// UI rendering data gets an independent failure boundary. A media,
+		// poll, vCard, or location mirror error above must not suppress buttons
+		// or carousel CTAs. The extractor and interactive payload are unchanged.
+		const isInteractive =
+			content?.buttonsMessage || content?.listMessage || content?.templateMessage || content?.interactiveMessage
+		if (addOnBackend && messageRowId !== undefined && isInteractive) {
+			try {
+				addOnBackend.recordUiElements(messageRowId, extractUiElements(content))
+			} catch (err) {
+				logger?.warn(
+					{
+						err,
+						...classifyMessageMirrorFailure('ui_elements_replace', err),
+						operation: 'ui_elements_replace',
+						table: MESSAGE_MIRROR_TABLE.ui_elements_replace,
+						messageId: message.key.id,
+						primary: 'multi_db_sqlite',
+						fallback: 'legacy_message_proto'
+					},
+					'multi-db-sqlite: interactive UI mirror fallback'
+				)
+			}
+		}
+	}
+
+	// Replay only after the parent message has had a chance to reach msgstore.db.
+	// A queued revoke must never be consumed before recordRevoke can resolve its
+	// target row; otherwise the queue entry is lost and the persisted message is
+	// left unrevoked.
+	if (isRealMsg && orphanQueue && canReplayOrphans) {
+		const drained = orphanQueue.drain(message.key)
+		for (const entry of drained) {
+			const entryContent = normalizeMessageContent(entry.message.message)
+			if (entry.kind === 'revoke' && entryContent?.protocolMessage) {
+				emitRevokeUpdate(entry.message, entryContent.protocolMessage)
+			} else if (entry.kind === 'event-response' && entryContent?.encEventResponseMessage) {
+				const encEventResponse = entryContent.encEventResponseMessage
+				const creationMsgKey = encEventResponse.eventCreationMessageKey
+				if (creationMsgKey) {
+					await decryptAndEmitEventResponse(entry.message, encEventResponse, creationMsgKey, content!)
+				}
+			}
 		}
 	}
 
@@ -1239,9 +1269,21 @@ const processMessage = async (
 					break
 				}
 
-				const targetKey: WAMessageKey = { ...message.key, id: protocolMsg.key.id }
+				const targetKey: WAMessageKey = {
+					...protocolMsg.key,
+					remoteJid: protocolMsg.key.remoteJid ?? message.key.remoteJid,
+					id: protocolMsg.key.id
+				}
 
-				const original = await getMessage(targetKey)
+				let original: proto.IMessage | undefined
+				try {
+					original = await getMessage(targetKey)
+				} catch (err) {
+					logger?.warn(
+						{ err, targetKey },
+						'processMessage: consumer message lookup failed, continuing with store/orphan fallback'
+					)
+				}
 				// The consumer's `getMessage` defaults to `() => undefined`, so a
 				// caller that doesn't maintain its own message cache would never
 				// record the revoke — even though the multi-db message store DOES

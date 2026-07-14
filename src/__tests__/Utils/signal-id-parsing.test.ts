@@ -66,10 +66,11 @@ describe('domainTypeToAccountType', () => {
 		expect(domainTypeToAccountType(WAJIDDomains.LID)).toBe(1)
 	})
 
-	it('maps WHATSAPP/HOSTED/HOSTED_LID to 0', () => {
+	it('maps WhatsApp to PN and leaves hosted domains to signal_kv', () => {
 		expect(domainTypeToAccountType(WAJIDDomains.WHATSAPP)).toBe(0)
-		expect(domainTypeToAccountType(WAJIDDomains.HOSTED)).toBe(0)
-		expect(domainTypeToAccountType(WAJIDDomains.HOSTED_LID)).toBe(0)
+		expect(domainTypeToAccountType(WAJIDDomains.HOSTED)).toBeNull()
+		expect(domainTypeToAccountType(WAJIDDomains.HOSTED_LID)).toBeNull()
+		expect(domainTypeToAccountType(999)).toBeNull()
 	})
 })
 

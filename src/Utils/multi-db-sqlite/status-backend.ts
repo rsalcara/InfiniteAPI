@@ -118,7 +118,8 @@ export class StatusBackend {
 			getStatusInfoRowId: this.db.prepare('SELECT row_id FROM status_info WHERE chat_jid = ?'),
 			incrementCounts: this.db.prepare(
 				'UPDATE status_info SET total_count = total_count + 1, unread_count = unread_count + 1, ' +
-					'last_status_sort_id = ?, last_status_timestamp = ? WHERE row_id = ?'
+					'last_status_sort_id = CASE WHEN ? >= COALESCE(last_status_timestamp, -1) THEN ? ELSE last_status_sort_id END, ' +
+					'last_status_timestamp = MAX(COALESCE(last_status_timestamp, 0), ?) WHERE row_id = ?'
 			),
 			nextSortId: this.db.prepare(
 				'SELECT COALESCE(MAX(sort_id), 0) + 1 AS next FROM status WHERE status_info_row_id = ?'
@@ -193,7 +194,7 @@ export class StatusBackend {
 				input.textData ?? null,
 				STATUS_STATE_SERVER_CONFIRMED
 			)
-			this.stmts.incrementCounts.run(sortId, input.timestamp, infoRow.row_id)
+			this.stmts.incrementCounts.run(input.timestamp, sortId, input.timestamp, infoRow.row_id)
 			inserted = true
 		})
 		run()
@@ -219,9 +220,9 @@ export class StatusBackend {
 			return
 		}
 
-		this.lastPruneAtMs = now
 		try {
 			this.pruneExpired(Math.floor(now / 1000) - this.retentionSecs)
+			this.lastPruneAtMs = now
 		} catch {
 			// best-effort: a prune failure must never break status recording.
 		}

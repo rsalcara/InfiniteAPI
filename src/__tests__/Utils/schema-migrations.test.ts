@@ -32,7 +32,7 @@ describe('runMigrations concurrency', () => {
 					})
 				}
 
-				if (sql === 'SELECT version FROM schema_migrations WHERE version = ?') {
+				if (sql === 'SELECT 1 FROM schema_migrations WHERE version = ?') {
 					return statement({
 						get: (...params: unknown[]) => {
 							const version = params[0] as number
@@ -41,7 +41,7 @@ describe('runMigrations concurrency', () => {
 					})
 				}
 
-				if (sql.startsWith('INSERT INTO schema_migrations')) {
+				if (sql.startsWith('INSERT OR IGNORE INTO schema_migrations')) {
 					return statement({
 						run: (...params: unknown[]) => {
 							const version = params[0] as number
@@ -90,11 +90,11 @@ describe('runMigrations run() form (#629)', () => {
 					return statement({ all: () => [] })
 				}
 
-				if (sql === 'SELECT version FROM schema_migrations WHERE version = ?') {
+				if (sql === 'SELECT 1 FROM schema_migrations WHERE version = ?') {
 					return statement({ get: (...p: unknown[]) => (applied.has(p[0] as number) ? { version: p[0] } : undefined) })
 				}
 
-				if (sql.startsWith('INSERT INTO schema_migrations')) {
+				if (sql.startsWith('INSERT OR IGNORE INTO schema_migrations')) {
 					return statement({
 						run: (...p: unknown[]) => {
 							applied.add(p[0] as number)
@@ -137,8 +137,8 @@ describe('runMigrations run() form (#629)', () => {
 		const db = {
 			prepare: (sql: string) => {
 				if (sql === 'SELECT version FROM schema_migrations ORDER BY version ASC') return statement()
-				if (sql === 'SELECT version FROM schema_migrations WHERE version = ?') return statement()
-				if (sql.startsWith('INSERT INTO schema_migrations')) {
+				if (sql === 'SELECT 1 FROM schema_migrations WHERE version = ?') return statement()
+				if (sql.startsWith('INSERT OR IGNORE INTO schema_migrations')) {
 					return statement({
 						run: () => {
 							recorded = true
