@@ -2,7 +2,7 @@
 /**
  * Build orchestrator for the baileys package.
  *
- * Runs the three build phases in order, tolerating non-fatal errors from
+ * Runs the three build steps in order, tolerating non-fatal errors from
  * `tsc` so the chain doesn't break on harmless TS2742 (and similar
  * declaration-only) warnings.
  *
@@ -22,11 +22,11 @@
  *
  *   A Node orchestrator gives us:
  *     1. cross-platform behaviour (no shell-dependent separators);
- *     2. explicit control over which phases are fatal vs warning-only;
- *     3. a single place to evolve the build pipeline as new phases get
+ *     2. explicit control over which steps are fatal vs warning-only;
+ *     3. a single place to evolve the build pipeline as new steps get
  *        added (e.g. wasm bundling, codegen).
  *
- * Phases:
+ * Steps:
  *   1. `tsc -P tsconfig.build.json`
  *        - emits `.js` + `.d.ts` from TypeScript sources
  *        - non-zero exit is tolerated ONLY if the sentinel output files
@@ -35,7 +35,7 @@
  *          the non-zero exit was triggered by declaration-only warnings
  *          (TS2742 most commonly). Truly broken builds (syntax errors,
  *          OOM mid-emission, missing tsconfig) leave the sentinels
- *          unwritten and abort the pipeline before downstream phases can
+ *          unwritten and abort the pipeline before downstream steps can
  *          rubber-stamp a stale `lib/`.
  *        - the `lint` script (`tsc && eslint`) remains the strict gate
  *          for real type errors and runs separately in CI.
@@ -107,7 +107,7 @@ function run(cmd, args) {
 }
 
 async function main() {
-	// Phase 1 — tsc (tolerant, with emit-sentinel gate)
+	// Step 1 — tsc (tolerant, with emit-sentinel gate)
 	//
 	// Codex P1 fix: previously a non-zero `tsc` exit was unconditionally
 	// downgraded to a warning. That would mask REAL failures (syntax
@@ -121,9 +121,9 @@ async function main() {
 	// non-zero exit was triggered by declaration-only warnings (e.g.
 	// TS2742 inferred-type errors), which this orchestrator is designed
 	// to tolerate. If any sentinel is missing or empty, the build is a
-	// true failure and we abort BEFORE the next phases can corrupt
+	// true failure and we abort BEFORE the next steps can corrupt
 	// `lib/` further.
-	console.log('[build] phase 1/3: tsc -P tsconfig.build.json')
+	console.log('[build] step 1/3: tsc -P tsconfig.build.json')
 	const tscCode = await run('tsc', ['-P', 'tsconfig.build.json'])
 	if (tscCode !== 0) {
 		const sentinelChecks = await Promise.all(
@@ -149,8 +149,8 @@ async function main() {
 		)
 	}
 
-	// Phase 2 — tsc-esm-fix (fatal)
-	console.log('[build] phase 2/3: tsc-esm-fix (rewrite imports to add .js)')
+	// Step 2 — tsc-esm-fix (fatal)
+	console.log('[build] step 2/3: tsc-esm-fix (rewrite imports to add .js)')
 	const fixCode = await run('tsc-esm-fix', ['--tsconfig=tsconfig.build.json', '--ext=.js'])
 	if (fixCode !== 0) {
 		console.error(
@@ -161,15 +161,15 @@ async function main() {
 		process.exit(fixCode)
 	}
 
-	// Phase 3 — copy non-ts assets (fatal)
-	console.log('[build] phase 3/3: copy-assets (mirror src/*.json → lib/)')
+	// Step 3 — copy non-ts assets (fatal)
+	console.log('[build] step 3/3: copy-assets (mirror src/*.json → lib/)')
 	const assetsCode = await run('node', ['scripts/copy-assets.mjs'])
 	if (assetsCode !== 0) {
 		console.error(`[build] copy-assets exited with code ${assetsCode} — aborting`)
 		process.exit(assetsCode)
 	}
 
-	console.log('[build] all phases completed successfully')
+	console.log('[build] all steps completed successfully')
 }
 
 main().catch(err => {
