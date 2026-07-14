@@ -364,7 +364,7 @@ export function makeLibSignalRepository(
 		)
 	}
 
-	// Phase 9.1 integration: if a multi-DB SQLite store was supplied, route
+	// Integration: if a multi-DB SQLite store was supplied, route
 	// LID mapping persistence through `msgstore.jid_map` (typed) instead of
 	// opaque `'lid-mapping'` rows on the shared key store. The LIDMappingStore
 	// itself is unchanged — its LRU cache, request coalescing, retry,

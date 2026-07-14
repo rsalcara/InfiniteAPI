@@ -135,6 +135,38 @@ describe('wa.db migration v1 — wa_contacts.username', () => {
 		expect(plan.some(r => /wa_contacts_username_idx/i.test(r.detail))).toBe(true)
 	})
 
+	it('drift: a pre-existing username column (no bookkeeping) does NOT brick open (#629)', async () => {
+		// The #629 hazard: a DB where `wa_contacts.username` ALREADY exists but
+		// `schema_migrations` has no v1 row — e.g. an even-older build that once
+		// carried the column in its base CREATE TABLE, or a half-applied upgrade
+		// (ALTER committed, bookkeeping insert didn't). A raw `ALTER TABLE ADD
+		// COLUMN` would throw "duplicate column name" here and fail open()
+		// entirely. The PRAGMA preflight must make it a safe no-op instead.
+		const walPath = join(dir, 'wa.db')
+		const pre = new Database(walPath)
+		pre.exec(`
+			CREATE TABLE IF NOT EXISTS wa_contacts (
+				_id INTEGER PRIMARY KEY AUTOINCREMENT,
+				jid TEXT NOT NULL,
+				is_whatsapp_user BOOLEAN NOT NULL,
+				is_contact_synced INTEGER,
+				username TEXT
+			);
+		`)
+		// No schema_migrations table at all — mimics a pre-bookkeeping DB.
+		pre.close()
+
+		store = new MultiDbSqliteStore({ sessionDir: dir })
+		await expect(store.open()).resolves.not.toThrow()
+
+		const db = store.handle('wa.db')
+		// Column still there (not duplicated), and v1 recorded so it never retries.
+		const cols = db.prepare("PRAGMA table_info('wa_contacts')").all() as Array<{ name: string }>
+		expect(cols.filter(c => c.name === 'username')).toHaveLength(1)
+		const applied = db.prepare('SELECT version FROM schema_migrations WHERE version = 1').all()
+		expect(applied).toHaveLength(1)
+	})
+
 	it('re-open after migration: no error, v1 stays recorded exactly once', async () => {
 		store = new MultiDbSqliteStore({ sessionDir: dir })
 		await store.open()

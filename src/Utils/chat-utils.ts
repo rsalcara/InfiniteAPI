@@ -32,6 +32,26 @@ type FetchAppStateSyncKey = (keyId: string) => Promise<proto.Message.IAppStateSy
 
 export type ChatMutationMap = { [index: string]: ChatMutation }
 
+/**
+ * Raw wire-level fields for a single decoded app-state mutation, in addition
+ * to the already-decoded `ChatMutation` — this is what a `sync.db`-style
+ * persistence layer needs, since the real mobile schema stores
+ * the record's index/value MACs verbatim rather than the friendly decoded
+ * value. `index[0]` is always the action name, and for most actions
+ * `index[1]` is the target chat jid — verified against
+ * `chatModificationToAppPatch` below, which builds outgoing patches with
+ * that convention (e.g. `['mute', jid]`, `['archive', jid]`,
+ * `['pin_v1', jid]`). Not universal: label mutations put the jid at
+ * index[2] instead, see the consumer in Socket/chats.ts for how that's
+ * handled.
+ */
+export type RawSyncdMutation = {
+	indexMac: Uint8Array
+	valueMac: Uint8Array
+	operation: proto.SyncdMutation.SyncdOperation
+	mutation: ChatMutation
+}
+
 const mutationKeys = (keydata: Uint8Array) => {
 	return expandAppStateKeys(keydata)
 }
@@ -237,7 +257,8 @@ export const decodeSyncdMutations = async (
 	initialState: LTHashState,
 	getAppStateSyncKey: FetchAppStateSyncKey,
 	onMutation: (mutation: ChatMutation) => void,
-	validateMacs: boolean
+	validateMacs: boolean,
+	onRawMutation?: (raw: RawSyncdMutation) => void
 ) => {
 	const ltGenerator = makeLtHashGenerator(initialState)
 	// indexKey used to HMAC sign record.index.blob
@@ -318,7 +339,9 @@ export const decodeSyncdMutations = async (
 		}
 
 		const indexStr = Buffer.from(syncActionIndex).toString()
-		onMutation({ syncAction, index: JSON.parse(indexStr) })
+		const mutation = { syncAction, index: JSON.parse(indexStr) }
+		onMutation(mutation)
+		onRawMutation?.({ indexMac: indexBlob, valueMac: ogValueMac, operation, mutation })
 
 		ltGenerator.mix({
 			indexMac: indexBlob,
@@ -353,7 +376,8 @@ export const decodeSyncdPatch = async (
 	initialState: LTHashState,
 	getAppStateSyncKey: FetchAppStateSyncKey,
 	onMutation: (mutation: ChatMutation) => void,
-	validateMacs: boolean
+	validateMacs: boolean,
+	onRawMutation?: (raw: RawSyncdMutation) => void
 ) => {
 	if (validateMacs) {
 		const msgKeyId = msg.keyId?.id
@@ -415,7 +439,14 @@ export const decodeSyncdPatch = async (
 		throw new Boom('Missing mutations in patch message', { statusCode: 500 })
 	}
 
-	const result = await decodeSyncdMutations(patchMutations, initialState, getAppStateSyncKey, onMutation, validateMacs)
+	const result = await decodeSyncdMutations(
+		patchMutations,
+		initialState,
+		getAppStateSyncKey,
+		onMutation,
+		validateMacs,
+		onRawMutation
+	)
 	return result
 }
 
@@ -503,7 +534,8 @@ export const decodeSyncdSnapshot = async (
 	snapshot: proto.ISyncdSnapshot,
 	getAppStateSyncKey: FetchAppStateSyncKey,
 	minimumVersionNumber: number | undefined,
-	validateMacs = true
+	validateMacs = true,
+	onRawMutation?: (raw: RawSyncdMutation & { version: number }) => void
 ) => {
 	const newState = newLTHashState()
 
@@ -516,6 +548,7 @@ export const decodeSyncdSnapshot = async (
 	newState.version = toNumber(snapshotVersion)
 
 	const mutationMap: ChatMutationMap = {}
+	const pendingRawMutations: Array<RawSyncdMutation & { version: number }> = []
 	const areMutationsRequired = typeof minimumVersionNumber === 'undefined' || newState.version > minimumVersionNumber
 
 	const snapshotRecords = snapshot.records
@@ -533,7 +566,11 @@ export const decodeSyncdSnapshot = async (
 					mutationMap[index!] = mutation
 				}
 			: () => {},
-		validateMacs
+		validateMacs,
+		// Persisted regardless of `areMutationsRequired` — that flag only gates
+		// the in-memory diff used for THIS sync's immediate event emission, not
+		// whether a sync.db mirror should see the mutation at all.
+		onRawMutation ? raw => pendingRawMutations.push({ ...raw, version: newState.version }) : undefined
 	)
 	newState.hash = hash
 	newState.indexValueMap = indexValueMap
@@ -573,6 +610,13 @@ export const decodeSyncdSnapshot = async (
 		}
 	}
 
+	// A mutation-level MAC is not enough to trust the snapshot as a whole.
+	// Publish raw rows only after the aggregate LTHash MAC has succeeded, so a
+	// rejected snapshot can never leave durable sync.db rows behind.
+	if (onRawMutation) {
+		for (const raw of pendingRawMutations) onRawMutation(raw)
+	}
+
 	return {
 		state: newState,
 		mutationMap
@@ -587,7 +631,8 @@ export const decodePatches = async (
 	options: RequestInit,
 	minimumVersionNumber?: number,
 	logger?: ILogger,
-	validateMacs = true
+	validateMacs = true,
+	onRawMutation?: (raw: RawSyncdMutation & { version: number }) => void
 ) => {
 	const newState: LTHashState = {
 		...initial,
@@ -611,6 +656,7 @@ export const decodePatches = async (
 		}
 
 		const patchVersion = toNumber(ver)
+		const pendingRawMutations: Array<RawSyncdMutation & { version: number }> = []
 
 		newState.version = patchVersion
 		const shouldMutate = typeof minimumVersionNumber === 'undefined' || patchVersion > minimumVersionNumber
@@ -633,7 +679,8 @@ export const decodePatches = async (
 						mutationMap[index!] = mutation
 					}
 				: () => {},
-			validateMacs
+			validateMacs,
+			onRawMutation ? raw => pendingRawMutations.push({ ...raw, version: patchVersion }) : undefined
 		)
 
 		newState.hash = decodeResult.hash
@@ -669,6 +716,13 @@ export const decodePatches = async (
 				// a known-divergent hash.
 				throw new Boom(`failed to verify LTHash at ${newState.version} of ${name}`)
 			}
+		}
+
+		// Do not persist a partially authenticated patch. Flush only after its
+		// aggregate snapshot MAC is accepted (or immediately when validation is
+		// explicitly disabled by the caller).
+		if (onRawMutation) {
+			for (const raw of pendingRawMutations) onRawMutation(raw)
 		}
 
 		// clear memory used up by the mutations
@@ -954,7 +1008,38 @@ export const processSyncAction = (
 	ev: BaileysEventEmitter,
 	me: Contact,
 	initialSyncOpts?: InitialAppStateSyncOptions,
-	logger?: ILogger
+	logger?: ILogger,
+	// Optional chatsettings.db mirror. Only mute/pin are wired:
+	// they're the only chat-level app-state actions here with a confirmed
+	// column in the real schema (archive lives in msgstore.db's `chat` table,
+	// out of scope). Never allowed to affect sync processing.
+	chatSettingsBackend?: {
+		setMuteEnd(jid: string, muteEnd: number | null): void
+		setPinned(jid: string, pinned: boolean, pinnedTime: number | null): void
+	},
+	// Optional stickers.db mirror. `stickerAction`/
+	// `removeRecentStickerAction` are the two sticker app-state actions with a
+	// confirmed companion source + real-schema columns. Never affects sync
+	// processing (structural type to avoid a circular import).
+	stickersBackend?: {
+		upsertStarred(s: {
+			plaintextHash: string
+			timestamp?: number | null
+			url?: string | null
+			encHash?: string | null
+			directPath?: string | null
+			mimetype?: string | null
+			mediaKey?: string | null
+			fileSize?: number | null
+			width?: number | null
+			height?: number | null
+			hashOfImagePart?: string | null
+			isLottie?: number | null
+			isAvatar?: number | null
+		}): void
+		removeStarred(plaintextHash: string): boolean
+		removeRecentByTs(lastStickerSentTs: number): boolean
+	}
 ) => {
 	const isInitialSync = !!initialSyncOpts
 	const accountSettings = initialSyncOpts?.accountSettings
@@ -967,10 +1052,19 @@ export const processSyncAction = (
 	} = syncAction
 
 	if (action?.muteAction) {
+		const muteEndTime = action.muteAction?.muted ? toNumber(action.muteAction.muteEndTimestamp) : null
+		if (chatSettingsBackend && id) {
+			try {
+				chatSettingsBackend.setMuteEnd(id, muteEndTime)
+			} catch (err) {
+				logger?.warn({ err, id }, 'failed to record chatsettings.db mute_end')
+			}
+		}
+
 		ev.emit('chats.update', [
 			{
 				id,
-				muteEndTime: action.muteAction?.muted ? toNumber(action.muteAction.muteEndTimestamp) : null,
+				muteEndTime,
 				conditional: getChatUpdateConditional(id!, undefined)
 			}
 		])
@@ -1036,10 +1130,19 @@ export const processSyncAction = (
 			ev.emit('creds.update', { me: { ...me, name } })
 		}
 	} else if (action?.pinAction) {
+		const pinnedTime = action.pinAction?.pinned ? toNumber(action.timestamp) : null
+		if (chatSettingsBackend && id) {
+			try {
+				chatSettingsBackend.setPinned(id, !!action.pinAction?.pinned, pinnedTime)
+			} catch (err) {
+				logger?.warn({ err, id }, 'failed to record chatsettings.db pinned')
+			}
+		}
+
 		ev.emit('chats.update', [
 			{
 				id,
-				pinned: action.pinAction?.pinned ? toNumber(action.timestamp) : null,
+				pinned: pinnedTime,
 				conditional: getChatUpdateConditional(id!, undefined)
 			}
 		])
@@ -1140,6 +1243,51 @@ export const processSyncAction = (
 			setting: 'channelsPersonalisedRecommendation',
 			value: action.privacySettingChannelsPersonalisedRecommendationAction
 		})
+	} else if (action?.stickerAction && id) {
+		// Favourite/unfavourite a sticker. `id` (mutation index) is
+		// the sticker's plaintext SHA-256 (base64) = stickers.db PK. Fields map
+		// 1:1 onto `starred_stickers` (validated against a real device). The `&& id`
+		// guard keeps the mirror + event from firing with an undefined hash.
+		const sa = action.stickerAction
+		if (stickersBackend) {
+			try {
+				if (sa.isFavorite) {
+					stickersBackend.upsertStarred({
+						plaintextHash: id,
+						// The mutation timestamp lives on SyncActionValue (`action`),
+						// not on SyncActionData.
+						timestamp: toNumber(action.timestamp ?? 0) || null,
+						url: sa.url ?? null,
+						encHash: sa.fileEncSha256 ? Buffer.from(sa.fileEncSha256).toString('base64') : null,
+						directPath: sa.directPath ?? null,
+						mimetype: sa.mimetype ?? null,
+						mediaKey: sa.mediaKey ? Buffer.from(sa.mediaKey).toString('base64') : null,
+						fileSize: sa.fileLength ? toNumber(sa.fileLength) : null,
+						width: sa.width ?? null,
+						height: sa.height ?? null,
+						hashOfImagePart: sa.imageHash ?? null,
+						isLottie: sa.isLottie ? 1 : 0,
+						isAvatar: sa.isAvatarSticker ? 1 : 0
+					})
+				} else {
+					stickersBackend.removeStarred(id)
+				}
+			} catch (err) {
+				logger?.warn({ err, id }, 'failed to mirror stickerAction to stickers.db')
+			}
+		}
+
+		ev.emit('stickers.update', { plaintextHash: id, isFavorite: !!sa.isFavorite })
+	} else if (action?.removeRecentStickerAction) {
+		// Drop a recently-used sticker, keyed by its send timestamp.
+		const lastTs = toNumber(action.removeRecentStickerAction.lastStickerSentTs ?? 0)
+		if (stickersBackend && lastTs) {
+			try {
+				stickersBackend.removeRecentByTs(lastTs)
+			} catch (err) {
+				logger?.warn({ err }, 'failed to remove recent sticker from stickers.db')
+			}
+		}
 	} else {
 		logger?.debug({ syncAction, id }, 'unprocessable update')
 	}

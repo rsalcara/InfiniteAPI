@@ -34,8 +34,8 @@ const silentLogger = (): ILogger =>
 	}) as unknown as ILogger
 
 describe('event-buffer — re-entrant flush race (M6)', () => {
-	// PR #453: flipped from `it.failing` — M6 is closed in our tree by Phase 8
-	// Batch 3 commit 2cdab5076c (`fix(buffer,noise): close M6 flush race + M10
+	// PR #453: flipped from `it.failing` — M6 is closed in our tree by commit
+	// 2cdab5076c (`fix(buffer,noise): close M6 flush race + M10
 	// noise mutex + IV reuse`). `data = newData` now happens BEFORE the
 	// synchronous `ev.emit`, so a listener that re-enters `buffer() + emit(...)`
 	// lands in the new buffer instead of the about-to-be-overwritten one.

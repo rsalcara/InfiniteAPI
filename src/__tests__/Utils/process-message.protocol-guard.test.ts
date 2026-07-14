@@ -67,8 +67,11 @@ const inbound = (id: string, fromMe: boolean, message: proto.IMessage): WAMessag
 })
 
 describe('processMessage — protocolMessage guard (regression for blanket fromMe drop)', () => {
-	it('processes inbound REVOKE from a non-self sender (emits messages.update)', async () => {
+	it('processes inbound REVOKE from a non-self sender (emits messages.update) when the target message is known', async () => {
 		const { ctx, updates } = makeContext()
+		// getMessage finding the target is what gates the emit (see
+		// process-message.orphan-queue.test.ts for the "target not found yet" case)
+		ctx.getMessage = async () => ({ conversation: 'target' }) as any
 		const msg = inbound('msg-1', false, protocolMessage(proto.Message.ProtocolMessage.Type.REVOKE))
 
 		await processMessage(msg, ctx as any)

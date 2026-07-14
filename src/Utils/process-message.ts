@@ -36,10 +36,24 @@ import {
 	jidEncode,
 	jidNormalizedUser
 } from '../WABinary'
-import { aesDecryptGCM, hmacSign } from './crypto'
+import { aesDecryptGCM, hmacSign, sha256 } from './crypto'
 import { getKeyAuthor, toNumber } from './generics'
 import { downloadAndProcessHistorySyncNotification } from './history'
 import type { ILogger } from './logger'
+import {
+	type AppStateBackend,
+	type HistorySyncCompanionBackend,
+	type LocationBackend,
+	mapContentTypeToMessageType,
+	type MessageAddOnBackend,
+	type MessageMediaBackend,
+	type MessageStoreBackend,
+	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
+	type ReceiptBackend,
+	type StatusBackend,
+	UI_ELEMENT_TYPE
+} from './multi-db-sqlite'
+import { type OrphanEntry, OrphanQueue } from './orphan-queue'
 import { metrics, recordHistorySyncMessages } from './prometheus-metrics.js'
 
 type ProcessMessageContext = {
@@ -52,6 +66,26 @@ type ProcessMessageContext = {
 	options: RequestInit
 	signalRepository: SignalRepositoryWithLIDStore
 	getMessage: SocketConfig['getMessage']
+	/** Optional — holding pen for REVOKE/event-response whose parent message
+	 * hasn't arrived yet. Omitting it keeps today's behavior (no queueing);
+	 * `chats.ts` wires a real instance in production. */
+	orphanQueue?: OrphanQueue
+	/** Optional sync.db mirror (collection_versions/syncd_mutations/peer_messages). */
+	appStateBackend?: AppStateBackend
+	/** Optional location.db mirror (location_cache/location_sharer). */
+	locationBackend?: LocationBackend
+	/** Optional status.db mirror (status/status_info). */
+	statusBackend?: StatusBackend
+	/** Optional msgstore.db mirror — real message store (message/chat/revoke). */
+	messageStoreBackend?: MessageStoreBackend
+	/** Optional msgstore.db receipt holding-pen replayer. */
+	receiptBackend?: ReceiptBackend
+	/** Optional msgstore.db mirror — media metadata (message_media/message_thumbnail/audio_data). */
+	mediaBackend?: MessageMediaBackend
+	/** Optional msgstore.db mirror — reactions/polls/locations/vcards attached to a message. */
+	addOnBackend?: MessageAddOnBackend
+	/** Optional sync.db mirror — per-chunk companion history-sync tracking (history_sync_companion). */
+	historySyncCompanionBackend?: HistorySyncCompanionBackend
 }
 
 const REAL_MSG_STUB_TYPES = new Set([
@@ -362,6 +396,186 @@ export function decryptEventResponse(
 	}
 }
 
+type UiElement = Omit<import('./multi-db-sqlite').RecordUiElementWithContextInput, 'messageRowId'>
+
+type MessageMirrorOperation =
+	| 'message_record'
+	| 'media_record'
+	| 'media_thumbnail'
+	| 'media_mms_thumbnail'
+	| 'media_audio_data'
+	| 'media_streaming_sidecar'
+	| 'poll_record'
+	| 'poll_option_record'
+	| 'vcard_record'
+	| 'ui_elements_replace'
+
+const MESSAGE_MIRROR_TABLE: Record<MessageMirrorOperation, string> = {
+	message_record: 'message,chat',
+	media_record: 'message_media',
+	media_thumbnail: 'message_thumbnail',
+	media_mms_thumbnail: 'mms_thumbnail_metadata',
+	media_audio_data: 'audio_data',
+	media_streaming_sidecar: 'message_streaming_sidecar',
+	poll_record: 'message_poll',
+	poll_option_record: 'message_poll_option',
+	vcard_record: 'message_vcard,message_vcard_jid',
+	ui_elements_replace: 'message_ui_elements,message_ui_element_context'
+}
+
+const classifyMessageMirrorFailure = (operation: MessageMirrorOperation, err: unknown) => {
+	const errorMessage = err instanceof Error ? err.message : String(err)
+	const sqliteCode =
+		typeof err === 'object' && err !== null && 'code' in err && typeof err.code === 'string' ? err.code : undefined
+	const prefix = `MESSAGE_MIRROR_${operation.toUpperCase()}`
+	let suffix = 'WRITE_FAILED'
+	if (/no such (table|column)/i.test(errorMessage)) suffix = 'SCHEMA_MISMATCH'
+	else if (sqliteCode?.startsWith('SQLITE_BUSY') || sqliteCode?.startsWith('SQLITE_LOCKED')) suffix = 'DB_LOCKED'
+	else if (sqliteCode?.startsWith('SQLITE_CORRUPT') || sqliteCode?.startsWith('SQLITE_NOTADB')) suffix = 'DB_CORRUPT'
+	else if (sqliteCode?.startsWith('SQLITE_READONLY')) suffix = 'DB_READ_ONLY'
+	else if (
+		sqliteCode?.startsWith('SQLITE_IOERR') ||
+		sqliteCode?.startsWith('SQLITE_FULL') ||
+		sqliteCode?.startsWith('SQLITE_CANTOPEN')
+	)
+		suffix = 'DB_IO_FAILURE'
+	else if (sqliteCode?.startsWith('SQLITE_CONSTRAINT')) suffix = 'DB_CONSTRAINT'
+
+	return { reason: `${prefix}_${suffix}`, sqliteCode, errorMessage }
+}
+
+/**
+ * Runs one optional message mirror without allowing its failure to suppress
+ * later, unrelated mirrors or the legacy message-processing path.
+ */
+const runOptionalMessageMirror = (
+	logger: ILogger | undefined,
+	operation: Exclude<MessageMirrorOperation, 'message_record'>,
+	messageId: string,
+	action: () => void
+): void => {
+	try {
+		action()
+	} catch (err) {
+		logger?.warn(
+			{
+				err,
+				...classifyMessageMirrorFailure(operation, err),
+				operation,
+				table: MESSAGE_MIRROR_TABLE[operation],
+				messageId,
+				primary: 'multi_db_sqlite',
+				fallback: 'legacy_message_proto'
+			},
+			'multi-db-sqlite: message mirror fallback'
+		)
+	}
+}
+
+const nativeFlowButtonLabel = (buttonParamsJson: string | null | undefined): string | null => {
+	if (!buttonParamsJson) return null
+	try {
+		const params = JSON.parse(buttonParamsJson) as Record<string, unknown>
+		const label = params.display_text ?? params.displayText ?? params.title
+		return typeof label === 'string' && label.trim() ? label : null
+	} catch {
+		// The raw payload and action name are still preserved. A future primary
+		// consumer can detect the missing label and fall back to the legacy proto.
+		return null
+	}
+}
+
+/**
+ * Extracts renderable UI elements (quick-reply buttons, list rows, template
+ * buttons, native-flow CTAs) from an interactive message's content. Returns
+ * an empty array for non-interactive messages. Pure — the message proto stays
+ * the source of truth; this is just a derived render-mirror.
+ */
+const extractUiElements = (content: proto.IMessage | undefined | null): UiElement[] => {
+	if (!content) return []
+	const out: UiElement[] = []
+
+	const bm = content.buttonsMessage
+	if (bm) {
+		const description = bm.contentText ?? bm.text ?? null
+		for (const btn of bm.buttons ?? []) {
+			out.push({
+				elementType: UI_ELEMENT_TYPE.QUICK_REPLY,
+				buttonText: btn.buttonText?.displayText ?? null,
+				elementContent: btn.buttonId ?? null,
+				footerText: bm.footerText ?? null,
+				description
+			})
+		}
+	}
+
+	const lm = content.listMessage
+	if (lm) {
+		for (const section of lm.sections ?? []) {
+			for (const row of section.rows ?? []) {
+				out.push({
+					elementType: UI_ELEMENT_TYPE.LIST,
+					buttonText: row.title ?? lm.buttonText ?? null,
+					elementContent: row.rowId ?? null,
+					description: row.description ?? row.title ?? null,
+					footerText: lm.footerText ?? null
+				})
+			}
+		}
+	}
+
+	const tm = content.templateMessage
+	const hydrated = tm?.hydratedTemplate ?? tm?.hydratedFourRowTemplate
+	if (tm && hydrated) {
+		for (const btn of hydrated.hydratedButtons ?? []) {
+			const label =
+				btn.quickReplyButton?.displayText ?? btn.urlButton?.displayText ?? btn.callButton?.displayText ?? null
+			const value = btn.quickReplyButton?.id ?? btn.urlButton?.url ?? btn.callButton?.phoneNumber ?? null
+			out.push({
+				elementType: UI_ELEMENT_TYPE.TEMPLATE,
+				templateId: tm.templateId ?? null,
+				buttonText: label,
+				elementContent: value,
+				footerText: hydrated.hydratedFooterText ?? null,
+				description: hydrated.hydratedContentText ?? null
+			})
+		}
+	}
+
+	for (const im of [content.interactiveMessage, tm?.interactiveMessageTemplate]) {
+		if (!im) continue
+		const nativeFlow = im.nativeFlowMessage
+		if (nativeFlow) {
+			for (const btn of nativeFlow.buttons ?? []) {
+				out.push({
+					elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
+					buttonText: nativeFlowButtonLabel(btn.buttonParamsJson),
+					elementContent: btn.buttonParamsJson ?? null,
+					footerText: im.footer?.text ?? null,
+					description: im.body?.text ?? null,
+					nativeFlowName: btn.name ?? null
+				})
+			}
+		} else if (im.carouselMessage) {
+			for (const [cardIndex, card] of (im.carouselMessage.cards ?? []).entries()) {
+				for (const [buttonIndex, btn] of (card.nativeFlowMessage?.buttons ?? []).entries()) {
+					out.push({
+						elementType: UI_ELEMENT_TYPE.NATIVE_FLOW,
+						buttonText: nativeFlowButtonLabel(btn.buttonParamsJson),
+						elementContent: btn.buttonParamsJson ?? null,
+						footerText: card.footer?.text ?? im.footer?.text ?? null,
+						description: card.body?.text ?? im.body?.text ?? null,
+						nativeFlowName: btn.name ?? null,
+						context: { containerType: 'carousel', cardIndex, buttonIndex }
+					})
+				}
+			}
+		}
+	}
+
+	return out
+}
+
 const processMessage = async (
 	message: WAMessage,
 	{
@@ -373,7 +587,16 @@ const processMessage = async (
 		keyStore,
 		logger,
 		options,
-		getMessage
+		getMessage,
+		orphanQueue,
+		appStateBackend,
+		locationBackend,
+		statusBackend,
+		messageStoreBackend,
+		receiptBackend,
+		mediaBackend,
+		addOnBackend,
+		historySyncCompanionBackend
 	}: ProcessMessageContext
 ) => {
 	const meUser = creds.me
@@ -397,6 +620,104 @@ const processMessage = async (
 		}
 	}
 
+	/** Emits the REVOKE update once the target message is confirmed to exist —
+	 * shared by the live path (case REVOKE below) and orphan replay. */
+	const emitRevokeUpdate = (revokeStanza: WAMessage, revokeProtocolMsg: proto.Message.IProtocolMessage): void => {
+		const targetKey: WAMessageKey = {
+			...revokeProtocolMsg.key,
+			remoteJid: revokeProtocolMsg.key?.remoteJid ?? revokeStanza.key.remoteJid,
+			fromMe: revokeProtocolMsg.key?.fromMe ?? revokeStanza.key.fromMe,
+			participant: revokeProtocolMsg.key?.participant ?? revokeStanza.key.participant,
+			id: revokeProtocolMsg.key?.id
+		}
+		ev.emit('messages.update', [
+			{ key: targetKey, update: { message: null, messageStubType: WAMessageStubType.REVOKE, key: revokeStanza.key } }
+		])
+
+		if (messageStoreBackend && targetKey.id) {
+			try {
+				messageStoreBackend.recordRevoke({
+					chatJid: jidNormalizedUser(targetKey.remoteJid ?? ''),
+					fromMe: !!targetKey.fromMe,
+					revokedKeyId: targetKey.id,
+					revokeTimestamp: toNumber(revokeStanza.messageTimestamp ?? 0)
+				})
+			} catch (err) {
+				logger?.warn({ err }, 'failed to record message_revoked row')
+			}
+		}
+	}
+
+	/** Decrypts + emits an event-response once the event-creation message is known
+	 * — shared by the live path (encEventResponseMessage branch below) and orphan
+	 * replay. `eventMsg` is the creation message's decrypted content (either fetched
+	 * via getMessage on the live path, or — on replay — the just-arrived message's
+	 * own `content`, since replay only runs once that message is being processed). */
+	const decryptAndEmitEventResponse = async (
+		responseStanza: WAMessage,
+		encEventResponse: proto.Message.IEncEventResponseMessage,
+		creationMsgKey: WAMessageKey,
+		eventMsg: proto.IMessage
+	): Promise<void> => {
+		try {
+			const meIdNormalised = jidNormalizedUser(meId)
+
+			// all jids need to be PN
+			const eventCreatorKey = creationMsgKey.participant || creationMsgKey.remoteJid!
+			const eventCreatorPn = isLidUser(eventCreatorKey)
+				? await signalRepository.lidMapping.getPNForLID(eventCreatorKey)
+				: eventCreatorKey
+			if (!eventCreatorPn) {
+				logger?.warn(
+					{ messageKey: responseStanza.key, eventCreatorKey },
+					'processMessage: eventCreatorPn missing, skipping'
+				)
+				return
+			}
+
+			const eventCreatorJid = getKeyAuthor(
+				{ remoteJid: jidNormalizedUser(eventCreatorPn), fromMe: meIdNormalised === eventCreatorPn },
+				meIdNormalised
+			)
+
+			const responderJid = getKeyAuthor(responseStanza.key, meIdNormalised)
+			const eventEncKey = eventMsg?.messageContextInfo?.messageSecret
+
+			if (!eventEncKey) {
+				logger?.warn({ creationMsgKey }, 'event response: missing messageSecret for decryption')
+				return
+			}
+
+			const responseMsg = decryptEventResponse(encEventResponse, {
+				eventEncKey,
+				eventCreatorJid,
+				eventMsgId: creationMsgKey.id!,
+				responderJid
+			})
+
+			const eventResponse = {
+				eventResponseMessageKey: responseStanza.key,
+				senderTimestampMs: responseMsg.timestampMs!,
+				response: responseMsg
+			}
+
+			// Normalize creationMsgKey JIDs for the emitted event
+			const normalizedCreationKey = { ...creationMsgKey }
+			await normalizeKeyLidToPn(normalizedCreationKey, signalRepository.lidMapping, logger)
+
+			ev.emit('messages.update', [
+				{
+					key: normalizedCreationKey,
+					update: {
+						eventResponses: [eventResponse]
+					}
+				}
+			])
+		} catch (err) {
+			logger?.warn({ err, creationMsgKey }, 'failed to decrypt event response')
+		}
+	}
+
 	const content = normalizeMessageContent(message.message)
 
 	// unarchive chat if it's a real message, or someone reacted to our message
@@ -404,6 +725,354 @@ const processMessage = async (
 	if ((isRealMsg || content?.reactionMessage?.key?.fromMe) && accountSettings?.unarchiveChats) {
 		chat.archived = false
 		chat.readOnly = false
+	}
+
+	// Mirrors real messages into msgstore.db's message/chat tables when
+	// configured. Never allowed to affect message processing: best-effort
+	// side channel, same rule as the other optional multi-db-sqlite mirrors
+	// in this file. Also mirrors media metadata and poll-creation options
+	// via the same messageRowId, since both hang off the message row.
+	let canReplayOrphans = !messageStoreBackend
+	if (messageStoreBackend && isRealMsg && message.key.id) {
+		let messageRowId: number | undefined
+		try {
+			const senderJid = getKeyAuthor(message.key, meId)
+			messageRowId = messageStoreBackend.recordMessage({
+				chatJid: chat.id!,
+				fromMe: !!message.key.fromMe,
+				keyId: message.key.id,
+				senderJid: message.key.fromMe ? null : jidNormalizedUser(senderJid),
+				timestamp: toNumber(message.messageTimestamp ?? 0),
+				receivedTimestamp: Date.now(),
+				messageType: mapContentTypeToMessageType(getContentType(content)),
+				textData: content?.extendedTextMessage?.text ?? content?.conversation ?? null,
+				authorDeviceJid: jidNormalizedUser(senderJid),
+				messageSecret: content?.messageContextInfo?.messageSecret
+					? Buffer.from(content.messageContextInfo.messageSecret)
+					: null,
+				incrementUnread: shouldIncrementChatUnread(message)
+			})
+			canReplayOrphans = true
+		} catch (err) {
+			logger?.warn(
+				{
+					err,
+					...classifyMessageMirrorFailure('message_record', err),
+					operation: 'message_record',
+					table: MESSAGE_MIRROR_TABLE.message_record,
+					messageId: message.key.id,
+					primary: 'multi_db_sqlite',
+					fallback: 'legacy_message_proto'
+				},
+				'multi-db-sqlite: message mirror fallback'
+			)
+		}
+
+		if (messageRowId !== undefined) {
+			try {
+				receiptBackend?.replayOrphaned(chat.id!, !!message.key.fromMe, message.key.id)
+			} catch (err) {
+				logger?.warn(
+					{ err, messageId: message.key.id, table: 'receipt_orphaned', fallback: 'live_receipt_events' },
+					'multi-db-sqlite: failed to replay orphaned receipts; message processing continues'
+				)
+			}
+
+			// NOTE: message_send_count is intentionally NOT written here. The
+			// real msgstore.db capture keeps it at 0 rows — the mobile client
+			// uses send_count transiently during send retries and clears it on
+			// success, so persisting a count at the (successful) echo would
+			// DIVERGE from the device. `MessageStoreBackend.recordSendAttempt`
+			// stays available for a consumer that tracks its own retries.
+
+			/* eslint-disable max-depth -- nested optional proto fields are traversed without changing the interactive payload */
+			if (mediaBackend) {
+				const media =
+					content?.imageMessage ||
+					content?.videoMessage ||
+					content?.audioMessage ||
+					content?.documentMessage ||
+					content?.stickerMessage
+				if (media) {
+					runOptionalMessageMirror(logger, 'media_record', message.key.id, () =>
+						mediaBackend.recordMedia({
+							messageRowId,
+							mimeType: media.mimetype ?? null,
+							fileLength: media.fileLength ? toNumber(media.fileLength) : null,
+							mediaKey: media.mediaKey ? Buffer.from(media.mediaKey) : null,
+							directPath: media.directPath ?? null,
+							fileSha256: media.fileSha256 ? Buffer.from(media.fileSha256) : null,
+							fileEncSha256: media.fileEncSha256 ? Buffer.from(media.fileEncSha256) : null,
+							width: 'width' in media ? (media.width ?? null) : null,
+							height: 'height' in media ? (media.height ?? null) : null,
+							mediaDurationSeconds: 'seconds' in media ? (media.seconds ?? null) : null,
+							caption: 'caption' in media ? (media.caption ?? null) : null,
+							mediaName: 'fileName' in media ? (media.fileName ?? null) : null
+						})
+					)
+
+					const thumbnail = content?.imageMessage?.jpegThumbnail || content?.videoMessage?.jpegThumbnail
+					if (thumbnail) {
+						runOptionalMessageMirror(logger, 'media_thumbnail', message.key.id, () =>
+							mediaBackend.recordThumbnail({ messageRowId, thumbnail: Buffer.from(thumbnail) })
+						)
+					}
+
+					// Pre-download thumbnail metadata (direct_path/mediaKey/hashes) —
+					// only image/video carry the dedicated thumbnail fields.
+					const thumbSource = content?.imageMessage || content?.videoMessage
+					if (thumbSource?.thumbnailDirectPath || thumbnail) {
+						runOptionalMessageMirror(logger, 'media_mms_thumbnail', message.key.id, () =>
+							mediaBackend.recordMmsThumbnail({
+								messageRowId,
+								directPath: thumbSource?.thumbnailDirectPath ?? null,
+								mediaKey: thumbSource?.mediaKey ? Buffer.from(thumbSource.mediaKey) : null,
+								mediaKeyTimestamp: thumbSource?.mediaKeyTimestamp ? toNumber(thumbSource.mediaKeyTimestamp) : null,
+								thumbSha256: thumbSource?.thumbnailSha256 ? Buffer.from(thumbSource.thumbnailSha256) : null,
+								thumbEncSha256: thumbSource?.thumbnailEncSha256 ? Buffer.from(thumbSource.thumbnailEncSha256) : null,
+								microThumbnail: thumbnail ? Buffer.from(thumbnail) : null,
+								insertTimestamp: toNumber(message.messageTimestamp ?? 0)
+							})
+						)
+					}
+
+					if (content?.audioMessage?.waveform) {
+						runOptionalMessageMirror(logger, 'media_audio_data', message.key.id, () =>
+							mediaBackend.recordAudioData({ messageRowId, waveform: Buffer.from(content.audioMessage!.waveform!) })
+						)
+					}
+
+					const streamingSidecar = content?.videoMessage?.streamingSidecar || content?.audioMessage?.streamingSidecar
+					if (streamingSidecar) {
+						runOptionalMessageMirror(logger, 'media_streaming_sidecar', message.key.id, () =>
+							mediaBackend.recordStreamingSidecar({
+								messageRowId,
+								sidecar: Buffer.from(streamingSidecar),
+								timestamp: toNumber(message.messageTimestamp ?? 0)
+							})
+						)
+					}
+				}
+			}
+
+			if (addOnBackend) {
+				const poll = content?.pollCreationMessage || content?.pollCreationMessageV2 || content?.pollCreationMessageV3
+				if (poll) {
+					runOptionalMessageMirror(logger, 'poll_record', message.key.id, () =>
+						addOnBackend.recordPoll({
+							messageRowId,
+							encKey: poll.encKey ? Buffer.from(poll.encKey) : null,
+							selectableOptionsCount: poll.selectableOptionsCount ?? null
+						})
+					)
+					for (const option of poll.options ?? []) {
+						const optionName = option.optionName
+						if (!optionName) continue
+						runOptionalMessageMirror(logger, 'poll_option_record', message.key.id, () =>
+							addOnBackend.recordPollOption({
+								messageRowId,
+								optionSha256: sha256(Buffer.from(optionName)).toString('base64'),
+								optionName
+							})
+						)
+					}
+				}
+
+				if (content?.contactMessage?.vcard) {
+					runOptionalMessageMirror(logger, 'vcard_record', message.key.id, () =>
+						addOnBackend.recordVcard({ messageRowId, vcard: content.contactMessage!.vcard! })
+					)
+				}
+
+				// A contactsArrayMessage carries several vcards on one message —
+				// each is recorded (and deduped) under the same message_row_id.
+				for (const contact of content?.contactsArrayMessage?.contacts ?? []) {
+					if (contact.vcard) {
+						runOptionalMessageMirror(logger, 'vcard_record', message.key.id, () =>
+							addOnBackend.recordVcard({ messageRowId, vcard: contact.vcard! })
+						)
+					}
+				}
+			}
+			/* eslint-enable max-depth */
+
+			// UI rendering data keeps its own failure boundary. The extractor and
+			// interactive payload are unchanged, including carousel card order.
+			const isInteractive =
+				content?.buttonsMessage || content?.listMessage || content?.templateMessage || content?.interactiveMessage
+			if (addOnBackend && isInteractive) {
+				runOptionalMessageMirror(logger, 'ui_elements_replace', message.key.id, () =>
+					addOnBackend.recordUiElements(messageRowId, extractUiElements(content))
+				)
+			}
+		}
+	}
+
+	// Replay only after the parent message has had a chance to reach msgstore.db.
+	// A queued revoke must never be consumed before recordRevoke can resolve its
+	// target row; otherwise the queue entry is lost and the persisted message is
+	// left unrevoked.
+	if (isRealMsg && orphanQueue && canReplayOrphans) {
+		const drained = orphanQueue.drain(message.key)
+		for (const entry of drained) {
+			const entryContent = normalizeMessageContent(entry.message.message)
+			if (entry.kind === 'revoke' && entryContent?.protocolMessage) {
+				emitRevokeUpdate(entry.message, entryContent.protocolMessage)
+			} else if (entry.kind === 'event-response' && entryContent?.encEventResponseMessage) {
+				const encEventResponse = entryContent.encEventResponseMessage
+				const creationMsgKey = encEventResponse.eventCreationMessageKey
+				if (creationMsgKey) {
+					await decryptAndEmitEventResponse(entry.message, encEventResponse, creationMsgKey, content!)
+				}
+			}
+		}
+	}
+
+	// Poll vote mirror (message_add_on_poll_vote + selected options). Decrypted
+	// in-house using the poll creation message's own messageSecret — which we
+	// already persisted (message_secret) — so no consumer getMessage is needed.
+	// This ONLY populates the typed mirror; the decrypted vote is deliberately
+	// NOT re-emitted as a messages.update (event delivery stays a consumer
+	// responsibility, per the upstream decision). Best-effort, never throws.
+	if (addOnBackend && messageStoreBackend && content?.pollUpdateMessage?.vote && message.key.id) {
+		try {
+			const pollKey = content.pollUpdateMessage.pollCreationMessageKey
+			const chatJid = jidNormalizedUser(message.key.remoteJid ?? '')
+			const pollRow = pollKey?.id ? messageStoreBackend.getMessageByKeyId(chatJid, !!pollKey.fromMe, pollKey.id) : null
+			const pollEncKey = pollRow ? messageStoreBackend.getMessageSecret(pollRow._id) : null
+			if (pollRow && pollEncKey && pollKey?.id) {
+				const meIdNorm = jidNormalizedUser(meId)
+				const voterJid = getKeyAuthor(message.key, meIdNorm)
+				const voteMsg = decryptPollVote(content.pollUpdateMessage.vote, {
+					pollEncKey,
+					pollCreatorJid: getKeyAuthor(pollKey, meIdNorm),
+					pollMsgId: pollKey.id,
+					voterJid
+				})
+
+				const selectedOptionRowIds: number[] = []
+				for (const opt of voteMsg.selectedOptions ?? []) {
+					const optRowId = addOnBackend.resolvePollOptionRowId(pollRow._id, Buffer.from(opt).toString('base64'))
+					if (optRowId !== null) selectedOptionRowIds.push(optRowId)
+				}
+
+				addOnBackend.recordPollVote({
+					chatJid,
+					fromMe: !!message.key.fromMe,
+					keyId: message.key.id,
+					senderJid: message.key.fromMe ? null : voterJid,
+					parentMessageRowId: pollRow._id,
+					timestamp: toNumber(message.messageTimestamp ?? 0),
+					senderTimestamp: content.pollUpdateMessage.senderTimestampMs
+						? toNumber(content.pollUpdateMessage.senderTimestampMs)
+						: toNumber(message.messageTimestamp ?? 0),
+					selectedOptionRowIds
+				})
+			}
+		} catch (err) {
+			logger?.warn({ err }, 'failed to record poll vote mirror')
+		}
+	}
+
+	// Mirror static/live location into location.db when configured.
+	// Never allowed to affect message processing: best-effort side channel,
+	// same rule as the other optional multi-db-sqlite mirrors in this file.
+	if (locationBackend && (content?.locationMessage || content?.liveLocationMessage)) {
+		try {
+			const loc = content.locationMessage || content.liveLocationMessage
+			const senderJid = getKeyAuthor(message.key, meId)
+			if (
+				loc?.degreesLatitude !== undefined &&
+				loc?.degreesLatitude !== null &&
+				loc?.degreesLongitude !== undefined &&
+				loc?.degreesLongitude !== null
+			) {
+				locationBackend.upsertLocationCache({
+					jid: jidNormalizedUser(senderJid),
+					latitude: loc.degreesLatitude,
+					longitude: loc.degreesLongitude,
+					accuracy: loc.accuracyInMeters ?? 0,
+					speed: loc.speedInMps ?? 0,
+					bearing: loc.degreesClockwiseFromMagneticNorth ?? 0,
+					locationTs: toNumber(message.messageTimestamp ?? 0)
+				})
+			}
+
+			if (content?.liveLocationMessage && message.key.id) {
+				// `expires` = 0 on the receive path is CORRECT parity, not a gap:
+				// the share duration is a primary-device-only datum, never on the
+				// companion wire. Proven by decoding the raw plaintext of a real
+				// received share (only lat/lng/sequenceNumber/jpegThumbnail present;
+				// no duration field in the E2E proto) — see LocationBackend's doc.
+				// A SENT share carries a real expires (see sendLiveLocation).
+				locationBackend.upsertLocationSharer({
+					remoteJid: jidNormalizedUser(message.key.remoteJid ?? ''),
+					fromMe: message.key.fromMe ? 1 : 0,
+					remoteResource: message.key.participant ? jidNormalizedUser(message.key.participant) : '',
+					expires: 0,
+					messageId: message.key.id,
+					// Last-activity time drives received-share retention (#636): the
+					// share ages out this many seconds after its final update.
+					receivedTs: message.key.fromMe ? undefined : toNumber(message.messageTimestamp ?? 0) || undefined
+				})
+			}
+
+			// Also mirrors the per-message location row (msgstore.db's
+			// message_location — a different concern than location.db above:
+			// this is the location DATA attached to this specific message,
+			// not the jid-level live-share state).
+			if (
+				addOnBackend &&
+				messageStoreBackend &&
+				message.key.id &&
+				loc?.degreesLatitude !== undefined &&
+				loc?.degreesLatitude !== null &&
+				loc?.degreesLongitude !== undefined &&
+				loc?.degreesLongitude !== null
+			) {
+				const row = messageStoreBackend.getMessageByKeyId(chat.id!, !!message.key.fromMe, message.key.id)
+				if (row) {
+					addOnBackend.recordLocation({
+						messageRowId: row._id,
+						chatJid: chat.id!,
+						latitude: loc.degreesLatitude,
+						longitude: loc.degreesLongitude,
+						placeName: content?.locationMessage?.name ?? null,
+						placeAddress: content?.locationMessage?.address ?? null,
+						url: content?.locationMessage?.url ?? null,
+						// Null for received shares: the share-duration is never on the
+						// companion wire (raw-plaintext-proven — only lat/lng/
+						// sequenceNumber/jpegThumbnail arrive). See LocationBackend doc.
+						liveLocationShareDurationSecs: null,
+						liveLocationSequenceNumber: content?.liveLocationMessage?.sequenceNumber
+							? toNumber(content.liveLocationMessage.sequenceNumber)
+							: null
+					})
+				}
+			}
+		} catch (err) {
+			logger?.warn({ err }, 'failed to record location.db row')
+		}
+	}
+
+	// Mirror received status/story updates into status.db when
+	// configured. Never allowed to affect message processing. `isRealMsg`
+	// excludes protocolMessage/reactionMessage/pollUpdateMessage (see its
+	// own doc) — without this guard, a REVOKE or reaction addressed to
+	// status@broadcast was recorded as if it were new status content
+	// (confirmed real bug).
+	if (statusBackend && isRealMsg && isJidStatusBroadcast(message.key.remoteJid ?? '') && message.key.id) {
+		try {
+			const senderJid = getKeyAuthor(message.key, meId)
+			statusBackend.recordReceivedStatus({
+				senderUserJid: jidNormalizedUser(senderJid),
+				uuid: message.key.id,
+				timestamp: toNumber(message.messageTimestamp ?? 0),
+				textData: content?.extendedTextMessage?.text ?? content?.conversation ?? null
+			})
+		} catch (err) {
+			logger?.warn({ err }, 'failed to record status.db row')
+		}
 	}
 
 	const protocolMsg = content?.protocolMessage
@@ -463,13 +1132,61 @@ const processMessage = async (
 						})
 					}
 
-					const data = await downloadAndProcessHistorySyncNotification(histNotification, options, logger)
+					// Best-effort mirror: record this history-sync chunk in
+					// `history_sync_companion` (sync.db) before the download, mirroring
+					// the mobile INSERT. Keyed by the notification message id. Wrapped
+					// so a mirror failure never blocks the real download/process flow.
+					const histMirrorId = message.key.id ?? undefined
+					// Best-effort drop of the transient tracking row. A named helper
+					// keeps the `finally` below a single call (avoids a 5th nesting
+					// level) and centralizes the swallow-and-log.
+					const dropHistMirror = (id: string | undefined) => {
+						if (!historySyncCompanionBackend || !id) return
+						try {
+							historySyncCompanionBackend.delete(id)
+						} catch (err) {
+							logger?.debug({ err, id }, 'history_sync_companion mirror: delete failed (ignored)')
+						}
+					}
+
+					if (historySyncCompanionBackend && histMirrorId) {
+						try {
+							historySyncCompanionBackend.put({
+								messageId: histMirrorId,
+								syncType: histNotification.syncType ?? 0,
+								chunkOrder: histNotification.chunkOrder ?? 0,
+								mediaKey: histNotification.mediaKey ?? null,
+								mediaHash: histNotification.fileSha256
+									? Buffer.from(histNotification.fileSha256).toString('base64')
+									: '',
+								mediaEncHash: histNotification.fileEncSha256
+									? Buffer.from(histNotification.fileEncSha256).toString('base64')
+									: '',
+								fileSize: histNotification.fileLength ? toNumber(histNotification.fileLength) : 0,
+								directPath: histNotification.directPath ?? '',
+								inlinePayload: histNotification.initialHistBootstrapInlinePayload ?? null
+							})
+						} catch (err) {
+							logger?.debug({ err, id: histMirrorId }, 'history_sync_companion mirror: put failed (ignored)')
+						}
+					}
+
+					let data: Awaited<ReturnType<typeof downloadAndProcessHistorySyncNotification>>
+					try {
+						data = await downloadAndProcessHistorySyncNotification(histNotification, options, logger)
+					} finally {
+						// Drop the tracking row whether the chunk was consumed OR the
+						// download threw — `finally` prevents an orphan row when
+						// `downloadAndProcessHistorySyncNotification` rejects (the delete
+						// used to sit after the await, so a throw skipped it).
+						dropHistMirror(histMirrorId)
+					}
 
 					// Emit LID-PN mappings from history sync
 					// This is how WhatsApp Web learns mappings for chats with non-contacts
 					if (data.lidPnMappings?.length) {
 						logger?.debug({ count: data.lidPnMappings.length }, 'processing LID-PN mappings from history sync')
-						// eslint-disable-next-line max-depth
+
 						try {
 							const result = await signalRepository.lidMapping.storeLIDPNMappings(data.lidPnMappings)
 							logger?.debug(
@@ -485,7 +1202,7 @@ const processMessage = async (
 						}
 
 						// Emit all mappings at once for better performance
-						// eslint-disable-next-line max-depth
+
 						if (data.lidPnMappings.length > 0) {
 							ev.emit('lid-mapping.update', data.lidPnMappings)
 						}
@@ -509,6 +1226,7 @@ const processMessage = async (
 				const keys = protocolMsg.appStateSyncKeyShare?.keys
 				if (keys?.length) {
 					let newAppStateSyncKeyId = ''
+					let isNewlyGeneratedKey = false
 					await keyStore.transaction(async () => {
 						const newKeys: string[] = []
 						for (const { keyData, keyId } of keys) {
@@ -521,6 +1239,21 @@ const processMessage = async (
 							newKeys.push(strKeyId)
 
 							if (keyData) {
+								// "isNewlyGeneratedKey" — confirmed real field in
+								// sync.db.peer_messages' JSON payload (live Frida capture), but
+								// neither the server nor this protocolMessage transmit it as a
+								// flag — it's a local determination. Inferred here as "was this
+								// key ID absent from our store before this share", which matches
+								// the field name's own meaning. A share can carry more than one
+								// key, but only one peer_messages row is recorded for the whole
+								// batch (below, after this loop) — OR the per-key results together
+								// so the flag means "at least one key in this share was new"
+								// instead of silently keeping only the last key's result.
+								if (appStateBackend) {
+									const existing = await keyStore.get('app-state-sync-key', [strKeyId])
+									isNewlyGeneratedKey = isNewlyGeneratedKey || !existing[strKeyId]
+								}
+
 								await keyStore.set({ 'app-state-sync-key': { [strKeyId]: keyData } })
 							}
 
@@ -530,23 +1263,103 @@ const processMessage = async (
 						logger?.info({ newAppStateSyncKeyId, newKeys }, 'injecting new app state sync keys')
 					}, meId)
 
+					if (appStateBackend && protocolMsg.appStateSyncKeyShare) {
+						try {
+							const peerMsgId = appStateBackend.recordPeerMessage({
+								messageType: PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
+								keyRemoteJid: message.key.remoteJid ?? '',
+								keyFromMe: message.key.fromMe ? 1 : 0,
+								keyId: message.key.id ?? '',
+								deviceId: meId,
+								timestamp: toNumber(message.messageTimestamp ?? 0),
+								data: JSON.stringify({
+									appStateSyncKeyShareProtoString: Buffer.from(
+										proto.Message.AppStateSyncKeyShare.encode(protocolMsg.appStateSyncKeyShare).finish()
+									).toString('base64'),
+									isNewlyGeneratedKey
+								}),
+								acked: 0
+							})
+							appStateBackend.ackPeerMessage(peerMsgId)
+						} catch (err) {
+							logger?.warn({ err }, 'failed to record peer_messages row for app-state-sync-key-share')
+						}
+					}
+
 					ev.emit('creds.update', { myAppStateKeyId: newAppStateSyncKeyId })
 				} else {
 					logger?.info({ protocolMsg }, 'recv app state sync with 0 keys')
 				}
 
 				break
-			case proto.Message.ProtocolMessage.Type.REVOKE:
-				ev.emit('messages.update', [
-					{
-						key: {
-							...message.key,
-							id: protocolMsg.key?.id
-						},
-						update: { message: null, messageStubType: WAMessageStubType.REVOKE, key: message.key }
-					}
-				])
+			case proto.Message.ProtocolMessage.Type.REVOKE: {
+				if (!protocolMsg.key?.id) {
+					logger?.debug({ protocolMsg }, 'processMessage: REVOKE with no target id, dropping')
+					break
+				}
+
+				const targetKey: WAMessageKey = {
+					...protocolMsg.key,
+					remoteJid: protocolMsg.key.remoteJid ?? message.key.remoteJid,
+					fromMe: protocolMsg.key.fromMe ?? message.key.fromMe,
+					participant: protocolMsg.key.participant ?? message.key.participant,
+					id: protocolMsg.key.id
+				}
+
+				let original: proto.IMessage | undefined
+				try {
+					original = await getMessage(targetKey)
+				} catch (err) {
+					logger?.warn(
+						{ err, targetKey },
+						'processMessage: consumer message lookup failed, continuing with store/orphan fallback'
+					)
+				}
+
+				// The consumer's `getMessage` defaults to `() => undefined`, so a
+				// caller that doesn't maintain its own message cache would never
+				// record the revoke — even though the multi-db message store DOES
+				// have the target. Treat the store as an independent "target known"
+				// source: if either the consumer or our own store has the original,
+				// process the revoke now instead of queueing it as an orphan.
+				//
+				// Wrapped in try/catch so a store read error (closed handle,
+				// transient I/O) can NEVER reject REVOKE processing — the same
+				// "the mirror must never affect message handling" invariant every
+				// other multi-db write in this file follows. On failure we fall
+				// back to `knownToStore = false` (relies on getMessage / orphan
+				// queue), never breaking the delete-for-everyone core path.
+				let knownToStore = false
+				try {
+					knownToStore =
+						!!messageStoreBackend &&
+						!!targetKey.id &&
+						messageStoreBackend.getMessageByKeyId(
+							jidNormalizedUser(targetKey.remoteJid ?? ''),
+							!!targetKey.fromMe,
+							targetKey.id
+						) !== null
+				} catch (err) {
+					logger?.warn({ err, targetKey }, 'processMessage: REVOKE store lookup failed, treating target as unknown')
+				}
+
+				if (original || knownToStore) {
+					emitRevokeUpdate(message, protocolMsg)
+				} else if (orphanQueue) {
+					// Out-of-order arrival (common during history sync / offline catch-up):
+					// the revoke target isn't in the consumer's store yet. Queue it instead
+					// of firing a "delete a message I don't have" no-op — replayed by the
+					// drain block near the top of this function, on the future invocation
+					// of processMessage() that handles the target message once it arrives.
+					orphanQueue.enqueue(targetKey, 'revoke', message)
+					logger?.debug({ targetKey }, 'processMessage: REVOKE target not found yet, queued as orphan')
+				} else {
+					logger?.debug({ targetKey }, 'processMessage: REVOKE target not found, dropping (no orphan queue configured)')
+				}
+
 				break
+			}
+
 			case proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING:
 				Object.assign(chat, {
 					ephemeralSettingTimestamp: toNumber(message.messageTimestamp),
@@ -576,9 +1389,8 @@ const processMessage = async (
 					let recoveredCount = 0
 					for (const result of peerDataOperationResult) {
 						const { placeholderMessageResendResponse: retryResponse } = result
-						//eslint-disable-next-line max-depth
+
 						if (retryResponse) {
-							// eslint-disable-next-line max-depth
 							if (!retryResponse.webMessageInfoBytes) {
 								continue
 							}
@@ -587,7 +1399,7 @@ const processMessage = async (
 
 							// Merge cached metadata with decoded message
 							// This ensures we don't lose critical information like pushName and LID mappings
-							// eslint-disable-next-line max-depth
+
 							if (cachedData && typeof cachedData === 'object') {
 								// Preserve pushName if not present in PDO response
 								// eslint-disable-next-line max-depth
@@ -639,7 +1451,7 @@ const processMessage = async (
 							)
 
 							// Normalize LID→PN in PDO-recovered message key before emitting
-							// eslint-disable-next-line max-depth
+
 							if (webMessageInfo.key && signalRepository) {
 								await normalizeKeyLidToPn(webMessageInfo.key as WAMessageKey, signalRepository.lidMapping, logger)
 							}
@@ -745,6 +1557,35 @@ const processMessage = async (
 				key: reactionKey
 			}
 		])
+
+		// Mirrors the reaction into msgstore.db's message_add_on(+_reaction)
+		// tables when configured. No-ops (does not throw) when the reacted-to
+		// message isn't locally known — same best-effort convention as
+		// MessageStoreBackend.recordRevoke.
+		if (addOnBackend && messageStoreBackend && message.key.id && reactionKey.remoteJid && reactionKey.id) {
+			try {
+				const parent = messageStoreBackend.getMessageByKeyId(
+					jidNormalizedUser(reactionKey.remoteJid),
+					!!reactionKey.fromMe,
+					reactionKey.id
+				)
+				if (parent) {
+					const senderJid = getKeyAuthor(message.key, meId)
+					addOnBackend.recordReaction({
+						chatJid: jidNormalizedUser(message.key.remoteJid ?? ''),
+						fromMe: !!message.key.fromMe,
+						keyId: message.key.id,
+						senderJid: message.key.fromMe ? null : jidNormalizedUser(senderJid),
+						parentMessageRowId: parent._id,
+						timestamp: toNumber(message.messageTimestamp ?? 0),
+						reaction: content.reactionMessage.text ?? '',
+						senderTimestamp: toNumber(content.reactionMessage.senderTimestampMs ?? 0)
+					})
+				}
+			} catch (err) {
+				logger?.warn({ err }, 'failed to record message_add_on_reaction row')
+			}
+		}
 	} else if (content?.encEventResponseMessage) {
 		const encEventResponse = content.encEventResponseMessage
 		const creationMsgKey = encEventResponse.eventCreationMessageKey
@@ -756,59 +1597,15 @@ const processMessage = async (
 		// we need to fetch the event creation message to get the event enc key
 		const eventMsg = await getMessage(creationMsgKey)
 		if (eventMsg) {
-			try {
-				const meIdNormalised = jidNormalizedUser(meId)
-
-				// all jids need to be PN
-				const eventCreatorKey = creationMsgKey.participant || creationMsgKey.remoteJid!
-				const eventCreatorPn = isLidUser(eventCreatorKey)
-					? await signalRepository.lidMapping.getPNForLID(eventCreatorKey)
-					: eventCreatorKey
-				if (!eventCreatorPn) {
-					logger?.warn({ messageKey: message.key, eventCreatorKey }, 'processMessage: eventCreatorPn missing, skipping')
-					return
-				}
-
-				const eventCreatorJid = getKeyAuthor(
-					{ remoteJid: jidNormalizedUser(eventCreatorPn), fromMe: meIdNormalised === eventCreatorPn },
-					meIdNormalised
-				)
-
-				const responderJid = getKeyAuthor(message.key, meIdNormalised)
-				const eventEncKey = eventMsg?.messageContextInfo?.messageSecret
-
-				if (!eventEncKey) {
-					logger?.warn({ creationMsgKey }, 'event response: missing messageSecret for decryption')
-				} else {
-					const responseMsg = decryptEventResponse(encEventResponse, {
-						eventEncKey,
-						eventCreatorJid,
-						eventMsgId: creationMsgKey.id!,
-						responderJid
-					})
-
-					const eventResponse = {
-						eventResponseMessageKey: message.key,
-						senderTimestampMs: responseMsg.timestampMs!,
-						response: responseMsg
-					}
-
-					// Normalize creationMsgKey JIDs for the emitted event
-					const normalizedCreationKey = { ...creationMsgKey }
-					await normalizeKeyLidToPn(normalizedCreationKey, signalRepository.lidMapping, logger)
-
-					ev.emit('messages.update', [
-						{
-							key: normalizedCreationKey,
-							update: {
-								eventResponses: [eventResponse]
-							}
-						}
-					])
-				}
-			} catch (err) {
-				logger?.warn({ err, creationMsgKey }, 'failed to decrypt event response')
-			}
+			await decryptAndEmitEventResponse(message, encEventResponse, creationMsgKey, eventMsg)
+		} else if (orphanQueue) {
+			// Out-of-order arrival: the event-creation message isn't in the
+			// consumer's store yet. Queue it instead of dropping the response —
+			// replayed by the drain block near the top of this function, on the
+			// future invocation of processMessage() that handles the creation
+			// message once it arrives.
+			orphanQueue.enqueue(creationMsgKey, 'event-response', message)
+			logger?.debug({ creationMsgKey }, 'processMessage: event creation message not found yet, queued as orphan')
 		} else {
 			logger?.warn({ creationMsgKey }, 'event creation message not found, cannot decrypt response')
 		}

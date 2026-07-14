@@ -15,6 +15,7 @@ import type {
 	ChatModification,
 	ChatMutation,
 	ChatUpdate,
+	Contact,
 	LTHashState,
 	MessageUpsertType,
 	PresenceData,
@@ -45,6 +46,7 @@ import type {
 } from '../Types/Username'
 import { UsernameQueryIds, XWAUsernamePaths } from '../Types/Username'
 import {
+	buildCompanionDeviceProps,
 	chatModificationToAppPatch,
 	type ChatMutationMap,
 	decodePatches,
@@ -58,10 +60,36 @@ import {
 	isMissingKeyError,
 	MAX_SYNC_ATTEMPTS,
 	newLTHashState,
+	OrphanQueue,
 	processSyncAction,
+	type RawSyncdMutation,
 	resolveLidToPn
 } from '../Utils'
+import type { ILogger } from '../Utils/logger'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
+import {
+	AppStateBackend,
+	ChatSettingsBackend,
+	type ChatSettingsRow,
+	CompanionDevicesBackend,
+	HistorySyncCompanionBackend,
+	JidMapBackend,
+	LocationBackend,
+	type LocationCacheRow,
+	type LocationSharerRow,
+	MessageAddOnBackend,
+	MessageMediaBackend,
+	MessageStoreBackend,
+	ReceiptBackend,
+	StatusBackend,
+	StickersBackend,
+	type StoredCompanionDeviceRow,
+	type StoredRecentStickerRow,
+	type StoredStarredStickerRow,
+	WaContactsBackend
+} from '../Utils/multi-db-sqlite'
+import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
+import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
 import processMessage from '../Utils/process-message'
 import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
 import {
@@ -78,6 +106,52 @@ import {
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { executeWMexQuery as genericExecuteWMexQuery } from './mex'
 import { makeSocket } from './socket.js'
+
+/**
+ * Mirror one decoded app-state mutation into `sync.db`'s
+ * `syncd_mutations` table. `index[0]` is always the action name, and for
+ * MOST actions `index[1]` is the target chat jid — verified against
+ * `chatModificationToAppPatch` in chat-utils.ts, which builds outgoing
+ * patches with that convention (`['mute', jid]`, `['archive', jid]`,
+ * `['pin_v1', jid]`). It is NOT universal, though: action-only entries like
+ * `['setting_disableLinkPreviews']` have no jid at all, and label mutations
+ * (`[LabelAssociationType.Chat, labelId, jid]`) put the jid at index[2], with
+ * a label id at index[1] instead. `chatJid` below is only populated when
+ * `index[1]` actually looks like a jid, so those cases store `null` rather
+ * than a mislabeled value.
+ *
+ * Never allowed to affect the sync flow: `appStateBackend` is a best-effort
+ * side channel (same rule as `onQuarantine`), so any throw here
+ * (e.g. a busy SQLite writer) is swallowed and logged, not propagated.
+ */
+const recordRawMutation = (
+	appStateBackend: AppStateBackend,
+	collectionName: WAPatchName,
+	raw: RawSyncdMutation & { version: number },
+	logger?: ILogger
+) => {
+	try {
+		const index = raw.mutation.index
+		appStateBackend.insertMutation({
+			mutationIndex: Buffer.from(raw.indexMac).toString('base64'),
+			mutationValue: Buffer.from(proto.SyncActionData.encode(raw.mutation.syncAction).finish()),
+			mutationVersion: raw.version,
+			collectionName,
+			areDependenciesMissing: 0,
+			mutationMac: Buffer.from(raw.valueMac),
+			// Real Android's device_id/epoch key the app-state-sync-key rotation
+			// (crypto_info.device_id/epoch) — Baileys doesn't track that epoch
+			// counter today, so these default to 0 (the schema's own default)
+			// rather than fabricate a value with no confirmed source.
+			deviceId: 0,
+			epoch: 0,
+			chatJid: typeof index[1] === 'string' && index[1].includes('@') ? index[1] : null,
+			mutationName: index[0]
+		})
+	} catch (err) {
+		logger?.warn?.({ err, collectionName }, 'failed to record syncd_mutation')
+	}
+}
 
 export const makeChatsSocket = (config: SocketConfig) => {
 	const {
@@ -113,6 +187,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 * smells like a custom client.
 	 */
 	const getKnownLIDForPN = signalRepository.lidMapping.getKnownLIDForPN.bind(signalRepository.lidMapping)
+	const initOptionalMirror = <T>(mirror: string, fallback: string, factory: () => T): T | undefined =>
+		initOptionalMirrorBase(config.multiDbStore, logger, mirror, fallback, factory)
 
 	let privacySettings: { [_: string]: string } | undefined
 
@@ -144,6 +220,160 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// When a key arrives via APP_STATE_SYNC_KEY_SHARE, these are re-synced.
 	const blockedCollections = new Set<WAPatchName>()
 
+	// Mirrors app-state sync (collection_versions + syncd_mutations
+	// + peer_messages) into sync.db when a multi-db-sqlite store is configured.
+	// Boundary cast: `multiDbStore` is typed `unknown` on SocketConfig so
+	// consumers of this module don't need a hard dependency on the SQLite
+	// types (same pattern as libsignal.ts's LID-mapping wiring).
+
+	const appStateBackend = initOptionalMirror(
+		'sync.db.app_state',
+		'auth_state_keys',
+		() => new AppStateBackend((config.multiDbStore as any).handle('sync.db'))
+	)
+
+	// Mirrors companion history-sync chunk tracking into `history_sync_companion`
+	// (sync.db) when a multi-db-sqlite store is configured. Best-effort: the
+	// existing download/process flow stays authoritative; the table just tracks
+	// each chunk's lifecycle (insert on notification, mark on process, delete on
+	// consume). Same boundary-cast rationale as appStateBackend above.
+	const historySyncCompanionBackend = initOptionalMirror(
+		'sync.db.history_sync_companion',
+		'legacy_history_sync_flow',
+		() => new HistorySyncCompanionBackend((config.multiDbStore as any).handle('sync.db'))
+	)
+
+	// Mirrors contact events into `wa_contacts` (wa.db) — the canonical mobile
+	// central contact table. Persistent (no socket-close wipe). Populated from
+	// every `contacts.upsert`/`contacts.update` and backfilled on
+	// `lid-mapping.update`; read back PN-transparently. All writes best-effort:
+	// a mirror failure never blocks the contact event flow (fallback = legacy
+	// event-driven handling). Same boundary-cast rationale as appStateBackend.
+	const waContactsBackend = initOptionalMirror(
+		'wa.db.wa_contacts',
+		'contacts_events',
+		() => new WaContactsBackend((config.multiDbStore as any).handle('wa.db'))
+	)
+
+	// Mirrors THIS client's own device registration into `companion_devices.db`
+	// on connection open. InfiniteAPI is a companion (not the primary that owns
+	// companions), so it stores a single row: itself, with the DeviceProps it
+	// declared at pairing. Best-effort; the reconnect session lives in creds.db,
+	// not here. Same boundary-cast rationale as appStateBackend.
+	const companionDevicesBackend = initOptionalMirror(
+		'companion_devices.db.companion_devices',
+		'creds_device_state',
+		() => new CompanionDevicesBackend((config.multiDbStore as any).handle('companion_devices.db'))
+	)
+
+	// Mirrors static/live location (location_cache/location_sharer)
+	// into location.db when a multi-db-sqlite store is configured. Same
+	// boundary-cast rationale as appStateBackend above.
+
+	const locationBackend = initOptionalMirror(
+		'location.db.location',
+		'message_proto_location',
+		() => new LocationBackend((config.multiDbStore as any).handle('location.db'))
+	)
+
+	// Mirrors mute/pin chat settings into chatsettings.db when a
+	// multi-db-sqlite store is configured. Same boundary-cast rationale as
+	// appStateBackend above.
+
+	const chatSettingsBackend = initOptionalMirror(
+		'chatsettings.db.chat_settings',
+		'chat_events',
+		() => new ChatSettingsBackend((config.multiDbStore as any).handle('chatsettings.db'))
+	)
+
+	// Mirrors received status/story updates (status/status_info)
+	// into status.db when a multi-db-sqlite store is configured. Same
+	// boundary-cast rationale as appStateBackend above.
+
+	const statusBackend = initOptionalMirror(
+		'status.db.status',
+		'status_message_events',
+		() => new StatusBackend((config.multiDbStore as any).handle('status.db'))
+	)
+
+	// Mirrors starred/recent stickers into stickers.db from the
+	// app-state `stickerAction`/`removeRecentStickerAction` (validated source).
+	const stickersBackend = initOptionalMirror(
+		'stickers.db.stickers',
+		'app_state_sticker_actions',
+		() => new StickersBackend((config.multiDbStore as any).handle('stickers.db'))
+	)
+
+	// Mirrors real messages (message/chat tables) + delete-for-everyone
+	// (message_revoked) into msgstore.db when a multi-db-sqlite store is
+	// configured. Same boundary-cast rationale as appStateBackend above.
+	// Resolves a fresh JidMapBackend against the shared msgstore.db handle
+	// for chat/sender jid_row_id lookups — cheap (stateless prepared-
+	// statement wrapper over the same connection the LID mapping already
+	// uses), same pattern as factories.ts's createMessageQuarantineRecorder.
+	const messageStoreBackend = initOptionalMirror(
+		'msgstore.db.message',
+		'legacy_message_proto',
+		() =>
+			new MessageStoreBackend(
+				(config.multiDbStore as any).handle('msgstore.db'),
+				new JidMapBackend((config.multiDbStore as any).handle('msgstore.db'))
+			)
+	)
+	const receiptReplayBackend = messageStoreBackend
+		? initOptionalMirror(
+				'msgstore.db.receipt_orphaned',
+				'live_receipt_events',
+				() =>
+					new ReceiptBackend(
+						(config.multiDbStore as any).handle('msgstore.db'),
+						new JidMapBackend((config.multiDbStore as any).handle('msgstore.db')),
+						messageStoreBackend
+					)
+			)
+		: undefined
+
+	// Mirrors media metadata (message_media/message_thumbnail/audio_data/
+	// message_streaming_sidecar) into msgstore.db. Same boundary-cast
+	// rationale as messageStoreBackend above.
+	const mediaBackend = initOptionalMirror(
+		'msgstore.db.message_media',
+		'message_proto_media',
+		() => new MessageMediaBackend((config.multiDbStore as any).handle('msgstore.db'))
+	)
+
+	// Mirrors reactions/polls/locations/vcards attached to a message
+	// (message_add_on(+_reaction)/message_poll(+_option)/message_location/
+	// message_vcard) into msgstore.db. Same boundary-cast + fresh-
+	// JidMapBackend rationale as messageStoreBackend above.
+	const addOnBackend = messageStoreBackend
+		? initOptionalMirror(
+				'msgstore.db.message_add_on',
+				'legacy_message_proto',
+				() =>
+					new MessageAddOnBackend(
+						(config.multiDbStore as any).handle('msgstore.db'),
+						new JidMapBackend((config.multiDbStore as any).handle('msgstore.db')),
+						messageStoreBackend
+					)
+			)
+		: undefined
+	const mirrorAppStateVersion = (name: WAPatchName, state: LTHashState, source: 'snapshot' | 'patch'): void => {
+		try {
+			appStateBackend?.setCollectionVersion({
+				collectionName: name,
+				version: state.version,
+				ltHash: Buffer.from(state.hash),
+				dirtyVersion: -1
+			})
+		} catch (err) {
+			logger.warn(
+				{ err, collectionName: name, version: state.version, mirror: 'sync.db.collection', source },
+				'multi-db-sqlite: failed to mirror collection version; auth state remains authoritative'
+			)
+		}
+	}
+
 	const ownsPlaceholderResendCache = !config.placeholderResendCache
 	const placeholderResendCache =
 		config.placeholderResendCache ||
@@ -163,6 +393,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	if (!config.placeholderResendCache) {
 		config.placeholderResendCache = placeholderResendCache
 	}
+
+	// Holding pen for REVOKE/event-response that arrive before their target/parent
+	// message does (out-of-order delivery, common during history sync catch-up).
+	// See src/Utils/orphan-queue.ts for the full rationale.
+	const orphanQueue = new OrphanQueue(logger)
 
 	/** helper function to fetch the given app state sync key */
 	const getAppStateSyncKey = async (keyId: string) => {
@@ -515,12 +750,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 * The server enforces three rules independently of this client:
 	 *   - Format: lowercase ASCII letters/digits/underscore, length 3-30
 	 *   - Uniqueness: returns `result: 'TAKEN'` if claimed
-	 *   - Phase gate: while `username_reservation_only_mode` is set
+	 *   - Rollout gate: while `username_reservation_only_mode` is set
 	 *     server-side, an existing RESERVED handle cannot be transitioned
 	 *     to ACTIVE — the mutation may succeed but the state stays
 	 *     RESERVED until the global toggle flips
 	 *
-	 * `reserved` defaults to `true` (current rollout phase). Override to
+	 * `reserved` defaults to `true` (current rollout state). Override to
 	 * `false` once the public ACTIVE flow opens.
 	 */
 	const setMyUsername = async (
@@ -765,7 +1000,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					ev,
 					me,
 					isInitialSync ? { accountSettings: authState.creds.accountSettings } : undefined,
-					logger
+					logger,
+					chatSettingsBackend,
+					stickersBackend
 				)
 			}
 		}
@@ -851,7 +1088,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 									snapshot,
 									getCachedAppStateSyncKey,
 									initialVersionMap[name],
-									appStateMacVerification.snapshot
+									appStateMacVerification.snapshot,
+									appStateBackend ? raw => recordRawMutation(appStateBackend, name, raw) : undefined
 								)
 								states[name] = newState
 								Object.assign(globalMutationMap, mutationMap)
@@ -859,6 +1097,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 								logger.info(`restored state of ${name} from snapshot to v${newState.version} with mutations`)
 
 								await authState.keys.set({ 'app-state-sync-version': { [name]: newState } })
+								// See AppStateBackend's class doc: `dirty_version=-1` mirrors the
+								// real schema's "converged" default — this gateway only persists
+								// server-confirmed state, never a pending local-first mutation.
+								mirrorAppStateVersion(name, newState, 'snapshot')
 							}
 
 							// only process if there are syncd patches
@@ -871,10 +1113,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 									config.options,
 									initialVersionMap[name],
 									logger,
-									appStateMacVerification.patch
+									appStateMacVerification.patch,
+									appStateBackend ? raw => recordRawMutation(appStateBackend, name, raw) : undefined
 								)
 
 								await authState.keys.set({ 'app-state-sync-version': { [name]: newState } })
+								mirrorAppStateVersion(name, newState, 'patch')
 
 								logger.info(`synced ${name} to v${newState.version}`)
 								initialVersionMap[name] = newState.version
@@ -1255,6 +1499,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 				await authState.keys.set({ 'app-state-sync-version': { [name]: state } })
 			}, authState?.creds?.me?.id || 'app-patch')
+
+			// Only publish to sync.db after the auth-state transaction has fully
+			// committed. A post-callback commit failure must never leave the mirror
+			// ahead of the authoritative version. The server already accepted this
+			// patch, and the helper remains best-effort/non-blocking.
+			mirrorAppStateVersion(name, encodeResult!.state, 'patch')
 		})
 
 		if (config.emitOwnEvents) {
@@ -1614,7 +1864,16 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				keyStore: authState.keys,
 				logger,
 				options: config.options,
-				getMessage
+				getMessage,
+				orphanQueue,
+				appStateBackend,
+				locationBackend,
+				statusBackend,
+				messageStoreBackend,
+				mediaBackend,
+				addOnBackend,
+				historySyncCompanionBackend,
+				receiptBackend: receiptReplayBackend
 			})
 		])
 
@@ -1657,8 +1916,62 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	})
 
+	/**
+	 * Persists THIS client's own device registration into `companion_devices.db`
+	 * on connection open — the DeviceProps declared at pairing (same source as
+	 * the wire payload, via buildCompanionDeviceProps) plus its device jid and
+	 * ADV key index. Single row, upserted per connection. Best-effort: a mirror
+	 * failure never affects the connection.
+	 */
+	const mirrorOwnDevice = () => {
+		if (!companionDevicesBackend || !authState.creds.me?.id) {
+			return
+		}
+
+		try {
+			const props = buildCompanionDeviceProps(config)
+			const hsc = props.historySyncConfig || {}
+			let advKeyIndex = 0
+			try {
+				const details = authState.creds.account?.details
+				if (details) {
+					advKeyIndex = proto.ADVDeviceIdentity.decode(details).keyIndex ?? 0
+				}
+			} catch {
+				/* keyIndex stays 0 if the account identity can't be decoded */
+			}
+
+			companionDevicesBackend.upsertOwnDevice({
+				deviceId: authState.creds.me.id,
+				deviceOs: props.os,
+				platformType: props.platformType,
+				loginTime: Math.floor(Date.now() / 1000),
+				advKeyIndex,
+				fullSyncRequired: props.requireFullSync ?? undefined,
+				storageQuotaMb: hsc.storageQuotaMb ?? undefined,
+				inlineInitialHistSyncPayloadEnabled: hsc.inlineInitialPayloadInE2EeMsg ?? undefined,
+				recentSyncDaysLimit: hsc.recentSyncDaysLimit ?? undefined,
+				supportCallLogHistory: hsc.supportCallLogHistory ?? undefined,
+				supportBotUserAgentChatHistory: hsc.supportBotUserAgentChatHistory ?? undefined,
+				supportCagReactionsAndPollsHistory: hsc.supportCagReactionsAndPolls ?? undefined,
+				supportRecentSyncChunkMessageTuning: hsc.supportRecentSyncChunkMessageCountTuning ?? undefined,
+				supportHostedGroupMsg: hsc.supportHostedGroupMsg ?? undefined,
+				supportFbidBotChatHistory: hsc.supportFbidBotChatHistory ?? undefined,
+				supportBizHostedMsg: hsc.supportBizHostedMsg ?? undefined,
+				supportAddOnHistorySyncMigration: hsc.supportAddOnHistorySyncMigration ?? undefined,
+				supportMessageAssociation: hsc.supportMessageAssociation ?? undefined,
+				supportGroupHistory: hsc.supportGroupHistory ?? undefined,
+				supportGuestChat: hsc.supportGuestChat ?? undefined
+			})
+		} catch (err) {
+			logger.debug({ err }, 'companion_devices mirror: own-device upsert failed (ignored)')
+		}
+	}
+
 	ev.on('connection.update', ({ connection, receivedPendingNotifications }) => {
 		if (connection === 'open') {
+			mirrorOwnDevice()
+
 			if (fireInitQueries) {
 				executeInitQueries().catch(error => onUnexpectedError(error, 'init queries'))
 			}
@@ -1782,6 +2095,105 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		resyncAppState(collections, false).catch(error => onUnexpectedError(error, 'blocked collections resync'))
 	})
 
+	/**
+	 * Best-effort mirror of a contact event into `wa_contacts` as the LID+PN
+	 * pair, matching how the mobile client stores two rows per contact. The side
+	 * carried by the event is written directly; the other side is resolved via
+	 * the LID↔PN mapping (or backfilled later by the `lid-mapping.update`
+	 * listener below when the mapping first becomes known). Wrapped so a mirror
+	 * failure never disrupts the contact event delivered to the consumer.
+	 */
+	const mirrorContactToWaDb = async (c: Partial<Contact>) => {
+		if (!waContactsBackend || !c.id) return
+		try {
+			const id = jidNormalizedUser(c.id)
+			// Only mirror real user contacts. Group / @newsletter / @bot jids also
+			// arrive on contacts.update (e.g. group picture notifications) — without
+			// this guard the else-branch below would treat them as PN and store them
+			// with is_whatsapp_user=1, and getStoredContact(groupJid) would then
+			// serve a bogus contact instead of falling back.
+			if (!isAnyPnUser(id) && !isAnyLidUser(id)) {
+				return
+			}
+
+			let pn: string | undefined
+			let lid: string | undefined
+			if (isAnyLidUser(id)) {
+				lid = id
+				pn = c.phoneNumber
+					? jidNormalizedUser(c.phoneNumber)
+					: (await signalRepository.lidMapping.getPNForLID(id)) || undefined
+			} else {
+				pn = id
+				lid = c.lid ? jidNormalizedUser(c.lid) : (await signalRepository.lidMapping.getLIDForPN(id)) || undefined
+			}
+
+			const fields = { waName: c.notify, displayName: c.name, status: c.status, username: c.username }
+			if (pn) {
+				waContactsBackend.upsertRow({ jid: pn, ...fields })
+			}
+
+			if (lid) {
+				waContactsBackend.upsertRow({ jid: lid, ...fields })
+			}
+		} catch (err) {
+			logger.debug({ err, id: c.id }, 'wa_contacts mirror: upsert failed (ignored)')
+		}
+	}
+
+	const contactMirrorChains = new Map<string, Promise<void>>()
+	const enqueueContactMirror = (contact: Partial<Contact>): void => {
+		if (!contact.id) return
+		const key = jidNormalizedUser(contact.id)
+		const previous = contactMirrorChains.get(key) ?? Promise.resolve()
+		const next = previous
+			.catch(() => undefined)
+			.then(() => mirrorContactToWaDb(contact))
+			.finally(() => {
+				if (contactMirrorChains.get(key) === next) contactMirrorChains.delete(key)
+			})
+		contactMirrorChains.set(key, next)
+	}
+
+	/**
+	 * Copies whichever wa_contacts row exists onto its pair, so the store holds
+	 * both the LID and PN rows like the mobile client once the mapping is known.
+	 * Best-effort; a named helper keeps the `lid-mapping.update` loop shallow.
+	 */
+	const backfillWaContactPair = (pnUser: string, lidUser: string) => {
+		if (!waContactsBackend) {
+			return
+		}
+
+		try {
+			waContactsBackend.copyFieldsTo(pnUser, lidUser)
+			waContactsBackend.copyFieldsTo(lidUser, pnUser)
+		} catch (err) {
+			logger.debug({ err, lid: lidUser, pn: pnUser }, 'wa_contacts mirror: backfill failed (ignored)')
+		}
+	}
+
+	if (waContactsBackend) {
+		ev.on('contacts.upsert', contacts => {
+			for (const c of contacts) {
+				enqueueContactMirror(c)
+			}
+		})
+		ev.on('contacts.update', updates => {
+			for (const c of updates) {
+				enqueueContactMirror(c)
+			}
+		})
+		// Contacts learned during history sync arrive here (not via
+		// contacts.upsert), so a session whose contacts come only from history
+		// sync would otherwise leave wa_contacts empty until a live event.
+		ev.on('messaging-history.set', ({ contacts }) => {
+			for (const c of contacts) {
+				enqueueContactMirror(c)
+			}
+		})
+	}
+
 	ev.on('lid-mapping.update', async mappings => {
 		try {
 			const result = await signalRepository.lidMapping.storeLIDPNMappings(mappings)
@@ -1815,6 +2227,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 						previousId: lidUser,
 						mergedAt
 					})
+
+					// Backfill the wa_contacts pair now that the mapping is known (an
+					// earlier contact event may have written only one side). Helper
+					// keeps this out of a 5th nesting level.
+					backfillWaContactPair(pnUser, lidUser)
 				}
 			}
 
@@ -1861,12 +2278,198 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				config.placeholderResendCache = undefined
 			}
 		}
+
+		orphanQueue.clear()
+		// Wipe any straggler history-sync chunk rows. In normal operation the
+		// `finally` in process-message deletes each row after its download, but a
+		// swallowed delete error (best-effort) could leave one behind — this
+		// closes that gap on teardown, mirroring the retry manager's own clear().
+		try {
+			historySyncCompanionBackend?.clear()
+		} catch (err) {
+			logger.debug({ err }, 'history_sync_companion clear on socket-end failed (non-fatal)')
+		}
 	})
+
+	/**
+	 * PN-transparent contact read from the `wa_contacts` mirror. Given any jid
+	 * (LID or PN), it prefers the mapped PN row and falls back to the original
+	 * LID row when that PN row is absent. The returned id is the known PN, or the
+	 * original LID when no mapping exists. Returns `null` on miss, missing store,
+	 * or error so the caller falls back to legacy event-driven handling.
+	 */
+	const getStoredContact = async (jid: string): Promise<Contact | null> => {
+		if (!waContactsBackend || !jid) {
+			return null
+		}
+
+		try {
+			// PN-transparent read with LID-row fallback (#630) — see
+			// resolveStoredContact.
+			return await resolveStoredContact(
+				jid,
+				j => waContactsBackend.getByJid(j),
+				async lid => (await signalRepository.lidMapping.getPNForLID(lid)) || undefined
+			)
+		} catch (err) {
+			// Logged (not silent) so a schema/migration issue is diagnosable; the
+			// caller still falls back to the legacy path on the null return.
+			logger.debug({ err, jid }, 'wa_contacts getStoredContact failed (fallback to legacy)')
+			return null
+		}
+	}
+
+	/**
+	 * Reads this client's own device registration from `companion_devices.db`.
+	 * Returns the stored row or `null` on miss / no store / error — the caller
+	 * falls back to the live `buildCompanionDeviceProps(config)` source.
+	 */
+	const getOwnDeviceRegistration = (): StoredCompanionDeviceRow | null => {
+		if (!companionDevicesBackend || !authState.creds.me?.id) {
+			return null
+		}
+
+		try {
+			return companionDevicesBackend.getByDeviceId(authState.creds.me.id)
+		} catch {
+			return null
+		}
+	}
+
+	/**
+	 * Reads a chat's synced per-chat settings (mute end + pin) from
+	 * `chatsettings.db`. Returns the stored row or `null` on miss / no store /
+	 * error — the caller falls back to the legacy `chats.update` event state.
+	 * Keyed by the chat jid. Only mute/pin are stored (the only per-chat
+	 * settings WhatsApp syncs across devices — wallpaper/tone/etc. are
+	 * device-local by protocol design; see ChatSettingsBackend).
+	 */
+	const getChatSettings = (jid: string): ChatSettingsRow | null => {
+		if (!chatSettingsBackend || !jid) {
+			return null
+		}
+
+		try {
+			return chatSettingsBackend.getSettings(jidNormalizedUser(jid))
+		} catch (err) {
+			logger.debug({ err, jid }, 'chatsettings getChatSettings failed (fallback to legacy)')
+			return null
+		}
+	}
+
+	// Reads the location.db live-location mirror. Best-effort:
+	// returns null/[] on miss or error so the consumer falls back to the live
+	// `messages.upsert` stream (each liveLocationMessage arrives as a message).
+	// Note: for a RECEIVED share the `expires` is always 0 (companion never gets
+	// the peer's duration — see LocationBackend docs); a SENT share (from_me=1)
+	// carries the real `expires` we chose in `sendLiveLocation`.
+	const getLiveLocation = (jid: string): LocationCacheRow | null => {
+		if (!locationBackend || !jid) {
+			return null
+		}
+
+		try {
+			return locationBackend.getLocationCache(jidNormalizedUser(jid))
+		} catch (err) {
+			logger.debug({ err, jid }, 'location getLiveLocation failed (fallback to legacy)')
+			return null
+		}
+	}
+
+	const getActiveLiveLocations = (): LocationSharerRow[] => {
+		if (!locationBackend) {
+			return []
+		}
+
+		try {
+			// Only non-expired shares (expires in unix seconds, matching the
+			// receive/send mirror). Open-ended rows (expires=0) stay included.
+			return locationBackend.listActiveLocationSharers(Math.floor(Date.now() / 1000))
+		} catch (err) {
+			logger.debug({ err }, 'location getActiveLiveLocations failed (fallback to legacy)')
+			return []
+		}
+	}
+
+	// Reads the status.db mirror. Best-effort: `[]` on miss
+	// or error → the consumer falls back to the live `messages.upsert` stream
+	// (each received status@broadcast arrives as a message).
+	const getStatusFeed = (jid: string): ReturnType<StatusBackend['listActiveStatusesForSender']> => {
+		if (!statusBackend || !jid) {
+			return []
+		}
+
+		try {
+			// Active-only: the 24h window is enforced on READ too, so a status
+			// that expired between throttled prunes is never surfaced (audit #637).
+			return statusBackend.listActiveStatusesForSender(jidNormalizedUser(jid))
+		} catch (err) {
+			logger.debug({ err, jid }, 'status getStatusFeed failed (fallback to legacy)')
+			return []
+		}
+	}
+
+	// Who has viewed a given status (by its uuid = the status message id).
+	// NOTE: only resolves viewers for statuses recorded locally (received, or own
+	// posts that flowed through processMessage while connected). For a status not
+	// in the mirror, returns [] — consume viewer info live via
+	// `message-receipt.update` instead. (We deliberately don't store null-FK
+	// receipts; see StatusBackend.recordSeenReceipt.)
+	const getStatusViewers = (statusUuid: string): ReturnType<StatusBackend['listSeenReceiptsForStatus']> => {
+		if (!statusBackend || !statusUuid) {
+			return []
+		}
+
+		try {
+			return statusBackend.listSeenReceiptsForStatus(statusUuid)
+		} catch (err) {
+			logger.debug({ err, statusUuid }, 'status getStatusViewers failed (fallback to legacy)')
+			return []
+		}
+	}
+
+	// Reads the user's favourited stickers (from app-state, kept
+	// in sync via `stickerAction`). Best-effort: `[]` on miss/error.
+	const getStarredStickers = (): StoredStarredStickerRow[] => {
+		if (!stickersBackend) {
+			return []
+		}
+
+		try {
+			return stickersBackend.listStarred()
+		} catch (err) {
+			logger.debug({ err }, 'stickers getStarredStickers failed (fallback to legacy)')
+			return []
+		}
+	}
+
+	const getRecentStickers = (): StoredRecentStickerRow[] => {
+		if (!stickersBackend) {
+			return []
+		}
+
+		try {
+			return stickersBackend.listRecent()
+		} catch (err) {
+			logger.debug({ err }, 'stickers getRecentStickers failed (fallback to legacy)')
+			return []
+		}
+	}
 
 	return {
 		...sock,
 		createCallLink,
 		getBotListV2,
+		getStoredContact,
+		getOwnDeviceRegistration,
+		getChatSettings,
+		getLiveLocation,
+		getActiveLiveLocations,
+		getStatusFeed,
+		getStatusViewers,
+		getStarredStickers,
+		getRecentStickers,
+		orphanQueue,
 		messageMutex,
 		receiptMutex,
 		appStatePatchMutex,

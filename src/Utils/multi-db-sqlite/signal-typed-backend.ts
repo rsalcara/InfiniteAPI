@@ -1,5 +1,5 @@
 /**
- * Phase 9.5 — typed Signal Protocol backend that migrates the opaque
+ * Typed Signal Protocol backend that migrates the opaque
  * `signal_kv(type, id, value)` rows in `axolotl.db` into their typed
  * counterparts (`sessions`, `prekeys`, `signed_prekeys`,
  * `kyber_prekeys`, `identities`, `sender_keys`).
@@ -20,17 +20,14 @@
  *       sender_account_type)` — 4 fields.
  *     - `identities` is dual-stored by `(recipient_id, recipient_type,
  *       device_id)` — 3 fields with the LID/PN type column meaningful.
- *   The wrapper pattern from phase 9.1 worked because LID mapping is a
+ *   The wrapper pattern worked for LID mapping because it is a
  *   simple key->value relation; the typed Signal tables need first-class
  *   structured operations.
  *
- * Migration sequencing:
- *   - Skeleton (this commit) — typed backend ships with insert + select
- *     primitives; opaque signal_kv stays primary.
- *   - Phase 9.5.1 (follow-up) — libsignal-side integration calls these
- *     primitives directly. The opaque signal_kv rows are migrated row by
- *     row into the typed tables, gated behind a version flag in the
- *     creds row so a partial migration is detectable on restart.
+ * For the mirrored Signal types, the auth-state integration uses these tables
+ * as its primary read/write surface and atomically keeps `signal_kv` as a
+ * compatibility fallback for pre-migration rows. Other Signal data types
+ * continue to use `signal_kv` directly.
  */
 import type { SqliteDbLike, SqliteStatementLike } from './types'
 
@@ -43,6 +40,79 @@ import type { SqliteDbLike, SqliteStatementLike } from './types'
  * mobile schema also uses — keeps the conflict target meaningful.
  */
 const IDENTITY_DEVICE_ID_SENTINEL = 0
+
+/**
+ * Sentinel `recipient_id` for a message-base-key row whose recipient jid row
+ * id isn't resolved at the retry site. Same NULL-distinct-under-UNIQUE reason
+ * as {@link IDENTITY_DEVICE_ID_SENTINEL}: the `message_base_key_idx` unique
+ * index includes `recipient_id`, so `0` (not NULL) keeps the conflict target
+ * meaningful and lets the upsert/delete dedupe by natural key.
+ */
+const MESSAGE_BASE_KEY_RECIPIENT_SENTINEL = 0
+
+const toBuf = (v: Buffer | Uint8Array): Buffer => (Buffer.isBuffer(v) ? v : Buffer.from(v))
+
+/** Keep every statement below SQLite's default 999-variable ceiling. */
+const SQLITE_VARIABLE_LIMIT = 999
+
+const queryTupleChunks = <Key, Row>(
+	db: SqliteDbLike,
+	statementCache: Map<number, SqliteStatementLike>,
+	keys: ReadonlyArray<Key>,
+	tupleWidth: number,
+	sqlBeforeValues: string,
+	valuesForKey: (key: Key) => ReadonlyArray<unknown>
+): Row[] => {
+	if (keys.length === 0) return []
+	const chunkSize = Math.floor(SQLITE_VARIABLE_LIMIT / tupleWidth)
+	const rows: Row[] = []
+
+	for (let offset = 0; offset < keys.length; offset += chunkSize) {
+		const chunk = keys.slice(offset, offset + chunkSize)
+		let statement = statementCache.get(chunk.length)
+		if (!statement) {
+			const tuple = `(${new Array(tupleWidth).fill('?').join(', ')})`
+			statement = db.prepare(`${sqlBeforeValues}${new Array(chunk.length).fill(tuple).join(', ')})`)
+			statementCache.set(chunk.length, statement)
+		}
+
+		const params: unknown[] = []
+		for (const key of chunk) params.push(...valuesForKey(key))
+		rows.push(...(statement.all(...params) as Row[]))
+	}
+
+	return rows
+}
+
+/**
+ * A raw stanza held in `unordered_stanza_queue` because it could not be
+ * processed in order yet. Keyed by `stanzaId` (the message id) — the UNIQUE
+ * `stanza_key` BLOB is derived from it so enqueue and delete agree on the key
+ * without the caller threading a second value.
+ */
+export type UnorderedStanzaRow = {
+	stanzaId: string
+	stanzaClass?: number
+	stanzaType?: number
+	stanzaPayload: Buffer | Uint8Array
+	protobuf?: Buffer | Uint8Array | null
+	decryptMetadata?: Buffer | Uint8Array | null
+	chatType?: number | null
+	chatJid?: string | null
+	senderJid?: string | null
+	timeSec?: number
+	createTimeMs?: number
+	processCount?: number
+}
+
+export type SignalMessageBaseKey = {
+	remoteJid: string
+	fromMe: boolean
+	msgId: string
+	recipientId?: number | null
+	recipientType?: number
+	deviceId?: number
+}
 
 export type SignalSessionKey = {
 	deviceId: number
@@ -81,9 +151,27 @@ export class SignalTypedBackend {
 		selectIdentity: SqliteStatementLike
 		upsertSenderKey: SqliteStatementLike
 		selectSenderKey: SqliteStatementLike
+		deleteSenderKey: SqliteStatementLike
+		deleteIdentity: SqliteStatementLike
+		insertPrekeyUpload: SqliteStatementLike
+		upsertMessageBaseKey: SqliteStatementLike
+		deleteMessageBaseKey: SqliteStatementLike
+		selectMessageBaseKey: SqliteStatementLike
+		clearMessageBaseKeys: SqliteStatementLike
+		enqueueUnorderedStanza: SqliteStatementLike
+		deleteUnorderedStanza: SqliteStatementLike
+		clearUnorderedStanzas: SqliteStatementLike
+		insertPreack: SqliteStatementLike
+		deletePreack: SqliteStatementLike
+		drainPreacksUpTo: SqliteStatementLike
+		clearPreacks: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
+	private readonly manySessionStmts = new Map<number, SqliteStatementLike>()
+	private readonly manyPrekeyStmts = new Map<number, SqliteStatementLike>()
+	private readonly manyIdentityStmts = new Map<number, SqliteStatementLike>()
+	private readonly manySenderKeyStmts = new Map<number, SqliteStatementLike>()
 
 	constructor(db: SqliteDbLike) {
 		this.db = db
@@ -114,7 +202,8 @@ export class SignalTypedBackend {
 			deletePrekey: this.db.prepare('DELETE FROM prekeys WHERE prekey_id = ?'),
 			upsertSignedPrekey: this.db.prepare(
 				'INSERT INTO signed_prekeys (prekey_id, record, timestamp, key_type) VALUES (?, ?, ?, ?) ' +
-					'ON CONFLICT(prekey_id) DO UPDATE SET record = excluded.record, timestamp = excluded.timestamp'
+					'ON CONFLICT(prekey_id) DO UPDATE SET ' +
+					'record = excluded.record, timestamp = excluded.timestamp, key_type = excluded.key_type'
 			),
 			selectSignedPrekey: this.db.prepare('SELECT record, timestamp FROM signed_prekeys WHERE prekey_id = ?'),
 			upsertKyberPrekey: this.db.prepare(
@@ -153,7 +242,55 @@ export class SignalTypedBackend {
 			selectSenderKey: this.db.prepare(
 				'SELECT record, timestamp FROM sender_keys ' +
 					'WHERE group_id = ? AND device_id = ? AND sender_account_id = ? AND sender_account_type = ?'
-			)
+			),
+			deleteSenderKey: this.db.prepare(
+				'DELETE FROM sender_keys ' +
+					'WHERE group_id = ? AND device_id = ? AND sender_account_id = ? AND sender_account_type = ?'
+			),
+			deleteIdentity: this.db.prepare(
+				'DELETE FROM identities WHERE recipient_id = ? AND recipient_type = ? AND device_id = ?'
+			),
+			// prekey_uploads: append-only log of pre-key upload batches to the
+			// server (upload_timestamp + key_type), one row per upload.
+			insertPrekeyUpload: this.db.prepare('INSERT INTO prekey_uploads (upload_timestamp, key_type) VALUES (?, ?)'),
+			// message_base_key: per-message ratchet anchor for retry re-derivation.
+			// Natural key matches the mobile unique index; DELETE-on-ack mirrors
+			// the captured WhatsApp behavior.
+			upsertMessageBaseKey: this.db.prepare(
+				'INSERT INTO message_base_key (msg_key_remote_jid, msg_key_from_me, msg_key_id, recipient_id, ' +
+					'recipient_type, device_id, last_alice_base_key, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ' +
+					'ON CONFLICT(msg_key_remote_jid, msg_key_from_me, msg_key_id, recipient_id, recipient_type, device_id) ' +
+					'DO UPDATE SET last_alice_base_key = excluded.last_alice_base_key, timestamp = excluded.timestamp'
+			),
+			deleteMessageBaseKey: this.db.prepare(
+				'DELETE FROM message_base_key WHERE msg_key_remote_jid = ? AND msg_key_from_me = ? AND msg_key_id = ? ' +
+					'AND recipient_id IS ? AND recipient_type = ? AND device_id = ?'
+			),
+			selectMessageBaseKey: this.db.prepare(
+				'SELECT last_alice_base_key, timestamp FROM message_base_key WHERE msg_key_remote_jid = ? ' +
+					'AND msg_key_from_me = ? AND msg_key_id = ? AND recipient_id IS ? AND recipient_type = ? AND device_id = ?'
+			),
+			clearMessageBaseKeys: this.db.prepare('DELETE FROM message_base_key'),
+			// unordered_stanza_queue: raw stanza held because it could not be
+			// processed/decrypted in order yet. `stanza_key` is the UNIQUE dedupe
+			// key; re-enqueuing the same stanza bumps `process_count`, folding the
+			// mobile INSERT-then-UPDATE(process_count) steps into one upsert.
+			enqueueUnorderedStanza: this.db.prepare(
+				'INSERT INTO unordered_stanza_queue (stanza_id, stanza_key, stanza_class, stanza_type, stanza_payload, ' +
+					'protobuf, decrypt_metadata, chat_type, chat_jid, sender_jid, time_sec, create_time_ms, process_count) ' +
+					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+					'ON CONFLICT(stanza_key) DO UPDATE SET process_count = process_count + 1'
+			),
+			deleteUnorderedStanza: this.db.prepare('DELETE FROM unordered_stanza_queue WHERE stanza_key = ?'),
+			clearUnorderedStanzas: this.db.prepare('DELETE FROM unordered_stanza_queue'),
+			// preacks: append-only buffer of pending pre-acknowledgements (`ptn`
+			// blob). Each ack drops its OWN row by exact `_id` once sent
+			// (`deletePreack`); `drainPreacksUpTo` keeps the mobile prefix-drain
+			// (`DELETE ... WHERE _id <= ?`) for a future startup/batch drain.
+			insertPreack: this.db.prepare('INSERT INTO preacks (ptn) VALUES (?)'),
+			deletePreack: this.db.prepare('DELETE FROM preacks WHERE _id = ?'),
+			drainPreacksUpTo: this.db.prepare('DELETE FROM preacks WHERE _id <= ?'),
+			clearPreacks: this.db.prepare('DELETE FROM preacks')
 		}
 	}
 
@@ -193,6 +330,44 @@ export class SignalTypedBackend {
 		return r.changes > 0
 	}
 
+	/**
+	 * Batched {@link getSession}: one row-value `IN` query for N keys instead of
+	 * N point lookups. Returns each hit with its key columns so the caller can
+	 * map rows back to its original ids; misses are simply absent. The
+	 * (session_type, session_scope) pair is matched per-key exactly like the
+	 * single get.
+	 */
+	getManySessions(keys: ReadonlyArray<SignalSessionKey>): Array<{
+		device_id: number
+		recipient_account_id: string
+		recipient_account_type: number
+		record: Buffer
+	}> {
+		return queryTupleChunks<
+			SignalSessionKey,
+			{
+				device_id: number
+				recipient_account_id: string
+				recipient_account_type: number
+				record: Buffer
+			}
+		>(
+			this.db,
+			this.manySessionStmts,
+			keys,
+			5,
+			'SELECT device_id, recipient_account_id, recipient_account_type, record FROM sessions ' +
+				'WHERE (device_id, recipient_account_id, recipient_account_type, session_type, session_scope) IN (VALUES ',
+			key => [
+				key.deviceId,
+				key.recipientAccountId,
+				key.recipientAccountType,
+				key.sessionType ?? 0,
+				key.sessionScope ?? 0
+			]
+		)
+	}
+
 	// ============ prekeys ============
 
 	putPrekey(prekeyId: number, record: Buffer | Uint8Array, keyType = 0): void {
@@ -202,6 +377,18 @@ export class SignalTypedBackend {
 	getPrekey(prekeyId: number): Buffer | null {
 		const r = this.stmts.selectPrekey.get(prekeyId) as { record: Buffer } | undefined
 		return r?.record ?? null
+	}
+
+	/** Batched {@link getPrekey}: one `IN` query for N prekey ids. */
+	getManyPrekeys(prekeyIds: ReadonlyArray<number>): Array<{ prekey_id: number; record: Buffer }> {
+		return queryTupleChunks<number, { prekey_id: number; record: Buffer }>(
+			this.db,
+			this.manyPrekeyStmts,
+			prekeyIds,
+			1,
+			'SELECT prekey_id, record FROM prekeys WHERE prekey_id IN (VALUES ',
+			prekeyId => [prekeyId]
+		)
 	}
 
 	deletePrekey(prekeyId: number): boolean {
@@ -259,6 +446,31 @@ export class SignalTypedBackend {
 		return { publicKey: r.public_key, timestamp: r.timestamp }
 	}
 
+	/**
+	 * Batched {@link getIdentity}: one row-value `IN` query. `device_id` is
+	 * coerced to the sentinel exactly like the single get so a null-device key
+	 * still matches its stored row.
+	 */
+	getManyIdentities(keys: ReadonlyArray<SignalIdentityKey>): Array<{
+		recipient_id: number
+		recipient_type: number
+		device_id: number
+		public_key: Buffer
+	}> {
+		return queryTupleChunks<
+			SignalIdentityKey,
+			{ recipient_id: number; recipient_type: number; device_id: number; public_key: Buffer }
+		>(
+			this.db,
+			this.manyIdentityStmts,
+			keys,
+			3,
+			'SELECT recipient_id, recipient_type, device_id, public_key FROM identities ' +
+				'WHERE (recipient_id, recipient_type, device_id) IN (VALUES ',
+			key => [key.recipientId, key.recipientType, key.deviceId ?? IDENTITY_DEVICE_ID_SENTINEL]
+		)
+	}
+
 	// ============ sender keys ============
 
 	putSenderKey(key: SignalSenderKeyKey, record: Buffer | Uint8Array, timestamp: number = Date.now()): void {
@@ -277,5 +489,177 @@ export class SignalTypedBackend {
 			| { record: Buffer; timestamp: number }
 			| undefined
 		return r ?? null
+	}
+
+	/** Batched {@link getSenderKey}: one row-value `IN` query for N keys. */
+	getManySenderKeys(keys: ReadonlyArray<SignalSenderKeyKey>): Array<{
+		group_id: string
+		device_id: number
+		sender_account_id: string
+		sender_account_type: number
+		record: Buffer
+	}> {
+		return queryTupleChunks<
+			SignalSenderKeyKey,
+			{
+				group_id: string
+				device_id: number
+				sender_account_id: string
+				sender_account_type: number
+				record: Buffer
+			}
+		>(
+			this.db,
+			this.manySenderKeyStmts,
+			keys,
+			4,
+			'SELECT group_id, device_id, sender_account_id, sender_account_type, record FROM sender_keys ' +
+				'WHERE (group_id, device_id, sender_account_id, sender_account_type) IN (VALUES ',
+			key => [key.groupId, key.deviceId, key.senderAccountId, key.senderAccountType]
+		)
+	}
+
+	deleteSenderKey(key: SignalSenderKeyKey): boolean {
+		const r = this.stmts.deleteSenderKey.run(key.groupId, key.deviceId, key.senderAccountId, key.senderAccountType)
+		return r.changes > 0
+	}
+
+	deleteIdentity(key: SignalIdentityKey): boolean {
+		const r = this.stmts.deleteIdentity.run(
+			key.recipientId,
+			key.recipientType,
+			key.deviceId ?? IDENTITY_DEVICE_ID_SENTINEL
+		)
+		return r.changes > 0
+	}
+
+	// ============ prekey_uploads ============
+
+	/** Appends one pre-key upload-batch record (upload_timestamp + key_type). */
+	recordPrekeyUpload(uploadTimestamp: number = Date.now(), keyType = 0): void {
+		this.stmts.insertPrekeyUpload.run(uploadTimestamp, keyType)
+	}
+
+	// ============ message_base_key ============
+
+	/**
+	 * Records the per-message ratchet anchor (last Alice base key) for retry
+	 * re-derivation. `recipientId` defaults to a `0` sentinel (not NULL) so the
+	 * unique index — which includes it — dedupes properly (SQLite treats NULLs
+	 * as distinct). Deleted on ack via {@link deleteMessageBaseKey}, matching
+	 * the mobile client.
+	 */
+	putMessageBaseKey(key: SignalMessageBaseKey, baseKey: Buffer | Uint8Array, timestamp: number = Date.now()): void {
+		this.stmts.upsertMessageBaseKey.run(
+			key.remoteJid,
+			key.fromMe ? 1 : 0,
+			key.msgId,
+			key.recipientId ?? MESSAGE_BASE_KEY_RECIPIENT_SENTINEL,
+			key.recipientType ?? 0,
+			key.deviceId ?? 0,
+			Buffer.isBuffer(baseKey) ? baseKey : Buffer.from(baseKey),
+			timestamp
+		)
+	}
+
+	deleteMessageBaseKey(key: SignalMessageBaseKey): boolean {
+		const r = this.stmts.deleteMessageBaseKey.run(
+			key.remoteJid,
+			key.fromMe ? 1 : 0,
+			key.msgId,
+			key.recipientId ?? MESSAGE_BASE_KEY_RECIPIENT_SENTINEL,
+			key.recipientType ?? 0,
+			key.deviceId ?? 0
+		)
+		return r.changes > 0
+	}
+
+	getMessageBaseKey(key: SignalMessageBaseKey): { baseKey: Buffer; timestamp: number } | null {
+		const r = this.stmts.selectMessageBaseKey.get(
+			key.remoteJid,
+			key.fromMe ? 1 : 0,
+			key.msgId,
+			key.recipientId ?? MESSAGE_BASE_KEY_RECIPIENT_SENTINEL,
+			key.recipientType ?? 0,
+			key.deviceId ?? 0
+		) as { last_alice_base_key: Buffer; timestamp: number } | undefined
+		return r ? { baseKey: r.last_alice_base_key, timestamp: r.timestamp } : null
+	}
+
+	/** Wipes every message_base_key row (socket close — the in-memory cache is gone). */
+	clearMessageBaseKeys(): void {
+		this.stmts.clearMessageBaseKeys.run()
+	}
+
+	// ============ unordered_stanza_queue ============
+
+	/**
+	 * Records a stanza that could not be processed in order yet (best-effort
+	 * mirror of the mobile out-of-order holding pen). Re-enqueuing the same
+	 * `stanzaId` bumps `process_count` instead of inserting a duplicate — the
+	 * `stanza_key` UNIQUE column is derived from `stanzaId`.
+	 */
+	enqueueUnorderedStanza(row: UnorderedStanzaRow): void {
+		this.stmts.enqueueUnorderedStanza.run(
+			row.stanzaId,
+			Buffer.from(row.stanzaId),
+			row.stanzaClass ?? 0,
+			row.stanzaType ?? 0,
+			toBuf(row.stanzaPayload),
+			row.protobuf ? toBuf(row.protobuf) : null,
+			row.decryptMetadata ? toBuf(row.decryptMetadata) : null,
+			row.chatType ?? null,
+			row.chatJid ?? null,
+			row.senderJid ?? null,
+			row.timeSec ?? Math.floor(Date.now() / 1000),
+			row.createTimeMs ?? Date.now(),
+			row.processCount ?? 1
+		)
+	}
+
+	/** Drops a held stanza once it is finally processed (retry resolved/failed). */
+	deleteUnorderedStanza(msgId: string): boolean {
+		return this.stmts.deleteUnorderedStanza.run(Buffer.from(msgId)).changes > 0
+	}
+
+	/** Wipes every held stanza (socket close). */
+	clearUnorderedStanzas(): void {
+		this.stmts.clearUnorderedStanzas.run()
+	}
+
+	// ============ preacks ============
+
+	/**
+	 * Appends one pending pre-acknowledgement (`ptn` blob) before the ack is
+	 * flushed to the server. Returns the row id so the caller can drop THIS
+	 * ack's row with {@link deletePreack} once it is sent.
+	 *
+	 * Wired from `sendMessageAck` for message-class stanzas: INSERT before
+	 * `sendNode`, {@link deletePreack} after — mirroring the mobile pre-ack
+	 * buffer and giving the same crash-safety (a pre-ack persisted but not yet
+	 * sent survives a restart). Best-effort: a mirror failure never blocks the
+	 * ack itself.
+	 */
+	enqueuePreack(ptn: Buffer | Uint8Array): number {
+		return Number(this.stmts.insertPreack.run(toBuf(ptn)).lastInsertRowid)
+	}
+
+	/**
+	 * Drops a single sent pre-ack by exact `_id`. Preferred over
+	 * {@link drainPreacksUpTo} on the concurrent ack hot path: a prefix drain
+	 * could delete another ack's row that was enqueued but not yet sent.
+	 */
+	deletePreack(id: number): boolean {
+		return this.stmts.deletePreack.run(id).changes > 0
+	}
+
+	/** Drains the contiguous prefix `_id <= id`, mirroring the mobile batch drain. */
+	drainPreacksUpTo(id: number): number {
+		return this.stmts.drainPreacksUpTo.run(id).changes
+	}
+
+	/** Wipes every buffered pre-ack (socket close). */
+	clearPreacks(): void {
+		this.stmts.clearPreacks.run()
 	}
 }

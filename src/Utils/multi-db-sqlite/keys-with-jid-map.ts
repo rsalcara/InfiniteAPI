@@ -1,5 +1,5 @@
 /**
- * Phase 9.1 — `wrapKeysWithJidMap` plugs the typed {@link JidMapBackend}
+ * `wrapKeysWithJidMap` plugs the typed {@link JidMapBackend}
  * into any `SignalKeyStoreWithTransaction`-shaped store by intercepting
  * the `'lid-mapping'` type.
  *
@@ -21,6 +21,7 @@
  *   message-routing code paths.
  */
 import type { SignalDataSet, SignalDataTypeMap, SignalKeyStoreWithTransaction } from '../../Types'
+import type { LidChatStateBackend } from './lid-chat-state-backend'
 import { JidMapBackend, REVERSE_SUFFIX, stripReverse } from './lid-mapping-backend'
 
 /**
@@ -33,7 +34,8 @@ import { JidMapBackend, REVERSE_SUFFIX, stripReverse } from './lid-mapping-backe
  */
 export function wrapKeysWithJidMap(
 	inner: SignalKeyStoreWithTransaction,
-	jidMap: JidMapBackend
+	jidMap: JidMapBackend,
+	lidChatState?: LidChatStateBackend
 ): SignalKeyStoreWithTransaction {
 	return {
 		isInTransaction: () => inner.isInTransaction(),
@@ -143,7 +145,7 @@ export function wrapKeysWithJidMap(
 			const seenReverse = new Set<string>()
 			// Track which entries in the inner store ALSO need a delete request
 			// — used below to propagate the null sentinel down so legacy entries
-			// that landed in the inner store (pre-Phase-9) don't resurrect via
+			// that predate the typed backend don't resurrect via
 			// the `inner.get` fallback. (audit MDB-02)
 			const innerDeleteForward: string[] = []
 			const innerDeleteReverse: string[] = []
@@ -228,8 +230,8 @@ export function wrapKeysWithJidMap(
 			}
 
 			// Propagate deletes to the inner store as well — covers legacy
-			// lid-mapping entries that landed there before Phase 9 migrated
-			// the typed jid_map backend in. Without this they resurrect via
+			// lid-mapping entries that landed there before the typed jid_map
+			// backend was introduced. Without this they resurrect via
 			// `inner.get` fallback. (audit MDB-02)
 			if (innerDeleteForward.length > 0 || innerDeleteReverse.length > 0) {
 				const lidMappingDeletes: Record<string, null> = {}
@@ -254,6 +256,22 @@ export function wrapKeysWithJidMap(
 				if (pairs.length > 0) jidMap.storeMappingsBatch(pairs)
 				for (const m of forwardOnly) jidMap.storeMapping(m.pnUser, m.lidUser)
 				for (const m of reverseOnly) jidMap.storeMapping(m.pnUser, m.lidUser)
+
+				// Mirror lid_chat_state.is_pn_shared for every LID whose PN was just
+				// persisted — this `set` is the SINGLE choke point every
+				// storeLIDPNMappings caller funnels through, so marking here covers
+				// all of them at once (not just the app-state merge path). Best-effort
+				// in its OWN try/catch: a mirror failure must never fail the critical
+				// jid_map/Signal write. Deletes are excluded — they remove the link.
+				if (lidChatState) {
+					try {
+						for (const m of pairs) lidChatState.markPnShared(m.lidUser)
+						for (const m of forwardOnly) lidChatState.markPnShared(m.lidUser)
+						for (const m of reverseOnly) lidChatState.markPnShared(m.lidUser)
+					} catch {
+						// best-effort coexistence-state mirror — swallow
+					}
+				}
 			} catch (err) {
 				// Re-raise SQLITE_BUSY so caller-level retry (e.g.
 				// `runSetWithBusyRetry` in `use-multi-db-sqlite-auth-state`)

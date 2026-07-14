@@ -1,5 +1,5 @@
 /**
- * Phase 9.5 — `SignalTypedBackend` smoke tests.
+ * `SignalTypedBackend` smoke tests.
  *
  * Covers session / prekey / signed_prekey / kyber_prekey / identity /
  * sender_key round-trip on the typed Signal Protocol tables. Identity
@@ -91,5 +91,108 @@ describe('SignalTypedBackend', () => {
 		const got = backend.getSenderKey(key)
 		expect(Buffer.from(got!.record).toString('hex')).toBe('5566')
 		expect(got!.timestamp).toBe(999)
+	})
+
+	it('appends prekey_uploads rows (one per upload batch)', () => {
+		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
+		backend.recordPrekeyUpload(1_000, 0)
+		backend.recordPrekeyUpload(2_000, 0)
+
+		const rows = store
+			.handle('axolotl.db')
+			.prepare('SELECT upload_timestamp, key_type FROM prekey_uploads ORDER BY _id')
+			.all() as Array<{ upload_timestamp: number; key_type: number }>
+		expect(rows.map(r => r.upload_timestamp)).toEqual([1_000, 2_000])
+		expect(rows.map(r => r.key_type)).toEqual([0, 0])
+	})
+
+	it('round-trips + deletes a message_base_key (dedupes on the natural key)', () => {
+		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
+		const key = { remoteJid: '5515991426667.0', fromMe: true, msgId: 'MSG-BK-1' }
+
+		backend.putMessageBaseKey(key, Buffer.from([0xba, 0x5e]), 500)
+		expect(Buffer.from(backend.getMessageBaseKey(key)!.baseKey).toString('hex')).toBe('ba5e')
+
+		// Upsert on the same natural key replaces (no duplicate row) — the
+		// recipient_id sentinel keeps the unique index effective.
+		backend.putMessageBaseKey(key, Buffer.from([0xff]), 600)
+		const count = store.handle('axolotl.db').prepare('SELECT COUNT(*) AS n FROM message_base_key').get() as {
+			n: number
+		}
+		expect(count.n).toBe(1)
+		expect(Buffer.from(backend.getMessageBaseKey(key)!.baseKey).toString('hex')).toBe('ff')
+
+		// Delete-on-ack removes it.
+		expect(backend.deleteMessageBaseKey(key)).toBe(true)
+		expect(backend.getMessageBaseKey(key)).toBeNull()
+	})
+
+	it('enqueues, bumps process_count, and drops an unordered_stanza_queue row', () => {
+		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
+		const axolotl = store.handle('axolotl.db')
+		const row = (id: string) =>
+			axolotl.prepare('SELECT process_count, stanza_id FROM unordered_stanza_queue WHERE stanza_id = ?').get(id) as
+				| { process_count: number; stanza_id: string }
+				| undefined
+
+		backend.enqueueUnorderedStanza({
+			stanzaId: 'MSG-U-1',
+			stanzaPayload: Buffer.from([0x01, 0x02]),
+			chatJid: '120363044055005321@g.us',
+			chatType: 1,
+			processCount: 1
+		})
+		expect(row('MSG-U-1')?.process_count).toBe(1)
+
+		// Re-enqueue of the same id bumps process_count (no duplicate row).
+		backend.enqueueUnorderedStanza({ stanzaId: 'MSG-U-1', stanzaPayload: Buffer.from([0x03]) })
+		const count = axolotl.prepare('SELECT COUNT(*) AS n FROM unordered_stanza_queue').get() as { n: number }
+		expect(count.n).toBe(1)
+		expect(row('MSG-U-1')?.process_count).toBe(2)
+
+		// Delete by message id (retry resolved).
+		expect(backend.deleteUnorderedStanza('MSG-U-1')).toBe(true)
+		expect(row('MSG-U-1')).toBeUndefined()
+	})
+
+	it('appends preacks and drains a contiguous prefix', () => {
+		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
+		const remaining = () =>
+			(store.handle('axolotl.db').prepare('SELECT COUNT(*) AS n FROM preacks').get() as { n: number }).n
+
+		const id1 = backend.enqueuePreack(Buffer.from([0xa1]))
+		backend.enqueuePreack(Buffer.from([0xa2]))
+		const id3 = backend.enqueuePreack(Buffer.from([0xa3]))
+		expect(remaining()).toBe(3)
+		expect(id3).toBeGreaterThan(id1)
+
+		// Drain up to the first id removes only that prefix.
+		expect(backend.drainPreacksUpTo(id1)).toBe(1)
+		expect(remaining()).toBe(2)
+
+		// Drain up to the last id removes the rest.
+		backend.drainPreacksUpTo(id3)
+		expect(remaining()).toBe(0)
+	})
+
+	it('deletes a single preack by exact id (concurrent-safe, leaves others)', () => {
+		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
+		const remaining = () =>
+			(store.handle('axolotl.db').prepare('SELECT COUNT(*) AS n FROM preacks').get() as { n: number }).n
+
+		const id1 = backend.enqueuePreack(Buffer.from([0xb1]))
+		const id2 = backend.enqueuePreack(Buffer.from([0xb2]))
+		backend.enqueuePreack(Buffer.from([0xb3]))
+		expect(remaining()).toBe(3)
+
+		// Deleting the middle id drops ONLY that row — the earlier (id1) and
+		// later (id3) not-yet-sent pre-acks survive (unlike a prefix drain).
+		expect(backend.deletePreack(id2)).toBe(true)
+		expect(remaining()).toBe(2)
+		const ids = (
+			store.handle('axolotl.db').prepare('SELECT _id FROM preacks ORDER BY _id').all() as Array<{ _id: number }>
+		).map(r => r._id)
+		expect(ids).toContain(id1)
+		expect(ids).not.toContain(id2)
 	})
 })

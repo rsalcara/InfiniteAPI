@@ -71,8 +71,18 @@ import {
 	xmppSignedPreKey
 } from '../Utils'
 import { logMessageReceived, logTcToken } from '../Utils/baileys-logger'
+import { applyDeviceListDelta } from '../Utils/device-list-delta'
 import { makeLockManager } from '../Utils/lock-manager'
 import { makeMutex } from '../Utils/make-mutex'
+import {
+	JidMapBackend,
+	MessageStoreBackend,
+	ReceiptBackend,
+	type ReceiptKind,
+	SignalTypedBackend,
+	StatusBackend
+} from '../Utils/multi-db-sqlite'
+import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
 import {
 	metrics,
@@ -92,6 +102,8 @@ import {
 	areJidsSameUser,
 	type BinaryNode,
 	binaryNodeToString,
+	encodeBinaryNode,
+	type FullJid,
 	getAllBinaryNodeChildren,
 	getBinaryNodeChild,
 	getBinaryNodeChildBuffer,
@@ -105,7 +117,6 @@ import {
 	isPnUser,
 	jidDecode,
 	jidNormalizedUser,
-	type JidWithDevice,
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { extractGroupMetadata } from './groups'
@@ -118,6 +129,20 @@ import { makeMessagesSocket } from './messages-send'
 const ENFORCEMENT_TYPE_VALUES = new Set<string>(Object.values(ReachoutTimelockEnforcementType))
 const isValidEnforcementType = (value: string | undefined): value is ReachoutTimelockEnforcementType =>
 	value !== undefined && ENFORCEMENT_TYPE_VALUES.has(value)
+
+/**
+ * Maps a decoded receipt status to the msgstore.db receipt_user/_device
+ * "kind" it should populate. Collapsing everything that isn't
+ * DELIVERY_ACK into 'read' (an earlier revision's shortcut) silently
+ * dropped PLAYED (voice-note listen) receipts into read_timestamp instead
+ * of played_timestamp — confirmed real bug.
+ */
+const receiptKindFromStatus = (status: proto.WebMessageInfo.Status | undefined): ReceiptKind =>
+	status === proto.WebMessageInfo.Status.PLAYED
+		? 'played'
+		: status === proto.WebMessageInfo.Status.DELIVERY_ACK
+			? 'delivery'
+			: 'read'
 
 export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const {
@@ -164,6 +189,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
+	const initOptionalMirror = <T>(mirror: string, fallback: string, factory: () => T): T | undefined =>
+		initOptionalMirrorBase(config.multiDbStore, logger, mirror, fallback, factory)
 
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
 	const retryMutex = makeMutex()
@@ -194,6 +221,62 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			useClones: false,
 			maxKeys: DEFAULT_CACHE_MAX_KEYS.PLACEHOLDER_RESEND
 		})
+
+	// Mirrors status-view receipts (status_seen_receipt) into status.db when a
+	// multi-db-sqlite store is configured. Same boundary-cast rationale as
+	// chats.ts's appStateBackend — `multiDbStore` is typed `unknown` on
+	// SocketConfig so this module doesn't need a hard dependency on the
+	// SQLite types. `MultiDbSqliteStore.handle()` is idempotent (cached), so
+	// this is the same underlying connection chats.ts's own StatusBackend
+	// instance uses — just a second, cheap wrapper over it.
+	const statusBackend = initOptionalMirror(
+		'status.db.status_seen_receipt',
+		'message_receipt_events',
+		() => new StatusBackend((config.multiDbStore as any).handle('status.db'))
+	)
+
+	// Mirrors message receipts (receipt_user/receipt_device) into
+	// msgstore.db when a multi-db-sqlite store is configured. Same
+	// boundary-cast + fresh-JidMapBackend rationale as chats.ts's own
+	// messageStoreBackend instantiation. A second, cheap MessageStoreBackend
+	// wrapper (same underlying connection as chats.ts's own instance) is
+	// needed here too — ReceiptBackend resolves `chat._id` through it rather
+	// than a bare JidMapBackend (see ChatRowResolver's doc for why those are
+	// different values).
+	const receiptChatResolver = initOptionalMirror(
+		'msgstore.db.receipt_chat_resolver',
+		'message_receipt_events',
+		() =>
+			new MessageStoreBackend(
+				(config.multiDbStore as any).handle('msgstore.db'),
+				new JidMapBackend((config.multiDbStore as any).handle('msgstore.db'))
+			)
+	)
+	const receiptBackend = receiptChatResolver
+		? initOptionalMirror(
+				'msgstore.db.receipts',
+				'message_receipt_events',
+				() =>
+					new ReceiptBackend(
+						(config.multiDbStore as any).handle('msgstore.db'),
+						new JidMapBackend((config.multiDbStore as any).handle('msgstore.db')),
+						receiptChatResolver
+					)
+			)
+		: undefined
+
+	// Best-effort typed mirror of the axolotl.db pre-decrypt/pre-ack tables:
+	//   - `preacks`               — pending pre-ack buffer (sendMessageAck)
+	//   - `unordered_stanza_queue`— stanza held because it could not be
+	//                               decrypted in order yet (sendRetryRequest)
+	// Same boundary-cast + idempotent-handle rationale as the receipt/status
+	// backends above. Every write is wrapped in try/catch at the call site so a
+	// mirror failure never blocks the real ack / retry flow (fallback = legacy).
+	const signalTypedBackend = initOptionalMirror(
+		'axolotl.db.transient_signal_tables',
+		'legacy_signal_flow',
+		() => new SignalTypedBackend((config.multiDbStore as any).handle('axolotl.db'))
+	)
 
 	// Per-socket cache of Meta AI / FBID bot message secrets (msmsg). Bounded by
 	// DEFAULT_CACHE_MAX_KEYS.MSMSG_SECRET (500) + 1h TTL. Cleared AND closed on
@@ -961,7 +1044,32 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const meId = authState.creds.me?.id
 		const stanza = buildAckStanza(node, errorCode, meId)
 		logger.debug({ recv: { tag: node.tag, attrs: node.attrs }, sent: stanza.attrs }, 'sent ack')
+
+		// Best-effort pre-ack mirror (axolotl.db `preacks`): persist the encoded
+		// ack BEFORE sending, drop THIS ack's row AFTER it goes out — the mobile
+		// pre-ack lifecycle. Deleting by exact row id (not a `_id <= ?` prefix
+		// drain) so a concurrent ack cannot remove another ack's not-yet-sent
+		// pre-ack. Gated to message-class stanzas (what the mobile client
+		// pre-acks) and fully wrapped: any mirror error is logged and the ack
+		// still sends (fallback = legacy inline ack).
+		let preackId: number | undefined
+		if (signalTypedBackend && node.tag === 'message') {
+			try {
+				preackId = signalTypedBackend.enqueuePreack(encodeBinaryNode(stanza))
+			} catch (err) {
+				logger.debug({ err, msgId: node.attrs.id }, 'preacks mirror: enqueue failed (ignored)')
+			}
+		}
+
 		await sendNode(stanza)
+
+		if (signalTypedBackend && preackId !== undefined) {
+			try {
+				signalTypedBackend.deletePreack(preackId)
+			} catch (err) {
+				logger.debug({ err, msgId: node.attrs.id }, 'preacks mirror: delete failed (ignored)')
+			}
+		}
 	}
 
 	const rejectCall = async (callId: string, callFrom: string) => {
@@ -1706,6 +1814,32 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			recordMessageRetry('retry')
 
+			// Best-effort mirror: this stanza could not be decrypted in order, so
+			// we are asking the peer to resend — the exact condition the mobile
+			// client parks a stanza in `unordered_stanza_queue`. Persist the raw
+			// encoded stanza keyed by message id with the current process count.
+			// The row is dropped when the resend decrypts (the success branch of
+			// this handler calls `deleteUnorderedStanza`), or promptly on retry
+			// exhaustion (markRetryFailed dispose); the 15-min TTL / socket-close
+			// wipe are backstops. Never blocks the retry.
+			if (signalTypedBackend) {
+				try {
+					const senderJid = msgKey.participant
+						? jidNormalizedUser(msgKey.participant)
+						: jidNormalizedUser(node.attrs.from)
+					signalTypedBackend.enqueueUnorderedStanza({
+						stanzaId: msgId,
+						stanzaPayload: encodeBinaryNode(node),
+						chatJid: msgKey.remoteJid ?? undefined,
+						senderJid,
+						chatType: isJidGroup(msgKey.remoteJid ?? undefined) ? 1 : 0,
+						processCount: attempt.count
+					})
+				} catch (err) {
+					logger.debug({ err, msgId }, 'unordered_stanza_queue mirror: enqueue failed (ignored)')
+				}
+			}
+
 			// Stage 6 H9 (upstream #2576): mirror the retry count to the durable
 			// cache via `retryLocks` so this set cannot race against
 			// `updateSendMessageAgainCount`'s increment for the same key. Both
@@ -2262,7 +2396,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		type DecodedDevice = { jid: string; user: string; server: string; device?: number }
+		type DecodedDevice = FullJid & { jid: string; device: number }
 		const decoded: DecodedDevice[] = []
 		for (const d of devices) {
 			const jid = d.attrs.jid
@@ -2273,7 +2407,19 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				continue
 			}
 
-			decoded.push({ jid, user: parts.user, server: parts.server, device: parts.device })
+			// Normalize the primary to `device: 0`. `jidDecode` returns `undefined`
+			// for a `0` device suffix, but the cached device list (both the JSON
+			// mirror and the typed store, which reads back `device: 0`) stores the
+			// primary as `0`. Comparing `undefined` against `0` in the add/remove
+			// delta below would miss the primary — `remove` wouldn't drop it and
+			// `add` would append a duplicate entry. (#621 audit.)
+			decoded.push({
+				jid,
+				user: parts.user,
+				server: parts.server,
+				domainType: parts.domainType,
+				device: parts.device ?? 0
+			})
 		}
 
 		if (!decoded.length) return
@@ -2297,7 +2443,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					await signalRepository.deleteSession(entries.map(e => e.jid))
 				}
 
-				const existingCache: JidWithDevice[] = (await userDevicesCache?.get<JidWithDevice[]>(user)) || []
+				const existingCache = ((await userDevicesCache?.get(user)) as FullJid[] | undefined) || []
 				if (!existingCache.length) {
 					// No baseline yet; skip applying the delta so getUSyncDevices can
 					// later fetch the full device list. Caching just the notification
@@ -2306,24 +2452,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					continue
 				}
 
-				const affected = new Set(entries.map(e => e.device))
-				let updatedDevices: JidWithDevice[]
-				switch (tag) {
-					case 'add':
-						logger.info({ deviceHash, count: entries.length }, 'devices added')
-						updatedDevices = [
-							...existingCache.filter(d => !affected.has(d.device)),
-							...entries.map(e => ({ user: e.user, server: e.server, device: e.device }))
-						]
-						break
-					case 'remove':
-						logger.info({ deviceHash, count: entries.length }, 'devices removed')
-						updatedDevices = existingCache.filter(d => !affected.has(d.device))
-						break
-					default:
-						logger.debug({ tag }, 'Unknown device list change tag')
-						continue
+				if (tag !== 'add' && tag !== 'remove') {
+					logger.debug({ tag }, 'Unknown device list change tag')
+					continue
 				}
+
+				logger.info({ deviceHash, count: entries.length }, tag === 'add' ? 'devices added' : 'devices removed')
+				// #621: normalized diff (primary = device 0 on both sides). See
+				// applyDeviceListDelta.
+				const updatedDevices = applyDeviceListDelta(existingCache, entries, tag)
 
 				if (updatedDevices.length === 0) {
 					await userDevicesCache?.del(user)
@@ -2940,16 +3077,75 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 									status === proto.WebMessageInfo.Status.DELIVERY_ACK ? 'receiptTimestamp' : 'readTimestamp'
 								const resolvedReceiptUserJid =
 									(await resolveLidToPn(attrs.participant, lidMapping, logger)) || jidNormalizedUser(attrs.participant)
+								const normalizedReceiptUserJid = jidNormalizedUser(resolvedReceiptUserJid)
 								ev.emit(
 									'message-receipt.update',
 									ids.map(id => ({
 										key: { ...key, id },
 										receipt: {
-											userJid: jidNormalizedUser(resolvedReceiptUserJid),
+											userJid: normalizedReceiptUserJid,
 											[updateKey]: +attrs.t!
 										}
 									}))
 								)
+
+								// Mirrors status-view receipts into status.db. Never allowed
+								// to affect receipt processing: best-effort side channel,
+								// same rule as the other optional multi-db-sqlite mirrors
+								// in this codebase.
+								if (statusBackend && isJidStatusBroadcast(remoteJid!) && updateKey === 'readTimestamp') {
+									try {
+										for (const id of ids) {
+											statusBackend.recordSeenReceipt({
+												statusUuid: id,
+												receiptUserJid: normalizedReceiptUserJid,
+												seenTimestamp: +attrs.t!
+											})
+										}
+									} catch (err) {
+										logger.warn({ err }, 'failed to record status_seen_receipt row')
+									}
+								}
+
+								// Mirrors group message receipts into msgstore.db's
+								// receipt_user/receipt_device tables. Status broadcasts are
+								// intentionally excluded — real Android tracks those in
+								// status.db's own status_seen_receipt table (handled above),
+								// not msgstore.db's receipt tables.
+								if (receiptBackend && isJidGroup(remoteJid) && key.remoteJid) {
+									try {
+										const receiptKind = receiptKindFromStatus(status)
+										for (const id of ids) {
+											receiptBackend.recordUserReceipt({
+												chatJid: key.remoteJid,
+												fromMe: !!key.fromMe,
+												keyId: id,
+												receiptUserJid: normalizedReceiptUserJid,
+												kind: receiptKind,
+												timestamp: +attrs.t!
+											})
+											// Device-level ack: `attrs.from` is the GROUP's own jid
+											// for a group receipt (the group member is only
+											// identified by `attrs.participant`), so it can't be
+											// used here the way the 1:1 branch below uses it. This
+											// keys by the participant's bare jid instead of a true
+											// per-device jid — not device-granular, but far more
+											// correct than collapsing every member into one row
+											// under the group's jid (confirmed real bug).
+											if (attrs.participant) {
+												receiptBackend.recordDeviceReceipt({
+													chatJid: key.remoteJid,
+													fromMe: !!key.fromMe,
+													keyId: id,
+													receiptDeviceJid: normalizedReceiptUserJid,
+													timestamp: +attrs.t!
+												})
+											}
+										}
+									} catch (err) {
+										logger.warn({ err }, 'failed to record receipt_user/receipt_device row')
+									}
+								}
 							}
 						} else {
 							ev.emit(
@@ -2959,6 +3155,36 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 									update: { status, messageTimestamp: toNumber(+(attrs.t ?? 0)) }
 								}))
 							)
+
+							// Mirrors 1:1 message receipts into msgstore.db. The other
+							// party IS the receipt_user for a 1:1 chat (no separate
+							// participant field the way group/status receipts have one).
+							if (receiptBackend && key.remoteJid) {
+								try {
+									const receiptKind = receiptKindFromStatus(status)
+									for (const id of ids) {
+										receiptBackend.recordUserReceipt({
+											chatJid: key.remoteJid,
+											fromMe: !!key.fromMe,
+											keyId: id,
+											receiptUserJid: jidNormalizedUser(key.remoteJid),
+											kind: receiptKind,
+											timestamp: +(attrs.t ?? 0)
+										})
+										if (attrs.from) {
+											receiptBackend.recordDeviceReceipt({
+												chatJid: key.remoteJid,
+												fromMe: !!key.fromMe,
+												keyId: id,
+												receiptDeviceJid: attrs.from,
+												timestamp: +(attrs.t ?? 0)
+											})
+										}
+									}
+								} catch (err) {
+									logger.warn({ err }, 'failed to record receipt_user/receipt_device row')
+								}
+							}
 						}
 					}
 
@@ -3077,7 +3303,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				authState.creds.me!.lid || '',
 				signalRepository,
 				logger,
-				msmsgSecretCache
+				msmsgSecretCache,
+				config.onMessageQuarantine
 			)
 
 			const alt = msg.key.participantAlt || msg.key.remoteJidAlt
@@ -3420,6 +3647,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						messageRetryManager.cancelPendingPhoneRequest(msg.key.id)
 					}
 
+					// Best-effort: a previously-held stanza's resend just decrypted —
+					// drop its `unordered_stanza_queue` row at the canonical "stanza
+					// processed" trigger. This is the SUCCESS-only branch, so it never
+					// runs on a decrypt failure (where `sendRetryRequest` re-enqueues
+					// and bumps process_count) — placing it before the CIPHERTEXT check
+					// would reset process_count on every retry. The retry-counter TTL /
+					// socket-close wipe remain as backstops for the exhaustion path.
+					if (signalTypedBackend && msg.key.id) {
+						try {
+							signalTypedBackend.deleteUnorderedStanza(msg.key.id)
+						} catch (err) {
+							logger.debug({ err, msgId: msg.key.id }, 'unordered_stanza_queue mirror: success-delete failed (ignored)')
+						}
+					}
+
 					const isNewsletter = isJidNewsletter(msg.key.remoteJid!)
 					if (!isNewsletter) {
 						// no type in the receipt => message delivered
@@ -3431,10 +3673,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						} else if (msg.key.fromMe) {
 							// message was sent by us from a different device
 							type = 'sender'
-							// need to specially handle this case
-							if (isLidUser(msg.key.remoteJid!) || isLidUser(msg.key.remoteJidAlt)) {
-								participant = author // TODO: investigate sending receipts to LIDs and not PNs
-							}
+							// `author` is decodeMessageNode's raw stanza `from`/`participant` —
+							// our own device's JID exactly as the server addressed THIS stanza,
+							// in whichever mode (LID or PN) it picked. That's independent of
+							// `msg.key.remoteJid`'s addressing, which normalizeMessageJids()
+							// above may already have flipped LID→PN — so the old LID-only guard
+							// here left `participant` unset (and sendReceipt() throwing) for any
+							// fromMe sync copy of a PN-addressed chat. Always use `author`.
+							participant = author
 						} else if (!sendActiveReceipts) {
 							type = 'inactive'
 						}

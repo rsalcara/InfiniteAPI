@@ -5,6 +5,7 @@ import type { SignalRepositoryWithLIDStore } from '../Types/Signal'
 import {
 	areJidsSameUser,
 	type BinaryNode,
+	encodeBinaryNode,
 	isHostedLidUser,
 	isHostedPnUser,
 	isJidBroadcast,
@@ -463,6 +464,22 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 	}
 }
 
+/**
+ * Shape of the optional `SocketConfig.onMessageQuarantine` hook,
+ * duplicated structurally here (not imported from `Types/Socket`) to avoid a
+ * circular import; TypeScript structural typing makes the two interchangeable
+ * at the `messages-recv.ts` call site.
+ */
+export type MessageQuarantineHook = (record: {
+	chatJid: string
+	keyId: string
+	fromMe: boolean
+	senderJid?: string
+	originalProtobuf?: Uint8Array
+	serializedStanza?: Uint8Array
+	failureReason?: string
+}) => void
+
 export const decryptMessageNode = (
 	stanza: BinaryNode,
 	meId: string,
@@ -478,7 +495,16 @@ export const decryptMessageNode = (
 	 * — not the generic "Unknown e2e type" path — so misconfiguration surfaces
 	 * with a precise message rather than being silently NACKed.
 	 */
-	msmsgCache?: MsmsgSecretCache
+	msmsgCache?: MsmsgSecretCache,
+	/**
+	 * Optional hook — see `SocketConfig.onMessageQuarantine`.
+	 * Invoked only for confirmed Bad MAC / corrupted-session failures after
+	 * all retries are exhausted (the same condition that today only produces
+	 * a `logger.warn` and a `CIPHERTEXT` stub). Omitted by default; when
+	 * absent this function's behavior is byte-for-byte identical to before
+	 * this parameter existed.
+	 */
+	onQuarantine?: MessageQuarantineHook
 ) => {
 	const { fullMessage, author, sender } = decodeMessageNode(stanza, meId, meLid)
 
@@ -680,6 +706,34 @@ export const decryptMessageNode = (
 							// Deleting sessions here (hot path) causes cascading failures when
 							// multiple messages from the same contact arrive simultaneously.
 							// See: messages-recv.ts sendRetryRequest() for deferred cleanup.
+
+							// Mirror WhatsApp Android's own behavior: a Bad MAC /
+							// corrupted-session stanza that exhausted retries is quarantined
+							// (`msgstore.message_quarantine` on real WA) instead of vanishing
+							// once the CIPHERTEXT stub is written. Scoped to `isCorrupted` only
+							// — this is specifically the Bad MAC / counter-error / key-reuse
+							// family (`isCorruptedSessionError`), not session-record-missing or
+							// the unrelated msmsg-orphan case. Never allowed to affect the
+							// decrypt flow: `onQuarantine` is a best-effort side channel, so any
+							// throw (e.g. a busy SQLite writer) is swallowed and logged, not
+							// propagated.
+							// eslint-disable-next-line max-depth
+							if (onQuarantine) {
+								// eslint-disable-next-line max-depth
+								try {
+									onQuarantine({
+										chatJid: fullMessage.key.remoteJid!,
+										keyId: fullMessage.key.id!,
+										fromMe: !!fullMessage.key.fromMe,
+										senderJid: fullMessage.key.participant ?? undefined,
+										originalProtobuf: content,
+										serializedStanza: encodeBinaryNode(stanza),
+										failureReason: compactError(originalError)
+									})
+								} catch (quarantineErr) {
+									logger.warn({ key: fullMessage.key, err: quarantineErr }, 'failed to record Bad MAC quarantine')
+								}
+							}
 						} else if (isSessionRecord) {
 							// Session record errors are transient and the internal retry
 							// loop already exhausted its retries before reaching here.

@@ -862,14 +862,16 @@ export class Summary implements BaseMetric {
 		const grouped = new Map<string, SummaryValue>()
 
 		for (const v of metric.values) {
+			const quantile = Number((v.labels as Record<string, unknown>).quantile)
 			const vLabels = { ...v.labels } as Labels
+			const hasQuantileLabel = 'quantile' in vLabels
 			delete (vLabels as Record<string, unknown>)['quantile']
 			const key = this.labelsToKey(vLabels)
 
 			if (!grouped.has(key)) {
 				grouped.set(key, {
 					labels: vLabels,
-					values: [],
+					values: new Array(this.percentiles.length).fill(Number.NaN),
 					sum: 0,
 					count: 0
 				})
@@ -880,6 +882,14 @@ export class Summary implements BaseMetric {
 				summaryValue.sum = v.value
 			} else if (v.metricName?.endsWith('_count')) {
 				summaryValue.count = v.value
+			} else if (hasQuantileLabel) {
+				// The per-quantile sample (e.g. p50/p90/p99) — every other
+				// branch above matches the _sum/_count synthetic series, so
+				// anything left is a real quantile value. Previously dropped
+				// entirely, leaving `values` (and downstream `quantiles_json`)
+				// permanently empty — confirmed real bug.
+				const index = this.percentiles.indexOf(quantile)
+				if (index >= 0) summaryValue.values[index] = v.value
 			}
 		}
 

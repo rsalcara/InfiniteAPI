@@ -29,6 +29,30 @@
  *
  * Column names match the canonical mobile schema verbatim.
  */
+export const STATUS_LAST_TIMESTAMP_TRIGGER_NAME = 'status_ad_for_status_info_last_status_timestamp_trigger'
+
+/**
+ * Single trigger definition shared by fresh-schema creation and the status.db
+ * upgrade migration. Keeping one SQL body prevents new and upgraded databases
+ * from drifting when this trigger changes again.
+ */
+export const STATUS_LAST_TIMESTAMP_TRIGGER_SQL = `
+CREATE TRIGGER IF NOT EXISTS ${STATUS_LAST_TIMESTAMP_TRIGGER_NAME}
+  AFTER DELETE ON status
+  BEGIN
+    UPDATE status_info
+      SET last_status_timestamp = (SELECT
+        CASE WHEN COALESCE(server_receipt_timestamp, 0) > 0 THEN server_receipt_timestamp ELSE timestamp END
+        FROM status
+        WHERE status_info_row_id = old.status_info_row_id
+        AND type <> 8 AND type <> 2 AND is_archived = 0
+        ORDER BY sort_id DESC LIMIT 1)
+      WHERE row_id = old.status_info_row_id
+        AND last_status_timestamp = (CASE WHEN COALESCE(old.server_receipt_timestamp, 0) > 0
+              THEN old.server_receipt_timestamp ELSE old.timestamp END);
+  END;
+`
+
 export const STATUS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS android_metadata (locale TEXT);
 
@@ -57,6 +81,12 @@ CREATE TABLE IF NOT EXISTS status (
 CREATE INDEX IF NOT EXISTS status_is_archived_index ON status (is_archived);
 CREATE UNIQUE INDEX IF NOT EXISTS status_info_sort_id_index
   ON status (status_info_row_id, sort_id);
+-- Serves the 24h retention prune (\`DELETE FROM status WHERE timestamp < ?\`) and
+-- the per-sender active-window read (\`WHERE sender_user_jid = ? AND timestamp >= ?\`)
+-- so neither scans the whole table as the feed grows. New index — CREATE INDEX IF
+-- NOT EXISTS is re-exec'd on every open, so existing status.db files pick it up.
+CREATE INDEX IF NOT EXISTS status_timestamp_index ON status (timestamp);
+CREATE INDEX IF NOT EXISTS status_sender_timestamp_index ON status (sender_user_jid, timestamp);
 
 CREATE TABLE IF NOT EXISTS status_attribution (
   row_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -179,4 +209,76 @@ CREATE TABLE IF NOT EXISTS props (
   prop_name TEXT UNIQUE,
   prop_value TEXT
 );
+
+-- AFTER DELETE triggers on \`status\` — ported VERBATIM from the canonical mobile
+-- schema (WA Business 2.26.21.75). They keep \`status_info\`'s aggregate columns
+-- consistent when a status row is deleted (e.g. by the 24h expiry prune), exactly
+-- like the real app does — so a bulk \`DELETE FROM status WHERE timestamp < ?\`
+-- self-maintains total_count/unread_count/last_status_*/first_unread_sort_id
+-- instead of leaving them stale. We port only the DELETE-side triggers: the
+-- INSERT counting is done manually by StatusBackend.recordReceivedStatus (adding
+-- the mobile's AFTER INSERT triggers too would double-count). \`CREATE TRIGGER IF
+-- NOT EXISTS\` is idempotent — the base schema is re-exec'd on every open, so
+-- existing status.db files pick these up on upgrade.
+CREATE TRIGGER IF NOT EXISTS status_ad_for_status_info_total_count_trigger
+  AFTER DELETE ON status
+  WHEN old.type <> 8 AND old.type <> 2 AND old.is_archived = 0
+  BEGIN
+    UPDATE status_info SET total_count = total_count - 1
+      WHERE row_id = old.status_info_row_id AND total_count > 0;
+  END;
+
+CREATE TRIGGER IF NOT EXISTS status_ad_for_status_info_unread_count_trigger
+  AFTER DELETE ON status
+  WHEN old.type <> 8 AND old.type <> 2 AND old.is_archived = 0 AND old.state <= 4
+  BEGIN
+    UPDATE status_info
+      SET unread_count = unread_count - 1,
+      unread_count_close_friends = CASE
+        WHEN (old.audience_type = 1 OR old.audience_type = 2) AND unread_count_close_friends > 0
+          THEN unread_count_close_friends - 1
+        ELSE unread_count_close_friends
+      END
+      WHERE row_id = old.status_info_row_id AND unread_count > 0;
+  END;
+
+CREATE TRIGGER IF NOT EXISTS status_ad_for_status_info_last_status_sort_id_trigger
+  AFTER DELETE ON status
+  BEGIN
+    UPDATE status_info
+      SET last_status_sort_id = (SELECT MAX(sort_id) FROM status
+        WHERE status_info_row_id = old.status_info_row_id
+        AND type <> 8 AND type <> 2 AND is_archived = 0)
+      WHERE row_id = old.status_info_row_id AND last_status_sort_id = old.sort_id;
+  END;
+
+-- DEVIATION FROM VERBATIM MOBILE (audit #637): the mobile trigger guards this
+-- UPDATE on \`last_status_sort_id = old.sort_id\`. But the sibling
+-- \`...last_status_sort_id_trigger\` (also AFTER DELETE on \`status\`) OVERWRITES
+-- \`last_status_sort_id\` to the new MAX, and SQLite does NOT define a firing
+-- order between multiple triggers of the same event — so if that trigger runs
+-- first, this one's guard is already false and \`last_status_timestamp\` is left
+-- pointing at the just-deleted row (stale aggregate). We instead guard on the
+-- deleted row being the one that CONTRIBUTED the current \`last_status_timestamp\`
+-- (a column no sibling trigger touches), making it order-independent. Same net
+-- effect on mobile-consistent data; robust regardless of trigger fire order.
+${STATUS_LAST_TIMESTAMP_TRIGGER_SQL}
+
+CREATE TRIGGER IF NOT EXISTS status_ad_for_status_info_first_unread_sort_id_trigger
+  AFTER DELETE ON status
+  BEGIN
+    UPDATE status_info
+      SET first_unread_sort_id = (SELECT MIN(sort_id) FROM status
+        WHERE status_info_row_id = old.status_info_row_id
+        AND type <> 8 AND type <> 2 AND is_archived = 0
+        AND (state <> 5 AND state <> 6))
+      WHERE row_id = old.status_info_row_id AND first_unread_sort_id = old.sort_id;
+  END;
+
+-- BEFORE DELETE cascade to the child table we populate (verbatim from mobile).
+CREATE TRIGGER IF NOT EXISTS status_bd_for_status_seen_receipt_trigger
+  BEFORE DELETE ON status
+  BEGIN
+    DELETE FROM status_seen_receipt WHERE status_row_id = old.row_id;
+  END;
 `
