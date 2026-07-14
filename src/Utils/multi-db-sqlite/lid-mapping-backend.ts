@@ -1,5 +1,5 @@
 /**
- * Phase 9.1 — typed `jid_map`-backed storage for LID↔PN mappings.
+ * Typed `jid_map`-backed storage for LID↔PN mappings.
  *
  * Stores both addressing forms as rows in the `jid` table (one row per
  * unique `raw_string`) and links them via `jid_map`. The mapping table
@@ -172,6 +172,31 @@ export class JidMapBackend {
 			if (!row) throw new Error(`JidMapBackend: failed to materialize jid row for "${rawString}"`)
 			return row._id
 		})(jid)
+	}
+
+	/**
+	 * Public resolve-or-create entry point onto the same `jid` table, for
+	 * callers outside the LID↔PN mapping use case. The quarantine recorder uses this to
+	 * turn a chat/sender JID string into the `chat_row_id`/`sender_jid_row_id`
+	 * foreign keys that `message_quarantine` expects — the row is shared with
+	 * (and reused by) the LID mapping table, so quarantine rows join cleanly
+	 * against `jid` without a second identity for the same contact.
+	 */
+	resolveJidRowId(jid: string): number {
+		return this.rowIdFor(jid)
+	}
+
+	/**
+	 * Read-only counterpart to {@link resolveJidRowId}: returns the existing
+	 * `jid` row id, or `null` if the JID has never been seen — WITHOUT the
+	 * insert-or-create side effect. For read paths (e.g. an identity-key
+	 * lookup) that must not materialize a `jid` row for an unknown contact,
+	 * which would both mutate `msgstore.db` on a pure read and bloat the
+	 * table with junk rows for every unknown JID queried.
+	 */
+	lookupJidRowId(jid: string): number | null {
+		const row = this.stmts.selectJidIdByRaw.get(jid) as { _id: number } | undefined
+		return row?._id ?? null
 	}
 
 	/**

@@ -1,0 +1,134 @@
+/**
+ * `WaContactsBackend` smoke tests — the canonical mobile `wa_contacts` mirror
+ * in `wa.db`. Exercises the row CRUD the socket wiring builds the LID+PN pair
+ * on top of: upsert-by-jid (partial-update COALESCE), read, pair backfill, and
+ * clear. The upsert also proves wa.db migration v2 ran (ON CONFLICT(jid) needs
+ * the UNIQUE jid index the migration adds).
+ */
+import { mkdtemp, rm } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { MultiDbSqliteStore, WaContactsBackend } from '../../Utils/multi-db-sqlite'
+
+const PN = '5515991426667@s.whatsapp.net'
+const LID = '46802258641027@lid'
+
+describe('WaContactsBackend', () => {
+	let dir: string
+	let store: MultiDbSqliteStore
+	let backend: WaContactsBackend
+
+	const countRows = () =>
+		(store.handle('wa.db').prepare('SELECT COUNT(*) AS n FROM wa_contacts').get() as { n: number }).n
+
+	beforeEach(async () => {
+		dir = await mkdtemp(join(tmpdir(), 'wa-contacts-test-'))
+		store = new MultiDbSqliteStore({ sessionDir: dir })
+		await store.open()
+		backend = new WaContactsBackend(store.handle('wa.db'))
+	})
+
+	afterEach(async () => {
+		store.close()
+		await rm(dir, { recursive: true, force: true })
+	})
+
+	it('upserts a row and reads it back (is_whatsapp_user defaults to 1)', () => {
+		backend.upsertRow({ jid: PN, waName: 'Renato', status: 'busy', username: 'renato' })
+		const row = backend.getByJid(PN)
+		expect(row).not.toBeNull()
+		expect(row!.wa_name).toBe('Renato')
+		expect(row!.status).toBe('busy')
+		expect(row!.username).toBe('renato')
+		expect(row!.is_whatsapp_user).toBe(1)
+		expect(backend.getByJid('nobody@s.whatsapp.net')).toBeNull()
+	})
+
+	it('ON CONFLICT(jid) dedupes and a partial update never clobbers other fields (COALESCE)', () => {
+		backend.upsertRow({ jid: PN, waName: 'Renato', status: 'busy', username: 'renato' })
+		// A pushName-only update (status/username undefined) must keep the stored
+		// values, not null them — this is the mobile per-field UPDATE behavior.
+		backend.upsertRow({ jid: PN, waName: 'Renato Alcará' })
+		expect(countRows()).toBe(1)
+
+		const row = backend.getByJid(PN)!
+		expect(row.wa_name).toBe('Renato Alcará')
+		expect(row.status).toBe('busy')
+		expect(row.username).toBe('renato')
+	})
+
+	it('username tri-state: undefined keeps, explicit null clears, string sets', () => {
+		backend.upsertRow({ jid: PN, username: 'renato' })
+		expect(backend.getByJid(PN)!.username).toBe('renato')
+
+		// undefined → keep (a pushName-only update must NOT clear the username)
+		backend.upsertRow({ jid: PN, waName: 'Renato' })
+		expect(backend.getByJid(PN)!.username).toBe('renato')
+
+		// explicit null → clear (the username-delete signal)
+		backend.upsertRow({ jid: PN, username: null })
+		expect(backend.getByJid(PN)!.username).toBeNull()
+
+		// string → set again
+		backend.upsertRow({ jid: PN, username: 'renato2' })
+		expect(backend.getByJid(PN)!.username).toBe('renato2')
+	})
+
+	it('copyFieldsTo backfill never clears the target username when source has none', () => {
+		// PN row has a username; LID row will be created with a different set later.
+		backend.upsertRow({ jid: LID, username: 'lidname' })
+		backend.upsertRow({ jid: PN, waName: 'Renato' }) // PN has NO username
+		// Backfill PN → LID must NOT wipe LID's username (source username is null).
+		backend.copyFieldsTo(PN, LID)
+		expect(backend.getByJid(LID)!.username).toBe('lidname')
+		expect(backend.getByJid(LID)!.wa_name).toBe('Renato')
+	})
+
+	it('backfills the LID↔PN pair via copyFieldsTo', () => {
+		// Only the PN side was written (mapping unknown at event time).
+		backend.upsertRow({ jid: PN, waName: 'Renato', username: 'renato' })
+		expect(backend.getByJid(LID)).toBeNull()
+
+		// Mapping resolves → backfill the LID row from the PN row.
+		backend.copyFieldsTo(PN, LID)
+		const lidRow = backend.getByJid(LID)
+		expect(lidRow).not.toBeNull()
+		expect(lidRow!.wa_name).toBe('Renato')
+		expect(lidRow!.username).toBe('renato')
+		expect(countRows()).toBe(2)
+
+		// copyFieldsTo from a jid with no row is a no-op.
+		backend.copyFieldsTo('ghost@s.whatsapp.net', PN)
+		expect(countRows()).toBe(2)
+	})
+
+	it('backfill does NOT resurrect a username cleared on the target (seed-only)', () => {
+		// Both sides had a username; the delete reached the PN row (cleared it) but
+		// the LID row still holds the stale value (pair not reconciled at delete).
+		backend.upsertRow({ jid: LID, username: 'old', waName: 'Renato' })
+		backend.upsertRow({ jid: PN, username: 'old' })
+		backend.upsertRow({ jid: PN, username: null }) // delete reaches PN → cleared
+		expect(backend.getByJid(PN)!.username).toBeNull()
+
+		// The bidirectional backfill must NOT copy the stale LID username back onto
+		// the correctly-cleared PN row (username is seed-only, not merged).
+		backend.copyFieldsTo(LID, PN)
+		backend.copyFieldsTo(PN, LID)
+		expect(backend.getByJid(PN)!.username).toBeNull()
+	})
+
+	it('backfill still seeds username onto a newly CREATED pair row', () => {
+		backend.upsertRow({ jid: LID, username: 'x', waName: 'R' })
+		expect(backend.getByJid(PN)).toBeNull()
+		backend.copyFieldsTo(LID, PN) // creates the PN row
+		expect(backend.getByJid(PN)!.username).toBe('x')
+	})
+
+	it('clear wipes every row', () => {
+		backend.upsertRow({ jid: PN, waName: 'a' })
+		backend.upsertRow({ jid: LID, waName: 'a' })
+		expect(countRows()).toBe(2)
+		backend.clear()
+		expect(countRows()).toBe(0)
+	})
+})

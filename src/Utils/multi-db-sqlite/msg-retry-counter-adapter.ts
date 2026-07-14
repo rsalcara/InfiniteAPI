@@ -1,5 +1,5 @@
 /**
- * Phase 9.3 — `NodeCache`-shaped adapter that persists message-retry
+ * `NodeCache`-shaped adapter that persists message-retry
  * counters in a dedicated `msg_retry_counter` auxiliary table on
  * `msgstore.db`.
  *
@@ -12,7 +12,7 @@
  * (the upstream `NodeCache<number>` shape), so storing it in the typed
  * table would force a parser at the boundary. The auxiliary table keeps
  * the adapter call-compatible while leaving `message_orphaned_edit` free
- * for the eventual fully-typed integration (phase 9.3.1).
+ * for the eventual fully-typed integration.
  *
  * With this adapter the counter survives gateway restarts, which avoids
  * two failure modes:
@@ -30,7 +30,7 @@
  *      InfiniteAPI deployment topology is single-process (PM2), so this
  *      undercount is not exercised today; a fully race-free counter
  *      would require an atomic `INSERT ... ON CONFLICT DO UPDATE SET
- *      retry_count = retry_count + 1` and is tracked for phase 9.3.1.
+ *      retry_count = retry_count + 1` and is tracked.
  */
 import { resolveExpiresAt } from './ttl-utils'
 import type { SqliteDbLike, SqliteStatementLike } from './types'

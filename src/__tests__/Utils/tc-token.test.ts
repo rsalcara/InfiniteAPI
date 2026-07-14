@@ -510,7 +510,7 @@ describe('tctoken integration scenarios', () => {
 		mockKeys = createMockKeys()
 	})
 
-	describe('Phase 1: token fetch and store flow', () => {
+	describe('token fetch and store flow', () => {
 		it('token missing → fetch stores new token → subsequent read finds it', async () => {
 			const recentTs = String(nowSeconds())
 
@@ -539,7 +539,7 @@ describe('tctoken integration scenarios', () => {
 		})
 	})
 
-	describe('Phase 2: expired token triggers re-fetch', () => {
+	describe('expired token triggers re-fetch', () => {
 		it('expired token is detected and deleted, then re-fetch stores fresh token', async () => {
 			const expiredTs = String(nowSeconds() - 30 * 86400)
 			const freshTs = String(nowSeconds())
@@ -566,7 +566,7 @@ describe('tctoken integration scenarios', () => {
 		})
 	})
 
-	describe('Phase 2: shouldSendNewTcToken gates fire-and-forget', () => {
+	describe('shouldSendNewTcToken gates fire-and-forget', () => {
 		it('recent senderTimestamp prevents re-issuance', () => {
 			const recentTs = nowSeconds() - 100
 			expect(shouldSendNewTcToken(recentTs)).toBe(false)
@@ -620,7 +620,7 @@ describe('tctoken integration scenarios', () => {
 		})
 	})
 
-	describe('Phase 4: identity change re-issuance decision', () => {
+	describe('identity change re-issuance decision', () => {
 		it('re-issues when senderTimestamp is recent (within 28-day window)', async () => {
 			const recentSenderTs = nowSeconds() - 5 * 86400 // 5 days ago
 			// @ts-ignore
@@ -664,7 +664,7 @@ describe('tctoken integration scenarios', () => {
 		})
 	})
 
-	describe('Phase 5: token pruning', () => {
+	describe('token pruning', () => {
 		it('prune correctly identifies expired vs valid tokens', () => {
 			const now = nowSeconds()
 			const entries = {

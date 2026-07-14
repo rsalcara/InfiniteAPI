@@ -8,9 +8,12 @@
  *   - `pending_mutations` — uncommitted mutations awaiting server ACK
  *   - `placeholder_retry_message` — placeholder pending re-resolution
  *   - `peer_messages` — peer-to-peer message queue (DSM, app-state acks)
+ *   - `history_sync_companion` — per-chunk tracking of a companion history
+ *     sync (message_id → chunk metadata); rows are transient, dropped once
+ *     the chunk is consumed
  *
- * Target for phase 9.7 (replaces multi-file blob storage). Column names
- * match the canonical mobile schema verbatim.
+ * This structured store replaces multi-file blob storage. Column names match
+ * the canonical mobile schema verbatim.
  */
 export const SYNC_SCHEMA = `
 CREATE TABLE IF NOT EXISTS android_metadata (locale TEXT);
@@ -103,4 +106,22 @@ CREATE TABLE IF NOT EXISTS peer_messages (
   data TEXT,
   acked INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS history_sync_companion (
+  message_id TEXT PRIMARY KEY NOT NULL DEFAULT '',
+  sync_type INTEGER NOT NULL DEFAULT 0,
+  chunk_order INTEGER NOT NULL DEFAULT 0,
+  media_key BLOB,
+  media_hash TEXT NOT NULL DEFAULT '',
+  media_enc_hash TEXT NOT NULL DEFAULT '',
+  file_size INTEGER NOT NULL DEFAULT 0,
+  direct_path TEXT NOT NULL DEFAULT '',
+  local_path TEXT,
+  start_time INTEGER,
+  inline_payload BLOB,
+  enc_handle TEXT
+);
+
+CREATE INDEX IF NOT EXISTS history_sync_companion_index
+  ON history_sync_companion (sync_type, chunk_order);
 `

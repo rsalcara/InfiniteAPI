@@ -77,6 +77,25 @@ describe('processSyncAction', () => {
 				expect.arrayContaining([expect.objectContaining({ muteEndTime: null })])
 			)
 		})
+
+		it('mirrors mute_end into chatSettingsBackend when configured', () => {
+			const chatSettingsBackend = { setMuteEnd: jest.fn(), setPinned: jest.fn() }
+			const syncAction = createSyncAction({ muteAction: { muted: true, muteEndTimestamp: 1700000000 } }, [
+				'mute',
+				'chat123@s.whatsapp.net'
+			])
+			processSyncAction(syncAction, ev, mockMe, undefined, logger, chatSettingsBackend)
+			expect(chatSettingsBackend.setMuteEnd).toHaveBeenCalledWith('chat123@s.whatsapp.net', 1700000000)
+			expect(chatSettingsBackend.setPinned).not.toHaveBeenCalled()
+		})
+
+		it('is a no-op without chatSettingsBackend (additive/opt-in)', () => {
+			const syncAction = createSyncAction({ muteAction: { muted: true, muteEndTimestamp: 1700000000 } }, [
+				'mute',
+				'chat123@s.whatsapp.net'
+			])
+			expect(() => processSyncAction(syncAction, ev, mockMe, undefined, logger)).not.toThrow()
+		})
 	})
 
 	describe('archiveChatAction', () => {
@@ -201,6 +220,17 @@ describe('processSyncAction', () => {
 				'chats.update',
 				expect.arrayContaining([expect.objectContaining({ pinned: 1700000000 })])
 			)
+		})
+
+		it('mirrors pinned/pinned_time into chatSettingsBackend when configured', () => {
+			const chatSettingsBackend = { setMuteEnd: jest.fn(), setPinned: jest.fn() }
+			const syncAction: ChatMutation = {
+				syncAction: { value: { pinAction: { pinned: true }, timestamp: 1700000000 } },
+				index: ['pin', 'chat@s.whatsapp.net']
+			}
+			processSyncAction(syncAction, ev, mockMe, undefined, logger, chatSettingsBackend)
+			expect(chatSettingsBackend.setPinned).toHaveBeenCalledWith('chat@s.whatsapp.net', true, 1700000000)
+			expect(chatSettingsBackend.setMuteEnd).not.toHaveBeenCalled()
 		})
 	})
 
@@ -356,6 +386,81 @@ describe('processSyncAction', () => {
 			processSyncAction(syncAction, ev, mockMe, undefined, logger)
 			expect(logger.debug).toHaveBeenCalledWith({ syncAction, id: 'id123' }, 'unprocessable update')
 			expect(ev.emit).not.toHaveBeenCalled()
+		})
+	})
+
+	describe('stickerAction', () => {
+		const makeBackend = () => ({
+			upsertStarred: jest.fn(),
+			removeStarred: jest.fn(() => false),
+			removeRecentByTs: jest.fn(() => false)
+		})
+		const fullSticker = {
+			isFavorite: true,
+			url: 'https://cdn/s.webp',
+			directPath: '/o1/x',
+			mimetype: 'image/webp',
+			fileEncSha256: Buffer.from([1, 2, 3]),
+			mediaKey: Buffer.from([9, 8]),
+			fileLength: 4096,
+			width: 512,
+			height: 512,
+			imageHash: 'imgHash',
+			isLottie: false,
+			isAvatarSticker: false
+		}
+
+		it('favourite: upserts starred (hash from index, base64 bufs, ts from action.timestamp) + emits', () => {
+			const backend = makeBackend()
+			const syncAction = createSyncAction({ stickerAction: fullSticker, timestamp: 1700 }, ['sticker', 'HASH1'])
+			processSyncAction(syncAction, ev, mockMe, undefined, logger, undefined, backend)
+
+			expect(backend.upsertStarred).toHaveBeenCalledWith(
+				expect.objectContaining({
+					plaintextHash: 'HASH1',
+					timestamp: 1700,
+					url: 'https://cdn/s.webp',
+					encHash: Buffer.from([1, 2, 3]).toString('base64'),
+					mediaKey: Buffer.from([9, 8]).toString('base64'),
+					fileSize: 4096,
+					isAvatar: 0
+				})
+			)
+			expect(backend.removeStarred).not.toHaveBeenCalled()
+			expect(ev.emit).toHaveBeenCalledWith('stickers.update', { plaintextHash: 'HASH1', isFavorite: true })
+		})
+
+		it('unfavourite: removes starred + emits isFavorite=false', () => {
+			const backend = makeBackend()
+			const syncAction = createSyncAction({ stickerAction: { isFavorite: false }, timestamp: 1 }, ['sticker', 'HASH1'])
+			processSyncAction(syncAction, ev, mockMe, undefined, logger, undefined, backend)
+			expect(backend.removeStarred).toHaveBeenCalledWith('HASH1')
+			expect(backend.upsertStarred).not.toHaveBeenCalled()
+			expect(ev.emit).toHaveBeenCalledWith('stickers.update', { plaintextHash: 'HASH1', isFavorite: false })
+		})
+
+		it('does not mirror or emit when the mutation index has no id (no undefined hash)', () => {
+			const backend = makeBackend()
+			const syncAction = createSyncAction({ stickerAction: fullSticker, timestamp: 1 }, ['sticker'])
+			processSyncAction(syncAction, ev, mockMe, undefined, logger, undefined, backend)
+			expect(backend.upsertStarred).not.toHaveBeenCalled()
+			expect(ev.emit).not.toHaveBeenCalledWith('stickers.update', expect.anything())
+		})
+
+		it('is a no-op mirror without stickersBackend (additive) but still emits', () => {
+			const syncAction = createSyncAction({ stickerAction: fullSticker, timestamp: 1 }, ['sticker', 'HASH1'])
+			expect(() => processSyncAction(syncAction, ev, mockMe, undefined, logger)).not.toThrow()
+			expect(ev.emit).toHaveBeenCalledWith('stickers.update', { plaintextHash: 'HASH1', isFavorite: true })
+		})
+
+		it('removeRecentStickerAction removes recent by lastStickerSentTs', () => {
+			const backend = makeBackend()
+			const syncAction = createSyncAction({ removeRecentStickerAction: { lastStickerSentTs: 1700000000 } }, [
+				'recent',
+				''
+			])
+			processSyncAction(syncAction, ev, mockMe, undefined, logger, undefined, backend)
+			expect(backend.removeRecentByTs).toHaveBeenCalledWith(1700000000)
 		})
 	})
 })

@@ -290,19 +290,27 @@ export type SocketConfig = {
 	/**
 	 * Optional multi-DB SQLite store (`MultiDbSqliteStore`).
 	 *
-	 * Currently wired components (phase 9.1):
+	 * Wired automatically the moment this field is set (no other config
+	 * needed):
 	 *   - **LID mapping** — `LIDMappingStore` persists `'lid-mapping'` rows
 	 *     into `msgstore.db.jid_map` (typed) instead of opaque key-value
 	 *     rows on the shared signal key store. Cache, coalescing, retry,
 	 *     and statistics on top of the store are unchanged.
+	 *   - **Message store** — `message`/`chat`/`receipt_user`/
+	 *     `receipt_device`/`message_media`/`message_add_on`/`message_poll`/
+	 *     `message_location`/`message_vcard` mirror every real inbound
+	 *     message (see `chats.ts`'s `messageStoreBackend`/`addOnBackend`).
+	 *   - **User device cache** (`UserDeviceCacheSqliteAdapter` →
+	 *     `userDevicesCache`), **retry counter**
+	 *     (`MsgRetryCounterSqliteAdapter` → `msgRetryCounterCache`), and
+	 *     **Bad MAC quarantine** (`createMessageQuarantineRecorder` →
+	 *     `onMessageQuarantine`) — injected by `Socket/index.ts`'s
+	 *     `wireRemainingMsgstoreAdapters` only when the matching slot below
+	 *     is still unset, so passing your own adapter for any of the three
+	 *     (e.g. a Redis-backed cache) always wins.
 	 *
-	 * Components with adapters / backends READY but NOT wired here yet
-	 * (the caller passes the adapter explicitly to the matching
-	 * `SocketConfig` slot — `userDevicesCache`, `msgRetryCounterCache`,
-	 * etc.):
-	 *   - User device cache (`UserDeviceCacheSqliteAdapter`)
-	 *   - Retry counter (`MsgRetryCounterSqliteAdapter`)
-	 *   - Bad MAC quarantine (`MessageQuarantineBackend`)
+	 * Not auto-wired (the caller passes the adapter explicitly to its own
+	 * `SocketConfig` slot):
 	 *   - Trusted Contact tokens (`TrustedContactsBackend`)
 	 *   - App-state sync (`AppStateBackend`)
 	 *
@@ -313,6 +321,35 @@ export type SocketConfig = {
 	 * `MultiDbSqliteStore` instance from `Utils/multi-db-sqlite`.
 	 */
 	multiDbStore?: unknown
+
+	/**
+	 * Optional hook invoked when an inbound stanza permanently
+	 * fails Signal Protocol decryption (Bad MAC / corrupted session, retries
+	 * exhausted). Mirrors WhatsApp Android's own `msgstore.message_quarantine`
+	 * table: the raw ciphertext + stanza survive so they can be inspected or
+	 * replayed after a fresh session is established, instead of being dropped
+	 * silently on the floor as InfiniteAPI does today.
+	 *
+	 * Wire `createMessageQuarantineRecorder({ store })` from
+	 * `Utils/multi-db-sqlite` to persist into `msgstore.db`. A plain callback
+	 * (not the `unknown`-typed store pattern above) because the only contract
+	 * `decode-wa-message.ts` needs is "record this event" — it never touches
+	 * the underlying backend.
+	 *
+	 * Additive/opt-in: when omitted (the default), behavior is unchanged —
+	 * failed decrypts are logged and dropped exactly as before. A caller on
+	 * `useMultiFileAuthState` / `useSqliteAuthState` (single-bank) that never
+	 * sets this sees zero behavior change.
+	 */
+	onMessageQuarantine?: (record: {
+		chatJid: string
+		keyId: string
+		fromMe: boolean
+		senderJid?: string
+		originalProtobuf?: Uint8Array
+		serializedStanza?: Uint8Array
+		failureReason?: string
+	}) => void
 
 	// === Listener Limits (Memory Leak Prevention) ===
 

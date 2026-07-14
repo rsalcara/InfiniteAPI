@@ -178,6 +178,9 @@ export type BaileysEventMap = {
 
 	/** Settings and actions sync events */
 	'chats.lock': { id: string; locked: boolean }
+	/** A sticker was starred/unstarred (app-state `stickerAction`). `plaintextHash`
+	 * is the sticker's plaintext SHA-256 (base64). Mirrored into stickers.db. */
+	'stickers.update': { plaintextHash: string; isFavorite: boolean }
 	/**
 	 * Emitted when a new WhatsApp Web version is detected.
 	 * The new version will be used on the next reconnection (soft update).

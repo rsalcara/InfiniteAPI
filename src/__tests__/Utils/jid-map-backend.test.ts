@@ -1,5 +1,5 @@
 /**
- * Phase 9.1 — `JidMapBackend` + `wrapKeysWithJidMap` test.
+ * `JidMapBackend` + `wrapKeysWithJidMap` test.
  *
  * Verifies the typed `jid_map`-backed storage answers the same
  * SignalKeyStore queries that the existing `LIDMappingStore` issues:
@@ -14,7 +14,13 @@ import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { SignalKeyStoreWithTransaction } from '../../Types'
-import { JidMapBackend, MultiDbSqliteStore, REVERSE_SUFFIX, wrapKeysWithJidMap } from '../../Utils/multi-db-sqlite'
+import {
+	JidMapBackend,
+	LidChatStateBackend,
+	MultiDbSqliteStore,
+	REVERSE_SUFFIX,
+	wrapKeysWithJidMap
+} from '../../Utils/multi-db-sqlite'
 
 function makeInnerStub(): SignalKeyStoreWithTransaction & { _calls: string[] } {
 	const calls: string[] = []
@@ -103,5 +109,27 @@ describe('JidMapBackend + wrapKeysWithJidMap', () => {
 		} as never)
 
 		expect(inner._calls).not.toContain('inner.set')
+	})
+
+	it('marks lid_chat_state.is_pn_shared at the wrapper choke point (covers every storeLIDPNMappings path)', async () => {
+		const inner = makeInnerStub()
+		const db = store.handle('msgstore.db')
+		const backend = new JidMapBackend(db)
+		const lidChatState = new LidChatStateBackend(db, backend)
+		const wrapped = wrapKeysWithJidMap(inner, backend, lidChatState)
+
+		const pn = '5515991426667@s.whatsapp.net'
+		const lid = '46802258641027@lid'
+		await wrapped.set({
+			'lid-mapping': { [pn]: lid, [`${lid}${REVERSE_SUFFIX}`]: pn }
+		} as never)
+
+		// The LID whose PN was just persisted is marked is_pn_shared — on the SAME
+		// jid row storeMapping resolved, so a single set() covers it end-to-end.
+		const jidRowId = backend.resolveJidRowId(lid)
+		const row = db.prepare('SELECT is_pn_shared FROM lid_chat_state WHERE jid_row_id = ?').get(jidRowId) as
+			| { is_pn_shared: number }
+			| undefined
+		expect(row?.is_pn_shared).toBe(1)
 	})
 })

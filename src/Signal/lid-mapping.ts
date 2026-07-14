@@ -337,7 +337,7 @@ export class LIDMappingStore {
 
 			const result = { stored: 0, skipped: 0, errors: 0 }
 
-			// Phase 1: Validate and collect cache misses
+			// Step 1: Validate and collect cache misses
 			const cacheMissPnUsers: string[] = []
 			const pendingValidation = new Map<string, { pnUser: string; lidUser: string }>()
 
@@ -384,7 +384,7 @@ export class LIDMappingStore {
 				}
 			}
 
-			// Phase 2: Batch fetch all cache misses from DB
+			// Step 2: Batch fetch all cache misses from DB
 			if (cacheMissPnUsers.length > 0) {
 				const batches = this.chunkArray(cacheMissPnUsers, this.config.batchSize)
 
@@ -430,7 +430,7 @@ export class LIDMappingStore {
 				}
 			}
 
-			// Phase 3: Store new/updated mappings
+			// Step 3: Store new/updated mappings
 			const validPairs = Array.from(pendingValidation.values())
 
 			if (validPairs.length === 0) {

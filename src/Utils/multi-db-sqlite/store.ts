@@ -1,8 +1,8 @@
 /**
  * `MultiDbSqliteStore` — multi-handle SQLite store with one physical
  * `.db` file per concern (creds, axolotl, msgstore, wa, sync, media,
- * companion_devices, chatsettings, location, payments, stickers, smb,
- * status, prometheus — 14 files total; see `MULTI_DB_FILES`).
+ * companion_devices, chatsettings, location, stickers, status — 11 files
+ * total; see `MULTI_DB_FILES`).
  *
  * Why multiple files instead of one consolidated DB?
  *
@@ -19,7 +19,8 @@
  * and those all live inside `axolotl.db`, so the trade-off is fine.
  */
 import type { ILogger } from '../logger'
-import { type Migration, runMigrations } from './schema-migrations'
+import { STATUS_LAST_TIMESTAMP_TRIGGER_NAME, STATUS_LAST_TIMESTAMP_TRIGGER_SQL } from './schemas/status'
+import { addColumnIfMissing, type Migration, runMigrations } from './schema-migrations'
 import { MULTI_DB_FILES, type MultiDbFile, SCHEMAS } from './schemas'
 import type { SqliteDbLike } from './types'
 
@@ -29,12 +30,14 @@ import type { SqliteDbLike } from './types'
  *
  * Authoring rules:
  *   - Append; never re-number, never edit a shipped migration.
- *   - `ALTER TABLE ADD COLUMN` is the safe primitive for adding a
- *     nullable column to an existing table. It is NOT idempotent
- *     (`ADD COLUMN IF NOT EXISTS` does not exist in SQLite — a second
- *     run errors with "duplicate column name") — the per-DB
- *     `schema_migrations` bookkeeping in `runMigrations` is what
- *     guarantees the statement runs once per DB.
+ *   - To add a nullable column use the `run` form with
+ *     `addColumnIfMissing(db, table, col, def)`, NOT a raw `ALTER TABLE
+ *     ADD COLUMN` in `sql`. SQLite has no `ADD COLUMN IF NOT EXISTS`, so a
+ *     raw ADD throws "duplicate column name" — and fails `open()` — on any
+ *     DB where the column already exists (schema drift / half-applied
+ *     upgrade). The `schema_migrations` bookkeeping stops a re-run in the
+ *     common case, but the PRAGMA preflight is what keeps the migration
+ *     safe when the column predates the bookkeeping. (Audit #629.)
  *   - **Do NOT also add the column to the `_SCHEMA` `CREATE TABLE`.**
  *     Tempting (it'd let fresh DBs skip the migration) but breaks the
  *     contract: `runMigrations` runs v1 unconditionally on the first
@@ -48,17 +51,269 @@ import type { SqliteDbLike } from './types'
  *     truth for additions; the base `_SCHEMA` only carries the
  *     ORIGINAL columns of the table.
  */
+/**
+ * Recomputes `status_info.last_status_timestamp` for every row to its correct
+ * newest-remaining status (same expression the AFTER DELETE trigger uses). Used
+ * by the status.db v1 migration to REPAIR rows the old order-dependent trigger
+ * may have left stale. Idempotent — rows already correct are recomputed to the
+ * same value; a `status_info` with no live statuses gets NULL. Exported so the
+ * repair is unit-testable without duplicating the SQL. (Audit #637.)
+ */
+export const STATUS_BACKFILL_LAST_TIMESTAMP_SQL = `
+UPDATE status_info
+  SET last_status_timestamp = (SELECT
+    CASE WHEN COALESCE(s.server_receipt_timestamp, 0) > 0 THEN s.server_receipt_timestamp ELSE s.timestamp END
+    FROM status s
+    WHERE s.status_info_row_id = status_info.row_id
+    AND s.type <> 8 AND s.type <> 2 AND s.is_archived = 0
+    ORDER BY s.sort_id DESC LIMIT 1);
+`
+
 const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 	'wa.db': [
 		{
 			version: 1,
 			name: 'add wa_contacts.username + index',
+			// Idempotent ADD COLUMN (audit #629): a plain `ALTER TABLE ADD COLUMN`
+			// throws "duplicate column name" — and fails open() — on any DB where
+			// `username` already exists (schema drift / half-applied upgrade). The
+			// preflight makes it a no-op in that case; the index is already
+			// idempotent via IF NOT EXISTS.
+			run: db => {
+				addColumnIfMissing(db, 'wa_contacts', 'username', 'TEXT')
+				db.exec('CREATE INDEX IF NOT EXISTS wa_contacts_username_idx ON wa_contacts (username)')
+			}
+		},
+		{
+			// The contact mirror upserts by jid (ON CONFLICT(jid)); the base
+			// schema only ships a NON-unique jid index, so add a UNIQUE one. jid
+			// is unique per row on mobile too (a contact's LID row and PN row have
+			// distinct jids). Safe: wa_contacts had no writer before this, so no
+			// pre-existing duplicate jids can break the unique build.
+			version: 2,
+			name: 'add wa_contacts unique jid index (contact upsert)',
+			sql: `CREATE UNIQUE INDEX IF NOT EXISTS wa_contacts_jid_unique_idx ON wa_contacts (jid);`
+		}
+	],
+	'axolotl.db': [
+		{
+			// Schema-fidelity only: the canonical mobile `sender_keys` carries a
+			// `bucket_id` column (part of its natural key alongside group/device/
+			// sender). InfiniteAPI keys sender-keys by the 4-tuple (Baileys'
+			// SenderKeyName has no bucket concept), so this column stays empty and
+			// is deliberately NOT added to `sender_keys_idx_v26` — adding it would
+			// change the live crypto key. Present purely so introspection/dumps
+			// match the mobile layout.
+			version: 1,
+			name: 'add sender_keys.bucket_id (schema fidelity)',
+			// Idempotent ADD COLUMN (audit #629) — see wa_contacts.username above.
+			run: db => addColumnIfMissing(db, 'sender_keys', 'bucket_id', "TEXT NOT NULL DEFAULT ''")
+		}
+	],
+	'msgstore.db': [
+		{
+			// Existing jid_map rows predate the lid_chat_state mirror. The live
+			// wrapper only marks mappings that flow through a later set(), and the
+			// mapping store skips unchanged pairs, so those rows would otherwise
+			// remain permanently absent. Backfill every known LID idempotently while
+			// preserving the other coexistence-state columns.
+			version: 1,
+			name: 'backfill lid_chat_state from existing jid_map rows',
 			sql: `
-				ALTER TABLE wa_contacts ADD COLUMN username TEXT;
-				CREATE INDEX IF NOT EXISTS wa_contacts_username_idx ON wa_contacts (username);
+				INSERT OR IGNORE INTO lid_chat_state (jid_row_id, is_pn_shared)
+				SELECT lid_row_id, 1 FROM jid_map;
+				UPDATE lid_chat_state
+				SET is_pn_shared = 1
+				WHERE jid_row_id IN (SELECT lid_row_id FROM jid_map);
+			`
+		},
+		{
+			version: 2,
+			name: 'deduplicate poll selections, repair totals, and enforce natural key',
+			sql: `
+				DELETE FROM message_add_on_poll_vote_selected_option
+				WHERE _id NOT IN (
+					SELECT MIN(_id) FROM message_add_on_poll_vote_selected_option
+					GROUP BY message_add_on_row_id, message_poll_option_id
+				);
+				UPDATE message_poll_option
+				SET vote_total = (
+					SELECT COUNT(*)
+					FROM message_add_on_poll_vote_selected_option selected
+					WHERE selected.message_poll_option_id = message_poll_option._id
+				);
+				CREATE UNIQUE INDEX IF NOT EXISTS message_add_on_poll_vote_selected_option_unique_idx
+				ON message_add_on_poll_vote_selected_option (message_add_on_row_id, message_poll_option_id);
 			`
 		}
+	],
+	'status.db': [
+		{
+			// Audit #637: the AFTER DELETE `...last_status_timestamp_trigger` guarded
+			// on `last_status_sort_id = old.sort_id`, a column the sibling
+			// `...last_status_sort_id_trigger` overwrites — and SQLite doesn't define
+			// a fire order between them, so the timestamp could be left stale. The
+			// base schema now ships an order-independent body (guard on
+			// `last_status_timestamp`), but `CREATE TRIGGER IF NOT EXISTS` won't
+			// replace an already-created trigger on existing status.db files. DROP +
+			// recreate here so upgraded DBs pick up the fixed body. Body kept
+			// byte-identical to the base schema's (single logical definition).
+			//
+			// Swapping the trigger only prevents FUTURE staleness — a DB that already
+			// ran the buggy trigger may hold a `last_status_timestamp` still pointing
+			// at an already-deleted status. So we also BACKFILL every `status_info`
+			// row to the correct newest-remaining status in the same (IMMEDIATE)
+			// migration transaction (audit follow-up: repair, not just prevent).
+			version: 1,
+			name: 'fix last_status_timestamp trigger order-dependency + backfill stale aggregates',
+			sql: `
+				DROP TRIGGER IF EXISTS ${STATUS_LAST_TIMESTAMP_TRIGGER_NAME};
+				${STATUS_LAST_TIMESTAMP_TRIGGER_SQL}
+				${STATUS_BACKFILL_LAST_TIMESTAMP_SQL}
+			`
+		}
+	],
+	'location.db': [
+		{
+			// Audit #636: a RECEIVED live-location sharer (from_me=0) carries
+			// `expires=0` — the companion never gets the share duration, correct
+			// parity — so `listActiveLocationSharers` treated it as perpetually
+			// active and the rows accumulated unbounded (a share that ended hours
+			// ago still showed up). Add a gateway-only `received_ts` bookkeeping
+			// column (orthogonal to `expires`, which keeps its parity meaning) so
+			// received shares can be aged out by last-activity time. The PRAGMA
+			// preflight keeps open() safe if the column already exists in
+			// a drifted/partially migrated database.
+			version: 1,
+			name: 'add location_sharer.received_ts (received-share retention)',
+			run: db => addColumnIfMissing(db, 'location_sharer', 'received_ts', 'INTEGER NOT NULL DEFAULT 0')
+		}
 	]
+}
+
+/**
+ * Transient tables wiped once at {@link MultiDbSqliteStore.open} (i.e. on
+ * process start). Each mirrors IN-FLIGHT state that is meaningless after the
+ * process that owned it is gone — a live queue, a per-message ratchet anchor,
+ * an in-progress upload/history-sync job. The owning backends already clear
+ * these on a clean socket teardown, but a CRASH (or `kill -9`) skips teardown,
+ * so the stale rows would otherwise survive into the next start and accumulate
+ * across restarts (audit #627/#628/#633). None is a source of truth: the live
+ * protocol flow re-drives all of them, so wiping on start is always safe.
+ *
+ *   - axolotl.db `message_base_key`      — per-message retry ratchet anchor;
+ *                                          the in-memory cache is gone on start
+ *   - axolotl.db `unordered_stanza_queue`— raw stanzas parked awaiting an
+ *                                          earlier one; re-sent by the server
+ *   - axolotl.db `preacks`               — pending pre-ack buffer (ptn)
+ *   - media.db   `media_job`             — in-progress media upload jobs
+ *   - sync.db    `history_sync_companion`— history-sync progress mirror
+ */
+const TRANSIENT_TABLES: Partial<Record<MultiDbFile, ReadonlyArray<string>>> = {
+	'axolotl.db': ['message_base_key', 'unordered_stanza_queue', 'preacks'],
+	'media.db': ['media_job'],
+	'sync.db': ['history_sync_companion']
+}
+
+const SESSION_LOCK_FILE = '.multi-db-sqlite.lock'
+
+type LockConnection = { pragma: (p: string) => unknown; exec: (sql: string) => unknown; close: () => void }
+
+/**
+ * Acquires an EXCLUSIVE, OS-held lock on the session directory and returns a
+ * release function.
+ *
+ * Mechanism: a dedicated better-sqlite3 connection to a `.multi-db-sqlite.lock`
+ * database that holds an open `BEGIN EXCLUSIVE` transaction for the store's
+ * lifetime. This is a REAL kernel-held file lock (fcntl), not a pidfile whose
+ * liveness has to be GUESSED:
+ *   - A second opener — another process/container on the same volume, OR a
+ *     second store in THIS process — hits `SQLITE_BUSY` and is refused. True
+ *     mutual exclusion; a previous holder can never have its lock "stolen".
+ *   - When the owning process dies (crash / kill -9 / OOM), the kernel closes
+ *     its fds and releases the lock automatically — so a restarted container
+ *     (always pid 1) recovers cleanly, WITHOUT the old pidfile's unrecoverable
+ *     "already owned by process 1" brick.
+ *
+ * `busy_timeout = 0` makes contention fail FAST. Verified empirically
+ * (cross-process + same-process exclusion + auto-release on SIGKILL) on overlay
+ * and 9p volumes.
+ *
+ * Legacy upgrade: pre-upgrade builds wrote a JSON pidfile at this same path.
+ * Opened as a SQLite db it raises `SQLITE_NOTADB`; we FAIL CLOSED (throw an
+ * actionable error) rather than delete it — see the handler below.
+ *
+ * Caveat (inherent to any advisory lock): cross-process exclusion relies on the
+ * filesystem honoring POSIX locks. The correct deployment is ONE sessionDir per
+ * instance — never a session shared across processes.
+ */
+const acquireSessionLock = (
+	Database: DatabaseConstructor,
+	path: typeof import('node:path'),
+	sessionDir: string
+): (() => void) => {
+	const lockPath = path.join(sessionDir, SESSION_LOCK_FILE)
+
+	const tryAcquire = (): LockConnection => {
+		const lockDb = new Database(lockPath) as unknown as LockConnection
+		try {
+			lockDb.pragma('busy_timeout = 0') // fail fast on contention
+			lockDb.pragma('journal_mode = DELETE') // rollback journal (NOT wal): EXCLUSIVE then blocks all access
+			lockDb.exec('BEGIN EXCLUSIVE') // acquire + HOLD the exclusive lock until close()
+			return lockDb
+		} catch (err) {
+			try {
+				lockDb.close()
+			} catch {
+				// ignore — surface the acquire error
+			}
+
+			throw err
+		}
+	}
+
+	const busyError = () =>
+		new Error(
+			`MultiDbSqliteStore: sessionDir is locked by another live store — refusing to open a second one. ` +
+				`If this is a reconnect, close() the previous store first; otherwise another process/container is ` +
+				`using this session (use one sessionDir per instance): ${sessionDir}`
+		)
+
+	let lockDb: LockConnection
+	try {
+		lockDb = tryAcquire()
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code
+		if (code === 'SQLITE_BUSY') throw busyError()
+
+		if (code !== 'SQLITE_NOTADB') throw err
+
+		// FAIL CLOSED on a lock file that is not a SQLite db — either a legacy JSON
+		// pidfile (pre-upgrade builds wrote one at this same path) or a corrupted
+		// file. We do NOT delete it automatically:
+		//   - it may belong to an OLD version STILL RUNNING on this sessionDir, and a
+		//     silent delete would drop that instance's mutual exclusion (both would
+		//     then write the same DBs → corruption); and
+		//   - two NEW processes hitting the stale file would race on delete→create
+		//     and end up holding EXCLUSIVE on different inodes at the same path (an
+		//     `unlink`+recreate is not an atomic ownership handoff).
+		// A stale legacy JSON only lingers after an OLD version CRASHED (a clean
+		// shutdown removes its own pidfile), so this is a one-time, operator-visible
+		// upgrade step: stop old instances and remove the file. The new SQLite lock
+		// then reuses this path.
+		throw new Error(
+			`MultiDbSqliteStore: the session lock file at ${lockPath} is not a SQLite database ` +
+				`(a legacy JSON pidfile from a previous version, or a corrupted file). Stop any old ` +
+				`instances still using this sessionDir and delete this file to recover — it is deliberately ` +
+				`NOT removed automatically, to avoid dropping a lock a live old instance may still hold.`
+		)
+	}
+
+	// close() rolls back the held EXCLUSIVE transaction and releases the OS lock
+	// (and removes the leftover `-journal`). Not wrapped here: the sole caller,
+	// `unlockSession()`, already try/catches and logs — swallowing the error in
+	// this closure would just hide the real cause from that logger.
+	return () => lockDb.close()
 }
 
 type DatabaseConstructor = typeof import('better-sqlite3')
@@ -77,7 +332,7 @@ const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
 	// every opened handle — DEFAULT_PRAGMAS is the right place.
 	'foreign_keys = ON',
 	// Audit memory MEM-001 — sem esta pragma, SQLite cai no default de
-	// `-2000` (~2 MB de page cache por handle). Com 14 handles × N
+	// `-2000` (~2 MB de page cache por handle). Com 11 handles × N
 	// sessões, isso vira pressão de RSS desnecessária pro workload da
 	// lib (point reads em signal_kv/jid_map, sem joins grandes). `-512`
 	// = 512 KiB por handle → ~7 MB por sessão em vez de ~28 MB.
@@ -143,39 +398,50 @@ export class MultiDbSqliteStore {
 	// mechanism close() uses to interrupt a concurrent open() without
 	// leaking handles or leaving `opened=true` after teardown.
 	private openGeneration = 0
+	private releaseSessionLock?: () => void
 
 	constructor(private readonly opts: MultiDbSqliteStoreOptions) {}
 
 	async open(): Promise<void> {
 		if (this.opened) return
+		const requestedGeneration = this.openGeneration
 		// Concurrency-safe open: if a second caller hits open() while the first
 		// is still inside the async init below, return the in-flight promise so
 		// both end up sharing the same set of handles rather than racing to
 		// create duplicates.
-		if (this.openInFlight) return this.openInFlight
-
-		this.openInFlight = this.runOpen()
-		try {
+		if (this.openInFlight) {
 			await this.openInFlight
+			// close() may have cancelled the promise we just joined. Only a caller
+			// that started after that close (and therefore captured the current
+			// generation) should retry; callers from the cancelled generation keep
+			// the explicit close() postcondition and resolve with the store closed.
+			if (!this.opened && this.openGeneration === requestedGeneration) return this.open()
+			return
+		}
+
+		const inFlight = this.runOpen()
+		this.openInFlight = inFlight
+		try {
+			await inFlight
 		} finally {
-			this.openInFlight = undefined
+			if (this.openInFlight === inFlight) this.openInFlight = undefined
 		}
 	}
 
 	private async runOpen(): Promise<void> {
+		// Capture this before the first await. A close() issued while the lazy
+		// imports or optional driver load are pending must still cancel this open.
+		const startGen = this.openGeneration
 		const fs = await import('node:fs')
 		const path = await import('node:path')
+		if (this.openGeneration !== startGen) return
 
 		fs.mkdirSync(this.opts.sessionDir, { recursive: true })
 
 		const Database = await loadBetterSqlite3()
+		if (this.openGeneration !== startGen) return
+		this.releaseSessionLock = acquireSessionLock(Database, path, this.opts.sessionDir)
 		const extra = this.opts.extraPragmas ?? []
-
-		// Capture the generation at the start. If close() runs while we
-		// are still here, it will increment this counter — we then know
-		// the caller has explicitly torn the store down and we must abort
-		// (closing the just-opened db) instead of stashing it.
-		const startGen = this.openGeneration
 
 		// On partial-initialization failure (bad extraPragma entry, missing
 		// directory permissions on one .db, schema error inside one of the
@@ -204,9 +470,8 @@ export class MultiDbSqliteStore {
 				for (const pragma of extra) db.pragma(pragma)
 				db.exec(SCHEMAS[file])
 				// Apply per-DB migrations after the base schema is in place.
-				// Empty list today, but the bookkeeping table is created on
-				// the first call so future migrations have somewhere to
-				// record their applied state.
+				// The bookkeeping table is created on every database, including
+				// databases that do not yet have a migration list.
 				const fileMigrations = MIGRATIONS[file]
 				if (fileMigrations && fileMigrations.length > 0) {
 					runMigrations(db as unknown as SqliteDbLike, fileMigrations)
@@ -215,6 +480,19 @@ export class MultiDbSqliteStore {
 					// migration in a future PR doesn't have to special-case
 					// "table doesn't exist yet" for already-deployed dbs.
 					runMigrations(db as unknown as SqliteDbLike, [])
+				}
+
+				// Prune-on-open: wipe transient in-flight tables that a crash would
+				// have left stale (see TRANSIENT_TABLES). The session lock is held
+				// for this store's full lifetime, so no other store can be writing
+				// this sessionDir while these deletes run. Best-effort per table — a
+				// prune failure must not block opening the store.
+				for (const table of TRANSIENT_TABLES[file] ?? []) {
+					try {
+						db.exec(`DELETE FROM ${table}`)
+					} catch (pruneErr) {
+						this.opts.logger?.warn?.({ file, table, err: pruneErr }, 'multi-db-sqlite: startup prune failed')
+					}
 				}
 
 				// Abort check: if close() bumped the generation while we were
@@ -229,6 +507,7 @@ export class MultiDbSqliteStore {
 					}
 
 					this.handles.delete(file)
+					this.unlockSession()
 					return
 				}
 
@@ -244,6 +523,7 @@ export class MultiDbSqliteStore {
 			}
 
 			this.handles.clear()
+			this.unlockSession()
 			throw err
 		}
 
@@ -262,10 +542,22 @@ export class MultiDbSqliteStore {
 			}
 
 			this.handles.clear()
+			this.unlockSession()
 			return
 		}
 
 		this.opened = true
+	}
+
+	private unlockSession(): void {
+		const release = this.releaseSessionLock
+		this.releaseSessionLock = undefined
+		if (!release) return
+		try {
+			release()
+		} catch (err) {
+			this.opts.logger?.warn?.({ err }, 'multi-db-sqlite: session lock release failed')
+		}
 	}
 
 	/**
@@ -312,6 +604,7 @@ export class MultiDbSqliteStore {
 		// the handles currently in the map and close them — runOpen() may
 		// have added some between its last checkpoint and this point, but
 		// the generation bump guarantees it will not add MORE after this.
+		const wasOpened = this.opened
 		this.openGeneration++
 		const handlesToClose = Array.from(this.handles.entries())
 		this.handles.clear()
@@ -323,5 +616,9 @@ export class MultiDbSqliteStore {
 				this.opts.logger?.warn?.({ file, err }, 'multi-db-sqlite: close failed')
 			}
 		}
+
+		// If runOpen() has not completed, it owns lock release on its abort
+		// checkpoint. An already-open store releases synchronously here.
+		if (wasOpened) this.unlockSession()
 	}
 }

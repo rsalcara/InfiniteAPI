@@ -1,5 +1,5 @@
 /**
- * Phase 9.6 — typed `wa_trusted_contacts` + `wa_trusted_contacts_send`
+ * Typed `wa_trusted_contacts` + `wa_trusted_contacts_send`
  * SQLite-backed storage for Trusted Contact (TC) tokens.
  *
  * TC tokens drive the biz `quality_control` envelope: the gateway sends

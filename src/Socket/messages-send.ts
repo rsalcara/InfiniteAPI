@@ -1,6 +1,6 @@
 import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
-import { randomBytes } from 'crypto'
+import { randomBytes, randomUUID } from 'crypto'
 import { proto } from '../../WAProto/index.js'
 import { DEFAULT_CACHE_MAX_KEYS, DEFAULT_CACHE_TTLS, URL_REGEX, WA_DEFAULT_EPHEMERAL } from '../Defaults'
 import type {
@@ -32,6 +32,7 @@ import {
 	generateMessageIDV2,
 	generateParticipantHashV2,
 	generateWAMessage,
+	generateWAMessageFromContent,
 	getStatusCodeForMediaRetry,
 	getUrlFromDirectPath,
 	getWAUploadToServer,
@@ -41,11 +42,19 @@ import {
 	parseAndInjectE2ESessions,
 	runDetached,
 	safeCacheSet,
+	toNumber,
 	unixTimestampSeconds
 } from '../Utils'
 import { logMessageSent, logTcToken } from '../Utils/baileys-logger'
 import { getUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
+import {
+	LocationBackend,
+	MediaJobBackend,
+	type MultiDbSqliteStore,
+	SignalTypedBackend,
+	StickersBackend
+} from '../Utils/multi-db-sqlite'
 import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prometheus-metrics'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import {
@@ -211,8 +220,45 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	/** Serializes writes to userDevicesCache across USync refresh and device-notification handling. */
 	const devicesMutex = makeMutex()
 
-	// Initialize message retry manager if enabled
-	const messageRetryManager = enableRecentMessageCache ? new MessageRetryManager(logger, maxMsgRetryCount) : null
+	// Initialize message retry manager if enabled. Pass a typed backend when a
+	// multi-db-sqlite store is wired so base-key anchors mirror into the
+	// `message_base_key` table AND held stanzas mirror into
+	// `unordered_stanza_queue` (both best-effort; the in-memory caches stay
+	// primary). One SignalTypedBackend satisfies both mirror interfaces.
+	const retryTypedBackend = config.multiDbStore
+		? new SignalTypedBackend((config.multiDbStore as MultiDbSqliteStore).handle('axolotl.db'))
+		: undefined
+	const messageRetryManager = enableRecentMessageCache
+		? new MessageRetryManager(logger, maxMsgRetryCount, retryTypedBackend, retryTypedBackend)
+		: null
+
+	// Send-side location.db mirror. On a SENT live location the
+	// duration is chosen by us (the originator), so unlike the receive path
+	// (companion never gets the peer's duration — proven: the wire only carries
+	// lat/lng/sequenceNumber/jpegThumbnail) we CAN populate the real
+	// `expires`/share window on the `from_me=1` sharer row. Same shared
+	// `location.db` handle as the receive/consume backend in chats.ts.
+	let sendLocationBackend: LocationBackend | undefined
+	if (config.multiDbStore) {
+		try {
+			sendLocationBackend = new LocationBackend((config.multiDbStore as MultiDbSqliteStore).handle('location.db'))
+		} catch (err) {
+			// A bad handle / failed `prepare` must not break socket setup — the
+			// mirror is best-effort; sends keep working without it.
+			logger.warn({ err }, 'location.db backend init failed — sent-live-location mirror disabled')
+		}
+	}
+
+	// Recent_stickers mirror: sending a sticker makes it "recent"
+	// (mirrors the mobile). Best-effort; a bad handle just disables the mirror.
+	let sendStickersBackend: StickersBackend | undefined
+	if (config.multiDbStore) {
+		try {
+			sendStickersBackend = new StickersBackend((config.multiDbStore as MultiDbSqliteStore).handle('stickers.db'))
+		} catch (err) {
+			logger.warn({ err }, 'stickers.db backend init failed — recent-sticker mirror disabled')
+		}
+	}
 
 	// Prevent race conditions in Signal session encryption by user
 	const encryptionMutex = makeKeyedMutex()
@@ -2482,7 +2528,46 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return result
 	}
 
-	const waUploadToServer = getWAUploadToServer(config, refreshMediaConn)
+	const rawWaUploadToServer = getWAUploadToServer(config, refreshMediaConn)
+
+	// Best-effort `media_job` mirror (media.db): the mobile client tracks an
+	// in-flight media transfer as a transient row — INSERT on start, DELETE on
+	// completion, keyed by (uuid, job_type). InfiniteAPI uploads inline, so we
+	// mirror the same lifecycle around each upload: generate a client uuid,
+	// INSERT before the transfer, DELETE in `finally` (success OR failure). Only
+	// job_type=1 (upload) — the flow InfiniteAPI drives. A mirror failure never
+	// affects the upload (fallback = the raw upload runs regardless).
+	let mediaJobBackend: MediaJobBackend | undefined
+	if (config.multiDbStore) {
+		try {
+			mediaJobBackend = new MediaJobBackend((config.multiDbStore as MultiDbSqliteStore).handle('media.db'))
+		} catch (err) {
+			// A bad handle / failed `prepare` must not break socket setup — the
+			// mirror is best-effort; uploads keep working without it.
+			logger.warn({ err }, 'media.db backend init failed — media_job mirror disabled')
+		}
+	}
+
+	const waUploadToServer: typeof rawWaUploadToServer = mediaJobBackend
+		? async (filePath, opts) => {
+				const uuid = randomUUID()
+				try {
+					mediaJobBackend.insertUpload({ uuid })
+				} catch (err) {
+					logger.debug({ err }, 'media_job mirror: insert failed (ignored)')
+				}
+
+				try {
+					return await rawWaUploadToServer(filePath, opts)
+				} finally {
+					try {
+						mediaJobBackend.deleteUpload(uuid)
+					} catch (err) {
+						logger.debug({ err }, 'media_job mirror: delete failed (ignored)')
+					}
+				}
+			}
+		: rawWaUploadToServer
 
 	const waitForMsgMediaUpdate = bindWaitForEvent(ev, 'messages.media-update')
 
@@ -2498,6 +2583,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 
 		messageRetryManager?.clear()
+
+		// media_job is transient (INSERT before an upload, DELETE in `finally`).
+		// If the socket dies between those — a crash mid-transfer — the row is
+		// orphaned. Wipe on socket end so a reconnect doesn't inherit stale
+		// in-flight rows (best-effort; a raw-upload path has no rows to leak).
+		try {
+			mediaJobBackend?.clear()
+		} catch (err) {
+			logger.debug({ err }, 'media_job mirror: clear on socket end failed (ignored)')
+		}
 	})
 
 	return {
@@ -2517,6 +2612,19 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		// (not getter) so the spread in chats.ts preserves the live closure binding.
 		getMediaHost: () => mediaHost,
 		waUploadToServer,
+		/**
+		 * Media transfers currently in flight (the transient `media.db.media_job`
+		 * mirror). Empty in steady state — a row exists only while an upload is
+		 * running. Returns `[]` when no multi-db store is configured or on error
+		 * (fallback: the consumer has no in-progress view, same as legacy).
+		 */
+		getMediaUploadsInProgress: () => {
+			try {
+				return mediaJobBackend?.listInProgress() ?? []
+			} catch {
+				return []
+			}
+		},
 		fetchPrivacySettings,
 		sendPeerDataOperationMessage,
 		createParticipantNodes,
@@ -3005,6 +3113,34 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					statusJidList: options.statusJidList,
 					additionalNodes
 				})
+
+				// A SENT sticker becomes "recent" (mobile parity).
+				// Best-effort; never blocks the send (relay already happened).
+				const sentSticker = fullMsg.message?.stickerMessage
+				if (sendStickersBackend && sentSticker?.fileSha256) {
+					try {
+						const sentTs = sentSticker.stickerSentTs ? toNumber(sentSticker.stickerSentTs) : Date.now()
+						sendStickersBackend.upsertRecent({
+							plaintextHash: Buffer.from(sentSticker.fileSha256).toString('base64'),
+							// entry_weight: newest-first ordering; WA's real weighting algo
+							// isn't exposed, so we approximate with the send timestamp.
+							entryWeight: sentTs,
+							lastStickerSentTs: sentTs,
+							url: sentSticker.url ?? null,
+							encHash: sentSticker.fileEncSha256 ? Buffer.from(sentSticker.fileEncSha256).toString('base64') : null,
+							mediaKey: sentSticker.mediaKey ? Buffer.from(sentSticker.mediaKey).toString('base64') : null,
+							directPath: sentSticker.directPath ?? null,
+							mimetype: sentSticker.mimetype ?? null,
+							fileSize: sentSticker.fileLength ? toNumber(sentSticker.fileLength) : null,
+							width: sentSticker.width ?? null,
+							height: sentSticker.height ?? null,
+							isLottie: sentSticker.isLottie ? 1 : 0
+						})
+					} catch (err) {
+						logger.debug({ err }, 'recent-sticker mirror failed (best-effort)')
+					}
+				}
+
 				// Stage 9 hybrid: runDetached for structured logging + preserve mutex-key fallback
 				if (config.emitOwnEvents) {
 					process.nextTick(() =>
@@ -3026,6 +3162,111 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				return fullMsg
 			}
+		},
+		/**
+		 * Sends a live-location message (`liveLocationMessage`) and mirrors the
+		 * `from_me=1` share into `location.db` with the real `expires` — unlike a
+		 * RECEIVED share (where the companion never gets the peer's duration:
+		 * proven, the wire only carries lat/lng/sequenceNumber/jpegThumbnail),
+		 * on a SEND we are the originator and know the duration.
+		 *
+		 * COMPANION LIMITATION (empirically proven, kept intentionally): WhatsApp's
+		 * native "live location" is a PRIMARY-DEVICE-ONLY server session. A linked
+		 * companion (every Baileys socket) cannot register that session, so the
+		 * server does NOT fan a bare `liveLocationMessage` out to the recipient
+		 * (server ack but zero delivery receipt in testing) and no "view live
+		 * location" card renders. A plain `locationMessage` (`sendMessage({ location })`)
+		 * IS delivered as a static map. This method is kept complete for schema
+		 * parity/mirroring and for consumer↔consumer flows that render the
+		 * position stream themselves — it will not produce a native live card.
+		 */
+		sendLiveLocation: async (
+			jid: string,
+			location: {
+				degreesLatitude: number
+				degreesLongitude: number
+				/** Share window in seconds — populates the `from_me=1` sharer `expires`. */
+				durationSecs?: number
+				caption?: string
+				accuracyInMeters?: number
+				speedInMps?: number
+				degreesClockwiseFromMagneticNorth?: number
+				sequenceNumber?: number
+				jpegThumbnail?: Uint8Array
+			},
+			options: MiscMessageGenerationOptions = {}
+		) => {
+			const userJid = authState.creds.me!.id
+			const content: proto.IMessage = {
+				liveLocationMessage: {
+					degreesLatitude: location.degreesLatitude,
+					degreesLongitude: location.degreesLongitude,
+					accuracyInMeters: location.accuracyInMeters,
+					speedInMps: location.speedInMps,
+					degreesClockwiseFromMagneticNorth: location.degreesClockwiseFromMagneticNorth,
+					caption: location.caption,
+					sequenceNumber: location.sequenceNumber ?? unixTimestampSeconds() * 1000,
+					jpegThumbnail: location.jpegThumbnail
+				}
+			}
+
+			const fullMsg = generateWAMessageFromContent(jid, content, {
+				userJid,
+				messageId: generateMessageIDV2(sock.user?.id),
+				...options
+			})
+
+			await relayMessage(jid, fullMsg.message!, {
+				messageId: fullMsg.key.id!,
+				useCachedGroupMetadata: options.useCachedGroupMetadata,
+				statusJidList: options.statusJidList
+			})
+
+			// Best-effort from_me=1 mirror — never blocks the send. We know the
+			// duration here, so `expires` is real (0 = open-ended when unset).
+			// UNITS: seconds, to match the receive path (`message.messageTimestamp`
+			// is unix seconds). Using ms here would leave the sent row's
+			// `location_ts` permanently ahead of any received update and the
+			// `location_cache` guard (`excluded.location_ts >= …`) would then never
+			// let a received position overwrite it.
+			if (sendLocationBackend) {
+				try {
+					const nowSecs = unixTimestampSeconds()
+					sendLocationBackend.upsertLocationCache({
+						jid: jidNormalizedUser(userJid),
+						latitude: location.degreesLatitude,
+						longitude: location.degreesLongitude,
+						accuracy: location.accuracyInMeters ?? 0,
+						speed: location.speedInMps ?? 0,
+						bearing: location.degreesClockwiseFromMagneticNorth ?? 0,
+						locationTs: nowSecs
+					})
+					sendLocationBackend.upsertLocationSharer({
+						remoteJid: jidNormalizedUser(jid),
+						fromMe: 1,
+						remoteResource: '',
+						expires: location.durationSecs ? nowSecs + location.durationSecs : 0,
+						messageId: fullMsg.key.id!
+					})
+				} catch (err) {
+					logger.debug({ err, jid }, 'location.db sent-live-location mirror failed (best-effort)')
+				}
+			}
+
+			if (config.emitOwnEvents) {
+				process.nextTick(() =>
+					runDetached(
+						() =>
+							messageMutex.mutex(fullMsg.key.remoteJid || fullMsg.key.id || 'unknown', () =>
+								upsertMessage(fullMsg, 'append')
+							),
+						logger,
+						{ op: 'emitOwnEvents.upsertMessage.liveLocation', msgId: fullMsg.key.id }
+					)
+				)
+			}
+
+			return fullMsg
 		}
 	}
 }

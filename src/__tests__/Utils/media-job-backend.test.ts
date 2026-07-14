@@ -1,0 +1,99 @@
+/**
+ * `MediaJobBackend` smoke tests — the transient upload-transfer tracker in
+ * `media.db`. Mirrors the mobile lifecycle: INSERT on transfer start
+ * (job_type=1), DELETE by (uuid, job_type) on completion. Exercises insert +
+ * read, delete, list-in-progress, and clear.
+ */
+import { mkdtemp, rm } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { MediaJobBackend, MultiDbSqliteStore } from '../../Utils/multi-db-sqlite'
+
+describe('MediaJobBackend', () => {
+	let dir: string
+	let store: MultiDbSqliteStore
+	let backend: MediaJobBackend
+
+	beforeEach(async () => {
+		dir = await mkdtemp(join(tmpdir(), 'media-job-test-'))
+		store = new MultiDbSqliteStore({ sessionDir: dir })
+		await store.open()
+		backend = new MediaJobBackend(store.handle('media.db'))
+	})
+
+	afterEach(async () => {
+		store.close()
+		await rm(dir, { recursive: true, force: true })
+	})
+
+	it('inserts an upload job (job_type=1) on start and reads it back', () => {
+		backend.insertUpload({ uuid: 'JOB-1', createTime: 1_700_000_000, transferStartTime: 1_700_000_000 })
+		const row = backend.getJob('JOB-1')
+		expect(row).not.toBeNull()
+		expect(row!.job_type).toBe(1)
+		expect(row!.create_time).toBe(1_700_000_000)
+		expect(row!.transferred_bytes).toBe(0)
+		expect(row!.reupload_attempt_count).toBe(0)
+		expect(backend.getJob('nope')).toBeNull()
+	})
+
+	it('deletes the job on completion by (uuid, job_type)', () => {
+		backend.insertUpload({ uuid: 'JOB-2' })
+		expect(backend.getJob('JOB-2')).not.toBeNull()
+		expect(backend.deleteUpload('JOB-2')).toBe(true)
+		expect(backend.getJob('JOB-2')).toBeNull()
+		// Deleting a non-existent job is a no-op.
+		expect(backend.deleteUpload('JOB-2')).toBe(false)
+	})
+
+	it('lists transfers currently in flight (transient — empty once drained)', () => {
+		backend.insertUpload({ uuid: 'A' })
+		backend.insertUpload({ uuid: 'B' })
+		expect(
+			backend
+				.listInProgress()
+				.map(j => j.uuid)
+				.sort()
+		).toEqual(['A', 'B'])
+
+		backend.deleteUpload('A')
+		expect(backend.listInProgress().map(j => j.uuid)).toEqual(['B'])
+
+		backend.deleteUpload('B')
+		expect(backend.listInProgress()).toEqual([])
+	})
+
+	it('clear wipes every in-flight row (socket close)', () => {
+		backend.insertUpload({ uuid: 'A' })
+		backend.insertUpload({ uuid: 'B' })
+		expect(backend.listInProgress()).toHaveLength(2)
+		backend.clear()
+		expect(backend.listInProgress()).toEqual([])
+	})
+
+	it('scopes reads to uploads (job_type=1) — a foreign job_type row is ignored', () => {
+		// A non-upload row (e.g. job_type=2) inserted directly must be invisible to
+		// getJob/listInProgress, which only drive uploads.
+		store
+			.handle('media.db')
+			.prepare(
+				'INSERT INTO media_job (uuid, job_type, create_time, transfer_start_time, last_update_time, ' +
+					'transferred_bytes, reupload_attempt_count, user_initiated_attempt_count, overall_cumulative_time, ' +
+					'overall_cumulative_user_visible_time, streaming_playback_count, media_key_reuse_type, ' +
+					'last_reupload_attempt_timestamp, last_reupload_success_timestamp) ' +
+					'VALUES (?, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)'
+			)
+			.run('DL-1')
+		backend.insertUpload({ uuid: 'UP-1' })
+
+		expect(backend.getJob('DL-1')).toBeNull()
+		expect(backend.getJob('UP-1')).not.toBeNull()
+		expect(backend.listInProgress().map(j => j.uuid)).toEqual(['UP-1'])
+
+		// clear() is scoped too: wipes our uploads, leaves the foreign row.
+		backend.clear()
+		expect(backend.listInProgress()).toEqual([])
+		const remaining = store.handle('media.db').prepare('SELECT uuid FROM media_job').all() as Array<{ uuid: string }>
+		expect(remaining.map(r => r.uuid)).toEqual(['DL-1'])
+	})
+})

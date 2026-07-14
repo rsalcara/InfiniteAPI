@@ -84,6 +84,13 @@ CREATE TABLE IF NOT EXISTS sender_keys (
   timestamp INTEGER,
   sender_account_id TEXT,
   sender_account_type INTEGER
+  /* @bucket_id column intentionally NOT declared here — it is added by
+     axolotl.db migration v1 (see MIGRATIONS in store.ts), the single source
+     of truth for column additions (SQLite has no ALTER ADD COLUMN IF NOT
+     EXISTS, so declaring it here too would make the migration ALTER fail with
+     "duplicate column" on fresh DBs). It exists only for schema fidelity to
+     the mobile sender_keys table — InfiniteAPI keys sender-keys by the 4-tuple
+     below and leaves bucket_id empty. */
 );
 
 CREATE INDEX IF NOT EXISTS sender_keys_account_idx
