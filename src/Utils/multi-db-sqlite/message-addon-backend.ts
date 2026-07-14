@@ -295,12 +295,13 @@ export class MessageAddOnBackend {
 			const selectedOptionRowIds = [...new Set(input.selectedOptionRowIds)]
 			for (const optionRowId of selectedOptionRowIds) {
 				const option = this.stmts.getPollOptionParent.get(optionRowId) as { message_row_id: number } | undefined
-				if (!option || option.message_row_id !== input.parentMessageRowId) {
+				if (option?.message_row_id !== input.parentMessageRowId) {
 					throw new Error(
 						`MessageAddOnBackend: poll option ${optionRowId} does not belong to parent message ${input.parentMessageRowId}`
 					)
 				}
 			}
+
 			const addOnRowId = this.upsertAddOnRow(input)
 			this.stmts.upsertPollVote.run(addOnRowId, input.senderTimestamp)
 

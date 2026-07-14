@@ -267,6 +267,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			const pair = value as { public?: unknown; private?: unknown }
 			return isBytes(pair.public) && isBytes(pair.private)
 		}
+
 		return isBytes(value)
 	}
 
@@ -350,6 +351,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 					.join(', ')} (axolotl.db); split the batch so each physical database commits independently`
 			)
 		}
+
 		return runWithBusyRetry('signal_kv set', () => applySetTx.immediate(data))
 	}
 

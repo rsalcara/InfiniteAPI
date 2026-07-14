@@ -488,6 +488,7 @@ export class UserDeviceCacheSqliteAdapter implements NodeCacheLike {
 				const rows = this.stmts.selectExpiredTyped.all(now) as Array<{ user_jid_row_id: number }>
 				for (const row of rows) this.deviceBackend.deleteDevices(row.user_jid_row_id)
 			}
+
 			return this.stmts.prune.run(now).changes
 		})()
 	}

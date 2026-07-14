@@ -367,6 +367,21 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					)
 			)
 		: undefined
+	const mirrorAppStateVersion = (name: WAPatchName, state: LTHashState, source: 'snapshot' | 'patch'): void => {
+		try {
+			appStateBackend?.setCollectionVersion({
+				collectionName: name,
+				version: state.version,
+				ltHash: Buffer.from(state.hash),
+				dirtyVersion: -1
+			})
+		} catch (err) {
+			logger.warn(
+				{ err, collectionName: name, version: state.version, mirror: 'sync.db.collection', source },
+				'multi-db-sqlite: failed to mirror collection version; auth state remains authoritative'
+			)
+		}
+	}
 
 	const ownsPlaceholderResendCache = !config.placeholderResendCache
 	const placeholderResendCache =
@@ -1086,19 +1101,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 								// See AppStateBackend's class doc: `dirty_version=-1` mirrors the
 								// real schema's "converged" default — this gateway only persists
 								// server-confirmed state, never a pending local-first mutation.
-								try {
-									appStateBackend?.setCollectionVersion({
-										collectionName: name,
-										version: newState.version,
-										ltHash: Buffer.from(newState.hash),
-										dirtyVersion: -1
-									})
-								} catch (err) {
-									logger.warn(
-										{ err, collectionName: name, version: newState.version, mirror: 'sync.db.collection' },
-										'multi-db-sqlite: failed to mirror snapshot collection version; auth state remains authoritative'
-									)
-								}
+								mirrorAppStateVersion(name, newState, 'snapshot')
 							}
 
 							// only process if there are syncd patches
@@ -1116,19 +1119,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 								)
 
 								await authState.keys.set({ 'app-state-sync-version': { [name]: newState } })
-								try {
-									appStateBackend?.setCollectionVersion({
-										collectionName: name,
-										version: newState.version,
-										ltHash: Buffer.from(newState.hash),
-										dirtyVersion: -1
-									})
-								} catch (err) {
-									logger.warn(
-										{ err, collectionName: name, version: newState.version, mirror: 'sync.db.collection' },
-										'multi-db-sqlite: failed to mirror patch collection version; auth state remains authoritative'
-									)
-								}
+								mirrorAppStateVersion(name, newState, 'patch')
 
 								logger.info(`synced ${name} to v${newState.version}`)
 								initialVersionMap[name] = newState.version
@@ -2144,6 +2135,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			logger.debug({ err, id: c.id }, 'wa_contacts mirror: upsert failed (ignored)')
 		}
 	}
+
 	const contactMirrorChains = new Map<string, Promise<void>>()
 	const enqueueContactMirror = (contact: Partial<Contact>): void => {
 		if (!contact.id) return

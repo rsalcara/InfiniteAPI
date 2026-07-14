@@ -243,9 +243,11 @@ export class ReceiptBackend {
 					if (!stmt) continue
 					stmt.run(messageRowId, recipientRowId, row.timestamp)
 				}
+
 				this.stmts.deleteOrphaned.run(row._id)
 				replayed += 1
 			}
+
 			return replayed
 		})()
 	}

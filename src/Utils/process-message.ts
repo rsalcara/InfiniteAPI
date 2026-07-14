@@ -48,8 +48,8 @@ import {
 	type MessageAddOnBackend,
 	type MessageMediaBackend,
 	type MessageStoreBackend,
-	type ReceiptBackend,
 	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
+	type ReceiptBackend,
 	type StatusBackend,
 	UI_ELEMENT_TYPE
 } from './multi-db-sqlite'
@@ -740,6 +740,7 @@ const processMessage = async (
 			// DIVERGE from the device. `MessageStoreBackend.recordSendAttempt`
 			// stays available for a consumer that tracks its own retries.
 
+			/* eslint-disable max-depth -- nested optional proto fields are traversed without changing the interactive payload */
 			if (mediaBackend) {
 				const media =
 					content?.imageMessage ||
@@ -814,7 +815,6 @@ const processMessage = async (
 						selectableOptionsCount: poll.selectableOptionsCount ?? null
 					})
 					for (const option of poll.options ?? []) {
-						// eslint-disable-next-line max-depth
 						if (!option.optionName) continue
 						mirrorOperation = 'poll_option_record'
 						addOnBackend.recordPollOption({
@@ -839,6 +839,7 @@ const processMessage = async (
 					}
 				}
 			}
+			/* eslint-enable max-depth */
 		} catch (err) {
 			logger?.warn(
 				{
@@ -1284,6 +1285,7 @@ const processMessage = async (
 						'processMessage: consumer message lookup failed, continuing with store/orphan fallback'
 					)
 				}
+
 				// The consumer's `getMessage` defaults to `() => undefined`, so a
 				// caller that doesn't maintain its own message cache would never
 				// record the revoke — even though the multi-db message store DOES

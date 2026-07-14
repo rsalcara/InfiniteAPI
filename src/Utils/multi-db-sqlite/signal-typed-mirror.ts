@@ -50,6 +50,7 @@ export function mirrorSignalEntry(
 					deps.logger?.debug?.({ id }, 'multi-db-sqlite: could not parse session id for typed mirror, skipping')
 					return
 				}
+
 				const recipientAccountType = domainTypeToAccountType(parsed.domainType)
 				if (recipientAccountType === null) {
 					deps.logger?.debug?.(
@@ -101,6 +102,7 @@ export function mirrorSignalEntry(
 					deps.logger?.debug?.({ id }, 'multi-db-sqlite: could not parse sender-key id for typed mirror, skipping')
 					return
 				}
+
 				const senderAccountType = domainTypeToAccountType(parsed.sender.domainType)
 				if (senderAccountType === null) {
 					deps.logger?.debug?.(
