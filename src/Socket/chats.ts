@@ -1490,6 +1490,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				await query(node)
 
 				await authState.keys.set({ 'app-state-sync-version': { [name]: state } })
+				// The server accepted this locally-created patch, so the resulting
+				// LTHash state is now just as authoritative as a resync result. Keep
+				// sync.db current; the helper is best-effort and cannot fail appPatch.
+				mirrorAppStateVersion(name, state, 'patch')
 			}, authState?.creds?.me?.id || 'app-patch')
 		})
 

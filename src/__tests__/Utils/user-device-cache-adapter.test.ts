@@ -237,6 +237,35 @@ describe('UserDeviceCacheSqliteAdapter — source of truth (typed tables)', () =
 		expect(adapter.get('5515991426667')).toBeUndefined()
 	})
 
+	it('flushAll atomically wipes the JSON mirror and every typed table', () => {
+		const adapter = new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db'), { sourceOfTruth: true })
+		adapter.set('5515991426667', devices)
+		adapter.flushAll()
+
+		const db = store.handle('msgstore.db')
+		for (const table of ['user_device_cache_json', 'user_device', 'user_device_info', 'primary_device_version']) {
+			expect((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n).toBe(0)
+		}
+	})
+
+	it('rolls back the entire flushAll when any typed-table delete fails', () => {
+		const adapter = new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db'), { sourceOfTruth: true })
+		adapter.set('5515991426667', devices)
+		const db = store.handle('msgstore.db')
+		db.exec(
+			"CREATE TRIGGER fail_user_device_info_delete BEFORE DELETE ON user_device_info BEGIN SELECT RAISE(ABORT, 'forced flush failure'); END"
+		)
+
+		expect(() => adapter.flushAll()).toThrow('forced flush failure')
+
+		// The trigger fires after the JSON + user_device DELETE statements.
+		// Their rows surviving proves those earlier statements were rolled back.
+		expect((db.prepare('SELECT COUNT(*) AS n FROM user_device_cache_json').get() as { n: number }).n).toBe(1)
+		expect((db.prepare('SELECT COUNT(*) AS n FROM user_device').get() as { n: number }).n).toBe(2)
+		expect((db.prepare('SELECT COUNT(*) AS n FROM user_device_info').get() as { n: number }).n).toBe(1)
+		expect((db.prepare('SELECT COUNT(*) AS n FROM primary_device_version').get() as { n: number }).n).toBe(1)
+	})
+
 	it('falls back to the JSON mirror for a pre-typed entry and counts it', () => {
 		const adapter = new UserDeviceCacheSqliteAdapter(store.handle('msgstore.db'), { sourceOfTruth: true })
 		// A JSON-only row (as written before the typed split) with no typed row.
