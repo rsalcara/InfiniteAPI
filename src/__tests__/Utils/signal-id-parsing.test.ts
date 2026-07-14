@@ -5,6 +5,7 @@
  * construct them.
  */
 import {
+	classifyIdentityKey,
 	domainTypeToAccountType,
 	parseIdentityKey,
 	parseNonNegativeInt,
@@ -155,6 +156,26 @@ describe('parseIdentityKey', () => {
 		expect(parseIdentityKey('123_9999.0')).toBeNull() // unknown domainType
 	})
 
+	it('classifies each fallback with an exact observable reason', () => {
+		expect(classifyIdentityKey('totally-unparseable')).toEqual({ kind: 'fallback', reason: 'unparseable' })
+		expect(classifyIdentityKey(`123_${WAJIDDomains.HOSTED}.0`)).toEqual({
+			kind: 'fallback',
+			reason: 'hosted-domain',
+			domainType: WAJIDDomains.HOSTED
+		})
+		expect(classifyIdentityKey('123_9999.0')).toEqual({
+			kind: 'fallback',
+			reason: 'unknown-domain',
+			domainType: 9999
+		})
+		expect(classifyIdentityKey('123@g.us')).toEqual({
+			kind: 'fallback',
+			reason: 'unsupported-jid-server',
+			domainType: WAJIDDomains.WHATSAPP,
+			server: 'g.us'
+		})
+	})
+
 	it('a PN and a LID for the same user never reconstruct to the same jid', () => {
 		const pn = parseIdentityKey('777.0')
 		const lid = parseIdentityKey(`777_${WAJIDDomains.LID}.0`)
@@ -171,6 +192,13 @@ describe('parseIdentityKey', () => {
 			jid: '5511999999999@s.whatsapp.net',
 			recipientType: 0
 		})
+	})
+
+	it('does not canonicalize an unsupported jid server onto s.whatsapp.net', () => {
+		expect(parseIdentityKey('5511999999999@g.us')).toBeNull()
+		expect(parseIdentityKey('5511999999999@newsletter')).toBeNull()
+		expect(parseIdentityKey('5511999999999@bot')).toBeNull()
+		expect(parseIdentityKey('5511999999999@c.us')).toBeNull()
 	})
 
 	it('returns null for an unparseable id', () => {

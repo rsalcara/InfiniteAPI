@@ -13,8 +13,8 @@
 import type { ILogger } from '../logger'
 import type { JidMapBackend } from './lid-mapping-backend'
 import {
+	classifyIdentityKey,
 	domainTypeToAccountType,
-	parseIdentityKey,
 	parseNonNegativeInt,
 	parseProtocolAddressId,
 	parseSenderKeyId
@@ -114,23 +114,25 @@ export function mirrorSignalEntry(
 				// not jids — parse them via the shared parser (jidDecode failed here,
 				// which is why the typed identities mirror was empty in this
 				// kill-switch path). PN/LID only; hosted/unknown → signal_kv fallback.
-				const parsed = parseIdentityKey(id)
-				if (!parsed) {
-					// Two non-error reasons: unparseable id, OR a hosted/unknown domain
-					// deliberately left to signal_kv (reconstructing it onto a shared
-					// server would collide with a real PN identity — see parseIdentityKey).
+				const parsed = classifyIdentityKey(id)
+				if (parsed.kind === 'fallback') {
 					deps.logger?.debug?.(
-						{ id },
-						'multi-db-sqlite: identity-key not mirrored to typed table (unparseable, or a hosted/unknown domain deliberately left to signal_kv)'
+						{
+							id,
+							reason: parsed.reason,
+							domainType: parsed.domainType,
+							server: parsed.server
+						},
+						'multi-db-sqlite: identity-key not mirrored to typed table, signal_kv remains authoritative'
 					)
 					return
 				}
 
 				deps.signalTypedBackend.putIdentity(
 					{
-						recipientId: deps.jidMapBackend.resolveJidRowId(parsed.jid),
-						recipientType: parsed.recipientType,
-						deviceId: parsed.deviceId
+						recipientId: deps.jidMapBackend.resolveJidRowId(parsed.key.jid),
+						recipientType: parsed.key.recipientType,
+						deviceId: parsed.key.deviceId
 					},
 					value as Uint8Array
 				)

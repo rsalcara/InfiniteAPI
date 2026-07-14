@@ -115,6 +115,17 @@ export function parseSenderKeyId(id: string): ParsedSenderKeyId | null {
 
 export type ParsedIdentityKey = { jid: string; recipientType: AccountType; deviceId: number | null }
 
+export type IdentityKeyFallbackReason = 'unparseable' | 'hosted-domain' | 'unknown-domain' | 'unsupported-jid-server'
+
+export type IdentityKeyFallback = {
+	kind: 'fallback'
+	reason: IdentityKeyFallbackReason
+	domainType?: number
+	server?: string
+}
+
+export type IdentityKeyParseResult = { kind: 'typed'; key: ParsedIdentityKey } | IdentityKeyFallback
+
 /**
  * Parses an `identity-key` id into the structured `identities` key. Like a
  * session id, this is a libsignal PROTOCOL ADDRESS (`signalUser.deviceId`), NOT a
@@ -123,7 +134,7 @@ export type ParsedIdentityKey = { jid: string; recipientType: AccountType; devic
  * separator, still resolves via the `jidDecode` fallback).
  *
  * ONLY PN and LID are mapped into the typed table; HOSTED / HOSTED_LID and any
- * unknown domain return `null` so they resolve via the `signal_kv` fallback.
+ * unknown domain return a classified fallback so they resolve via `signal_kv`.
  * This is DELIBERATE and load-bearing: their `recipient_type`/server semantics
  * aren't confirmed against real Android, and reconstructing a hosted id onto a
  * shared server (`s.whatsapp.net`) would COLLIDE with a real PN identity on the
@@ -131,31 +142,67 @@ export type ParsedIdentityKey = { jid: string; recipientType: AccountType; devic
  * overwrite the PN public key, and a later PN read would hand back the wrong
  * (hosted) key material as a typed hit. Leaving hosted to signal_kv is correct.
  */
-export function parseIdentityKey(id: string): ParsedIdentityKey | null {
-	let user: string
-	let domainType: number
-	let deviceId: number | null
-
+export function classifyIdentityKey(id: string): IdentityKeyParseResult {
 	const addr = parseProtocolAddressId(id)
 	if (addr) {
-		user = addr.user
-		domainType = addr.domainType
-		deviceId = addr.deviceId
-	} else {
-		const decoded = jidDecode(id)
-		if (!decoded) return null
-		user = decoded.user
-		domainType = decoded.domainType ?? WAJIDDomains.WHATSAPP
-		deviceId = decoded.device ?? null
+		if (!addr.user) return { kind: 'fallback', reason: 'unparseable' }
+
+		if (addr.domainType === WAJIDDomains.WHATSAPP) {
+			return {
+				kind: 'typed',
+				key: { jid: jidEncode(addr.user, 's.whatsapp.net'), recipientType: 0, deviceId: addr.deviceId }
+			}
+		}
+
+		if (addr.domainType === WAJIDDomains.LID) {
+			return {
+				kind: 'typed',
+				key: { jid: jidEncode(addr.user, 'lid'), recipientType: 1, deviceId: addr.deviceId }
+			}
+		}
+
+		if (addr.domainType === WAJIDDomains.HOSTED || addr.domainType === WAJIDDomains.HOSTED_LID) {
+			return { kind: 'fallback', reason: 'hosted-domain', domainType: addr.domainType }
+		}
+
+		return { kind: 'fallback', reason: 'unknown-domain', domainType: addr.domainType }
 	}
 
-	if (domainType === WAJIDDomains.WHATSAPP) {
-		return { jid: jidEncode(user, 's.whatsapp.net'), recipientType: 0, deviceId }
+	const decoded = jidDecode(id)
+	if (!decoded?.user) return { kind: 'fallback', reason: 'unparseable' }
+
+	const domainType = decoded.domainType ?? WAJIDDomains.WHATSAPP
+	if (decoded.server === 'hosted' || decoded.server === 'hosted.lid') {
+		return { kind: 'fallback', reason: 'hosted-domain', domainType, server: decoded.server }
 	}
 
-	if (domainType === WAJIDDomains.LID) {
-		return { jid: jidEncode(user, 'lid'), recipientType: 1, deviceId }
+	if (decoded.server === 's.whatsapp.net') {
+		if (domainType !== WAJIDDomains.WHATSAPP) {
+			return { kind: 'fallback', reason: 'unknown-domain', domainType, server: decoded.server }
+		}
+
+		return {
+			kind: 'typed',
+			key: { jid: jidEncode(decoded.user, 's.whatsapp.net'), recipientType: 0, deviceId: decoded.device ?? null }
+		}
 	}
 
-	return null // HOSTED / HOSTED_LID / unknown → signal_kv fallback (no typed row)
+	if (decoded.server === 'lid') {
+		return {
+			kind: 'typed',
+			key: { jid: jidEncode(decoded.user, 'lid'), recipientType: 1, deviceId: decoded.device ?? null }
+		}
+	}
+
+	// jidDecode intentionally accepts arbitrary `@server` values and defaults
+	// their domainType to WHATSAPP. Never use that default to canonicalize an
+	// unknown server onto s.whatsapp.net: doing so would let (for example)
+	// `123@g.us` overwrite the typed identity for `123@s.whatsapp.net`.
+	return { kind: 'fallback', reason: 'unsupported-jid-server', domainType, server: decoded.server }
+}
+
+/** Compatibility helper for callers that only need a typed key or a miss. */
+export function parseIdentityKey(id: string): ParsedIdentityKey | null {
+	const result = classifyIdentityKey(id)
+	return result.kind === 'typed' ? result.key : null
 }

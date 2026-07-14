@@ -332,9 +332,9 @@ describe('useMultiDbSqliteAuthState', () => {
 		close()
 	})
 
-	it('mirrors a LID identity-key write into axolotl.db.identities with recipient_type=1 (legacy mode)', async () => {
+	it('mirrors a protocol-address LID identity-key into identities with recipient_type=1 (legacy mode)', async () => {
 		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: false })
-		await state.keys.set({ 'identity-key': { '123456789@lid': Buffer.from([0xaa]) as Uint8Array } })
+		await state.keys.set({ 'identity-key': { '123456789_1.0': Buffer.from([0xaa]) as Uint8Array } })
 
 		const jidRowId = store
 			.handle('msgstore.db')

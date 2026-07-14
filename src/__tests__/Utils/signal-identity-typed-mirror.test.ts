@@ -83,10 +83,20 @@ describe('SignalTypedSourceStore identity typed-mirror (protocol-address ids)', 
 		expect(source.get('identity-key', '46802258641027@lid')).toBe('PUBKEY-JID')
 	})
 
-	it('an unparseable id writes no typed row (caller still writes signal_kv)', () => {
+	it('an unparseable id writes no typed row', () => {
 		source.set('identity-key', 'totally-unparseable', 'X')
 		expect(identityCount()).toBe(0)
 		expect(source.get('identity-key', 'totally-unparseable')).toBeNull()
+	})
+
+	it('an unsupported jid server cannot overwrite the typed PN identity', () => {
+		const user = '123456789'
+		source.set('identity-key', `${user}@s.whatsapp.net`, 'PN-KEY')
+		source.set('identity-key', `${user}@g.us`, 'UNSUPPORTED-SERVER-KEY')
+
+		expect(identityCount()).toBe(1)
+		expect(source.get('identity-key', `${user}@s.whatsapp.net`)).toBe('PN-KEY')
+		expect(source.get('identity-key', `${user}@g.us`)).toBeNull()
 	})
 
 	// P1 (audit): HOSTED / HOSTED_LID must NOT be reconstructed onto a shared
