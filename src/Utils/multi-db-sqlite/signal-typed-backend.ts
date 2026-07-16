@@ -144,6 +144,8 @@ export class SignalTypedBackend {
 		selectPrekey: SqliteStatementLike
 		deletePrekey: SqliteStatementLike
 		markPrekeysUploaded: SqliteStatementLike
+		countUnsentPrekeys: SqliteStatementLike
+		firstUnsentPrekeyId: SqliteStatementLike
 		upsertSignedPrekey: SqliteStatementLike
 		selectSignedPrekey: SqliteStatementLike
 		upsertKyberPrekey: SqliteStatementLike
@@ -219,6 +221,17 @@ export class SignalTypedBackend {
 			markPrekeysUploaded: this.db.prepare(
 				'UPDATE prekeys SET sent_to_server = 1, upload_timestamp = ? ' +
 					'WHERE prekey_id >= ? AND prekey_id < ? AND (sent_to_server IS NULL OR sent_to_server = 0)'
+			),
+			// A00 / A01 of the real SignalPreKeyStore: the unsent-prekey set IS the
+			// upload queue. `WHERE sent_to_server = 0 AND direct_distribution = 0`
+			// is the exact predicate the mobile store uses to count and select the
+			// keys still owed to the server. InfiniteAPI uses these to let the table
+			// be authoritative for upload progress (self-healing the creds counter).
+			countUnsentPrekeys: this.db.prepare(
+				'SELECT COUNT(*) AS count FROM prekeys WHERE sent_to_server = 0 AND direct_distribution = 0'
+			),
+			firstUnsentPrekeyId: this.db.prepare(
+				'SELECT MIN(prekey_id) AS id FROM prekeys WHERE sent_to_server = 0 AND direct_distribution = 0'
 			),
 			upsertSignedPrekey: this.db.prepare(
 				'INSERT INTO signed_prekeys (prekey_id, record, timestamp, key_type) VALUES (?, ?, ?, ?) ' +
@@ -405,6 +418,28 @@ export class SignalTypedBackend {
 	markPrekeysUploaded(fromId: number, toId: number, uploadTimestamp: number = Date.now()): void {
 		if (!(toId > fromId)) return
 		this.stmts.markPrekeysUploaded.run(uploadTimestamp, fromId, toId)
+	}
+
+	/**
+	 * A00 of the real SignalPreKeyStore — how many one-time prekeys are still
+	 * owed to the server (`sent_to_server = 0 AND direct_distribution = 0`).
+	 */
+	countUnsentPrekeys(): number {
+		const r = this.stmts.countUnsentPrekeys.get() as { count: number } | undefined
+		return Number(r?.count ?? 0)
+	}
+
+	/**
+	 * Lowest prekey id that still needs uploading, or `null` when the server has
+	 * every generated key. This is the table-authoritative equivalent of the
+	 * `firstUnuploadedPreKeyId` creds counter: whenever it points BELOW the
+	 * counter, the counter drifted (e.g. a pre-#665 orphan) and the caller
+	 * rewinds it so those keys get re-sent. Never used to raise the counter, so
+	 * it can only recover keys, never skip an un-acked one.
+	 */
+	firstUnsentPrekeyId(): number | null {
+		const r = this.stmts.firstUnsentPrekeyId.get() as { id: number | null } | undefined
+		return r?.id ?? null
 	}
 
 	getPrekey(prekeyId: number): Buffer | null {

@@ -83,6 +83,10 @@ describe('SignalTypedBackend', () => {
 			expect(readFlag(id).upload_timestamp ?? null).toBeNull()
 		}
 
+		// A00 of SignalPreKeyStore: the unsent set is the upload queue.
+		expect(backend.countUnsentPrekeys()).toBe(5)
+		expect(backend.firstUnsentPrekeyId()).toBe(1)
+
 		// Upload ack: mark the half-open range [1, 4) as uploaded.
 		const ts = 1_784_050_584_000
 		backend.markPrekeysUploaded(1, 4, ts)
@@ -92,6 +96,14 @@ describe('SignalTypedBackend', () => {
 		// Outside the range stays unuploaded.
 		expect(readFlag(4).sent_to_server).toBe(0)
 		expect(readFlag(5).sent_to_server).toBe(0)
+
+		// Table is now authoritative for what's still owed: ids 4,5 (2 keys).
+		expect(backend.countUnsentPrekeys()).toBe(2)
+		expect(backend.firstUnsentPrekeyId()).toBe(4)
+		// All uploaded → no unsent id (drives the "nothing to re-send" case).
+		backend.markPrekeysUploaded(4, 6, ts)
+		expect(backend.countUnsentPrekeys()).toBe(0)
+		expect(backend.firstUnsentPrekeyId()).toBeNull()
 
 		// Idempotent: re-marking the same range does not touch already-acked keys.
 		backend.markPrekeysUploaded(1, 4, 9_999_999_999_999)

@@ -617,23 +617,36 @@ export const makeSocket = (config: SocketConfig) => {
 	// multi-db-sqlite store is wired). One row per successful upload batch —
 	// best-effort introspection parity, never affects the upload itself.
 	let prekeyUploadBackend: SignalTypedBackend | null | undefined
+	// Lazily open the typed axolotl.db backend, once, iff a multi-db-sqlite store
+	// is wired. Returns null for single-file / legacy backends (which have no
+	// typed prekeys table). Never throws — a failure caches null and disables the
+	// typed prekey bookkeeping without affecting uploads.
+	const getPrekeyBackend = (): SignalTypedBackend | null => {
+		if (!config.multiDbStore) return null
+		if (prekeyUploadBackend === undefined) {
+			try {
+				prekeyUploadBackend = new SignalTypedBackend((config.multiDbStore as MultiDbSqliteStore).handle('axolotl.db'))
+			} catch (err) {
+				logger.debug({ err }, 'multi-db-sqlite: could not open axolotl.db backend for prekeys')
+				prekeyUploadBackend = null
+			}
+		}
+
+		return prekeyUploadBackend
+	}
 	// Records a successful pre-key upload into the multi-db-sqlite axolotl.db:
 	// one `prekey_uploads` log row, plus (when the acked id range is known) the
 	// per-key `sent_to_server = 1` flag flip on `prekeys`, matching WhatsApp
-	// Android. Multi-db-only (gated on `config.multiDbStore`); single-file and
-	// legacy backends don't have these tables and simply skip this. Best-effort:
-	// never affects the upload result.
+	// Android. Multi-db-only; single-file and legacy backends simply skip this.
+	// Best-effort: never affects the upload result.
 	const recordPrekeyUpload = (fromId?: number, toId?: number): void => {
-		if (!config.multiDbStore) return
 		try {
-			if (prekeyUploadBackend === undefined) {
-				prekeyUploadBackend = new SignalTypedBackend((config.multiDbStore as MultiDbSqliteStore).handle('axolotl.db'))
-			}
-
+			const backend = getPrekeyBackend()
+			if (!backend) return
 			const uploadTimestamp = Date.now()
-			prekeyUploadBackend?.recordPrekeyUpload(uploadTimestamp, 0)
+			backend.recordPrekeyUpload(uploadTimestamp, 0)
 			if (typeof fromId === 'number' && typeof toId === 'number' && toId > fromId) {
-				prekeyUploadBackend?.markPrekeysUploaded(fromId, toId, uploadTimestamp)
+				backend.markPrekeysUploaded(fromId, toId, uploadTimestamp)
 			}
 		} catch (err) {
 			logger.debug({ err }, 'multi-db-sqlite: prekey_uploads mirror failed (non-fatal)')
@@ -660,6 +673,27 @@ export const makeSocket = (config: SocketConfig) => {
 		const uploadLogic = async () => {
 			const startedAt = Date.now()
 			const sinceLastUploadMs = lastUploadTime ? startedAt - lastUploadTime : null
+
+			// Table-authoritative upload progress (multi-db only), matching the real
+			// SignalPreKeyStore where the upload queue IS `sent_to_server = 0`. If the
+			// typed prekeys table shows unsent keys BELOW the creds counter, the
+			// counter drifted (e.g. a pre-fix orphan) — rewind it so those keys get
+			// re-sent. Only ever lowers the counter, so it can recover keys but never
+			// skip an un-acked one. Uploading an id the server already has is a
+			// harmless no-op (deduped by prekey_id).
+			try {
+				const backend = getPrekeyBackend()
+				const firstUnsent = backend?.firstUnsentPrekeyId()
+				if (typeof firstUnsent === 'number' && firstUnsent < creds.firstUnuploadedPreKeyId) {
+					logger.info(
+						{ from: creds.firstUnuploadedPreKeyId, to: firstUnsent, unsent: backend?.countUnsentPrekeys?.() },
+						`pre-keys: self-heal — table has unsent keys below counter, rewinding firstUnuploadedPreKeyId ${creds.firstUnuploadedPreKeyId} → ${firstUnsent}`
+					)
+					ev.emit('creds.update', { firstUnuploadedPreKeyId: firstUnsent })
+				}
+			} catch (err) {
+				logger.debug({ err }, 'multi-db-sqlite: prekey self-heal check failed (non-fatal)')
+			}
 
 			// The id range this upload will carry: [firstUnuploadedBefore, committedFirstUnuploaded).
 			const firstUnuploadedBefore = creds.firstUnuploadedPreKeyId
