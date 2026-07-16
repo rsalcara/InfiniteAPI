@@ -634,6 +634,7 @@ export const makeSocket = (config: SocketConfig) => {
 
 		return prekeyUploadBackend
 	}
+
 	// Records a successful pre-key upload into the multi-db-sqlite axolotl.db:
 	// one `prekey_uploads` log row, plus (when the acked id range is known) the
 	// per-key `sent_to_server = 1` flag flip on `prekeys`, matching WhatsApp

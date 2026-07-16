@@ -100,10 +100,6 @@ describe('SignalTypedBackend', () => {
 		// Table is now authoritative for what's still owed: ids 4,5 (2 keys).
 		expect(backend.countUnsentPrekeys()).toBe(2)
 		expect(backend.firstUnsentPrekeyId()).toBe(4)
-		// All uploaded → no unsent id (drives the "nothing to re-send" case).
-		backend.markPrekeysUploaded(4, 6, ts)
-		expect(backend.countUnsentPrekeys()).toBe(0)
-		expect(backend.firstUnsentPrekeyId()).toBeNull()
 
 		// Idempotent: re-marking the same range does not touch already-acked keys.
 		backend.markPrekeysUploaded(1, 4, 9_999_999_999_999)
@@ -118,6 +114,17 @@ describe('SignalTypedBackend', () => {
 		// Empty/invalid range is a safe no-op.
 		backend.markPrekeysUploaded(100, 100, Date.now())
 		expect(readFlag(5).sent_to_server).toBe(0)
+	})
+
+	it('reports no unsent prekeys once every generated key is uploaded', () => {
+		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
+		for (let id = 1; id <= 3; id++) backend.putPrekey(id, Buffer.from([id]))
+		expect(backend.countUnsentPrekeys()).toBe(3)
+		expect(backend.firstUnsentPrekeyId()).toBe(1)
+
+		backend.markPrekeysUploaded(1, 4, 1_784_050_584_000)
+		expect(backend.countUnsentPrekeys()).toBe(0)
+		expect(backend.firstUnsentPrekeyId()).toBeNull()
 	})
 
 	it('stores an identity by both LID and PN recipient_type independently', () => {
