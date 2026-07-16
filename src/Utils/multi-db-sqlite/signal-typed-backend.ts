@@ -143,6 +143,7 @@ export class SignalTypedBackend {
 		upsertPrekey: SqliteStatementLike
 		selectPrekey: SqliteStatementLike
 		deletePrekey: SqliteStatementLike
+		markPrekeysUploaded: SqliteStatementLike
 		upsertSignedPrekey: SqliteStatementLike
 		selectSignedPrekey: SqliteStatementLike
 		upsertKyberPrekey: SqliteStatementLike
@@ -195,11 +196,25 @@ export class SignalTypedBackend {
 					'AND session_type = ? AND session_scope = ?'
 			),
 			upsertPrekey: this.db.prepare(
-				'INSERT INTO prekeys (prekey_id, record, key_type) VALUES (?, ?, ?) ' +
+				// `sent_to_server = 0` on INSERT mirrors WhatsApp Android: a freshly
+				// generated one-time prekey is "not yet uploaded" until the server
+				// acks the batch (then `markPrekeysUploaded` flips it to 1). The
+				// ON CONFLICT clause deliberately updates ONLY `record` — re-putting
+				// an existing id must NOT reset an already-uploaded key back to 0.
+				'INSERT INTO prekeys (prekey_id, record, key_type, sent_to_server) VALUES (?, ?, ?, 0) ' +
 					'ON CONFLICT(prekey_id) DO UPDATE SET record = excluded.record'
 			),
 			selectPrekey: this.db.prepare('SELECT record FROM prekeys WHERE prekey_id = ?'),
 			deletePrekey: this.db.prepare('DELETE FROM prekeys WHERE prekey_id = ?'),
+			// Flip the just-uploaded batch to sent_to_server=1 + upload_timestamp,
+			// mirroring WhatsApp Android's per-key upload flag. Range is the
+			// half-open [fromId, toId) that the upload IQ carried. Guarded on
+			// `sent_to_server = 0` so a re-run (retry that re-uploads the same
+			// range) is idempotent and never disturbs already-acked keys.
+			markPrekeysUploaded: this.db.prepare(
+				'UPDATE prekeys SET sent_to_server = 1, upload_timestamp = ? ' +
+					'WHERE prekey_id >= ? AND prekey_id < ? AND (sent_to_server IS NULL OR sent_to_server = 0)'
+			),
 			upsertSignedPrekey: this.db.prepare(
 				'INSERT INTO signed_prekeys (prekey_id, record, timestamp, key_type) VALUES (?, ?, ?, ?) ' +
 					'ON CONFLICT(prekey_id) DO UPDATE SET ' +
@@ -372,6 +387,19 @@ export class SignalTypedBackend {
 
 	putPrekey(prekeyId: number, record: Buffer | Uint8Array, keyType = 0): void {
 		this.stmts.upsertPrekey.run(prekeyId, record, keyType)
+	}
+
+	/**
+	 * Marks the one-time prekeys in the half-open range `[fromId, toId)` as
+	 * uploaded (sent_to_server = 1) with the given `upload_timestamp`, mirroring
+	 * WhatsApp Android's per-key upload flag. Called only AFTER the server acks
+	 * the upload IQ, so a permanently-failed upload leaves the keys at 0 and they
+	 * get re-uploaded on the next attempt — impossible to orphan, unlike a
+	 * monotonic "first unuploaded" counter. Idempotent (guarded on `= 0`).
+	 */
+	markPrekeysUploaded(fromId: number, toId: number, uploadTimestamp: number = Date.now()): void {
+		if (!(toId > fromId)) return
+		this.stmts.markPrekeysUploaded.run(uploadTimestamp, fromId, toId)
 	}
 
 	getPrekey(prekeyId: number): Buffer | null {

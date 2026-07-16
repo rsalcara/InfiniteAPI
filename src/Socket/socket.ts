@@ -617,14 +617,24 @@ export const makeSocket = (config: SocketConfig) => {
 	// multi-db-sqlite store is wired). One row per successful upload batch —
 	// best-effort introspection parity, never affects the upload itself.
 	let prekeyUploadBackend: SignalTypedBackend | null | undefined
-	const recordPrekeyUpload = (): void => {
+	// Records a successful pre-key upload into the multi-db-sqlite axolotl.db:
+	// one `prekey_uploads` log row, plus (when the acked id range is known) the
+	// per-key `sent_to_server = 1` flag flip on `prekeys`, matching WhatsApp
+	// Android. Multi-db-only (gated on `config.multiDbStore`); single-file and
+	// legacy backends don't have these tables and simply skip this. Best-effort:
+	// never affects the upload result.
+	const recordPrekeyUpload = (fromId?: number, toId?: number): void => {
 		if (!config.multiDbStore) return
 		try {
 			if (prekeyUploadBackend === undefined) {
 				prekeyUploadBackend = new SignalTypedBackend((config.multiDbStore as MultiDbSqliteStore).handle('axolotl.db'))
 			}
 
-			prekeyUploadBackend?.recordPrekeyUpload(Date.now(), 0)
+			const uploadTimestamp = Date.now()
+			prekeyUploadBackend?.recordPrekeyUpload(uploadTimestamp, 0)
+			if (typeof fromId === 'number' && typeof toId === 'number' && toId > fromId) {
+				prekeyUploadBackend?.markPrekeysUploaded(fromId, toId, uploadTimestamp)
+			}
 		} catch (err) {
 			logger.debug({ err }, 'multi-db-sqlite: prekey_uploads mirror failed (non-fatal)')
 		}
@@ -648,29 +658,73 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 
 		const uploadLogic = async () => {
-			logger.info({ count, retryCount }, 'uploading pre-keys')
+			const startedAt = Date.now()
+			const sinceLastUploadMs = lastUploadTime ? startedAt - lastUploadTime : null
+
+			// The id range this upload will carry: [firstUnuploadedBefore, committedFirstUnuploaded).
+			const firstUnuploadedBefore = creds.firstUnuploadedPreKeyId
+			let committedFirstUnuploaded = firstUnuploadedBefore
+
+			logger.info(
+				{ requested: count, retryCount, sinceLastUploadMs },
+				`pre-keys: starting upload of ${count}${retryCount ? ` (retry #${retryCount})` : ''}` +
+					`${sinceLastUploadMs !== null ? ` — ${(sinceLastUploadMs / 1000).toFixed(1)}s since last upload` : ''}`
+			)
 
 			// Generate and save pre-keys atomically (prevents ID collisions on retry)
 			const node = await keys.transaction(async () => {
-				logger.debug({ requestedCount: count }, 'generating pre-keys with requested count')
 				const { update, node } = await getNextPreKeysNode({ creds, keys }, count)
-				// Update credentials immediately to prevent duplicate IDs on retry
-				ev.emit('creds.update', update)
-				return node // Only return node since update is already used
+				committedFirstUnuploaded = update.firstUnuploadedPreKeyId ?? firstUnuploadedBefore
+				const generated = committedFirstUnuploaded - firstUnuploadedBefore
+				logger.info(
+					{
+						fromId: firstUnuploadedBefore,
+						toId: committedFirstUnuploaded,
+						keys: generated,
+						nextPreKeyId: update.nextPreKeyId
+					},
+					`pre-keys: prepared batch of ${generated} — ids [${firstUnuploadedBefore}..${committedFirstUnuploaded}) — awaiting server ack`
+				)
+				// Split alloc/commit — fixes the orphan bug. Advance ONLY the
+				// allocation counter (`nextPreKeyId`) now, so a retry can never
+				// reuse ids; hold back the upload-progress counter
+				// (`firstUnuploadedPreKeyId`) until the server acks below. If the
+				// upload fails permanently the generated keys stay "unuploaded"
+				// and get re-sent on the next attempt instead of being orphaned
+				// (which is what advancing both counters pre-ack used to cause).
+				ev.emit('creds.update', { nextPreKeyId: update.nextPreKeyId })
+				return node
 			}, creds?.me?.id || 'upload-pre-keys')
 
 			try {
 				await query(node)
-				logger.info({ count }, 'uploaded pre-keys successfully')
+				const durationMs = Date.now() - startedAt
 				lastUploadTime = Date.now()
-				recordPrekeyUpload()
+				// Server acked → commit the upload-progress counter and flip the
+				// per-key sent_to_server flag for exactly the uploaded range.
+				ev.emit('creds.update', { firstUnuploadedPreKeyId: committedFirstUnuploaded })
+				recordPrekeyUpload(firstUnuploadedBefore, committedFirstUnuploaded)
+				logger.info(
+					{
+						uploaded: committedFirstUnuploaded - firstUnuploadedBefore,
+						fromId: firstUnuploadedBefore,
+						toId: committedFirstUnuploaded,
+						durationMs
+					},
+					`pre-keys: ✓ uploaded & acked in ${durationMs}ms — ` +
+						`${committedFirstUnuploaded - firstUnuploadedBefore} keys [${firstUnuploadedBefore}..${committedFirstUnuploaded}) marked sent_to_server`
+				)
 			} catch (uploadError) {
-				logger.error({ uploadError: (uploadError as Error).toString(), count }, 'Failed to upload pre-keys to server')
+				const durationMs = Date.now() - startedAt
+				logger.error(
+					{ uploadError: (uploadError as Error).toString(), count, retryCount, durationMs },
+					`pre-keys: ✗ upload failed after ${durationMs}ms — keys [${firstUnuploadedBefore}..${committedFirstUnuploaded}) kept unuploaded for retry`
+				)
 
 				// Exponential backoff retry (max 3 retries)
 				if (retryCount < 3) {
 					const backoffDelay = Math.min(1000 * Math.pow(2, retryCount), 10000)
-					logger.info(`Retrying pre-key upload in ${backoffDelay}ms`)
+					logger.info(`pre-keys: retrying upload in ${backoffDelay}ms (attempt ${retryCount + 1}/3)`)
 					await new Promise(resolve => setTimeout(resolve, backoffDelay))
 					return uploadPreKeys(count, retryCount + 1)
 				}
@@ -714,23 +768,24 @@ export const makeSocket = (config: SocketConfig) => {
 			else count = MIN_PREKEY_COUNT
 			const { exists: currentPreKeyExists, currentPreKeyId } = await verifyCurrentPreKeyExists()
 
-			logger.info(`${preKeyCount} pre-keys found on server`)
-			logger.info(`Current prekey ID: ${currentPreKeyId}, exists in storage: ${currentPreKeyExists}`)
-
 			const lowServerCount = preKeyCount <= count
 			const missingCurrentPreKey = !currentPreKeyExists && currentPreKeyId > 0
-
 			const shouldUpload = lowServerCount || missingCurrentPreKey
+
+			logger.info(
+				{ serverCount: preKeyCount, threshold: count, currentPreKeyId, currentPreKeyExists, willUpload: shouldUpload },
+				`pre-keys: server has ${preKeyCount} (threshold ${count}), current prekey #${currentPreKeyId} ${currentPreKeyExists ? 'present' : 'MISSING'} in storage`
+			)
 
 			if (shouldUpload) {
 				const reasons = []
-				if (lowServerCount) reasons.push(`server count low (${preKeyCount})`)
-				if (missingCurrentPreKey) reasons.push(`current prekey ${currentPreKeyId} missing from storage`)
+				if (lowServerCount) reasons.push(`server count low (${preKeyCount} ≤ ${count})`)
+				if (missingCurrentPreKey) reasons.push(`current prekey #${currentPreKeyId} missing from storage`)
 
-				logger.info(`Uploading PreKeys due to: ${reasons.join(', ')}`)
+				logger.info(`pre-keys: upload required — ${reasons.join('; ')}`)
 				await uploadPreKeys(count)
 			} else {
-				logger.info(`PreKey validation passed - Server: ${preKeyCount}, Current prekey ${currentPreKeyId} exists`)
+				logger.info(`pre-keys: validation passed — no upload needed (server ${preKeyCount} > ${count})`)
 			}
 		} catch (error) {
 			logger.error({ error }, 'Failed to check/upload pre-keys during initialization')

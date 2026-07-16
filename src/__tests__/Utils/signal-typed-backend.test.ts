@@ -61,6 +61,47 @@ describe('SignalTypedBackend', () => {
 		expect(backend.getPrekey(101)).toBeNull()
 	})
 
+	it('tracks per-key upload state via sent_to_server (WhatsApp Android parity)', () => {
+		const handle = store.handle('axolotl.db')
+		const backend = new SignalTypedBackend(handle)
+		const readFlag = (id: number) =>
+			(handle.prepare('SELECT sent_to_server, upload_timestamp FROM prekeys WHERE prekey_id = ?').get(id) ?? {}) as {
+				sent_to_server?: number
+				upload_timestamp?: number
+			}
+
+		// Generation: fresh keys are sent_to_server = 0, upload_timestamp NULL.
+		for (let id = 1; id <= 5; id++) backend.putPrekey(id, Buffer.from([id]))
+		for (let id = 1; id <= 5; id++) {
+			expect(readFlag(id).sent_to_server).toBe(0)
+			expect(readFlag(id).upload_timestamp ?? null).toBeNull()
+		}
+
+		// Upload ack: mark the half-open range [1, 4) as uploaded.
+		const ts = 1_784_050_584_000
+		backend.markPrekeysUploaded(1, 4, ts)
+		expect(readFlag(1).sent_to_server).toBe(1)
+		expect(readFlag(3).sent_to_server).toBe(1)
+		expect(readFlag(1).upload_timestamp).toBe(ts)
+		// Outside the range stays unuploaded.
+		expect(readFlag(4).sent_to_server).toBe(0)
+		expect(readFlag(5).sent_to_server).toBe(0)
+
+		// Idempotent: re-marking the same range does not touch already-acked keys.
+		backend.markPrekeysUploaded(1, 4, 9_999_999_999_999)
+		expect(readFlag(1).upload_timestamp).toBe(ts)
+
+		// ON CONFLICT re-put of an uploaded key updates record but preserves the flag.
+		backend.putPrekey(1, Buffer.from([0x63]))
+		expect(readFlag(1).sent_to_server).toBe(1)
+		expect(readFlag(1).upload_timestamp).toBe(ts)
+		expect(Buffer.from(backend.getPrekey(1)!).toString('hex')).toBe('63')
+
+		// Empty/invalid range is a safe no-op.
+		backend.markPrekeysUploaded(100, 100, Date.now())
+		expect(readFlag(5).sent_to_server).toBe(0)
+	})
+
 	it('stores an identity by both LID and PN recipient_type independently', () => {
 		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
 		// recipient_id is INTEGER per the schema — use stable numeric ids
