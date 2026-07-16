@@ -196,13 +196,18 @@ export class SignalTypedBackend {
 					'AND session_type = ? AND session_scope = ?'
 			),
 			upsertPrekey: this.db.prepare(
-				// `sent_to_server = 0` on INSERT mirrors WhatsApp Android: a freshly
-				// generated one-time prekey is "not yet uploaded" until the server
-				// acks the batch (then `markPrekeysUploaded` flips it to 1). The
-				// ON CONFLICT clause deliberately updates ONLY `record` — re-putting
-				// an existing id must NOT reset an already-uploaded key back to 0.
-				'INSERT INTO prekeys (prekey_id, record, key_type, sent_to_server) VALUES (?, ?, ?, 0) ' +
-					'ON CONFLICT(prekey_id) DO UPDATE SET record = excluded.record'
+				// `sent_to_server = 0` + `direct_distribution = 0` on INSERT mirror
+				// WhatsApp Android's SignalPreKeyStore exactly: a freshly generated
+				// one-time prekey is "not yet uploaded" until the server acks the
+				// batch (then `markPrekeysUploaded` flips sent_to_server to 1). The
+				// real store selects the upload batch with
+				// `WHERE sent_to_server = 0 AND direct_distribution = 0`, so both
+				// columns must be a concrete 0 (not NULL) for that predicate to hold.
+				// InfiniteAPI never produces direct-distribution prekeys, so it is
+				// always 0. The ON CONFLICT clause deliberately updates ONLY `record`
+				// — re-putting an existing id must NOT reset an uploaded key to 0.
+				'INSERT INTO prekeys (prekey_id, record, key_type, sent_to_server, direct_distribution) ' +
+					'VALUES (?, ?, ?, 0, 0) ON CONFLICT(prekey_id) DO UPDATE SET record = excluded.record'
 			),
 			selectPrekey: this.db.prepare('SELECT record FROM prekeys WHERE prekey_id = ?'),
 			deletePrekey: this.db.prepare('DELETE FROM prekeys WHERE prekey_id = ?'),

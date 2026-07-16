@@ -65,15 +65,21 @@ describe('SignalTypedBackend', () => {
 		const handle = store.handle('axolotl.db')
 		const backend = new SignalTypedBackend(handle)
 		const readFlag = (id: number) =>
-			(handle.prepare('SELECT sent_to_server, upload_timestamp FROM prekeys WHERE prekey_id = ?').get(id) ?? {}) as {
+			(handle
+				.prepare('SELECT sent_to_server, direct_distribution, upload_timestamp FROM prekeys WHERE prekey_id = ?')
+				.get(id) ?? {}) as {
 				sent_to_server?: number
+				direct_distribution?: number
 				upload_timestamp?: number
 			}
 
-		// Generation: fresh keys are sent_to_server = 0, upload_timestamp NULL.
+		// Generation: fresh keys are sent_to_server = 0, direct_distribution = 0,
+		// upload_timestamp NULL — matches SignalPreKeyStore's upload predicate
+		// `WHERE sent_to_server = 0 AND direct_distribution = 0`.
 		for (let id = 1; id <= 5; id++) backend.putPrekey(id, Buffer.from([id]))
 		for (let id = 1; id <= 5; id++) {
 			expect(readFlag(id).sent_to_server).toBe(0)
+			expect(readFlag(id).direct_distribution).toBe(0)
 			expect(readFlag(id).upload_timestamp ?? null).toBeNull()
 		}
 
