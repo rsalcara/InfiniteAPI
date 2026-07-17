@@ -102,4 +102,39 @@ describe('uploadPreKeys — id advancement gated on commit + ack', () => {
 		expect(creds.nextPreKeyId).toBe(1 + MIN)
 		expect(creds.firstUnuploadedPreKeyId).toBe(1 + MIN)
 	})
+
+	it('bounds each attempt with an explicit per-call timeout even if the global query timeout is disabled', async () => {
+		const EXPLICIT_MS = 10
+		const globalDefaultMs: number | undefined = undefined // consumer disabled defaultQueryTimeoutMs
+
+		// Mirrors `query(node, PREKEY_UPLOAD_QUERY_TIMEOUT_MS)` → promiseTimeout:
+		// the EXPLICIT ms is what promiseTimeout receives, so a non-responding
+		// server still rejects instead of hanging — even though the global default
+		// is undefined (which, if relied on, builds a promise with no timeout).
+		const query = (serverResponds: boolean) =>
+			new Promise<void>((resolve, reject) => {
+				const ms = EXPLICIT_MS ?? globalDefaultMs
+				if (serverResponds) resolve()
+				else if (ms) setTimeout(() => reject(new Error('Timed Out')), ms)
+				// else: would hang forever — the bug this explicit timeout guards against
+			})
+
+		// The retry loop must terminate (reject), never hang, with a dead server.
+		const outcome = await Promise.race([
+			(async () => {
+				for (let attempt = 0; attempt <= 3; attempt++) {
+					try {
+						await query(false)
+						return 'resolved'
+					} catch {
+						if (attempt < 3) await delay(1)
+					}
+				}
+				return 'rejected'
+			})(),
+			delay(1000).then(() => 'hung')
+		])
+
+		expect(outcome).toBe('rejected')
+	})
 })

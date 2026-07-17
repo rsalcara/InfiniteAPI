@@ -677,6 +677,15 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 
 		const MAX_RETRIES = 3
+		// Explicit per-attempt timeout. We must NOT rely on `defaultQueryTimeoutMs`
+		// here: it is `number | undefined` and a consumer can disable it (undefined),
+		// in which case `promiseTimeout` builds a promise with NO timeout — a
+		// non-responding server would then hang query() forever, and because the
+		// single-flight promise wraps the whole loop that would permanently block
+		// every future upload. Passing an explicit value bounds each attempt
+		// regardless of config; 4 attempts × 30s + backoff (~127s) stays under the
+		// 180s guard.
+		const PREKEY_UPLOAD_QUERY_TIMEOUT_MS = 30_000
 
 		const runWithRetries = async () => {
 			// Table-authoritative upload progress (multi-db only), matching the real
@@ -739,7 +748,7 @@ export const makeSocket = (config: SocketConfig) => {
 				ev.emit('creds.update', { nextPreKeyId: allocatedNextPreKeyId })
 
 				try {
-					await query(node)
+					await query(node, PREKEY_UPLOAD_QUERY_TIMEOUT_MS)
 					const durationMs = Date.now() - startedAt
 					lastUploadTime = Date.now()
 					// Server acked → advance the upload-progress cursor (all backends),
@@ -779,10 +788,10 @@ export const makeSocket = (config: SocketConfig) => {
 		// The single-flight promise tracks the WHOLE retry loop — no outer
 		// Promise.race timeout. An external timeout would resolve the guard while
 		// runWithRetries() kept running in the background, letting a subsequent
-		// call start a second, concurrent upload. Each query() already enforces
-		// its own `defaultQueryTimeoutMs` (30s), so the loop can't hang; worst
-		// case (4 attempts × 30s + 1+2+4s backoff ≈ 127s) stays under WhatsApp's
-		// 180s upload guard.
+		// call start a second, concurrent upload. The loop can't hang because each
+		// query() is given an EXPLICIT PREKEY_UPLOAD_QUERY_TIMEOUT_MS (not the
+		// disable-able global default), so worst case (4 × 30s + 1+2+4s backoff ≈
+		// 127s) stays under WhatsApp's 180s upload guard.
 		uploadPreKeysPromise = runWithRetries()
 
 		try {
