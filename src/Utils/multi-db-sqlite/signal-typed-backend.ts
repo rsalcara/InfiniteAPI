@@ -223,15 +223,20 @@ export class SignalTypedBackend {
 					'WHERE prekey_id >= ? AND prekey_id < ? AND (sent_to_server IS NULL OR sent_to_server = 0)'
 			),
 			// A00 / A01 of the real SignalPreKeyStore: the unsent-prekey set IS the
-			// upload queue. `WHERE sent_to_server = 0 AND direct_distribution = 0`
-			// is the exact predicate the mobile store uses to count and select the
-			// keys still owed to the server. InfiniteAPI uses these to let the table
-			// be authoritative for upload progress (self-healing the creds counter).
+			// upload queue. The mobile store uses `sent_to_server = 0 AND
+			// direct_distribution = 0`; we wrap both columns in COALESCE so rows
+			// generated BEFORE per-key tracking existed (NULL columns) are treated
+			// as unsent instead of vanishing — in SQL `NULL = 0` is not true, which
+			// would otherwise hide every legacy orphan from the self-heal. The
+			// conservative choice is deliberate: a NULL row is indistinguishable
+			// from an orphan, so we re-send it (the server dedups by prekey_id)
+			// rather than trust a possibly-drifted cursor and risk hiding a key the
+			// server never received.
 			countUnsentPrekeys: this.db.prepare(
-				'SELECT COUNT(*) AS count FROM prekeys WHERE sent_to_server = 0 AND direct_distribution = 0'
+				'SELECT COUNT(*) AS count FROM prekeys WHERE COALESCE(sent_to_server, 0) = 0 AND COALESCE(direct_distribution, 0) = 0'
 			),
 			firstUnsentPrekeyId: this.db.prepare(
-				'SELECT MIN(prekey_id) AS id FROM prekeys WHERE sent_to_server = 0 AND direct_distribution = 0'
+				'SELECT MIN(prekey_id) AS id FROM prekeys WHERE COALESCE(sent_to_server, 0) = 0 AND COALESCE(direct_distribution, 0) = 0'
 			),
 			upsertSignedPrekey: this.db.prepare(
 				'INSERT INTO signed_prekeys (prekey_id, record, timestamp, key_type) VALUES (?, ?, ?, ?) ' +
@@ -440,6 +445,36 @@ export class SignalTypedBackend {
 	firstUnsentPrekeyId(): number | null {
 		const r = this.stmts.firstUnsentPrekeyId.get() as { id: number | null } | undefined
 		return r?.id ?? null
+	}
+
+	/**
+	 * A03 of the real SignalPreKeyStore, atomically: on server ack, flip the
+	 * uploaded ids to `sent_to_server = 1` + `upload_timestamp` in chunks of 200,
+	 * THEN append one `prekey_uploads` log row — all inside a single transaction,
+	 * committed only if every step succeeds (order + chunk size confirmed from the
+	 * deobfuscated store). This makes the two writes atomic: a mid-way failure
+	 * rolls back, so the DB never claims an upload that didn't fully land. Range
+	 * is the half-open `[fromId, toId)` the IQ carried; `uploadTimestampSec` is
+	 * epoch SECONDS (WhatsApp Android stores seconds, not millis).
+	 */
+	commitPrekeyUpload(fromId: number, toId: number, uploadTimestampSec: number): void {
+		const CHUNK = 200
+		this.db.exec('BEGIN IMMEDIATE')
+		try {
+			for (let start = fromId; start < toId; start += CHUNK) {
+				const end = Math.min(start + CHUNK, toId)
+				this.stmts.markPrekeysUploaded.run(uploadTimestampSec, start, end)
+			}
+
+			this.stmts.insertPrekeyUpload.run(uploadTimestampSec, 0)
+			this.db.exec('COMMIT')
+		} catch (err) {
+			try {
+				this.db.exec('ROLLBACK')
+			} catch {}
+
+			throw err
+		}
 	}
 
 	getPrekey(prekeyId: number): Buffer | null {

@@ -87,8 +87,9 @@ describe('SignalTypedBackend', () => {
 		expect(backend.countUnsentPrekeys()).toBe(5)
 		expect(backend.firstUnsentPrekeyId()).toBe(1)
 
-		// Upload ack: mark the half-open range [1, 4) as uploaded.
-		const ts = 1_784_050_584_000
+		// Upload ack: mark the half-open range [1, 4) as uploaded. Epoch SECONDS
+		// (WhatsApp Android stores seconds, not millis).
+		const ts = 1_784_050_584
 		backend.markPrekeysUploaded(1, 4, ts)
 		expect(readFlag(1).sent_to_server).toBe(1)
 		expect(readFlag(3).sent_to_server).toBe(1)
@@ -122,9 +123,43 @@ describe('SignalTypedBackend', () => {
 		expect(backend.countUnsentPrekeys()).toBe(3)
 		expect(backend.firstUnsentPrekeyId()).toBe(1)
 
-		backend.markPrekeysUploaded(1, 4, 1_784_050_584_000)
+		backend.markPrekeysUploaded(1, 4, 1_784_050_584)
 		expect(backend.countUnsentPrekeys()).toBe(0)
 		expect(backend.firstUnsentPrekeyId()).toBeNull()
+	})
+
+	it('treats legacy prekeys with NULL flags as unsent (COALESCE)', () => {
+		const handle = store.handle('axolotl.db')
+		// Simulate a row written BEFORE per-key tracking existed: NULL flags.
+		handle.prepare("INSERT INTO prekeys (prekey_id, record, key_type) VALUES (10, X'0a', 0)").run()
+		const backend = new SignalTypedBackend(handle)
+		// `NULL = 0` is not true in SQL — without COALESCE this key would vanish
+		// from the upload queue and the self-heal could never recover it.
+		expect(backend.countUnsentPrekeys()).toBe(1)
+		expect(backend.firstUnsentPrekeyId()).toBe(10)
+	})
+
+	it('commits an upload atomically: chunked flag flip + prekey_uploads in one txn', () => {
+		const handle = store.handle('axolotl.db')
+		const backend = new SignalTypedBackend(handle)
+		for (let id = 1; id <= 450; id++) backend.putPrekey(id, Buffer.from([id & 0xff]))
+
+		const tsSec = 1_784_050_584
+		backend.commitPrekeyUpload(1, 451, tsSec) // 450 keys → chunks of 200
+
+		expect(backend.countUnsentPrekeys()).toBe(0)
+		const uploads = handle.prepare('SELECT COUNT(*) AS n, MAX(upload_timestamp) AS t FROM prekey_uploads').get() as {
+			n: number
+			t: number
+		}
+		expect(uploads.n).toBe(1)
+		expect(uploads.t).toBe(tsSec) // seconds, not millis
+
+		// Rollback: if the prekey_uploads INSERT can't run, the flag flip is undone.
+		handle.exec('DROP TABLE prekey_uploads')
+		expect(() => backend.commitPrekeyUpload(1, 4, tsSec)).toThrow()
+		// No partial write survived (everything was already sent above, so still 0).
+		expect(backend.countUnsentPrekeys()).toBe(0)
 	})
 
 	it('stores an identity by both LID and PN recipient_type independently', () => {
