@@ -458,6 +458,9 @@ export class SignalTypedBackend {
 	 * epoch SECONDS (WhatsApp Android stores seconds, not millis).
 	 */
 	commitPrekeyUpload(fromId: number, toId: number, uploadTimestampSec: number): void {
+		// Guard the public contract: an empty/invalid range must NOT append a
+		// prekey_uploads row (that would log an upload that flipped zero keys).
+		if (!(toId > fromId)) return
 		const CHUNK = 200
 		this.db.exec('BEGIN IMMEDIATE')
 		try {

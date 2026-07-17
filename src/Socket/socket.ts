@@ -11,8 +11,7 @@ import {
 	INITIAL_PREKEY_COUNT,
 	MIN_PREKEY_COUNT,
 	MIN_UPLOAD_INTERVAL,
-	NOISE_WA_HEADER,
-	UPLOAD_TIMEOUT
+	NOISE_WA_HEADER
 } from '../Defaults'
 import { makeSessionActivityTracker } from '../Signal/session-activity-tracker'
 import { makeSessionCleanup } from '../Signal/session-cleanup'
@@ -777,15 +776,14 @@ export const makeSocket = (config: SocketConfig) => {
 			throw lastError
 		}
 
-		// Timeout protects the whole retry sequence. (The in-flight logic is not
-		// hard-cancelled when the timeout wins — tracked as a follow-up; today the
-		// single-flight guard prevents overlap and the cursor stays consistent.)
-		uploadPreKeysPromise = Promise.race([
-			runWithRetries(),
-			new Promise<void>((_, reject) =>
-				setTimeout(() => reject(new Boom('Pre-key upload timeout', { statusCode: 408 })), UPLOAD_TIMEOUT)
-			)
-		])
+		// The single-flight promise tracks the WHOLE retry loop — no outer
+		// Promise.race timeout. An external timeout would resolve the guard while
+		// runWithRetries() kept running in the background, letting a subsequent
+		// call start a second, concurrent upload. Each query() already enforces
+		// its own `defaultQueryTimeoutMs` (30s), so the loop can't hang; worst
+		// case (4 attempts × 30s + 1+2+4s backoff ≈ 127s) stays under WhatsApp's
+		// 180s upload guard.
+		uploadPreKeysPromise = runWithRetries()
 
 		try {
 			await uploadPreKeysPromise

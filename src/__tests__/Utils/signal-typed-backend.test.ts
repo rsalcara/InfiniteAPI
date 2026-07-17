@@ -155,11 +155,15 @@ describe('SignalTypedBackend', () => {
 		expect(uploads.n).toBe(1)
 		expect(uploads.t).toBe(tsSec) // seconds, not millis
 
-		// Rollback: if the prekey_uploads INSERT can't run, the flag flip is undone.
-		handle.exec('DROP TABLE prekey_uploads')
-		expect(() => backend.commitPrekeyUpload(1, 4, tsSec)).toThrow()
-		// No partial write survived (everything was already sent above, so still 0).
-		expect(backend.countUnsentPrekeys()).toBe(0)
+		// Rollback proof: use FRESH still-unsent keys so the UPDATE actually
+		// changes rows, then make the prekey_uploads INSERT fail. If the txn were
+		// not atomic the flag flip would survive; it must be rolled back.
+		for (let id = 500; id <= 502; id++) backend.putPrekey(id, Buffer.from([id & 0xff]))
+		expect(backend.countUnsentPrekeys()).toBe(3) // the 3 fresh keys
+		handle.exec('DROP TABLE prekey_uploads') // force the INSERT step to throw
+		expect(() => backend.commitPrekeyUpload(500, 503, tsSec)).toThrow()
+		// The UPDATE was rolled back — all three keys are still unsent.
+		expect(backend.countUnsentPrekeys()).toBe(3)
 	})
 
 	it('stores an identity by both LID and PN recipient_type independently', () => {
