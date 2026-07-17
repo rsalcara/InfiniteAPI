@@ -119,21 +119,21 @@ describe('uploadPreKeys — id advancement gated on commit + ack', () => {
 				// else: would hang forever — the bug this explicit timeout guards against
 			})
 
-		// The retry loop must terminate (reject), never hang, with a dead server.
-		const outcome = await Promise.race([
-			(async () => {
-				for (let attempt = 0; attempt <= 3; attempt++) {
-					try {
-						await query(false)
-						return 'resolved'
-					} catch {
-						if (attempt < 3) await delay(1)
-					}
+		const retryLoop = async (): Promise<string> => {
+			for (let attempt = 0; attempt <= 3; attempt++) {
+				try {
+					await query(false)
+					return 'resolved'
+				} catch {
+					if (attempt < 3) await delay(1)
 				}
-				return 'rejected'
-			})(),
-			delay(1000).then(() => 'hung')
-		])
+			}
+
+			return 'rejected'
+		}
+
+		// The retry loop must terminate (reject), never hang, with a dead server.
+		const outcome = await Promise.race([retryLoop(), delay(1000).then(() => 'hung')])
 
 		expect(outcome).toBe('rejected')
 	})
