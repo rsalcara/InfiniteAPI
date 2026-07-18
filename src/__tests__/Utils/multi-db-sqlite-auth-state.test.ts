@@ -670,6 +670,57 @@ describe('useMultiDbSqliteAuthState', () => {
 		}
 	})
 
+	it('serializes a retried non-tctoken set with a concurrent clear', async () => {
+		const barrier: {
+			auth?: MultiDbAuthState
+			locker?: { exec(sql: string): unknown; close(): void }
+			clearPromise?: Promise<void>
+		} = {}
+		const warn = jest.fn((context: unknown) => {
+			if ((context as { label?: string }).label !== 'signal_kv set' || barrier.clearPromise) return
+			if (!barrier.auth || !barrier.locker || !barrier.auth.state.keys.clear) {
+				throw new Error('test clear barrier is not initialized')
+			}
+
+			// This callback runs after the first SQLITE_BUSY and before the
+			// retry delay. Queue clear at the exact TOCTOU boundary, then release
+			// the external writer so both operations can continue.
+			barrier.clearPromise = Promise.resolve(barrier.auth.state.keys.clear())
+			barrier.locker.exec('COMMIT')
+		})
+		const logger: ILogger = { ...silentLogger(), warn }
+
+		const auth = await useMultiDbSqliteAuthState({ sessionDir: dir, logger })
+		const locker = new Database(join(dir, 'axolotl.db'))
+		barrier.auth = auth
+		barrier.locker = locker
+		auth.store.handle('axolotl.db').exec('PRAGMA busy_timeout = 1')
+		locker.exec('BEGIN IMMEDIATE')
+
+		try {
+			const sessionId = '5511888888888.0'
+			await auth.state.keys.set({ session: { [sessionId]: sampleSession(9) } })
+			expect(barrier.clearPromise).toBeDefined()
+			await barrier.clearPromise
+
+			expect(warn).toHaveBeenCalledWith(
+				expect.objectContaining({ label: 'signal_kv set', code: expect.stringMatching(/^SQLITE_BUSY/) }),
+				expect.stringContaining('retrying')
+			)
+			expect((await auth.state.keys.get('session', [sessionId]))[sessionId]).toBeUndefined()
+			expectAuthKeyClearSurfacesEmpty(auth)
+		} finally {
+			try {
+				locker.exec('ROLLBACK')
+			} catch {
+				// The logger callback normally committed the external lock.
+			}
+
+			locker.close()
+			auth.close()
+		}
+	})
+
 	it.each([
 		[
 			'msgstore.db',

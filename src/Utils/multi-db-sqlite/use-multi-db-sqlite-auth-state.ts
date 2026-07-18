@@ -137,7 +137,9 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	// Default ON: typed tables authoritative. `signalSourceOfTruth: false` is
 	// the kill switch back to legacy signal_kv-authoritative mode.
 	const sourceOfTruth = opts.signalSourceOfTruth !== false
-	const tctokenMutex = makeMutex()
+	// Global barrier shared by auth-key clear/recovery and every public key
+	// operation. The marker now covers all key stores, not only tctoken.
+	const authKeysClearMutex = makeMutex()
 
 	// Observability for the typed→signal_kv fallback. `total` counts reads the
 	// typed table couldn't serve but signal_kv could (real fallbacks, not
@@ -488,7 +490,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	}
 
 	const recoverPendingAuthKeysClear = (trigger: 'startup' | 'before-access'): Promise<boolean> =>
-		tctokenMutex.mutex(() => recoverPendingAuthKeysClearUnlocked(trigger))
+		authKeysClearMutex.mutex(() => recoverPendingAuthKeysClearUnlocked(trigger))
 
 	const runSetWithBusyRetryUnlocked = async (data: SignalDataSet): Promise<void> => {
 		const nonEmptyTypes = Object.keys(data).filter(type => {
@@ -551,18 +553,11 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		}
 	}
 
-	const runSetWithBusyRetry = async (data: SignalDataSet): Promise<void> => {
-		if (data.tctoken) {
-			await tctokenMutex.mutex(async () => {
-				await recoverPendingAuthKeysClearUnlocked('before-access')
-				await runSetWithBusyRetryUnlocked(data)
-			})
-			return
-		}
-
-		if (trustedContactsBackend.hasPendingClear()) await recoverPendingAuthKeysClear('before-access')
-		await runSetWithBusyRetryUnlocked(data)
-	}
+	const runSetWithBusyRetry = (data: SignalDataSet): Promise<void> =>
+		authKeysClearMutex.mutex(async () => {
+			await recoverPendingAuthKeysClearUnlocked('before-access')
+			await runSetWithBusyRetryUnlocked(data)
+		})
 
 	const state: AuthenticationState = {
 		// Getter/setter pair so `state.creds = newObj` mutations are
@@ -581,7 +576,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 						authoritative: true,
 						listIncoming: () => trustedContactsBackend.listIncoming(),
 						compareAndPrune: (jid, expectedTimestamp, expectedToken) =>
-							tctokenMutex.mutex(async () => {
+							authKeysClearMutex.mutex(async () => {
 								await recoverPendingAuthKeysClearUnlocked('before-access')
 								let current = readTctokenRelational(jid)
 								if (current.kind === 'miss') {
@@ -604,46 +599,40 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 							})
 					}
 				: undefined,
-			get: async (type, ids) => {
-				const out: { [_: string]: SignalDataTypeMap[typeof type] } = {}
-				if (ids.length === 0) return out
-				if (type !== 'tctoken' && trustedContactsBackend.hasPendingClear()) {
-					await recoverPendingAuthKeysClear('before-access')
-				}
+			get: (type, ids) =>
+				authKeysClearMutex.mutex(async () => {
+					const out: { [_: string]: SignalDataTypeMap[typeof type] } = {}
+					if (ids.length === 0) return out
+					await recoverPendingAuthKeysClearUnlocked('before-access')
 
-				// `app-state-sync-key` lives in its own creds.db table and needs
-				// the AppStateSyncKeyData proto rehydration — kept separate.
-				if (type === 'app-state-sync-key') {
-					const rows = appStateSyncKeyGetIn.all([], ids) as Array<{ id: string; value: string }>
-					for (const row of rows) {
-						const parsed = JSON.parse(row.value, BufferJSON.reviver)
-						out[row.id] = (
-							parsed ? proto.Message.AppStateSyncKeyData.fromObject(parsed) : parsed
-						) as SignalDataTypeMap[typeof type]
+					// `app-state-sync-key` lives in its own creds.db table and needs
+					// the AppStateSyncKeyData proto rehydration — kept separate.
+					if (type === 'app-state-sync-key') {
+						const rows = appStateSyncKeyGetIn.all([], ids) as Array<{ id: string; value: string }>
+						for (const row of rows) {
+							const parsed = JSON.parse(row.value, BufferJSON.reviver)
+							out[row.id] = (
+								parsed ? proto.Message.AppStateSyncKeyData.fromObject(parsed) : parsed
+							) as SignalDataTypeMap[typeof type]
+						}
+
+						return out
 					}
 
-					return out
-				}
-
-				if (!sourceOfTruth && type === 'tctoken') {
-					return tctokenMutex.mutex(async () => {
-						await recoverPendingAuthKeysClearUnlocked('before-access')
+					if (!sourceOfTruth && type === 'tctoken') {
 						const rows = signalGetIn.all([type], ids) as Array<{ id: string; value: string }>
 						for (const row of rows) {
 							out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
 						}
 
 						return out
-					})
-				}
+					}
 
-				// tctoken: read the authoritative PK-jid tables first; fall back to
-				// signal_kv for metadata keys (`__index`/`__prune_ts`) and for contacts
-				// not yet migrated. A backend read error also degrades to signal_kv —
-				// never throws to the caller.
-				if (sourceOfTruth && type === 'tctoken') {
-					return tctokenMutex.mutex(async () => {
-						await recoverPendingAuthKeysClearUnlocked('before-access')
+					// tctoken: read the authoritative PK-jid tables first; fall back to
+					// signal_kv for metadata keys (`__index`/`__prune_ts`) and for contacts
+					// not yet migrated. A backend read error also degrades to signal_kv —
+					// never throws to the caller.
+					if (sourceOfTruth && type === 'tctoken') {
 						const missing: string[] = []
 						for (const id of ids) {
 							if (!isTctokenContactKey(id)) {
@@ -673,91 +662,90 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 						}
 
 						return out
-					})
-				}
-
-				// Source-of-truth: read the typed table first, fall back to
-				// signal_kv for any id it doesn't have yet (rows written before
-				// the flag was enabled). Both stores hold the identical
-				// serialized value, so a typed hit and a signal_kv hit are
-				// interchangeable — the fallback only covers pre-migration rows.
-				//
-				// `getMany` batches the typed read into cached, parameter-bounded
-				// row-value IN queries (was one point-query per id). Semantics are identical
-				// to looping `get` per id — an id absent from the batch result is
-				// a miss and resolves via the signal_kv fallback below. (#618/#619)
-				if (sourceOfTruth && isMirroredSignalType(type)) {
-					const missing: string[] = []
-					const unparseableIds = new Set<string>()
-					const serializedById = signalTypedSource.getMany(type, ids)
-					for (const id of ids) {
-						if (!Object.prototype.hasOwnProperty.call(serializedById, id)) {
-							missing.push(id)
-							continue
-						}
-
-						const serialized = serializedById[id]!
-
-						try {
-							const parsed = JSON.parse(serialized, BufferJSON.reviver) as unknown
-							if (!isTypedSignalValue(type, parsed)) throw new Error('typed row has an invalid runtime shape')
-							out[id] = parsed as SignalDataTypeMap[typeof type]
-						} catch {
-							// A typed row left by the pre-typed best-effort mirror is
-							// raw session/sender-key bytes or a public-only pre-key —
-							// NOT the BufferJSON string this path expects. Treat the
-							// unparseable row as a miss and resolve via signal_kv,
-							// which still holds the valid value; the row heals to the
-							// authoritative format on its next write.
-							unparseableIds.add(id)
-							missing.push(id)
-						}
 					}
 
-					if (missing.length > 0) {
-						const rows = signalGetIn.all([type], missing) as Array<{ id: string; value: string }>
-						for (const row of rows) {
-							out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
+					// Source-of-truth: read the typed table first, fall back to
+					// signal_kv for any id it doesn't have yet (rows written before
+					// the flag was enabled). Both stores hold the identical
+					// serialized value, so a typed hit and a signal_kv hit are
+					// interchangeable — the fallback only covers pre-migration rows.
+					//
+					// `getMany` batches the typed read into cached, parameter-bounded
+					// row-value IN queries (was one point-query per id). Semantics are identical
+					// to looping `get` per id — an id absent from the batch result is
+					// a miss and resolves via the signal_kv fallback below. (#618/#619)
+					if (sourceOfTruth && isMirroredSignalType(type)) {
+						const missing: string[] = []
+						const unparseableIds = new Set<string>()
+						const serializedById = signalTypedSource.getMany(type, ids)
+						for (const id of ids) {
+							if (!Object.prototype.hasOwnProperty.call(serializedById, id)) {
+								missing.push(id)
+								continue
+							}
+
+							const serialized = serializedById[id]!
+
+							try {
+								const parsed = JSON.parse(serialized, BufferJSON.reviver) as unknown
+								if (!isTypedSignalValue(type, parsed)) throw new Error('typed row has an invalid runtime shape')
+								out[id] = parsed as SignalDataTypeMap[typeof type]
+							} catch {
+								// A typed row left by the pre-typed best-effort mirror is
+								// raw session/sender-key bytes or a public-only pre-key —
+								// NOT the BufferJSON string this path expects. Treat the
+								// unparseable row as a miss and resolve via signal_kv,
+								// which still holds the valid value; the row heals to the
+								// authoritative format on its next write.
+								unparseableIds.add(id)
+								missing.push(id)
+							}
 						}
 
-						// Only rows signal_kv actually served count as a real
-						// fallback (the typed table lacked a value the legacy store
-						// had). An id absent from BOTH is just "not found", not a
-						// fallback — don't inflate the counter with it. `legacyServed`
-						// is the subset of served fallbacks whose typed row existed
-						// but was unparseable, so it's always ≤ servedByLegacy.
-						if (rows.length > 0) {
-							const legacyServed = rows.reduce((n, row) => (unparseableIds.has(row.id) ? n + 1 : n), 0)
-							signalFallbackStats.total += rows.length
-							signalFallbackStats.legacyUnparseable += legacyServed
-							opts.logger?.debug?.(
-								{
-									type,
-									servedByLegacy: rows.length,
-									legacyUnparseable: legacyServed,
-									cumulativeFallbacks: signalFallbackStats.total,
-									cumulativeLegacyUnparseable: signalFallbackStats.legacyUnparseable
-								},
-								'multi-db-sqlite: typed signal read fell back to signal_kv'
-							)
+						if (missing.length > 0) {
+							const rows = signalGetIn.all([type], missing) as Array<{ id: string; value: string }>
+							for (const row of rows) {
+								out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
+							}
+
+							// Only rows signal_kv actually served count as a real
+							// fallback (the typed table lacked a value the legacy store
+							// had). An id absent from BOTH is just "not found", not a
+							// fallback — don't inflate the counter with it. `legacyServed`
+							// is the subset of served fallbacks whose typed row existed
+							// but was unparseable, so it's always ≤ servedByLegacy.
+							if (rows.length > 0) {
+								const legacyServed = rows.reduce((n, row) => (unparseableIds.has(row.id) ? n + 1 : n), 0)
+								signalFallbackStats.total += rows.length
+								signalFallbackStats.legacyUnparseable += legacyServed
+								opts.logger?.debug?.(
+									{
+										type,
+										servedByLegacy: rows.length,
+										legacyUnparseable: legacyServed,
+										cumulativeFallbacks: signalFallbackStats.total,
+										cumulativeLegacyUnparseable: signalFallbackStats.legacyUnparseable
+									},
+									'multi-db-sqlite: typed signal read fell back to signal_kv'
+								)
+							}
 						}
+
+						return out
+					}
+
+					const rows = signalGetIn.all([type], ids) as Array<{ id: string; value: string }>
+					for (const row of rows) {
+						out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
 					}
 
 					return out
-				}
-
-				const rows = signalGetIn.all([type], ids) as Array<{ id: string; value: string }>
-				for (const row of rows) {
-					out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
-				}
-
-				return out
-			},
+				}),
 			set: async data => {
 				await runSetWithBusyRetry(data)
 			},
 			clear: async () => {
-				await tctokenMutex.mutex(async () => {
+				await authKeysClearMutex.mutex(async () => {
 					await recoverPendingAuthKeysClearUnlocked('before-access')
 					// wa.db owns the durable intent. Writing it and clearing both token
 					// tables is one transaction; every remaining database is replayed
@@ -791,11 +779,12 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			list: async function* <T extends keyof SignalDataTypeMap>(
 				type: T
 			): AsyncIterable<readonly [string, SignalDataTypeMap[T]]> {
-				if (trustedContactsBackend.hasPendingClear()) await recoverPendingAuthKeysClear('before-access')
-				const rows =
-					type === 'app-state-sync-key'
-						? (appStateSyncKeyStmts.list.iterate() as Iterable<{ id: string; value: string }>)
-						: (signalStmts.list.iterate(type) as Iterable<{ id: string; value: string }>)
+				const rows = await authKeysClearMutex.mutex(async () => {
+					await recoverPendingAuthKeysClearUnlocked('before-access')
+					return type === 'app-state-sync-key'
+						? (appStateSyncKeyStmts.list.all() as Array<{ id: string; value: string }>)
+						: (signalStmts.list.all(type) as Array<{ id: string; value: string }>)
+				})
 				for (const row of rows) {
 					// eslint-disable-next-line @typescript-eslint/no-explicit-any
 					let value: any = JSON.parse(row.value, BufferJSON.reviver)
@@ -807,11 +796,12 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				}
 			},
 			listIds: async function* <T extends keyof SignalDataTypeMap>(type: T): AsyncIterable<string> {
-				if (trustedContactsBackend.hasPendingClear()) await recoverPendingAuthKeysClear('before-access')
-				const rows =
-					type === 'app-state-sync-key'
-						? (appStateSyncKeyStmts.listIds.iterate() as Iterable<{ id: string }>)
-						: (signalStmts.listIds.iterate(type) as Iterable<{ id: string }>)
+				const rows = await authKeysClearMutex.mutex(async () => {
+					await recoverPendingAuthKeysClearUnlocked('before-access')
+					return type === 'app-state-sync-key'
+						? (appStateSyncKeyStmts.listIds.all() as Array<{ id: string }>)
+						: (signalStmts.listIds.all(type) as Array<{ id: string }>)
+				})
 				for (const row of rows) {
 					yield row.id
 				}
