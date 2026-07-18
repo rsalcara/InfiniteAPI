@@ -96,6 +96,18 @@ export type RecordRef = {
 	id: string
 }
 
+/**
+ * Internal capability exposed by auth-state adapters that make the relational
+ * Trusted Contacts tables authoritative for `tctoken` values. Socket code uses
+ * this capability instead of inferring authority from `SocketConfig.multiDbStore`,
+ * which may be configured only for unrelated mirrors/caches.
+ */
+export type TrustedContactTokenStore = {
+	readonly authoritative: true
+	listIncoming(): Array<{ jid: string; timestamp: number }>
+	compareAndPrune(jid: string, expectedTimestamp: number, expectedToken: Uint8Array): Promise<boolean>
+}
+
 type Awaitable<T> = T | Promise<T>
 
 export type SignalKeyStore = {
@@ -116,6 +128,8 @@ export type SignalKeyStore = {
 	 * need values can still fall back to `list`.
 	 */
 	listIds?<T extends keyof SignalDataTypeMap>(type: T): AsyncIterable<string>
+	/** Present only when this exact key store owns authoritative relational tctokens. */
+	trustedContactTokens?: TrustedContactTokenStore
 }
 
 /**
@@ -155,6 +169,13 @@ export type TransactionScope = {
 
 export type SignalKeyStoreWithTransaction = SignalKeyStore & {
 	isInTransaction: () => boolean
+	/**
+	 * Register work that runs only after the outermost durable commit succeeds,
+	 * while the transaction's locks are still held. This is for side effects
+	 * that must observe committed state without opening a race window before a
+	 * competing transaction starts. Throws when called outside a transaction.
+	 */
+	afterCommit?: (work: () => Awaitable<void>) => void
 	/**
 	 * @deprecated Use {@link SignalKeyStoreWithRecordTransaction.transactWith}
 	 * (available on stores built via Baileys' `addTransactionCapability`),
@@ -202,6 +223,7 @@ export type SignalKeyStoreWithTransaction = SignalKeyStore & {
  */
 export type SignalKeyStoreWithRecordTransaction = SignalKeyStoreWithTransaction & {
 	transactWith<T>(scope: TransactionScope, work: () => Promise<T>): Promise<T>
+	afterCommit(work: () => Awaitable<void>): void
 }
 
 export type TransactionCapabilityOptions = {

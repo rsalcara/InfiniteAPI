@@ -145,3 +145,53 @@ describe('addTransactionCapability — nested-transaction lock suppression (H0)'
 		expect(second!.at - first!.at).toBeGreaterThanOrEqual(8)
 	})
 })
+
+describe('addTransactionCapability — afterCommit ordering', () => {
+	it('runs callbacks after durable commit and before a queued transaction acquires the same lock', async () => {
+		const events: string[] = []
+		const store = makeInMemoryStore()
+		const originalSet = store.set.bind(store)
+		store.set = async data => {
+			await originalSet(data)
+			events.push('commit')
+		}
+
+		const keys = addTransactionCapability(store, silentLogger(), {
+			maxCommitRetries: 1,
+			delayBetweenTriesMs: 1
+		})
+
+		const first = keys.transaction(async () => {
+			await keys.set({ 'pre-key': { 1: { public: Buffer.from([1]), private: Buffer.from([2]) } } })
+			keys.afterCommit(() => {
+				events.push('after-commit')
+			})
+			await delay(10)
+		}, 'same-lock')
+		await delay(1)
+		const queued = keys.transaction(async () => {
+			events.push('queued-transaction')
+		}, 'same-lock')
+
+		await Promise.all([first, queued])
+		expect(events).toEqual(['commit', 'after-commit', 'queued-transaction'])
+	})
+
+	it('does not run callbacks when the transaction rolls back', async () => {
+		const keys = addTransactionCapability(makeInMemoryStore(), silentLogger(), {
+			maxCommitRetries: 1,
+			delayBetweenTriesMs: 1
+		})
+		let called = false
+
+		await expect(
+			keys.transaction(async () => {
+				keys.afterCommit(() => {
+					called = true
+				})
+				throw new Error('rollback')
+			}, 'same-lock')
+		).rejects.toThrow('rollback')
+		expect(called).toBe(false)
+	})
+})
