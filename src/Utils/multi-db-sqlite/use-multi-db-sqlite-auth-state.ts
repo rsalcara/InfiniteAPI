@@ -16,6 +16,7 @@ import { TrustedContactsBackend } from './trusted-contacts-backend'
 const CREDS_ROW_KEY = '__creds__'
 const MAX_BUSY_ATTEMPTS = 5
 const BUSY_RETRY_BASE_MS = 25
+const AUTH_KEYS_ENUM_PAGE_SIZE = 256
 
 function sleep(ms: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms))
@@ -137,7 +138,10 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	// Default ON: typed tables authoritative. `signalSourceOfTruth: false` is
 	// the kill switch back to legacy signal_kv-authoritative mode.
 	const sourceOfTruth = opts.signalSourceOfTruth !== false
-	const tctokenMutex = makeMutex()
+	// Global barrier shared by auth-key clear/recovery and every public key
+	// operation. The marker now covers all key stores, not only tctoken.
+	const authKeysClearMutex = makeMutex()
+	let authKeysClearGeneration = 0
 
 	// Observability for the typed→signal_kv fallback. `total` counts reads the
 	// typed table couldn't serve but signal_kv could (real fallbacks, not
@@ -186,14 +190,6 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		signalMirrorJidMap = new JidMapBackend(store.handle('msgstore.db'))
 		signalTypedSource = new SignalTypedSourceStore(signalTypedBackend, signalMirrorJidMap, opts.logger)
 		trustedContactsBackend = new TrustedContactsBackend(store.handle('wa.db'))
-		if (trustedContactsBackend.hasPendingClear()) {
-			signalStmts.deleteType.run('tctoken')
-			trustedContactsBackend.finishClear()
-			opts.logger?.warn?.(
-				{ reason: 'interrupted-cross-file-clear', recoveredStore: 'wa.db+axolotl.db.signal_kv' },
-				'multi-db-sqlite: completed interrupted tctoken clear; stale legacy fallback removed'
-			)
-		}
 	} catch (err) {
 		// Only close the store if WE opened it — injected stores belong to
 		// the caller.
@@ -444,15 +440,60 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		throw lastError ?? new Error(`runWithBusyRetry(${label}): no attempts were made (MAX_BUSY_ATTEMPTS=0?)`)
 	}
 
-	const recoverPendingTctokenClear = (): void => {
-		if (!trustedContactsBackend.hasPendingClear()) return
-		signalStmts.deleteType.run('tctoken')
-		trustedContactsBackend.finishClear()
-		opts.logger?.warn?.(
-			{ reason: 'interrupted-cross-file-clear', fallbackStore: 'signal_kv' },
-			'multi-db-sqlite: recovered pending tctoken clear before access'
-		)
+	const msgstoreDb = store.handle('msgstore.db')
+	const axolotlDb = store.handle('axolotl.db')
+	const clearAxolotlTx = axolotlDb.transaction(() => {
+		signalStmts.clear.run()
+		axolotlDb.exec('DELETE FROM sessions; DELETE FROM prekeys; DELETE FROM sender_keys; DELETE FROM identities;')
+	}).immediate
+
+	// Every statement is idempotent. The durable marker lives in wa.db and is
+	// removed only after all three remaining physical databases complete, so a
+	// crash or SQLITE_BUSY at any boundary can safely replay the whole sequence.
+	const clearRemainingAuthKeyStores = async (label: string): Promise<void> => {
+		await runWithBusyRetry(label, () => {
+			msgstoreDb.exec('DELETE FROM jid_map;')
+			clearAxolotlTx()
+			appStateSyncKeyStmts.clear.run()
+		})
 	}
+
+	const finishAuthKeysClear = (label: string): Promise<void> =>
+		runWithBusyRetry(label, () => trustedContactsBackend.finishClear())
+
+	const recoverPendingAuthKeysClearUnlocked = async (trigger: 'startup' | 'before-access'): Promise<boolean> => {
+		if (!trustedContactsBackend.hasPendingClear()) return false
+		authKeysClearGeneration++
+		try {
+			await clearRemainingAuthKeyStores('recover interrupted auth keys clear')
+			await finishAuthKeysClear('finish recovered auth keys clear')
+			opts.logger?.warn?.(
+				{
+					reason: 'interrupted-auth-keys-clear',
+					trigger,
+					recoveredStores: ['wa.db', 'msgstore.db', 'axolotl.db', 'creds.db'],
+					markerState: 'cleared'
+				},
+				'multi-db-sqlite: completed interrupted auth key clear across every participating database'
+			)
+			return true
+		} catch (err) {
+			opts.logger?.error?.(
+				{
+					err,
+					reason: 'auth-keys-clear-recovery-failed',
+					trigger,
+					markerState: 'retained',
+					recovery: 'retry-on-next-auth-state-open-or-key-access'
+				},
+				'multi-db-sqlite: auth key clear recovery failed; refusing partially-cleared state'
+			)
+			throw err
+		}
+	}
+
+	const recoverPendingAuthKeysClear = (trigger: 'startup' | 'before-access'): Promise<boolean> =>
+		authKeysClearMutex.mutex(() => recoverPendingAuthKeysClearUnlocked(trigger))
 
 	const runSetWithBusyRetryUnlocked = async (data: SignalDataSet): Promise<void> => {
 		const nonEmptyTypes = Object.keys(data).filter(type => {
@@ -516,12 +557,16 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	}
 
 	const runSetWithBusyRetry = (data: SignalDataSet): Promise<void> =>
-		data.tctoken
-			? tctokenMutex.mutex(async () => {
-					recoverPendingTctokenClear()
-					await runSetWithBusyRetryUnlocked(data)
-				})
-			: runSetWithBusyRetryUnlocked(data)
+		authKeysClearMutex.mutex(async () => {
+			await recoverPendingAuthKeysClearUnlocked('before-access')
+			await runSetWithBusyRetryUnlocked(data)
+		})
+	const assertAuthKeyEnumerationGeneration = (expected: number): void => {
+		if (expected === authKeysClearGeneration) return
+		throw new Error(
+			'multi-db-sqlite: auth-key enumeration invalidated by concurrent keys.clear; restart the enumeration'
+		)
+	}
 
 	const state: AuthenticationState = {
 		// Getter/setter pair so `state.creds = newObj` mutations are
@@ -540,8 +585,8 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 						authoritative: true,
 						listIncoming: () => trustedContactsBackend.listIncoming(),
 						compareAndPrune: (jid, expectedTimestamp, expectedToken) =>
-							tctokenMutex.mutex(async () => {
-								recoverPendingTctokenClear()
+							authKeysClearMutex.mutex(async () => {
+								await recoverPendingAuthKeysClearUnlocked('before-access')
 								let current = readTctokenRelational(jid)
 								if (current.kind === 'miss') {
 									const row = signalStmts.select.get('tctoken', jid) as { value: string } | undefined
@@ -563,43 +608,40 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 							})
 					}
 				: undefined,
-			get: async (type, ids) => {
-				const out: { [_: string]: SignalDataTypeMap[typeof type] } = {}
-				if (ids.length === 0) return out
+			get: (type, ids) =>
+				authKeysClearMutex.mutex(async () => {
+					const out: { [_: string]: SignalDataTypeMap[typeof type] } = {}
+					if (ids.length === 0) return out
+					await recoverPendingAuthKeysClearUnlocked('before-access')
 
-				// `app-state-sync-key` lives in its own creds.db table and needs
-				// the AppStateSyncKeyData proto rehydration — kept separate.
-				if (type === 'app-state-sync-key') {
-					const rows = appStateSyncKeyGetIn.all([], ids) as Array<{ id: string; value: string }>
-					for (const row of rows) {
-						const parsed = JSON.parse(row.value, BufferJSON.reviver)
-						out[row.id] = (
-							parsed ? proto.Message.AppStateSyncKeyData.fromObject(parsed) : parsed
-						) as SignalDataTypeMap[typeof type]
+					// `app-state-sync-key` lives in its own creds.db table and needs
+					// the AppStateSyncKeyData proto rehydration — kept separate.
+					if (type === 'app-state-sync-key') {
+						const rows = appStateSyncKeyGetIn.all([], ids) as Array<{ id: string; value: string }>
+						for (const row of rows) {
+							const parsed = JSON.parse(row.value, BufferJSON.reviver)
+							out[row.id] = (
+								parsed ? proto.Message.AppStateSyncKeyData.fromObject(parsed) : parsed
+							) as SignalDataTypeMap[typeof type]
+						}
+
+						return out
 					}
 
-					return out
-				}
-
-				if (!sourceOfTruth && type === 'tctoken') {
-					return tctokenMutex.mutex(() => {
-						recoverPendingTctokenClear()
+					if (!sourceOfTruth && type === 'tctoken') {
 						const rows = signalGetIn.all([type], ids) as Array<{ id: string; value: string }>
 						for (const row of rows) {
 							out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
 						}
 
 						return out
-					})
-				}
+					}
 
-				// tctoken: read the authoritative PK-jid tables first; fall back to
-				// signal_kv for metadata keys (`__index`/`__prune_ts`) and for contacts
-				// not yet migrated. A backend read error also degrades to signal_kv —
-				// never throws to the caller.
-				if (sourceOfTruth && type === 'tctoken') {
-					return tctokenMutex.mutex(() => {
-						recoverPendingTctokenClear()
+					// tctoken: read the authoritative PK-jid tables first; fall back to
+					// signal_kv for metadata keys (`__index`/`__prune_ts`) and for contacts
+					// not yet migrated. A backend read error also degrades to signal_kv —
+					// never throws to the caller.
+					if (sourceOfTruth && type === 'tctoken') {
 						const missing: string[] = []
 						for (const id of ids) {
 							if (!isTctokenContactKey(id)) {
@@ -629,119 +671,96 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 						}
 
 						return out
-					})
-				}
-
-				// Source-of-truth: read the typed table first, fall back to
-				// signal_kv for any id it doesn't have yet (rows written before
-				// the flag was enabled). Both stores hold the identical
-				// serialized value, so a typed hit and a signal_kv hit are
-				// interchangeable — the fallback only covers pre-migration rows.
-				//
-				// `getMany` batches the typed read into cached, parameter-bounded
-				// row-value IN queries (was one point-query per id). Semantics are identical
-				// to looping `get` per id — an id absent from the batch result is
-				// a miss and resolves via the signal_kv fallback below. (#618/#619)
-				if (sourceOfTruth && isMirroredSignalType(type)) {
-					const missing: string[] = []
-					const unparseableIds = new Set<string>()
-					const serializedById = signalTypedSource.getMany(type, ids)
-					for (const id of ids) {
-						if (!Object.prototype.hasOwnProperty.call(serializedById, id)) {
-							missing.push(id)
-							continue
-						}
-
-						const serialized = serializedById[id]!
-
-						try {
-							const parsed = JSON.parse(serialized, BufferJSON.reviver) as unknown
-							if (!isTypedSignalValue(type, parsed)) throw new Error('typed row has an invalid runtime shape')
-							out[id] = parsed as SignalDataTypeMap[typeof type]
-						} catch {
-							// A typed row left by the pre-typed best-effort mirror is
-							// raw session/sender-key bytes or a public-only pre-key —
-							// NOT the BufferJSON string this path expects. Treat the
-							// unparseable row as a miss and resolve via signal_kv,
-							// which still holds the valid value; the row heals to the
-							// authoritative format on its next write.
-							unparseableIds.add(id)
-							missing.push(id)
-						}
 					}
 
-					if (missing.length > 0) {
-						const rows = signalGetIn.all([type], missing) as Array<{ id: string; value: string }>
-						for (const row of rows) {
-							out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
+					// Source-of-truth: read the typed table first, fall back to
+					// signal_kv for any id it doesn't have yet (rows written before
+					// the flag was enabled). Both stores hold the identical
+					// serialized value, so a typed hit and a signal_kv hit are
+					// interchangeable — the fallback only covers pre-migration rows.
+					//
+					// `getMany` batches the typed read into cached, parameter-bounded
+					// row-value IN queries (was one point-query per id). Semantics are identical
+					// to looping `get` per id — an id absent from the batch result is
+					// a miss and resolves via the signal_kv fallback below. (#618/#619)
+					if (sourceOfTruth && isMirroredSignalType(type)) {
+						const missing: string[] = []
+						const unparseableIds = new Set<string>()
+						const serializedById = signalTypedSource.getMany(type, ids)
+						for (const id of ids) {
+							if (!Object.prototype.hasOwnProperty.call(serializedById, id)) {
+								missing.push(id)
+								continue
+							}
+
+							const serialized = serializedById[id]!
+
+							try {
+								const parsed = JSON.parse(serialized, BufferJSON.reviver) as unknown
+								if (!isTypedSignalValue(type, parsed)) throw new Error('typed row has an invalid runtime shape')
+								out[id] = parsed as SignalDataTypeMap[typeof type]
+							} catch {
+								// A typed row left by the pre-typed best-effort mirror is
+								// raw session/sender-key bytes or a public-only pre-key —
+								// NOT the BufferJSON string this path expects. Treat the
+								// unparseable row as a miss and resolve via signal_kv,
+								// which still holds the valid value; the row heals to the
+								// authoritative format on its next write.
+								unparseableIds.add(id)
+								missing.push(id)
+							}
 						}
 
-						// Only rows signal_kv actually served count as a real
-						// fallback (the typed table lacked a value the legacy store
-						// had). An id absent from BOTH is just "not found", not a
-						// fallback — don't inflate the counter with it. `legacyServed`
-						// is the subset of served fallbacks whose typed row existed
-						// but was unparseable, so it's always ≤ servedByLegacy.
-						if (rows.length > 0) {
-							const legacyServed = rows.reduce((n, row) => (unparseableIds.has(row.id) ? n + 1 : n), 0)
-							signalFallbackStats.total += rows.length
-							signalFallbackStats.legacyUnparseable += legacyServed
-							opts.logger?.debug?.(
-								{
-									type,
-									servedByLegacy: rows.length,
-									legacyUnparseable: legacyServed,
-									cumulativeFallbacks: signalFallbackStats.total,
-									cumulativeLegacyUnparseable: signalFallbackStats.legacyUnparseable
-								},
-								'multi-db-sqlite: typed signal read fell back to signal_kv'
-							)
+						if (missing.length > 0) {
+							const rows = signalGetIn.all([type], missing) as Array<{ id: string; value: string }>
+							for (const row of rows) {
+								out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
+							}
+
+							// Only rows signal_kv actually served count as a real
+							// fallback (the typed table lacked a value the legacy store
+							// had). An id absent from BOTH is just "not found", not a
+							// fallback — don't inflate the counter with it. `legacyServed`
+							// is the subset of served fallbacks whose typed row existed
+							// but was unparseable, so it's always ≤ servedByLegacy.
+							if (rows.length > 0) {
+								const legacyServed = rows.reduce((n, row) => (unparseableIds.has(row.id) ? n + 1 : n), 0)
+								signalFallbackStats.total += rows.length
+								signalFallbackStats.legacyUnparseable += legacyServed
+								opts.logger?.debug?.(
+									{
+										type,
+										servedByLegacy: rows.length,
+										legacyUnparseable: legacyServed,
+										cumulativeFallbacks: signalFallbackStats.total,
+										cumulativeLegacyUnparseable: signalFallbackStats.legacyUnparseable
+									},
+									'multi-db-sqlite: typed signal read fell back to signal_kv'
+								)
+							}
 						}
+
+						return out
+					}
+
+					const rows = signalGetIn.all([type], ids) as Array<{ id: string; value: string }>
+					for (const row of rows) {
+						out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
 					}
 
 					return out
-				}
-
-				const rows = signalGetIn.all([type], ids) as Array<{ id: string; value: string }>
-				for (const row of rows) {
-					out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
-				}
-
-				return out
-			},
+				}),
 			set: async data => {
 				await runSetWithBusyRetry(data)
 			},
 			clear: async () => {
-				await tctokenMutex.mutex(async () => {
-					recoverPendingTctokenClear()
-					// wa.db owns the durable marker. Its transaction writes the marker
-					// and clears both relational tables atomically; if the process dies
-					// before signal_kv is cleared, startup recovery sees the marker and
-					// removes the stale fallback before enabling reads.
+				await authKeysClearMutex.mutex(async () => {
+					await recoverPendingAuthKeysClearUnlocked('before-access')
+					// wa.db owns the durable intent. Writing it and clearing both token
+					// tables is one transaction; every remaining database is replayed
+					// idempotently until all key-store surfaces have been cleared.
 					trustedContactsBackend.beginClear()
-					// Order matters here because cross-file transactions are NOT
-					// ACID in SQLite — `clear()` writes to two physical .db files
-					// (axolotl.db.signal_kv + msgstore.db.jid_map). If the
-					// process crashes between the two DELETEs, the partially-
-					// completed state must be RECOVERABLE on the next startup.
-					//
-					// We clear `jid_map` FIRST. If we crash now:
-					//   - msgstore.jid_map is empty (no stale LID mappings)
-					//   - axolotl.signal_kv still has Signal keys
-					//   - on next start, `initAuthCreds()` only runs when creds.db
-					//     is empty, so existing creds are loaded; the leftover
-					//     Signal keys in signal_kv will be naturally overwritten
-					//     by the next session establishment. NOT catastrophic.
-					//
-					// If we cleared `signal_kv` first and crashed:
-					//   - axolotl.signal_kv is empty (Signal session lost)
-					//   - msgstore.jid_map STILL has LID mappings pointing at the
-					//     old session — `LIDMappingStore` would resolve contacts
-					//     to LIDs whose sessions no longer exist, breaking
-					//     encryption for those contacts until a fresh
-					//     `storeMapping()` overwrites them.
-					//
+					authKeysClearGeneration++
 					// Only `jid_map` is cleared, NOT the shared `jid` table:
 					// other msgstore tables (`user_device.user_jid_row_id`,
 					// `user_device_info.user_jid_row_id`,
@@ -750,38 +769,18 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 					// them. `jid` rows are reused naturally by the next
 					// `LIDMappingStore.storeMapping()` resolve on the same
 					// raw_string.
-					const msgstoreDb = store.handle('msgstore.db')
-					// Wrap both DELETEs in the same busy-retry helper as
-					// `runSetWithBusyRetry`. Without it, `exec('DELETE FROM
-					// jid_map')` raised SQLITE_BUSY directly to the caller after
-					// the 5 s busy_timeout expired — under contention pressure
-					// (e.g. cleanup raced with a hot LIDMappingStore write) the
-					// session reset would abort and the caller usually doesn't
-					// handle the error. The two DELETEs are still issued in the
-					// documented order so the partial-crash recovery semantics
-					// above hold.
 					try {
-						await runWithBusyRetry('clear', () => {
-							msgstoreDb.exec('DELETE FROM jid_map;')
-							signalStmts.clear.run()
-							appStateSyncKeyStmts.clear.run()
-							// The typed Signal tables must be wiped too. In
-							// `signalSourceOfTruth` mode `keys.get` reads them BEFORE
-							// signal_kv, so a surviving row would resurrect key material
-							// this clear() was meant to erase. Cleared unconditionally
-							// (harmless when the flag is off — the mirror also populates
-							// these tables, and a leftover mirror row after a reset is
-							// equally undesirable). All four live in axolotl.db.
-							const axolotlDb = store.handle('axolotl.db')
-							axolotlDb.exec(
-								'DELETE FROM sessions; DELETE FROM prekeys; DELETE FROM sender_keys; DELETE FROM identities;'
-							)
-						})
-						trustedContactsBackend.finishClear()
+						await clearRemainingAuthKeyStores('clear auth key stores')
+						await finishAuthKeysClear('finish auth keys clear')
 					} catch (err) {
 						opts.logger?.error?.(
-							{ err, reason: 'cross-file-clear-interrupted', recovery: 'startup-or-next-tctoken-access' },
-							'multi-db-sqlite: clear failed after tctoken reset marker; leaving marker for deterministic recovery'
+							{
+								err,
+								reason: 'auth-keys-clear-interrupted',
+								markerState: 'retained',
+								recovery: 'retry-on-next-auth-state-open-or-key-access'
+							},
+							'multi-db-sqlite: auth key clear interrupted; durable marker retained for full replay'
 						)
 						throw err
 					}
@@ -790,30 +789,104 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			list: async function* <T extends keyof SignalDataTypeMap>(
 				type: T
 			): AsyncIterable<readonly [string, SignalDataTypeMap[T]]> {
-				const rows =
-					type === 'app-state-sync-key'
-						? (appStateSyncKeyStmts.list.iterate() as Iterable<{ id: string; value: string }>)
-						: (signalStmts.list.iterate(type) as Iterable<{ id: string; value: string }>)
-				for (const row of rows) {
-					// eslint-disable-next-line @typescript-eslint/no-explicit-any
-					let value: any = JSON.parse(row.value, BufferJSON.reviver)
-					if (type === 'app-state-sync-key' && value) {
-						value = proto.Message.AppStateSyncKeyData.fromObject(value)
+				let afterId: string | undefined
+				let enumerationGeneration: number | undefined
+				while (true) {
+					const rows = await authKeysClearMutex.mutex(async () => {
+						await recoverPendingAuthKeysClearUnlocked('before-access')
+						if (enumerationGeneration === undefined) enumerationGeneration = authKeysClearGeneration
+						else assertAuthKeyEnumerationGeneration(enumerationGeneration)
+
+						if (type === 'app-state-sync-key') {
+							return (
+								afterId === undefined
+									? appStateSyncKeyStmts.listFirstPage.all(AUTH_KEYS_ENUM_PAGE_SIZE)
+									: appStateSyncKeyStmts.listPageAfter.all(afterId, AUTH_KEYS_ENUM_PAGE_SIZE)
+							) as Array<{
+								id: string
+								value: string
+							}>
+						}
+
+						return (
+							afterId === undefined
+								? signalStmts.listFirstPage.all(type, AUTH_KEYS_ENUM_PAGE_SIZE)
+								: signalStmts.listPageAfter.all(type, afterId, AUTH_KEYS_ENUM_PAGE_SIZE)
+						) as Array<{
+							id: string
+							value: string
+						}>
+					})
+					const pageGeneration = enumerationGeneration
+					if (pageGeneration === undefined) throw new Error('auth-key enumeration generation was not initialized')
+					if (rows.length === 0) return
+
+					for (const row of rows) {
+						assertAuthKeyEnumerationGeneration(pageGeneration)
+						// eslint-disable-next-line @typescript-eslint/no-explicit-any
+						let value: any = JSON.parse(row.value, BufferJSON.reviver)
+						if (type === 'app-state-sync-key' && value) {
+							value = proto.Message.AppStateSyncKeyData.fromObject(value)
+						}
+
+						yield [row.id, value as SignalDataTypeMap[T]] as const
 					}
 
-					yield [row.id, value as SignalDataTypeMap[T]] as const
+					afterId = rows[rows.length - 1]!.id
+					if (rows.length < AUTH_KEYS_ENUM_PAGE_SIZE) return
 				}
 			},
 			listIds: async function* <T extends keyof SignalDataTypeMap>(type: T): AsyncIterable<string> {
-				const rows =
-					type === 'app-state-sync-key'
-						? (appStateSyncKeyStmts.listIds.iterate() as Iterable<{ id: string }>)
-						: (signalStmts.listIds.iterate(type) as Iterable<{ id: string }>)
-				for (const row of rows) {
-					yield row.id
+				let afterId: string | undefined
+				let enumerationGeneration: number | undefined
+				while (true) {
+					const rows = await authKeysClearMutex.mutex(async () => {
+						await recoverPendingAuthKeysClearUnlocked('before-access')
+						if (enumerationGeneration === undefined) enumerationGeneration = authKeysClearGeneration
+						else assertAuthKeyEnumerationGeneration(enumerationGeneration)
+
+						if (type === 'app-state-sync-key') {
+							return (
+								afterId === undefined
+									? appStateSyncKeyStmts.listIdsFirstPage.all(AUTH_KEYS_ENUM_PAGE_SIZE)
+									: appStateSyncKeyStmts.listIdsPageAfter.all(afterId, AUTH_KEYS_ENUM_PAGE_SIZE)
+							) as Array<{
+								id: string
+							}>
+						}
+
+						return (
+							afterId === undefined
+								? signalStmts.listIdsFirstPage.all(type, AUTH_KEYS_ENUM_PAGE_SIZE)
+								: signalStmts.listIdsPageAfter.all(type, afterId, AUTH_KEYS_ENUM_PAGE_SIZE)
+						) as Array<{
+							id: string
+						}>
+					})
+					const pageGeneration = enumerationGeneration
+					if (pageGeneration === undefined) throw new Error('auth-key enumeration generation was not initialized')
+					if (rows.length === 0) return
+
+					for (const row of rows) {
+						assertAuthKeyEnumerationGeneration(pageGeneration)
+						yield row.id
+					}
+
+					afterId = rows[rows.length - 1]!.id
+					if (rows.length < AUTH_KEYS_ENUM_PAGE_SIZE) return
 				}
 			}
 		}
+	}
+
+	// Do not expose an auth-state whose previous clear completed in only some
+	// physical databases. A retained marker makes startup replay every target;
+	// persistent failure aborts opening and leaves the marker for the next try.
+	try {
+		await recoverPendingAuthKeysClear('startup')
+	} catch (err) {
+		if (ownsStore) store.close()
+		throw err
 	}
 
 	return {
@@ -858,8 +931,10 @@ function prepareSignalStatements(store: MultiDbSqliteStore) {
 		),
 		del: db.prepare('DELETE FROM signal_kv WHERE type = ? AND id = ?'),
 		deleteType: db.prepare('DELETE FROM signal_kv WHERE type = ?'),
-		listIds: db.prepare('SELECT id FROM signal_kv WHERE type = ?'),
-		list: db.prepare('SELECT id, value FROM signal_kv WHERE type = ?'),
+		listIdsFirstPage: db.prepare('SELECT id FROM signal_kv WHERE type = ? ORDER BY id LIMIT ?'),
+		listIdsPageAfter: db.prepare('SELECT id FROM signal_kv WHERE type = ? AND id > ? ORDER BY id LIMIT ?'),
+		listFirstPage: db.prepare('SELECT id, value FROM signal_kv WHERE type = ? ORDER BY id LIMIT ?'),
+		listPageAfter: db.prepare('SELECT id, value FROM signal_kv WHERE type = ? AND id > ? ORDER BY id LIMIT ?'),
 		clear: db.prepare('DELETE FROM signal_kv')
 	}
 }
@@ -880,8 +955,14 @@ function prepareAppStateSyncKeyStatements(store: MultiDbSqliteStore) {
 				'ON CONFLICT(key_id) DO UPDATE SET value = excluded.value, created_at = excluded.created_at'
 		),
 		del: db.prepare('DELETE FROM app_state_sync_keys WHERE key_id = ?'),
-		listIds: db.prepare('SELECT key_id AS id FROM app_state_sync_keys'),
-		list: db.prepare('SELECT key_id AS id, value FROM app_state_sync_keys'),
+		listIdsFirstPage: db.prepare('SELECT key_id AS id FROM app_state_sync_keys ORDER BY key_id LIMIT ?'),
+		listIdsPageAfter: db.prepare(
+			'SELECT key_id AS id FROM app_state_sync_keys WHERE key_id > ? ORDER BY key_id LIMIT ?'
+		),
+		listFirstPage: db.prepare('SELECT key_id AS id, value FROM app_state_sync_keys ORDER BY key_id LIMIT ?'),
+		listPageAfter: db.prepare(
+			'SELECT key_id AS id, value FROM app_state_sync_keys WHERE key_id > ? ORDER BY key_id LIMIT ?'
+		),
 		clear: db.prepare('DELETE FROM app_state_sync_keys')
 	}
 }

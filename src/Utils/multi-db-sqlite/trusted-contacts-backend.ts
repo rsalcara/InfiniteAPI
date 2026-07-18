@@ -29,7 +29,11 @@ export type TrustedContactReplacement = {
 	sent: { sentTimestamp: number; realIssueTimestamp: number } | null
 }
 
-const CLEAR_MARKER_KEY = 'tctoken_clear_in_progress'
+const CLEAR_MARKER_KEY = 'auth_keys_clear_in_progress'
+// #671 used this narrower name while the marker only guaranteed tctoken
+// recovery. Treat it as the same global-clear intent during upgrades: that
+// version wrote the marker before attempting the remaining key-store deletes.
+const LEGACY_CLEAR_MARKER_KEY = 'tctoken_clear_in_progress'
 
 export class TrustedContactsBackend {
 	private readonly stmts: {
@@ -53,6 +57,7 @@ export class TrustedContactsBackend {
 	private readonly db: SqliteDbLike
 	private readonly replaceTx: (jid: string, replacement: TrustedContactReplacement) => void
 	private readonly beginClearTx: () => void
+	private readonly finishClearTx: () => void
 
 	constructor(db: SqliteDbLike) {
 		this.db = db
@@ -112,8 +117,14 @@ export class TrustedContactsBackend {
 
 		this.beginClearTx = this.db.transaction(() => {
 			this.stmts.upsertMetadata.run(CLEAR_MARKER_KEY, String(Date.now()))
+			this.stmts.deleteMetadata.run(LEGACY_CLEAR_MARKER_KEY)
 			this.stmts.clearIncoming.run()
 			this.stmts.clearSent.run()
+		}).immediate
+
+		this.finishClearTx = this.db.transaction(() => {
+			this.stmts.deleteMetadata.run(CLEAR_MARKER_KEY)
+			this.stmts.deleteMetadata.run(LEGACY_CLEAR_MARKER_KEY)
 		}).immediate
 	}
 
@@ -191,16 +202,19 @@ export class TrustedContactsBackend {
 		return { incomingCount: inc.n, sentCount: sent.n }
 	}
 
-	/** Starts a crash-recoverable cross-file clear and wipes both wa.db tables atomically. */
+	/** Records a global key-clear intent and wipes both wa.db token tables atomically. */
 	beginClear(): void {
 		this.beginClearTx()
 	}
 
 	hasPendingClear(): boolean {
-		return this.stmts.selectMetadata.get(CLEAR_MARKER_KEY) !== undefined
+		return (
+			this.stmts.selectMetadata.get(CLEAR_MARKER_KEY) !== undefined ||
+			this.stmts.selectMetadata.get(LEGACY_CLEAR_MARKER_KEY) !== undefined
+		)
 	}
 
 	finishClear(): void {
-		this.stmts.deleteMetadata.run(CLEAR_MARKER_KEY)
+		this.finishClearTx()
 	}
 }

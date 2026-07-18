@@ -20,6 +20,7 @@
  * across the 11 handles).
  */
 import { jest } from '@jest/globals'
+import Database from 'better-sqlite3'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -27,7 +28,12 @@ import type { SignalDataTypeMap } from '../../Types'
 import { addTransactionCapability } from '../../Utils/auth-utils'
 import { BufferJSON } from '../../Utils/generics'
 import type { ILogger } from '../../Utils/logger'
-import { SignalTypedBackend, TrustedContactsBackend, useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
+import {
+	JidMapBackend,
+	SignalTypedBackend,
+	TrustedContactsBackend,
+	useMultiDbSqliteAuthState
+} from '../../Utils/multi-db-sqlite'
 import { markPrekeyDirectDistributionIntent } from '../../Utils/prekey-direct-distribution'
 
 const silentLogger = (): ILogger => ({
@@ -49,6 +55,48 @@ const sampleAppStateSyncKey = (n: number): SignalDataTypeMap['app-state-sync-key
 		timestamp: String(1_700_000_000 + n)
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	}) as any
+
+type MultiDbAuthState = Awaited<ReturnType<typeof useMultiDbSqliteAuthState>>
+
+const seedAuthKeyClearSurfaces = async ({ state, store }: MultiDbAuthState): Promise<void> => {
+	await state.keys.set({
+		session: { '5511999999999.0': sampleSession(7) },
+		'pre-key': { 44: { public: Buffer.from([1]), private: Buffer.from([2]) } },
+		'sender-key': { '120363000000000000@g.us::5511999999999::0': Buffer.from([3]) },
+		'identity-key': { '5511999999999@s.whatsapp.net': Buffer.from([4]) }
+	})
+	await state.keys.set({ 'app-state-sync-key': { clear_key: sampleAppStateSyncKey(5) } })
+	await state.keys.set({ tctoken: { 'clear-target@lid': { token: Buffer.from([6]), timestamp: '100' } } })
+	new JidMapBackend(store.handle('msgstore.db')).storeMapping('5515991426667@s.whatsapp.net', '46802258641027@lid')
+}
+
+const expectAuthKeyClearSurfacesEmpty = ({ store }: MultiDbAuthState): void => {
+	const count = (dbName: Parameters<typeof store.handle>[0], table: string): number =>
+		(store.handle(dbName).prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n
+	expect(count('wa.db', 'wa_trusted_contacts')).toBe(0)
+	expect(count('wa.db', 'wa_trusted_contacts_send')).toBe(0)
+	expect(count('msgstore.db', 'jid_map')).toBe(0)
+	expect(count('axolotl.db', 'signal_kv')).toBe(0)
+	expect(count('axolotl.db', 'sessions')).toBe(0)
+	expect(count('axolotl.db', 'prekeys')).toBe(0)
+	expect(count('axolotl.db', 'sender_keys')).toBe(0)
+	expect(count('axolotl.db', 'identities')).toBe(0)
+	expect(count('creds.db', 'app_state_sync_keys')).toBe(0)
+	expect(new TrustedContactsBackend(store.handle('wa.db')).hasPendingClear()).toBe(false)
+}
+
+const seedSignalKvSessions = ({ store }: MultiDbAuthState, count: number): string[] => {
+	const ids = Array.from({ length: count }, (_, index) => `bulk-${String(index).padStart(4, '0')}`)
+	const db = store.handle('axolotl.db')
+	const insert = db.prepare('INSERT INTO signal_kv (type, id, value) VALUES (?, ?, ?)')
+	const seed = db.transaction(() => {
+		for (const [index, id] of ids.entries()) {
+			insert.run('session', id, JSON.stringify(sampleSession(index % 256), BufferJSON.replacer))
+		}
+	}).immediate
+	seed()
+	return ids
+}
 
 describe('useMultiDbSqliteAuthState', () => {
 	let dir: string
@@ -235,6 +283,70 @@ describe('useMultiDbSqliteAuthState', () => {
 		for await (const id of listIds('session')) ids.push(id)
 		expect(ids.sort()).toEqual(['a', 'b', 'c'])
 		close()
+	})
+
+	it('enumerates multiple bounded keyset pages without gaps or duplicates', async () => {
+		const auth = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			const expectedIds = seedSignalKvSessions(auth, 600)
+			const listedIds: string[] = []
+			for await (const id of auth.state.keys.listIds!('session')) listedIds.push(id)
+			expect(listedIds).toEqual(expectedIds)
+
+			const listedEntries: string[] = []
+			for await (const [id] of auth.state.keys.list!('session')) listedEntries.push(id)
+			expect(listedEntries).toEqual(expectedIds)
+		} finally {
+			auth.close()
+		}
+	})
+
+	it('invalidates list and listIds immediately when keys.clear runs between yields', async () => {
+		const auth = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			seedSignalKvSessions(auth, 300)
+			const listIterator = auth.state.keys.list!('session')[Symbol.asyncIterator]()
+			const idIterator = auth.state.keys.listIds!('session')[Symbol.asyncIterator]()
+			expect((await listIterator.next()).done).toBe(false)
+			expect((await idIterator.next()).done).toBe(false)
+
+			if (!auth.state.keys.clear) throw new Error('clear not implemented')
+			await auth.state.keys.clear()
+
+			await expect(listIterator.next()).rejects.toThrow('invalidated by concurrent keys.clear')
+			await expect(idIterator.next()).rejects.toThrow('invalidated by concurrent keys.clear')
+		} finally {
+			auth.close()
+		}
+	})
+
+	it('keeps active enumeration valid when beginClear rolls back before creating the durable intent', async () => {
+		const auth = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		const locker = new Database(join(dir, 'wa.db'))
+		try {
+			seedSignalKvSessions(auth, 3)
+			const iterator = auth.state.keys.listIds!('session')[Symbol.asyncIterator]()
+			expect(await iterator.next()).toEqual({ done: false, value: 'bulk-0000' })
+
+			auth.store.handle('wa.db').exec('PRAGMA busy_timeout = 1')
+			locker.exec('BEGIN IMMEDIATE')
+			if (!auth.state.keys.clear) throw new Error('clear not implemented')
+			await expect(auth.state.keys.clear()).rejects.toMatchObject({ code: expect.stringMatching(/^SQLITE_BUSY/) })
+
+			// beginClear is atomic: a failed transaction neither creates the marker
+			// nor changes the key set, so the existing snapshot remains valid.
+			expect(new TrustedContactsBackend(auth.store.handle('wa.db')).hasPendingClear()).toBe(false)
+			expect(await iterator.next()).toEqual({ done: false, value: 'bulk-0001' })
+		} finally {
+			try {
+				locker.exec('ROLLBACK')
+			} catch {
+				// The lock may already be released after an earlier failure.
+			}
+
+			locker.close()
+			auth.close()
+		}
 	})
 
 	it('routes app-state-sync-key to creds.db.app_state_sync_keys, not axolotl.signal_kv', async () => {
@@ -621,17 +733,171 @@ describe('useMultiDbSqliteAuthState', () => {
 		}
 	})
 
-	it('recovers an interrupted cross-file tctoken clear without resurrecting signal_kv', async () => {
+	it('replays every auth-key clear target after a crash immediately after the durable marker', async () => {
 		const first = await useMultiDbSqliteAuthState({ sessionDir: dir })
-		const jid = '67890@lid'
-		await first.state.keys.set({ tctoken: { [jid]: { token: Buffer.from([7]), timestamp: '100' } } })
+		await seedAuthKeyClearSurfaces(first)
 		new TrustedContactsBackend(first.store.handle('wa.db')).beginClear()
 		first.close()
 
 		const second = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		try {
-			expect((await second.state.keys.get('tctoken', [jid]))[jid]).toBeUndefined()
-			expect(new TrustedContactsBackend(second.store.handle('wa.db')).hasPendingClear()).toBe(false)
+			expectAuthKeyClearSurfacesEmpty(second)
+		} finally {
+			second.close()
+		}
+	})
+
+	it('serializes a retried non-tctoken set with a concurrent clear', async () => {
+		const barrier: {
+			auth?: MultiDbAuthState
+			locker?: { exec(sql: string): unknown; close(): void }
+			clearPromise?: Promise<void>
+		} = {}
+		const warn = jest.fn((context: unknown) => {
+			if ((context as { label?: string }).label !== 'signal_kv set' || barrier.clearPromise) return
+			if (!barrier.auth || !barrier.locker || !barrier.auth.state.keys.clear) {
+				throw new Error('test clear barrier is not initialized')
+			}
+
+			// This callback runs after the first SQLITE_BUSY and before the
+			// retry delay. Queue clear at the exact TOCTOU boundary, then release
+			// the external writer so both operations can continue.
+			barrier.clearPromise = Promise.resolve(barrier.auth.state.keys.clear())
+			barrier.locker.exec('COMMIT')
+		})
+		const logger: ILogger = { ...silentLogger(), warn }
+
+		const auth = await useMultiDbSqliteAuthState({ sessionDir: dir, logger })
+		const locker = new Database(join(dir, 'axolotl.db'))
+		barrier.auth = auth
+		barrier.locker = locker
+		auth.store.handle('axolotl.db').exec('PRAGMA busy_timeout = 1')
+		locker.exec('BEGIN IMMEDIATE')
+
+		try {
+			const sessionId = '5511888888888.0'
+			await auth.state.keys.set({ session: { [sessionId]: sampleSession(9) } })
+			expect(barrier.clearPromise).toBeDefined()
+			await barrier.clearPromise
+
+			expect(warn).toHaveBeenCalledWith(
+				expect.objectContaining({ label: 'signal_kv set', code: expect.stringMatching(/^SQLITE_BUSY/) }),
+				expect.stringContaining('retrying')
+			)
+			expect((await auth.state.keys.get('session', [sessionId]))[sessionId]).toBeUndefined()
+			expectAuthKeyClearSurfacesEmpty(auth)
+		} finally {
+			try {
+				locker.exec('ROLLBACK')
+			} catch {
+				// The logger callback normally committed the external lock.
+			}
+
+			locker.close()
+			auth.close()
+		}
+	})
+
+	it.each([
+		[
+			'msgstore.db',
+			`CREATE TRIGGER fail_jid_map_clear BEFORE DELETE ON jid_map BEGIN SELECT RAISE(ABORT, 'forced msgstore clear failure'); END;`,
+			'DROP TRIGGER IF EXISTS fail_jid_map_clear',
+			'forced msgstore clear failure'
+		],
+		[
+			'axolotl.db',
+			`CREATE TRIGGER fail_signal_kv_clear BEFORE DELETE ON signal_kv BEGIN SELECT RAISE(ABORT, 'forced axolotl clear failure'); END;`,
+			'DROP TRIGGER IF EXISTS fail_signal_kv_clear',
+			'forced axolotl clear failure'
+		],
+		[
+			'creds.db',
+			`CREATE TRIGGER fail_app_state_key_clear BEFORE DELETE ON app_state_sync_keys BEGIN SELECT RAISE(ABORT, 'forced creds clear failure'); END;`,
+			'DROP TRIGGER IF EXISTS fail_app_state_key_clear',
+			'forced creds clear failure'
+		]
+	] as const)(
+		'retains the marker and idempotently replays after a %s boundary failure',
+		async (dbName, createTrigger, dropTrigger, message) => {
+			const first = await useMultiDbSqliteAuthState({ sessionDir: dir, logger: silentLogger() })
+			let firstClosed = false
+			let second: MultiDbAuthState | undefined
+			try {
+				await seedAuthKeyClearSurfaces(first)
+				first.store.handle(dbName).exec(createTrigger)
+				if (!first.state.keys.clear) throw new Error('clear not implemented')
+				await expect(first.state.keys.clear()).rejects.toThrow(message)
+				expect(new TrustedContactsBackend(first.store.handle('wa.db')).hasPendingClear()).toBe(true)
+
+				first.store.handle(dbName).exec(dropTrigger)
+				first.close()
+				firstClosed = true
+
+				second = await useMultiDbSqliteAuthState({ sessionDir: dir, logger: silentLogger() })
+				expectAuthKeyClearSurfacesEmpty(second)
+			} finally {
+				if (!firstClosed) {
+					try {
+						first.store.handle(dbName).exec(dropTrigger)
+					} catch {
+						// connection may already be closed after an earlier assertion
+					}
+
+					first.close()
+				}
+
+				second?.close()
+			}
+		}
+	)
+
+	it('fails startup closed while replay is still blocked, then succeeds without losing the marker', async () => {
+		const first = await useMultiDbSqliteAuthState({ sessionDir: dir, logger: silentLogger() })
+		await seedAuthKeyClearSurfaces(first)
+		first.store.handle('msgstore.db').exec(`
+			CREATE TRIGGER fail_persistent_clear
+			BEFORE DELETE ON jid_map
+			BEGIN
+				SELECT RAISE(ABORT, 'persistent clear failure');
+			END;
+		`)
+		if (!first.state.keys.clear) throw new Error('clear not implemented')
+		await expect(first.state.keys.clear()).rejects.toThrow('persistent clear failure')
+		first.close()
+
+		await expect(useMultiDbSqliteAuthState({ sessionDir: dir, logger: silentLogger() })).rejects.toThrow(
+			'persistent clear failure'
+		)
+
+		const maintenance = new Database(join(dir, 'msgstore.db'))
+		try {
+			maintenance.exec('DROP TRIGGER IF EXISTS fail_persistent_clear')
+		} finally {
+			maintenance.close()
+		}
+
+		const recovered = await useMultiDbSqliteAuthState({ sessionDir: dir, logger: silentLogger() })
+		try {
+			expectAuthKeyClearSurfacesEmpty(recovered)
+		} finally {
+			recovered.close()
+		}
+	})
+
+	it('upgrades the #671 tctoken-only marker into a full auth-key clear replay', async () => {
+		const first = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		await seedAuthKeyClearSurfaces(first)
+		first.store.handle('wa.db').exec(`
+			INSERT INTO infiniteapi_metadata (key, value) VALUES ('tctoken_clear_in_progress', 'legacy');
+			DELETE FROM wa_trusted_contacts;
+			DELETE FROM wa_trusted_contacts_send;
+		`)
+		first.close()
+
+		const second = await useMultiDbSqliteAuthState({ sessionDir: dir, logger: silentLogger() })
+		try {
+			expectAuthKeyClearSurfacesEmpty(second)
 		} finally {
 			second.close()
 		}
