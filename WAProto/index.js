@@ -11117,6 +11117,10 @@ export const proto = $root.proto = (() => {
             case 56:
                 m.botEntryPointOrigin = 56;
                 break;
+            case "CONTACTS_TAB":
+            case 57:
+                m.botEntryPointOrigin = 57;
+                break;
             }
             if (d.forwardScore != null) {
                 m.forwardScore = d.forwardScore >>> 0;
@@ -12251,6 +12255,7 @@ export const proto = $root.proto = (() => {
         values[valuesById[54] = "GROUP_MEMBER"] = 54;
         values[valuesById[55] = "CHATLIST_SEARCH"] = 55;
         values[valuesById[56] = "NEW_CHAT_LIST"] = 56;
+        values[valuesById[57] = "CONTACTS_TAB"] = 57;
         return values;
     })();
 
@@ -12537,6 +12542,10 @@ export const proto = $root.proto = (() => {
             case "NEW_CHAT_LIST":
             case 56:
                 m.destinationEntryPoint = 56;
+                break;
+            case "CONTACTS_TAB":
+            case 57:
+                m.destinationEntryPoint = 57;
                 break;
             }
             switch (d.threadOrigin) {
@@ -21362,6 +21371,10 @@ export const proto = $root.proto = (() => {
                 case 37:
                     m.platform = 37;
                     break;
+                case "WAIL":
+                case 38:
+                    m.platform = 38;
+                    break;
                 }
                 if (d.appVersion != null) {
                     if (typeof d.appVersion !== "object")
@@ -21817,6 +21830,7 @@ export const proto = $root.proto = (() => {
                 values[valuesById[35] = "SMART_GLASSES"] = 35;
                 values[valuesById[36] = "BLUE_VR"] = 36;
                 values[valuesById[37] = "AR_WRIST"] = 37;
+                values[valuesById[38] = "WAIL"] = 38;
                 return values;
             })();
 
@@ -46383,6 +46397,7 @@ export const proto = $root.proto = (() => {
             Call.prototype.deeplinkPayload = null;
             Call.prototype.messageContextInfo = null;
             Call.prototype.callEntryPoint = null;
+            Call.prototype.callReason = null;
 
             let $oneOfFields;
 
@@ -46452,6 +46467,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(Call.prototype, "_callReason", {
+                get: $util.oneOfGetter($oneOfFields = ["callReason"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             Call.create = function create(properties) {
                 return new Call(properties);
             };
@@ -46481,6 +46502,8 @@ export const proto = $root.proto = (() => {
                     $root.proto.MessageContextInfo.encode(m.messageContextInfo, w.uint32(82).fork()).ldelim();
                 if (m.callEntryPoint != null && Object.hasOwnProperty.call(m, "callEntryPoint"))
                     w.uint32(88).uint32(m.callEntryPoint);
+                if (m.callReason != null && Object.hasOwnProperty.call(m, "callReason"))
+                    w.uint32(98).string(m.callReason);
                 return w;
             };
 
@@ -46535,6 +46558,10 @@ export const proto = $root.proto = (() => {
                         }
                     case 11: {
                             m.callEntryPoint = r.uint32();
+                            break;
+                        }
+                    case 12: {
+                            m.callReason = r.string();
                             break;
                         }
                     default:
@@ -46594,6 +46621,9 @@ export const proto = $root.proto = (() => {
                 }
                 if (d.callEntryPoint != null) {
                     m.callEntryPoint = d.callEntryPoint >>> 0;
+                }
+                if (d.callReason != null) {
+                    m.callReason = String(d.callReason);
                 }
                 return m;
             };
@@ -46656,6 +46686,11 @@ export const proto = $root.proto = (() => {
                     d.callEntryPoint = m.callEntryPoint;
                     if (o.oneofs)
                         d._callEntryPoint = "callEntryPoint";
+                }
+                if (m.callReason != null && m.hasOwnProperty("callReason")) {
+                    d.callReason = m.callReason;
+                    if (o.oneofs)
+                        d._callReason = "callReason";
                 }
                 return d;
             };
@@ -69639,6 +69674,7 @@ export const proto = $root.proto = (() => {
             ProtocolMessage.prototype.aiMetadataOperation = null;
             ProtocolMessage.prototype.markAsVerifiedAction = null;
             ProtocolMessage.prototype.coexStateSync = null;
+            ProtocolMessage.prototype.syncRequestMutationRetry = null;
 
             let $oneOfFields;
 
@@ -69822,6 +69858,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ProtocolMessage.prototype, "_syncRequestMutationRetry", {
+                get: $util.oneOfGetter($oneOfFields = ["syncRequestMutationRetry"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             ProtocolMessage.create = function create(properties) {
                 return new ProtocolMessage(properties);
             };
@@ -69889,6 +69931,8 @@ export const proto = $root.proto = (() => {
                     $root.proto.Message.MarkAsVerifiedAction.encode(m.markAsVerifiedAction, w.uint32(258).fork()).ldelim();
                 if (m.coexStateSync != null && Object.hasOwnProperty.call(m, "coexStateSync"))
                     $root.proto.CoexStateSync.encode(m.coexStateSync, w.uint32(266).fork()).ldelim();
+                if (m.syncRequestMutationRetry != null && Object.hasOwnProperty.call(m, "syncRequestMutationRetry"))
+                    $root.proto.Message.SyncRequestMutationRetry.encode(m.syncRequestMutationRetry, w.uint32(274).fork()).ldelim();
                 return w;
             };
 
@@ -70019,6 +70063,10 @@ export const proto = $root.proto = (() => {
                         }
                     case 33: {
                             m.coexStateSync = $root.proto.CoexStateSync.decode(r, r.uint32());
+                            break;
+                        }
+                    case 34: {
+                            m.syncRequestMutationRetry = $root.proto.Message.SyncRequestMutationRetry.decode(r, r.uint32());
                             break;
                         }
                     default:
@@ -70173,6 +70221,10 @@ export const proto = $root.proto = (() => {
                 case 37:
                     m.type = 37;
                     break;
+                case "SYNC_REQUEST_MUTATION_RETRY":
+                case 38:
+                    m.type = 38;
+                    break;
                 }
                 if (d.ephemeralExpiration != null) {
                     m.ephemeralExpiration = d.ephemeralExpiration >>> 0;
@@ -70318,6 +70370,11 @@ export const proto = $root.proto = (() => {
                     if (typeof d.coexStateSync !== "object")
                         throw TypeError(".proto.Message.ProtocolMessage.coexStateSync: object expected");
                     m.coexStateSync = $root.proto.CoexStateSync.fromObject(d.coexStateSync);
+                }
+                if (d.syncRequestMutationRetry != null) {
+                    if (typeof d.syncRequestMutationRetry !== "object")
+                        throw TypeError(".proto.Message.ProtocolMessage.syncRequestMutationRetry: object expected");
+                    m.syncRequestMutationRetry = $root.proto.Message.SyncRequestMutationRetry.fromObject(d.syncRequestMutationRetry);
                 }
                 return m;
             };
@@ -70482,6 +70539,11 @@ export const proto = $root.proto = (() => {
                     if (o.oneofs)
                         d._coexStateSync = "coexStateSync";
                 }
+                if (m.syncRequestMutationRetry != null && m.hasOwnProperty("syncRequestMutationRetry")) {
+                    d.syncRequestMutationRetry = $root.proto.Message.SyncRequestMutationRetry.toObject(m.syncRequestMutationRetry, o);
+                    if (o.oneofs)
+                        d._syncRequestMutationRetry = "syncRequestMutationRetry";
+                }
                 return d;
             };
 
@@ -70530,6 +70592,7 @@ export const proto = $root.proto = (() => {
                 values[valuesById[35] = "AI_METADATA_OPERATION"] = 35;
                 values[valuesById[36] = "MARK_AS_VERIFIED_ACTION"] = 36;
                 values[valuesById[37] = "COEX_STATE_SYNC"] = 37;
+                values[valuesById[38] = "SYNC_REQUEST_MUTATION_RETRY"] = 38;
                 return values;
             })();
 
@@ -74837,6 +74900,244 @@ export const proto = $root.proto = (() => {
             };
 
             return StickerSyncRMRMessage;
+        })();
+
+        Message.SyncRequestMutationRetry = (function() {
+
+            function SyncRequestMutationRetry(p) {
+                this.collections = [];
+                if (p)
+                    for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null)
+                            this[ks[i]] = p[ks[i]];
+            }
+
+            SyncRequestMutationRetry.prototype.collections = $util.emptyArray;
+            SyncRequestMutationRetry.prototype.count = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(SyncRequestMutationRetry.prototype, "_count", {
+                get: $util.oneOfGetter($oneOfFields = ["count"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            SyncRequestMutationRetry.create = function create(properties) {
+                return new SyncRequestMutationRetry(properties);
+            };
+
+            SyncRequestMutationRetry.encode = function encode(m, w) {
+                if (!w)
+                    w = $Writer.create();
+                if (m.collections != null && m.collections.length) {
+                    for (var i = 0; i < m.collections.length; ++i)
+                        $root.proto.Message.SyncRequestMutationRetry.Collection.encode(m.collections[i], w.uint32(10).fork()).ldelim();
+                }
+                if (m.count != null && Object.hasOwnProperty.call(m, "count"))
+                    w.uint32(16).uint32(m.count);
+                return w;
+            };
+
+            SyncRequestMutationRetry.decode = function decode(r, l, e) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.Message.SyncRequestMutationRetry();
+                while (r.pos < c) {
+                    var t = r.uint32();
+                    if (t === e)
+                        break;
+                    switch (t >>> 3) {
+                    case 1: {
+                            if (!(m.collections && m.collections.length))
+                                m.collections = [];
+                            m.collections.push($root.proto.Message.SyncRequestMutationRetry.Collection.decode(r, r.uint32()));
+                            break;
+                        }
+                    case 2: {
+                            m.count = r.uint32();
+                            break;
+                        }
+                    default:
+                        r.skipType(t & 7);
+                        break;
+                    }
+                }
+                return m;
+            };
+
+            SyncRequestMutationRetry.fromObject = function fromObject(d) {
+                if (d instanceof $root.proto.Message.SyncRequestMutationRetry)
+                    return d;
+                var m = new $root.proto.Message.SyncRequestMutationRetry();
+                if (d.collections) {
+                    if (!Array.isArray(d.collections))
+                        throw TypeError(".proto.Message.SyncRequestMutationRetry.collections: array expected");
+                    m.collections = [];
+                    for (var i = 0; i < d.collections.length; ++i) {
+                        if (typeof d.collections[i] !== "object")
+                            throw TypeError(".proto.Message.SyncRequestMutationRetry.collections: object expected");
+                        m.collections[i] = $root.proto.Message.SyncRequestMutationRetry.Collection.fromObject(d.collections[i]);
+                    }
+                }
+                if (d.count != null) {
+                    m.count = d.count >>> 0;
+                }
+                return m;
+            };
+
+            SyncRequestMutationRetry.toObject = function toObject(m, o) {
+                if (!o)
+                    o = {};
+                var d = {};
+                if (o.arrays || o.defaults) {
+                    d.collections = [];
+                }
+                if (m.collections && m.collections.length) {
+                    d.collections = [];
+                    for (var j = 0; j < m.collections.length; ++j) {
+                        d.collections[j] = $root.proto.Message.SyncRequestMutationRetry.Collection.toObject(m.collections[j], o);
+                    }
+                }
+                if (m.count != null && m.hasOwnProperty("count")) {
+                    d.count = m.count;
+                    if (o.oneofs)
+                        d._count = "count";
+                }
+                return d;
+            };
+
+            SyncRequestMutationRetry.prototype.toJSON = function toJSON() {
+                return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            SyncRequestMutationRetry.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                if (typeUrlPrefix === undefined) {
+                    typeUrlPrefix = "type.googleapis.com";
+                }
+                return typeUrlPrefix + "/proto.Message.SyncRequestMutationRetry";
+            };
+
+            SyncRequestMutationRetry.Collection = (function() {
+
+                function Collection(p) {
+                    if (p)
+                        for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                            if (p[ks[i]] != null)
+                                this[ks[i]] = p[ks[i]];
+                }
+
+                Collection.prototype.name = null;
+                Collection.prototype.storedSyncdVersion = null;
+
+                let $oneOfFields;
+
+                // Virtual OneOf for proto3 optional field
+                Object.defineProperty(Collection.prototype, "_name", {
+                    get: $util.oneOfGetter($oneOfFields = ["name"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+
+                // Virtual OneOf for proto3 optional field
+                Object.defineProperty(Collection.prototype, "_storedSyncdVersion", {
+                    get: $util.oneOfGetter($oneOfFields = ["storedSyncdVersion"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+
+                Collection.create = function create(properties) {
+                    return new Collection(properties);
+                };
+
+                Collection.encode = function encode(m, w) {
+                    if (!w)
+                        w = $Writer.create();
+                    if (m.name != null && Object.hasOwnProperty.call(m, "name"))
+                        w.uint32(10).string(m.name);
+                    if (m.storedSyncdVersion != null && Object.hasOwnProperty.call(m, "storedSyncdVersion"))
+                        w.uint32(16).uint64(m.storedSyncdVersion);
+                    return w;
+                };
+
+                Collection.decode = function decode(r, l, e) {
+                    if (!(r instanceof $Reader))
+                        r = $Reader.create(r);
+                    var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.Message.SyncRequestMutationRetry.Collection();
+                    while (r.pos < c) {
+                        var t = r.uint32();
+                        if (t === e)
+                            break;
+                        switch (t >>> 3) {
+                        case 1: {
+                                m.name = r.string();
+                                break;
+                            }
+                        case 2: {
+                                m.storedSyncdVersion = r.uint64();
+                                break;
+                            }
+                        default:
+                            r.skipType(t & 7);
+                            break;
+                        }
+                    }
+                    return m;
+                };
+
+                Collection.fromObject = function fromObject(d) {
+                    if (d instanceof $root.proto.Message.SyncRequestMutationRetry.Collection)
+                        return d;
+                    var m = new $root.proto.Message.SyncRequestMutationRetry.Collection();
+                    if (d.name != null) {
+                        m.name = String(d.name);
+                    }
+                    if (d.storedSyncdVersion != null) {
+                        if ($util.Long)
+                            (m.storedSyncdVersion = $util.Long.fromValue(d.storedSyncdVersion)).unsigned = true;
+                        else if (typeof d.storedSyncdVersion === "string")
+                            m.storedSyncdVersion = parseInt(d.storedSyncdVersion, 10);
+                        else if (typeof d.storedSyncdVersion === "number")
+                            m.storedSyncdVersion = d.storedSyncdVersion;
+                        else if (typeof d.storedSyncdVersion === "object")
+                            m.storedSyncdVersion = new $util.LongBits(d.storedSyncdVersion.low >>> 0, d.storedSyncdVersion.high >>> 0).toNumber(true);
+                    }
+                    return m;
+                };
+
+                Collection.toObject = function toObject(m, o) {
+                    if (!o)
+                        o = {};
+                    var d = {};
+                    if (m.name != null && m.hasOwnProperty("name")) {
+                        d.name = m.name;
+                        if (o.oneofs)
+                            d._name = "name";
+                    }
+                    if (m.storedSyncdVersion != null && m.hasOwnProperty("storedSyncdVersion")) {
+                        if (typeof m.storedSyncdVersion === "number")
+                            d.storedSyncdVersion = o.longs === String ? String(m.storedSyncdVersion) : m.storedSyncdVersion;
+                        else
+                            d.storedSyncdVersion = o.longs === String ? longToString(m.storedSyncdVersion, true) : o.longs === Number ? longToNumber(m.storedSyncdVersion, true) : m.storedSyncdVersion;
+                        if (o.oneofs)
+                            d._storedSyncdVersion = "storedSyncdVersion";
+                    }
+                    return d;
+                };
+
+                Collection.prototype.toJSON = function toJSON() {
+                    return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+                };
+
+                Collection.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                    if (typeUrlPrefix === undefined) {
+                        typeUrlPrefix = "type.googleapis.com";
+                    }
+                    return typeUrlPrefix + "/proto.Message.SyncRequestMutationRetry.Collection";
+                };
+
+                return Collection;
+            })();
+
+            return SyncRequestMutationRetry;
         })();
 
         Message.TemplateButtonReplyMessage = (function() {
@@ -80515,6 +80816,7 @@ export const proto = $root.proto = (() => {
         values[valuesById[88] = "COEX_V2_VERSION_ACTION"] = 88;
         values[valuesById[89] = "WASA_ROOT_SECRET_ACTION"] = 89;
         values[valuesById[90] = "BUBBLE_LOCK_MESSAGE_ACTION"] = 90;
+        values[valuesById[91] = "LABEL_SUBLIST_ACTION"] = 91;
         values[valuesById[10001] = "SHARE_OWN_PN"] = 10001;
         values[valuesById[10002] = "BUSINESS_BROADCAST_ACTION"] = 10002;
         values[valuesById[10003] = "AI_THREAD_DELETE_ACTION"] = 10003;
@@ -91333,6 +91635,7 @@ export const proto = $root.proto = (() => {
         SyncActionValue.prototype.coexV2VersionAction = null;
         SyncActionValue.prototype.wasaRootSecretAction = null;
         SyncActionValue.prototype.bubbleLockMessageAction = null;
+        SyncActionValue.prototype.labelSublistAction = null;
 
         let $oneOfFields;
 
@@ -91822,6 +92125,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(SyncActionValue.prototype, "_labelSublistAction", {
+            get: $util.oneOfGetter($oneOfFields = ["labelSublistAction"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         SyncActionValue.create = function create(properties) {
             return new SyncActionValue(properties);
         };
@@ -91991,6 +92300,8 @@ export const proto = $root.proto = (() => {
                 $root.proto.SyncActionValue.WASARootSecretAction.encode(m.wasaRootSecretAction, w.uint32(714).fork()).ldelim();
             if (m.bubbleLockMessageAction != null && Object.hasOwnProperty.call(m, "bubbleLockMessageAction"))
                 $root.proto.SyncActionValue.BubbleLockMessageAction.encode(m.bubbleLockMessageAction, w.uint32(722).fork()).ldelim();
+            if (m.labelSublistAction != null && Object.hasOwnProperty.call(m, "labelSublistAction"))
+                $root.proto.SyncActionValue.LabelSublistAction.encode(m.labelSublistAction, w.uint32(730).fork()).ldelim();
             return w;
         };
 
@@ -92325,6 +92636,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 90: {
                         m.bubbleLockMessageAction = $root.proto.SyncActionValue.BubbleLockMessageAction.decode(r, r.uint32());
+                        break;
+                    }
+                case 91: {
+                        m.labelSublistAction = $root.proto.SyncActionValue.LabelSublistAction.decode(r, r.uint32());
                         break;
                     }
                 default:
@@ -92749,6 +93064,11 @@ export const proto = $root.proto = (() => {
                     throw TypeError(".proto.SyncActionValue.bubbleLockMessageAction: object expected");
                 m.bubbleLockMessageAction = $root.proto.SyncActionValue.BubbleLockMessageAction.fromObject(d.bubbleLockMessageAction);
             }
+            if (d.labelSublistAction != null) {
+                if (typeof d.labelSublistAction !== "object")
+                    throw TypeError(".proto.SyncActionValue.labelSublistAction: object expected");
+                m.labelSublistAction = $root.proto.SyncActionValue.LabelSublistAction.fromObject(d.labelSublistAction);
+            }
             return m;
         };
 
@@ -93163,6 +93483,11 @@ export const proto = $root.proto = (() => {
                 d.bubbleLockMessageAction = $root.proto.SyncActionValue.BubbleLockMessageAction.toObject(m.bubbleLockMessageAction, o);
                 if (o.oneofs)
                     d._bubbleLockMessageAction = "bubbleLockMessageAction";
+            }
+            if (m.labelSublistAction != null && m.hasOwnProperty("labelSublistAction")) {
+                d.labelSublistAction = $root.proto.SyncActionValue.LabelSublistAction.toObject(m.labelSublistAction, o);
+                if (o.oneofs)
+                    d._labelSublistAction = "labelSublistAction";
             }
             return d;
         };
@@ -97975,6 +98300,94 @@ export const proto = $root.proto = (() => {
             };
 
             return LabelReorderingAction;
+        })();
+
+        SyncActionValue.LabelSublistAction = (function() {
+
+            function LabelSublistAction(p) {
+                if (p)
+                    for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null)
+                            this[ks[i]] = p[ks[i]];
+            }
+
+            LabelSublistAction.prototype.subListId = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(LabelSublistAction.prototype, "_subListId", {
+                get: $util.oneOfGetter($oneOfFields = ["subListId"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            LabelSublistAction.create = function create(properties) {
+                return new LabelSublistAction(properties);
+            };
+
+            LabelSublistAction.encode = function encode(m, w) {
+                if (!w)
+                    w = $Writer.create();
+                if (m.subListId != null && Object.hasOwnProperty.call(m, "subListId"))
+                    w.uint32(8).int32(m.subListId);
+                return w;
+            };
+
+            LabelSublistAction.decode = function decode(r, l, e) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.SyncActionValue.LabelSublistAction();
+                while (r.pos < c) {
+                    var t = r.uint32();
+                    if (t === e)
+                        break;
+                    switch (t >>> 3) {
+                    case 1: {
+                            m.subListId = r.int32();
+                            break;
+                        }
+                    default:
+                        r.skipType(t & 7);
+                        break;
+                    }
+                }
+                return m;
+            };
+
+            LabelSublistAction.fromObject = function fromObject(d) {
+                if (d instanceof $root.proto.SyncActionValue.LabelSublistAction)
+                    return d;
+                var m = new $root.proto.SyncActionValue.LabelSublistAction();
+                if (d.subListId != null) {
+                    m.subListId = d.subListId | 0;
+                }
+                return m;
+            };
+
+            LabelSublistAction.toObject = function toObject(m, o) {
+                if (!o)
+                    o = {};
+                var d = {};
+                if (m.subListId != null && m.hasOwnProperty("subListId")) {
+                    d.subListId = m.subListId;
+                    if (o.oneofs)
+                        d._subListId = "subListId";
+                }
+                return d;
+            };
+
+            LabelSublistAction.prototype.toJSON = function toJSON() {
+                return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            LabelSublistAction.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                if (typeUrlPrefix === undefined) {
+                    typeUrlPrefix = "type.googleapis.com";
+                }
+                return typeUrlPrefix + "/proto.SyncActionValue.LabelSublistAction";
+            };
+
+            return LabelSublistAction;
         })();
 
         SyncActionValue.LidContactAction = (function() {
@@ -105008,6 +105421,7 @@ export const proto = $root.proto = (() => {
                 RootSecretEntry.prototype.id = null;
                 RootSecretEntry.prototype.rootSecret = null;
                 RootSecretEntry.prototype.epoch = null;
+                RootSecretEntry.prototype.status = null;
 
                 let $oneOfFields;
 
@@ -105029,6 +105443,12 @@ export const proto = $root.proto = (() => {
                     set: $util.oneOfSetter($oneOfFields)
                 });
 
+                // Virtual OneOf for proto3 optional field
+                Object.defineProperty(RootSecretEntry.prototype, "_status", {
+                    get: $util.oneOfGetter($oneOfFields = ["status"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+
                 RootSecretEntry.create = function create(properties) {
                     return new RootSecretEntry(properties);
                 };
@@ -105042,6 +105462,8 @@ export const proto = $root.proto = (() => {
                         w.uint32(18).bytes(m.rootSecret);
                     if (m.epoch != null && Object.hasOwnProperty.call(m, "epoch"))
                         w.uint32(24).int64(m.epoch);
+                    if (m.status != null && Object.hasOwnProperty.call(m, "status"))
+                        w.uint32(32).int32(m.status);
                     return w;
                 };
 
@@ -105064,6 +105486,10 @@ export const proto = $root.proto = (() => {
                             }
                         case 3: {
                                 m.epoch = r.int64();
+                                break;
+                            }
+                        case 4: {
+                                m.status = r.int32();
                                 break;
                             }
                         default:
@@ -105097,6 +105523,22 @@ export const proto = $root.proto = (() => {
                         else if (typeof d.epoch === "object")
                             m.epoch = new $util.LongBits(d.epoch.low >>> 0, d.epoch.high >>> 0).toNumber();
                     }
+                    switch (d.status) {
+                    default:
+                        if (typeof d.status === "number") {
+                            m.status = d.status;
+                            break;
+                        }
+                        break;
+                    case "INACTIVE":
+                    case 0:
+                        m.status = 0;
+                        break;
+                    case "ACTIVE":
+                    case 1:
+                        m.status = 1;
+                        break;
+                    }
                     return m;
                 };
 
@@ -105122,6 +105564,11 @@ export const proto = $root.proto = (() => {
                         if (o.oneofs)
                             d._epoch = "epoch";
                     }
+                    if (m.status != null && m.hasOwnProperty("status")) {
+                        d.status = o.enums === String ? $root.proto.SyncActionValue.WASARootSecretAction.RootSecretEntry.Status[m.status] === undefined ? m.status : $root.proto.SyncActionValue.WASARootSecretAction.RootSecretEntry.Status[m.status] : m.status;
+                        if (o.oneofs)
+                            d._status = "status";
+                    }
                     return d;
                 };
 
@@ -105135,6 +105582,13 @@ export const proto = $root.proto = (() => {
                     }
                     return typeUrlPrefix + "/proto.SyncActionValue.WASARootSecretAction.RootSecretEntry";
                 };
+
+                RootSecretEntry.Status = (function() {
+                    const valuesById = {}, values = Object.create(valuesById);
+                    values[valuesById[0] = "INACTIVE"] = 0;
+                    values[valuesById[1] = "ACTIVE"] = 1;
+                    return values;
+                })();
 
                 return RootSecretEntry;
             })();
