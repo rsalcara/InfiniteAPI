@@ -454,11 +454,14 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		})
 	}
 
+	const finishAuthKeysClear = (label: string): Promise<void> =>
+		runWithBusyRetry(label, () => trustedContactsBackend.finishClear())
+
 	const recoverPendingAuthKeysClearUnlocked = async (trigger: 'startup' | 'before-access'): Promise<boolean> => {
 		if (!trustedContactsBackend.hasPendingClear()) return false
 		try {
 			await clearRemainingAuthKeyStores('recover interrupted auth keys clear')
-			trustedContactsBackend.finishClear()
+			await finishAuthKeysClear('finish recovered auth keys clear')
 			opts.logger?.warn?.(
 				{
 					reason: 'interrupted-auth-keys-clear',
@@ -770,7 +773,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 					// raw_string.
 					try {
 						await clearRemainingAuthKeyStores('clear auth key stores')
-						trustedContactsBackend.finishClear()
+						await finishAuthKeysClear('finish auth keys clear')
 					} catch (err) {
 						opts.logger?.error?.(
 							{

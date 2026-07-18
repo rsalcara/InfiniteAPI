@@ -57,6 +57,7 @@ export class TrustedContactsBackend {
 	private readonly db: SqliteDbLike
 	private readonly replaceTx: (jid: string, replacement: TrustedContactReplacement) => void
 	private readonly beginClearTx: () => void
+	private readonly finishClearTx: () => void
 
 	constructor(db: SqliteDbLike) {
 		this.db = db
@@ -119,6 +120,11 @@ export class TrustedContactsBackend {
 			this.stmts.deleteMetadata.run(LEGACY_CLEAR_MARKER_KEY)
 			this.stmts.clearIncoming.run()
 			this.stmts.clearSent.run()
+		}).immediate
+
+		this.finishClearTx = this.db.transaction(() => {
+			this.stmts.deleteMetadata.run(CLEAR_MARKER_KEY)
+			this.stmts.deleteMetadata.run(LEGACY_CLEAR_MARKER_KEY)
 		}).immediate
 	}
 
@@ -209,7 +215,6 @@ export class TrustedContactsBackend {
 	}
 
 	finishClear(): void {
-		this.stmts.deleteMetadata.run(CLEAR_MARKER_KEY)
-		this.stmts.deleteMetadata.run(LEGACY_CLEAR_MARKER_KEY)
+		this.finishClearTx()
 	}
 }
