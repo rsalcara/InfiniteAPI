@@ -145,6 +145,7 @@ export class SignalTypedBackend {
 		deletePrekey: SqliteStatementLike
 		markPrekeysUploaded: SqliteStatementLike
 		markPrekeyDirectDistribution: SqliteStatementLike
+		selectPrekeyDirectDistribution: SqliteStatementLike
 		countUnsentPrekeys: SqliteStatementLike
 		firstUnsentPrekeyId: SqliteStatementLike
 		upsertSignedPrekey: SqliteStatementLike
@@ -233,6 +234,7 @@ export class SignalTypedBackend {
 			markPrekeyDirectDistribution: this.db.prepare(
 				'UPDATE prekeys SET direct_distribution = 1, upload_timestamp = ? WHERE prekey_id = ?'
 			),
+			selectPrekeyDirectDistribution: this.db.prepare('SELECT direct_distribution FROM prekeys WHERE prekey_id = ?'),
 			// A00 / A01 of the real SignalPreKeyStore: the unsent-prekey set IS the
 			// upload queue. The mobile store uses `sent_to_server = 0 AND
 			// direct_distribution = 0`; we wrap both columns in COALESCE so rows
@@ -442,10 +444,20 @@ export class SignalTypedBackend {
 	 * does when a key is handed to a peer inline in a retry receipt instead of
 	 * being uploaded to the server pool. The flag removes it from the unsent-stock
 	 * / upload queries (`countUnsentPrekeys` / `firstUnsentPrekeyId`), so it is not
-	 * also re-sent to the server. Best-effort mirror — never on a critical path.
+	 * also re-sent to the server. Returns true only when exactly one durable row
+	 * was marked; retry-receipt callers use that result fail-closed before handing
+	 * the one-time key to a peer.
 	 */
-	markPrekeyDirectDistribution(prekeyId: number, uploadTimestampSec: number = Math.floor(Date.now() / 1000)): void {
-		this.stmts.markPrekeyDirectDistribution.run(uploadTimestampSec, prekeyId)
+	markPrekeyDirectDistribution(prekeyId: number, uploadTimestampSec: number = Math.floor(Date.now() / 1000)): boolean {
+		return this.stmts.markPrekeyDirectDistribution.run(uploadTimestampSec, prekeyId).changes === 1
+	}
+
+	/** True only when the durable typed row is present and direct-distributed. */
+	isPrekeyDirectDistribution(prekeyId: number): boolean {
+		const row = this.stmts.selectPrekeyDirectDistribution.get(prekeyId) as
+			| { direct_distribution: number | null }
+			| undefined
+		return row?.direct_distribution === 1
 	}
 
 	/**

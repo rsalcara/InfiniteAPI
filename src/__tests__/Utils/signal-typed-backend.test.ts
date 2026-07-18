@@ -136,7 +136,7 @@ describe('SignalTypedBackend', () => {
 
 		// Key 1 is handed to a peer inline in a retry receipt → direct_distribution.
 		const tsSec = 1_784_050_584
-		backend.markPrekeyDirectDistribution(1, tsSec)
+		expect(backend.markPrekeyDirectDistribution(1, tsSec)).toBe(true)
 
 		const row = handle
 			.prepare('SELECT sent_to_server, direct_distribution, upload_timestamp FROM prekeys WHERE prekey_id = 1')
@@ -149,10 +149,9 @@ describe('SignalTypedBackend', () => {
 		expect(backend.countUnsentPrekeys()).toBe(4)
 		expect(backend.firstUnsentPrekeyId()).toBe(2)
 
-		// Marking a prekey id that isn't persisted yet is a silent no-op — this is
-		// why the retry-receipt caller must flag the key AFTER keys.transaction()
-		// commits, not while it is still a pending mutation.
-		backend.markPrekeyDirectDistribution(9999)
+		// The caller must be able to fail closed when no durable row was marked.
+		expect(backend.markPrekeyDirectDistribution(9999)).toBe(false)
+		expect(backend.isPrekeyDirectDistribution(9999)).toBe(false)
 		expect(backend.countUnsentPrekeys()).toBe(4) // unchanged
 	})
 

@@ -27,6 +27,7 @@ import { addTransactionCapability } from '../../Utils/auth-utils'
 import { BufferJSON } from '../../Utils/generics'
 import type { ILogger } from '../../Utils/logger'
 import { SignalTypedBackend, useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
+import { markPrekeyDirectDistributionIntent } from '../../Utils/prekey-direct-distribution'
 
 const silentLogger = (): ILogger => ({
 	level: 'silent',
@@ -449,10 +450,10 @@ describe('useMultiDbSqliteAuthState', () => {
 		close()
 	})
 
-	// Integration guard for the retry-receipt direct_distribution flag: inside
-	// keys.transaction() a `pre-key` set is only a pending mutation, so the row
-	// does not exist yet — the flag MUST be applied after the transaction commits.
-	it('flags a retry-receipt prekey direct_distribution only AFTER the transaction commits', async () => {
+	// Integration guard for the retry-receipt direct_distribution flag: the
+	// object-identity intent must survive the transaction cache and make the
+	// typed prekey INSERT + flag atomic with signal_kv.
+	it('commits a freshly-generated retry prekey with direct_distribution atomically', async () => {
 		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		try {
 			// The raw auth-state keys have no transaction(); the socket adds it via
@@ -471,22 +472,13 @@ describe('useMultiDbSqliteAuthState', () => {
 						| undefined
 				)?.direct_distribution
 
-			// Wrong order (what the first cut did): mark INSIDE the transaction.
-			// The prekey is still a pending mutation → the UPDATE matches zero rows.
 			await keys.transaction(async () => {
 				await keys.set({ 'pre-key': { 43: kp } })
-				backend.markPrekeyDirectDistribution(43)
+				markPrekeyDirectDistributionIntent(kp)
 			}, 'itest')
-			expect(readDd(43)).toBe(0) // in-transaction mark was a no-op
-
-			// Correct order: mark AFTER the transaction commits, when the row exists.
-			await keys.transaction(async () => {
-				await keys.set({ 'pre-key': { 42: kp } })
-			}, 'itest')
-			backend.markPrekeyDirectDistribution(42)
-			expect(readDd(42)).toBe(1)
-			// And it drops out of the upload queue while 43 stays in it.
-			expect(backend.firstUnsentPrekeyId()).toBe(43)
+			expect(readDd(43)).toBe(1)
+			expect(backend.isPrekeyDirectDistribution(43)).toBe(true)
+			expect(backend.countUnsentPrekeys()).toBe(0)
 		} finally {
 			close()
 		}
