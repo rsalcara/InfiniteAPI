@@ -61,6 +61,111 @@ describe('SignalTypedBackend', () => {
 		expect(backend.getPrekey(101)).toBeNull()
 	})
 
+	it('tracks per-key upload state via sent_to_server (WhatsApp Android parity)', () => {
+		const handle = store.handle('axolotl.db')
+		const backend = new SignalTypedBackend(handle)
+		const readFlag = (id: number) =>
+			(handle
+				.prepare('SELECT sent_to_server, direct_distribution, upload_timestamp FROM prekeys WHERE prekey_id = ?')
+				.get(id) ?? {}) as {
+				sent_to_server?: number
+				direct_distribution?: number
+				upload_timestamp?: number
+			}
+
+		// Generation: fresh keys are sent_to_server = 0, direct_distribution = 0,
+		// upload_timestamp NULL — matches SignalPreKeyStore's upload predicate
+		// `WHERE sent_to_server = 0 AND direct_distribution = 0`.
+		for (let id = 1; id <= 5; id++) backend.putPrekey(id, Buffer.from([id]))
+		for (let id = 1; id <= 5; id++) {
+			expect(readFlag(id).sent_to_server).toBe(0)
+			expect(readFlag(id).direct_distribution).toBe(0)
+			expect(readFlag(id).upload_timestamp ?? null).toBeNull()
+		}
+
+		// A00 of SignalPreKeyStore: the unsent set is the upload queue.
+		expect(backend.countUnsentPrekeys()).toBe(5)
+		expect(backend.firstUnsentPrekeyId()).toBe(1)
+
+		// Upload ack: mark the half-open range [1, 4) as uploaded. Epoch SECONDS
+		// (WhatsApp Android stores seconds, not millis).
+		const ts = 1_784_050_584
+		backend.markPrekeysUploaded(1, 4, ts)
+		expect(readFlag(1).sent_to_server).toBe(1)
+		expect(readFlag(3).sent_to_server).toBe(1)
+		expect(readFlag(1).upload_timestamp).toBe(ts)
+		// Outside the range stays unuploaded.
+		expect(readFlag(4).sent_to_server).toBe(0)
+		expect(readFlag(5).sent_to_server).toBe(0)
+
+		// Table is now authoritative for what's still owed: ids 4,5 (2 keys).
+		expect(backend.countUnsentPrekeys()).toBe(2)
+		expect(backend.firstUnsentPrekeyId()).toBe(4)
+
+		// Idempotent: re-marking the same range does not touch already-acked keys.
+		backend.markPrekeysUploaded(1, 4, 9_999_999_999_999)
+		expect(readFlag(1).upload_timestamp).toBe(ts)
+
+		// ON CONFLICT re-put of an uploaded key updates record but preserves the flag.
+		backend.putPrekey(1, Buffer.from([0x63]))
+		expect(readFlag(1).sent_to_server).toBe(1)
+		expect(readFlag(1).upload_timestamp).toBe(ts)
+		expect(Buffer.from(backend.getPrekey(1)!).toString('hex')).toBe('63')
+
+		// Empty/invalid range is a safe no-op.
+		backend.markPrekeysUploaded(100, 100, Date.now())
+		expect(readFlag(5).sent_to_server).toBe(0)
+	})
+
+	it('reports no unsent prekeys once every generated key is uploaded', () => {
+		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
+		for (let id = 1; id <= 3; id++) backend.putPrekey(id, Buffer.from([id]))
+		expect(backend.countUnsentPrekeys()).toBe(3)
+		expect(backend.firstUnsentPrekeyId()).toBe(1)
+
+		backend.markPrekeysUploaded(1, 4, 1_784_050_584)
+		expect(backend.countUnsentPrekeys()).toBe(0)
+		expect(backend.firstUnsentPrekeyId()).toBeNull()
+	})
+
+	it('treats legacy prekeys with NULL flags as unsent (COALESCE)', () => {
+		const handle = store.handle('axolotl.db')
+		// Simulate a row written BEFORE per-key tracking existed: NULL flags.
+		handle.prepare("INSERT INTO prekeys (prekey_id, record, key_type) VALUES (10, X'0a', 0)").run()
+		const backend = new SignalTypedBackend(handle)
+		// `NULL = 0` is not true in SQL — without COALESCE this key would vanish
+		// from the upload queue and the self-heal could never recover it.
+		expect(backend.countUnsentPrekeys()).toBe(1)
+		expect(backend.firstUnsentPrekeyId()).toBe(10)
+	})
+
+	it('commits an upload atomically: chunked flag flip + prekey_uploads in one txn', () => {
+		const handle = store.handle('axolotl.db')
+		const backend = new SignalTypedBackend(handle)
+		for (let id = 1; id <= 450; id++) backend.putPrekey(id, Buffer.from([id & 0xff]))
+
+		const tsSec = 1_784_050_584
+		backend.commitPrekeyUpload(1, 451, tsSec) // 450 keys → chunks of 200
+
+		expect(backend.countUnsentPrekeys()).toBe(0)
+		const uploads = handle.prepare('SELECT COUNT(*) AS n, MAX(upload_timestamp) AS t FROM prekey_uploads').get() as {
+			n: number
+			t: number
+		}
+		expect(uploads.n).toBe(1)
+		expect(uploads.t).toBe(tsSec) // seconds, not millis
+
+		// Rollback proof: use FRESH still-unsent keys so the UPDATE actually
+		// changes rows, then make the prekey_uploads INSERT fail. If the txn were
+		// not atomic the flag flip would survive; it must be rolled back.
+		for (let id = 500; id <= 502; id++) backend.putPrekey(id, Buffer.from([id & 0xff]))
+		expect(backend.countUnsentPrekeys()).toBe(3) // the 3 fresh keys
+		handle.exec('DROP TABLE prekey_uploads') // force the INSERT step to throw
+		expect(() => backend.commitPrekeyUpload(500, 503, tsSec)).toThrow()
+		// The UPDATE was rolled back — all three keys are still unsent.
+		expect(backend.countUnsentPrekeys()).toBe(3)
+	})
+
 	it('stores an identity by both LID and PN recipient_type independently', () => {
 		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
 		// recipient_id is INTEGER per the schema — use stable numeric ids
