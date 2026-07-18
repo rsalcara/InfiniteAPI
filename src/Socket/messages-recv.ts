@@ -85,6 +85,7 @@ import {
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
 import { markPrekeyDirectDistributionIntent } from '../Utils/prekey-direct-distribution'
+import { applyReconciledPrekeyCursors } from '../Utils/prekey-upload-cursors'
 import {
 	metrics,
 	recordHistorySyncMessages,
@@ -2052,6 +2053,32 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		let directDistributionMarkError: unknown
 		let directDistributionWasAlreadyMarked = false
 		let includeDirectDistributionKey = false
+		const shouldIncludeRetryKeys = retryCount > 1 || forceIncludeKeys || shouldRecreateSession
+		if (shouldIncludeRetryKeys && prekeyUploads) {
+			try {
+				const firstUnsent = prekeyUploads.firstUnsentId()
+				const nextGenerated = prekeyUploads.nextGeneratedId()
+				const unsentCount = prekeyUploads.countUnsent()
+				const cursorUpdate = applyReconciledPrekeyCursors(authState.creds, {
+					firstUnsentId: firstUnsent,
+					nextGeneratedId: nextGenerated,
+					unsentCount
+				})
+				if (Object.keys(cursorUpdate).length > 0) {
+					logger.info(
+						{ cursorUpdate, firstUnsent, nextGenerated, unsentCount },
+						'pre-keys: reconciled retry-receipt cursors before selecting direct-distribution key'
+					)
+					ev.emit('creds.update', cursorUpdate)
+				}
+			} catch (err) {
+				logger.error(
+					{ err },
+					'multi-db-sqlite: failed to reconcile retry prekey before selection; refusing possible key reuse'
+				)
+				throw err
+			}
+		}
 		await authState.keys.transaction(async () => {
 			receipt = {
 				tag: 'receipt',
@@ -2088,7 +2115,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				receipt.attrs.participant = node.attrs.participant
 			}
 
-			if (retryCount > 1 || forceIncludeKeys || shouldRecreateSession) {
+			if (shouldIncludeRetryKeys) {
 				const { update, preKeys } = await getNextPreKeys(authState, 1)
 
 				const [keyId] = Object.keys(preKeys)
@@ -4314,17 +4341,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					setTimeout(() => tcTokenRetriedMsgIds.delete(retryKey), 60_000)
 					void (async () => {
 						try {
-							let fetchedForRecipient: boolean | undefined
-							void recoveryPromise.then(
-								result => {
-									fetchedForRecipient = result
-								},
-								() => {
-									fetchedForRecipient = false
-								}
-							)
 							await delay(1500)
-							const tokenUsability = await readTcTokenUsability(jid)
+							let tokenUsability = await readTcTokenUsability(jid)
+							let fetchedForRecipient: boolean | undefined
+							if (!tokenUsability.usable) {
+								// The notification path gets the first 1.5s without being blocked by
+								// the IQ. If it did not provide a token, wait for the explicitly
+								// bounded fetch before consuming the message's single retry.
+								fetchedForRecipient = await recoveryPromise.catch(() => false)
+								tokenUsability = await readTcTokenUsability(jid)
+							}
 							if (!tokenUsability.usable) {
 								logger.warn(
 									{

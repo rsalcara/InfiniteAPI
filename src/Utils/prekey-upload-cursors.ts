@@ -40,3 +40,13 @@ export const reconcilePrekeyCursors = (
 
 	return update
 }
+
+/** Reconciles and immediately updates the cursor object used by the active operation. */
+export const applyReconciledPrekeyCursors = (
+	creds: PrekeyCursorSnapshot,
+	typed: TypedPrekeyProgress
+): Partial<PrekeyCursorSnapshot> => {
+	const update = reconcilePrekeyCursors(creds, typed)
+	Object.assign(creds, update)
+	return update
+}

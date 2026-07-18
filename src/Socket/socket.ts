@@ -39,7 +39,7 @@ import {
 	xmppSignedPreKey
 } from '../Utils'
 import { getPlatformId, isAndroidBrowser } from '../Utils/browser-utils'
-import { reconcilePrekeyCursors } from '../Utils/prekey-upload-cursors'
+import { applyReconciledPrekeyCursors } from '../Utils/prekey-upload-cursors'
 import { resolvePrekeyUploadQueryTimeout } from '../Utils/prekey-upload-timeout'
 import {
 	markConnectionActive,
@@ -679,25 +679,20 @@ export const makeSocket = (config: SocketConfig) => {
 				const firstUnsent = prekeyUploads?.firstUnsentId()
 				const typedNextGenerated = prekeyUploads?.nextGeneratedId()
 				const unsent = prekeyUploads?.countUnsent()
-				const cursorUpdate = reconcilePrekeyCursors(
-					{
-						firstUnuploadedPreKeyId: creds.firstUnuploadedPreKeyId,
-						nextPreKeyId: creds.nextPreKeyId
-					},
-					{
-						firstUnsentId: firstUnsent ?? null,
-						nextGeneratedId: typedNextGenerated ?? null,
-						unsentCount: unsent ?? 0
-					}
-				)
+				const cursorBefore = {
+					firstUnuploadedPreKeyId: creds.firstUnuploadedPreKeyId,
+					nextPreKeyId: creds.nextPreKeyId
+				}
+				const cursorUpdate = applyReconciledPrekeyCursors(creds, {
+					firstUnsentId: firstUnsent ?? null,
+					nextGeneratedId: typedNextGenerated ?? null,
+					unsentCount: unsent ?? 0
+				})
 
 				if (Object.keys(cursorUpdate).length > 0) {
 					logger.info(
 						{
-							from: {
-								firstUnuploadedPreKeyId: creds.firstUnuploadedPreKeyId,
-								nextPreKeyId: creds.nextPreKeyId
-							},
+							from: cursorBefore,
 							to: cursorUpdate,
 							firstUnsent,
 							typedNextGenerated,
@@ -705,10 +700,6 @@ export const makeSocket = (config: SocketConfig) => {
 						},
 						'pre-keys: self-heal reconciled creds cursors from authoritative typed prekeys'
 					)
-					// The retry loop below reads this captured creds object immediately.
-					// Persisting through the event alone is not enough: the consumer may
-					// save asynchronously, leaving this attempt on the stale cursors.
-					Object.assign(creds, cursorUpdate)
 					ev.emit('creds.update', cursorUpdate)
 				}
 			} catch (err) {

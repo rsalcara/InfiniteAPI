@@ -13,7 +13,7 @@
  *     advance `nextPreKeyId` by exactly one batch, not N.
  */
 
-import { reconcilePrekeyCursors } from '../../Utils/prekey-upload-cursors'
+import { applyReconciledPrekeyCursors, reconcilePrekeyCursors } from '../../Utils/prekey-upload-cursors'
 import {
 	PREKEY_UPLOAD_QUERY_TIMEOUT_FALLBACK_MS,
 	resolvePrekeyUploadQueryTimeout
@@ -211,18 +211,32 @@ describe('reconcilePrekeyCursors', () => {
 
 	it('applies repaired cursors to the active creds before the same upload attempt', () => {
 		const creds: CredsLike = { firstUnuploadedPreKeyId: 1, nextPreKeyId: 1 }
-		const cursorUpdate = reconcilePrekeyCursors(creds, {
+		const cursorUpdate = applyReconciledPrekeyCursors(creds, {
 			firstUnsentId: null,
 			nextGeneratedId: 31,
 			unsentCount: 0
 		})
 
-		Object.assign(creds, cursorUpdate)
-
+		expect(cursorUpdate).toEqual({ firstUnuploadedPreKeyId: 31, nextPreKeyId: 31 })
 		expect(creds).toEqual({ firstUnuploadedPreKeyId: 31, nextPreKeyId: 31 })
 		expect(generateOrGetPreKeys(creds, 3)).toEqual({
 			firstUnuploadedPreKeyId: 34,
 			nextPreKeyId: 34
+		})
+	})
+
+	it('skips a crash-stale direct-distributed id before generating its replacement', () => {
+		const creds: CredsLike = { firstUnuploadedPreKeyId: 1, nextPreKeyId: 1 }
+		applyReconciledPrekeyCursors(creds, {
+			firstUnsentId: null,
+			nextGeneratedId: 2,
+			unsentCount: 0
+		})
+
+		expect(creds).toEqual({ firstUnuploadedPreKeyId: 2, nextPreKeyId: 2 })
+		expect(generateOrGetPreKeys(creds, 1)).toEqual({
+			firstUnuploadedPreKeyId: 3,
+			nextPreKeyId: 3
 		})
 	})
 
