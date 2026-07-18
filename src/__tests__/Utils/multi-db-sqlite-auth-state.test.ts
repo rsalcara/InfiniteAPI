@@ -85,6 +85,19 @@ const expectAuthKeyClearSurfacesEmpty = ({ store }: MultiDbAuthState): void => {
 	expect(new TrustedContactsBackend(store.handle('wa.db')).hasPendingClear()).toBe(false)
 }
 
+const seedSignalKvSessions = ({ store }: MultiDbAuthState, count: number): string[] => {
+	const ids = Array.from({ length: count }, (_, index) => `bulk-${String(index).padStart(4, '0')}`)
+	const db = store.handle('axolotl.db')
+	const insert = db.prepare('INSERT INTO signal_kv (type, id, value) VALUES (?, ?, ?)')
+	const seed = db.transaction(() => {
+		for (const [index, id] of ids.entries()) {
+			insert.run('session', id, JSON.stringify(sampleSession(index % 256), BufferJSON.replacer))
+		}
+	}).immediate
+	seed()
+	return ids
+}
+
 describe('useMultiDbSqliteAuthState', () => {
 	let dir: string
 
@@ -270,6 +283,41 @@ describe('useMultiDbSqliteAuthState', () => {
 		for await (const id of listIds('session')) ids.push(id)
 		expect(ids.sort()).toEqual(['a', 'b', 'c'])
 		close()
+	})
+
+	it('enumerates multiple bounded keyset pages without gaps or duplicates', async () => {
+		const auth = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			const expectedIds = seedSignalKvSessions(auth, 600)
+			const listedIds: string[] = []
+			for await (const id of auth.state.keys.listIds!('session')) listedIds.push(id)
+			expect(listedIds).toEqual(expectedIds)
+
+			const listedEntries: string[] = []
+			for await (const [id] of auth.state.keys.list!('session')) listedEntries.push(id)
+			expect(listedEntries).toEqual(expectedIds)
+		} finally {
+			auth.close()
+		}
+	})
+
+	it('invalidates list and listIds immediately when keys.clear runs between yields', async () => {
+		const auth = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			seedSignalKvSessions(auth, 300)
+			const listIterator = auth.state.keys.list!('session')[Symbol.asyncIterator]()
+			const idIterator = auth.state.keys.listIds!('session')[Symbol.asyncIterator]()
+			expect((await listIterator.next()).done).toBe(false)
+			expect((await idIterator.next()).done).toBe(false)
+
+			if (!auth.state.keys.clear) throw new Error('clear not implemented')
+			await auth.state.keys.clear()
+
+			await expect(listIterator.next()).rejects.toThrow('invalidated by concurrent keys.clear')
+			await expect(idIterator.next()).rejects.toThrow('invalidated by concurrent keys.clear')
+		} finally {
+			auth.close()
+		}
 	})
 
 	it('routes app-state-sync-key to creds.db.app_state_sync_keys, not axolotl.signal_kv', async () => {

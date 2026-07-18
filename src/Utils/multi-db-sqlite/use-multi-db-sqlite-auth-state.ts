@@ -16,6 +16,7 @@ import { TrustedContactsBackend } from './trusted-contacts-backend'
 const CREDS_ROW_KEY = '__creds__'
 const MAX_BUSY_ATTEMPTS = 5
 const BUSY_RETRY_BASE_MS = 25
+const AUTH_KEYS_ENUM_PAGE_SIZE = 256
 
 function sleep(ms: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms))
@@ -140,6 +141,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	// Global barrier shared by auth-key clear/recovery and every public key
 	// operation. The marker now covers all key stores, not only tctoken.
 	const authKeysClearMutex = makeMutex()
+	let authKeysClearGeneration = 0
 
 	// Observability for the typed→signal_kv fallback. `total` counts reads the
 	// typed table couldn't serve but signal_kv could (real fallbacks, not
@@ -461,6 +463,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 
 	const recoverPendingAuthKeysClearUnlocked = async (trigger: 'startup' | 'before-access'): Promise<boolean> => {
 		if (!trustedContactsBackend.hasPendingClear()) return false
+		authKeysClearGeneration++
 		try {
 			await clearRemainingAuthKeyStores('recover interrupted auth keys clear')
 			await finishAuthKeysClear('finish recovered auth keys clear')
@@ -558,6 +561,12 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			await recoverPendingAuthKeysClearUnlocked('before-access')
 			await runSetWithBusyRetryUnlocked(data)
 		})
+	const assertAuthKeyEnumerationGeneration = (expected: number): void => {
+		if (expected === authKeysClearGeneration) return
+		throw new Error(
+			'multi-db-sqlite: auth-key enumeration invalidated by concurrent keys.clear; restart the enumeration'
+		)
+	}
 
 	const state: AuthenticationState = {
 		// Getter/setter pair so `state.creds = newObj` mutations are
@@ -747,6 +756,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			clear: async () => {
 				await authKeysClearMutex.mutex(async () => {
 					await recoverPendingAuthKeysClearUnlocked('before-access')
+					authKeysClearGeneration++
 					// wa.db owns the durable intent. Writing it and clearing both token
 					// tables is one transaction; every remaining database is replayed
 					// idempotently until all key-store surfaces have been cleared.
@@ -779,31 +789,91 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			list: async function* <T extends keyof SignalDataTypeMap>(
 				type: T
 			): AsyncIterable<readonly [string, SignalDataTypeMap[T]]> {
-				const rows = await authKeysClearMutex.mutex(async () => {
-					await recoverPendingAuthKeysClearUnlocked('before-access')
-					return type === 'app-state-sync-key'
-						? (appStateSyncKeyStmts.list.all() as Array<{ id: string; value: string }>)
-						: (signalStmts.list.all(type) as Array<{ id: string; value: string }>)
-				})
-				for (const row of rows) {
-					// eslint-disable-next-line @typescript-eslint/no-explicit-any
-					let value: any = JSON.parse(row.value, BufferJSON.reviver)
-					if (type === 'app-state-sync-key' && value) {
-						value = proto.Message.AppStateSyncKeyData.fromObject(value)
+				let afterId: string | undefined
+				let enumerationGeneration: number | undefined
+				while (true) {
+					const rows = await authKeysClearMutex.mutex(async () => {
+						await recoverPendingAuthKeysClearUnlocked('before-access')
+						if (enumerationGeneration === undefined) enumerationGeneration = authKeysClearGeneration
+						else assertAuthKeyEnumerationGeneration(enumerationGeneration)
+
+						if (type === 'app-state-sync-key') {
+							return (
+								afterId === undefined
+									? appStateSyncKeyStmts.listFirstPage.all(AUTH_KEYS_ENUM_PAGE_SIZE)
+									: appStateSyncKeyStmts.listPageAfter.all(afterId, AUTH_KEYS_ENUM_PAGE_SIZE)
+							) as Array<{
+								id: string
+								value: string
+							}>
+						}
+
+						return (
+							afterId === undefined
+								? signalStmts.listFirstPage.all(type, AUTH_KEYS_ENUM_PAGE_SIZE)
+								: signalStmts.listPageAfter.all(type, afterId, AUTH_KEYS_ENUM_PAGE_SIZE)
+						) as Array<{
+							id: string
+							value: string
+						}>
+					})
+					const pageGeneration = enumerationGeneration
+					if (pageGeneration === undefined) throw new Error('auth-key enumeration generation was not initialized')
+					if (rows.length === 0) return
+
+					for (const row of rows) {
+						assertAuthKeyEnumerationGeneration(pageGeneration)
+						// eslint-disable-next-line @typescript-eslint/no-explicit-any
+						let value: any = JSON.parse(row.value, BufferJSON.reviver)
+						if (type === 'app-state-sync-key' && value) {
+							value = proto.Message.AppStateSyncKeyData.fromObject(value)
+						}
+
+						yield [row.id, value as SignalDataTypeMap[T]] as const
 					}
 
-					yield [row.id, value as SignalDataTypeMap[T]] as const
+					afterId = rows[rows.length - 1]!.id
+					if (rows.length < AUTH_KEYS_ENUM_PAGE_SIZE) return
 				}
 			},
 			listIds: async function* <T extends keyof SignalDataTypeMap>(type: T): AsyncIterable<string> {
-				const rows = await authKeysClearMutex.mutex(async () => {
-					await recoverPendingAuthKeysClearUnlocked('before-access')
-					return type === 'app-state-sync-key'
-						? (appStateSyncKeyStmts.listIds.all() as Array<{ id: string }>)
-						: (signalStmts.listIds.all(type) as Array<{ id: string }>)
-				})
-				for (const row of rows) {
-					yield row.id
+				let afterId: string | undefined
+				let enumerationGeneration: number | undefined
+				while (true) {
+					const rows = await authKeysClearMutex.mutex(async () => {
+						await recoverPendingAuthKeysClearUnlocked('before-access')
+						if (enumerationGeneration === undefined) enumerationGeneration = authKeysClearGeneration
+						else assertAuthKeyEnumerationGeneration(enumerationGeneration)
+
+						if (type === 'app-state-sync-key') {
+							return (
+								afterId === undefined
+									? appStateSyncKeyStmts.listIdsFirstPage.all(AUTH_KEYS_ENUM_PAGE_SIZE)
+									: appStateSyncKeyStmts.listIdsPageAfter.all(afterId, AUTH_KEYS_ENUM_PAGE_SIZE)
+							) as Array<{
+								id: string
+							}>
+						}
+
+						return (
+							afterId === undefined
+								? signalStmts.listIdsFirstPage.all(type, AUTH_KEYS_ENUM_PAGE_SIZE)
+								: signalStmts.listIdsPageAfter.all(type, afterId, AUTH_KEYS_ENUM_PAGE_SIZE)
+						) as Array<{
+							id: string
+						}>
+					})
+					const pageGeneration = enumerationGeneration
+					if (pageGeneration === undefined) throw new Error('auth-key enumeration generation was not initialized')
+					if (rows.length === 0) return
+
+					for (const row of rows) {
+						assertAuthKeyEnumerationGeneration(pageGeneration)
+						yield row.id
+					}
+
+					afterId = rows[rows.length - 1]!.id
+					if (rows.length < AUTH_KEYS_ENUM_PAGE_SIZE) return
 				}
 			}
 		}
@@ -861,8 +931,10 @@ function prepareSignalStatements(store: MultiDbSqliteStore) {
 		),
 		del: db.prepare('DELETE FROM signal_kv WHERE type = ? AND id = ?'),
 		deleteType: db.prepare('DELETE FROM signal_kv WHERE type = ?'),
-		listIds: db.prepare('SELECT id FROM signal_kv WHERE type = ?'),
-		list: db.prepare('SELECT id, value FROM signal_kv WHERE type = ?'),
+		listIdsFirstPage: db.prepare('SELECT id FROM signal_kv WHERE type = ? ORDER BY id LIMIT ?'),
+		listIdsPageAfter: db.prepare('SELECT id FROM signal_kv WHERE type = ? AND id > ? ORDER BY id LIMIT ?'),
+		listFirstPage: db.prepare('SELECT id, value FROM signal_kv WHERE type = ? ORDER BY id LIMIT ?'),
+		listPageAfter: db.prepare('SELECT id, value FROM signal_kv WHERE type = ? AND id > ? ORDER BY id LIMIT ?'),
 		clear: db.prepare('DELETE FROM signal_kv')
 	}
 }
@@ -883,8 +955,14 @@ function prepareAppStateSyncKeyStatements(store: MultiDbSqliteStore) {
 				'ON CONFLICT(key_id) DO UPDATE SET value = excluded.value, created_at = excluded.created_at'
 		),
 		del: db.prepare('DELETE FROM app_state_sync_keys WHERE key_id = ?'),
-		listIds: db.prepare('SELECT key_id AS id FROM app_state_sync_keys'),
-		list: db.prepare('SELECT key_id AS id, value FROM app_state_sync_keys'),
+		listIdsFirstPage: db.prepare('SELECT key_id AS id FROM app_state_sync_keys ORDER BY key_id LIMIT ?'),
+		listIdsPageAfter: db.prepare(
+			'SELECT key_id AS id FROM app_state_sync_keys WHERE key_id > ? ORDER BY key_id LIMIT ?'
+		),
+		listFirstPage: db.prepare('SELECT key_id AS id, value FROM app_state_sync_keys ORDER BY key_id LIMIT ?'),
+		listPageAfter: db.prepare(
+			'SELECT key_id AS id, value FROM app_state_sync_keys WHERE key_id > ? ORDER BY key_id LIMIT ?'
+		),
 		clear: db.prepare('DELETE FROM app_state_sync_keys')
 	}
 }
