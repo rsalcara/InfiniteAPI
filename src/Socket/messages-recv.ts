@@ -2053,14 +2053,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						logger.error(
 							{
 								err: directDistributionMarkError ? compactError(directDistributionMarkError) : undefined,
-								fallbackStore: 'signal_kv',
 								keyId: directDistributionKeyId,
 								reason: signalTypedBackend ? 'typed-row-not-direct-distributed' : 'typed-backend-unavailable',
 								retryReceiptAction: 'one-time-prekey-omitted',
 								signalKvPreserved: true,
-								serverUploadEligibilityPreserved: true
+								serverUploadEligibilityPreserved: true,
+								storagePath: signalTypedBackend ? 'typed-prekeys-with-signal_kv-fallback' : 'signal_kv-only'
 							},
-							'multi-db-sqlite: typed direct-distribution unavailable; signal_kv preserved and one-time prekey omitted from retry receipt'
+							'multi-db-sqlite: typed direct-distribution unavailable; key material retained, signal_kv fallback preserved, and one-time prekey omitted from retry receipt'
 						)
 					}
 				}
