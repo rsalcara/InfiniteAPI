@@ -10,6 +10,7 @@ import { SignalTypedBackend } from './signal-typed-backend'
 import { isMirroredSignalType, mirrorSignalEntry } from './signal-typed-mirror'
 import { SignalTypedSourceStore, type TypedSignalType } from './signal-typed-source'
 import { MultiDbSqliteStore, type MultiDbSqliteStoreOptions } from './store'
+import { TrustedContactsBackend } from './trusted-contacts-backend'
 
 const CREDS_ROW_KEY = '__creds__'
 const MAX_BUSY_ATTEMPTS = 5
@@ -144,6 +145,10 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	let signalTypedBackend: SignalTypedBackend
 	let signalMirrorJidMap: JidMapBackend
 	let signalTypedSource: SignalTypedSourceStore
+	// Authoritative (PK-jid) store for TC / "privacy" tokens, in wa.db. When
+	// `sourceOfTruth` is on, `'tctoken'` reads/writes route here (signal_kv stays
+	// the superset fallback); replaces the signal_kv `__index` enumeration race.
+	let trustedContactsBackend: TrustedContactsBackend
 
 	try {
 		// store.open() now lives INSIDE the try/catch so any open-time error
@@ -170,6 +175,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		signalTypedBackend = new SignalTypedBackend(store.handle('axolotl.db'))
 		signalMirrorJidMap = new JidMapBackend(store.handle('msgstore.db'))
 		signalTypedSource = new SignalTypedSourceStore(signalTypedBackend, signalMirrorJidMap, opts.logger)
+		trustedContactsBackend = new TrustedContactsBackend(store.handle('wa.db'))
 	} catch (err) {
 		// Only close the store if WE opened it — injected stores belong to
 		// the caller.
@@ -294,6 +300,50 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		return isBytes(value)
 	}
 
+	// tctoken values bundle the incoming (token/timestamp) and sent
+	// (senderTimestamp/realIssueTimestamp) sides into one KV entry; the relational
+	// model splits them across wa_trusted_contacts / wa_trusted_contacts_send
+	// (both PK jid). Metadata keys (`__index`, `__prune_ts`) are NOT contact rows
+	// — they have no `@` and stay in signal_kv.
+	const isTctokenContactKey = (id: string): boolean => id.includes('@')
+
+	// Mirror a bundled tctoken value into the two relational tables. Matches the
+	// KV "replace whole value" semantics: a side absent from the new value is
+	// cleared, so the tables never keep a stale incoming/sent half.
+	const writeTctokenRelational = (id: string, value: SignalDataTypeMap['tctoken'] | null | undefined): void => {
+		if (value === null || value === undefined) {
+			trustedContactsBackend.deleteIncoming(id)
+			trustedContactsBackend.deleteSent(id)
+			return
+		}
+
+		if (value.token && value.token.length > 0) {
+			trustedContactsBackend.setIncoming(id, value.token, value.timestamp ? Number(value.timestamp) : 0)
+		} else {
+			trustedContactsBackend.deleteIncoming(id)
+		}
+
+		if (value.senderTimestamp !== undefined) {
+			trustedContactsBackend.setSent(id, value.senderTimestamp, value.realIssueTimestamp ?? 0)
+		} else {
+			trustedContactsBackend.deleteSent(id)
+		}
+	}
+
+	// Merge the two relational rows back into the bundled KV shape, or undefined
+	// when the contact has neither side (a real miss → signal_kv fallback).
+	const readTctokenRelational = (id: string): SignalDataTypeMap['tctoken'] | undefined => {
+		const inc = trustedContactsBackend.getIncoming(id)
+		const snt = trustedContactsBackend.getSent(id)
+		if (!inc && !snt) return undefined
+		return {
+			token: inc ? inc.token : Buffer.alloc(0),
+			timestamp: inc ? String(inc.timestamp) : undefined,
+			senderTimestamp: snt ? snt.sentTimestamp : undefined,
+			realIssueTimestamp: snt ? snt.realIssueTimestamp : undefined
+		}
+	}
+
 	const applySetTx = store.handle('axolotl.db').transaction((data: SignalDataSet) => {
 		for (const category in data) {
 			const type = category as keyof SignalDataTypeMap
@@ -332,6 +382,16 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 
 				if (isMirroredSignalType(type)) {
 					writeTypedSignal(type, id, value, serialized)
+				}
+
+				// Authoritative tctoken write to wa.db (PK-jid tables). signal_kv is
+				// still written above as the superset fallback. Metadata keys
+				// (`__index`/`__prune_ts`) are NOT contacts → signal_kv only. Like the
+				// app-state-sync-key write, this hits a DIFFERENT physical file than
+				// the axolotl.db transaction, so it autocommits on its own — the same
+				// non-atomic-across-files trade-off already accepted here.
+				if (sourceOfTruth && type === 'tctoken' && isTctokenContactKey(id)) {
+					writeTctokenRelational(id, value as SignalDataTypeMap['tctoken'] | null)
 				}
 			}
 		}
@@ -403,6 +463,42 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 						out[row.id] = (
 							parsed ? proto.Message.AppStateSyncKeyData.fromObject(parsed) : parsed
 						) as SignalDataTypeMap[typeof type]
+					}
+
+					return out
+				}
+
+				// tctoken: read the authoritative PK-jid tables first; fall back to
+				// signal_kv for metadata keys (`__index`/`__prune_ts`) and for contacts
+				// not yet migrated. A backend read error also degrades to signal_kv —
+				// never throws to the caller.
+				if (sourceOfTruth && type === 'tctoken') {
+					const missing: string[] = []
+					for (const id of ids) {
+						if (!isTctokenContactKey(id)) {
+							missing.push(id)
+							continue
+						}
+
+						let rel: SignalDataTypeMap['tctoken'] | undefined
+						try {
+							rel = readTctokenRelational(id)
+						} catch {
+							rel = undefined
+						}
+
+						if (rel !== undefined) {
+							out[id] = rel as SignalDataTypeMap[typeof type]
+						} else {
+							missing.push(id)
+						}
+					}
+
+					if (missing.length > 0) {
+						const rows = signalGetIn.all([type], missing) as Array<{ id: string; value: string }>
+						for (const row of rows) {
+							out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
+						}
 					}
 
 					return out
@@ -542,6 +638,10 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 					// equally undesirable). All four live in axolotl.db.
 					const axolotlDb = store.handle('axolotl.db')
 					axolotlDb.exec('DELETE FROM sessions; DELETE FROM prekeys; DELETE FROM sender_keys; DELETE FROM identities;')
+					// tctoken authoritative tables live in wa.db — wipe them too so a
+					// reset can't resurrect trusted-contact tokens via the tctoken read
+					// path (which hits these before the signal_kv fallback).
+					store.handle('wa.db').exec('DELETE FROM wa_trusted_contacts; DELETE FROM wa_trusted_contacts_send;')
 				})
 			},
 			list: async function* <T extends keyof SignalDataTypeMap>(

@@ -484,6 +484,70 @@ describe('useMultiDbSqliteAuthState', () => {
 		}
 	})
 
+	it('routes tctoken through wa_trusted_contacts / _send (authoritative) with signal_kv fallback', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			const jid = '46802258641027@lid'
+			await state.keys.set({
+				tctoken: {
+					[jid]: {
+						token: Buffer.from([1, 2, 3]),
+						timestamp: '1784050585',
+						senderTimestamp: 1783471194,
+						realIssueTimestamp: null
+					}
+				}
+			})
+
+			// Authoritative write landed in the relational tables (not just signal_kv).
+			const inc = store
+				.handle('wa.db')
+				.prepare(
+					'SELECT hex(incoming_tc_token) AS t, incoming_tc_token_timestamp AS ts FROM wa_trusted_contacts WHERE jid = ?'
+				)
+				.get(jid) as { t: string; ts: number }
+			expect(inc).toEqual({ t: '010203', ts: 1784050585 })
+			const snt = store
+				.handle('wa.db')
+				.prepare(
+					'SELECT sent_tc_token_timestamp AS s, real_issue_timestamp AS r FROM wa_trusted_contacts_send WHERE jid = ?'
+				)
+				.get(jid) as { s: number; r: number }
+			expect(snt).toEqual({ s: 1783471194, r: 0 }) // realIssueTimestamp null → 0
+
+			// Read merges both tables back into the bundled KV value.
+			const got = await state.keys.get('tctoken', [jid])
+			expect(Buffer.from(got[jid]!.token).toString('hex')).toBe('010203')
+			expect(got[jid]!.senderTimestamp).toBe(1783471194)
+
+			// Metadata keys (no `@`) are NOT contacts → signal_kv only.
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			await state.keys.set({ tctoken: { __index: { jids: [jid] } as any } })
+			expect(
+				(
+					store
+						.handle('wa.db')
+						.prepare('SELECT COUNT(*) AS n FROM wa_trusted_contacts WHERE jid = ?')
+						.get('__index') as { n: number }
+				).n
+			).toBe(0)
+			expect((await state.keys.get('tctoken', ['__index']))['__index']).toBeDefined()
+
+			// Delete (set null) clears both relational rows; read returns undefined.
+			await state.keys.set({ tctoken: { [jid]: null as unknown as SignalDataTypeMap['tctoken'] } })
+			expect(
+				(
+					store.handle('wa.db').prepare('SELECT COUNT(*) AS n FROM wa_trusted_contacts WHERE jid = ?').get(jid) as {
+						n: number
+					}
+				).n
+			).toBe(0)
+			expect((await state.keys.get('tctoken', [jid]))[jid]).toBeUndefined()
+		} finally {
+			close()
+		}
+	})
+
 	it('keeps signal_kv operational when a direct-distribution mirror fails in kill-switch mode', async () => {
 		const { store, state, close } = await useMultiDbSqliteAuthState({
 			sessionDir: dir,

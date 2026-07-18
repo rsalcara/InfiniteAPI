@@ -77,10 +77,12 @@ import { makeMutex } from '../Utils/make-mutex'
 import {
 	JidMapBackend,
 	MessageStoreBackend,
+	type MultiDbSqliteStore,
 	ReceiptBackend,
 	type ReceiptKind,
 	SignalTypedBackend,
-	StatusBackend
+	StatusBackend,
+	TrustedContactsBackend
 } from '../Utils/multi-db-sqlite'
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
@@ -448,8 +450,29 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	})()
 
+	// Lazily-opened authoritative TC-token store (wa.db, PK-jid). When present it
+	// makes the signal_kv `__index` jid-list obsolete: enumeration is a SELECT
+	// over the PK, so the cross-session read-merge-write race on `__index` is gone.
+	let trustedContactsBackend: TrustedContactsBackend | null | undefined
+	const getTrustedContactsBackend = (): TrustedContactsBackend | null => {
+		if (!config.multiDbStore) return null
+		if (trustedContactsBackend === undefined) {
+			try {
+				trustedContactsBackend = new TrustedContactsBackend((config.multiDbStore as MultiDbSqliteStore).handle('wa.db'))
+			} catch (err) {
+				logger.debug({ err }, 'multi-db-sqlite: could not open wa.db backend for tctoken')
+				trustedContactsBackend = null
+			}
+		}
+
+		return trustedContactsBackend
+	}
+
 	/** Debounced save of the tctoken JID index (5s) */
 	const scheduleTcTokenIndexSave = () => {
+		// Multi-db is authoritative and enumerates via SELECT jid — the `__index`
+		// list (and its lost-update race) is unnecessary, so skip persisting it.
+		if (config.multiDbStore) return
 		if (tcTokenIndexSaveTimer) clearTimeout(tcTokenIndexSaveTimer)
 		tcTokenIndexSaveTimer = setTimeout(async () => {
 			try {
@@ -470,6 +493,30 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	/** Delete expired tctokens — runs at most once per 24h when coming online */
 	const pruneExpiredTcTokens = async () => {
+		// Multi-db path: enumerate authoritatively over the PK-jid table (SELECT
+		// jid) instead of the racey signal_kv `__index`. `listIncoming` already
+		// returns the timestamp, so expiry is checked without an extra read per jid.
+		const tcBackend = getTrustedContactsBackend()
+		if (tcBackend) {
+			try {
+				const pruneSet: Record<string, null> = {}
+				for (const { jid, timestamp } of tcBackend.listIncoming()) {
+					if (isTcTokenExpired(timestamp)) pruneSet[jid] = null
+				}
+
+				const pruneCount = Object.keys(pruneSet).length
+				if (pruneCount > 0) {
+					await authState.keys.set({ tctoken: pruneSet })
+					logTcToken('prune', { pruned: pruneCount, via: 'wa_trusted_contacts' })
+				}
+			} catch (err) {
+				logger.debug({ err }, 'tctoken prune (relational) failed')
+			}
+
+			return
+		}
+
+		// Legacy (single-file / no multi-db): __index-backed enumeration.
 		await tcTokenIndexLoaded
 		const pruneSet: Record<string, null> = {}
 		const survivingJids: string[] = []
