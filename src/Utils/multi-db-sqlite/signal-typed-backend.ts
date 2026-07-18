@@ -144,6 +144,7 @@ export class SignalTypedBackend {
 		selectPrekey: SqliteStatementLike
 		deletePrekey: SqliteStatementLike
 		markPrekeysUploaded: SqliteStatementLike
+		markPrekeyDirectDistribution: SqliteStatementLike
 		countUnsentPrekeys: SqliteStatementLike
 		firstUnsentPrekeyId: SqliteStatementLike
 		upsertSignedPrekey: SqliteStatementLike
@@ -221,6 +222,16 @@ export class SignalTypedBackend {
 			markPrekeysUploaded: this.db.prepare(
 				'UPDATE prekeys SET sent_to_server = 1, upload_timestamp = ? ' +
 					'WHERE prekey_id >= ? AND prekey_id < ? AND (sent_to_server IS NULL OR sent_to_server = 0)'
+			),
+			// Direct-distribution path (retry receipt): the real SignalPreKeyStore
+			// takes ONE unsent key, flags it `direct_distribution = 1` + stamps
+			// `upload_timestamp`, then hands it straight to the peer inline. The flag
+			// excludes it from the normal stock/upload queries (which filter
+			// `direct_distribution = 0`) so it is never also uploaded to the server
+			// pool. `sent_to_server` is intentionally left untouched (the key was
+			// delivered peer-to-peer, not acked by the server pool upload IQ).
+			markPrekeyDirectDistribution: this.db.prepare(
+				'UPDATE prekeys SET direct_distribution = 1, upload_timestamp = ? WHERE prekey_id = ?'
 			),
 			// A00 / A01 of the real SignalPreKeyStore: the unsent-prekey set IS the
 			// upload queue. The mobile store uses `sent_to_server = 0 AND
@@ -423,6 +434,18 @@ export class SignalTypedBackend {
 	markPrekeysUploaded(fromId: number, toId: number, uploadTimestamp: number = Date.now()): void {
 		if (!(toId > fromId)) return
 		this.stmts.markPrekeysUploaded.run(uploadTimestamp, fromId, toId)
+	}
+
+	/**
+	 * Flags a single one-time prekey as direct-distributed (`direct_distribution
+	 * = 1`) with its `upload_timestamp`, mirroring what the real SignalPreKeyStore
+	 * does when a key is handed to a peer inline in a retry receipt instead of
+	 * being uploaded to the server pool. The flag removes it from the unsent-stock
+	 * / upload queries (`countUnsentPrekeys` / `firstUnsentPrekeyId`), so it is not
+	 * also re-sent to the server. Best-effort mirror — never on a critical path.
+	 */
+	markPrekeyDirectDistribution(prekeyId: number, uploadTimestampSec: number = Math.floor(Date.now() / 1000)): void {
+		this.stmts.markPrekeyDirectDistribution.run(uploadTimestampSec, prekeyId)
 	}
 
 	/**

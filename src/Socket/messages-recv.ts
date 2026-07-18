@@ -1998,6 +1998,19 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				})
 
 				ev.emit('creds.update', update)
+
+				// SignalPreKeyStore parity: this key was handed to the peer inline
+				// (direct distribution), not uploaded to the server pool. Flag it in
+				// the typed prekeys table so the unsent-stock / upload queries exclude
+				// it (they filter direct_distribution = 0) and it is never also
+				// re-sent to the server. Best-effort mirror — never blocks the receipt.
+				if (signalTypedBackend && keyId) {
+					try {
+						signalTypedBackend.markPrekeyDirectDistribution(+keyId)
+					} catch (err) {
+						logger.debug({ err, keyId }, 'multi-db-sqlite: mark prekey direct_distribution failed (non-fatal)')
+					}
+				}
 			}
 
 			await sendNode(receipt)
