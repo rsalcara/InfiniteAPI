@@ -705,6 +705,10 @@ export const makeSocket = (config: SocketConfig) => {
 						},
 						'pre-keys: self-heal reconciled creds cursors from authoritative typed prekeys'
 					)
+					// The retry loop below reads this captured creds object immediately.
+					// Persisting through the event alone is not enough: the consumer may
+					// save asynchronously, leaving this attempt on the stale cursors.
+					Object.assign(creds, cursorUpdate)
 					ev.emit('creds.update', cursorUpdate)
 				}
 			} catch (err) {

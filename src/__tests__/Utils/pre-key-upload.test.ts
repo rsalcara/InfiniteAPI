@@ -209,6 +209,23 @@ describe('reconcilePrekeyCursors', () => {
 		).toEqual({ firstUnuploadedPreKeyId: 31, nextPreKeyId: 31 })
 	})
 
+	it('applies repaired cursors to the active creds before the same upload attempt', () => {
+		const creds: CredsLike = { firstUnuploadedPreKeyId: 1, nextPreKeyId: 1 }
+		const cursorUpdate = reconcilePrekeyCursors(creds, {
+			firstUnsentId: null,
+			nextGeneratedId: 31,
+			unsentCount: 0
+		})
+
+		Object.assign(creds, cursorUpdate)
+
+		expect(creds).toEqual({ firstUnuploadedPreKeyId: 31, nextPreKeyId: 31 })
+		expect(generateOrGetPreKeys(creds, 3)).toEqual({
+			firstUnuploadedPreKeyId: 34,
+			nextPreKeyId: 34
+		})
+	})
+
 	it('still rewinds to a legacy unsent orphan below the creds cursor', () => {
 		expect(
 			reconcilePrekeyCursors(
