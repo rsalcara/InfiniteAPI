@@ -22,6 +22,7 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { jest } from '@jest/globals'
 import type { SignalDataTypeMap } from '../../Types'
 import { addTransactionCapability } from '../../Utils/auth-utils'
 import { BufferJSON } from '../../Utils/generics'
