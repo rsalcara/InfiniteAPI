@@ -3,6 +3,7 @@ import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDat
 import { initAuthCreds } from '../auth-utils'
 import { BufferJSON } from '../generics'
 import type { ILogger } from '../logger'
+import { hasPrekeyDirectDistributionIntent } from '../prekey-direct-distribution'
 import { prepareInClause } from './in-statement-cache'
 import { JidMapBackend } from './lid-mapping-backend'
 import { SignalTypedBackend } from './signal-typed-backend'
@@ -236,6 +237,28 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		value: SignalDataTypeMap[keyof SignalDataTypeMap] | null | undefined,
 		serialized: string | null
 	): void => {
+		// A retry-receipt prekey must be inserted and flagged in the SAME
+		// axolotl.db transaction as signal_kv. The KeyPair carries a private
+		// WeakSet intent (never serialized) from messages-recv through the auth
+		// transaction cache. In authoritative mode, doing both statements here
+		// closes the post-commit window where upload self-heal could observe dd=0.
+		// Kill-switch mode deliberately falls through to its best-effort mirror;
+		// the receipt path verifies/marks that row after commit and omits the key
+		// without breaking signal_kv when the mirror is unavailable.
+		if (sourceOfTruth && type === 'pre-key' && serialized !== null && hasPrekeyDirectDistributionIntent(value)) {
+			signalTypedSource.set(type, id, serialized)
+			const prekeyId = Number(id)
+			if (!Number.isSafeInteger(prekeyId) || prekeyId < 0) {
+				throw new Error(`multi-db-sqlite: invalid direct-distribution prekey id: ${id}`)
+			}
+
+			if (!signalTypedBackend.markPrekeyDirectDistribution(prekeyId)) {
+				throw new Error(`multi-db-sqlite: direct-distribution prekey row was not persisted: ${id}`)
+			}
+
+			return
+		}
+
 		if (sourceOfTruth) {
 			// Authoritative typed write — same transaction as the signal_kv
 			// write, so they can never diverge. On delete, remove the typed row

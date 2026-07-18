@@ -144,6 +144,8 @@ export class SignalTypedBackend {
 		selectPrekey: SqliteStatementLike
 		deletePrekey: SqliteStatementLike
 		markPrekeysUploaded: SqliteStatementLike
+		markPrekeyDirectDistribution: SqliteStatementLike
+		selectPrekeyDirectDistribution: SqliteStatementLike
 		countUnsentPrekeys: SqliteStatementLike
 		firstUnsentPrekeyId: SqliteStatementLike
 		upsertSignedPrekey: SqliteStatementLike
@@ -222,6 +224,17 @@ export class SignalTypedBackend {
 				'UPDATE prekeys SET sent_to_server = 1, upload_timestamp = ? ' +
 					'WHERE prekey_id >= ? AND prekey_id < ? AND (sent_to_server IS NULL OR sent_to_server = 0)'
 			),
+			// Direct-distribution path (retry receipt): the real SignalPreKeyStore
+			// takes ONE unsent key, flags it `direct_distribution = 1` + stamps
+			// `upload_timestamp`, then hands it straight to the peer inline. The flag
+			// excludes it from the normal stock/upload queries (which filter
+			// `direct_distribution = 0`) so it is never also uploaded to the server
+			// pool. `sent_to_server` is intentionally left untouched (the key was
+			// delivered peer-to-peer, not acked by the server pool upload IQ).
+			markPrekeyDirectDistribution: this.db.prepare(
+				'UPDATE prekeys SET direct_distribution = 1, upload_timestamp = ? WHERE prekey_id = ?'
+			),
+			selectPrekeyDirectDistribution: this.db.prepare('SELECT direct_distribution FROM prekeys WHERE prekey_id = ?'),
 			// A00 / A01 of the real SignalPreKeyStore: the unsent-prekey set IS the
 			// upload queue. The mobile store uses `sent_to_server = 0 AND
 			// direct_distribution = 0`; we wrap both columns in COALESCE so rows
@@ -420,9 +433,31 @@ export class SignalTypedBackend {
 	 * get re-uploaded on the next attempt — impossible to orphan, unlike a
 	 * monotonic "first unuploaded" counter. Idempotent (guarded on `= 0`).
 	 */
-	markPrekeysUploaded(fromId: number, toId: number, uploadTimestamp: number = Date.now()): void {
+	markPrekeysUploaded(fromId: number, toId: number, uploadTimestampSec: number = Math.floor(Date.now() / 1000)): void {
 		if (!(toId > fromId)) return
-		this.stmts.markPrekeysUploaded.run(uploadTimestamp, fromId, toId)
+		this.stmts.markPrekeysUploaded.run(uploadTimestampSec, fromId, toId)
+	}
+
+	/**
+	 * Flags a single one-time prekey as direct-distributed (`direct_distribution
+	 * = 1`) with its `upload_timestamp`, mirroring what the real SignalPreKeyStore
+	 * does when a key is handed to a peer inline in a retry receipt instead of
+	 * being uploaded to the server pool. The flag removes it from the unsent-stock
+	 * / upload queries (`countUnsentPrekeys` / `firstUnsentPrekeyId`), so it is not
+	 * also re-sent to the server. Returns true only when exactly one durable row
+	 * was marked; retry-receipt callers use that result fail-closed before handing
+	 * the one-time key to a peer.
+	 */
+	markPrekeyDirectDistribution(prekeyId: number, uploadTimestampSec: number = Math.floor(Date.now() / 1000)): boolean {
+		return this.stmts.markPrekeyDirectDistribution.run(uploadTimestampSec, prekeyId).changes === 1
+	}
+
+	/** True only when the durable typed row is present and direct-distributed. */
+	isPrekeyDirectDistribution(prekeyId: number): boolean {
+		const row = this.stmts.selectPrekeyDirectDistribution.get(prekeyId) as
+			| { direct_distribution: number | null }
+			| undefined
+		return row?.direct_distribution === 1
 	}
 
 	/**

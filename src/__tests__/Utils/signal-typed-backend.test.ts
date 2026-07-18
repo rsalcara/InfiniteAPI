@@ -128,6 +128,33 @@ describe('SignalTypedBackend', () => {
 		expect(backend.firstUnsentPrekeyId()).toBeNull()
 	})
 
+	it('excludes a direct-distributed (retry-receipt) prekey from the upload queue', () => {
+		const handle = store.handle('axolotl.db')
+		const backend = new SignalTypedBackend(handle)
+		for (let id = 1; id <= 5; id++) backend.putPrekey(id, Buffer.from([id]))
+		expect(backend.countUnsentPrekeys()).toBe(5)
+
+		// Key 1 is handed to a peer inline in a retry receipt → direct_distribution.
+		const tsSec = 1_784_050_584
+		expect(backend.markPrekeyDirectDistribution(1, tsSec)).toBe(true)
+
+		const row = handle
+			.prepare('SELECT sent_to_server, direct_distribution, upload_timestamp FROM prekeys WHERE prekey_id = 1')
+			.get() as { sent_to_server: number; direct_distribution: number; upload_timestamp: number }
+		expect(row.direct_distribution).toBe(1)
+		expect(row.upload_timestamp).toBe(tsSec)
+		expect(row.sent_to_server).toBe(0) // delivered peer-to-peer, NOT server-acked
+
+		// It drops out of the unsent stock / upload queries (which filter dd = 0).
+		expect(backend.countUnsentPrekeys()).toBe(4)
+		expect(backend.firstUnsentPrekeyId()).toBe(2)
+
+		// The caller must be able to fail closed when no durable row was marked.
+		expect(backend.markPrekeyDirectDistribution(9999)).toBe(false)
+		expect(backend.isPrekeyDirectDistribution(9999)).toBe(false)
+		expect(backend.countUnsentPrekeys()).toBe(4) // unchanged
+	})
+
 	it('treats legacy prekeys with NULL flags as unsent (COALESCE)', () => {
 		const handle = store.handle('axolotl.db')
 		// Simulate a row written BEFORE per-key tracking existed: NULL flags.

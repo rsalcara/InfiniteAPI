@@ -84,6 +84,7 @@ import {
 } from '../Utils/multi-db-sqlite'
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
+import { markPrekeyDirectDistributionIntent } from '../Utils/prekey-direct-distribution'
 import {
 	metrics,
 	recordHistorySyncMessages,
@@ -265,13 +266,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			)
 		: undefined
 
-	// Best-effort typed mirror of the axolotl.db pre-decrypt/pre-ack tables:
+	// Typed access to the axolotl.db Signal tables. The pre-decrypt/pre-ack mirrors
+	// below remain best-effort:
 	//   - `preacks`               — pending pre-ack buffer (sendMessageAck)
 	//   - `unordered_stanza_queue`— stanza held because it could not be
 	//                               decrypted in order yet (sendRetryRequest)
 	// Same boundary-cast + idempotent-handle rationale as the receipt/status
-	// backends above. Every write is wrapped in try/catch at the call site so a
+	// backends above. Their writes are wrapped in try/catch at the call site so a
 	// mirror failure never blocks the real ack / retry flow (fallback = legacy).
+	// Direct-distribution marking is deliberately different: a retry receipt only
+	// exposes its one-time prekey after the durable typed row is confirmed, so that
+	// security-sensitive path fails closed instead of falling back silently.
 	const signalTypedBackend = initOptionalMirror(
 		'axolotl.db.transient_signal_tables',
 		'legacy_signal_flow',
@@ -1942,8 +1947,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		if (!account) throw new Boom('Account not available', { statusCode: 401 })
 		const deviceIdentity = encodeSignedDeviceIdentity(account, true)
+		let receipt: BinaryNode | undefined
+		let directDistributionKeyId: number | undefined
+		let directDistributionKeysNode: BinaryNode | undefined
+		let directDistributionCredsUpdate: Partial<(typeof authState)['creds']> | undefined
+		let directDistributionMarkError: unknown
+		let directDistributionWasAlreadyMarked = false
+		let includeDirectDistributionKey = false
 		await authState.keys.transaction(async () => {
-			const receipt: BinaryNode = {
+			receipt = {
 				tag: 'receipt',
 				attrs: {
 					id: msgId,
@@ -1984,8 +1996,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				const [keyId] = Object.keys(preKeys)
 				const key = preKeys[+keyId!]
 
-				const content = receipt.content! as BinaryNode[]
-				content.push({
+				directDistributionKeysNode = {
 					tag: 'keys',
 					attrs: {},
 					content: [
@@ -1995,15 +2006,89 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						xmppSignedPreKey(signedPreKey),
 						{ tag: 'device-identity', attrs: {}, content: deviceIdentity }
 					]
-				})
+				}
 
-				ev.emit('creds.update', update)
+				directDistributionCredsUpdate = update
+				directDistributionKeyId = keyId ? +keyId : undefined
+				if (signalTypedBackend && key && directDistributionKeyId !== undefined) {
+					// For a freshly generated key, carry this intent through the pending
+					// keys.set mutation so axolotl.db inserts + flags it atomically at
+					// commit. Existing rows are deliberately marked only in afterCommit:
+					// if another auth mutation fails, no key is removed from the upload
+					// pool before the transaction has actually succeeded.
+					try {
+						directDistributionWasAlreadyMarked = signalTypedBackend.isPrekeyDirectDistribution(directDistributionKeyId)
+					} catch (err) {
+						directDistributionMarkError = err
+					}
+
+					if (!directDistributionWasAlreadyMarked) markPrekeyDirectDistributionIntent(key)
+				}
 			}
 
-			await sendNode(receipt)
+			authState.keys.afterCommit(() => {
+				includeDirectDistributionKey = directDistributionKeysNode !== undefined
+				if (directDistributionKeyId !== undefined && config.multiDbStore) {
+					let durableMark = false
+					try {
+						durableMark = signalTypedBackend?.isPrekeyDirectDistribution(directDistributionKeyId) === true
+						if (!durableMark && signalTypedBackend && !directDistributionWasAlreadyMarked) {
+							// Existing prekeys (and kill-switch mirror rows) were not part of
+							// this transaction's typed INSERT. Mark them only now, after the
+							// auth-key commit, but before releasing its operation lock.
+							durableMark = signalTypedBackend.markPrekeyDirectDistribution(directDistributionKeyId)
+						}
+					} catch (err) {
+						directDistributionMarkError = directDistributionMarkError ?? err
+					}
 
-			logger.info({ msgAttrs: node.attrs, retryCount }, 'sent retry receipt')
+					if (directDistributionWasAlreadyMarked) {
+						includeDirectDistributionKey = false
+						logger.error(
+							{ keyId: directDistributionKeyId, reason: 'key-already-direct-distributed' },
+							'multi-db-sqlite: selected retry prekey was already consumed; omitting it and advancing the stale cursor'
+						)
+					} else if (!durableMark) {
+						includeDirectDistributionKey = false
+						logger.error(
+							{
+								err: directDistributionMarkError ? compactError(directDistributionMarkError) : undefined,
+								keyId: directDistributionKeyId,
+								reason: signalTypedBackend ? 'typed-row-not-direct-distributed' : 'typed-backend-unavailable',
+								retryReceiptAction: 'one-time-prekey-omitted',
+								signalKvPreserved: true,
+								serverUploadEligibilityPreserved: true,
+								storagePath: signalTypedBackend ? 'typed-prekeys-with-signal_kv-fallback' : 'signal_kv-only'
+							},
+							'multi-db-sqlite: typed direct-distribution unavailable; key material retained, signal_kv fallback preserved, and one-time prekey omitted from retry receipt'
+						)
+					}
+				}
+
+				if (directDistributionCredsUpdate) {
+					// Keep this update under the same legacy lock until the durable
+					// direct-distribution check finishes. A queued upload can only start
+					// after it sees the matching cursor state.
+					const update =
+						includeDirectDistributionKey || directDistributionWasAlreadyMarked
+							? directDistributionCredsUpdate
+							: { nextPreKeyId: directDistributionCredsUpdate.nextPreKeyId }
+					ev.emit('creds.update', update)
+				}
+			})
 		}, authState?.creds?.me?.id || 'sendRetryRequest')
+
+		if (!receipt) throw new Error('sendRetryRequest: retry receipt was not constructed')
+
+		if (includeDirectDistributionKey && directDistributionKeysNode) {
+			;(receipt.content! as BinaryNode[]).push(directDistributionKeysNode)
+		}
+
+		await sendNode(receipt)
+		logger.info(
+			{ msgAttrs: node.attrs, retryCount, includedDirectDistributionKey: includeDirectDistributionKey },
+			'sent retry receipt'
+		)
 	}
 
 	// Upstream #2432: dedupe re-issued PreKeyLow notifications by stanza id.

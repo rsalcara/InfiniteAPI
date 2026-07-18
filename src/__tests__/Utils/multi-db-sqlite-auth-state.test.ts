@@ -23,8 +23,21 @@ import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { SignalDataTypeMap } from '../../Types'
+import { addTransactionCapability } from '../../Utils/auth-utils'
 import { BufferJSON } from '../../Utils/generics'
-import { useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
+import type { ILogger } from '../../Utils/logger'
+import { SignalTypedBackend, useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
+import { markPrekeyDirectDistributionIntent } from '../../Utils/prekey-direct-distribution'
+
+const silentLogger = (): ILogger => ({
+	level: 'silent',
+	trace: () => {},
+	debug: () => {},
+	info: () => {},
+	warn: () => {},
+	error: () => {},
+	child: () => silentLogger()
+})
 
 const sampleSession = (b: number): SignalDataTypeMap['session'] => Buffer.from([b]) as Uint8Array
 
@@ -435,5 +448,66 @@ describe('useMultiDbSqliteAuthState', () => {
 		expect(Buffer.from(got['5511999999999.0'] as Uint8Array).toString('hex')).toBe('01')
 		expect(Buffer.from(got['5511999999999_128.0'] as Uint8Array).toString('hex')).toBe('02')
 		close()
+	})
+
+	// Integration guard for the retry-receipt direct_distribution flag: the
+	// object-identity intent must survive the transaction cache and make the
+	// typed prekey INSERT + flag atomic with signal_kv.
+	it('commits a freshly-generated retry prekey with direct_distribution atomically', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			// The raw auth-state keys have no transaction(); the socket adds it via
+			// addTransactionCapability — replicate that here so the deferred-mutation
+			// semantics match production.
+			const keys = addTransactionCapability(state.keys, silentLogger(), {
+				maxCommitRetries: 1,
+				delayBetweenTriesMs: 1
+			})
+			const backend = new SignalTypedBackend(store.handle('axolotl.db'))
+			const kp = { public: Buffer.from([1, 2, 3]) as Uint8Array, private: Buffer.from([4, 5, 6]) as Uint8Array }
+			const readDd = (id: number) =>
+				(
+					store.handle('axolotl.db').prepare('SELECT direct_distribution FROM prekeys WHERE prekey_id = ?').get(id) as
+						| { direct_distribution?: number }
+						| undefined
+				)?.direct_distribution
+
+			await keys.transaction(async () => {
+				await keys.set({ 'pre-key': { 43: kp } })
+				markPrekeyDirectDistributionIntent(kp)
+			}, 'itest')
+			expect(readDd(43)).toBe(1)
+			expect(backend.isPrekeyDirectDistribution(43)).toBe(true)
+			expect(backend.countUnsentPrekeys()).toBe(0)
+		} finally {
+			close()
+		}
+	})
+
+	it('keeps signal_kv operational when a direct-distribution mirror fails in kill-switch mode', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({
+			sessionDir: dir,
+			signalSourceOfTruth: false,
+			logger: silentLogger()
+		})
+		try {
+			store.handle('axolotl.db').exec(`
+				CREATE TRIGGER fail_direct_distribution_mirror
+				BEFORE INSERT ON prekeys
+				BEGIN
+					SELECT RAISE(ABORT, 'forced typed mirror failure');
+				END;
+			`)
+			const kp = { public: Buffer.from([0x31]), private: Buffer.from([0x32]) }
+			markPrekeyDirectDistributionIntent(kp)
+
+			await expect(state.keys.set({ 'pre-key': { 44: kp } })).resolves.not.toThrow()
+			const got = await state.keys.get('pre-key', ['44'])
+			expect(Buffer.from(got['44']!.public).toString('hex')).toBe('31')
+			expect(store.handle('axolotl.db').prepare('SELECT 1 FROM prekeys WHERE prekey_id = 44').get()).toBeUndefined()
+		} finally {
+			store.handle('axolotl.db').exec('DROP TRIGGER IF EXISTS fail_direct_distribution_mirror')
+			close()
+		}
 	})
 })
