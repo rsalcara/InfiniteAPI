@@ -756,11 +756,11 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			clear: async () => {
 				await authKeysClearMutex.mutex(async () => {
 					await recoverPendingAuthKeysClearUnlocked('before-access')
-					authKeysClearGeneration++
 					// wa.db owns the durable intent. Writing it and clearing both token
 					// tables is one transaction; every remaining database is replayed
 					// idempotently until all key-store surfaces have been cleared.
 					trustedContactsBackend.beginClear()
+					authKeysClearGeneration++
 					// Only `jid_map` is cleared, NOT the shared `jid` table:
 					// other msgstore tables (`user_device.user_jid_row_id`,
 					// `user_device_info.user_jid_row_id`,

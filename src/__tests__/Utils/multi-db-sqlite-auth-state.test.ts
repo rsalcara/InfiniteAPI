@@ -320,6 +320,35 @@ describe('useMultiDbSqliteAuthState', () => {
 		}
 	})
 
+	it('keeps active enumeration valid when beginClear rolls back before creating the durable intent', async () => {
+		const auth = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		const locker = new Database(join(dir, 'wa.db'))
+		try {
+			seedSignalKvSessions(auth, 3)
+			const iterator = auth.state.keys.listIds!('session')[Symbol.asyncIterator]()
+			expect(await iterator.next()).toEqual({ done: false, value: 'bulk-0000' })
+
+			auth.store.handle('wa.db').exec('PRAGMA busy_timeout = 1')
+			locker.exec('BEGIN IMMEDIATE')
+			if (!auth.state.keys.clear) throw new Error('clear not implemented')
+			await expect(auth.state.keys.clear()).rejects.toMatchObject({ code: expect.stringMatching(/^SQLITE_BUSY/) })
+
+			// beginClear is atomic: a failed transaction neither creates the marker
+			// nor changes the key set, so the existing snapshot remains valid.
+			expect(new TrustedContactsBackend(auth.store.handle('wa.db')).hasPendingClear()).toBe(false)
+			expect(await iterator.next()).toEqual({ done: false, value: 'bulk-0001' })
+		} finally {
+			try {
+				locker.exec('ROLLBACK')
+			} catch {
+				// The lock may already be released after an earlier failure.
+			}
+
+			locker.close()
+			auth.close()
+		}
+	})
+
 	it('routes app-state-sync-key to creds.db.app_state_sync_keys, not axolotl.signal_kv', async () => {
 		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		await state.keys.set({
