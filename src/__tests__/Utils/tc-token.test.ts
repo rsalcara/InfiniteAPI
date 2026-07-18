@@ -5,6 +5,7 @@ import {
 	buildTcTokenFromJid,
 	buildTcTokenNode,
 	isTcTokenExpired,
+	selectUsableTcToken,
 	shouldSendNewTcToken,
 	storeTcTokensFromIqResult
 } from '../../Utils/tc-token-utils'
@@ -97,6 +98,40 @@ describe('storeTcTokensFromIqResult', () => {
 				[lid]: expect.objectContaining({ token: Buffer.from([1]) }),
 				[pn]: expect.objectContaining({ token: Buffer.from([1]) })
 			}
+		})
+	})
+})
+
+describe('selectUsableTcToken', () => {
+	const validTimestamp = () => Math.floor(Date.now() / 1000).toString()
+
+	it('uses a valid PN alias when the preferred LID alias is empty', () => {
+		expect(
+			selectUsableTcToken([
+				{ token: Buffer.alloc(0), timestamp: validTimestamp() },
+				{ token: Buffer.from([1]), timestamp: validTimestamp() }
+			])
+		).toEqual({ usable: true })
+	})
+
+	it('uses a valid LID alias when the PN alias is expired', () => {
+		expect(
+			selectUsableTcToken([
+				{ token: Buffer.from([1]), timestamp: validTimestamp() },
+				{ token: Buffer.from([2]), timestamp: '1' }
+			])
+		).toEqual({ usable: true })
+	})
+
+	it('reports failure only after considering every alias', () => {
+		expect(selectUsableTcToken([undefined, null])).toEqual({ usable: false, reason: 'missing-token' })
+		expect(selectUsableTcToken([{ token: Buffer.alloc(0), timestamp: validTimestamp() }])).toEqual({
+			usable: false,
+			reason: 'empty-token'
+		})
+		expect(selectUsableTcToken([{ token: Buffer.from([1]), timestamp: '1' }])).toEqual({
+			usable: false,
+			reason: 'expired-token'
 		})
 	})
 })

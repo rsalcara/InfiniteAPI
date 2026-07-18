@@ -93,7 +93,13 @@ import {
 	recordMessageRetry
 } from '../Utils/prometheus-metrics.js'
 import { buildAckStanza } from '../Utils/stanza-ack'
-import { isRegularUser, isTcTokenExpired, resolveTcTokenJid, storeTcTokensFromIqResult } from '../Utils/tc-token-utils'
+import {
+	isRegularUser,
+	isTcTokenExpired,
+	resolveTcTokenJid,
+	selectUsableTcToken,
+	storeTcTokensFromIqResult
+} from '../Utils/tc-token-utils'
 import {
 	handleUsernameDeleteNotification as handleUsernameDeleteNotificationImpl,
 	handleUsernameSetNotification as handleUsernameSetNotificationImpl,
@@ -459,11 +465,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	): Promise<{ usable: boolean; storageJid: string; reason?: 'missing-token' | 'empty-token' | 'expired-token' }> => {
 		const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
 		const tokenState = await authState.keys.get('tctoken', [storageJid, jid])
-		const tokenEntry = tokenState[storageJid] ?? tokenState[jid]
-		if (!tokenEntry) return { usable: false, storageJid, reason: 'missing-token' }
-		if (!tokenEntry.token?.length) return { usable: false, storageJid, reason: 'empty-token' }
-		if (isTcTokenExpired(tokenEntry.timestamp)) return { usable: false, storageJid, reason: 'expired-token' }
-		return { usable: true, storageJid }
+		const aliases = storageJid === jid ? [tokenState[storageJid]] : [tokenState[storageJid], tokenState[jid]]
+		return { ...selectUsableTcToken(aliases), storageJid }
 	}
 
 	/** Debounced save of the tctoken JID index (5s) */

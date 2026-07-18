@@ -1,4 +1,4 @@
-import type { SignalKeyStoreWithTransaction } from '../Types'
+import type { SignalDataTypeMap, SignalKeyStoreWithTransaction } from '../Types'
 import type { BinaryNode } from '../WABinary'
 import {
 	getBinaryNodeChild,
@@ -55,6 +55,26 @@ export function isTcTokenExpired(timestamp: number | string | null | undefined):
 	const cutoffBucket = currentBucket - (TC_TOKEN_NUM_BUCKETS - 1)
 	const cutoffTimestamp = cutoffBucket * TC_TOKEN_BUCKET_DURATION
 	return ts < cutoffTimestamp
+}
+
+export type TcTokenUsability = {
+	usable: boolean
+	reason?: 'missing-token' | 'empty-token' | 'expired-token'
+}
+
+/**
+ * Evaluates every alias independently and accepts the first usable token.
+ * A stale/empty LID row must not mask a valid PN row (or the inverse).
+ */
+export function selectUsableTcToken(
+	candidates: Array<SignalDataTypeMap['tctoken'] | null | undefined>
+): TcTokenUsability {
+	const present = candidates.filter((entry): entry is SignalDataTypeMap['tctoken'] => !!entry)
+	if (present.length === 0) return { usable: false, reason: 'missing-token' }
+	const nonEmpty = present.filter(entry => !!entry.token?.length)
+	if (nonEmpty.length === 0) return { usable: false, reason: 'empty-token' }
+	if (nonEmpty.some(entry => !isTcTokenExpired(entry.timestamp))) return { usable: true }
+	return { usable: false, reason: 'expired-token' }
 }
 
 /**
