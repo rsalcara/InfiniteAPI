@@ -22,7 +22,7 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import type { SignalDataTypeMap } from '../../Types'
+import type { SignalDataTypeMap, SignalKeyStoreWithTransaction } from '../../Types'
 import { BufferJSON } from '../../Utils/generics'
 import { SignalTypedBackend, useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
 
@@ -443,6 +443,7 @@ describe('useMultiDbSqliteAuthState', () => {
 	it('flags a retry-receipt prekey direct_distribution only AFTER the transaction commits', async () => {
 		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		try {
+			const keys = state.keys as SignalKeyStoreWithTransaction
 			const backend = new SignalTypedBackend(store.handle('axolotl.db'))
 			const kp = { public: Buffer.from([1, 2, 3]) as Uint8Array, private: Buffer.from([4, 5, 6]) as Uint8Array }
 			const readDd = (id: number) =>
@@ -454,15 +455,15 @@ describe('useMultiDbSqliteAuthState', () => {
 
 			// Wrong order (what the first cut did): mark INSIDE the transaction.
 			// The prekey is still a pending mutation → the UPDATE matches zero rows.
-			await state.keys.transaction(async () => {
-				await state.keys.set({ 'pre-key': { 43: kp } })
+			await keys.transaction(async () => {
+				await keys.set({ 'pre-key': { 43: kp } })
 				backend.markPrekeyDirectDistribution(43)
 			}, 'itest')
 			expect(readDd(43)).toBe(0) // in-transaction mark was a no-op
 
 			// Correct order: mark AFTER the transaction commits, when the row exists.
-			await state.keys.transaction(async () => {
-				await state.keys.set({ 'pre-key': { 42: kp } })
+			await keys.transaction(async () => {
+				await keys.set({ 'pre-key': { 42: kp } })
 			}, 'itest')
 			backend.markPrekeyDirectDistribution(42)
 			expect(readDd(42)).toBe(1)
