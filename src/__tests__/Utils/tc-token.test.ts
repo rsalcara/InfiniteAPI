@@ -5,7 +5,8 @@ import {
 	buildTcTokenFromJid,
 	buildTcTokenNode,
 	isTcTokenExpired,
-	shouldSendNewTcToken
+	shouldSendNewTcToken,
+	storeTcTokensFromIqResult
 } from '../../Utils/tc-token-utils'
 import type { BinaryNode } from '../../WABinary'
 
@@ -32,6 +33,72 @@ const createMockKeys = (): jest.Mocked<SignalKeyStoreWithTransaction> => ({
 	set: jest.fn<SignalKeyStoreWithTransaction['set']>(),
 	transaction: jest.fn<SignalKeyStoreWithTransaction['transaction']>(async (work: () => any) => await work()) as any,
 	isInTransaction: jest.fn<SignalKeyStoreWithTransaction['isInTransaction']>()
+})
+
+describe('storeTcTokensFromIqResult', () => {
+	const iqWithTokens = (tokens: BinaryNode[]): BinaryNode => ({
+		tag: 'iq',
+		attrs: {},
+		content: [{ tag: 'tokens', attrs: {}, content: tokens }]
+	})
+	const tokenNode = (jid: string, token = Buffer.from([1])): BinaryNode => ({
+		tag: 'token',
+		attrs: { jid, type: 'trusted_contact', t: nowSeconds().toString() },
+		content: token
+	})
+
+	it('reports an empty IQ truthfully and persists nothing', async () => {
+		const keys = createMockKeys()
+		const result = await storeTcTokensFromIqResult({
+			result: iqWithTokens([]),
+			fallbackJid: '5511000000000@s.whatsapp.net',
+			keys,
+			getLIDForPN: async () => null
+		})
+
+		expect(result).toEqual({ storedJids: [], validTokenNodes: 0 })
+		expect(keys.set).not.toHaveBeenCalled()
+	})
+
+	it('does not copy a token returned for a different JID onto the requested recipient', async () => {
+		const keys = createMockKeys()
+		;(keys.get as any).mockResolvedValue({})
+		const ownJid = '46802258641027@lid'
+		const requestedJid = '207421150646274@lid'
+		const result = await storeTcTokensFromIqResult({
+			result: iqWithTokens([tokenNode(ownJid)]),
+			fallbackJid: requestedJid,
+			keys,
+			getLIDForPN: async () => null
+		})
+
+		expect(result.storedJids).toEqual([ownJid])
+		expect(keys.set).toHaveBeenCalledWith({
+			tctoken: { [ownJid]: expect.objectContaining({ token: Buffer.from([1]) }) }
+		})
+		expect(result.storedJids).not.toContain(requestedJid)
+	})
+
+	it('keeps PN and LID aliases only when they resolve to the same contact', async () => {
+		const keys = createMockKeys()
+		;(keys.get as any).mockResolvedValue({})
+		const pn = '5511999999999@s.whatsapp.net'
+		const lid = '1234567890@lid'
+		const result = await storeTcTokensFromIqResult({
+			result: iqWithTokens([tokenNode(lid)]),
+			fallbackJid: pn,
+			keys,
+			getLIDForPN: async jid => (jid === pn ? lid : null)
+		})
+
+		expect(new Set(result.storedJids)).toEqual(new Set([lid, pn]))
+		expect(keys.set).toHaveBeenCalledWith({
+			tctoken: {
+				[lid]: expect.objectContaining({ token: Buffer.from([1]) }),
+				[pn]: expect.objectContaining({ token: Buffer.from([1]) })
+			}
+		})
+	})
 })
 
 // ─── isTcTokenExpired (rolling bucket algorithm) ─────────────────────────

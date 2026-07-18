@@ -39,7 +39,6 @@ import {
 	xmppSignedPreKey
 } from '../Utils'
 import { getPlatformId, isAndroidBrowser } from '../Utils/browser-utils'
-import { type MultiDbSqliteStore, SignalTypedBackend } from '../Utils/multi-db-sqlite'
 import { resolvePrekeyUploadQueryTimeout } from '../Utils/prekey-upload-timeout'
 import {
 	markConnectionActive,
@@ -613,27 +612,10 @@ export const makeSocket = (config: SocketConfig) => {
 	let uploadPreKeysPromise: Promise<void> | null = null
 	let lastUploadTime = 0
 
-	// Lazily-built typed backend for the `prekey_uploads` mirror (only when a
-	// multi-db-sqlite store is wired). One row per successful upload batch —
-	// best-effort introspection parity, never affects the upload itself.
-	let prekeyUploadBackend: SignalTypedBackend | null | undefined
-	// Lazily open the typed axolotl.db backend, once, iff a multi-db-sqlite store
-	// is wired. Returns null for single-file / legacy backends (which have no
-	// typed prekeys table). Never throws — a failure caches null and disables the
-	// typed prekey bookkeeping without affecting uploads.
-	const getPrekeyBackend = (): SignalTypedBackend | null => {
-		if (!config.multiDbStore) return null
-		if (prekeyUploadBackend === undefined) {
-			try {
-				prekeyUploadBackend = new SignalTypedBackend((config.multiDbStore as MultiDbSqliteStore).handle('axolotl.db'))
-			} catch (err) {
-				logger.debug({ err }, 'multi-db-sqlite: could not open axolotl.db backend for prekeys')
-				prekeyUploadBackend = null
-			}
-		}
-
-		return prekeyUploadBackend
-	}
+	// Only the auth-state that owns the typed prekeys table may control upload
+	// progress. `config.multiDbStore` can be a separate best-effort mirror and
+	// must never be allowed to rewind or commit the real auth cursor.
+	const prekeyUploads = keys.prekeyUploads
 
 	// Records a successful pre-key upload into the multi-db-sqlite axolotl.db,
 	// atomically: flips the acked ids [fromId, toId) to sent_to_server = 1 (in
@@ -647,9 +629,8 @@ export const makeSocket = (config: SocketConfig) => {
 	const recordPrekeyUpload = (fromId: number, toId: number): void => {
 		if (!(toId > fromId)) return
 		try {
-			const backend = getPrekeyBackend()
-			if (!backend) return
-			backend.commitPrekeyUpload(fromId, toId, Math.floor(Date.now() / 1000))
+			if (!prekeyUploads) return
+			prekeyUploads.commitUpload(fromId, toId, Math.floor(Date.now() / 1000))
 		} catch (err) {
 			logger.warn(
 				{ err, fromId, toId },
@@ -696,11 +677,10 @@ export const makeSocket = (config: SocketConfig) => {
 			// can recover keys but never skip an un-acked one; re-uploading an id the
 			// server already has is a harmless no-op (deduped by prekey_id).
 			try {
-				const backend = getPrekeyBackend()
-				const firstUnsent = backend?.firstUnsentPrekeyId()
+				const firstUnsent = prekeyUploads?.firstUnsentId()
 				if (typeof firstUnsent === 'number' && firstUnsent < creds.firstUnuploadedPreKeyId) {
 					logger.info(
-						{ from: creds.firstUnuploadedPreKeyId, to: firstUnsent, unsent: backend?.countUnsentPrekeys?.() },
+						{ from: creds.firstUnuploadedPreKeyId, to: firstUnsent, unsent: prekeyUploads?.countUnsent() },
 						`pre-keys: self-heal — rewinding firstUnuploadedPreKeyId ${creds.firstUnuploadedPreKeyId} → ${firstUnsent}`
 					)
 					ev.emit('creds.update', { firstUnuploadedPreKeyId: firstUnsent })
@@ -738,6 +718,21 @@ export const makeSocket = (config: SocketConfig) => {
 						},
 						`pre-keys: prepared batch of ${generated} — ids [${firstUnuploadedBefore}..${committedFirstUnuploaded}) — awaiting server ack`
 					)
+					keys.afterCommit(() => {
+						if (!prekeyUploads || !(committedFirstUnuploaded > firstUnuploadedBefore)) return
+						const expected = committedFirstUnuploaded - firstUnuploadedBefore
+						const reserved = prekeyUploads.reserveUploadRange(
+							firstUnuploadedBefore,
+							committedFirstUnuploaded,
+							Math.floor(Date.now() / 1000)
+						)
+						if (reserved !== expected) {
+							throw new Error(
+								`pre-keys: authoritative upload reservation covered ${reserved}/${expected} rows for ` +
+									`[${firstUnuploadedBefore}..${committedFirstUnuploaded}); refusing to send an ambiguous batch`
+							)
+						}
+					})
 					return node
 				}, creds?.me?.id || 'upload-pre-keys')
 

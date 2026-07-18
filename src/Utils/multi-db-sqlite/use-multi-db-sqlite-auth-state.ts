@@ -11,7 +11,7 @@ import { SignalTypedBackend } from './signal-typed-backend'
 import { isMirroredSignalType, mirrorSignalEntry } from './signal-typed-mirror'
 import { SignalTypedSourceStore, type TypedSignalType } from './signal-typed-source'
 import { MultiDbSqliteStore, type MultiDbSqliteStoreOptions } from './store'
-import { TrustedContactsBackend } from './trusted-contacts-backend'
+import { type TrustedContactReplacement, TrustedContactsBackend } from './trusted-contacts-backend'
 
 const CREDS_ROW_KEY = '__creds__'
 const MAX_BUSY_ATTEMPTS = 5
@@ -321,33 +321,40 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	// — they have no `@` and stay in signal_kv.
 	const isTctokenContactKey = (id: string): boolean => id.includes('@')
 
-	const tctokenTombstone = (): SignalDataTypeMap['tctoken'] => ({ token: Buffer.alloc(0), timestamp: '0' })
+	const finiteNumberOrZero = (value: unknown): number => {
+		const parsed = Number(value ?? 0)
+		return Number.isFinite(parsed) ? parsed : 0
+	}
 
-	// Replace both relational halves in one wa.db transaction. A fully deleted
+	// Build both relational halves for replacement in one wa.db transaction. A fully deleted
 	// value leaves an empty-token tombstone: relational reads can distinguish a
 	// deliberate delete from a pre-migration miss and therefore never resurrect
 	// the stale signal_kv fallback after a cross-file crash.
-	const writeTctokenRelational = (id: string, value: SignalDataTypeMap['tctoken'] | null | undefined): void => {
+	const toTctokenRelationalReplacement = (
+		value: SignalDataTypeMap['tctoken'] | null | undefined
+	): TrustedContactReplacement => {
 		if (value === null || value === undefined) {
-			trustedContactsBackend.replace(id, {
+			return {
 				incoming: { token: Buffer.alloc(0), timestamp: 0 },
 				sent: null
-			})
-			return
+			}
 		}
 
 		const hasIncoming = value.token && value.token.length > 0
 		const hasSent = value.senderTimestamp !== undefined
-		trustedContactsBackend.replace(id, {
+		return {
 			incoming: hasIncoming
-				? { token: value.token, timestamp: value.timestamp ? Number(value.timestamp) : 0 }
+				? { token: value.token, timestamp: finiteNumberOrZero(value.timestamp) }
 				: hasSent
 					? null
 					: { token: Buffer.alloc(0), timestamp: 0 },
 			sent: hasSent
-				? { sentTimestamp: value.senderTimestamp!, realIssueTimestamp: value.realIssueTimestamp ?? 0 }
+				? {
+						sentTimestamp: finiteNumberOrZero(value.senderTimestamp),
+						realIssueTimestamp: finiteNumberOrZero(value.realIssueTimestamp)
+					}
 				: null
-		})
+		}
 	}
 
 	type TctokenRelationalRead =
@@ -514,9 +521,12 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		if (sourceOfTruth && data.tctoken) {
 			const bucket = data.tctoken
 			await runWithBusyRetry('tctoken relational set', () => {
+				const replacements: Array<readonly [string, TrustedContactReplacement]> = []
 				for (const id in bucket) {
-					if (isTctokenContactKey(id)) writeTctokenRelational(id, bucket[id])
+					if (isTctokenContactKey(id)) replacements.push([id, toTctokenRelationalReplacement(bucket[id])])
 				}
+
+				trustedContactsBackend.replaceMany(replacements)
 			})
 		}
 
@@ -580,6 +590,20 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			credsRef.current = value
 		},
 		keys: {
+			prekeyUploads: sourceOfTruth
+				? {
+						authoritative: true,
+						reserveUploadRange: (fromId, toId, timestampSec) =>
+							signalTypedBackend.reservePrekeyUploadRange(fromId, toId, timestampSec),
+						commitUpload: (fromId, toId, timestampSec) =>
+							signalTypedBackend.commitPrekeyUpload(fromId, toId, timestampSec),
+						countUnsent: () => signalTypedBackend.countUnsentPrekeys(),
+						firstUnsentId: () => signalTypedBackend.firstUnsentPrekeyId(),
+						markDirectDistribution: (prekeyId, timestampSec) =>
+							signalTypedBackend.markPrekeyDirectDistribution(prekeyId, timestampSec),
+						isDirectDistribution: prekeyId => signalTypedBackend.isPrekeyDirectDistribution(prekeyId)
+					}
+				: undefined,
 			trustedContactTokens: sourceOfTruth
 				? {
 						authoritative: true,
@@ -603,7 +627,25 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 									!Buffer.from(current.value.token).equals(Buffer.from(expectedToken))
 								)
 									return false
-								await runSetWithBusyRetryUnlocked({ tctoken: { [jid]: tctokenTombstone() } })
+								// Cross-file safe ordering: remove the legacy fallback first,
+								// then physically delete the authoritative incoming row. If the
+								// process crashes between the two, wa.db still owns the token; the
+								// inverse order could expose a stale signal_kv token after a miss.
+								await runWithBusyRetry('tctoken prune signal_kv', () => {
+									signalStmts.del.run('tctoken', jid)
+								})
+								await runWithBusyRetry('tctoken prune relational', () => {
+									trustedContactsBackend.replace(jid, {
+										incoming: null,
+										sent:
+											current.value.senderTimestamp !== undefined
+												? {
+														sentTimestamp: finiteNumberOrZero(current.value.senderTimestamp),
+														realIssueTimestamp: finiteNumberOrZero(current.value.realIssueTimestamp)
+													}
+												: null
+									})
+								})
 								return true
 							})
 					}
@@ -639,8 +681,9 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 
 					// tctoken: read the authoritative PK-jid tables first; fall back to
 					// signal_kv for metadata keys (`__index`/`__prune_ts`) and for contacts
-					// not yet migrated. A backend read error also degrades to signal_kv —
-					// never throws to the caller.
+					// not yet migrated. An authoritative read error fails closed: the backup
+					// may be stale after a cross-file partial write, so only a genuine miss
+					// is eligible for legacy fallback.
 					if (sourceOfTruth && type === 'tctoken') {
 						const missing: string[] = []
 						for (const id of ids) {
@@ -655,11 +698,17 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 								if (rel.kind === 'miss') missing.push(id)
 								// Tombstone = deliberate absence; never fall back.
 							} catch (err) {
-								opts.logger?.warn?.(
-									{ err, id, reason: 'relational-read-failed', fallbackStore: 'signal_kv' },
-									'multi-db-sqlite: tctoken relational read failed; routing this id to signal_kv'
+								opts.logger?.error?.(
+									{
+										err,
+										id,
+										reason: 'authoritative-relational-read-failed',
+										fallbackStore: 'signal_kv',
+										fallbackUsed: false,
+										action: 'tctoken-omitted-fail-closed'
+									},
+									'multi-db-sqlite: authoritative tctoken read failed; stale signal_kv fallback was rejected and this token was omitted'
 								)
-								missing.push(id)
 							}
 						}
 

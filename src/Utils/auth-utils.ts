@@ -193,7 +193,18 @@ export function makeCacheableSignalKeyStore(
 	}
 
 	return {
-		trustedContactTokens: store.trustedContactTokens,
+		trustedContactTokens: store.trustedContactTokens
+			? {
+					authoritative: true,
+					listIncoming: () => store.trustedContactTokens!.listIncoming(),
+					compareAndPrune: async (jid, expectedTimestamp, expectedToken) => {
+						const pruned = await store.trustedContactTokens!.compareAndPrune(jid, expectedTimestamp, expectedToken)
+						if (pruned) await cache.del(getUniqueId('tctoken', jid))
+						return pruned
+					}
+				}
+			: undefined,
+		prekeyUploads: store.prekeyUploads,
 		async get(type, ids) {
 			const data: { [_: string]: SignalDataTypeMap[typeof type] } = {}
 			const idsToFetch: string[] = []
@@ -404,16 +415,7 @@ export const addTransactionCapability = (
 
 	return {
 		trustedContactTokens: state.trustedContactTokens,
-		...(state.list
-			? {
-					list: <T extends keyof SignalDataTypeMap>(type: T) => state.list!(type)
-				}
-			: {}),
-		...(state.listIds
-			? {
-					listIds: <T extends keyof SignalDataTypeMap>(type: T) => state.listIds!(type)
-				}
-			: {}),
+		prekeyUploads: state.prekeyUploads,
 		get: async (type, ids) => {
 			const ctx = txStorage.getStore()
 

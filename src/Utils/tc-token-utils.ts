@@ -224,6 +224,11 @@ type StoreTcTokensParams = {
 	onNewJidStored?: (jid: string) => void
 }
 
+export type StoreTcTokensResult = {
+	storedJids: string[]
+	validTokenNodes: number
+}
+
 /**
  * Parse and store tctoken(s) from an IQ result node.
  * Includes timestamp monotonicity guard matching WA Web's handleIncomingTcToken.
@@ -235,9 +240,11 @@ export async function storeTcTokensFromIqResult({
 	keys,
 	getLIDForPN,
 	onNewJidStored
-}: StoreTcTokensParams) {
+}: StoreTcTokensParams): Promise<StoreTcTokensResult> {
+	const storedJids = new Set<string>()
+	let validTokenNodes = 0
 	const tokensNode = getBinaryNodeChild(result, 'tokens')
-	if (!tokensNode) return
+	if (!tokensNode) return { storedJids: [], validTokenNodes }
 
 	const tokenNodes = getBinaryNodeChildren(tokensNode, 'token')
 	for (const tokenNode of tokenNodes) {
@@ -270,6 +277,8 @@ export async function storeTcTokensFromIqResult({
 			continue
 		}
 
+		validTokenNodes++
+
 		const tokenEntry = {
 			...existingEntry,
 			token: Buffer.from(tokenNode.content),
@@ -279,17 +288,25 @@ export async function storeTcTokensFromIqResult({
 			realIssueTimestamp: null
 		}
 
-		// Store under resolved storageJid AND under fallbackJid (PN) for reliable lookup
-		// The read path may resolve to a different LID than the store path
+		// Store under the resolved identity and under fallbackJid only when both
+		// resolve to the same contact. An IQ may return a token for a different
+		// JID (including our own LID); copying that token onto the requested
+		// recipient would poison future sends with another account's token.
 		const normalizedFallback = jidNormalizedUser(fallbackJid)
 		const keysToStore: Record<string, typeof tokenEntry | null> = {
 			[storageJid]: tokenEntry
 		}
-		if (normalizedFallback !== storageJid) {
+		const fallbackStorageJid = await resolveTcTokenJid(normalizedFallback, getLIDForPN)
+		if (normalizedFallback !== storageJid && fallbackStorageJid === storageJid) {
 			keysToStore[normalizedFallback] = tokenEntry
 		}
 
 		await keys.set({ tctoken: keysToStore })
-		onNewJidStored?.(storageJid)
+		for (const jid of Object.keys(keysToStore)) {
+			storedJids.add(jid)
+			onNewJidStored?.(jid)
+		}
 	}
+
+	return { storedJids: [...storedJids], validTokenNodes }
 }

@@ -399,7 +399,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	 * carousel) would fire N parallel getPrivacyTokens IQs. Adapted from upstream #2517
 	 * (which dedupes issuePrivacyTokens; we dedupe our equivalent getPrivacyTokens path).
 	 */
-	const inFlight463Recoveries = new Set<string>()
+	const inFlight463Recoveries = new Map<string, Promise<boolean>>()
 
 	/**
 	 * Dedupe global de `fetchAccountReachoutTimelock` em fire-and-forget.
@@ -452,6 +452,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	// alone may be present only for unrelated mirrors, so it must never imply
 	// that tctokens are relational/authoritative.
 	const trustedContactTokens = authState.keys.trustedContactTokens
+	const prekeyUploads = authState.keys.prekeyUploads
 
 	/** Debounced save of the tctoken JID index (5s) */
 	const scheduleTcTokenIndexSave = () => {
@@ -2092,14 +2093,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 				directDistributionCredsUpdate = update
 				directDistributionKeyId = keyId ? +keyId : undefined
-				if (signalTypedBackend && key && directDistributionKeyId !== undefined) {
+				if (prekeyUploads && key && directDistributionKeyId !== undefined) {
 					// For a freshly generated key, carry this intent through the pending
 					// keys.set mutation so axolotl.db inserts + flags it atomically at
 					// commit. Existing rows are deliberately marked only in afterCommit:
 					// if another auth mutation fails, no key is removed from the upload
 					// pool before the transaction has actually succeeded.
 					try {
-						directDistributionWasAlreadyMarked = signalTypedBackend.isPrekeyDirectDistribution(directDistributionKeyId)
+						directDistributionWasAlreadyMarked = prekeyUploads.isDirectDistribution(directDistributionKeyId)
 					} catch (err) {
 						directDistributionMarkError = err
 					}
@@ -2110,15 +2111,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			authState.keys.afterCommit(() => {
 				includeDirectDistributionKey = directDistributionKeysNode !== undefined
-				if (directDistributionKeyId !== undefined && config.multiDbStore) {
+				if (directDistributionKeyId !== undefined && prekeyUploads) {
 					let durableMark = false
 					try {
-						durableMark = signalTypedBackend?.isPrekeyDirectDistribution(directDistributionKeyId) === true
-						if (!durableMark && signalTypedBackend && !directDistributionWasAlreadyMarked) {
+						durableMark = prekeyUploads.isDirectDistribution(directDistributionKeyId)
+						if (!durableMark && !directDistributionWasAlreadyMarked) {
 							// Existing prekeys (and kill-switch mirror rows) were not part of
 							// this transaction's typed INSERT. Mark them only now, after the
 							// auth-key commit, but before releasing its operation lock.
-							durableMark = signalTypedBackend.markPrekeyDirectDistribution(directDistributionKeyId)
+							durableMark = prekeyUploads.markDirectDistribution(directDistributionKeyId)
 						}
 					} catch (err) {
 						directDistributionMarkError = directDistributionMarkError ?? err
@@ -2136,15 +2137,27 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							{
 								err: directDistributionMarkError ? compactError(directDistributionMarkError) : undefined,
 								keyId: directDistributionKeyId,
-								reason: signalTypedBackend ? 'typed-row-not-direct-distributed' : 'typed-backend-unavailable',
+								reason: 'typed-row-ineligible-or-not-persisted',
 								retryReceiptAction: 'one-time-prekey-omitted',
 								signalKvPreserved: true,
 								serverUploadEligibilityPreserved: true,
-								storagePath: signalTypedBackend ? 'typed-prekeys-with-signal_kv-fallback' : 'signal_kv-only'
+								storagePath: 'authoritative-typed-prekeys-with-signal_kv-fallback'
 							},
 							'multi-db-sqlite: typed direct-distribution unavailable; key material retained, signal_kv fallback preserved, and one-time prekey omitted from retry receipt'
 						)
 					}
+				} else if (directDistributionKeyId !== undefined && signalTypedBackend) {
+					includeDirectDistributionKey = false
+					logger.error(
+						{
+							keyId: directDistributionKeyId,
+							reason: 'authoritative-prekey-capability-unavailable',
+							retryReceiptAction: 'one-time-prekey-omitted',
+							mirrorIgnored: true,
+							signalKvPreserved: true
+						},
+						'multi-db-sqlite: prekey mirror is not authoritative; refusing direct distribution and preserving the legacy key material'
+					)
 				}
 
 				if (directDistributionCredsUpdate) {
@@ -4167,7 +4180,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleBadAck = async ({ attrs }: BinaryNode) => {
-		const key: WAMessageKey = { remoteJid: attrs.from, fromMe: true, id: attrs.id }
+		// Error acks can come from an alternate/device/own-domain JID. The retry
+		// cache records the actual destination used by relayMessage, so prefer it
+		// over attrs.from when deciding whose privacy token must be fetched.
+		const recentMessage = attrs.id ? messageRetryManager?.getRecentMessage(attrs.from ?? '', attrs.id) : undefined
+		const outboundJid = jidNormalizedUser(recentMessage?.to ?? attrs.from ?? '')
+		const key: WAMessageKey = { remoteJid: outboundJid, fromMe: true, id: attrs.id }
 		await normalizeKeyLidToPn(key, signalRepository.lidMapping, logger)
 
 		// WARNING: REFRAIN FROM ENABLING THIS FOR NOW. IT WILL CAUSE A LOOP
@@ -4199,7 +4217,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const is463 = attrs.error === SERVER_ERROR_CODES.MissingTcToken
 			if (is463) {
 				const msgId = attrs.id
-				const jid = jidNormalizedUser(attrs.from)
+				const jid = outboundJid
 				logTcToken('error_463', { jid, msgId })
 
 				// Fire-and-forget — detecta reachout timelock quando 463 vem por
@@ -4221,31 +4239,53 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				// to ensure token is available for the retry below.
 				// Per-JID dedupe (adapted from upstream #2517) — burst of 463 acks for the
 				// same recipient must not fan out N parallel IQs.
-				if (!inFlight463Recoveries.has(jid)) {
-					inFlight463Recoveries.add(jid)
-					getPrivacyTokens([jid])
-						.then(async result => {
-							await storeTcTokensFromIqResult({
-								result,
-								fallbackJid: jid,
-								keys: authState.keys,
-								getLIDForPN,
-								onNewJidStored: storedJid => {
-									tcTokenKnownJids.add(storedJid)
-									scheduleTcTokenIndexSave()
-								}
-							})
+				let recoveryPromise = inFlight463Recoveries.get(jid)
+				if (!recoveryPromise) {
+					recoveryPromise = (async () => {
+						const result = await getPrivacyTokens([jid])
+						const stored = await storeTcTokensFromIqResult({
+							result,
+							fallbackJid: jid,
+							keys: authState.keys,
+							getLIDForPN,
+							onNewJidStored: storedJid => {
+								tcTokenKnownJids.add(storedJid)
+								scheduleTcTokenIndexSave()
+							}
+						})
+						const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
+						const storedForRecipient = stored.storedJids.some(
+							storedJid => storedJid === jid || storedJid === storageJid
+						)
+						if (storedForRecipient) {
 							logTcToken('fetched', { jid, reason: 'error_463' })
-						})
+						} else {
+							logger.warn(
+								{
+									jid,
+									reason:
+										stored.validTokenNodes === 0
+											? 'privacy-iq-returned-no-valid-token'
+											: 'privacy-iq-token-for-different-jid',
+									validTokenNodes: stored.validTokenNodes,
+									storedJids: stored.storedJids,
+									retryAction: 'suppressed'
+								},
+								'463 recovery: no valid token was persisted for the original recipient; refusing tokenless retry'
+							)
+						}
+
+						return storedForRecipient
+					})()
+					inFlight463Recoveries.set(jid, recoveryPromise)
+					recoveryPromise
 						.catch(err => {
-							// Audit SILENT-002 — antes silenciado; agora `debug` pra dar
-							// visibilidade quando 463 recovery falhar sistematicamente
-							// (próximas mensagens pro mesmo JID podem falhar).
-							logger.debug({ jid, err: err?.message }, '463 recovery: tctoken fetch/store failed')
+							logger.warn(
+								{ jid, err: err?.message, reason: 'privacy-token-fetch-or-store-failed', retryAction: 'suppressed' },
+								'463 recovery: tctoken fetch/store failed; refusing tokenless retry'
+							)
 						})
-						.finally(() => {
-							inFlight463Recoveries.delete(jid)
-						})
+						.finally(() => inFlight463Recoveries.delete(jid))
 				}
 
 				// Single-retry: wait 1.5s for the server's tctoken notification to arrive,
@@ -4256,13 +4296,41 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					tcTokenRetriedMsgIds.add(retryKey)
 					// Each entry auto-expires after 60s — naturally bounded under normal use
 					setTimeout(() => tcTokenRetriedMsgIds.delete(retryKey), 60_000)
-					;(async () => {
+					void (async () => {
 						try {
+							const fetchedForRecipient = await recoveryPromise.catch(() => false)
 							await delay(1500)
+							const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
+							const tokenState = await authState.keys.get('tctoken', [storageJid, jid])
+							const tokenEntry = tokenState[storageJid] ?? tokenState[jid]
+							const hasValidToken = !!tokenEntry?.token?.length && !isTcTokenExpired(tokenEntry.timestamp)
+							if (!hasValidToken) {
+								logger.warn(
+									{
+										jid,
+										msgId,
+										reason: 'no-valid-recipient-token-after-recovery',
+										fetchStoredRecipient: fetchedForRecipient,
+										retryAction: 'suppressed'
+									},
+									'463 recovery: retry suppressed because the recipient still has no valid tctoken'
+								)
+								ev.emit('messages.update', [
+									{
+										key,
+										update: {
+											status: WAMessageStatus.ERROR,
+											messageStubParameters: ['463', ACCOUNT_RESTRICTED_TEXT]
+										}
+									}
+								])
+								return
+							}
+
 							const msg =
 								(await getMessage(key)) ??
 								// Fallback: ack can arrive <30ms after send, before store persists
-								messageRetryManager?.getRecentMessage(jid, msgId)?.message
+								recentMessage?.message
 							if (msg) {
 								await relayMessage(jid, msg, { messageId: msgId, useUserDevicesCache: true })
 								logTcToken('retry_463_ok', { jid, msgId })
@@ -4289,12 +4357,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					return
 				}
 			} else if (attrs.error === SERVER_ERROR_CODES.SmaxInvalid) {
-				const jid479 = jidNormalizedUser(attrs.from)
+				const jid479 = outboundJid
 				logTcToken('error_479', { jid: jid479, msgId: attrs.id })
 				// WABA Android: error 479 (SmaxInvalid) also triggers token re-fetch
 				getPrivacyTokens([jid479])
 					.then(async result => {
-						await storeTcTokensFromIqResult({
+						const stored = await storeTcTokensFromIqResult({
 							result,
 							fallbackJid: jid479,
 							keys: authState.keys,
@@ -4304,7 +4372,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								scheduleTcTokenIndexSave()
 							}
 						})
-						logTcToken('fetched', { jid: jid479, reason: 'error_479' })
+						const storageJid = await resolveTcTokenJid(jid479, getLIDForPN)
+						if (stored.storedJids.some(storedJid => storedJid === jid479 || storedJid === storageJid)) {
+							logTcToken('fetched', { jid: jid479, reason: 'error_479' })
+						} else {
+							logger.warn(
+								{
+									jid: jid479,
+									reason:
+										stored.validTokenNodes === 0
+											? 'privacy-iq-returned-no-valid-token'
+											: 'privacy-iq-token-for-different-jid',
+									storedJids: stored.storedJids
+								},
+								'479 recovery: no valid token was persisted for the original recipient'
+							)
+						}
 					})
 					.catch(err => {
 						// Audit SILENT-002 — antes silenciado; agora `debug` pra

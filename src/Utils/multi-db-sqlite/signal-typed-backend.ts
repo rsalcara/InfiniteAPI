@@ -144,6 +144,7 @@ export class SignalTypedBackend {
 		selectPrekey: SqliteStatementLike
 		deletePrekey: SqliteStatementLike
 		markPrekeysUploaded: SqliteStatementLike
+		reservePrekeyUploadRange: SqliteStatementLike
 		markPrekeyDirectDistribution: SqliteStatementLike
 		selectPrekeyDirectDistribution: SqliteStatementLike
 		countUnsentPrekeys: SqliteStatementLike
@@ -224,6 +225,15 @@ export class SignalTypedBackend {
 				'UPDATE prekeys SET sent_to_server = 1, upload_timestamp = ? ' +
 					'WHERE prekey_id >= ? AND prekey_id < ? AND (sent_to_server IS NULL OR sent_to_server = 0)'
 			),
+			// Stamp every key before the upload IQ leaves the process. A non-null
+			// timestamp is a durable reservation: after a crash we cannot know whether
+			// the server accepted the IQ, so that key must stay on the server-upload
+			// path and must never be handed directly to a peer.
+			reservePrekeyUploadRange: this.db.prepare(
+				'UPDATE prekeys SET upload_timestamp = COALESCE(upload_timestamp, ?) ' +
+					'WHERE prekey_id >= ? AND prekey_id < ? ' +
+					'AND COALESCE(sent_to_server, 0) = 0 AND COALESCE(direct_distribution, 0) = 0'
+			),
 			// Direct-distribution path (retry receipt): the real SignalPreKeyStore
 			// takes ONE unsent key, flags it `direct_distribution = 1` + stamps
 			// `upload_timestamp`, then hands it straight to the peer inline. The flag
@@ -232,7 +242,9 @@ export class SignalTypedBackend {
 			// pool. `sent_to_server` is intentionally left untouched (the key was
 			// delivered peer-to-peer, not acked by the server pool upload IQ).
 			markPrekeyDirectDistribution: this.db.prepare(
-				'UPDATE prekeys SET direct_distribution = 1, upload_timestamp = ? WHERE prekey_id = ?'
+				'UPDATE prekeys SET direct_distribution = 1, upload_timestamp = ? ' +
+					'WHERE prekey_id = ? AND COALESCE(sent_to_server, 0) = 0 ' +
+					'AND COALESCE(direct_distribution, 0) = 0 AND upload_timestamp IS NULL'
 			),
 			selectPrekeyDirectDistribution: this.db.prepare('SELECT direct_distribution FROM prekeys WHERE prekey_id = ?'),
 			// A00 / A01 of the real SignalPreKeyStore: the unsent-prekey set IS the
@@ -439,6 +451,15 @@ export class SignalTypedBackend {
 	}
 
 	/**
+	 * Durably reserves an eligible half-open range for a normal server upload.
+	 * Returns the number of eligible typed rows covered by the reservation.
+	 */
+	reservePrekeyUploadRange(fromId: number, toId: number, uploadTimestampSec: number): number {
+		if (!(toId > fromId)) return 0
+		return this.stmts.reservePrekeyUploadRange.run(uploadTimestampSec, fromId, toId).changes
+	}
+
+	/**
 	 * Flags a single one-time prekey as direct-distributed (`direct_distribution
 	 * = 1`) with its `upload_timestamp`, mirroring what the real SignalPreKeyStore
 	 * does when a key is handed to a peer inline in a retry receipt instead of
@@ -446,7 +467,9 @@ export class SignalTypedBackend {
 	 * / upload queries (`countUnsentPrekeys` / `firstUnsentPrekeyId`), so it is not
 	 * also re-sent to the server. Returns true only when exactly one durable row
 	 * was marked; retry-receipt callers use that result fail-closed before handing
-	 * the one-time key to a peer.
+	 * the one-time key to a peer. A row whose `upload_timestamp` is already set
+	 * has entered the normal upload path and is intentionally ineligible even
+	 * when its server ACK has not been recorded yet.
 	 */
 	markPrekeyDirectDistribution(prekeyId: number, uploadTimestampSec: number = Math.floor(Date.now() / 1000)): boolean {
 		return this.stmts.markPrekeyDirectDistribution.run(uploadTimestampSec, prekeyId).changes === 1

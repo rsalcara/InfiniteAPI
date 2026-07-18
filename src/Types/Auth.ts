@@ -108,6 +108,22 @@ export type TrustedContactTokenStore = {
 	compareAndPrune(jid: string, expectedTimestamp: number, expectedToken: Uint8Array): Promise<boolean>
 }
 
+/**
+ * Authoritative per-key upload state exposed by auth adapters backed by the
+ * typed `prekeys` table. Socket code must use this capability instead of
+ * opening an arbitrary `SocketConfig.multiDbStore` as though it owned the
+ * auth-state cursor.
+ */
+export type PrekeyUploadStore = {
+	readonly authoritative: true
+	reserveUploadRange(fromId: number, toId: number, timestampSec: number): number
+	commitUpload(fromId: number, toId: number, timestampSec: number): void
+	countUnsent(): number
+	firstUnsentId(): number | null
+	markDirectDistribution(prekeyId: number, timestampSec?: number): boolean
+	isDirectDistribution(prekeyId: number): boolean
+}
+
 type Awaitable<T> = T | Promise<T>
 
 export type SignalKeyStore = {
@@ -130,6 +146,8 @@ export type SignalKeyStore = {
 	listIds?<T extends keyof SignalDataTypeMap>(type: T): AsyncIterable<string>
 	/** Present only when this exact key store owns authoritative relational tctokens. */
 	trustedContactTokens?: TrustedContactTokenStore
+	/** Present only when this exact key store owns authoritative typed prekeys. */
+	prekeyUploads?: PrekeyUploadStore
 }
 
 /**
