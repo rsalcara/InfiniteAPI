@@ -599,6 +599,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 							signalTypedBackend.commitPrekeyUpload(fromId, toId, timestampSec),
 						countUnsent: () => signalTypedBackend.countUnsentPrekeys(),
 						firstUnsentId: () => signalTypedBackend.firstUnsentPrekeyId(),
+						nextGeneratedId: () => signalTypedBackend.nextGeneratedPrekeyId(),
 						markDirectDistribution: (prekeyId, timestampSec) =>
 							signalTypedBackend.markPrekeyDirectDistribution(prekeyId, timestampSec),
 						isDirectDistribution: prekeyId => signalTypedBackend.isPrekeyDirectDistribution(prekeyId)

@@ -120,6 +120,7 @@ export type PrekeyUploadStore = {
 	commitUpload(fromId: number, toId: number, timestampSec: number): void
 	countUnsent(): number
 	firstUnsentId(): number | null
+	nextGeneratedId(): number | null
 	markDirectDistribution(prekeyId: number, timestampSec?: number): boolean
 	isDirectDistribution(prekeyId: number): boolean
 }

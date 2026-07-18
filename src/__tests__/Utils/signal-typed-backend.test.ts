@@ -86,6 +86,7 @@ describe('SignalTypedBackend', () => {
 		// A00 of SignalPreKeyStore: the unsent set is the upload queue.
 		expect(backend.countUnsentPrekeys()).toBe(5)
 		expect(backend.firstUnsentPrekeyId()).toBe(1)
+		expect(backend.nextGeneratedPrekeyId()).toBe(6)
 
 		// Upload ack: mark the half-open range [1, 4) as uploaded. Epoch SECONDS
 		// (WhatsApp Android stores seconds, not millis).

@@ -39,6 +39,7 @@ import {
 	xmppSignedPreKey
 } from '../Utils'
 import { getPlatformId, isAndroidBrowser } from '../Utils/browser-utils'
+import { reconcilePrekeyCursors } from '../Utils/prekey-upload-cursors'
 import { resolvePrekeyUploadQueryTimeout } from '../Utils/prekey-upload-timeout'
 import {
 	markConnectionActive,
@@ -669,21 +670,42 @@ export const makeSocket = (config: SocketConfig) => {
 		const PREKEY_UPLOAD_QUERY_TIMEOUT_MS = resolvePrekeyUploadQueryTimeout(defaultQueryTimeoutMs)
 
 		const runWithRetries = async () => {
-			// Table-authoritative upload progress (multi-db only), matching the real
-			// SignalPreKeyStore where the upload queue IS `sent_to_server = 0`. If the
-			// typed prekeys table shows unsent keys BELOW the creds cursor, the cursor
-			// drifted (e.g. a legacy orphan, or NULL-flagged pre-tracking rows) —
-			// rewind it so those keys get re-sent. Only ever lowers the cursor, so it
-			// can recover keys but never skip an un-acked one; re-uploading an id the
-			// server already has is a harmless no-op (deduped by prekey_id).
+			// Reconcile both cursors from the authoritative typed table. Besides
+			// rewinding for legacy unsent orphans, this must advance past a durable ACK
+			// when a crash happened before the matching creds.update reached creds.db.
+			// `nextGeneratedId` also prevents regeneration over durable key material if
+			// the allocation-cursor save was the write lost by the crash.
 			try {
 				const firstUnsent = prekeyUploads?.firstUnsentId()
-				if (typeof firstUnsent === 'number' && firstUnsent < creds.firstUnuploadedPreKeyId) {
+				const typedNextGenerated = prekeyUploads?.nextGeneratedId()
+				const unsent = prekeyUploads?.countUnsent()
+				const cursorUpdate = reconcilePrekeyCursors(
+					{
+						firstUnuploadedPreKeyId: creds.firstUnuploadedPreKeyId,
+						nextPreKeyId: creds.nextPreKeyId
+					},
+					{
+						firstUnsentId: firstUnsent ?? null,
+						nextGeneratedId: typedNextGenerated ?? null,
+						unsentCount: unsent ?? 0
+					}
+				)
+
+				if (Object.keys(cursorUpdate).length > 0) {
 					logger.info(
-						{ from: creds.firstUnuploadedPreKeyId, to: firstUnsent, unsent: prekeyUploads?.countUnsent() },
-						`pre-keys: self-heal — rewinding firstUnuploadedPreKeyId ${creds.firstUnuploadedPreKeyId} → ${firstUnsent}`
+						{
+							from: {
+								firstUnuploadedPreKeyId: creds.firstUnuploadedPreKeyId,
+								nextPreKeyId: creds.nextPreKeyId
+							},
+							to: cursorUpdate,
+							firstUnsent,
+							typedNextGenerated,
+							unsent
+						},
+						'pre-keys: self-heal reconciled creds cursors from authoritative typed prekeys'
 					)
-					ev.emit('creds.update', { firstUnuploadedPreKeyId: firstUnsent })
+					ev.emit('creds.update', cursorUpdate)
 				}
 			} catch (err) {
 				logger.debug({ err }, 'multi-db-sqlite: prekey self-heal check failed (non-fatal)')

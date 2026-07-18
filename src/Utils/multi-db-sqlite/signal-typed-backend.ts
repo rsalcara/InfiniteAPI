@@ -149,6 +149,7 @@ export class SignalTypedBackend {
 		selectPrekeyDirectDistribution: SqliteStatementLike
 		countUnsentPrekeys: SqliteStatementLike
 		firstUnsentPrekeyId: SqliteStatementLike
+		nextGeneratedPrekeyId: SqliteStatementLike
 		upsertSignedPrekey: SqliteStatementLike
 		selectSignedPrekey: SqliteStatementLike
 		upsertKyberPrekey: SqliteStatementLike
@@ -263,6 +264,7 @@ export class SignalTypedBackend {
 			firstUnsentPrekeyId: this.db.prepare(
 				'SELECT MIN(prekey_id) AS id FROM prekeys WHERE COALESCE(sent_to_server, 0) = 0 AND COALESCE(direct_distribution, 0) = 0'
 			),
+			nextGeneratedPrekeyId: this.db.prepare('SELECT MAX(prekey_id) + 1 AS id FROM prekeys'),
 			upsertSignedPrekey: this.db.prepare(
 				'INSERT INTO signed_prekeys (prekey_id, record, timestamp, key_type) VALUES (?, ?, ?, ?) ' +
 					'ON CONFLICT(prekey_id) DO UPDATE SET ' +
@@ -502,6 +504,12 @@ export class SignalTypedBackend {
 	 */
 	firstUnsentPrekeyId(): number | null {
 		const r = this.stmts.firstUnsentPrekeyId.get() as { id: number | null } | undefined
+		return r?.id ?? null
+	}
+
+	/** Next allocation id implied by the highest durable typed prekey. */
+	nextGeneratedPrekeyId(): number | null {
+		const r = this.stmts.nextGeneratedPrekeyId.get() as { id: number | null } | undefined
 		return r?.id ?? null
 	}
 

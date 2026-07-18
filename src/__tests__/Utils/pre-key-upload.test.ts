@@ -13,6 +13,7 @@
  *     advance `nextPreKeyId` by exactly one batch, not N.
  */
 
+import { reconcilePrekeyCursors } from '../../Utils/prekey-upload-cursors'
 import {
 	PREKEY_UPLOAD_QUERY_TIMEOUT_FALLBACK_MS,
 	resolvePrekeyUploadQueryTimeout
@@ -186,5 +187,34 @@ describe('resolvePrekeyUploadQueryTimeout', () => {
 	it("preserves a consumer's positive configured timeout instead of clamping it", () => {
 		expect(resolvePrekeyUploadQueryTimeout(60_000)).toBe(60_000)
 		expect(resolvePrekeyUploadQueryTimeout(5_000)).toBe(5_000)
+	})
+})
+
+describe('reconcilePrekeyCursors', () => {
+	it('advances upload progress past a durable ACK whose creds update was lost', () => {
+		expect(
+			reconcilePrekeyCursors(
+				{ firstUnuploadedPreKeyId: 1, nextPreKeyId: 31 },
+				{ firstUnsentId: null, nextGeneratedId: 31, unsentCount: 0 }
+			)
+		).toEqual({ firstUnuploadedPreKeyId: 31 })
+	})
+
+	it('also restores the allocation cursor when both creds updates were lost', () => {
+		expect(
+			reconcilePrekeyCursors(
+				{ firstUnuploadedPreKeyId: 1, nextPreKeyId: 1 },
+				{ firstUnsentId: null, nextGeneratedId: 31, unsentCount: 0 }
+			)
+		).toEqual({ firstUnuploadedPreKeyId: 31, nextPreKeyId: 31 })
+	})
+
+	it('still rewinds to a legacy unsent orphan below the creds cursor', () => {
+		expect(
+			reconcilePrekeyCursors(
+				{ firstUnuploadedPreKeyId: 20, nextPreKeyId: 31 },
+				{ firstUnsentId: 7, nextGeneratedId: 31, unsentCount: 4 }
+			)
+		).toEqual({ firstUnuploadedPreKeyId: 7 })
 	})
 })
