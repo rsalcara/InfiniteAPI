@@ -108,6 +108,38 @@ describe('uploadPreKeys — id advancement gated on commit + ack', () => {
 		expect(creds.firstUnuploadedPreKeyId).toBe(1 + MIN)
 	})
 
+	it('preserves committed key ids and retries the same material after a post-commit reservation failure', () => {
+		const creds: CredsLike = { nextPreKeyId: 1, firstUnuploadedPreKeyId: 1 }
+		const persisted = new Map<number, string>()
+		let generated = 0
+
+		const prepareAndCommit = () => {
+			const before = creds.nextPreKeyId
+			const update = generateOrGetPreKeys(creds, 3)
+			for (let id = before; id < update.nextPreKeyId; id++) {
+				generated++
+				persisted.set(id, `key-${id}-${generated}`)
+			}
+
+			// Mirrors the production fix: afterCommit proves the key mutations are
+			// durable, so allocation advances even when reservation rejects the IQ.
+			creds.nextPreKeyId = update.nextPreKeyId
+			return update
+		}
+
+		const first = prepareAndCommit()
+		const firstMaterial = [...persisted.entries()]
+		expect(first.nextPreKeyId).toBe(4)
+		expect(creds.firstUnuploadedPreKeyId).toBe(1)
+
+		// Retry with firstUnuploaded still at 1 sees all three persisted keys as
+		// available; it generates nothing and therefore cannot overwrite them.
+		const second = prepareAndCommit()
+		expect(second.nextPreKeyId).toBe(4)
+		expect(generated).toBe(3)
+		expect([...persisted.entries()]).toEqual(firstMaterial)
+	})
+
 	it('bounds each attempt with an explicit per-call timeout even if the global query timeout is disabled', async () => {
 		const EXPLICIT_MS = 10
 		const globalDefaultMs: number | undefined = undefined // consumer disabled defaultQueryTimeoutMs

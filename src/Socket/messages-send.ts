@@ -2500,30 +2500,33 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return ''
 	}
 
-	const getPrivacyTokens = async (jids: string[], timestamp?: number) => {
+	const getPrivacyTokens = async (jids: string[], timestamp?: number, timeoutMs?: number) => {
 		const t = (timestamp ?? unixTimestampSeconds()).toString()
-		const result = await query({
-			tag: 'iq',
-			attrs: {
-				to: S_WHATSAPP_NET,
-				type: 'set',
-				xmlns: 'privacy'
+		const result = await query(
+			{
+				tag: 'iq',
+				attrs: {
+					to: S_WHATSAPP_NET,
+					type: 'set',
+					xmlns: 'privacy'
+				},
+				content: [
+					{
+						tag: 'tokens',
+						attrs: {},
+						content: jids.map(jid => ({
+							tag: 'token',
+							attrs: {
+								jid: jidNormalizedUser(jid),
+								t,
+								type: 'trusted_contact'
+							}
+						}))
+					}
+				]
 			},
-			content: [
-				{
-					tag: 'tokens',
-					attrs: {},
-					content: jids.map(jid => ({
-						tag: 'token',
-						attrs: {
-							jid: jidNormalizedUser(jid),
-							t,
-							type: 'trusted_contact'
-						}
-					}))
-				}
-			]
-		})
+			timeoutMs
+		)
 
 		return result
 	}

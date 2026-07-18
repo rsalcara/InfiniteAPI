@@ -167,6 +167,9 @@ describe('SignalTypedBackend', () => {
 		expect(backend.markPrekeyDirectDistribution(2, 1_784_050_583)).toBe(false)
 
 		expect(backend.reservePrekeyUploadRange(3, 5, 1_784_050_584)).toBe(2)
+		// Reservation is retry-idempotent: a post-commit retry touches the same
+		// eligible rows instead of forcing key regeneration.
+		expect(backend.reservePrekeyUploadRange(3, 5, 1_784_050_586)).toBe(2)
 		expect(backend.markPrekeyDirectDistribution(3, 1_784_050_585)).toBe(false)
 		expect(backend.markPrekeyDirectDistribution(4, 1_784_050_585)).toBe(false)
 

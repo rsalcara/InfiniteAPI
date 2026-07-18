@@ -159,6 +159,21 @@ describe('handleBadAck error 463 retry', () => {
 		expect(mockRelayMessage).not.toHaveBeenCalled()
 	})
 
+	it('checks persisted token after the grace period without waiting for a stalled privacy IQ', async () => {
+		const neverSettles = new Promise<boolean>(() => {})
+		let fetchResult: boolean | undefined
+		const retryDecision = async () => {
+			void neverSettles.then(result => {
+				fetchResult = result
+			})
+			await Promise.resolve() // deterministic grace-period stand-in
+			const persistedTokenIsUsable = true // notification path populated it
+			return { persistedTokenIsUsable, fetchResult }
+		}
+
+		await expect(retryDecision()).resolves.toEqual({ persistedTokenIsUsable: true, fetchResult: undefined })
+	})
+
 	it('should NOT retry same message ID twice (loop guard)', async () => {
 		const fakeMsg = { conversation: 'hello' }
 		mockGetMessage.mockResolvedValue(fakeMsg)

@@ -697,6 +697,7 @@ export const makeSocket = (config: SocketConfig) => {
 				const firstUnuploadedBefore = creds.firstUnuploadedPreKeyId
 				let committedFirstUnuploaded = firstUnuploadedBefore
 				let allocatedNextPreKeyId = creds.nextPreKeyId
+				let reservationError: unknown
 
 				logger.info(
 					{ requested: count, attempt },
@@ -720,17 +721,21 @@ export const makeSocket = (config: SocketConfig) => {
 					)
 					keys.afterCommit(() => {
 						if (!prekeyUploads || !(committedFirstUnuploaded > firstUnuploadedBefore)) return
-						const expected = committedFirstUnuploaded - firstUnuploadedBefore
-						const reserved = prekeyUploads.reserveUploadRange(
-							firstUnuploadedBefore,
-							committedFirstUnuploaded,
-							Math.floor(Date.now() / 1000)
-						)
-						if (reserved !== expected) {
-							throw new Error(
-								`pre-keys: authoritative upload reservation covered ${reserved}/${expected} rows for ` +
-									`[${firstUnuploadedBefore}..${committedFirstUnuploaded}); refusing to send an ambiguous batch`
+						try {
+							const expected = committedFirstUnuploaded - firstUnuploadedBefore
+							const reserved = prekeyUploads.reserveUploadRange(
+								firstUnuploadedBefore,
+								committedFirstUnuploaded,
+								Math.floor(Date.now() / 1000)
 							)
+							if (reserved !== expected) {
+								reservationError = new Error(
+									`pre-keys: authoritative upload reservation covered ${reserved}/${expected} rows for ` +
+										`[${firstUnuploadedBefore}..${committedFirstUnuploaded}); refusing to send an ambiguous batch`
+								)
+							}
+						} catch (err) {
+							reservationError = err
 						}
 					})
 					return node
@@ -741,6 +746,34 @@ export const makeSocket = (config: SocketConfig) => {
 				// `nextPreKeyId` pointing past ids that were never persisted. Holds
 				// back `firstUnuploadedPreKeyId` (upload progress) until the ack below.
 				ev.emit('creds.update', { nextPreKeyId: allocatedNextPreKeyId })
+
+				// afterCommit runs only after the generated key mutations are durable.
+				// A reservation failure must therefore NOT make the caller believe the
+				// whole transaction rolled back: doing so leaves nextPreKeyId stale and
+				// the next attempt regenerates different key material over the same ids.
+				// Advance only the allocation cursor, keep upload progress unchanged, and
+				// retry the exact persisted range without sending an ambiguous IQ.
+				if (reservationError) {
+					lastError = reservationError
+					logger.error(
+						{
+							reservationError: (reservationError as Error)?.toString?.() ?? String(reservationError),
+							fromId: firstUnuploadedBefore,
+							toId: committedFirstUnuploaded,
+							attempt,
+							nextPreKeyId: allocatedNextPreKeyId,
+							firstUnuploadedPreKeyId: firstUnuploadedBefore,
+							action: attempt < MAX_RETRIES ? 'retry-persisted-range' : 'fail-preserving-persisted-range'
+						},
+						'pre-keys: post-commit upload reservation failed; allocation cursor preserved and IQ suppressed'
+					)
+					if (attempt < MAX_RETRIES) {
+						const backoffDelay = Math.min(1000 * Math.pow(2, attempt), 10000)
+						await new Promise(resolve => setTimeout(resolve, backoffDelay))
+					}
+
+					continue
+				}
 
 				try {
 					await query(node, PREKEY_UPLOAD_QUERY_TIMEOUT_MS)

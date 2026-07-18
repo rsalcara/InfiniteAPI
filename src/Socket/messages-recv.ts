@@ -393,6 +393,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const TC_TOKEN_PRUNE_TS_KEY = '__prune_ts'
 	const tcTokenKnownJids = new Set<string>()
 	const tcTokenRetriedMsgIds = new Set<string>()
+	const TC_TOKEN_RECOVERY_QUERY_TIMEOUT_MS = 30_000
 	/**
 	 * Dedupe per-JID in-flight 463 token-refetch IQs.
 	 * Without this, a burst of 463 acks for the same recipient (e.g. multi-recipient
@@ -453,6 +454,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	// that tctokens are relational/authoritative.
 	const trustedContactTokens = authState.keys.trustedContactTokens
 	const prekeyUploads = authState.keys.prekeyUploads
+	const readTcTokenUsability = async (
+		jid: string
+	): Promise<{ usable: boolean; storageJid: string; reason?: 'missing-token' | 'empty-token' | 'expired-token' }> => {
+		const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
+		const tokenState = await authState.keys.get('tctoken', [storageJid, jid])
+		const tokenEntry = tokenState[storageJid] ?? tokenState[jid]
+		if (!tokenEntry) return { usable: false, storageJid, reason: 'missing-token' }
+		if (!tokenEntry.token?.length) return { usable: false, storageJid, reason: 'empty-token' }
+		if (isTcTokenExpired(tokenEntry.timestamp)) return { usable: false, storageJid, reason: 'expired-token' }
+		return { usable: true, storageJid }
+	}
 
 	/** Debounced save of the tctoken JID index (5s) */
 	const scheduleTcTokenIndexSave = () => {
@@ -4242,7 +4254,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				let recoveryPromise = inFlight463Recoveries.get(jid)
 				if (!recoveryPromise) {
 					recoveryPromise = (async () => {
-						const result = await getPrivacyTokens([jid])
+						const result = await getPrivacyTokens([jid], undefined, TC_TOKEN_RECOVERY_QUERY_TIMEOUT_MS)
 						const stored = await storeTcTokensFromIqResult({
 							result,
 							fallbackJid: jid,
@@ -4253,20 +4265,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								scheduleTcTokenIndexSave()
 							}
 						})
-						const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
+						const tokenUsability = await readTcTokenUsability(jid)
 						const storedForRecipient = stored.storedJids.some(
-							storedJid => storedJid === jid || storedJid === storageJid
+							storedJid => storedJid === jid || storedJid === tokenUsability.storageJid
 						)
-						if (storedForRecipient) {
+						if (storedForRecipient && tokenUsability.usable) {
 							logTcToken('fetched', { jid, reason: 'error_463' })
 						} else {
 							logger.warn(
 								{
 									jid,
-									reason:
-										stored.validTokenNodes === 0
+									reason: !storedForRecipient
+										? stored.validTokenNodes === 0
 											? 'privacy-iq-returned-no-valid-token'
-											: 'privacy-iq-token-for-different-jid',
+											: 'privacy-iq-token-for-different-jid'
+										: tokenUsability.reason,
 									validTokenNodes: stored.validTokenNodes,
 									storedJids: stored.storedJids,
 									retryAction: 'suppressed'
@@ -4275,7 +4288,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							)
 						}
 
-						return storedForRecipient
+						return storedForRecipient && tokenUsability.usable
 					})()
 					inFlight463Recoveries.set(jid, recoveryPromise)
 					recoveryPromise
@@ -4298,18 +4311,23 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					setTimeout(() => tcTokenRetriedMsgIds.delete(retryKey), 60_000)
 					void (async () => {
 						try {
-							const fetchedForRecipient = await recoveryPromise.catch(() => false)
+							let fetchedForRecipient: boolean | undefined
+							void recoveryPromise.then(
+								result => {
+									fetchedForRecipient = result
+								},
+								() => {
+									fetchedForRecipient = false
+								}
+							)
 							await delay(1500)
-							const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
-							const tokenState = await authState.keys.get('tctoken', [storageJid, jid])
-							const tokenEntry = tokenState[storageJid] ?? tokenState[jid]
-							const hasValidToken = !!tokenEntry?.token?.length && !isTcTokenExpired(tokenEntry.timestamp)
-							if (!hasValidToken) {
+							const tokenUsability = await readTcTokenUsability(jid)
+							if (!tokenUsability.usable) {
 								logger.warn(
 									{
 										jid,
 										msgId,
-										reason: 'no-valid-recipient-token-after-recovery',
+										reason: tokenUsability.reason,
 										fetchStoredRecipient: fetchedForRecipient,
 										retryAction: 'suppressed'
 									},
@@ -4360,7 +4378,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				const jid479 = outboundJid
 				logTcToken('error_479', { jid: jid479, msgId: attrs.id })
 				// WABA Android: error 479 (SmaxInvalid) also triggers token re-fetch
-				getPrivacyTokens([jid479])
+				getPrivacyTokens([jid479], undefined, TC_TOKEN_RECOVERY_QUERY_TIMEOUT_MS)
 					.then(async result => {
 						const stored = await storeTcTokensFromIqResult({
 							result,
@@ -4372,17 +4390,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								scheduleTcTokenIndexSave()
 							}
 						})
-						const storageJid = await resolveTcTokenJid(jid479, getLIDForPN)
-						if (stored.storedJids.some(storedJid => storedJid === jid479 || storedJid === storageJid)) {
+						const tokenUsability = await readTcTokenUsability(jid479)
+						const storedForRecipient = stored.storedJids.some(
+							storedJid => storedJid === jid479 || storedJid === tokenUsability.storageJid
+						)
+						if (storedForRecipient && tokenUsability.usable) {
 							logTcToken('fetched', { jid: jid479, reason: 'error_479' })
 						} else {
 							logger.warn(
 								{
 									jid: jid479,
-									reason:
-										stored.validTokenNodes === 0
+									reason: !storedForRecipient
+										? stored.validTokenNodes === 0
 											? 'privacy-iq-returned-no-valid-token'
-											: 'privacy-iq-token-for-different-jid',
+											: 'privacy-iq-token-for-different-jid'
+										: tokenUsability.reason,
 									storedJids: stored.storedJids
 								},
 								'479 recovery: no valid token was persisted for the original recipient'
