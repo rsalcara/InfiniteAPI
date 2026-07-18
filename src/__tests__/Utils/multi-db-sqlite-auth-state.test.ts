@@ -22,9 +22,21 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import type { SignalDataTypeMap, SignalKeyStoreWithTransaction } from '../../Types'
+import type { SignalDataTypeMap } from '../../Types'
+import { addTransactionCapability } from '../../Utils/auth-utils'
 import { BufferJSON } from '../../Utils/generics'
+import type { ILogger } from '../../Utils/logger'
 import { SignalTypedBackend, useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
+
+const silentLogger = (): ILogger => ({
+	level: 'silent',
+	trace: () => {},
+	debug: () => {},
+	info: () => {},
+	warn: () => {},
+	error: () => {},
+	child: () => silentLogger()
+})
 
 const sampleSession = (b: number): SignalDataTypeMap['session'] => Buffer.from([b]) as Uint8Array
 
@@ -443,7 +455,13 @@ describe('useMultiDbSqliteAuthState', () => {
 	it('flags a retry-receipt prekey direct_distribution only AFTER the transaction commits', async () => {
 		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		try {
-			const keys = state.keys as SignalKeyStoreWithTransaction
+			// The raw auth-state keys have no transaction(); the socket adds it via
+			// addTransactionCapability — replicate that here so the deferred-mutation
+			// semantics match production.
+			const keys = addTransactionCapability(state.keys, silentLogger(), {
+				maxCommitRetries: 1,
+				delayBetweenTriesMs: 1
+			})
 			const backend = new SignalTypedBackend(store.handle('axolotl.db'))
 			const kp = { public: Buffer.from([1, 2, 3]) as Uint8Array, private: Buffer.from([4, 5, 6]) as Uint8Array }
 			const readDd = (id: number) =>
