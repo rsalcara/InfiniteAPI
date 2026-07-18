@@ -13,6 +13,11 @@
  *     advance `nextPreKeyId` by exactly one batch, not N.
  */
 
+import {
+	PREKEY_UPLOAD_QUERY_TIMEOUT_FALLBACK_MS,
+	resolvePrekeyUploadQueryTimeout
+} from '../../Utils/prekey-upload-timeout'
+
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
 interface CredsLike {
@@ -136,5 +141,18 @@ describe('uploadPreKeys — id advancement gated on commit + ack', () => {
 		const outcome = await Promise.race([retryLoop(), delay(1000).then(() => 'hung')])
 
 		expect(outcome).toBe('rejected')
+	})
+})
+
+describe('resolvePrekeyUploadQueryTimeout', () => {
+	it('falls back to 30s only when the global timeout is disabled', () => {
+		expect(resolvePrekeyUploadQueryTimeout(undefined)).toBe(PREKEY_UPLOAD_QUERY_TIMEOUT_FALLBACK_MS)
+		expect(resolvePrekeyUploadQueryTimeout(0)).toBe(PREKEY_UPLOAD_QUERY_TIMEOUT_FALLBACK_MS)
+		expect(PREKEY_UPLOAD_QUERY_TIMEOUT_FALLBACK_MS).toBe(30_000)
+	})
+
+	it("preserves a consumer's positive configured timeout instead of clamping it", () => {
+		expect(resolvePrekeyUploadQueryTimeout(60_000)).toBe(60_000)
+		expect(resolvePrekeyUploadQueryTimeout(5_000)).toBe(5_000)
 	})
 })

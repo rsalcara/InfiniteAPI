@@ -40,6 +40,7 @@ import {
 } from '../Utils'
 import { getPlatformId, isAndroidBrowser } from '../Utils/browser-utils'
 import { type MultiDbSqliteStore, SignalTypedBackend } from '../Utils/multi-db-sqlite'
+import { resolvePrekeyUploadQueryTimeout } from '../Utils/prekey-upload-timeout'
 import {
 	markConnectionActive,
 	markConnectionInactive,
@@ -677,15 +678,14 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 
 		const MAX_RETRIES = 3
-		// Explicit per-attempt timeout. We must NOT rely on `defaultQueryTimeoutMs`
-		// here: it is `number | undefined` and a consumer can disable it (undefined),
-		// in which case `promiseTimeout` builds a promise with NO timeout — a
-		// non-responding server would then hang query() forever, and because the
-		// single-flight promise wraps the whole loop that would permanently block
-		// every future upload. Passing an explicit value bounds each attempt
-		// regardless of config; 4 attempts × 30s + backoff (~127s) stays under the
-		// 180s guard.
-		const PREKEY_UPLOAD_QUERY_TIMEOUT_MS = 30_000
+		// Explicit per-attempt timeout so an attempt is never unbounded. We must NOT
+		// blindly rely on `defaultQueryTimeoutMs` (it is `number | undefined`; a
+		// consumer can disable it, and `promiseTimeout(undefined)` builds a promise
+		// with NO timeout — query() would then hang forever and, since the
+		// single-flight promise wraps the whole loop, permanently block every future
+		// upload). But we also must NOT clamp a valid config: a consumer's positive
+		// value is honoured and only a disabled/0 timeout falls back to 30s.
+		const PREKEY_UPLOAD_QUERY_TIMEOUT_MS = resolvePrekeyUploadQueryTimeout(defaultQueryTimeoutMs)
 
 		const runWithRetries = async () => {
 			// Table-authoritative upload progress (multi-db only), matching the real
@@ -789,9 +789,9 @@ export const makeSocket = (config: SocketConfig) => {
 		// Promise.race timeout. An external timeout would resolve the guard while
 		// runWithRetries() kept running in the background, letting a subsequent
 		// call start a second, concurrent upload. The loop can't hang because each
-		// query() is given an EXPLICIT PREKEY_UPLOAD_QUERY_TIMEOUT_MS (not the
-		// disable-able global default), so worst case (4 × 30s + 1+2+4s backoff ≈
-		// 127s) stays under WhatsApp's 180s upload guard.
+		// query() is given a bounded PREKEY_UPLOAD_QUERY_TIMEOUT_MS (the consumer's
+		// timeout when set, else a 30s fallback — never the disable-able undefined),
+		// so every attempt terminates and the guard is always released.
 		uploadPreKeysPromise = runWithRetries()
 
 		try {
