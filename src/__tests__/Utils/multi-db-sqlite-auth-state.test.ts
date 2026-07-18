@@ -506,6 +506,7 @@ describe('useMultiDbSqliteAuthState', () => {
 			expect(Buffer.from(got['44']!.public).toString('hex')).toBe('31')
 			expect(store.handle('axolotl.db').prepare('SELECT 1 FROM prekeys WHERE prekey_id = 44').get()).toBeUndefined()
 		} finally {
+			store.handle('axolotl.db').exec('DROP TRIGGER IF EXISTS fail_direct_distribution_mirror')
 			close()
 		}
 	})
