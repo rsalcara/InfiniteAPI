@@ -24,6 +24,13 @@ export type TrustedContactsBackendStats = {
 	sentCount: number
 }
 
+export type TrustedContactReplacement = {
+	incoming: { token: Buffer | Uint8Array; timestamp: number } | null
+	sent: { sentTimestamp: number; realIssueTimestamp: number } | null
+}
+
+const CLEAR_MARKER_KEY = 'tctoken_clear_in_progress'
+
 export class TrustedContactsBackend {
 	private readonly stmts: {
 		upsertIncoming: SqliteStatementLike
@@ -36,9 +43,16 @@ export class TrustedContactsBackend {
 		listSentJids: SqliteStatementLike
 		countIncoming: SqliteStatementLike
 		countSent: SqliteStatementLike
+		clearIncoming: SqliteStatementLike
+		clearSent: SqliteStatementLike
+		upsertMetadata: SqliteStatementLike
+		selectMetadata: SqliteStatementLike
+		deleteMetadata: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
+	private readonly replaceTx: (jid: string, replacement: TrustedContactReplacement) => void
+	private readonly beginClearTx: () => void
 
 	constructor(db: SqliteDbLike) {
 		this.db = db
@@ -57,7 +71,9 @@ export class TrustedContactsBackend {
 			// opaque `__index` list the legacy signal_kv path kept (whose
 			// read-merge-write had a lost-update race): here every contact is its
 			// own row, so listing is a plain SELECT with no shared list to clobber.
-			listIncoming: this.db.prepare('SELECT jid, incoming_tc_token_timestamp FROM wa_trusted_contacts'),
+			listIncoming: this.db.prepare(
+				'SELECT jid, incoming_tc_token_timestamp FROM wa_trusted_contacts WHERE length(incoming_tc_token) > 0'
+			),
 			upsertSent: this.db.prepare(
 				'INSERT INTO wa_trusted_contacts_send (jid, sent_tc_token_timestamp, real_issue_timestamp) VALUES (?, ?, ?) ' +
 					'ON CONFLICT(jid) DO UPDATE SET ' +
@@ -70,8 +86,40 @@ export class TrustedContactsBackend {
 			delSent: this.db.prepare('DELETE FROM wa_trusted_contacts_send WHERE jid = ?'),
 			listSentJids: this.db.prepare('SELECT jid FROM wa_trusted_contacts_send'),
 			countIncoming: this.db.prepare('SELECT COUNT(*) AS n FROM wa_trusted_contacts'),
-			countSent: this.db.prepare('SELECT COUNT(*) AS n FROM wa_trusted_contacts_send')
+			countSent: this.db.prepare('SELECT COUNT(*) AS n FROM wa_trusted_contacts_send'),
+			clearIncoming: this.db.prepare('DELETE FROM wa_trusted_contacts'),
+			clearSent: this.db.prepare('DELETE FROM wa_trusted_contacts_send'),
+			upsertMetadata: this.db.prepare(
+				'INSERT INTO infiniteapi_metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+			),
+			selectMetadata: this.db.prepare('SELECT value FROM infiniteapi_metadata WHERE key = ?'),
+			deleteMetadata: this.db.prepare('DELETE FROM infiniteapi_metadata WHERE key = ?')
 		}
+
+		this.replaceTx = this.db.transaction((jid: string, replacement: TrustedContactReplacement) => {
+			if (replacement.incoming) {
+				this.stmts.upsertIncoming.run(jid, replacement.incoming.token, replacement.incoming.timestamp)
+			} else {
+				this.stmts.delIncoming.run(jid)
+			}
+
+			if (replacement.sent) {
+				this.stmts.upsertSent.run(jid, replacement.sent.sentTimestamp, replacement.sent.realIssueTimestamp)
+			} else {
+				this.stmts.delSent.run(jid)
+			}
+		}).immediate
+
+		this.beginClearTx = this.db.transaction(() => {
+			this.stmts.upsertMetadata.run(CLEAR_MARKER_KEY, String(Date.now()))
+			this.stmts.clearIncoming.run()
+			this.stmts.clearSent.run()
+		}).immediate
+	}
+
+	/** Atomically replaces both halves of one bundled tctoken inside wa.db. */
+	replace(jid: string, replacement: TrustedContactReplacement): void {
+		this.replaceTx(jid, replacement)
 	}
 
 	/** Stores (or updates) the incoming TC token for a contact JID. */
@@ -141,5 +189,18 @@ export class TrustedContactsBackend {
 		const inc = this.stmts.countIncoming.get() as { n: number }
 		const sent = this.stmts.countSent.get() as { n: number }
 		return { incomingCount: inc.n, sentCount: sent.n }
+	}
+
+	/** Starts a crash-recoverable cross-file clear and wipes both wa.db tables atomically. */
+	beginClear(): void {
+		this.beginClearTx()
+	}
+
+	hasPendingClear(): boolean {
+		return this.stmts.selectMetadata.get(CLEAR_MARKER_KEY) !== undefined
+	}
+
+	finishClear(): void {
+		this.stmts.deleteMetadata.run(CLEAR_MARKER_KEY)
 	}
 }

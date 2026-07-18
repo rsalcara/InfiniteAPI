@@ -67,4 +67,46 @@ describe('TrustedContactsBackend', () => {
 		expect(backend.deleteSent('a@lid')).toBe(true)
 		expect(backend.getSent('a@lid')).toBeNull()
 	})
+
+	it('replaces incoming and sent halves atomically', () => {
+		const backend = new TrustedContactsBackend(store.handle('wa.db'))
+		backend.replace('a@lid', {
+			incoming: { token: Buffer.from([1]), timestamp: 10 },
+			sent: { sentTimestamp: 20, realIssueTimestamp: 30 }
+		})
+		store.handle('wa.db').exec(`
+			CREATE TRIGGER fail_sent_replace
+			BEFORE UPDATE ON wa_trusted_contacts_send
+			BEGIN
+				SELECT RAISE(ABORT, 'forced sent failure');
+			END;
+		`)
+
+		try {
+			expect(() =>
+				backend.replace('a@lid', {
+					incoming: { token: Buffer.from([9]), timestamp: 90 },
+					sent: { sentTimestamp: 200, realIssueTimestamp: 300 }
+				})
+			).toThrow('forced sent failure')
+			expect(Buffer.from(backend.getIncoming('a@lid')!.token).toString('hex')).toBe('01')
+			expect(backend.getSent('a@lid')).toEqual({ sentTimestamp: 20, realIssueTimestamp: 30 })
+		} finally {
+			store.handle('wa.db').exec('DROP TRIGGER IF EXISTS fail_sent_replace')
+		}
+	})
+
+	it('persists and clears the cross-file reset marker atomically with wa rows', () => {
+		const backend = new TrustedContactsBackend(store.handle('wa.db'))
+		backend.setIncoming('a@lid', Buffer.from([1]), 1)
+		backend.setSent('a@lid', 2, 3)
+
+		backend.beginClear()
+		expect(backend.hasPendingClear()).toBe(true)
+		expect(backend.listIncoming()).toEqual([])
+		expect(backend.listSentJids()).toEqual([])
+
+		backend.finishClear()
+		expect(backend.hasPendingClear()).toBe(false)
+	})
 })

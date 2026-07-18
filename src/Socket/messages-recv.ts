@@ -77,12 +77,10 @@ import { makeMutex } from '../Utils/make-mutex'
 import {
 	JidMapBackend,
 	MessageStoreBackend,
-	type MultiDbSqliteStore,
 	ReceiptBackend,
 	type ReceiptKind,
 	SignalTypedBackend,
-	StatusBackend,
-	TrustedContactsBackend
+	StatusBackend
 } from '../Utils/multi-db-sqlite'
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
@@ -450,29 +448,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	})()
 
-	// Lazily-opened authoritative TC-token store (wa.db, PK-jid). When present it
-	// makes the signal_kv `__index` jid-list obsolete: enumeration is a SELECT
-	// over the PK, so the cross-session read-merge-write race on `__index` is gone.
-	let trustedContactsBackend: TrustedContactsBackend | null | undefined
-	const getTrustedContactsBackend = (): TrustedContactsBackend | null => {
-		if (!config.multiDbStore) return null
-		if (trustedContactsBackend === undefined) {
-			try {
-				trustedContactsBackend = new TrustedContactsBackend((config.multiDbStore as MultiDbSqliteStore).handle('wa.db'))
-			} catch (err) {
-				logger.debug({ err }, 'multi-db-sqlite: could not open wa.db backend for tctoken')
-				trustedContactsBackend = null
-			}
-		}
-
-		return trustedContactsBackend
-	}
+	// Capability belongs to the configured auth-state itself. `multiDbStore`
+	// alone may be present only for unrelated mirrors, so it must never imply
+	// that tctokens are relational/authoritative.
+	const trustedContactTokens = authState.keys.trustedContactTokens
 
 	/** Debounced save of the tctoken JID index (5s) */
 	const scheduleTcTokenIndexSave = () => {
-		// Multi-db is authoritative and enumerates via SELECT jid — the `__index`
-		// list (and its lost-update race) is unnecessary, so skip persisting it.
-		if (config.multiDbStore) return
+		// The authoritative adapter enumerates relational rows plus signal_kv ids
+		// directly; only that exact capability makes the legacy __index obsolete.
+		if (trustedContactTokens) return
 		if (tcTokenIndexSaveTimer) clearTimeout(tcTokenIndexSaveTimer)
 		tcTokenIndexSaveTimer = setTimeout(async () => {
 			try {
@@ -493,24 +478,55 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	/** Delete expired tctokens — runs at most once per 24h when coming online */
 	const pruneExpiredTcTokens = async () => {
-		// Multi-db path: enumerate authoritatively over the PK-jid table (SELECT
-		// jid) instead of the racey signal_kv `__index`. `listIncoming` already
-		// returns the timestamp, so expiry is checked without an extra read per jid.
-		const tcBackend = getTrustedContactsBackend()
-		if (tcBackend) {
+		if (trustedContactTokens) {
+			await tcTokenIndexLoaded
+			const candidates = new Set<string>()
 			try {
-				const pruneSet: Record<string, null> = {}
-				for (const { jid, timestamp } of tcBackend.listIncoming()) {
-					if (isTcTokenExpired(timestamp)) pruneSet[jid] = null
-				}
-
-				const pruneCount = Object.keys(pruneSet).length
-				if (pruneCount > 0) {
-					await authState.keys.set({ tctoken: pruneSet })
-					logTcToken('prune', { pruned: pruneCount, via: 'wa_trusted_contacts' })
-				}
+				for (const { jid } of trustedContactTokens.listIncoming()) candidates.add(jid)
 			} catch (err) {
-				logger.debug({ err }, 'tctoken prune (relational) failed')
+				logger.warn(
+					{ err, reason: 'relational-enumeration-failed', fallback: 'signal_kv-listIds' },
+					'tctoken prune: relational enumeration failed; continuing with legacy superset'
+				)
+			}
+
+			// signal_kv is deliberately retained as a complete superset, so its ids
+			// cover pre-migration contacts and temporary relational-list failures
+			// without relying on the race-prone __index value.
+			if (authState.keys.listIds) {
+				try {
+					for await (const jid of authState.keys.listIds('tctoken')) {
+						if (jid.includes('@')) candidates.add(jid)
+					}
+				} catch (err) {
+					logger.warn(
+						{ err, reason: 'signal-kv-enumeration-failed', fallback: 'legacy-__index' },
+						'tctoken prune: signal_kv id enumeration failed; using persisted legacy index'
+					)
+					for (const jid of tcTokenKnownJids) if (jid.includes('@')) candidates.add(jid)
+				}
+			} else {
+				for (const jid of tcTokenKnownJids) if (jid.includes('@')) candidates.add(jid)
+			}
+
+			if (candidates.size === 0) return
+			const allData = await authState.keys.get('tctoken', Array.from(candidates))
+			let pruned = 0
+			let refreshed = 0
+			for (const jid of candidates) {
+				const entry = allData[jid]
+				if (!entry?.token || entry.token.length === 0 || !isTcTokenExpired(entry.timestamp)) continue
+				const expectedTimestamp = Number(entry.timestamp ?? 0)
+				if (await trustedContactTokens.compareAndPrune(jid, expectedTimestamp, entry.token)) pruned++
+				else refreshed++ // changed after the snapshot; leave the new token intact
+			}
+
+			if (pruned > 0 || refreshed > 0) {
+				logTcToken('prune', {
+					pruned,
+					refreshedDuringPrune: refreshed,
+					via: 'wa_trusted_contacts+signal_kv-superset'
+				})
 			}
 
 			return

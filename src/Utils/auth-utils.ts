@@ -193,6 +193,7 @@ export function makeCacheableSignalKeyStore(
 	}
 
 	return {
+		trustedContactTokens: store.trustedContactTokens,
 		async get(type, ids) {
 			const data: { [_: string]: SignalDataTypeMap[typeof type] } = {}
 			const idsToFetch: string[] = []
@@ -402,6 +403,17 @@ export const addTransactionCapability = (
 	}
 
 	return {
+		trustedContactTokens: state.trustedContactTokens,
+		...(state.list
+			? {
+					list: <T extends keyof SignalDataTypeMap>(type: T) => state.list!(type)
+				}
+			: {}),
+		...(state.listIds
+			? {
+					listIds: <T extends keyof SignalDataTypeMap>(type: T) => state.listIds!(type)
+				}
+			: {}),
 		get: async (type, ids) => {
 			const ctx = txStorage.getStore()
 
