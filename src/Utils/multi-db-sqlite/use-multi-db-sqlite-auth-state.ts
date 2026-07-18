@@ -240,9 +240,12 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		// A retry-receipt prekey must be inserted and flagged in the SAME
 		// axolotl.db transaction as signal_kv. The KeyPair carries a private
 		// WeakSet intent (never serialized) from messages-recv through the auth
-		// transaction cache. Doing both statements here closes the post-commit
-		// window where the upload self-heal could otherwise observe dd=0.
-		if (type === 'pre-key' && serialized !== null && hasPrekeyDirectDistributionIntent(value)) {
+		// transaction cache. In authoritative mode, doing both statements here
+		// closes the post-commit window where upload self-heal could observe dd=0.
+		// Kill-switch mode deliberately falls through to its best-effort mirror;
+		// the receipt path verifies/marks that row after commit and omits the key
+		// without breaking signal_kv when the mirror is unavailable.
+		if (sourceOfTruth && type === 'pre-key' && serialized !== null && hasPrekeyDirectDistributionIntent(value)) {
 			signalTypedSource.set(type, id, serialized)
 			const prekeyId = Number(id)
 			if (!Number.isSafeInteger(prekeyId) || prekeyId < 0) {

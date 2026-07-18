@@ -1951,7 +1951,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		let directDistributionKeyId: number | undefined
 		let directDistributionKeysNode: BinaryNode | undefined
 		let directDistributionCredsUpdate: Partial<(typeof authState)['creds']> | undefined
-		let preCommitMarkError: unknown
+		let directDistributionMarkError: unknown
+		let directDistributionWasAlreadyMarked = false
 		let includeDirectDistributionKey = false
 		await authState.keys.transaction(async () => {
 			receipt = {
@@ -2012,14 +2013,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				if (signalTypedBackend && key && directDistributionKeyId !== undefined) {
 					// For a freshly generated key, carry this intent through the pending
 					// keys.set mutation so axolotl.db inserts + flags it atomically at
-					// commit. For an existing row, mark immediately while this retry
-					// still owns the same legacy prekey-operation lock as uploadPreKeys.
-					markPrekeyDirectDistributionIntent(key)
+					// commit. Existing rows are deliberately marked only in afterCommit:
+					// if another auth mutation fails, no key is removed from the upload
+					// pool before the transaction has actually succeeded.
 					try {
-						signalTypedBackend.markPrekeyDirectDistribution(directDistributionKeyId)
+						directDistributionWasAlreadyMarked = signalTypedBackend.isPrekeyDirectDistribution(directDistributionKeyId)
 					} catch (err) {
-						preCommitMarkError = err
+						directDistributionMarkError = err
 					}
+
+					if (!directDistributionWasAlreadyMarked) markPrekeyDirectDistributionIntent(key)
 				}
 			}
 
@@ -2029,15 +2032,27 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					let durableMark = false
 					try {
 						durableMark = signalTypedBackend?.isPrekeyDirectDistribution(directDistributionKeyId) === true
+						if (!durableMark && signalTypedBackend && !directDistributionWasAlreadyMarked) {
+							// Existing prekeys (and kill-switch mirror rows) were not part of
+							// this transaction's typed INSERT. Mark them only now, after the
+							// auth-key commit, but before releasing its operation lock.
+							durableMark = signalTypedBackend.markPrekeyDirectDistribution(directDistributionKeyId)
+						}
 					} catch (err) {
-						preCommitMarkError = preCommitMarkError ?? err
+						directDistributionMarkError = directDistributionMarkError ?? err
 					}
 
-					if (!durableMark) {
+					if (directDistributionWasAlreadyMarked) {
+						includeDirectDistributionKey = false
+						logger.error(
+							{ keyId: directDistributionKeyId, reason: 'key-already-direct-distributed' },
+							'multi-db-sqlite: selected retry prekey was already consumed; omitting it and advancing the stale cursor'
+						)
+					} else if (!durableMark) {
 						includeDirectDistributionKey = false
 						logger.error(
 							{
-								err: preCommitMarkError ? compactError(preCommitMarkError) : undefined,
+								err: directDistributionMarkError ? compactError(directDistributionMarkError) : undefined,
 								keyId: directDistributionKeyId,
 								reason: signalTypedBackend ? 'typed-row-not-direct-distributed' : 'typed-backend-unavailable'
 							},
@@ -2050,9 +2065,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					// Keep this update under the same legacy lock until the durable
 					// direct-distribution check finishes. A queued upload can only start
 					// after it sees the matching cursor state.
-					const update = includeDirectDistributionKey
-						? directDistributionCredsUpdate
-						: { nextPreKeyId: directDistributionCredsUpdate.nextPreKeyId }
+					const update =
+						includeDirectDistributionKey || directDistributionWasAlreadyMarked
+							? directDistributionCredsUpdate
+							: { nextPreKeyId: directDistributionCredsUpdate.nextPreKeyId }
 					ev.emit('creds.update', update)
 				}
 			})

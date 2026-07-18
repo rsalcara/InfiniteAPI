@@ -483,4 +483,30 @@ describe('useMultiDbSqliteAuthState', () => {
 			close()
 		}
 	})
+
+	it('keeps signal_kv operational when a direct-distribution mirror fails in kill-switch mode', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({
+			sessionDir: dir,
+			signalSourceOfTruth: false,
+			logger: silentLogger()
+		})
+		try {
+			store.handle('axolotl.db').exec(`
+				CREATE TRIGGER fail_direct_distribution_mirror
+				BEFORE INSERT ON prekeys
+				BEGIN
+					SELECT RAISE(ABORT, 'forced typed mirror failure');
+				END;
+			`)
+			const kp = { public: Buffer.from([0x31]), private: Buffer.from([0x32]) }
+			markPrekeyDirectDistributionIntent(kp)
+
+			await expect(state.keys.set({ 'pre-key': { 44: kp } })).resolves.not.toThrow()
+			const got = await state.keys.get('pre-key', ['44'])
+			expect(Buffer.from(got['44']!.public).toString('hex')).toBe('31')
+			expect(store.handle('axolotl.db').prepare('SELECT 1 FROM prekeys WHERE prekey_id = 44').get()).toBeUndefined()
+		} finally {
+			close()
+		}
+	})
 })
