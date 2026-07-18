@@ -1914,7 +1914,8 @@ export namespace proto {
         WEB_NAVIGATION_BAR = 47,
         GROUP_MEMBER = 54,
         CHATLIST_SEARCH = 55,
-        NEW_CHAT_LIST = 56
+        NEW_CHAT_LIST = 56,
+        CONTACTS_TAB = 57
     }
 
     interface IBotMetricsMetadata {
@@ -3341,7 +3342,8 @@ export namespace proto {
                 TEST = 34,
                 SMART_GLASSES = 35,
                 BLUE_VR = 36,
-                AR_WRIST = 37
+                AR_WRIST = 37,
+                WAIL = 38
             }
 
             enum ReleaseChannel {
@@ -6652,6 +6654,7 @@ export namespace proto {
             deeplinkPayload?: (string|null);
             messageContextInfo?: (proto.IMessageContextInfo|null);
             callEntryPoint?: (number|null);
+            callReason?: (string|null);
         }
 
         class Call implements ICall {
@@ -6667,6 +6670,7 @@ export namespace proto {
             public deeplinkPayload?: (string|null);
             public messageContextInfo?: (proto.IMessageContextInfo|null);
             public callEntryPoint?: (number|null);
+            public callReason?: (string|null);
             public static create(properties?: proto.Message.ICall): proto.Message.Call;
             public static encode(m: proto.Message.ICall, w?: $protobuf.Writer): $protobuf.Writer;
             public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Message.Call;
@@ -9974,6 +9978,7 @@ export namespace proto {
             aiMetadataOperation?: (proto.IAIMetadataOperation|null);
             markAsVerifiedAction?: (proto.Message.IMarkAsVerifiedAction|null);
             coexStateSync?: (proto.ICoexStateSync|null);
+            syncRequestMutationRetry?: (proto.Message.ISyncRequestMutationRetry|null);
         }
 
         class ProtocolMessage implements IProtocolMessage {
@@ -10008,6 +10013,7 @@ export namespace proto {
             public aiMetadataOperation?: (proto.IAIMetadataOperation|null);
             public markAsVerifiedAction?: (proto.Message.IMarkAsVerifiedAction|null);
             public coexStateSync?: (proto.ICoexStateSync|null);
+            public syncRequestMutationRetry?: (proto.Message.ISyncRequestMutationRetry|null);
             public static create(properties?: proto.Message.IProtocolMessage): proto.Message.ProtocolMessage;
             public static encode(m: proto.Message.IProtocolMessage, w?: $protobuf.Writer): $protobuf.Writer;
             public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Message.ProtocolMessage;
@@ -10051,7 +10057,8 @@ export namespace proto {
                 CHAT_THEME_SETTING = 34,
                 AI_METADATA_OPERATION = 35,
                 MARK_AS_VERIFIED_ACTION = 36,
-                COEX_STATE_SYNC = 37
+                COEX_STATE_SYNC = 37,
+                SYNC_REQUEST_MUTATION_RETRY = 38
             }
         }
 
@@ -10669,6 +10676,45 @@ export namespace proto {
             public static toObject(m: proto.Message.StickerSyncRMRMessage, o?: $protobuf.IConversionOptions): { [k: string]: any };
             public toJSON(): { [k: string]: any };
             public static getTypeUrl(typeUrlPrefix?: string): string;
+        }
+
+        interface ISyncRequestMutationRetry {
+            collections?: (proto.Message.SyncRequestMutationRetry.ICollection[]|null);
+            count?: (number|null);
+        }
+
+        class SyncRequestMutationRetry implements ISyncRequestMutationRetry {
+            constructor(p?: proto.Message.ISyncRequestMutationRetry);
+            public collections: proto.Message.SyncRequestMutationRetry.ICollection[];
+            public count?: (number|null);
+            public static create(properties?: proto.Message.ISyncRequestMutationRetry): proto.Message.SyncRequestMutationRetry;
+            public static encode(m: proto.Message.ISyncRequestMutationRetry, w?: $protobuf.Writer): $protobuf.Writer;
+            public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Message.SyncRequestMutationRetry;
+            public static fromObject(d: { [k: string]: any }): proto.Message.SyncRequestMutationRetry;
+            public static toObject(m: proto.Message.SyncRequestMutationRetry, o?: $protobuf.IConversionOptions): { [k: string]: any };
+            public toJSON(): { [k: string]: any };
+            public static getTypeUrl(typeUrlPrefix?: string): string;
+        }
+
+        namespace SyncRequestMutationRetry {
+
+            interface ICollection {
+                name?: (string|null);
+                storedSyncdVersion?: (number|Long|null);
+            }
+
+            class Collection implements ICollection {
+                constructor(p?: proto.Message.SyncRequestMutationRetry.ICollection);
+                public name?: (string|null);
+                public storedSyncdVersion?: (number|Long|null);
+                public static create(properties?: proto.Message.SyncRequestMutationRetry.ICollection): proto.Message.SyncRequestMutationRetry.Collection;
+                public static encode(m: proto.Message.SyncRequestMutationRetry.ICollection, w?: $protobuf.Writer): $protobuf.Writer;
+                public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Message.SyncRequestMutationRetry.Collection;
+                public static fromObject(d: { [k: string]: any }): proto.Message.SyncRequestMutationRetry.Collection;
+                public static toObject(m: proto.Message.SyncRequestMutationRetry.Collection, o?: $protobuf.IConversionOptions): { [k: string]: any };
+                public toJSON(): { [k: string]: any };
+                public static getTypeUrl(typeUrlPrefix?: string): string;
+            }
         }
 
         interface ITemplateButtonReplyMessage {
@@ -11466,6 +11512,7 @@ export namespace proto {
         COEX_V2_VERSION_ACTION = 88,
         WASA_ROOT_SECRET_ACTION = 89,
         BUBBLE_LOCK_MESSAGE_ACTION = 90,
+        LABEL_SUBLIST_ACTION = 91,
         SHARE_OWN_PN = 10001,
         BUSINESS_BROADCAST_ACTION = 10002,
         AI_THREAD_DELETE_ACTION = 10003
@@ -13151,6 +13198,7 @@ export namespace proto {
         coexV2VersionAction?: (proto.SyncActionValue.ICoexV2VersionAction|null);
         wasaRootSecretAction?: (proto.SyncActionValue.IWASARootSecretAction|null);
         bubbleLockMessageAction?: (proto.SyncActionValue.IBubbleLockMessageAction|null);
+        labelSublistAction?: (proto.SyncActionValue.ILabelSublistAction|null);
     }
 
     class SyncActionValue implements ISyncActionValue {
@@ -13236,6 +13284,7 @@ export namespace proto {
         public coexV2VersionAction?: (proto.SyncActionValue.ICoexV2VersionAction|null);
         public wasaRootSecretAction?: (proto.SyncActionValue.IWASARootSecretAction|null);
         public bubbleLockMessageAction?: (proto.SyncActionValue.IBubbleLockMessageAction|null);
+        public labelSublistAction?: (proto.SyncActionValue.ILabelSublistAction|null);
         public static create(properties?: proto.ISyncActionValue): proto.SyncActionValue;
         public static encode(m: proto.ISyncActionValue, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue;
@@ -14006,6 +14055,22 @@ export namespace proto {
             public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue.LabelReorderingAction;
             public static fromObject(d: { [k: string]: any }): proto.SyncActionValue.LabelReorderingAction;
             public static toObject(m: proto.SyncActionValue.LabelReorderingAction, o?: $protobuf.IConversionOptions): { [k: string]: any };
+            public toJSON(): { [k: string]: any };
+            public static getTypeUrl(typeUrlPrefix?: string): string;
+        }
+
+        interface ILabelSublistAction {
+            subListId?: (number|null);
+        }
+
+        class LabelSublistAction implements ILabelSublistAction {
+            constructor(p?: proto.SyncActionValue.ILabelSublistAction);
+            public subListId?: (number|null);
+            public static create(properties?: proto.SyncActionValue.ILabelSublistAction): proto.SyncActionValue.LabelSublistAction;
+            public static encode(m: proto.SyncActionValue.ILabelSublistAction, w?: $protobuf.Writer): $protobuf.Writer;
+            public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue.LabelSublistAction;
+            public static fromObject(d: { [k: string]: any }): proto.SyncActionValue.LabelSublistAction;
+            public static toObject(m: proto.SyncActionValue.LabelSublistAction, o?: $protobuf.IConversionOptions): { [k: string]: any };
             public toJSON(): { [k: string]: any };
             public static getTypeUrl(typeUrlPrefix?: string): string;
         }
@@ -15141,6 +15206,7 @@ export namespace proto {
                 id?: (string|null);
                 rootSecret?: (Uint8Array|null);
                 epoch?: (number|Long|null);
+                status?: (proto.SyncActionValue.WASARootSecretAction.RootSecretEntry.Status|null);
             }
 
             class RootSecretEntry implements IRootSecretEntry {
@@ -15148,6 +15214,7 @@ export namespace proto {
                 public id?: (string|null);
                 public rootSecret?: (Uint8Array|null);
                 public epoch?: (number|Long|null);
+                public status?: (proto.SyncActionValue.WASARootSecretAction.RootSecretEntry.Status|null);
                 public static create(properties?: proto.SyncActionValue.WASARootSecretAction.IRootSecretEntry): proto.SyncActionValue.WASARootSecretAction.RootSecretEntry;
                 public static encode(m: proto.SyncActionValue.WASARootSecretAction.IRootSecretEntry, w?: $protobuf.Writer): $protobuf.Writer;
                 public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue.WASARootSecretAction.RootSecretEntry;
@@ -15155,6 +15222,14 @@ export namespace proto {
                 public static toObject(m: proto.SyncActionValue.WASARootSecretAction.RootSecretEntry, o?: $protobuf.IConversionOptions): { [k: string]: any };
                 public toJSON(): { [k: string]: any };
                 public static getTypeUrl(typeUrlPrefix?: string): string;
+            }
+
+            namespace RootSecretEntry {
+
+                enum Status {
+                    INACTIVE = 0,
+                    ACTIVE = 1
+                }
             }
         }
 
