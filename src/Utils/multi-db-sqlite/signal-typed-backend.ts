@@ -431,9 +431,9 @@ export class SignalTypedBackend {
 	 * get re-uploaded on the next attempt — impossible to orphan, unlike a
 	 * monotonic "first unuploaded" counter. Idempotent (guarded on `= 0`).
 	 */
-	markPrekeysUploaded(fromId: number, toId: number, uploadTimestamp: number = Date.now()): void {
+	markPrekeysUploaded(fromId: number, toId: number, uploadTimestampSec: number = Math.floor(Date.now() / 1000)): void {
 		if (!(toId > fromId)) return
-		this.stmts.markPrekeysUploaded.run(uploadTimestamp, fromId, toId)
+		this.stmts.markPrekeysUploaded.run(uploadTimestampSec, fromId, toId)
 	}
 
 	/**

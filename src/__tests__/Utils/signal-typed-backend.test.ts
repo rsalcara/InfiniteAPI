@@ -148,6 +148,12 @@ describe('SignalTypedBackend', () => {
 		// It drops out of the unsent stock / upload queries (which filter dd = 0).
 		expect(backend.countUnsentPrekeys()).toBe(4)
 		expect(backend.firstUnsentPrekeyId()).toBe(2)
+
+		// Marking a prekey id that isn't persisted yet is a silent no-op — this is
+		// why the retry-receipt caller must flag the key AFTER keys.transaction()
+		// commits, not while it is still a pending mutation.
+		backend.markPrekeyDirectDistribution(9999)
+		expect(backend.countUnsentPrekeys()).toBe(4) // unchanged
 	})
 
 	it('treats legacy prekeys with NULL flags as unsent (COALESCE)', () => {

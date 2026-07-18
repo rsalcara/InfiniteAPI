@@ -1942,6 +1942,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		if (!account) throw new Boom('Account not available', { statusCode: 401 })
 		const deviceIdentity = encodeSignedDeviceIdentity(account, true)
+		// The inline retry-receipt prekey (if any) is captured here and flagged
+		// direct_distribution AFTER the transaction commits — see note below.
+		let directDistributionKeyId: number | undefined
 		await authState.keys.transaction(async () => {
 			const receipt: BinaryNode = {
 				tag: 'receipt',
@@ -1999,24 +2002,33 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 				ev.emit('creds.update', update)
 
-				// SignalPreKeyStore parity: this key was handed to the peer inline
-				// (direct distribution), not uploaded to the server pool. Flag it in
-				// the typed prekeys table so the unsent-stock / upload queries exclude
-				// it (they filter direct_distribution = 0) and it is never also
-				// re-sent to the server. Best-effort mirror — never blocks the receipt.
-				if (signalTypedBackend && keyId) {
-					try {
-						signalTypedBackend.markPrekeyDirectDistribution(+keyId)
-					} catch (err) {
-						logger.debug({ err, keyId }, 'multi-db-sqlite: mark prekey direct_distribution failed (non-fatal)')
-					}
-				}
+				// Capture the inline key id — do NOT flag it here. Inside
+				// keys.transaction() the prekey is still a pending mutation (not yet
+				// in the `prekeys` table), so an UPDATE would match zero rows,
+				// exactly for the retry-receipt case that generates a fresh key.
+				directDistributionKeyId = keyId ? +keyId : undefined
 			}
 
 			await sendNode(receipt)
 
 			logger.info({ msgAttrs: node.attrs, retryCount }, 'sent retry receipt')
 		}, authState?.creds?.me?.id || 'sendRetryRequest')
+
+		// Now that the transaction committed and the prekey is persisted, mirror the
+		// real SignalPreKeyStore: a key handed to the peer inline (direct
+		// distribution) must not also be uploaded to the server pool. Flagging it
+		// direct_distribution=1 removes it from the unsent-stock / upload queries.
+		// Best-effort (multi-db only) — never blocks the receipt that already went out.
+		if (signalTypedBackend && directDistributionKeyId !== undefined) {
+			try {
+				signalTypedBackend.markPrekeyDirectDistribution(directDistributionKeyId)
+			} catch (err) {
+				logger.debug(
+					{ err, keyId: directDistributionKeyId },
+					'multi-db-sqlite: mark prekey direct_distribution failed (non-fatal)'
+				)
+			}
+		}
 	}
 
 	// Upstream #2432: dedupe re-issued PreKeyLow notifications by stanza id.

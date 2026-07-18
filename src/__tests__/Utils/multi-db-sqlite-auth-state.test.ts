@@ -24,7 +24,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import type { SignalDataTypeMap } from '../../Types'
 import { BufferJSON } from '../../Utils/generics'
-import { useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
+import { SignalTypedBackend, useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
 
 const sampleSession = (b: number): SignalDataTypeMap['session'] => Buffer.from([b]) as Uint8Array
 
@@ -435,5 +435,41 @@ describe('useMultiDbSqliteAuthState', () => {
 		expect(Buffer.from(got['5511999999999.0'] as Uint8Array).toString('hex')).toBe('01')
 		expect(Buffer.from(got['5511999999999_128.0'] as Uint8Array).toString('hex')).toBe('02')
 		close()
+	})
+
+	// Integration guard for the retry-receipt direct_distribution flag: inside
+	// keys.transaction() a `pre-key` set is only a pending mutation, so the row
+	// does not exist yet — the flag MUST be applied after the transaction commits.
+	it('flags a retry-receipt prekey direct_distribution only AFTER the transaction commits', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			const backend = new SignalTypedBackend(store.handle('axolotl.db'))
+			const kp = { public: Buffer.from([1, 2, 3]) as Uint8Array, private: Buffer.from([4, 5, 6]) as Uint8Array }
+			const readDd = (id: number) =>
+				(
+					store.handle('axolotl.db').prepare('SELECT direct_distribution FROM prekeys WHERE prekey_id = ?').get(id) as
+						| { direct_distribution?: number }
+						| undefined
+				)?.direct_distribution
+
+			// Wrong order (what the first cut did): mark INSIDE the transaction.
+			// The prekey is still a pending mutation → the UPDATE matches zero rows.
+			await state.keys.transaction(async () => {
+				await state.keys.set({ 'pre-key': { 43: kp } })
+				backend.markPrekeyDirectDistribution(43)
+			}, 'itest')
+			expect(readDd(43)).toBe(0) // in-transaction mark was a no-op
+
+			// Correct order: mark AFTER the transaction commits, when the row exists.
+			await state.keys.transaction(async () => {
+				await state.keys.set({ 'pre-key': { 42: kp } })
+			}, 'itest')
+			backend.markPrekeyDirectDistribution(42)
+			expect(readDd(42)).toBe(1)
+			// And it drops out of the upload queue while 43 stays in it.
+			expect(backend.firstUnsentPrekeyId()).toBe(43)
+		} finally {
+			close()
+		}
 	})
 })
