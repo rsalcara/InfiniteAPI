@@ -29,9 +29,11 @@ export class TrustedContactsBackend {
 		upsertIncoming: SqliteStatementLike
 		selectIncoming: SqliteStatementLike
 		delIncoming: SqliteStatementLike
+		listIncoming: SqliteStatementLike
 		upsertSent: SqliteStatementLike
 		selectSent: SqliteStatementLike
 		delSent: SqliteStatementLike
+		listSentJids: SqliteStatementLike
 		countIncoming: SqliteStatementLike
 		countSent: SqliteStatementLike
 	}
@@ -51,6 +53,11 @@ export class TrustedContactsBackend {
 				'SELECT incoming_tc_token, incoming_tc_token_timestamp FROM wa_trusted_contacts WHERE jid = ?'
 			),
 			delIncoming: this.db.prepare('DELETE FROM wa_trusted_contacts WHERE jid = ?'),
+			// Enumeration = the table itself (PK jid). This is what replaces the
+			// opaque `__index` list the legacy signal_kv path kept (whose
+			// read-merge-write had a lost-update race): here every contact is its
+			// own row, so listing is a plain SELECT with no shared list to clobber.
+			listIncoming: this.db.prepare('SELECT jid, incoming_tc_token_timestamp FROM wa_trusted_contacts'),
 			upsertSent: this.db.prepare(
 				'INSERT INTO wa_trusted_contacts_send (jid, sent_tc_token_timestamp, real_issue_timestamp) VALUES (?, ?, ?) ' +
 					'ON CONFLICT(jid) DO UPDATE SET ' +
@@ -61,6 +68,7 @@ export class TrustedContactsBackend {
 				'SELECT sent_tc_token_timestamp, real_issue_timestamp FROM wa_trusted_contacts_send WHERE jid = ?'
 			),
 			delSent: this.db.prepare('DELETE FROM wa_trusted_contacts_send WHERE jid = ?'),
+			listSentJids: this.db.prepare('SELECT jid FROM wa_trusted_contacts_send'),
 			countIncoming: this.db.prepare('SELECT COUNT(*) AS n FROM wa_trusted_contacts'),
 			countSent: this.db.prepare('SELECT COUNT(*) AS n FROM wa_trusted_contacts_send')
 		}
@@ -105,6 +113,27 @@ export class TrustedContactsBackend {
 	/** Removes the outbound TC token row for a JID. */
 	deleteSent(jid: string): boolean {
 		return this.stmts.delSent.run(jid).changes > 0
+	}
+
+	/**
+	 * Enumerates every stored incoming-token contact as `{ jid, timestamp }`.
+	 * Replaces the legacy `__index` jid-list (which the prune path read, merged
+	 * and rewrote — a lost-update race). The prune can filter by `timestamp`
+	 * without an extra point-read per jid.
+	 */
+	listIncoming(): Array<{ jid: string; timestamp: number }> {
+		const rows = this.stmts.listIncoming.all() as Array<{ jid: string; incoming_tc_token_timestamp: number }>
+		return rows.map(r => ({ jid: r.jid, timestamp: r.incoming_tc_token_timestamp }))
+	}
+
+	/** Every jid that has an incoming TC token (PK enumeration). */
+	listIncomingJids(): string[] {
+		return (this.stmts.listIncoming.all() as Array<{ jid: string }>).map(r => r.jid)
+	}
+
+	/** Every jid that has an outbound (sent/scheduled) TC token row. */
+	listSentJids(): string[] {
+		return (this.stmts.listSentJids.all() as Array<{ jid: string }>).map(r => r.jid)
 	}
 
 	/** Diagnostic stats for ops visibility. */
