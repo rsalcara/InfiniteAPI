@@ -309,10 +309,11 @@ export type SocketConfig = {
 	 *     is still unset, so passing your own adapter for any of the three
 	 *     (e.g. a Redis-backed cache) always wins.
 	 *
-	 * Not auto-wired (the caller passes the adapter explicitly to its own
-	 * `SocketConfig` slot):
-	 *   - Trusted Contact tokens (`TrustedContactsBackend`)
-	 *   - App-state sync (`AppStateBackend`)
+	 * Trusted Contact tokens are not inferred from this option: the
+	 * multi-db auth-state exposes its own authoritative capability through
+	 * `authState.keys.trustedContactTokens`. This prevents a store supplied
+	 * only for unrelated mirrors from silently changing token persistence.
+	 * App-state sync (`AppStateBackend`) remains explicitly caller-wired.
 	 *
 	 * The default (`undefined`) keeps the legacy behavior end-to-end.
 	 *

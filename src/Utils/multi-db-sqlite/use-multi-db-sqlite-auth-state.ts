@@ -3,6 +3,7 @@ import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDat
 import { initAuthCreds } from '../auth-utils'
 import { BufferJSON } from '../generics'
 import type { ILogger } from '../logger'
+import { makeMutex } from '../make-mutex'
 import { hasPrekeyDirectDistributionIntent } from '../prekey-direct-distribution'
 import { prepareInClause } from './in-statement-cache'
 import { JidMapBackend } from './lid-mapping-backend'
@@ -10,6 +11,7 @@ import { SignalTypedBackend } from './signal-typed-backend'
 import { isMirroredSignalType, mirrorSignalEntry } from './signal-typed-mirror'
 import { SignalTypedSourceStore, type TypedSignalType } from './signal-typed-source'
 import { MultiDbSqliteStore, type MultiDbSqliteStoreOptions } from './store'
+import { TrustedContactsBackend } from './trusted-contacts-backend'
 
 const CREDS_ROW_KEY = '__creds__'
 const MAX_BUSY_ATTEMPTS = 5
@@ -49,8 +51,10 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
 	 * legacy behavior (opaque `signal_kv` authoritative + a best-effort typed
 	 * mirror) with no redeploy — kept as an instant escape hatch until the
 	 * typed path is proven and `signal_kv` is eventually retired.
+	 * The same switch gates relational Trusted Contact-token authority: when
+	 * disabled, `tctoken` also remains exclusively `signal_kv`-authoritative.
 	 *
-	 * Safe by construction (default mode):
+	 * Safe by construction for typed Signal keys (default mode):
 	 *   - `signal_kv` is ALWAYS written in the SAME transaction (both tables
 	 *     live in axolotl.db, so the dual-write commits or rolls back as a
 	 *     unit — no partial write). It stays the complete superset and the
@@ -67,6 +71,11 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
 	 *   - `keys.list`/`listIds` operate on `signal_kv` (kept complete by the
 	 *     dual-write); `clear()` wipes the typed tables too, so a reset can't
 	 *     leave stale key material the typed read would find.
+	 *
+	 * Trusted Contact tokens span `wa.db` and `axolotl.db`, so they cannot use
+	 * one SQLite transaction. Their relational value commits first; a mutex,
+	 * tombstones, compare-and-prune, and a durable clear marker make crashes and
+	 * concurrent refreshes recoverable while `signal_kv` remains the backup.
 	 */
 	signalSourceOfTruth?: boolean
 }
@@ -102,8 +111,9 @@ export type UseMultiDbSqliteAuthStateOptions = MultiDbSqliteStoreOptions & {
  * `axolotl.signal_kv` from a prior version are migrated automatically on
  * first `open()` (idempotent — safe to run every startup). Mirrored Signal
  * types use their typed tables as the primary surface when enabled and retain
- * `signal_kv` as an atomic compatibility fallback. The remaining database
- * backends are wired by the socket when `multiDbStore` is configured.
+ * `signal_kv` as an atomic compatibility fallback. This adapter also owns the
+ * relational Trusted Contact-token capability; other database backends are
+ * wired by the socket when `multiDbStore` is configured.
  *
  * Why open all 11 files up front instead of lazily? Disk allocation + WAL
  * checkpointing both have one-time costs; doing them at startup means the
@@ -127,6 +137,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	// Default ON: typed tables authoritative. `signalSourceOfTruth: false` is
 	// the kill switch back to legacy signal_kv-authoritative mode.
 	const sourceOfTruth = opts.signalSourceOfTruth !== false
+	const tctokenMutex = makeMutex()
 
 	// Observability for the typed→signal_kv fallback. `total` counts reads the
 	// typed table couldn't serve but signal_kv could (real fallbacks, not
@@ -144,6 +155,10 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	let signalTypedBackend: SignalTypedBackend
 	let signalMirrorJidMap: JidMapBackend
 	let signalTypedSource: SignalTypedSourceStore
+	// Authoritative (PK-jid) store for TC / "privacy" tokens, in wa.db. When
+	// `sourceOfTruth` is on, `'tctoken'` reads/writes route here (signal_kv stays
+	// the superset fallback); replaces the signal_kv `__index` enumeration race.
+	let trustedContactsBackend: TrustedContactsBackend
 
 	try {
 		// store.open() now lives INSIDE the try/catch so any open-time error
@@ -170,6 +185,15 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		signalTypedBackend = new SignalTypedBackend(store.handle('axolotl.db'))
 		signalMirrorJidMap = new JidMapBackend(store.handle('msgstore.db'))
 		signalTypedSource = new SignalTypedSourceStore(signalTypedBackend, signalMirrorJidMap, opts.logger)
+		trustedContactsBackend = new TrustedContactsBackend(store.handle('wa.db'))
+		if (trustedContactsBackend.hasPendingClear()) {
+			signalStmts.deleteType.run('tctoken')
+			trustedContactsBackend.finishClear()
+			opts.logger?.warn?.(
+				{ reason: 'interrupted-cross-file-clear', recoveredStore: 'wa.db+axolotl.db.signal_kv' },
+				'multi-db-sqlite: completed interrupted tctoken clear; stale legacy fallback removed'
+			)
+		}
 	} catch (err) {
 		// Only close the store if WE opened it — injected stores belong to
 		// the caller.
@@ -294,6 +318,64 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		return isBytes(value)
 	}
 
+	// tctoken values bundle the incoming (token/timestamp) and sent
+	// (senderTimestamp/realIssueTimestamp) sides into one KV entry; the relational
+	// model splits them across wa_trusted_contacts / wa_trusted_contacts_send
+	// (both PK jid). Metadata keys (`__index`, `__prune_ts`) are NOT contact rows
+	// — they have no `@` and stay in signal_kv.
+	const isTctokenContactKey = (id: string): boolean => id.includes('@')
+
+	const tctokenTombstone = (): SignalDataTypeMap['tctoken'] => ({ token: Buffer.alloc(0), timestamp: '0' })
+
+	// Replace both relational halves in one wa.db transaction. A fully deleted
+	// value leaves an empty-token tombstone: relational reads can distinguish a
+	// deliberate delete from a pre-migration miss and therefore never resurrect
+	// the stale signal_kv fallback after a cross-file crash.
+	const writeTctokenRelational = (id: string, value: SignalDataTypeMap['tctoken'] | null | undefined): void => {
+		if (value === null || value === undefined) {
+			trustedContactsBackend.replace(id, {
+				incoming: { token: Buffer.alloc(0), timestamp: 0 },
+				sent: null
+			})
+			return
+		}
+
+		const hasIncoming = value.token && value.token.length > 0
+		const hasSent = value.senderTimestamp !== undefined
+		trustedContactsBackend.replace(id, {
+			incoming: hasIncoming
+				? { token: value.token, timestamp: value.timestamp ? Number(value.timestamp) : 0 }
+				: hasSent
+					? null
+					: { token: Buffer.alloc(0), timestamp: 0 },
+			sent: hasSent
+				? { sentTimestamp: value.senderTimestamp!, realIssueTimestamp: value.realIssueTimestamp ?? 0 }
+				: null
+		})
+	}
+
+	type TctokenRelationalRead =
+		| { kind: 'value'; value: SignalDataTypeMap['tctoken'] }
+		| { kind: 'tombstone' }
+		| { kind: 'miss' }
+
+	// A tombstone is a deliberate authoritative absence and must NOT fall back.
+	const readTctokenRelational = (id: string): TctokenRelationalRead => {
+		const inc = trustedContactsBackend.getIncoming(id)
+		const snt = trustedContactsBackend.getSent(id)
+		if (!inc && !snt) return { kind: 'miss' }
+		if (inc?.token.length === 0 && !snt) return { kind: 'tombstone' }
+		return {
+			kind: 'value',
+			value: {
+				token: inc ? inc.token : Buffer.alloc(0),
+				timestamp: inc ? String(inc.timestamp) : undefined,
+				senderTimestamp: snt ? snt.sentTimestamp : undefined,
+				realIssueTimestamp: snt ? snt.realIssueTimestamp : undefined
+			}
+		}
+	}
+
 	const applySetTx = store.handle('axolotl.db').transaction((data: SignalDataSet) => {
 		for (const category in data) {
 			const type = category as keyof SignalDataTypeMap
@@ -362,7 +444,17 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		throw lastError ?? new Error(`runWithBusyRetry(${label}): no attempts were made (MAX_BUSY_ATTEMPTS=0?)`)
 	}
 
-	const runSetWithBusyRetry = (data: SignalDataSet): Promise<void> => {
+	const recoverPendingTctokenClear = (): void => {
+		if (!trustedContactsBackend.hasPendingClear()) return
+		signalStmts.deleteType.run('tctoken')
+		trustedContactsBackend.finishClear()
+		opts.logger?.warn?.(
+			{ reason: 'interrupted-cross-file-clear', fallbackStore: 'signal_kv' },
+			'multi-db-sqlite: recovered pending tctoken clear before access'
+		)
+	}
+
+	const runSetWithBusyRetryUnlocked = async (data: SignalDataSet): Promise<void> => {
 		const nonEmptyTypes = Object.keys(data).filter(type => {
 			const bucket = data[type as keyof SignalDataTypeMap]
 			return bucket && Object.keys(bucket).length > 0
@@ -375,8 +467,61 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			)
 		}
 
-		return runWithBusyRetry('signal_kv set', () => applySetTx.immediate(data))
+		// Commit the authoritative wa.db representation first. If the process dies
+		// before signal_kv is updated, reads still see the new relational value. Each
+		// bundled value replaces its incoming+sent halves in one wa.db transaction.
+		if (sourceOfTruth && data.tctoken) {
+			const bucket = data.tctoken
+			await runWithBusyRetry('tctoken relational set', () => {
+				for (const id in bucket) {
+					if (isTctokenContactKey(id)) writeTctokenRelational(id, bucket[id])
+				}
+			})
+		}
+
+		try {
+			await runWithBusyRetry('signal_kv set', () => applySetTx.immediate(data))
+		} catch (err) {
+			if (sourceOfTruth && data.tctoken) {
+				opts.logger?.error?.(
+					{
+						err,
+						reason: 'signal-kv-fallback-write-failed',
+						authoritativeStore: 'wa.db',
+						fallbackStore: 'axolotl.db.signal_kv',
+						fallbackState: 'stale-or-missing',
+						recovery: 'retry-the-same-keys.set-batch'
+					},
+					'multi-db-sqlite: tctoken committed to wa.db but its signal_kv fallback failed; retry is required to restore the backup copy'
+				)
+			}
+
+			throw err
+		}
+
+		// A null delete used a relational tombstone as the cross-file handoff.
+		// Once signal_kv has durably committed the delete, the tombstone can be
+		// removed; a crash before this cleanup is safe because reads recognize it
+		// as authoritative absence and never fall back.
+		if (sourceOfTruth && data.tctoken) {
+			const bucket = data.tctoken
+			await runWithBusyRetry('tctoken tombstone cleanup', () => {
+				for (const id in bucket) {
+					if (isTctokenContactKey(id) && (bucket[id] === null || bucket[id] === undefined)) {
+						trustedContactsBackend.deleteIncoming(id)
+					}
+				}
+			})
+		}
 	}
+
+	const runSetWithBusyRetry = (data: SignalDataSet): Promise<void> =>
+		data.tctoken
+			? tctokenMutex.mutex(async () => {
+					recoverPendingTctokenClear()
+					await runSetWithBusyRetryUnlocked(data)
+				})
+			: runSetWithBusyRetryUnlocked(data)
 
 	const state: AuthenticationState = {
 		// Getter/setter pair so `state.creds = newObj` mutations are
@@ -390,6 +535,34 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			credsRef.current = value
 		},
 		keys: {
+			trustedContactTokens: sourceOfTruth
+				? {
+						authoritative: true,
+						listIncoming: () => trustedContactsBackend.listIncoming(),
+						compareAndPrune: (jid, expectedTimestamp, expectedToken) =>
+							tctokenMutex.mutex(async () => {
+								recoverPendingTctokenClear()
+								let current = readTctokenRelational(jid)
+								if (current.kind === 'miss') {
+									const row = signalStmts.select.get('tctoken', jid) as { value: string } | undefined
+									if (!row) return false
+									current = {
+										kind: 'value',
+										value: JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap['tctoken']
+									}
+								}
+
+								if (
+									current.kind !== 'value' ||
+									Number(current.value.timestamp ?? 0) !== expectedTimestamp ||
+									!Buffer.from(current.value.token).equals(Buffer.from(expectedToken))
+								)
+									return false
+								await runSetWithBusyRetryUnlocked({ tctoken: { [jid]: tctokenTombstone() } })
+								return true
+							})
+					}
+				: undefined,
 			get: async (type, ids) => {
 				const out: { [_: string]: SignalDataTypeMap[typeof type] } = {}
 				if (ids.length === 0) return out
@@ -406,6 +579,57 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 					}
 
 					return out
+				}
+
+				if (!sourceOfTruth && type === 'tctoken') {
+					return tctokenMutex.mutex(() => {
+						recoverPendingTctokenClear()
+						const rows = signalGetIn.all([type], ids) as Array<{ id: string; value: string }>
+						for (const row of rows) {
+							out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
+						}
+
+						return out
+					})
+				}
+
+				// tctoken: read the authoritative PK-jid tables first; fall back to
+				// signal_kv for metadata keys (`__index`/`__prune_ts`) and for contacts
+				// not yet migrated. A backend read error also degrades to signal_kv —
+				// never throws to the caller.
+				if (sourceOfTruth && type === 'tctoken') {
+					return tctokenMutex.mutex(() => {
+						recoverPendingTctokenClear()
+						const missing: string[] = []
+						for (const id of ids) {
+							if (!isTctokenContactKey(id)) {
+								missing.push(id)
+								continue
+							}
+
+							try {
+								const rel = readTctokenRelational(id)
+								if (rel.kind === 'value') out[id] = rel.value as SignalDataTypeMap[typeof type]
+								if (rel.kind === 'miss') missing.push(id)
+								// Tombstone = deliberate absence; never fall back.
+							} catch (err) {
+								opts.logger?.warn?.(
+									{ err, id, reason: 'relational-read-failed', fallbackStore: 'signal_kv' },
+									'multi-db-sqlite: tctoken relational read failed; routing this id to signal_kv'
+								)
+								missing.push(id)
+							}
+						}
+
+						if (missing.length > 0) {
+							const rows = signalGetIn.all([type], missing) as Array<{ id: string; value: string }>
+							for (const row of rows) {
+								out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
+							}
+						}
+
+						return out
+					})
 				}
 
 				// Source-of-truth: read the typed table first, fall back to
@@ -489,59 +713,78 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				await runSetWithBusyRetry(data)
 			},
 			clear: async () => {
-				// Order matters here because cross-file transactions are NOT
-				// ACID in SQLite — `clear()` writes to two physical .db files
-				// (axolotl.db.signal_kv + msgstore.db.jid_map). If the
-				// process crashes between the two DELETEs, the partially-
-				// completed state must be RECOVERABLE on the next startup.
-				//
-				// We clear `jid_map` FIRST. If we crash now:
-				//   - msgstore.jid_map is empty (no stale LID mappings)
-				//   - axolotl.signal_kv still has Signal keys
-				//   - on next start, `initAuthCreds()` only runs when creds.db
-				//     is empty, so existing creds are loaded; the leftover
-				//     Signal keys in signal_kv will be naturally overwritten
-				//     by the next session establishment. NOT catastrophic.
-				//
-				// If we cleared `signal_kv` first and crashed:
-				//   - axolotl.signal_kv is empty (Signal session lost)
-				//   - msgstore.jid_map STILL has LID mappings pointing at the
-				//     old session — `LIDMappingStore` would resolve contacts
-				//     to LIDs whose sessions no longer exist, breaking
-				//     encryption for those contacts until a fresh
-				//     `storeMapping()` overwrites them.
-				//
-				// Only `jid_map` is cleared, NOT the shared `jid` table:
-				// other msgstore tables (`user_device.user_jid_row_id`,
-				// `user_device_info.user_jid_row_id`,
-				// `message_orphaned_edit.chat_row_id`) hold row-id
-				// references into `jid`. Deleting `jid` rows would orphan
-				// them. `jid` rows are reused naturally by the next
-				// `LIDMappingStore.storeMapping()` resolve on the same
-				// raw_string.
-				const msgstoreDb = store.handle('msgstore.db')
-				// Wrap both DELETEs in the same busy-retry helper as
-				// `runSetWithBusyRetry`. Without it, `exec('DELETE FROM
-				// jid_map')` raised SQLITE_BUSY directly to the caller after
-				// the 5 s busy_timeout expired — under contention pressure
-				// (e.g. cleanup raced with a hot LIDMappingStore write) the
-				// session reset would abort and the caller usually doesn't
-				// handle the error. The two DELETEs are still issued in the
-				// documented order so the partial-crash recovery semantics
-				// above hold.
-				await runWithBusyRetry('clear', () => {
-					msgstoreDb.exec('DELETE FROM jid_map;')
-					signalStmts.clear.run()
-					appStateSyncKeyStmts.clear.run()
-					// The typed Signal tables must be wiped too. In
-					// `signalSourceOfTruth` mode `keys.get` reads them BEFORE
-					// signal_kv, so a surviving row would resurrect key material
-					// this clear() was meant to erase. Cleared unconditionally
-					// (harmless when the flag is off — the mirror also populates
-					// these tables, and a leftover mirror row after a reset is
-					// equally undesirable). All four live in axolotl.db.
-					const axolotlDb = store.handle('axolotl.db')
-					axolotlDb.exec('DELETE FROM sessions; DELETE FROM prekeys; DELETE FROM sender_keys; DELETE FROM identities;')
+				await tctokenMutex.mutex(async () => {
+					recoverPendingTctokenClear()
+					// wa.db owns the durable marker. Its transaction writes the marker
+					// and clears both relational tables atomically; if the process dies
+					// before signal_kv is cleared, startup recovery sees the marker and
+					// removes the stale fallback before enabling reads.
+					trustedContactsBackend.beginClear()
+					// Order matters here because cross-file transactions are NOT
+					// ACID in SQLite — `clear()` writes to two physical .db files
+					// (axolotl.db.signal_kv + msgstore.db.jid_map). If the
+					// process crashes between the two DELETEs, the partially-
+					// completed state must be RECOVERABLE on the next startup.
+					//
+					// We clear `jid_map` FIRST. If we crash now:
+					//   - msgstore.jid_map is empty (no stale LID mappings)
+					//   - axolotl.signal_kv still has Signal keys
+					//   - on next start, `initAuthCreds()` only runs when creds.db
+					//     is empty, so existing creds are loaded; the leftover
+					//     Signal keys in signal_kv will be naturally overwritten
+					//     by the next session establishment. NOT catastrophic.
+					//
+					// If we cleared `signal_kv` first and crashed:
+					//   - axolotl.signal_kv is empty (Signal session lost)
+					//   - msgstore.jid_map STILL has LID mappings pointing at the
+					//     old session — `LIDMappingStore` would resolve contacts
+					//     to LIDs whose sessions no longer exist, breaking
+					//     encryption for those contacts until a fresh
+					//     `storeMapping()` overwrites them.
+					//
+					// Only `jid_map` is cleared, NOT the shared `jid` table:
+					// other msgstore tables (`user_device.user_jid_row_id`,
+					// `user_device_info.user_jid_row_id`,
+					// `message_orphaned_edit.chat_row_id`) hold row-id
+					// references into `jid`. Deleting `jid` rows would orphan
+					// them. `jid` rows are reused naturally by the next
+					// `LIDMappingStore.storeMapping()` resolve on the same
+					// raw_string.
+					const msgstoreDb = store.handle('msgstore.db')
+					// Wrap both DELETEs in the same busy-retry helper as
+					// `runSetWithBusyRetry`. Without it, `exec('DELETE FROM
+					// jid_map')` raised SQLITE_BUSY directly to the caller after
+					// the 5 s busy_timeout expired — under contention pressure
+					// (e.g. cleanup raced with a hot LIDMappingStore write) the
+					// session reset would abort and the caller usually doesn't
+					// handle the error. The two DELETEs are still issued in the
+					// documented order so the partial-crash recovery semantics
+					// above hold.
+					try {
+						await runWithBusyRetry('clear', () => {
+							msgstoreDb.exec('DELETE FROM jid_map;')
+							signalStmts.clear.run()
+							appStateSyncKeyStmts.clear.run()
+							// The typed Signal tables must be wiped too. In
+							// `signalSourceOfTruth` mode `keys.get` reads them BEFORE
+							// signal_kv, so a surviving row would resurrect key material
+							// this clear() was meant to erase. Cleared unconditionally
+							// (harmless when the flag is off — the mirror also populates
+							// these tables, and a leftover mirror row after a reset is
+							// equally undesirable). All four live in axolotl.db.
+							const axolotlDb = store.handle('axolotl.db')
+							axolotlDb.exec(
+								'DELETE FROM sessions; DELETE FROM prekeys; DELETE FROM sender_keys; DELETE FROM identities;'
+							)
+						})
+						trustedContactsBackend.finishClear()
+					} catch (err) {
+						opts.logger?.error?.(
+							{ err, reason: 'cross-file-clear-interrupted', recovery: 'startup-or-next-tctoken-access' },
+							'multi-db-sqlite: clear failed after tctoken reset marker; leaving marker for deterministic recovery'
+						)
+						throw err
+					}
 				})
 			},
 			list: async function* <T extends keyof SignalDataTypeMap>(
@@ -614,6 +857,7 @@ function prepareSignalStatements(store: MultiDbSqliteStore) {
 				'ON CONFLICT(type, id) DO UPDATE SET value = excluded.value'
 		),
 		del: db.prepare('DELETE FROM signal_kv WHERE type = ? AND id = ?'),
+		deleteType: db.prepare('DELETE FROM signal_kv WHERE type = ?'),
 		listIds: db.prepare('SELECT id FROM signal_kv WHERE type = ?'),
 		list: db.prepare('SELECT id, value FROM signal_kv WHERE type = ?'),
 		clear: db.prepare('DELETE FROM signal_kv')

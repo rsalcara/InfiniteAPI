@@ -96,6 +96,18 @@ export type RecordRef = {
 	id: string
 }
 
+/**
+ * Internal capability exposed by auth-state adapters that make the relational
+ * Trusted Contacts tables authoritative for `tctoken` values. Socket code uses
+ * this capability instead of inferring authority from `SocketConfig.multiDbStore`,
+ * which may be configured only for unrelated mirrors/caches.
+ */
+export type TrustedContactTokenStore = {
+	readonly authoritative: true
+	listIncoming(): Array<{ jid: string; timestamp: number }>
+	compareAndPrune(jid: string, expectedTimestamp: number, expectedToken: Uint8Array): Promise<boolean>
+}
+
 type Awaitable<T> = T | Promise<T>
 
 export type SignalKeyStore = {
@@ -116,6 +128,8 @@ export type SignalKeyStore = {
 	 * need values can still fall back to `list`.
 	 */
 	listIds?<T extends keyof SignalDataTypeMap>(type: T): AsyncIterable<string>
+	/** Present only when this exact key store owns authoritative relational tctokens. */
+	trustedContactTokens?: TrustedContactTokenStore
 }
 
 /**

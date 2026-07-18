@@ -448,8 +448,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	})()
 
+	// Capability belongs to the configured auth-state itself. `multiDbStore`
+	// alone may be present only for unrelated mirrors, so it must never imply
+	// that tctokens are relational/authoritative.
+	const trustedContactTokens = authState.keys.trustedContactTokens
+
 	/** Debounced save of the tctoken JID index (5s) */
 	const scheduleTcTokenIndexSave = () => {
+		// The authoritative adapter enumerates relational rows plus signal_kv ids
+		// directly; only that exact capability makes the legacy __index obsolete.
+		if (trustedContactTokens) return
 		if (tcTokenIndexSaveTimer) clearTimeout(tcTokenIndexSaveTimer)
 		tcTokenIndexSaveTimer = setTimeout(async () => {
 			try {
@@ -470,6 +478,61 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	/** Delete expired tctokens — runs at most once per 24h when coming online */
 	const pruneExpiredTcTokens = async () => {
+		if (trustedContactTokens) {
+			await tcTokenIndexLoaded
+			const candidates = new Set<string>()
+			try {
+				for (const { jid } of trustedContactTokens.listIncoming()) candidates.add(jid)
+			} catch (err) {
+				logger.warn(
+					{ err, reason: 'relational-enumeration-failed', fallback: 'signal_kv-listIds' },
+					'tctoken prune: relational enumeration failed; continuing with legacy superset'
+				)
+			}
+
+			// signal_kv is deliberately retained as a complete superset, so its ids
+			// cover pre-migration contacts and temporary relational-list failures
+			// without relying on the race-prone __index value.
+			if (authState.keys.listIds) {
+				try {
+					for await (const jid of authState.keys.listIds('tctoken')) {
+						if (jid.includes('@')) candidates.add(jid)
+					}
+				} catch (err) {
+					logger.warn(
+						{ err, reason: 'signal-kv-enumeration-failed', fallback: 'legacy-__index' },
+						'tctoken prune: signal_kv id enumeration failed; using persisted legacy index'
+					)
+					for (const jid of tcTokenKnownJids) if (jid.includes('@')) candidates.add(jid)
+				}
+			} else {
+				for (const jid of tcTokenKnownJids) if (jid.includes('@')) candidates.add(jid)
+			}
+
+			if (candidates.size === 0) return
+			const allData = await authState.keys.get('tctoken', Array.from(candidates))
+			let pruned = 0
+			let refreshed = 0
+			for (const jid of candidates) {
+				const entry = allData[jid]
+				if (!entry?.token || entry.token.length === 0 || !isTcTokenExpired(entry.timestamp)) continue
+				const expectedTimestamp = Number(entry.timestamp ?? 0)
+				if (await trustedContactTokens.compareAndPrune(jid, expectedTimestamp, entry.token)) pruned++
+				else refreshed++ // changed after the snapshot; leave the new token intact
+			}
+
+			if (pruned > 0 || refreshed > 0) {
+				logTcToken('prune', {
+					pruned,
+					refreshedDuringPrune: refreshed,
+					via: 'wa_trusted_contacts+signal_kv-superset'
+				})
+			}
+
+			return
+		}
+
+		// Legacy (single-file / no multi-db): __index-backed enumeration.
 		await tcTokenIndexLoaded
 		const pruneSet: Record<string, null> = {}
 		const survivingJids: string[] = []

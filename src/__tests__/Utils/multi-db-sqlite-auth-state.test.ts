@@ -19,6 +19,7 @@
  * requires real files (`:memory:` is per-connection and doesn't apply
  * across the 11 handles).
  */
+import { jest } from '@jest/globals'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -26,7 +27,7 @@ import type { SignalDataTypeMap } from '../../Types'
 import { addTransactionCapability } from '../../Utils/auth-utils'
 import { BufferJSON } from '../../Utils/generics'
 import type { ILogger } from '../../Utils/logger'
-import { SignalTypedBackend, useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
+import { SignalTypedBackend, TrustedContactsBackend, useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
 import { markPrekeyDirectDistributionIntent } from '../../Utils/prekey-direct-distribution'
 
 const silentLogger = (): ILogger => ({
@@ -479,6 +480,167 @@ describe('useMultiDbSqliteAuthState', () => {
 			expect(readDd(43)).toBe(1)
 			expect(backend.isPrekeyDirectDistribution(43)).toBe(true)
 			expect(backend.countUnsentPrekeys()).toBe(0)
+		} finally {
+			close()
+		}
+	})
+
+	it('routes tctoken through wa_trusted_contacts / _send (authoritative) with signal_kv fallback', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			const jid = '46802258641027@lid'
+			await state.keys.set({
+				tctoken: {
+					[jid]: {
+						token: Buffer.from([1, 2, 3]),
+						timestamp: '1784050585',
+						senderTimestamp: 1783471194,
+						realIssueTimestamp: null
+					}
+				}
+			})
+
+			// Authoritative write landed in the relational tables (not just signal_kv).
+			const inc = store
+				.handle('wa.db')
+				.prepare(
+					'SELECT hex(incoming_tc_token) AS t, incoming_tc_token_timestamp AS ts FROM wa_trusted_contacts WHERE jid = ?'
+				)
+				.get(jid) as { t: string; ts: number }
+			expect(inc).toEqual({ t: '010203', ts: 1784050585 })
+			const snt = store
+				.handle('wa.db')
+				.prepare(
+					'SELECT sent_tc_token_timestamp AS s, real_issue_timestamp AS r FROM wa_trusted_contacts_send WHERE jid = ?'
+				)
+				.get(jid) as { s: number; r: number }
+			expect(snt).toEqual({ s: 1783471194, r: 0 }) // realIssueTimestamp null → 0
+
+			// Read merges both tables back into the bundled KV value.
+			const got = await state.keys.get('tctoken', [jid])
+			expect(Buffer.from(got[jid]!.token).toString('hex')).toBe('010203')
+			expect(got[jid]!.senderTimestamp).toBe(1783471194)
+
+			// Metadata keys (no `@`) are NOT contacts → signal_kv only.
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			await state.keys.set({ tctoken: { __index: { jids: [jid] } as any } })
+			expect(
+				(
+					store
+						.handle('wa.db')
+						.prepare('SELECT COUNT(*) AS n FROM wa_trusted_contacts WHERE jid = ?')
+						.get('__index') as { n: number }
+				).n
+			).toBe(0)
+			expect((await state.keys.get('tctoken', ['__index']))['__index']).toBeDefined()
+
+			// Delete (set null) clears both relational rows; read returns undefined.
+			await state.keys.set({ tctoken: { [jid]: null as unknown as SignalDataTypeMap['tctoken'] } })
+			expect(
+				(
+					store.handle('wa.db').prepare('SELECT COUNT(*) AS n FROM wa_trusted_contacts WHERE jid = ?').get(jid) as {
+						n: number
+					}
+				).n
+			).toBe(0)
+			expect((await state.keys.get('tctoken', [jid]))[jid]).toBeUndefined()
+		} finally {
+			close()
+		}
+	})
+
+	it('exposes tctoken authority only in source-of-truth mode and CAS-prunes without deleting a refresh', async () => {
+		const { state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			const jid = '12345@lid'
+			// Production socket wraps authState.keys before messages-recv consumes it.
+			// Both the authority and signal_kv enumeration must survive that wrapper.
+			const keys = addTransactionCapability(state.keys, silentLogger(), {
+				maxCommitRetries: 1,
+				delayBetweenTriesMs: 1
+			})
+			const authority = keys.trustedContactTokens
+			expect(authority?.authoritative).toBe(true)
+			await keys.set({ tctoken: { [jid]: { token: Buffer.from([1]), timestamp: '100' } } })
+			await keys.set({ tctoken: { [jid]: { token: Buffer.from([2]), timestamp: '200' } } })
+			const listedIds: string[] = []
+			for await (const id of keys.listIds!('tctoken')) listedIds.push(id)
+			expect(listedIds).toContain(jid)
+
+			// Prune observed timestamp=100, but the token was refreshed to 200.
+			expect(await authority!.compareAndPrune(jid, 100, Buffer.from([1]))).toBe(false)
+			let got = await keys.get('tctoken', [jid])
+			expect(Buffer.from(got[jid]!.token).toString('hex')).toBe('02')
+
+			// Same-second refresh is also protected by the token bytes, not only timestamp.
+			await keys.set({ tctoken: { [jid]: { token: Buffer.from([3]), timestamp: '200' } } })
+			expect(await authority!.compareAndPrune(jid, 200, Buffer.from([2]))).toBe(false)
+			expect(await authority!.compareAndPrune(jid, 200, Buffer.from([3]))).toBe(true)
+			expect(authority!.listIncoming()).toEqual([])
+			got = await keys.get('tctoken', [jid])
+			expect(got[jid]).toBeUndefined()
+		} finally {
+			close()
+		}
+	})
+
+	it('keeps the relational tctoken readable and logs an actionable reason when the signal_kv backup write fails', async () => {
+		const error = jest.fn()
+		const logger: ILogger = { ...silentLogger(), error }
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir, logger })
+		const jid = 'backup-failure@lid'
+		try {
+			store.handle('axolotl.db').exec(`
+				CREATE TRIGGER fail_tctoken_signal_kv_backup
+				BEFORE INSERT ON signal_kv
+				WHEN NEW.type = 'tctoken'
+				BEGIN
+					SELECT RAISE(ABORT, 'forced tctoken signal_kv backup failure');
+				END;
+			`)
+
+			await expect(
+				state.keys.set({ tctoken: { [jid]: { token: Buffer.from([0xab]), timestamp: '321' } } })
+			).rejects.toThrow('forced tctoken signal_kv backup failure')
+
+			const got = await state.keys.get('tctoken', [jid])
+			expect(Buffer.from(got[jid]!.token).toString('hex')).toBe('ab')
+			expect(error).toHaveBeenCalledWith(
+				expect.objectContaining({
+					reason: 'signal-kv-fallback-write-failed',
+					authoritativeStore: 'wa.db',
+					fallbackStore: 'axolotl.db.signal_kv',
+					fallbackState: 'stale-or-missing',
+					recovery: 'retry-the-same-keys.set-batch'
+				}),
+				expect.stringContaining('tctoken committed to wa.db')
+			)
+		} finally {
+			store.handle('axolotl.db').exec('DROP TRIGGER IF EXISTS fail_tctoken_signal_kv_backup')
+			close()
+		}
+	})
+
+	it('recovers an interrupted cross-file tctoken clear without resurrecting signal_kv', async () => {
+		const first = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		const jid = '67890@lid'
+		await first.state.keys.set({ tctoken: { [jid]: { token: Buffer.from([7]), timestamp: '100' } } })
+		new TrustedContactsBackend(first.store.handle('wa.db')).beginClear()
+		first.close()
+
+		const second = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			expect((await second.state.keys.get('tctoken', [jid]))[jid]).toBeUndefined()
+			expect(new TrustedContactsBackend(second.store.handle('wa.db')).hasPendingClear()).toBe(false)
+		} finally {
+			second.close()
+		}
+	})
+
+	it('does not advertise relational tctoken authority in kill-switch mode', async () => {
+		const { state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: false })
+		try {
+			expect(state.keys.trustedContactTokens).toBeUndefined()
 		} finally {
 			close()
 		}
