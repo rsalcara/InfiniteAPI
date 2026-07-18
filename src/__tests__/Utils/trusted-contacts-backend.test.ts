@@ -96,7 +96,7 @@ describe('TrustedContactsBackend', () => {
 		}
 	})
 
-	it('persists and clears the cross-file reset marker atomically with wa rows', () => {
+	it('persists and clears the global auth-key reset marker atomically with wa rows', () => {
 		const backend = new TrustedContactsBackend(store.handle('wa.db'))
 		backend.setIncoming('a@lid', Buffer.from([1]), 1)
 		backend.setSent('a@lid', 2, 3)
@@ -106,6 +106,40 @@ describe('TrustedContactsBackend', () => {
 		expect(backend.listIncoming()).toEqual([])
 		expect(backend.listSentJids()).toEqual([])
 
+		backend.finishClear()
+		expect(backend.hasPendingClear()).toBe(false)
+	})
+
+	it('rolls back the marker and both wa deletes when beginClear fails', () => {
+		const backend = new TrustedContactsBackend(store.handle('wa.db'))
+		backend.setIncoming('a@lid', Buffer.from([1]), 1)
+		backend.setSent('a@lid', 2, 3)
+		store.handle('wa.db').exec(`
+			CREATE TRIGGER fail_sent_clear
+			BEFORE DELETE ON wa_trusted_contacts_send
+			BEGIN
+				SELECT RAISE(ABORT, 'forced sent clear failure');
+			END;
+		`)
+
+		try {
+			expect(() => backend.beginClear()).toThrow('forced sent clear failure')
+			expect(backend.hasPendingClear()).toBe(false)
+			expect(backend.listIncomingJids()).toEqual(['a@lid'])
+			expect(backend.listSentJids()).toEqual(['a@lid'])
+		} finally {
+			store.handle('wa.db').exec('DROP TRIGGER IF EXISTS fail_sent_clear')
+		}
+	})
+
+	it('recognizes and removes the legacy #671 tctoken clear marker', () => {
+		const backend = new TrustedContactsBackend(store.handle('wa.db'))
+		store
+			.handle('wa.db')
+			.prepare("INSERT INTO infiniteapi_metadata (key, value) VALUES ('tctoken_clear_in_progress', 'legacy')")
+			.run()
+
+		expect(backend.hasPendingClear()).toBe(true)
 		backend.finishClear()
 		expect(backend.hasPendingClear()).toBe(false)
 	})

@@ -186,14 +186,6 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		signalMirrorJidMap = new JidMapBackend(store.handle('msgstore.db'))
 		signalTypedSource = new SignalTypedSourceStore(signalTypedBackend, signalMirrorJidMap, opts.logger)
 		trustedContactsBackend = new TrustedContactsBackend(store.handle('wa.db'))
-		if (trustedContactsBackend.hasPendingClear()) {
-			signalStmts.deleteType.run('tctoken')
-			trustedContactsBackend.finishClear()
-			opts.logger?.warn?.(
-				{ reason: 'interrupted-cross-file-clear', recoveredStore: 'wa.db+axolotl.db.signal_kv' },
-				'multi-db-sqlite: completed interrupted tctoken clear; stale legacy fallback removed'
-			)
-		}
 	} catch (err) {
 		// Only close the store if WE opened it — injected stores belong to
 		// the caller.
@@ -444,15 +436,56 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		throw lastError ?? new Error(`runWithBusyRetry(${label}): no attempts were made (MAX_BUSY_ATTEMPTS=0?)`)
 	}
 
-	const recoverPendingTctokenClear = (): void => {
-		if (!trustedContactsBackend.hasPendingClear()) return
-		signalStmts.deleteType.run('tctoken')
-		trustedContactsBackend.finishClear()
-		opts.logger?.warn?.(
-			{ reason: 'interrupted-cross-file-clear', fallbackStore: 'signal_kv' },
-			'multi-db-sqlite: recovered pending tctoken clear before access'
-		)
+	const msgstoreDb = store.handle('msgstore.db')
+	const axolotlDb = store.handle('axolotl.db')
+	const clearAxolotlTx = axolotlDb.transaction(() => {
+		signalStmts.clear.run()
+		axolotlDb.exec('DELETE FROM sessions; DELETE FROM prekeys; DELETE FROM sender_keys; DELETE FROM identities;')
+	}).immediate
+
+	// Every statement is idempotent. The durable marker lives in wa.db and is
+	// removed only after all three remaining physical databases complete, so a
+	// crash or SQLITE_BUSY at any boundary can safely replay the whole sequence.
+	const clearRemainingAuthKeyStores = async (label: string): Promise<void> => {
+		await runWithBusyRetry(label, () => {
+			msgstoreDb.exec('DELETE FROM jid_map;')
+			clearAxolotlTx()
+			appStateSyncKeyStmts.clear.run()
+		})
 	}
+
+	const recoverPendingAuthKeysClearUnlocked = async (trigger: 'startup' | 'before-access'): Promise<boolean> => {
+		if (!trustedContactsBackend.hasPendingClear()) return false
+		try {
+			await clearRemainingAuthKeyStores('recover interrupted auth keys clear')
+			trustedContactsBackend.finishClear()
+			opts.logger?.warn?.(
+				{
+					reason: 'interrupted-auth-keys-clear',
+					trigger,
+					recoveredStores: ['wa.db', 'msgstore.db', 'axolotl.db', 'creds.db'],
+					markerState: 'cleared'
+				},
+				'multi-db-sqlite: completed interrupted auth key clear across every participating database'
+			)
+			return true
+		} catch (err) {
+			opts.logger?.error?.(
+				{
+					err,
+					reason: 'auth-keys-clear-recovery-failed',
+					trigger,
+					markerState: 'retained',
+					recovery: 'retry-on-next-auth-state-open-or-key-access'
+				},
+				'multi-db-sqlite: auth key clear recovery failed; refusing partially-cleared state'
+			)
+			throw err
+		}
+	}
+
+	const recoverPendingAuthKeysClear = (trigger: 'startup' | 'before-access'): Promise<boolean> =>
+		tctokenMutex.mutex(() => recoverPendingAuthKeysClearUnlocked(trigger))
 
 	const runSetWithBusyRetryUnlocked = async (data: SignalDataSet): Promise<void> => {
 		const nonEmptyTypes = Object.keys(data).filter(type => {
@@ -515,13 +548,18 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		}
 	}
 
-	const runSetWithBusyRetry = (data: SignalDataSet): Promise<void> =>
-		data.tctoken
-			? tctokenMutex.mutex(async () => {
-					recoverPendingTctokenClear()
-					await runSetWithBusyRetryUnlocked(data)
-				})
-			: runSetWithBusyRetryUnlocked(data)
+	const runSetWithBusyRetry = async (data: SignalDataSet): Promise<void> => {
+		if (data.tctoken) {
+			await tctokenMutex.mutex(async () => {
+				await recoverPendingAuthKeysClearUnlocked('before-access')
+				await runSetWithBusyRetryUnlocked(data)
+			})
+			return
+		}
+
+		if (trustedContactsBackend.hasPendingClear()) await recoverPendingAuthKeysClear('before-access')
+		await runSetWithBusyRetryUnlocked(data)
+	}
 
 	const state: AuthenticationState = {
 		// Getter/setter pair so `state.creds = newObj` mutations are
@@ -541,7 +579,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 						listIncoming: () => trustedContactsBackend.listIncoming(),
 						compareAndPrune: (jid, expectedTimestamp, expectedToken) =>
 							tctokenMutex.mutex(async () => {
-								recoverPendingTctokenClear()
+								await recoverPendingAuthKeysClearUnlocked('before-access')
 								let current = readTctokenRelational(jid)
 								if (current.kind === 'miss') {
 									const row = signalStmts.select.get('tctoken', jid) as { value: string } | undefined
@@ -566,6 +604,9 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			get: async (type, ids) => {
 				const out: { [_: string]: SignalDataTypeMap[typeof type] } = {}
 				if (ids.length === 0) return out
+				if (type !== 'tctoken' && trustedContactsBackend.hasPendingClear()) {
+					await recoverPendingAuthKeysClear('before-access')
+				}
 
 				// `app-state-sync-key` lives in its own creds.db table and needs
 				// the AppStateSyncKeyData proto rehydration — kept separate.
@@ -582,8 +623,8 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				}
 
 				if (!sourceOfTruth && type === 'tctoken') {
-					return tctokenMutex.mutex(() => {
-						recoverPendingTctokenClear()
+					return tctokenMutex.mutex(async () => {
+						await recoverPendingAuthKeysClearUnlocked('before-access')
 						const rows = signalGetIn.all([type], ids) as Array<{ id: string; value: string }>
 						for (const row of rows) {
 							out[row.id] = JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap[typeof type]
@@ -598,8 +639,8 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				// not yet migrated. A backend read error also degrades to signal_kv —
 				// never throws to the caller.
 				if (sourceOfTruth && type === 'tctoken') {
-					return tctokenMutex.mutex(() => {
-						recoverPendingTctokenClear()
+					return tctokenMutex.mutex(async () => {
+						await recoverPendingAuthKeysClearUnlocked('before-access')
 						const missing: string[] = []
 						for (const id of ids) {
 							if (!isTctokenContactKey(id)) {
@@ -714,34 +755,11 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			},
 			clear: async () => {
 				await tctokenMutex.mutex(async () => {
-					recoverPendingTctokenClear()
-					// wa.db owns the durable marker. Its transaction writes the marker
-					// and clears both relational tables atomically; if the process dies
-					// before signal_kv is cleared, startup recovery sees the marker and
-					// removes the stale fallback before enabling reads.
+					await recoverPendingAuthKeysClearUnlocked('before-access')
+					// wa.db owns the durable intent. Writing it and clearing both token
+					// tables is one transaction; every remaining database is replayed
+					// idempotently until all key-store surfaces have been cleared.
 					trustedContactsBackend.beginClear()
-					// Order matters here because cross-file transactions are NOT
-					// ACID in SQLite — `clear()` writes to two physical .db files
-					// (axolotl.db.signal_kv + msgstore.db.jid_map). If the
-					// process crashes between the two DELETEs, the partially-
-					// completed state must be RECOVERABLE on the next startup.
-					//
-					// We clear `jid_map` FIRST. If we crash now:
-					//   - msgstore.jid_map is empty (no stale LID mappings)
-					//   - axolotl.signal_kv still has Signal keys
-					//   - on next start, `initAuthCreds()` only runs when creds.db
-					//     is empty, so existing creds are loaded; the leftover
-					//     Signal keys in signal_kv will be naturally overwritten
-					//     by the next session establishment. NOT catastrophic.
-					//
-					// If we cleared `signal_kv` first and crashed:
-					//   - axolotl.signal_kv is empty (Signal session lost)
-					//   - msgstore.jid_map STILL has LID mappings pointing at the
-					//     old session — `LIDMappingStore` would resolve contacts
-					//     to LIDs whose sessions no longer exist, breaking
-					//     encryption for those contacts until a fresh
-					//     `storeMapping()` overwrites them.
-					//
 					// Only `jid_map` is cleared, NOT the shared `jid` table:
 					// other msgstore tables (`user_device.user_jid_row_id`,
 					// `user_device_info.user_jid_row_id`,
@@ -750,38 +768,18 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 					// them. `jid` rows are reused naturally by the next
 					// `LIDMappingStore.storeMapping()` resolve on the same
 					// raw_string.
-					const msgstoreDb = store.handle('msgstore.db')
-					// Wrap both DELETEs in the same busy-retry helper as
-					// `runSetWithBusyRetry`. Without it, `exec('DELETE FROM
-					// jid_map')` raised SQLITE_BUSY directly to the caller after
-					// the 5 s busy_timeout expired — under contention pressure
-					// (e.g. cleanup raced with a hot LIDMappingStore write) the
-					// session reset would abort and the caller usually doesn't
-					// handle the error. The two DELETEs are still issued in the
-					// documented order so the partial-crash recovery semantics
-					// above hold.
 					try {
-						await runWithBusyRetry('clear', () => {
-							msgstoreDb.exec('DELETE FROM jid_map;')
-							signalStmts.clear.run()
-							appStateSyncKeyStmts.clear.run()
-							// The typed Signal tables must be wiped too. In
-							// `signalSourceOfTruth` mode `keys.get` reads them BEFORE
-							// signal_kv, so a surviving row would resurrect key material
-							// this clear() was meant to erase. Cleared unconditionally
-							// (harmless when the flag is off — the mirror also populates
-							// these tables, and a leftover mirror row after a reset is
-							// equally undesirable). All four live in axolotl.db.
-							const axolotlDb = store.handle('axolotl.db')
-							axolotlDb.exec(
-								'DELETE FROM sessions; DELETE FROM prekeys; DELETE FROM sender_keys; DELETE FROM identities;'
-							)
-						})
+						await clearRemainingAuthKeyStores('clear auth key stores')
 						trustedContactsBackend.finishClear()
 					} catch (err) {
 						opts.logger?.error?.(
-							{ err, reason: 'cross-file-clear-interrupted', recovery: 'startup-or-next-tctoken-access' },
-							'multi-db-sqlite: clear failed after tctoken reset marker; leaving marker for deterministic recovery'
+							{
+								err,
+								reason: 'auth-keys-clear-interrupted',
+								markerState: 'retained',
+								recovery: 'retry-on-next-auth-state-open-or-key-access'
+							},
+							'multi-db-sqlite: auth key clear interrupted; durable marker retained for full replay'
 						)
 						throw err
 					}
@@ -790,6 +788,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			list: async function* <T extends keyof SignalDataTypeMap>(
 				type: T
 			): AsyncIterable<readonly [string, SignalDataTypeMap[T]]> {
+				if (trustedContactsBackend.hasPendingClear()) await recoverPendingAuthKeysClear('before-access')
 				const rows =
 					type === 'app-state-sync-key'
 						? (appStateSyncKeyStmts.list.iterate() as Iterable<{ id: string; value: string }>)
@@ -805,6 +804,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				}
 			},
 			listIds: async function* <T extends keyof SignalDataTypeMap>(type: T): AsyncIterable<string> {
+				if (trustedContactsBackend.hasPendingClear()) await recoverPendingAuthKeysClear('before-access')
 				const rows =
 					type === 'app-state-sync-key'
 						? (appStateSyncKeyStmts.listIds.iterate() as Iterable<{ id: string }>)
@@ -814,6 +814,16 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				}
 			}
 		}
+	}
+
+	// Do not expose an auth-state whose previous clear completed in only some
+	// physical databases. A retained marker makes startup replay every target;
+	// persistent failure aborts opening and leaves the marker for the next try.
+	try {
+		await recoverPendingAuthKeysClear('startup')
+	} catch (err) {
+		if (ownsStore) store.close()
+		throw err
 	}
 
 	return {
