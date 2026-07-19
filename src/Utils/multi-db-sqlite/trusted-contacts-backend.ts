@@ -56,6 +56,7 @@ export class TrustedContactsBackend {
 
 	private readonly db: SqliteDbLike
 	private readonly replaceTx: (jid: string, replacement: TrustedContactReplacement) => void
+	private readonly replaceManyTx: (entries: ReadonlyArray<readonly [string, TrustedContactReplacement]>) => void
 	private readonly beginClearTx: () => void
 	private readonly finishClearTx: () => void
 
@@ -101,7 +102,7 @@ export class TrustedContactsBackend {
 			deleteMetadata: this.db.prepare('DELETE FROM infiniteapi_metadata WHERE key = ?')
 		}
 
-		this.replaceTx = this.db.transaction((jid: string, replacement: TrustedContactReplacement) => {
+		const applyReplacement = (jid: string, replacement: TrustedContactReplacement): void => {
 			if (replacement.incoming) {
 				this.stmts.upsertIncoming.run(jid, replacement.incoming.token, replacement.incoming.timestamp)
 			} else {
@@ -113,6 +114,11 @@ export class TrustedContactsBackend {
 			} else {
 				this.stmts.delSent.run(jid)
 			}
+		}
+
+		this.replaceTx = this.db.transaction(applyReplacement).immediate
+		this.replaceManyTx = this.db.transaction((entries: ReadonlyArray<readonly [string, TrustedContactReplacement]>) => {
+			for (const [jid, replacement] of entries) applyReplacement(jid, replacement)
 		}).immediate
 
 		this.beginClearTx = this.db.transaction(() => {
@@ -131,6 +137,12 @@ export class TrustedContactsBackend {
 	/** Atomically replaces both halves of one bundled tctoken inside wa.db. */
 	replace(jid: string, replacement: TrustedContactReplacement): void {
 		this.replaceTx(jid, replacement)
+	}
+
+	/** Atomically replaces both halves for every JID in one wa.db transaction. */
+	replaceMany(entries: ReadonlyArray<readonly [string, TrustedContactReplacement]>): void {
+		if (entries.length === 0) return
+		this.replaceManyTx(entries)
 	}
 
 	/** Stores (or updates) the incoming TC token for a contact JID. */

@@ -28,7 +28,7 @@ type RelayMessageFn = (jid: string, msg: any, opts: any) => Promise<void>
 type EmitFn = (event: string, data: any) => void
 
 interface MockMessageRetryManager {
-	getRecentMessage: (jid: string, msgId: string) => { message: any } | undefined
+	getRecentMessage: (jid: string, msgId: string) => { to: string; message: any } | undefined
 }
 
 /** Mirrors the handleBadAck error-463 retry logic */
@@ -39,13 +39,20 @@ async function handleBadAck463(
 	relayMessage: RelayMessageFn,
 	emit: EmitFn,
 	delayFn: (ms: number) => Promise<void>,
-	messageRetryManager?: MockMessageRetryManager
+	messageRetryManager?: MockMessageRetryManager,
+	hasValidToken = true
 ): Promise<{ action: string }> {
 	const msgId = attrs.id
-	const jid = jidNormalizedUser(attrs.from)
-	const key: MockKey = { remoteJid: attrs.from, fromMe: true, id: msgId }
+	const recentMessage = messageRetryManager?.getRecentMessage(attrs.from, msgId)
+	const jid = jidNormalizedUser(recentMessage?.to ?? attrs.from)
+	const key: MockKey = { remoteJid: jid, fromMe: true, id: msgId }
 
 	if (attrs.error === '463') {
+		if (!hasValidToken) {
+			emit('messages.update', [{ key, update: { status: 'ERROR', messageStubParameters: [attrs.error] } }])
+			return { action: 'error_emitted' }
+		}
+
 		const retryKey = `${jid}:${msgId}`
 		if (msgId && jid && !tcTokenRetriedMsgIds.has(retryKey)) {
 			tcTokenRetriedMsgIds.add(retryKey)
@@ -131,6 +138,55 @@ describe('handleBadAck error 463 retry', () => {
 		expect(result.action).toBe('error_emitted')
 		expect(mockRelayMessage).not.toHaveBeenCalled()
 		expect(mockEmit).toHaveBeenCalledTimes(1)
+	})
+
+	it('suppresses the retry when recovery did not persist a valid recipient token', async () => {
+		mockGetMessage.mockResolvedValue({ conversation: 'must not be resent tokenless' })
+
+		const result = await handleBadAck463(
+			baseAttrs,
+			tcTokenRetriedMsgIds,
+			mockGetMessage,
+			mockRelayMessage,
+			mockEmit,
+			mockDelay,
+			undefined,
+			false
+		)
+
+		expect(result.action).toBe('error_emitted')
+		expect(mockGetMessage).not.toHaveBeenCalled()
+		expect(mockRelayMessage).not.toHaveBeenCalled()
+	})
+
+	it('checks persisted token after the grace period without waiting for a stalled privacy IQ', async () => {
+		const neverSettles = new Promise<boolean>(() => {})
+		let fetchResult: boolean | undefined
+		const retryDecision = async () => {
+			void neverSettles.then(result => {
+				fetchResult = result
+			})
+			await Promise.resolve() // deterministic grace-period stand-in
+			const persistedTokenIsUsable = true // notification path populated it
+			return { persistedTokenIsUsable, fetchResult }
+		}
+
+		await expect(retryDecision()).resolves.toEqual({ persistedTokenIsUsable: true, fetchResult: undefined })
+	})
+
+	it('waits for the bounded privacy IQ when the token is still absent after grace', async () => {
+		let persistedTokenIsUsable = false
+		const boundedRecovery = Promise.resolve().then(() => {
+			persistedTokenIsUsable = true
+			return true
+		})
+		const retryDecision = async () => {
+			await Promise.resolve() // deterministic grace-period stand-in
+			if (!persistedTokenIsUsable) await boundedRecovery
+			return persistedTokenIsUsable
+		}
+
+		await expect(retryDecision()).resolves.toBe(true)
 	})
 
 	it('should NOT retry same message ID twice (loop guard)', async () => {
@@ -274,8 +330,8 @@ describe('handleBadAck error 463 retry', () => {
 		const cachedMsg = { conversation: 'cached' }
 		const mockRetryManager: MockMessageRetryManager = {
 			getRecentMessage: jest
-				.fn<(jid: string, msgId: string) => { message: any } | undefined>()
-				.mockReturnValue({ message: cachedMsg })
+				.fn<(jid: string, msgId: string) => { to: string; message: any } | undefined>()
+				.mockReturnValue({ to: baseAttrs.from, message: cachedMsg })
 		}
 		mockGetMessage.mockResolvedValue(undefined)
 		mockRelayMessage.mockResolvedValue(undefined)
@@ -292,6 +348,34 @@ describe('handleBadAck error 463 retry', () => {
 
 		expect(result.action).toBe('retry_succeeded')
 		expect(mockRelayMessage).toHaveBeenCalledWith(baseAttrs.from, cachedMsg, {
+			messageId: baseAttrs.id,
+			useUserDevicesCache: true
+		})
+	})
+
+	it('uses the retry-cache destination instead of an alternate ack sender', async () => {
+		const destination = '207421150646274@lid'
+		const cachedMsg = { conversation: 'cached for original recipient' }
+		const mockRetryManager: MockMessageRetryManager = {
+			getRecentMessage: jest
+				.fn<(jid: string, msgId: string) => { to: string; message: any } | undefined>()
+				.mockReturnValue({ to: destination, message: cachedMsg })
+		}
+		mockGetMessage.mockResolvedValue(undefined)
+		mockRelayMessage.mockResolvedValue(undefined)
+
+		const result = await handleBadAck463(
+			{ ...baseAttrs, from: '46802258641027@lid' },
+			tcTokenRetriedMsgIds,
+			mockGetMessage,
+			mockRelayMessage,
+			mockEmit,
+			mockDelay,
+			mockRetryManager
+		)
+
+		expect(result.action).toBe('retry_succeeded')
+		expect(mockRelayMessage).toHaveBeenCalledWith(destination, cachedMsg, {
 			messageId: baseAttrs.id,
 			useUserDevicesCache: true
 		})

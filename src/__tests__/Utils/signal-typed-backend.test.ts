@@ -86,6 +86,7 @@ describe('SignalTypedBackend', () => {
 		// A00 of SignalPreKeyStore: the unsent set is the upload queue.
 		expect(backend.countUnsentPrekeys()).toBe(5)
 		expect(backend.firstUnsentPrekeyId()).toBe(1)
+		expect(backend.nextGeneratedPrekeyId()).toBe(6)
 
 		// Upload ack: mark the half-open range [1, 4) as uploaded. Epoch SECONDS
 		// (WhatsApp Android stores seconds, not millis).
@@ -153,6 +154,42 @@ describe('SignalTypedBackend', () => {
 		expect(backend.markPrekeyDirectDistribution(9999)).toBe(false)
 		expect(backend.isPrekeyDirectDistribution(9999)).toBe(false)
 		expect(backend.countUnsentPrekeys()).toBe(4) // unchanged
+	})
+
+	it('refuses direct distribution for server-acked, already distributed, or upload-reserved prekeys', () => {
+		const handle = store.handle('axolotl.db')
+		const backend = new SignalTypedBackend(handle)
+		for (let id = 1; id <= 4; id++) backend.putPrekey(id, Buffer.from([id]))
+
+		backend.commitPrekeyUpload(1, 2, 1_784_050_580)
+		expect(backend.markPrekeyDirectDistribution(1, 1_784_050_581)).toBe(false)
+
+		expect(backend.markPrekeyDirectDistribution(2, 1_784_050_582)).toBe(true)
+		expect(backend.markPrekeyDirectDistribution(2, 1_784_050_583)).toBe(false)
+
+		expect(backend.reservePrekeyUploadRange(3, 5, 1_784_050_584)).toBe(2)
+		// Reservation is retry-idempotent: a post-commit retry touches the same
+		// eligible rows instead of forcing key regeneration.
+		expect(backend.reservePrekeyUploadRange(3, 5, 1_784_050_586)).toBe(2)
+		expect(backend.markPrekeyDirectDistribution(3, 1_784_050_585)).toBe(false)
+		expect(backend.markPrekeyDirectDistribution(4, 1_784_050_585)).toBe(false)
+
+		const rows = handle
+			.prepare(
+				'SELECT prekey_id, sent_to_server, direct_distribution, upload_timestamp FROM prekeys ORDER BY prekey_id'
+			)
+			.all() as Array<{
+			prekey_id: number
+			sent_to_server: number
+			direct_distribution: number
+			upload_timestamp: number | null
+		}>
+		expect(rows).toEqual([
+			{ prekey_id: 1, sent_to_server: 1, direct_distribution: 0, upload_timestamp: 1_784_050_580 },
+			{ prekey_id: 2, sent_to_server: 0, direct_distribution: 1, upload_timestamp: 1_784_050_582 },
+			{ prekey_id: 3, sent_to_server: 0, direct_distribution: 0, upload_timestamp: 1_784_050_584 },
+			{ prekey_id: 4, sent_to_server: 0, direct_distribution: 0, upload_timestamp: 1_784_050_584 }
+		])
 	})
 
 	it('treats legacy prekeys with NULL flags as unsent (COALESCE)', () => {

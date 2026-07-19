@@ -762,9 +762,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		username: string,
 		opts: UsernameMutationOptions & { reserved?: boolean } = {}
 	): Promise<UsernameMutationResponse> => {
+		// Strip a leading `@` defensively, same convention as
+		// `getUserByUsername` — the server expects the bare handle and
+		// rejects `@tuoli` with INVALID. (audit release #583 review #4)
+		const normalized = username.startsWith('@') ? username.slice(1) : username
 		return executeWMexQuery<UsernameMutationResponse>(
 			{
-				username,
+				username: normalized,
 				reserved: opts.reserved ?? true,
 				session_id: opts.sessionId ?? newMexSessionId(),
 				source: opts.source ?? 'USER_INPUT'
@@ -800,9 +804,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		username: string,
 		opts: UsernameMutationOptions = {}
 	): Promise<UsernameCheckResponse> => {
+		// Strip a leading `@` (audit release #583 review #4) — same as
+		// `setMyUsername`, so a "user types `@tuoli` → debounce → check
+		// → set" UI doesn't have to manually trim at every hop.
+		const normalized = username.startsWith('@') ? username.slice(1) : username
 		return executeWMexQuery<UsernameCheckResponse>(
 			{
-				username,
+				username: normalized,
 				session_id: opts.sessionId ?? newMexSessionId(),
 				source: opts.source ?? 'USER_INPUT'
 			},

@@ -39,7 +39,7 @@ import {
 	xmppSignedPreKey
 } from '../Utils'
 import { getPlatformId, isAndroidBrowser } from '../Utils/browser-utils'
-import { type MultiDbSqliteStore, SignalTypedBackend } from '../Utils/multi-db-sqlite'
+import { applyReconciledPrekeyCursors } from '../Utils/prekey-upload-cursors'
 import { resolvePrekeyUploadQueryTimeout } from '../Utils/prekey-upload-timeout'
 import {
 	markConnectionActive,
@@ -613,27 +613,10 @@ export const makeSocket = (config: SocketConfig) => {
 	let uploadPreKeysPromise: Promise<void> | null = null
 	let lastUploadTime = 0
 
-	// Lazily-built typed backend for the `prekey_uploads` mirror (only when a
-	// multi-db-sqlite store is wired). One row per successful upload batch —
-	// best-effort introspection parity, never affects the upload itself.
-	let prekeyUploadBackend: SignalTypedBackend | null | undefined
-	// Lazily open the typed axolotl.db backend, once, iff a multi-db-sqlite store
-	// is wired. Returns null for single-file / legacy backends (which have no
-	// typed prekeys table). Never throws — a failure caches null and disables the
-	// typed prekey bookkeeping without affecting uploads.
-	const getPrekeyBackend = (): SignalTypedBackend | null => {
-		if (!config.multiDbStore) return null
-		if (prekeyUploadBackend === undefined) {
-			try {
-				prekeyUploadBackend = new SignalTypedBackend((config.multiDbStore as MultiDbSqliteStore).handle('axolotl.db'))
-			} catch (err) {
-				logger.debug({ err }, 'multi-db-sqlite: could not open axolotl.db backend for prekeys')
-				prekeyUploadBackend = null
-			}
-		}
-
-		return prekeyUploadBackend
-	}
+	// Only the auth-state that owns the typed prekeys table may control upload
+	// progress. `config.multiDbStore` can be a separate best-effort mirror and
+	// must never be allowed to rewind or commit the real auth cursor.
+	const prekeyUploads = keys.prekeyUploads
 
 	// Records a successful pre-key upload into the multi-db-sqlite axolotl.db,
 	// atomically: flips the acked ids [fromId, toId) to sent_to_server = 1 (in
@@ -647,9 +630,8 @@ export const makeSocket = (config: SocketConfig) => {
 	const recordPrekeyUpload = (fromId: number, toId: number): void => {
 		if (!(toId > fromId)) return
 		try {
-			const backend = getPrekeyBackend()
-			if (!backend) return
-			backend.commitPrekeyUpload(fromId, toId, Math.floor(Date.now() / 1000))
+			if (!prekeyUploads) return
+			prekeyUploads.commitUpload(fromId, toId, Math.floor(Date.now() / 1000))
 		} catch (err) {
 			logger.warn(
 				{ err, fromId, toId },
@@ -688,22 +670,37 @@ export const makeSocket = (config: SocketConfig) => {
 		const PREKEY_UPLOAD_QUERY_TIMEOUT_MS = resolvePrekeyUploadQueryTimeout(defaultQueryTimeoutMs)
 
 		const runWithRetries = async () => {
-			// Table-authoritative upload progress (multi-db only), matching the real
-			// SignalPreKeyStore where the upload queue IS `sent_to_server = 0`. If the
-			// typed prekeys table shows unsent keys BELOW the creds cursor, the cursor
-			// drifted (e.g. a legacy orphan, or NULL-flagged pre-tracking rows) —
-			// rewind it so those keys get re-sent. Only ever lowers the cursor, so it
-			// can recover keys but never skip an un-acked one; re-uploading an id the
-			// server already has is a harmless no-op (deduped by prekey_id).
+			// Reconcile both cursors from the authoritative typed table. Besides
+			// rewinding for legacy unsent orphans, this must advance past a durable ACK
+			// when a crash happened before the matching creds.update reached creds.db.
+			// `nextGeneratedId` also prevents regeneration over durable key material if
+			// the allocation-cursor save was the write lost by the crash.
 			try {
-				const backend = getPrekeyBackend()
-				const firstUnsent = backend?.firstUnsentPrekeyId()
-				if (typeof firstUnsent === 'number' && firstUnsent < creds.firstUnuploadedPreKeyId) {
+				const firstUnsent = prekeyUploads?.firstUnsentId()
+				const typedNextGenerated = prekeyUploads?.nextGeneratedId()
+				const unsent = prekeyUploads?.countUnsent()
+				const cursorBefore = {
+					firstUnuploadedPreKeyId: creds.firstUnuploadedPreKeyId,
+					nextPreKeyId: creds.nextPreKeyId
+				}
+				const cursorUpdate = applyReconciledPrekeyCursors(creds, {
+					firstUnsentId: firstUnsent ?? null,
+					nextGeneratedId: typedNextGenerated ?? null,
+					unsentCount: unsent ?? 0
+				})
+
+				if (Object.keys(cursorUpdate).length > 0) {
 					logger.info(
-						{ from: creds.firstUnuploadedPreKeyId, to: firstUnsent, unsent: backend?.countUnsentPrekeys?.() },
-						`pre-keys: self-heal — rewinding firstUnuploadedPreKeyId ${creds.firstUnuploadedPreKeyId} → ${firstUnsent}`
+						{
+							from: cursorBefore,
+							to: cursorUpdate,
+							firstUnsent,
+							typedNextGenerated,
+							unsent
+						},
+						'pre-keys: self-heal reconciled creds cursors from authoritative typed prekeys'
 					)
-					ev.emit('creds.update', { firstUnuploadedPreKeyId: firstUnsent })
+					ev.emit('creds.update', cursorUpdate)
 				}
 			} catch (err) {
 				logger.debug({ err }, 'multi-db-sqlite: prekey self-heal check failed (non-fatal)')
@@ -717,6 +714,7 @@ export const makeSocket = (config: SocketConfig) => {
 				const firstUnuploadedBefore = creds.firstUnuploadedPreKeyId
 				let committedFirstUnuploaded = firstUnuploadedBefore
 				let allocatedNextPreKeyId = creds.nextPreKeyId
+				let reservationError: unknown
 
 				logger.info(
 					{ requested: count, attempt },
@@ -738,6 +736,25 @@ export const makeSocket = (config: SocketConfig) => {
 						},
 						`pre-keys: prepared batch of ${generated} — ids [${firstUnuploadedBefore}..${committedFirstUnuploaded}) — awaiting server ack`
 					)
+					keys.afterCommit(() => {
+						if (!prekeyUploads || !(committedFirstUnuploaded > firstUnuploadedBefore)) return
+						try {
+							const expected = committedFirstUnuploaded - firstUnuploadedBefore
+							const reserved = prekeyUploads.reserveUploadRange(
+								firstUnuploadedBefore,
+								committedFirstUnuploaded,
+								Math.floor(Date.now() / 1000)
+							)
+							if (reserved !== expected) {
+								reservationError = new Error(
+									`pre-keys: authoritative upload reservation covered ${reserved}/${expected} rows for ` +
+										`[${firstUnuploadedBefore}..${committedFirstUnuploaded}); refusing to send an ambiguous batch`
+								)
+							}
+						} catch (err) {
+							reservationError = err
+						}
+					})
 					return node
 				}, creds?.me?.id || 'upload-pre-keys')
 
@@ -746,6 +763,34 @@ export const makeSocket = (config: SocketConfig) => {
 				// `nextPreKeyId` pointing past ids that were never persisted. Holds
 				// back `firstUnuploadedPreKeyId` (upload progress) until the ack below.
 				ev.emit('creds.update', { nextPreKeyId: allocatedNextPreKeyId })
+
+				// afterCommit runs only after the generated key mutations are durable.
+				// A reservation failure must therefore NOT make the caller believe the
+				// whole transaction rolled back: doing so leaves nextPreKeyId stale and
+				// the next attempt regenerates different key material over the same ids.
+				// Advance only the allocation cursor, keep upload progress unchanged, and
+				// retry the exact persisted range without sending an ambiguous IQ.
+				if (reservationError) {
+					lastError = reservationError
+					logger.error(
+						{
+							reservationError: (reservationError as Error)?.toString?.() ?? String(reservationError),
+							fromId: firstUnuploadedBefore,
+							toId: committedFirstUnuploaded,
+							attempt,
+							nextPreKeyId: allocatedNextPreKeyId,
+							firstUnuploadedPreKeyId: firstUnuploadedBefore,
+							action: attempt < MAX_RETRIES ? 'retry-persisted-range' : 'fail-preserving-persisted-range'
+						},
+						'pre-keys: post-commit upload reservation failed; allocation cursor preserved and IQ suppressed'
+					)
+					if (attempt < MAX_RETRIES) {
+						const backoffDelay = Math.min(1000 * Math.pow(2, attempt), 10000)
+						await new Promise(resolve => setTimeout(resolve, backoffDelay))
+					}
+
+					continue
+				}
 
 				try {
 					await query(node, PREKEY_UPLOAD_QUERY_TIMEOUT_MS)

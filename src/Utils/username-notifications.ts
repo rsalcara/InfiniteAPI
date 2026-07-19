@@ -45,6 +45,16 @@ export const handleUsernameSetNotification = (
 	}
 
 	const lid = jidNormalizedUser(payload.lid)
+	// `jidNormalizedUser` returns the empty string for any input it
+	// can't parse (no `@`, missing user part, server-only). Emitting
+	// `{id: '', lid: ''}` would land on every downstream listener and
+	// look like a real contact for the empty-string JID — guard against
+	// that here. (audit release #583 review item #3)
+	if (!lid) {
+		logger.warn({ lid: payload.lid }, 'username set notification: malformed LID, dropping')
+		return
+	}
+
 	logger.info({ lid, username: payload.username }, 'username set notification received')
 
 	ev.emit('contacts.update', [
@@ -82,6 +92,13 @@ export const handleUsernameDeleteNotification = (
 	}
 
 	const lid = jidNormalizedUser(payload.lid)
+	// Same guard as the SET handler — `jidNormalizedUser` returns `''`
+	// for unparseable input. (audit release #583 review item #3)
+	if (!lid) {
+		logger.warn({ lid: payload.lid }, 'username delete notification: malformed LID, dropping')
+		return
+	}
+
 	const displayName = typeof payload.display_name === 'string' ? payload.display_name : undefined
 	logger.info({ lid, displayName }, 'username delete notification received')
 

@@ -662,7 +662,7 @@ describe('useMultiDbSqliteAuthState', () => {
 	})
 
 	it('exposes tctoken authority only in source-of-truth mode and CAS-prunes without deleting a refresh', async () => {
-		const { state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		try {
 			const jid = '12345@lid'
 			// Production socket wraps authState.keys before messages-recv consumes it.
@@ -673,6 +673,7 @@ describe('useMultiDbSqliteAuthState', () => {
 			})
 			const authority = keys.trustedContactTokens
 			expect(authority?.authoritative).toBe(true)
+			expect(keys.prekeyUploads?.authoritative).toBe(true)
 			await keys.set({ tctoken: { [jid]: { token: Buffer.from([1]), timestamp: '100' } } })
 			await keys.set({ tctoken: { [jid]: { token: Buffer.from([2]), timestamp: '200' } } })
 			const listedIds: string[] = []
@@ -691,6 +692,98 @@ describe('useMultiDbSqliteAuthState', () => {
 			expect(authority!.listIncoming()).toEqual([])
 			got = await keys.get('tctoken', [jid])
 			expect(got[jid]).toBeUndefined()
+			expect(new TrustedContactsBackend(store.handle('wa.db')).getIncoming(jid)).toBeNull()
+
+			// A bundled value can also carry the independent outbound/sent half.
+			// Pruning the expired incoming token must preserve those timestamps.
+			const sentJid = '67890@lid'
+			await keys.set({
+				tctoken: {
+					[sentJid]: {
+						token: Buffer.from([4]),
+						timestamp: '300',
+						senderTimestamp: 250,
+						realIssueTimestamp: 240
+					}
+				}
+			})
+			expect(await authority!.compareAndPrune(sentJid, 300, Buffer.from([4]))).toBe(true)
+			const sentOnly = (await keys.get('tctoken', [sentJid]))[sentJid]!
+			expect(sentOnly.token).toHaveLength(0)
+			expect(sentOnly.senderTimestamp).toBe(250)
+			expect(sentOnly.realIssueTimestamp).toBe(240)
+			const backend = new TrustedContactsBackend(store.handle('wa.db'))
+			expect(backend.getIncoming(sentJid)).toBeNull()
+			expect(backend.getSent(sentJid)).toEqual({ sentTimestamp: 250, realIssueTimestamp: 240 })
+		} finally {
+			close()
+		}
+	})
+
+	it('replaces a multi-JID tctoken bucket atomically and normalizes non-finite timestamps', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		const firstJid = 'atomic-first@lid'
+		const failingJid = 'atomic-fail@lid'
+		try {
+			store.handle('wa.db').exec(`
+				CREATE TRIGGER fail_second_tctoken
+				BEFORE INSERT ON wa_trusted_contacts
+				WHEN NEW.jid = '${failingJid}'
+				BEGIN
+					SELECT RAISE(ABORT, 'forced second tctoken failure');
+				END;
+			`)
+
+			await expect(
+				state.keys.set({
+					tctoken: {
+						[firstJid]: { token: Buffer.from([1]), timestamp: '100' },
+						[failingJid]: { token: Buffer.from([2]), timestamp: '200' }
+					}
+				})
+			).rejects.toThrow('forced second tctoken failure')
+			expect(new TrustedContactsBackend(store.handle('wa.db')).stats()).toEqual({ incomingCount: 0, sentCount: 0 })
+
+			store.handle('wa.db').exec('DROP TRIGGER fail_second_tctoken')
+			await state.keys.set({
+				tctoken: {
+					[firstJid]: {
+						token: Buffer.from([3]),
+						timestamp: 'not-a-number',
+						senderTimestamp: Number.NaN,
+						realIssueTimestamp: Number.POSITIVE_INFINITY
+					}
+				}
+			})
+			const backend = new TrustedContactsBackend(store.handle('wa.db'))
+			expect(backend.getIncoming(firstJid)?.timestamp).toBe(0)
+			expect(backend.getSent(firstJid)).toEqual({ sentTimestamp: 0, realIssueTimestamp: 0 })
+		} finally {
+			store.handle('wa.db').exec('DROP TRIGGER IF EXISTS fail_second_tctoken')
+			close()
+		}
+	})
+
+	it('fails closed on an authoritative tctoken read error instead of resurrecting signal_kv', async () => {
+		const error = jest.fn()
+		const logger: ILogger = { ...silentLogger(), error }
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir, logger })
+		const jid = 'stale-fallback@lid'
+		try {
+			await state.keys.set({ tctoken: { [jid]: { token: Buffer.from([0xaa]), timestamp: '123' } } })
+			store.handle('wa.db').exec('DROP TABLE wa_trusted_contacts')
+
+			const got = await state.keys.get('tctoken', [jid])
+			expect(got[jid]).toBeUndefined()
+			expect(error).toHaveBeenCalledWith(
+				expect.objectContaining({
+					reason: 'authoritative-relational-read-failed',
+					fallbackStore: 'signal_kv',
+					fallbackUsed: false,
+					action: 'tctoken-omitted-fail-closed'
+				}),
+				expect.stringContaining('stale signal_kv fallback was rejected')
+			)
 		} finally {
 			close()
 		}
@@ -903,10 +996,11 @@ describe('useMultiDbSqliteAuthState', () => {
 		}
 	})
 
-	it('does not advertise relational tctoken authority in kill-switch mode', async () => {
+	it('does not advertise relational tctoken or prekey authority in kill-switch mode', async () => {
 		const { state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: false })
 		try {
 			expect(state.keys.trustedContactTokens).toBeUndefined()
+			expect(state.keys.prekeyUploads).toBeUndefined()
 		} finally {
 			close()
 		}
