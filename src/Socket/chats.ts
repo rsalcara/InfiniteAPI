@@ -179,6 +179,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	} = sock
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
 	/**
 	 * Local-only LID resolver (port of upstream PR #2614). Use on
 	 * profile-picture / similar paths where we OPPORTUNISTICALLY attach
@@ -1259,7 +1260,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				// path. If the LID mapping is unknown we send the IQ without the
 				// tctoken and let the server tell us (vs. doing a USync round trip
 				// that fingerprints us as non-WA-Web).
-				getLIDForPN: getKnownLIDForPN
+				getLIDForPN: getKnownLIDForPN,
+				getPNForLID
 			})
 			if (tctokenNode) {
 				pictureNode.content = [tctokenNode]
@@ -1371,7 +1373,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		const normalizedToJid = jidNormalizedUser(toJid)
 		const isUserJid = isAnyPnUser(normalizedToJid) || isAnyLidUser(normalizedToJid)
 		const tcTokenContent = isUserJid
-			? await buildTcTokenFromJid({ authState, jid: normalizedToJid, getLIDForPN })
+			? await buildTcTokenFromJid({ authState, jid: normalizedToJid, getLIDForPN, getPNForLID })
 			: undefined
 
 		return sendNode({

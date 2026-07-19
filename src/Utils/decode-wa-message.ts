@@ -277,9 +277,9 @@ export const SERVER_ERROR_CODES = {
 	 */
 	MissingTcToken: '463',
 	/**
-	 * 1:1 message missing privacy token (tctoken). Usually means the account
-	 * is restricted: WhatsApp blocks starting new chats but preserves existing
-	 * ones, since established chats already carry a tctoken.
+	 * Message rejected by the account/reachout restriction policy. The numeric
+	 * ACK alone does not prove a missing privacy token, and issuing our token is
+	 * not a peer-token fetch, so callers must not automatically retry on 463.
 	 * Port de upstream `0b159bfefc`.
 	 */
 	MessageAccountRestriction: '463',

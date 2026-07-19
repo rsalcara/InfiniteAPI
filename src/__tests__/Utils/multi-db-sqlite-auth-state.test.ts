@@ -625,8 +625,8 @@ describe('useMultiDbSqliteAuthState', () => {
 				.prepare(
 					'SELECT sent_tc_token_timestamp AS s, real_issue_timestamp AS r FROM wa_trusted_contacts_send WHERE jid = ?'
 				)
-				.get(jid) as { s: number; r: number }
-			expect(snt).toEqual({ s: 1783471194, r: 0 }) // realIssueTimestamp null → 0
+				.get(jid) as { s: number; r: number | null }
+			expect(snt).toEqual({ s: 1783471194, r: null })
 
 			// Read merges both tables back into the bundled KV value.
 			const got = await state.keys.get('tctoken', [jid])

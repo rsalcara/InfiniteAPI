@@ -153,24 +153,11 @@ export class SignalingBridge {
 		if (cached?.length) return cached
 
 		try {
-			const response = await (this.#sock as any).getPrivacyTokens([userJid])
-			const { getBinaryNodeChild, getAllBinaryNodeChildren } = this.#baileys
-			const tokensNode =
-				getBinaryNodeChild(response, 'tokens') ?? getBinaryNodeChild(getBinaryNodeChild(response, 'iq'), 'tokens')
-			const tokenNodes = tokensNode ? getAllBinaryNodeChildren(tokensNode).filter((c: any) => c.tag === 'token') : []
-
-			for (const tokenNode of tokenNodes) {
-				const tokenJid = String(tokenNode.attrs.jid ?? '')
-				if (this.#baileys.jidNormalizedUser(tokenJid) !== this.#baileys.jidNormalizedUser(userJid)) continue
-				const content = tokenNode.content
-				if (content instanceof Uint8Array && content.length > 0) {
-					const token = Buffer.from(content)
-					await this.#sock.authState.keys.set({
-						tctoken: { [userJid]: { token, timestamp: String(tokenNode.attrs.t ?? '') } }
-					})
-					return token
-				}
-			}
+			// This privacy IQ announces our token; its empty result is an ACK, not
+			// the peer token. A reciprocal peer token, if issued, arrives through the
+			// normal privacy_token notification and the keys.set hook above observes it.
+			const issue = (this.#sock as any).issuePrivacyTokens ?? (this.#sock as any).getPrivacyTokens
+			await issue?.([userJid])
 		} catch {}
 
 		return this.#getTcToken(userJid)

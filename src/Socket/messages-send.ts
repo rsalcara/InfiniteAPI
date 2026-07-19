@@ -59,10 +59,10 @@ import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prome
 import { appendParticipantFanoutNode } from '../Utils/relay-stanza'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import {
-	isTcTokenExpired,
-	resolveTcTokenJid,
+	resolveTcTokenAliases,
+	selectNewestUsableTcToken,
 	shouldSendNewTcToken,
-	storeTcTokensFromIqResult
+	updateTcTokenIssueState
 } from '../Utils/tc-token-utils'
 import {
 	areJidsSameUser,
@@ -202,6 +202,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
 
 	const userDevicesCache =
 		config.userDevicesCache ||
@@ -264,8 +265,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	// Prevent race conditions in Signal session encryption by user
 	const encryptionMutex = makeKeyedMutex()
 
-	// Tracks JIDs with an in-flight getPrivacyTokens IQ to avoid duplicate concurrent fetches
-	const tcTokenFetchingJids = new Set<string>()
+	// The official client single-flights GeneratePrivacyTokenJob per canonical JID.
+	const tcTokenIssuingJids = new Set<string>()
 
 	let mediaConn: Promise<MediaConnInfo> | undefined
 	/**
@@ -1147,19 +1148,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		useUserDevicesCache = useUserDevicesCache !== false
 		useCachedGroupMetadata = useCachedGroupMetadata !== false && !isStatus
 
-		// Stage 2 (PR #457) M5 guard fix: any tctoken fire-and-forget chain registered
+		// Stage 2 (PR #457) M5 guard fix: a tctoken issue chain registered
 		// *inside* the outer authState.keys.transaction(...) below would inherit the
 		// transaction's AsyncLocalStorage ctx via .then()/promise continuations. When
 		// the tx returns, ctx.sealed=true → set({ tctoken }) becomes a no-op, breaking
-		// Web rendering of interactive messages (buttons / CTA / list) which need a
-		// persisted tctoken. Carousel uses a BLOCKING fetch inside the tx (intentional)
-		// so its writes go into mutations and commit normally; only the deferred chains
-		// need to escape. We collect the kick-offs here and invoke them AFTER the
+		// durable sent-state mirror. We collect the kick-off here and invoke it AFTER the
 		// transaction completes — the .then() callbacks then register under the OUTER
 		// ALS ctx (no tx ctx → set() commits directly).
-		let deferredTcTokenFetchJid: string | null = null
-		let deferredTcTokenFetchStorageKey: string | null = null
 		let deferredTcTokenReissue: { jid: string; tcTokenJid: string; issueTimestamp: number } | null = null
+		let reservedTcTokenIssueJid: string | null = null
 
 		// Convert nativeFlowMessage with single_select to direct listMessage (legacy format)
 		// This is required because WhatsApp expects listMessage format with biz > list node
@@ -1995,112 +1992,37 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 			}
 
-			// tctoken lifecycle: fetch, validate expiry, proactive re-fetch if missing/expired
+			// Incoming tctoken lifecycle: read the newest valid PN/LID alias and attach it
+			// only when present. The privacy IQ issued after send announces OUR token; it
+			// does not fetch the contact's token. The latter arrives independently through
+			// a `privacy_token` notification.
 			// WA Web never attaches tctoken to peer (AppStateSync) messages — server
 			const isPeerMessage = additionalAttributes?.['category'] === 'peer'
 			const is1on1Send = !isGroup && !isRetryResend && !isStatus && !isNewsletter && !isPeerMessage
 
-			// Resolve destination to LID for tctoken storage — matches Signal session key pattern
-			const tcTokenJid = is1on1Send ? await resolveTcTokenJid(destinationJid, getLIDForPN) : destinationJid
-			const contactTcTokenData = is1on1Send ? await authState.keys.get('tctoken', [tcTokenJid]) : {}
-			const existingTokenEntry = contactTcTokenData[tcTokenJid]
-			let tcTokenBuffer = existingTokenEntry?.token
-
-			// Treat expired tokens the same as missing — re-fetch from server
-			if (tcTokenBuffer?.length && isTcTokenExpired(existingTokenEntry?.timestamp)) {
-				logTcToken('expired', { jid: destinationJid, timestamp: existingTokenEntry?.timestamp })
-				tcTokenBuffer = undefined
-				// Opportunistic cleanup: drop the expired token but preserve senderTimestamp so the
-				// fire-and-forget issuance dedupe (shouldSendNewTcToken) survives the cleanup.
-				const cleared =
-					existingTokenEntry?.senderTimestamp !== undefined
-						? { token: Buffer.alloc(0), senderTimestamp: existingTokenEntry.senderTimestamp }
-						: null
-				try {
-					await authState.keys.set({ tctoken: { [tcTokenJid]: cleared } })
-				} catch {
-					/* ignore cleanup errors */
-				}
-			}
-
-			// If tctoken is missing for a 1:1 send, fetch it.
-			//
-			// CAROUSEL DELIVERY NOTE (validated in staging 2026-05-20): the carousel
-			// DELIVERS and RENDERS on phone+Web *without* a tctoken. What the server
-			// actually requires for the carousel is CONSISTENT addressing (envelope `to`
-			// in LID matching the LID-canonicalized participants — see the envelope fix
-			// below). The tctoken below is best-effort: an empty IQ result on a fresh
-			// session is NON-FATAL, so we do not block delivery on it.
-			//
-			// We deliberately do NOT seed tctokens from history sync here (upstream PR
-			// #2339's storeTcTokensFromHistorySync / "E3"): a stale seeded token makes the
-			// server answer 479 (smax-invalid), which our ack handler marks as ERROR — and
-			// it adds NO rendering benefit, since the carousel renders tokenless. Only the
-			// full tctoken lifecycle (fetch+validate+reissue) would make seeding safe.
-			if (!tcTokenBuffer?.length && is1on1Send && !tcTokenFetchingJids.has(tcTokenJid)) {
-				tcTokenFetchingJids.add(tcTokenJid)
-				logTcToken('fetch', { jid: destinationJid })
-
-				if (isCarousel) {
-					// BLOCKING fetch for carousel — best-effort (see CAROUSEL DELIVERY NOTE above)
-					try {
-						const fetchResult = await getPrivacyTokens([destinationJid])
-
-						// Direct extraction from IQ result — bypass store/read key mismatch
-						const tokensNode = getBinaryNodeChild(fetchResult, 'tokens')
-						if (tokensNode) {
-							const tokenNodes = getBinaryNodeChildren(tokensNode, 'token')
-							for (const tokenNode of tokenNodes) {
-								if (tokenNode.attrs.type === 'trusted_contact' && tokenNode.content instanceof Uint8Array) {
-									tcTokenBuffer = Buffer.from(tokenNode.content)
-									logger.info(
-										{
-											jid: destinationJid,
-											tokenLen: tcTokenBuffer.length,
-											tokenJid: tokenNode.attrs.jid,
-											timestamp: tokenNode.attrs.t
-										},
-										'[CAROUSEL] tctoken extracted directly from IQ result'
-									)
-									break
-								}
-							}
-						}
-
-						if (!tcTokenBuffer?.length) {
-							// Debug: dump the IQ result structure
-							const childTags = Array.isArray(fetchResult.content)
-								? (fetchResult.content as BinaryNode[]).map(n => `${n.tag}(${JSON.stringify(n.attrs)})`)
-								: []
-							logger.warn(
-								{ jid: destinationJid, resultTag: fetchResult.tag, resultAttrs: fetchResult.attrs, childTags },
-								'[CAROUSEL] tctoken fetch completed but NO valid token in IQ result'
-							)
-						}
-
-						// Also store for future use. Audit SILENT-001 — antes era
-						// `.catch(() => {})` silencioso; agora loga em debug pra
-						// dar visibilidade em caso de SQLITE_BUSY/JSON parse
-						// errors. Caminho carrossel: falha não derruba o envio.
-						await storeTcTokensFromIqResult({
-							result: fetchResult,
-							fallbackJid: destinationJid,
-							keys: authState.keys,
-							getLIDForPN
-						}).catch(err => logger.debug({ destinationJid, err: err?.message }, '[CAROUSEL] tctoken store failed'))
-					} catch (err: any) {
-						logger.warn({ jid: destinationJid, err: err?.message }, '[CAROUSEL] Blocking tctoken fetch failed')
-					} finally {
-						tcTokenFetchingJids.delete(tcTokenJid)
-					}
-				} else {
-					// Fire-and-forget for non-carousel — DEFERRED to run after the outer
-					// transaction returns (see "Stage 2 (PR #457) M5 guard fix" note at top
-					// of relayMessage). Registering the .then() chain here would attach it
-					// to the tx's sealed ALS ctx and the persistence would silently no-op.
-					deferredTcTokenFetchJid = destinationJid
-					deferredTcTokenFetchStorageKey = tcTokenJid
-				}
+			const tcTokenAliases = is1on1Send
+				? await resolveTcTokenAliases(destinationJid, { getLIDForPN, getPNForLID })
+				: [destinationJid]
+			const tcTokenJid = tcTokenAliases[0]!
+			const contactTcTokenData = is1on1Send ? await authState.keys.get('tctoken', tcTokenAliases) : {}
+			const selectedToken = selectNewestUsableTcToken(
+				tcTokenAliases.map(alias => [alias, contactTcTokenData[alias]] as const)
+			)
+			const existingTokenEntry = tcTokenAliases
+				.map(alias => contactTcTokenData[alias])
+				.filter(entry => entry?.senderTimestamp !== undefined)
+				.sort((left, right) => Number(right!.senderTimestamp) - Number(left!.senderTimestamp))[0]
+			const tcTokenBuffer = selectedToken.entry?.token
+			if (!selectedToken.usable && selectedToken.reason !== 'missing-token') {
+				logger.debug(
+					{
+						jid: destinationJid,
+						aliases: tcTokenAliases,
+						reason: selectedToken.reason,
+						action: 'send-without-tctoken'
+					},
+					'privacy-token lookup found no usable incoming token'
+				)
 			}
 
 			if (tcTokenBuffer?.length) {
@@ -2268,9 +2190,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// ALS ctx → keys.set({ tctoken }) silently no-ops → senderTimestamp never
 			// persists → shouldSendNewTcToken stays true forever → infinite reissue loop
 			// and Web cannot render interactive messages (no persisted token).
-			if (is1on1Send && shouldSendNewTcToken(existingTokenEntry?.senderTimestamp)) {
+			if (
+				is1on1Send &&
+				!tcTokenIssuingJids.has(tcTokenJid) &&
+				(shouldSendNewTcToken(existingTokenEntry?.senderTimestamp) || existingTokenEntry?.realIssueTimestamp === 0)
+			) {
 				const issueTimestamp = unixTimestampSeconds()
 				logTcToken('reissue', { jid: destinationJid })
+				tcTokenIssuingJids.add(tcTokenJid)
+				reservedTcTokenIssueJid = tcTokenJid
 				deferredTcTokenReissue = { jid: destinationJid, tcTokenJid, issueTimestamp }
 			}
 
@@ -2333,83 +2261,23 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				await authState.keys.transaction(runSendBody, meId)
 			}
 		} catch (err) {
-			// cubic P1 (PR #457): tx may throw BEFORE we reach the deferred-invocation
-			// block below. `tcTokenFetchingJids.add(tcTokenJid)` happens INSIDE the tx
-			// (line ~1705) — without this cleanup, the jid stays in the set forever
-			// and future sends to that contact silently skip the fetch (the gating
-			// `!tcTokenFetchingJids.has(tcTokenJid)` always returns false). The
-			// .finally() on the deferred Promise can't help because the Promise is
-			// never created. Reissue path has no gating flag, so no leak there.
-			if (deferredTcTokenFetchStorageKey) {
-				tcTokenFetchingJids.delete(deferredTcTokenFetchStorageKey)
-			}
+			// The canonical JID is reserved inside the transaction. Release it if the
+			// transaction fails before the deferred issue job can start.
+			if (reservedTcTokenIssueJid) tcTokenIssuingJids.delete(reservedTcTokenIssueJid)
 
 			throw err
 		}
 
-		// Fire deferred tctoken fire-and-forget chains OUTSIDE the transaction so
-		// their .then() callbacks register under the caller's ALS ctx (no tx ctx →
-		// keys.set commits directly, bypassing the M5 sealed-ctx guard).
-		// See "Stage 2 (PR #457) M5 guard fix" note inside relayMessage for details.
-		if (deferredTcTokenFetchJid) {
-			const fetchJid = deferredTcTokenFetchJid
-			const storageKey = deferredTcTokenFetchStorageKey!
-			getPrivacyTokens([fetchJid])
-				.then(async fetchResult => {
-					await storeTcTokensFromIqResult({
-						result: fetchResult,
-						fallbackJid: fetchJid,
-						keys: authState.keys,
-						getLIDForPN
-					})
-				})
-				.catch(err => {
-					logger.debug({ jid: fetchJid, err: err?.message }, 'fire-and-forget tctoken fetch failed')
-				})
-				.finally(() => {
-					tcTokenFetchingJids.delete(storageKey)
-				})
-		}
-
 		if (deferredTcTokenReissue) {
 			const { jid: reissueJid, tcTokenJid: reissueStorageKey, issueTimestamp } = deferredTcTokenReissue
-			getPrivacyTokens([reissueJid], issueTimestamp)
-				.then(async result => {
-					// Store any tokens received in the IQ response.
-					// onNewJidStored not passed — pruning index lives in messages-recv (higher layer).
-					// CodeRabbit PR #457: use original JID (reissueJid) as fallback so dual-key
-					// PN+LID storage works (tc-token-utils.ts:209-214). Passing reissueStorageKey
-					// (resolved LID) would make normalizedFallback === storageJid → no dual key
-					// stored → lookups under PN miss. Matches fetch path + messages-recv pattern.
-					await storeTcTokensFromIqResult({
-						result,
-						fallbackJid: reissueJid,
-						keys: authState.keys,
-						getLIDForPN
-					})
-
-					// Persist senderTimestamp unconditionally — WA Web stores it in the chat table
-					// regardless of whether a token exists. Spread preserves token+timestamp if present.
-					// WABA Android: INSERT INTO wa_trusted_contacts_send (jid, sent_tc_token_timestamp, real_issue_timestamp)
-					// VALUES (?, ?, 0) — realIssueTimestamp=0 means issued but not yet confirmed by server
-					const currentData = await authState.keys.get('tctoken', [reissueStorageKey])
-					const currentEntry = currentData[reissueStorageKey]
-					await authState.keys.set({
-						tctoken: {
-							[reissueStorageKey]: {
-								...currentEntry,
-								token: currentEntry?.token ?? Buffer.alloc(0),
-								senderTimestamp: issueTimestamp,
-								realIssueTimestamp: 0
-							}
-						}
-					})
-
+			issuePrivacyTokens([reissueJid], issueTimestamp)
+				.then(() => {
 					logTcToken('reissue_ok', { jid: reissueJid })
 				})
 				.catch(err => {
 					logTcToken('reissue_fail', { jid: reissueJid, error: err?.message })
 				})
+				.finally(() => tcTokenIssuingJids.delete(reissueStorageKey))
 		}
 
 		return msgId
@@ -2490,8 +2358,40 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return ''
 	}
 
-	const getPrivacyTokens = async (jids: string[], timestamp?: number, timeoutMs?: number) => {
-		const t = (timestamp ?? unixTimestampSeconds()).toString()
+	const updatePrivacyTokenIssueState = async (
+		jids: string[],
+		issueTimestamp: number,
+		phase: 'scheduled' | 'confirmed'
+	): Promise<boolean> => {
+		const aliasGroups = await Promise.all(
+			jids.map(async jid => ({
+				requestedJid: jidNormalizedUser(jid),
+				aliases: await resolveTcTokenAliases(jid, { getLIDForPN, getPNForLID })
+			}))
+		)
+		return updateTcTokenIssueState({
+			keys: authState.keys,
+			aliasGroups,
+			issueTimestamp,
+			phase,
+			onStaleAck: ({ requestedJid, canonicalJid, newerTimestamp }) =>
+				logger.debug(
+					{
+						jid: requestedJid,
+						canonicalJid,
+						ackTimestamp: issueTimestamp,
+						newerTimestamp,
+						action: 'ignored-stale-ack'
+					},
+					'privacy-token issue confirmation did not overwrite a newer issue'
+				)
+		})
+	}
+
+	const issuePrivacyTokens = async (jids: string[], timestamp?: number, timeoutMs?: number) => {
+		const issueTimestamp = timestamp ?? unixTimestampSeconds()
+		const t = issueTimestamp.toString()
+		await updatePrivacyTokenIssueState(jids, issueTimestamp, 'scheduled')
 		const result = await query(
 			{
 				tag: 'iq',
@@ -2515,11 +2415,19 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 				]
 			},
-			timeoutMs
+			timeoutMs ?? 32_000
+		)
+		const confirmed = await updatePrivacyTokenIssueState(jids, issueTimestamp, 'confirmed')
+		logger.debug(
+			{ jids: jids.map(jidNormalizedUser), issueTimestamp, confirmed, responseType: result.attrs.type },
+			'privacy-token issuance acknowledged; no peer token is expected in the IQ result'
 		)
 
 		return result
 	}
+
+	/** @deprecated This IQ issues our token; use `issuePrivacyTokens`. */
+	const getPrivacyTokens = issuePrivacyTokens
 
 	const rawWaUploadToServer = getWAUploadToServer(config, refreshMediaConn)
 
@@ -2592,6 +2500,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		...sock,
 		userDevicesCache,
 		devicesMutex,
+		issuePrivacyTokens,
 		getPrivacyTokens,
 		assertSessions,
 		relayMessage,

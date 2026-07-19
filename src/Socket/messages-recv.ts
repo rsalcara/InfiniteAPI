@@ -64,7 +64,6 @@ import {
 	resolveContactPictureIdentity,
 	resolveLidToPn,
 	safeCacheSet,
-	SERVER_ERROR_CODES,
 	toNumber,
 	unixTimestampSeconds,
 	xmppPreKey,
@@ -74,6 +73,7 @@ import { logMessageReceived, logTcToken } from '../Utils/baileys-logger'
 import { applyDeviceListDelta } from '../Utils/device-list-delta'
 import { makeLockManager } from '../Utils/lock-manager'
 import { makeMutex } from '../Utils/make-mutex'
+import { getMessageAckErrorPolicy } from '../Utils/message-ack-error'
 import {
 	JidMapBackend,
 	MessageStoreBackend,
@@ -97,9 +97,9 @@ import { buildAckStanza } from '../Utils/stanza-ack'
 import {
 	isRegularUser,
 	isTcTokenExpired,
-	resolveTcTokenJid,
-	selectUsableTcToken,
-	storeTcTokensFromIqResult
+	parseTrustedContactTokenNotification,
+	resolveTcTokenAliases,
+	selectNewestUsableTcToken
 } from '../Utils/tc-token-utils'
 import {
 	handleUsernameDeleteNotification as handleUsernameDeleteNotificationImpl,
@@ -189,7 +189,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		uploadPreKeys,
 		sendPeerDataOperationMessage,
 		messageRetryManager,
-		getPrivacyTokens,
+		issuePrivacyTokens,
 		registerSocketEndHandler,
 		// Port de upstream `4dbbba2891` (PR #2442)
 		fetchAccountReachoutTimelock
@@ -399,15 +399,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const TC_TOKEN_INDEX_KEY = '__index'
 	const TC_TOKEN_PRUNE_TS_KEY = '__prune_ts'
 	const tcTokenKnownJids = new Set<string>()
-	const tcTokenRetriedMsgIds = new Set<string>()
-	const TC_TOKEN_RECOVERY_QUERY_TIMEOUT_MS = 30_000
-	/**
-	 * Dedupe per-JID in-flight 463 token-refetch IQs.
-	 * Without this, a burst of 463 acks for the same recipient (e.g. multi-recipient
-	 * carousel) would fire N parallel getPrivacyTokens IQs. Adapted from upstream #2517
-	 * (which dedupes issuePrivacyTokens; we dedupe our equivalent getPrivacyTokens path).
-	 */
-	const inFlight463Recoveries = new Map<string, Promise<boolean>>()
 
 	/**
 	 * Dedupe global de `fetchAccountReachoutTimelock` em fire-and-forget.
@@ -461,15 +452,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	// that tctokens are relational/authoritative.
 	const trustedContactTokens = authState.keys.trustedContactTokens
 	const prekeyUploads = authState.keys.prekeyUploads
-	const readTcTokenUsability = async (
-		jid: string
-	): Promise<{ usable: boolean; storageJid: string; reason?: 'missing-token' | 'empty-token' | 'expired-token' }> => {
-		const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
-		const tokenState = await authState.keys.get('tctoken', [storageJid, jid])
-		const aliases = storageJid === jid ? [tokenState[storageJid]] : [tokenState[storageJid], tokenState[jid]]
-		return { ...selectUsableTcToken(aliases), storageJid }
-	}
-
 	/** Debounced save of the tctoken JID index (5s) */
 	const scheduleTcTokenIndexSave = () => {
 		// The authoritative adapter enumerates relational rows plus signal_kv ids
@@ -2280,42 +2262,19 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				logger
 			})
 
-			// When a session is refreshed (identity change), re-issue tctoken fire-and-forget
-			// WABA Android: reissue stores senderTimestamp + realIssueTimestamp after IQ success
+			// When a session is refreshed (identity change), re-issue our token. The
+			// issue helper records 0 before the IQ and NULL only after its ACK.
 			if (result.action === 'session_refreshed') {
 				const normalizedJid = jidNormalizedUser(from)
-				resolveTcTokenJid(normalizedJid, getLIDForPN)
-					.then(async tcJid => {
-						const tcData = await authState.keys.get('tctoken', [tcJid])
-						const entry = tcData[tcJid]
-						if (entry?.token?.length && !isTcTokenExpired(entry.timestamp)) {
+				resolveTcTokenAliases(normalizedJid, { getLIDForPN, getPNForLID })
+					.then(async aliases => {
+						const tcData = await authState.keys.get('tctoken', aliases)
+						const selected = selectNewestUsableTcToken(aliases.map(alias => [alias, tcData[alias]] as const))
+						if (selected.usable) {
 							const senderTs = unixTimestampSeconds()
 							logTcToken('reissue', { jid: normalizedJid, reason: 'session_refreshed' })
-							getPrivacyTokens([normalizedJid], senderTs)
-								.then(async iqResult => {
-									await storeTcTokensFromIqResult({
-										result: iqResult,
-										fallbackJid: normalizedJid,
-										keys: authState.keys,
-										getLIDForPN,
-										onNewJidStored: storedJid => {
-											tcTokenKnownJids.add(storedJid)
-											scheduleTcTokenIndexSave()
-										}
-									})
-									// Persist senderTimestamp + realIssueTimestamp after IQ success
-									const currentData = await authState.keys.get('tctoken', [tcJid])
-									const currentEntry = currentData[tcJid]
-									await authState.keys.set({
-										tctoken: {
-											[tcJid]: {
-												...currentEntry,
-												token: currentEntry?.token ?? Buffer.alloc(0),
-												senderTimestamp: senderTs,
-												realIssueTimestamp: 0
-											}
-										}
-									})
+							issuePrivacyTokens([normalizedJid], senderTs)
+								.then(() => {
 									logTcToken('reissue_ok', { jid: normalizedJid, reason: 'session_refreshed' })
 								})
 								.catch(err => {
@@ -2873,62 +2832,79 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handlePrivacyTokenNotification = async (node: BinaryNode) => {
-		const tokensNode = getBinaryNodeChild(node, 'tokens')
-		const from = jidNormalizedUser(node.attrs.from)
+		const parsedTokens = parseTrustedContactTokenNotification(node)
+		if (!parsedTokens.length) return
+		const from = parsedTokens[0]!.from
 
-		if (!tokensNode) return
-
-		// Defensive parity with the IQ-result path (storeTcTokensFromIqResult): never persist a
-		// tctoken for PSA/bot/MetaAI contacts — the same isRegularUser gate, shared across both
-		// token-ingestion paths so notifications can't smuggle one in.
+		// Never persist a tctoken for PSA/bot/MetaAI contacts. Notifications are
+		// the authoritative peer-token ingestion path.
 		if (!isRegularUser(from)) return
 
-		const tokenNodes = getBinaryNodeChildren(tokensNode, 'token')
+		for (const { senderLid, timestamp, timestampSource, childTimestamp, outerTimestamp, token } of parsedTokens) {
+			const aliases = await resolveTcTokenAliases(senderLid || from, { getLIDForPN, getPNForLID })
+			const storageJid = aliases[0]!
 
-		for (const tokenNode of tokenNodes) {
-			const { attrs, content } = tokenNode
-			const type = attrs.type
-			const timestamp = attrs.t
-
-			if (type === 'trusted_contact' && content instanceof Uint8Array) {
-				// Resolve to LID for consistent storage key
-				const senderLid = attrs.sender_lid ? jidNormalizedUser(attrs.sender_lid) : undefined
-				const storageJid = senderLid || (await resolveTcTokenJid(from, getLIDForPN))
-
-				// Timestamp monotonicity guard — only store if incoming >= existing
-				const existingData = await authState.keys.get('tctoken', [storageJid])
-				const existing = existingData[storageJid]
-				const existingTs = existing?.timestamp ? Number(existing.timestamp) : 0
-				const incomingTs = timestamp ? Number(timestamp) : 0
-				if (existingTs > 0 && incomingTs > 0 && existingTs > incomingTs) {
-					continue
-				}
-
-				// Don't store timestamp-less tokens — they expire immediately and would
-				// corrupt a valid existing entry if one is already present
-				if (!incomingTs) {
-					continue
-				}
-
-				await authState.keys.set({
-					tctoken: {
-						[storageJid]: {
-							...existing,
-							token: Buffer.from(content),
-							timestamp,
-							// WABA Android: resets real_issue_timestamp when a new incoming token arrives
-							// (UPDATE wa_trusted_contacts_send SET real_issue_timestamp=null)
-							realIssueTimestamp: null
-						}
-					}
-				})
-
-				logTcToken('stored', { jid: storageJid, from })
-
-				// Track JID for cross-session pruning
-				tcTokenKnownJids.add(storageJid)
-				scheduleTcTokenIndexSave()
+			// Timestamp monotonicity applies across PN+LID, matching the official
+			// ORDER BY incoming_tc_token_timestamp DESC LIMIT 1 read.
+			const existingData = await authState.keys.get('tctoken', aliases)
+			const existing = existingData[storageJid]
+			const existingTs = Math.max(...aliases.map(alias => Number(existingData[alias]?.timestamp ?? 0)))
+			const incomingTs = timestamp ? Number(timestamp) : 0
+			if (existingTs > 0 && incomingTs > 0 && existingTs > incomingTs) {
+				logger.debug(
+					{ from, senderLid, storageJid, incomingTs, existingTs, action: 'ignored-stale-token' },
+					'privacy-token notification did not overwrite a newer PN/LID token'
+				)
+				continue
 			}
+
+			// Don't store timestamp-less tokens — they expire immediately and would
+			// corrupt a valid existing entry if one is already present
+			if (!incomingTs) {
+				logger.warn(
+					{ from, senderLid, storageJid, childTimestamp, outerTimestamp, action: 'ignored-missing-timestamp' },
+					'privacy-token notification omitted both child and outer timestamps'
+				)
+				continue
+			}
+
+			const bucket: Record<string, NonNullable<typeof existing> | null> = {
+				[storageJid]: {
+					...existing,
+					token,
+					timestamp
+				}
+			}
+			// Official storage converges on LID. Remove only the incoming half of
+			// a legacy PN alias while preserving any sent-state fields it carries.
+			for (const alias of aliases.slice(1)) {
+				const aliasEntry = existingData[alias]
+				if (!aliasEntry?.token?.length) continue
+				bucket[alias] =
+					aliasEntry.senderTimestamp !== undefined
+						? {
+								token: Buffer.alloc(0),
+								senderTimestamp: aliasEntry.senderTimestamp,
+								realIssueTimestamp: aliasEntry.realIssueTimestamp
+							}
+						: null
+			}
+
+			await authState.keys.set({
+				tctoken: bucket
+			})
+
+			logTcToken('stored', {
+				jid: storageJid,
+				from,
+				senderLid,
+				timestampSource,
+				tokenLength: token.length
+			})
+
+			// Track JID for cross-session pruning
+			tcTokenKnownJids.add(storageJid)
+			scheduleTcTokenIndexSave()
 		}
 	}
 
@@ -4225,7 +4201,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const handleBadAck = async ({ attrs }: BinaryNode) => {
 		// Error acks can come from an alternate/device/own-domain JID. The retry
 		// cache records the actual destination used by relayMessage, so prefer it
-		// over attrs.from when deciding whose privacy token must be fetched.
+		// over attrs.from when correlating the failed outbound stanza.
 		const recentMessage = attrs.id ? messageRetryManager?.getRecentMessage(attrs.from ?? '', attrs.id) : undefined
 		const outboundJid = jidNormalizedUser(recentMessage?.to ?? attrs.from ?? '')
 		const key: WAMessageKey = { remoteJid: outboundJid, fromMe: true, id: attrs.id }
@@ -4248,16 +4224,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// error in acknowledgement,
 		// device could not display the message
 		if (attrs.error) {
-			// O servidor reusa o código 463 para dois cenários:
-			//   (a) MissingTcToken — TC token expirado/ausente pra esse contato (caminho original do fork)
-			//   (b) SenderReachoutTimelocked — conta restrita (port de upstream `4dbbba2891`, PR #2442)
-			// O attrs.error sozinho ('463') não distingue, então:
-			//   - Mantemos o caminho TC token (dedupe + retry single-shot) que já existia
-			//   - Emitimos fetchAccountReachoutTimelock em paralelo (fire-and-forget) — se o
-			//     cenário (b) for o real, o evento `connection.update` carrega o ReachoutTimelockState
-			//   - Marcamos messageStubParameters com ACCOUNT_RESTRICTED_TEXT para o consumer
-			//     conseguir distinguir essa classe de falha
-			const is463 = attrs.error === SERVER_ERROR_CODES.MissingTcToken
+			const errorPolicy = getMessageAckErrorPolicy(attrs.error)
+			// 463 is an account/reachout restriction. A privacy `type=set` IQ only
+			// announces our token and cannot fetch the peer token, so retrying the
+			// message after that IQ is both ineffective and capable of worsening the
+			// restriction. Match the official fail-closed behavior and refresh the
+			// reachout state solely for actionable diagnostics.
+			const is463 = errorPolicy.kind === 'message-account-restriction'
 			if (is463) {
 				const msgId = attrs.id
 				const jid = outboundJid
@@ -4278,175 +4251,35 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						})
 				}
 
-				// WABA Android: error 463 triggers getPrivacyTokens() fire-and-forget
-				// to ensure token is available for the retry below.
-				// Per-JID dedupe (adapted from upstream #2517) — burst of 463 acks for the
-				// same recipient must not fan out N parallel IQs.
-				let recoveryPromise = inFlight463Recoveries.get(jid)
-				if (!recoveryPromise) {
-					recoveryPromise = (async () => {
-						const result = await getPrivacyTokens([jid], undefined, TC_TOKEN_RECOVERY_QUERY_TIMEOUT_MS)
-						const stored = await storeTcTokensFromIqResult({
-							result,
-							fallbackJid: jid,
-							keys: authState.keys,
-							getLIDForPN,
-							onNewJidStored: storedJid => {
-								tcTokenKnownJids.add(storedJid)
-								scheduleTcTokenIndexSave()
-							}
-						})
-						const tokenUsability = await readTcTokenUsability(jid)
-						const storedForRecipient = stored.storedJids.some(
-							storedJid => storedJid === jid || storedJid === tokenUsability.storageJid
-						)
-						if (storedForRecipient && tokenUsability.usable) {
-							logTcToken('fetched', { jid, reason: 'error_463' })
-						} else {
-							logger.warn(
-								{
-									jid,
-									reason: !storedForRecipient
-										? stored.validTokenNodes === 0
-											? 'privacy-iq-returned-no-valid-token'
-											: 'privacy-iq-token-for-different-jid'
-										: tokenUsability.reason,
-									validTokenNodes: stored.validTokenNodes,
-									storedJids: stored.storedJids,
-									retryAction: 'suppressed'
-								},
-								'463 recovery: no valid token was persisted for the original recipient; refusing tokenless retry'
-							)
-						}
-
-						return storedForRecipient && tokenUsability.usable
-					})()
-					inFlight463Recoveries.set(jid, recoveryPromise)
-					recoveryPromise
-						.catch(err => {
-							logger.warn(
-								{ jid, err: err?.message, reason: 'privacy-token-fetch-or-store-failed', retryAction: 'suppressed' },
-								'463 recovery: tctoken fetch/store failed; refusing tokenless retry'
-							)
-						})
-						.finally(() => inFlight463Recoveries.delete(jid))
-				}
-
-				// Single-retry: wait 1.5s for the server's tctoken notification to arrive,
-				// then resend. A Set prevents infinite retry loops.
-				// Composite key (jid:msgId) ensures retries are isolated per destination.
-				const retryKey = `${jid}:${msgId}`
-				if (msgId && jid && !tcTokenRetriedMsgIds.has(retryKey)) {
-					tcTokenRetriedMsgIds.add(retryKey)
-					// Each entry auto-expires after 60s — naturally bounded under normal use
-					setTimeout(() => tcTokenRetriedMsgIds.delete(retryKey), 60_000)
-					void (async () => {
-						try {
-							await delay(1500)
-							let tokenUsability = await readTcTokenUsability(jid)
-							let fetchedForRecipient: boolean | undefined
-							if (!tokenUsability.usable) {
-								// The notification path gets the first 1.5s without being blocked by
-								// the IQ. If it did not provide a token, wait for the explicitly
-								// bounded fetch before consuming the message's single retry.
-								fetchedForRecipient = await recoveryPromise.catch(() => false)
-								tokenUsability = await readTcTokenUsability(jid)
-							}
-
-							if (!tokenUsability.usable) {
-								logger.warn(
-									{
-										jid,
-										msgId,
-										reason: tokenUsability.reason,
-										fetchStoredRecipient: fetchedForRecipient,
-										retryAction: 'suppressed'
-									},
-									'463 recovery: retry suppressed because the recipient still has no valid tctoken'
-								)
-								ev.emit('messages.update', [
-									{
-										key,
-										update: {
-											status: WAMessageStatus.ERROR,
-											messageStubParameters: ['463', ACCOUNT_RESTRICTED_TEXT]
-										}
-									}
-								])
-								return
-							}
-
-							const msg =
-								(await getMessage(key)) ??
-								// Fallback: ack can arrive <30ms after send, before store persists
-								recentMessage?.message
-							if (msg) {
-								await relayMessage(jid, msg, { messageId: msgId, useUserDevicesCache: true })
-								logTcToken('retry_463_ok', { jid, msgId })
-							} else {
-								logger.warn({ jid, msgId }, '463 retry: message not found in store')
-								ev.emit('messages.update', [
-									{
-										key,
-										update: { status: WAMessageStatus.ERROR, messageStubParameters: ['463', ACCOUNT_RESTRICTED_TEXT] }
-									}
-								])
-							}
-						} catch (err: any) {
-							logger.warn({ jid, msgId, err: err?.message }, '463 retry failed')
-							ev.emit('messages.update', [
-								{
-									key,
-									update: { status: WAMessageStatus.ERROR, messageStubParameters: ['463', ACCOUNT_RESTRICTED_TEXT] }
-								}
-							])
-						}
-					})()
-
-					return
-				}
-			} else if (attrs.error === SERVER_ERROR_CODES.SmaxInvalid) {
+				logger.warn(
+					{
+						jid,
+						msgId,
+						reason: 'message-account-restriction',
+						tokenAction: 'none-issuance-iq-is-not-a-fetch',
+						retryAction: 'suppressed'
+					},
+					'463 message rejected by account/reachout policy; automatic retry is disabled'
+				)
+			} else if (errorPolicy.kind === 'smax-invalid') {
 				const jid479 = outboundJid
 				logTcToken('error_479', { jid: jid479, msgId: attrs.id })
-				// WABA Android: error 479 (SmaxInvalid) also triggers token re-fetch
-				getPrivacyTokens([jid479], undefined, TC_TOKEN_RECOVERY_QUERY_TIMEOUT_MS)
-					.then(async result => {
-						const stored = await storeTcTokensFromIqResult({
-							result,
-							fallbackJid: jid479,
-							keys: authState.keys,
-							getLIDForPN,
-							onNewJidStored: storedJid => {
-								tcTokenKnownJids.add(storedJid)
-								scheduleTcTokenIndexSave()
-							}
-						})
-						const tokenUsability = await readTcTokenUsability(jid479)
-						const storedForRecipient = stored.storedJids.some(
-							storedJid => storedJid === jid479 || storedJid === tokenUsability.storageJid
-						)
-						if (storedForRecipient && tokenUsability.usable) {
-							logTcToken('fetched', { jid: jid479, reason: 'error_479' })
-						} else {
-							logger.warn(
-								{
-									jid: jid479,
-									reason: !storedForRecipient
-										? stored.validTokenNodes === 0
-											? 'privacy-iq-returned-no-valid-token'
-											: 'privacy-iq-token-for-different-jid'
-										: tokenUsability.reason,
-									storedJids: stored.storedJids
-								},
-								'479 recovery: no valid token was persisted for the original recipient'
-							)
-						}
-					})
-					.catch(err => {
-						// Audit SILENT-002 — antes silenciado; agora `debug` pra
-						// dar visibilidade em falhas sistemáticas de 479 recovery.
-						logger.debug({ jid: jid479, err: err?.message }, '479 recovery: tctoken fetch/store failed')
-					})
+				const decoded = jidDecode(jid479)
+				const messageShape = recentMessage?.message ? Object.keys(recentMessage.message).sort() : []
+				logger.error(
+					{
+						jid: jid479,
+						msgId: attrs.id,
+						ackFrom: attrs.from,
+						domain: decoded?.server,
+						device: decoded?.device,
+						messageShape,
+						reason: 'server-smax-invalid',
+						tokenAction: 'none-official-client-does-not-refetch-on-479',
+						retryAction: 'suppressed'
+					},
+					'479 smax-invalid: inspect the correlated outbound stanza shape and addressing'
+				)
 			} else {
 				logger.warn({ attrs }, 'received error in ack')
 			}
@@ -4725,8 +4558,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// rodar, persistindo índice vazio (review Codex P2 #476).
 		// O conteúdo de `tcTokenKnownJids` é solto naturalmente pelo GC
 		// quando o socket for descartado.
-		tcTokenRetriedMsgIds.clear()
-		inFlight463Recoveries.clear()
 		retryRequestActiveJids.clear()
 		identityInFlightRefreshes.clear()
 		// `tcTokenIndexSaveTimer` é cancelado pelo handler de connection.update
