@@ -56,6 +56,7 @@ import {
 	StickersBackend
 } from '../Utils/multi-db-sqlite'
 import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prometheus-metrics'
+import { appendParticipantFanoutNode } from '../Utils/relay-stanza'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import {
 	isTcTokenExpired,
@@ -1247,14 +1248,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				additionalAttributes = { ...additionalAttributes, device_fanout: 'false' }
 			}
 
-			const participantDecoded = jidDecode(participant.jid)
-			if (!participantDecoded) throw new Boom('Invalid participant JID')
-			const { user, device } = participantDecoded
-			devices.push({
-				user,
-				device,
-				jid: participant.jid
-			})
+			// `participant` means a direct retry resend. The dedicated block below
+			// encrypts exactly one top-level <enc> for this device. Do not also add
+			// it to `devices`: doing so builds a second ciphertext under
+			// <participants>, producing the invalid `enc + participants` stanza
+			// shape rejected by the server with SmaxInvalid (479).
+			if (!jidDecode(participant.jid)) throw new Boom('Invalid participant JID')
 		}
 
 		// WORKAROUND (Stage 2 #2572 — round 3, narrowed in round 4 per cubic P2):
@@ -1696,21 +1695,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				})
 			}
 
-			if (participants.length) {
-				if (additionalAttributes?.['category'] === 'peer') {
-					const peerNode = participants[0]?.content?.[0] as BinaryNode
-					if (peerNode) {
-						binaryNodeContent.push(peerNode) // push only enc
-					}
-				} else {
-					binaryNodeContent.push({
-						tag: 'participants',
-						attrs: {},
-
-						content: participants
-					})
-				}
-			}
+			appendParticipantFanoutNode(
+				binaryNodeContent,
+				participants,
+				isRetryResend,
+				additionalAttributes?.['category'] === 'peer'
+			)
 
 			const stanza: BinaryNode = {
 				tag: 'message',
