@@ -4,8 +4,10 @@ import { getErrorCodeFromStreamError, SERVER_ERROR_CODES } from '../../Utils'
 import {
 	buildTcTokenFromJid,
 	buildTcTokenNode,
+	getOrCreateTcTokenIssueFlight,
 	isTcTokenExpired,
 	parseTrustedContactTokenNotification,
+	resolveIncomingTcTokenAliases,
 	resolveTcTokenAliases,
 	selectNewestUsableTcToken,
 	selectUsableTcToken,
@@ -167,6 +169,7 @@ describe('privacy_token notification parsing', () => {
 				token
 			}
 		])
+		expect(parsed[0]).toHaveProperty('childTimestamp', undefined)
 	})
 
 	it('lets child timestamp override the outer fallback', () => {
@@ -198,6 +201,27 @@ describe('PN/LID token selection parity', () => {
 				getPNForLID: async value => (value === lid ? pn : null)
 			})
 		).resolves.toEqual([lid, pn])
+	})
+
+	it('keeps the notification PN even before reverse LID mapping exists', async () => {
+		await expect(
+			resolveIncomingTcTokenAliases(pn, lid, {
+				getLIDForPN: async () => null,
+				getPNForLID: async () => null
+			})
+		).resolves.toEqual([lid, pn])
+	})
+
+	it('treats hosted.lid as a LID and recovers its hosted PN alias', async () => {
+		const hostedLid = '1234567890@hosted.lid'
+		const hostedPn = '5511999999999@hosted'
+
+		await expect(
+			resolveTcTokenAliases(hostedLid, {
+				getLIDForPN: async () => null,
+				getPNForLID: async value => (value === hostedLid ? hostedPn : null)
+			})
+		).resolves.toEqual([hostedLid, hostedPn])
 	})
 
 	it('selects the newest valid token across both aliases', () => {
@@ -286,6 +310,29 @@ describe('privacy-token issue state machine', () => {
 		).resolves.toBe(false)
 		expect(state[lid]).toEqual({ token: Buffer.alloc(0), senderTimestamp: 200, realIssueTimestamp: 0 })
 		expect(onStaleAck).toHaveBeenCalledWith({ requestedJid: pn, canonicalJid: lid, newerTimestamp: 200 })
+	})
+})
+
+describe('privacy-token issue single-flight', () => {
+	it('shares one flight per canonical contact and releases it on completion', async () => {
+		const flights = new Map<string, Promise<string>>()
+		let complete!: (value: string) => void
+		const create = jest.fn(
+			() =>
+				new Promise<string>(resolve => {
+					complete = resolve
+				})
+		)
+
+		const first = getOrCreateTcTokenIssueFlight(flights, ['123@lid'], create)
+		const second = getOrCreateTcTokenIssueFlight(flights, ['123@lid'], create)
+
+		expect(second).toBe(first)
+		expect(create).toHaveBeenCalledTimes(1)
+		complete('ack')
+		await expect(first).resolves.toBe('ack')
+		await Promise.resolve()
+		expect(flights.size).toBe(0)
 	})
 })
 

@@ -98,6 +98,7 @@ import {
 	isRegularUser,
 	isTcTokenExpired,
 	parseTrustedContactTokenNotification,
+	resolveIncomingTcTokenAliases,
 	resolveTcTokenAliases,
 	selectNewestUsableTcToken
 } from '../Utils/tc-token-utils'
@@ -2841,7 +2842,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		if (!isRegularUser(from)) return
 
 		for (const { senderLid, timestamp, timestampSource, childTimestamp, outerTimestamp, token } of parsedTokens) {
-			const aliases = await resolveTcTokenAliases(senderLid || from, { getLIDForPN, getPNForLID })
+			const aliases = await resolveIncomingTcTokenAliases(from, senderLid, { getLIDForPN, getPNForLID })
 			const storageJid = aliases[0]!
 
 			// Timestamp monotonicity applies across PN+LID, matching the official

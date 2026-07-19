@@ -59,9 +59,11 @@ import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prome
 import { appendParticipantFanoutNode } from '../Utils/relay-stanza'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import {
+	getOrCreateTcTokenIssueFlight,
 	resolveTcTokenAliases,
 	selectNewestUsableTcToken,
 	shouldSendNewTcToken,
+	type TcTokenIssueAliasGroup,
 	updateTcTokenIssueState
 } from '../Utils/tc-token-utils'
 import {
@@ -266,7 +268,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const encryptionMutex = makeKeyedMutex()
 
 	// The official client single-flights GeneratePrivacyTokenJob per canonical JID.
-	const tcTokenIssuingJids = new Set<string>()
+	// Keep the guard at the public issuance boundary so message send, session
+	// refresh, VoIP, and external callers all share it.
+	const tcTokenIssueFlights = new Map<string, Promise<BinaryNode>>()
+	const tcTokenIssueMutex = makeMutex()
 
 	let mediaConn: Promise<MediaConnInfo> | undefined
 	/**
@@ -1155,8 +1160,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		// durable sent-state mirror. We collect the kick-off here and invoke it AFTER the
 		// transaction completes — the .then() callbacks then register under the OUTER
 		// ALS ctx (no tx ctx → set() commits directly).
-		let deferredTcTokenReissue: { jid: string; tcTokenJid: string; issueTimestamp: number } | null = null
-		let reservedTcTokenIssueJid: string | null = null
+		let deferredTcTokenReissue: { jid: string; issueTimestamp: number } | null = null
 
 		// Convert nativeFlowMessage with single_select to direct listMessage (legacy format)
 		// This is required because WhatsApp expects listMessage format with biz > list node
@@ -2003,7 +2007,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const tcTokenAliases = is1on1Send
 				? await resolveTcTokenAliases(destinationJid, { getLIDForPN, getPNForLID })
 				: [destinationJid]
-			const tcTokenJid = tcTokenAliases[0]!
 			const contactTcTokenData = is1on1Send ? await authState.keys.get('tctoken', tcTokenAliases) : {}
 			const selectedToken = selectNewestUsableTcToken(
 				tcTokenAliases.map(alias => [alias, contactTcTokenData[alias]] as const)
@@ -2192,14 +2195,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// and Web cannot render interactive messages (no persisted token).
 			if (
 				is1on1Send &&
-				!tcTokenIssuingJids.has(tcTokenJid) &&
 				(shouldSendNewTcToken(existingTokenEntry?.senderTimestamp) || existingTokenEntry?.realIssueTimestamp === 0)
 			) {
 				const issueTimestamp = unixTimestampSeconds()
 				logTcToken('reissue', { jid: destinationJid })
-				tcTokenIssuingJids.add(tcTokenJid)
-				reservedTcTokenIssueJid = tcTokenJid
-				deferredTcTokenReissue = { jid: destinationJid, tcTokenJid, issueTimestamp }
+				deferredTcTokenReissue = { jid: destinationJid, issueTimestamp }
 			}
 
 			// Log with [BAILEYS] prefix
@@ -2244,32 +2244,24 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 		}
 
-		try {
-			if (_isInteractiveSendBypass) {
-				logger.info(
-					{
-						msgId,
-						kind: isCarouselMessage(message) ? 'carousel' : getButtonType(message),
-						isGroup,
-						isStatus,
-						isNewsletter
-					},
-					'[relayMessage] WORKAROUND ACTIVE: bypassing outer transaction(meId) for interactive 1-on-1 send'
-				)
-				await runSendBody()
-			} else {
-				await authState.keys.transaction(runSendBody, meId)
-			}
-		} catch (err) {
-			// The canonical JID is reserved inside the transaction. Release it if the
-			// transaction fails before the deferred issue job can start.
-			if (reservedTcTokenIssueJid) tcTokenIssuingJids.delete(reservedTcTokenIssueJid)
-
-			throw err
+		if (_isInteractiveSendBypass) {
+			logger.info(
+				{
+					msgId,
+					kind: isCarouselMessage(message) ? 'carousel' : getButtonType(message),
+					isGroup,
+					isStatus,
+					isNewsletter
+				},
+				'[relayMessage] WORKAROUND ACTIVE: bypassing outer transaction(meId) for interactive 1-on-1 send'
+			)
+			await runSendBody()
+		} else {
+			await authState.keys.transaction(runSendBody, meId)
 		}
 
 		if (deferredTcTokenReissue) {
-			const { jid: reissueJid, tcTokenJid: reissueStorageKey, issueTimestamp } = deferredTcTokenReissue
+			const { jid: reissueJid, issueTimestamp } = deferredTcTokenReissue
 			issuePrivacyTokens([reissueJid], issueTimestamp)
 				.then(() => {
 					logTcToken('reissue_ok', { jid: reissueJid })
@@ -2277,7 +2269,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				.catch(err => {
 					logTcToken('reissue_fail', { jid: reissueJid, error: err?.message })
 				})
-				.finally(() => tcTokenIssuingJids.delete(reissueStorageKey))
 		}
 
 		return msgId
@@ -2359,16 +2350,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	const updatePrivacyTokenIssueState = async (
-		jids: string[],
+		aliasGroups: TcTokenIssueAliasGroup[],
 		issueTimestamp: number,
 		phase: 'scheduled' | 'confirmed'
 	): Promise<boolean> => {
-		const aliasGroups = await Promise.all(
-			jids.map(async jid => ({
-				requestedJid: jidNormalizedUser(jid),
-				aliases: await resolveTcTokenAliases(jid, { getLIDForPN, getPNForLID })
-			}))
-		)
 		return updateTcTokenIssueState({
 			keys: authState.keys,
 			aliasGroups,
@@ -2388,10 +2373,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		})
 	}
 
-	const issuePrivacyTokens = async (jids: string[], timestamp?: number, timeoutMs?: number) => {
-		const issueTimestamp = timestamp ?? unixTimestampSeconds()
+	const runPrivacyTokenIssue = async (
+		aliasGroups: TcTokenIssueAliasGroup[],
+		issueTimestamp: number,
+		timeoutMs?: number
+	): Promise<BinaryNode> => {
 		const t = issueTimestamp.toString()
-		await updatePrivacyTokenIssueState(jids, issueTimestamp, 'scheduled')
+		await updatePrivacyTokenIssueState(aliasGroups, issueTimestamp, 'scheduled')
 		const result = await query(
 			{
 				tag: 'iq',
@@ -2404,10 +2392,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					{
 						tag: 'tokens',
 						attrs: {},
-						content: jids.map(jid => ({
+						content: aliasGroups.map(({ requestedJid }) => ({
 							tag: 'token',
 							attrs: {
-								jid: jidNormalizedUser(jid),
+								jid: requestedJid,
 								t,
 								type: 'trusted_contact'
 							}
@@ -2417,11 +2405,37 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			},
 			timeoutMs ?? 32_000
 		)
-		const confirmed = await updatePrivacyTokenIssueState(jids, issueTimestamp, 'confirmed')
+		const confirmed = await updatePrivacyTokenIssueState(aliasGroups, issueTimestamp, 'confirmed')
 		logger.debug(
-			{ jids: jids.map(jidNormalizedUser), issueTimestamp, confirmed, responseType: result.attrs.type },
+			{
+				jids: aliasGroups.map(group => group.requestedJid),
+				issueTimestamp,
+				confirmed,
+				responseType: result.attrs.type
+			},
 			'privacy-token issuance acknowledged; no peer token is expected in the IQ result'
 		)
+
+		return result
+	}
+
+	const issuePrivacyTokens = async (jids: string[], timestamp?: number, timeoutMs?: number): Promise<BinaryNode> => {
+		const normalizedJids = [...new Set(jids.map(jidNormalizedUser))]
+		const aliasGroups = await Promise.all(
+			normalizedJids.map(async requestedJid => ({
+				requestedJid,
+				aliases: await resolveTcTokenAliases(requestedJid, { getLIDForPN, getPNForLID })
+			}))
+		)
+		let result!: Promise<BinaryNode>
+
+		await tcTokenIssueMutex.mutex(async () => {
+			const groupsByCanonical = new Map(aliasGroups.map(group => [group.aliases[0]!, group]))
+			result = getOrCreateTcTokenIssueFlight(tcTokenIssueFlights, [...groupsByCanonical.keys()], uncoveredKeys => {
+				const uncovered = uncoveredKeys.map(key => groupsByCanonical.get(key)!)
+				return runPrivacyTokenIssue(uncovered, timestamp ?? unixTimestampSeconds(), timeoutMs)
+			})
+		})
 
 		return result
 	}

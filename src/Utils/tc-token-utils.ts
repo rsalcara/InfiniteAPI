@@ -3,10 +3,10 @@ import type { BinaryNode } from '../WABinary'
 import {
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
+	isAnyLidUser,
 	isHostedLidUser,
 	isHostedPnUser,
 	isJidMetaAI,
-	isLidUser,
 	isPnUser,
 	jidNormalizedUser
 } from '../WABinary'
@@ -28,7 +28,7 @@ export function isRegularUser(jid: string | undefined): boolean {
 	if (user === '0') return false // PSA
 	if (BOT_PHONE_REGEX.test(user)) return false // Bot by phone pattern
 	if (isJidMetaAI(jid)) return false // MetaAI (@bot server)
-	return !!(isPnUser(jid) || isLidUser(jid) || isHostedPnUser(jid) || isHostedLidUser(jid) || jid.endsWith('@c.us'))
+	return !!(isPnUser(jid) || isAnyLidUser(jid) || isHostedPnUser(jid) || isHostedLidUser(jid) || jid.endsWith('@c.us'))
 }
 
 /** 7 days in seconds — matches WA Web AB prop tctoken_duration */
@@ -104,11 +104,22 @@ export type TcTokenAliasResolvers = {
  */
 export async function resolveTcTokenAliases(jid: string, resolvers: TcTokenAliasResolvers): Promise<string[]> {
 	const normalized = jidNormalizedUser(jid)
-	const lid = isLidUser(normalized) ? normalized : await resolvers.getLIDForPN(normalized)
+	const lid = isAnyLidUser(normalized) ? normalized : await resolvers.getLIDForPN(normalized)
 	const canonical = lid ? jidNormalizedUser(lid) : normalized
-	const pn = isLidUser(canonical) ? await resolvers.getPNForLID?.(canonical) : normalized
+	const pn = isAnyLidUser(canonical) ? await resolvers.getPNForLID?.(canonical) : normalized
 
 	return [...new Set([canonical, pn ? jidNormalizedUser(pn) : undefined].filter((value): value is string => !!value))]
+}
+
+/** Includes the notification's authoritative PN even before the LID map is populated. */
+export async function resolveIncomingTcTokenAliases(
+	from: string,
+	senderLid: string | undefined,
+	resolvers: TcTokenAliasResolvers
+): Promise<string[]> {
+	const resolved = await resolveTcTokenAliases(senderLid || from, resolvers)
+
+	return [...new Set([...resolved, jidNormalizedUser(from)])]
 }
 
 export type SelectedTcToken = TcTokenUsability & {
@@ -137,6 +148,38 @@ export function selectNewestUsableTcToken(
 export type TcTokenIssueAliasGroup = {
 	requestedJid: string
 	aliases: string[]
+}
+
+/**
+ * Joins in-flight work by canonical contact key. Callers serialize invocation
+ * while inspecting the map; cleanup is identity-checked so an old completion
+ * can never delete a newer flight registered for the same contact.
+ */
+export function getOrCreateTcTokenIssueFlight<T>(
+	flights: Map<string, Promise<T>>,
+	keys: string[],
+	create: (uncoveredKeys: string[]) => Promise<T>
+): Promise<T> {
+	const uniqueKeys = [...new Set(keys)]
+	const existing = [
+		...new Set(uniqueKeys.map(key => flights.get(key)).filter((flight): flight is Promise<T> => !!flight))
+	]
+	const uncovered = uniqueKeys.filter(key => !flights.has(key))
+	if (!uncovered.length && existing.length) {
+		return existing.length === 1 ? existing[0]! : Promise.all(existing).then(results => results.at(-1)!)
+	}
+
+	const flight = create(uncovered)
+	for (const key of uncovered) flights.set(key, flight)
+	const release = () => {
+		for (const key of uncovered) {
+			if (flights.get(key) === flight) flights.delete(key)
+		}
+	}
+
+	flight.then(release, release)
+
+	return existing.length ? Promise.all([...existing, flight]).then(results => results.at(-1)!) : flight
 }
 
 /**
@@ -233,7 +276,7 @@ export async function resolveTcTokenJid(
 	getLIDForPN: (pn: string) => Promise<string | null>
 ): Promise<string> {
 	const normalized = jidNormalizedUser(jid)
-	if (isLidUser(normalized)) return normalized
+	if (isAnyLidUser(normalized)) return normalized
 	const lid = await getLIDForPN(normalized)
 	return lid ?? normalized
 }
