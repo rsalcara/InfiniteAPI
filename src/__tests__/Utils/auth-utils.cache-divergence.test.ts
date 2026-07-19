@@ -12,7 +12,7 @@
  *
  * Failing while H6 is unresolved. Flipped to `it(...)` in Stage 4.
  */
-import type { SignalDataSet, SignalKeyStore } from '../../Types'
+import type { CacheStore, SignalDataSet, SignalKeyStore } from '../../Types'
 import { makeCacheableSignalKeyStore } from '../../Utils/auth-utils'
 import type { ILogger } from '../../Utils/logger'
 
@@ -124,5 +124,46 @@ describe('makeCacheableSignalKeyStore — cache divergence on store failure (H6)
 
 		const observed = await cacheable.get('pre-key', [id])
 		expect(observed).toEqual({})
+	})
+
+	it('invalidates a cached tctoken after authoritative compare-and-prune', async () => {
+		const jid = 'cache-prune@lid'
+		let durable: any = { token: Buffer.from([0xaa]), timestamp: '100' }
+		const entries = new Map<string, unknown>()
+		const cache: CacheStore = {
+			get: <T>(key: string) => entries.get(key) as T | undefined,
+			set: (key, value) => {
+				entries.set(key, value)
+			},
+			del: key => entries.delete(key),
+			flushAll: () => entries.clear()
+		}
+		const store: SignalKeyStore = {
+			trustedContactTokens: {
+				authoritative: true,
+				listIncoming: () => (durable ? [{ jid, timestamp: 100 }] : []),
+				compareAndPrune: async (_jid, expectedTimestamp, expectedToken) => {
+					if (
+						!durable ||
+						expectedTimestamp !== Number(durable.timestamp) ||
+						!Buffer.from(expectedToken).equals(Buffer.from(durable.token))
+					)
+						return false
+					durable = undefined
+					return true
+				}
+			},
+			async get(type, ids) {
+				const out: Record<string, any> = {}
+				if (type === 'tctoken' && ids.includes(jid) && durable) out[jid] = durable
+				return out
+			},
+			async set() {}
+		}
+
+		const cacheable = makeCacheableSignalKeyStore(store, silentLogger(), cache)
+		expect((await cacheable.get('tctoken', [jid]))[jid]).toBeDefined()
+		expect(await cacheable.trustedContactTokens!.compareAndPrune(jid, 100, Buffer.from([0xaa]))).toBe(true)
+		expect(await cacheable.get('tctoken', [jid])).toEqual({})
 	})
 })

@@ -82,4 +82,11 @@ CREATE INDEX IF NOT EXISTS sent_real_issue_timestamp_index
   ON wa_trusted_contacts_send (real_issue_timestamp);
 CREATE INDEX IF NOT EXISTS sent_tc_token_timestamp_index
   ON wa_trusted_contacts_send (sent_tc_token_timestamp);
+
+/* InfiniteAPI-only crash-recovery coordination for operations that span
+   wa.db and axolotl.db. Canonical WhatsApp tables above remain unchanged. */
+CREATE TABLE IF NOT EXISTS infiniteapi_metadata (
+  key TEXT PRIMARY KEY NOT NULL,
+  value TEXT NOT NULL
+);
 `

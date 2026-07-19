@@ -74,6 +74,7 @@ export interface RecentMessageKey {
 }
 
 export interface RecentMessage {
+	to: string
 	message: proto.IMessage
 	timestamp: number
 }
@@ -249,6 +250,7 @@ export class MessageRetryManager {
 
 		// Add new message
 		this.recentMessagesMap.set(keyStr, {
+			to,
 			message,
 			timestamp: Date.now()
 		})

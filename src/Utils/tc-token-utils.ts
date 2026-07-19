@@ -1,4 +1,4 @@
-import type { SignalKeyStoreWithTransaction } from '../Types'
+import type { SignalDataTypeMap, SignalKeyStoreWithTransaction } from '../Types'
 import type { BinaryNode } from '../WABinary'
 import {
 	getBinaryNodeChild,
@@ -55,6 +55,26 @@ export function isTcTokenExpired(timestamp: number | string | null | undefined):
 	const cutoffBucket = currentBucket - (TC_TOKEN_NUM_BUCKETS - 1)
 	const cutoffTimestamp = cutoffBucket * TC_TOKEN_BUCKET_DURATION
 	return ts < cutoffTimestamp
+}
+
+export type TcTokenUsability = {
+	usable: boolean
+	reason?: 'missing-token' | 'empty-token' | 'expired-token'
+}
+
+/**
+ * Evaluates every alias independently and accepts the first usable token.
+ * A stale/empty LID row must not mask a valid PN row (or the inverse).
+ */
+export function selectUsableTcToken(
+	candidates: Array<SignalDataTypeMap['tctoken'] | null | undefined>
+): TcTokenUsability {
+	const present = candidates.filter((entry): entry is SignalDataTypeMap['tctoken'] => !!entry)
+	if (present.length === 0) return { usable: false, reason: 'missing-token' }
+	const nonEmpty = present.filter(entry => !!entry.token?.length)
+	if (nonEmpty.length === 0) return { usable: false, reason: 'empty-token' }
+	if (nonEmpty.some(entry => !isTcTokenExpired(entry.timestamp))) return { usable: true }
+	return { usable: false, reason: 'expired-token' }
 }
 
 /**
@@ -224,6 +244,11 @@ type StoreTcTokensParams = {
 	onNewJidStored?: (jid: string) => void
 }
 
+export type StoreTcTokensResult = {
+	storedJids: string[]
+	validTokenNodes: number
+}
+
 /**
  * Parse and store tctoken(s) from an IQ result node.
  * Includes timestamp monotonicity guard matching WA Web's handleIncomingTcToken.
@@ -235,9 +260,11 @@ export async function storeTcTokensFromIqResult({
 	keys,
 	getLIDForPN,
 	onNewJidStored
-}: StoreTcTokensParams) {
+}: StoreTcTokensParams): Promise<StoreTcTokensResult> {
+	const storedJids = new Set<string>()
+	let validTokenNodes = 0
 	const tokensNode = getBinaryNodeChild(result, 'tokens')
-	if (!tokensNode) return
+	if (!tokensNode) return { storedJids: [], validTokenNodes }
 
 	const tokenNodes = getBinaryNodeChildren(tokensNode, 'token')
 	for (const tokenNode of tokenNodes) {
@@ -270,6 +297,8 @@ export async function storeTcTokensFromIqResult({
 			continue
 		}
 
+		validTokenNodes++
+
 		const tokenEntry = {
 			...existingEntry,
 			token: Buffer.from(tokenNode.content),
@@ -279,17 +308,25 @@ export async function storeTcTokensFromIqResult({
 			realIssueTimestamp: null
 		}
 
-		// Store under resolved storageJid AND under fallbackJid (PN) for reliable lookup
-		// The read path may resolve to a different LID than the store path
+		// Store under the resolved identity and under fallbackJid only when both
+		// resolve to the same contact. An IQ may return a token for a different
+		// JID (including our own LID); copying that token onto the requested
+		// recipient would poison future sends with another account's token.
 		const normalizedFallback = jidNormalizedUser(fallbackJid)
 		const keysToStore: Record<string, typeof tokenEntry | null> = {
 			[storageJid]: tokenEntry
 		}
-		if (normalizedFallback !== storageJid) {
+		const fallbackStorageJid = await resolveTcTokenJid(normalizedFallback, getLIDForPN)
+		if (normalizedFallback !== storageJid && fallbackStorageJid === storageJid) {
 			keysToStore[normalizedFallback] = tokenEntry
 		}
 
 		await keys.set({ tctoken: keysToStore })
-		onNewJidStored?.(storageJid)
+		for (const jid of Object.keys(keysToStore)) {
+			storedJids.add(jid)
+			onNewJidStored?.(jid)
+		}
 	}
+
+	return { storedJids: [...storedJids], validTokenNodes }
 }

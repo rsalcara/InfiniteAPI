@@ -84,6 +84,8 @@ import {
 } from '../Utils/multi-db-sqlite'
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
+import { markPrekeyDirectDistributionIntent } from '../Utils/prekey-direct-distribution'
+import { applyReconciledPrekeyCursors } from '../Utils/prekey-upload-cursors'
 import {
 	metrics,
 	recordHistorySyncMessages,
@@ -92,7 +94,13 @@ import {
 	recordMessageRetry
 } from '../Utils/prometheus-metrics.js'
 import { buildAckStanza } from '../Utils/stanza-ack'
-import { isRegularUser, isTcTokenExpired, resolveTcTokenJid, storeTcTokensFromIqResult } from '../Utils/tc-token-utils'
+import {
+	isRegularUser,
+	isTcTokenExpired,
+	resolveTcTokenJid,
+	selectUsableTcToken,
+	storeTcTokensFromIqResult
+} from '../Utils/tc-token-utils'
 import {
 	handleUsernameDeleteNotification as handleUsernameDeleteNotificationImpl,
 	handleUsernameSetNotification as handleUsernameSetNotificationImpl,
@@ -265,13 +273,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			)
 		: undefined
 
-	// Best-effort typed mirror of the axolotl.db pre-decrypt/pre-ack tables:
+	// Typed access to the axolotl.db Signal tables. The pre-decrypt/pre-ack mirrors
+	// below remain best-effort:
 	//   - `preacks`               — pending pre-ack buffer (sendMessageAck)
 	//   - `unordered_stanza_queue`— stanza held because it could not be
 	//                               decrypted in order yet (sendRetryRequest)
 	// Same boundary-cast + idempotent-handle rationale as the receipt/status
-	// backends above. Every write is wrapped in try/catch at the call site so a
+	// backends above. Their writes are wrapped in try/catch at the call site so a
 	// mirror failure never blocks the real ack / retry flow (fallback = legacy).
+	// Direct-distribution marking is deliberately different: a retry receipt only
+	// exposes its one-time prekey after the durable typed row is confirmed, so that
+	// security-sensitive path fails closed instead of falling back silently.
 	const signalTypedBackend = initOptionalMirror(
 		'axolotl.db.transient_signal_tables',
 		'legacy_signal_flow',
@@ -388,13 +400,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const TC_TOKEN_PRUNE_TS_KEY = '__prune_ts'
 	const tcTokenKnownJids = new Set<string>()
 	const tcTokenRetriedMsgIds = new Set<string>()
+	const TC_TOKEN_RECOVERY_QUERY_TIMEOUT_MS = 30_000
 	/**
 	 * Dedupe per-JID in-flight 463 token-refetch IQs.
 	 * Without this, a burst of 463 acks for the same recipient (e.g. multi-recipient
 	 * carousel) would fire N parallel getPrivacyTokens IQs. Adapted from upstream #2517
 	 * (which dedupes issuePrivacyTokens; we dedupe our equivalent getPrivacyTokens path).
 	 */
-	const inFlight463Recoveries = new Set<string>()
+	const inFlight463Recoveries = new Map<string, Promise<boolean>>()
 
 	/**
 	 * Dedupe global de `fetchAccountReachoutTimelock` em fire-and-forget.
@@ -443,8 +456,25 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	})()
 
+	// Capability belongs to the configured auth-state itself. `multiDbStore`
+	// alone may be present only for unrelated mirrors, so it must never imply
+	// that tctokens are relational/authoritative.
+	const trustedContactTokens = authState.keys.trustedContactTokens
+	const prekeyUploads = authState.keys.prekeyUploads
+	const readTcTokenUsability = async (
+		jid: string
+	): Promise<{ usable: boolean; storageJid: string; reason?: 'missing-token' | 'empty-token' | 'expired-token' }> => {
+		const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
+		const tokenState = await authState.keys.get('tctoken', [storageJid, jid])
+		const aliases = storageJid === jid ? [tokenState[storageJid]] : [tokenState[storageJid], tokenState[jid]]
+		return { ...selectUsableTcToken(aliases), storageJid }
+	}
+
 	/** Debounced save of the tctoken JID index (5s) */
 	const scheduleTcTokenIndexSave = () => {
+		// The authoritative adapter enumerates relational rows plus signal_kv ids
+		// directly; only that exact capability makes the legacy __index obsolete.
+		if (trustedContactTokens) return
 		if (tcTokenIndexSaveTimer) clearTimeout(tcTokenIndexSaveTimer)
 		tcTokenIndexSaveTimer = setTimeout(async () => {
 			try {
@@ -465,6 +495,61 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	/** Delete expired tctokens — runs at most once per 24h when coming online */
 	const pruneExpiredTcTokens = async () => {
+		if (trustedContactTokens) {
+			await tcTokenIndexLoaded
+			const candidates = new Set<string>()
+			try {
+				for (const { jid } of trustedContactTokens.listIncoming()) candidates.add(jid)
+			} catch (err) {
+				logger.warn(
+					{ err, reason: 'relational-enumeration-failed', fallback: 'signal_kv-listIds' },
+					'tctoken prune: relational enumeration failed; continuing with legacy superset'
+				)
+			}
+
+			// signal_kv is deliberately retained as a complete superset, so its ids
+			// cover pre-migration contacts and temporary relational-list failures
+			// without relying on the race-prone __index value.
+			if (authState.keys.listIds) {
+				try {
+					for await (const jid of authState.keys.listIds('tctoken')) {
+						if (jid.includes('@')) candidates.add(jid)
+					}
+				} catch (err) {
+					logger.warn(
+						{ err, reason: 'signal-kv-enumeration-failed', fallback: 'legacy-__index' },
+						'tctoken prune: signal_kv id enumeration failed; using persisted legacy index'
+					)
+					for (const jid of tcTokenKnownJids) if (jid.includes('@')) candidates.add(jid)
+				}
+			} else {
+				for (const jid of tcTokenKnownJids) if (jid.includes('@')) candidates.add(jid)
+			}
+
+			if (candidates.size === 0) return
+			const allData = await authState.keys.get('tctoken', Array.from(candidates))
+			let pruned = 0
+			let refreshed = 0
+			for (const jid of candidates) {
+				const entry = allData[jid]
+				if (!entry?.token || entry.token.length === 0 || !isTcTokenExpired(entry.timestamp)) continue
+				const expectedTimestamp = Number(entry.timestamp ?? 0)
+				if (await trustedContactTokens.compareAndPrune(jid, expectedTimestamp, entry.token)) pruned++
+				else refreshed++ // changed after the snapshot; leave the new token intact
+			}
+
+			if (pruned > 0 || refreshed > 0) {
+				logTcToken('prune', {
+					pruned,
+					refreshedDuringPrune: refreshed,
+					via: 'wa_trusted_contacts+signal_kv-superset'
+				})
+			}
+
+			return
+		}
+
+		// Legacy (single-file / no multi-db): __index-backed enumeration.
 		await tcTokenIndexLoaded
 		const pruneSet: Record<string, null> = {}
 		const survivingJids: string[] = []
@@ -1961,8 +2046,42 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		if (!account) throw new Boom('Account not available', { statusCode: 401 })
 		const deviceIdentity = encodeSignedDeviceIdentity(account, true)
+		let receipt: BinaryNode | undefined
+		let directDistributionKeyId: number | undefined
+		let directDistributionKeysNode: BinaryNode | undefined
+		let directDistributionCredsUpdate: Partial<(typeof authState)['creds']> | undefined
+		let directDistributionMarkError: unknown
+		let directDistributionWasAlreadyMarked = false
+		let includeDirectDistributionKey = false
+		const shouldIncludeRetryKeys = retryCount > 1 || forceIncludeKeys || shouldRecreateSession
+		if (shouldIncludeRetryKeys && prekeyUploads) {
+			try {
+				const firstUnsent = prekeyUploads.firstUnsentId()
+				const nextGenerated = prekeyUploads.nextGeneratedId()
+				const unsentCount = prekeyUploads.countUnsent()
+				const cursorUpdate = applyReconciledPrekeyCursors(authState.creds, {
+					firstUnsentId: firstUnsent,
+					nextGeneratedId: nextGenerated,
+					unsentCount
+				})
+				if (Object.keys(cursorUpdate).length > 0) {
+					logger.info(
+						{ cursorUpdate, firstUnsent, nextGenerated, unsentCount },
+						'pre-keys: reconciled retry-receipt cursors before selecting direct-distribution key'
+					)
+					ev.emit('creds.update', cursorUpdate)
+				}
+			} catch (err) {
+				logger.error(
+					{ err },
+					'multi-db-sqlite: failed to reconcile retry prekey before selection; refusing possible key reuse'
+				)
+				throw err
+			}
+		}
+
 		await authState.keys.transaction(async () => {
-			const receipt: BinaryNode = {
+			receipt = {
 				tag: 'receipt',
 				attrs: {
 					id: msgId,
@@ -1997,14 +2116,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				receipt.attrs.participant = node.attrs.participant
 			}
 
-			if (retryCount > 1 || forceIncludeKeys || shouldRecreateSession) {
+			if (shouldIncludeRetryKeys) {
 				const { update, preKeys } = await getNextPreKeys(authState, 1)
 
 				const [keyId] = Object.keys(preKeys)
 				const key = preKeys[+keyId!]
 
-				const content = receipt.content! as BinaryNode[]
-				content.push({
+				directDistributionKeysNode = {
 					tag: 'keys',
 					attrs: {},
 					content: [
@@ -2014,15 +2132,101 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						xmppSignedPreKey(signedPreKey),
 						{ tag: 'device-identity', attrs: {}, content: deviceIdentity }
 					]
-				})
+				}
 
-				ev.emit('creds.update', update)
+				directDistributionCredsUpdate = update
+				directDistributionKeyId = keyId ? +keyId : undefined
+				if (prekeyUploads && key && directDistributionKeyId !== undefined) {
+					// For a freshly generated key, carry this intent through the pending
+					// keys.set mutation so axolotl.db inserts + flags it atomically at
+					// commit. Existing rows are deliberately marked only in afterCommit:
+					// if another auth mutation fails, no key is removed from the upload
+					// pool before the transaction has actually succeeded.
+					try {
+						directDistributionWasAlreadyMarked = prekeyUploads.isDirectDistribution(directDistributionKeyId)
+					} catch (err) {
+						directDistributionMarkError = err
+					}
+
+					if (!directDistributionWasAlreadyMarked) markPrekeyDirectDistributionIntent(key)
+				}
 			}
 
-			await sendNode(receipt)
+			authState.keys.afterCommit(() => {
+				includeDirectDistributionKey = directDistributionKeysNode !== undefined
+				if (directDistributionKeyId !== undefined && prekeyUploads) {
+					let durableMark = false
+					try {
+						durableMark = prekeyUploads.isDirectDistribution(directDistributionKeyId)
+						if (!durableMark && !directDistributionWasAlreadyMarked) {
+							// Existing prekeys (and kill-switch mirror rows) were not part of
+							// this transaction's typed INSERT. Mark them only now, after the
+							// auth-key commit, but before releasing its operation lock.
+							durableMark = prekeyUploads.markDirectDistribution(directDistributionKeyId)
+						}
+					} catch (err) {
+						directDistributionMarkError = directDistributionMarkError ?? err
+					}
 
-			logger.info({ msgAttrs: node.attrs, retryCount }, 'sent retry receipt')
+					if (directDistributionWasAlreadyMarked) {
+						includeDirectDistributionKey = false
+						logger.error(
+							{ keyId: directDistributionKeyId, reason: 'key-already-direct-distributed' },
+							'multi-db-sqlite: selected retry prekey was already consumed; omitting it and advancing the stale cursor'
+						)
+					} else if (!durableMark) {
+						includeDirectDistributionKey = false
+						logger.error(
+							{
+								err: directDistributionMarkError ? compactError(directDistributionMarkError) : undefined,
+								keyId: directDistributionKeyId,
+								reason: 'typed-row-ineligible-or-not-persisted',
+								retryReceiptAction: 'one-time-prekey-omitted',
+								signalKvPreserved: true,
+								serverUploadEligibilityPreserved: true,
+								storagePath: 'authoritative-typed-prekeys-with-signal_kv-fallback'
+							},
+							'multi-db-sqlite: typed direct-distribution unavailable; key material retained, signal_kv fallback preserved, and one-time prekey omitted from retry receipt'
+						)
+					}
+				} else if (directDistributionKeyId !== undefined && signalTypedBackend) {
+					includeDirectDistributionKey = false
+					logger.error(
+						{
+							keyId: directDistributionKeyId,
+							reason: 'authoritative-prekey-capability-unavailable',
+							retryReceiptAction: 'one-time-prekey-omitted',
+							mirrorIgnored: true,
+							signalKvPreserved: true
+						},
+						'multi-db-sqlite: prekey mirror is not authoritative; refusing direct distribution and preserving the legacy key material'
+					)
+				}
+
+				if (directDistributionCredsUpdate) {
+					// Keep this update under the same legacy lock until the durable
+					// direct-distribution check finishes. A queued upload can only start
+					// after it sees the matching cursor state.
+					const update =
+						includeDirectDistributionKey || directDistributionWasAlreadyMarked
+							? directDistributionCredsUpdate
+							: { nextPreKeyId: directDistributionCredsUpdate.nextPreKeyId }
+					ev.emit('creds.update', update)
+				}
+			})
 		}, authState?.creds?.me?.id || 'sendRetryRequest')
+
+		if (!receipt) throw new Error('sendRetryRequest: retry receipt was not constructed')
+
+		if (includeDirectDistributionKey && directDistributionKeysNode) {
+			;(receipt.content! as BinaryNode[]).push(directDistributionKeysNode)
+		}
+
+		await sendNode(receipt)
+		logger.info(
+			{ msgAttrs: node.attrs, retryCount, includedDirectDistributionKey: includeDirectDistributionKey },
+			'sent retry receipt'
+		)
 	}
 
 	// Upstream #2432: dedupe re-issued PreKeyLow notifications by stanza id.
@@ -4019,7 +4223,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleBadAck = async ({ attrs }: BinaryNode) => {
-		const key: WAMessageKey = { remoteJid: attrs.from, fromMe: true, id: attrs.id }
+		// Error acks can come from an alternate/device/own-domain JID. The retry
+		// cache records the actual destination used by relayMessage, so prefer it
+		// over attrs.from when deciding whose privacy token must be fetched.
+		const recentMessage = attrs.id ? messageRetryManager?.getRecentMessage(attrs.from ?? '', attrs.id) : undefined
+		const outboundJid = jidNormalizedUser(recentMessage?.to ?? attrs.from ?? '')
+		const key: WAMessageKey = { remoteJid: outboundJid, fromMe: true, id: attrs.id }
 		await normalizeKeyLidToPn(key, signalRepository.lidMapping, logger)
 
 		// WARNING: REFRAIN FROM ENABLING THIS FOR NOW. IT WILL CAUSE A LOOP
@@ -4051,7 +4260,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const is463 = attrs.error === SERVER_ERROR_CODES.MissingTcToken
 			if (is463) {
 				const msgId = attrs.id
-				const jid = jidNormalizedUser(attrs.from)
+				const jid = outboundJid
 				logTcToken('error_463', { jid, msgId })
 
 				// Fire-and-forget — detecta reachout timelock quando 463 vem por
@@ -4073,31 +4282,54 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				// to ensure token is available for the retry below.
 				// Per-JID dedupe (adapted from upstream #2517) — burst of 463 acks for the
 				// same recipient must not fan out N parallel IQs.
-				if (!inFlight463Recoveries.has(jid)) {
-					inFlight463Recoveries.add(jid)
-					getPrivacyTokens([jid])
-						.then(async result => {
-							await storeTcTokensFromIqResult({
-								result,
-								fallbackJid: jid,
-								keys: authState.keys,
-								getLIDForPN,
-								onNewJidStored: storedJid => {
-									tcTokenKnownJids.add(storedJid)
-									scheduleTcTokenIndexSave()
-								}
-							})
+				let recoveryPromise = inFlight463Recoveries.get(jid)
+				if (!recoveryPromise) {
+					recoveryPromise = (async () => {
+						const result = await getPrivacyTokens([jid], undefined, TC_TOKEN_RECOVERY_QUERY_TIMEOUT_MS)
+						const stored = await storeTcTokensFromIqResult({
+							result,
+							fallbackJid: jid,
+							keys: authState.keys,
+							getLIDForPN,
+							onNewJidStored: storedJid => {
+								tcTokenKnownJids.add(storedJid)
+								scheduleTcTokenIndexSave()
+							}
+						})
+						const tokenUsability = await readTcTokenUsability(jid)
+						const storedForRecipient = stored.storedJids.some(
+							storedJid => storedJid === jid || storedJid === tokenUsability.storageJid
+						)
+						if (storedForRecipient && tokenUsability.usable) {
 							logTcToken('fetched', { jid, reason: 'error_463' })
-						})
+						} else {
+							logger.warn(
+								{
+									jid,
+									reason: !storedForRecipient
+										? stored.validTokenNodes === 0
+											? 'privacy-iq-returned-no-valid-token'
+											: 'privacy-iq-token-for-different-jid'
+										: tokenUsability.reason,
+									validTokenNodes: stored.validTokenNodes,
+									storedJids: stored.storedJids,
+									retryAction: 'suppressed'
+								},
+								'463 recovery: no valid token was persisted for the original recipient; refusing tokenless retry'
+							)
+						}
+
+						return storedForRecipient && tokenUsability.usable
+					})()
+					inFlight463Recoveries.set(jid, recoveryPromise)
+					recoveryPromise
 						.catch(err => {
-							// Audit SILENT-002 — antes silenciado; agora `debug` pra dar
-							// visibilidade quando 463 recovery falhar sistematicamente
-							// (próximas mensagens pro mesmo JID podem falhar).
-							logger.debug({ jid, err: err?.message }, '463 recovery: tctoken fetch/store failed')
+							logger.warn(
+								{ jid, err: err?.message, reason: 'privacy-token-fetch-or-store-failed', retryAction: 'suppressed' },
+								'463 recovery: tctoken fetch/store failed; refusing tokenless retry'
+							)
 						})
-						.finally(() => {
-							inFlight463Recoveries.delete(jid)
-						})
+						.finally(() => inFlight463Recoveries.delete(jid))
 				}
 
 				// Single-retry: wait 1.5s for the server's tctoken notification to arrive,
@@ -4108,13 +4340,46 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					tcTokenRetriedMsgIds.add(retryKey)
 					// Each entry auto-expires after 60s — naturally bounded under normal use
 					setTimeout(() => tcTokenRetriedMsgIds.delete(retryKey), 60_000)
-					;(async () => {
+					void (async () => {
 						try {
 							await delay(1500)
+							let tokenUsability = await readTcTokenUsability(jid)
+							let fetchedForRecipient: boolean | undefined
+							if (!tokenUsability.usable) {
+								// The notification path gets the first 1.5s without being blocked by
+								// the IQ. If it did not provide a token, wait for the explicitly
+								// bounded fetch before consuming the message's single retry.
+								fetchedForRecipient = await recoveryPromise.catch(() => false)
+								tokenUsability = await readTcTokenUsability(jid)
+							}
+
+							if (!tokenUsability.usable) {
+								logger.warn(
+									{
+										jid,
+										msgId,
+										reason: tokenUsability.reason,
+										fetchStoredRecipient: fetchedForRecipient,
+										retryAction: 'suppressed'
+									},
+									'463 recovery: retry suppressed because the recipient still has no valid tctoken'
+								)
+								ev.emit('messages.update', [
+									{
+										key,
+										update: {
+											status: WAMessageStatus.ERROR,
+											messageStubParameters: ['463', ACCOUNT_RESTRICTED_TEXT]
+										}
+									}
+								])
+								return
+							}
+
 							const msg =
 								(await getMessage(key)) ??
 								// Fallback: ack can arrive <30ms after send, before store persists
-								messageRetryManager?.getRecentMessage(jid, msgId)?.message
+								recentMessage?.message
 							if (msg) {
 								await relayMessage(jid, msg, { messageId: msgId, useUserDevicesCache: true })
 								logTcToken('retry_463_ok', { jid, msgId })
@@ -4141,12 +4406,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					return
 				}
 			} else if (attrs.error === SERVER_ERROR_CODES.SmaxInvalid) {
-				const jid479 = jidNormalizedUser(attrs.from)
+				const jid479 = outboundJid
 				logTcToken('error_479', { jid: jid479, msgId: attrs.id })
 				// WABA Android: error 479 (SmaxInvalid) also triggers token re-fetch
-				getPrivacyTokens([jid479])
+				getPrivacyTokens([jid479], undefined, TC_TOKEN_RECOVERY_QUERY_TIMEOUT_MS)
 					.then(async result => {
-						await storeTcTokensFromIqResult({
+						const stored = await storeTcTokensFromIqResult({
 							result,
 							fallbackJid: jid479,
 							keys: authState.keys,
@@ -4156,7 +4421,26 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								scheduleTcTokenIndexSave()
 							}
 						})
-						logTcToken('fetched', { jid: jid479, reason: 'error_479' })
+						const tokenUsability = await readTcTokenUsability(jid479)
+						const storedForRecipient = stored.storedJids.some(
+							storedJid => storedJid === jid479 || storedJid === tokenUsability.storageJid
+						)
+						if (storedForRecipient && tokenUsability.usable) {
+							logTcToken('fetched', { jid: jid479, reason: 'error_479' })
+						} else {
+							logger.warn(
+								{
+									jid: jid479,
+									reason: !storedForRecipient
+										? stored.validTokenNodes === 0
+											? 'privacy-iq-returned-no-valid-token'
+											: 'privacy-iq-token-for-different-jid'
+										: tokenUsability.reason,
+									storedJids: stored.storedJids
+								},
+								'479 recovery: no valid token was persisted for the original recipient'
+							)
+						}
 					})
 					.catch(err => {
 						// Audit SILENT-002 — antes silenciado; agora `debug` pra

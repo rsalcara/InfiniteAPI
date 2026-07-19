@@ -55,6 +55,7 @@ interface TransactionContext {
 	dbQueries: number
 	heldLocks: Map<string, number>
 	sealed: boolean
+	afterCommitCallbacks: Array<() => void | Promise<void>>
 }
 
 /** Increment refcount for a lock key. Returns the new count. */
@@ -192,6 +193,18 @@ export function makeCacheableSignalKeyStore(
 	}
 
 	return {
+		trustedContactTokens: store.trustedContactTokens
+			? {
+					authoritative: true,
+					listIncoming: () => store.trustedContactTokens!.listIncoming(),
+					compareAndPrune: async (jid, expectedTimestamp, expectedToken) => {
+						const pruned = await store.trustedContactTokens!.compareAndPrune(jid, expectedTimestamp, expectedToken)
+						if (pruned) await cache.del(getUniqueId('tctoken', jid))
+						return pruned
+					}
+				}
+			: undefined,
+		prekeyUploads: store.prekeyUploads,
 		async get(type, ids) {
 			const data: { [_: string]: SignalDataTypeMap[typeof type] } = {}
 			const idsToFetch: string[] = []
@@ -401,6 +414,8 @@ export const addTransactionCapability = (
 	}
 
 	return {
+		trustedContactTokens: state.trustedContactTokens,
+		prekeyUploads: state.prekeyUploads,
 		get: async (type, ids) => {
 			const ctx = txStorage.getStore()
 
@@ -506,6 +521,15 @@ export const addTransactionCapability = (
 
 		isInTransaction,
 
+		afterCommit: work => {
+			const ctx = txStorage.getStore()
+			if (!ctx || ctx.sealed) {
+				throw new Error('afterCommit must be registered inside an active transaction')
+			}
+
+			ctx.afterCommitCallbacks.push(work)
+		},
+
 		/**
 		 * @deprecated Stage 2 (upstream #2572) — use `transactWith({ records }, work)`
 		 * for record-scoped locking with deadlock-free multi-acquire. The legacy
@@ -590,20 +614,29 @@ export const addTransactionCapability = (
 					mutations: {},
 					dbQueries: 0,
 					heldLocks: new Map([[lockKey, 1]]),
-					sealed: false
+					sealed: false,
+					afterCommitCallbacks: []
 				}
 
 				logger.trace('entering transaction')
+				let committed = false
 
 				try {
 					const result = await txStorage.run(ctx, work)
 					ctx.sealed = true
 					await commitWithRetry(ctx.mutations)
+					committed = true
+					for (const afterCommit of ctx.afterCommitCallbacks) await afterCommit()
 					logger.trace({ dbQueries: ctx.dbQueries }, 'transaction completed')
 					return result
 				} catch (err) {
 					ctx.sealed = true
-					logger.error({ err }, 'transaction failed, rolling back')
+					logger.error(
+						{ err },
+						committed
+							? 'transaction post-commit callback failed; durable mutations remain committed'
+							: 'transaction failed, rolling back'
+					)
 					throw err
 				} finally {
 					activeTransactions--
@@ -694,15 +727,19 @@ export const addTransactionCapability = (
 					mutations: {},
 					dbQueries: 0,
 					heldLocks: new Map(newLockKeys.map(k => [k, 1] as [string, number])),
-					sealed: false
+					sealed: false,
+					afterCommitCallbacks: []
 				}
 
 				logger.trace({ records: scope.records.length }, 'entering transactWith')
+				let committed = false
 
 				try {
 					const result = await txStorage.run(ctx, work)
 					ctx.sealed = true
 					await commitWithRetry(ctx.mutations)
+					committed = true
+					for (const afterCommit of ctx.afterCommitCallbacks) await afterCommit()
 					logger.trace({ dbQueries: ctx.dbQueries }, 'transactWith completed')
 					return result
 				} catch (err) {
@@ -711,7 +748,12 @@ export const addTransactionCapability = (
 					// with the message context attached (key/sender/decryptionJid). This
 					// site has none of that context — it would just duplicate the stack
 					// without anything actionable on top.
-					logger.trace({ err: err instanceof Error ? err.message : String(err) }, 'transactWith rolled back')
+					logger.trace(
+						{ err: err instanceof Error ? err.message : String(err) },
+						committed
+							? 'transactWith post-commit callback failed; durable mutations remain committed'
+							: 'transactWith rolled back'
+					)
 					throw err
 				} finally {
 					activeTransactions--

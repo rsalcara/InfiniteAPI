@@ -11,8 +11,7 @@ import {
 	INITIAL_PREKEY_COUNT,
 	MIN_PREKEY_COUNT,
 	MIN_UPLOAD_INTERVAL,
-	NOISE_WA_HEADER,
-	UPLOAD_TIMEOUT
+	NOISE_WA_HEADER
 } from '../Defaults'
 import { makeSessionActivityTracker } from '../Signal/session-activity-tracker'
 import { makeSessionCleanup } from '../Signal/session-cleanup'
@@ -40,7 +39,8 @@ import {
 	xmppSignedPreKey
 } from '../Utils'
 import { getPlatformId, isAndroidBrowser } from '../Utils/browser-utils'
-import { type MultiDbSqliteStore, SignalTypedBackend } from '../Utils/multi-db-sqlite'
+import { applyReconciledPrekeyCursors } from '../Utils/prekey-upload-cursors'
+import { resolvePrekeyUploadQueryTimeout } from '../Utils/prekey-upload-timeout'
 import {
 	markConnectionActive,
 	markConnectionInactive,
@@ -613,79 +613,231 @@ export const makeSocket = (config: SocketConfig) => {
 	let uploadPreKeysPromise: Promise<void> | null = null
 	let lastUploadTime = 0
 
-	// Lazily-built typed backend for the `prekey_uploads` mirror (only when a
-	// multi-db-sqlite store is wired). One row per successful upload batch —
-	// best-effort introspection parity, never affects the upload itself.
-	let prekeyUploadBackend: SignalTypedBackend | null | undefined
-	const recordPrekeyUpload = (): void => {
-		if (!config.multiDbStore) return
-		try {
-			if (prekeyUploadBackend === undefined) {
-				prekeyUploadBackend = new SignalTypedBackend((config.multiDbStore as MultiDbSqliteStore).handle('axolotl.db'))
-			}
+	// Only the auth-state that owns the typed prekeys table may control upload
+	// progress. `config.multiDbStore` can be a separate best-effort mirror and
+	// must never be allowed to rewind or commit the real auth cursor.
+	const prekeyUploads = keys.prekeyUploads
 
-			prekeyUploadBackend?.recordPrekeyUpload(Date.now(), 0)
+	// Records a successful pre-key upload into the multi-db-sqlite axolotl.db,
+	// atomically: flips the acked ids [fromId, toId) to sent_to_server = 1 (in
+	// chunks of 200) and appends one prekey_uploads row, in a single transaction
+	// — mirroring the real SignalPreKeyStore. Timestamp is epoch SECONDS (Android
+	// stores seconds). Multi-db-only; single-file / legacy skip it. Best-effort:
+	// a DB failure here does NOT undo the upload (the server already acked and the
+	// creds cursor already advanced) — it is logged and the table self-heals on
+	// the next upload, so it never fails the operation, but it is NOT swallowed
+	// silently either.
+	const recordPrekeyUpload = (fromId: number, toId: number): void => {
+		if (!(toId > fromId)) return
+		try {
+			if (!prekeyUploads) return
+			prekeyUploads.commitUpload(fromId, toId, Math.floor(Date.now() / 1000))
 		} catch (err) {
-			logger.debug({ err }, 'multi-db-sqlite: prekey_uploads mirror failed (non-fatal)')
+			logger.warn(
+				{ err, fromId, toId },
+				'multi-db-sqlite: prekey upload commit failed — cursor already advanced, table will self-heal next upload'
+			)
 		}
 	}
 
 	/** generates and uploads a set of pre-keys to the server */
-	const uploadPreKeys = async (count = MIN_PREKEY_COUNT, retryCount = 0) => {
-		// Check minimum interval (except for retries)
-		if (retryCount === 0) {
-			const timeSinceLastUpload = Date.now() - lastUploadTime
-			if (timeSinceLastUpload < MIN_UPLOAD_INTERVAL) {
-				logger.debug(`Skipping upload, only ${timeSinceLastUpload}ms since last upload`)
-				return
-			}
+	const uploadPreKeys = async (count = MIN_PREKEY_COUNT) => {
+		// Rate-limit: skip if too soon since the last SUCCESSFUL upload.
+		const timeSinceLastUpload = Date.now() - lastUploadTime
+		if (timeSinceLastUpload < MIN_UPLOAD_INTERVAL) {
+			logger.debug(`pre-keys: skipping upload, only ${timeSinceLastUpload}ms since last`)
+			return
 		}
 
-		// Prevent multiple concurrent uploads
+		// Single-flight: if an upload is already running, wait for it and return —
+		// never start a second. The retry below is an INTERNAL loop (not a
+		// recursive uploadPreKeys call), so a retry can never re-enter here and
+		// deadlock awaiting its own in-flight promise.
 		if (uploadPreKeysPromise) {
-			logger.debug('Pre-key upload already in progress, waiting for completion')
+			logger.debug('pre-keys: upload already in progress, waiting for completion')
 			await uploadPreKeysPromise
+			return
 		}
 
-		const uploadLogic = async () => {
-			logger.info({ count, retryCount }, 'uploading pre-keys')
+		const MAX_RETRIES = 3
+		// Explicit per-attempt timeout so an attempt is never unbounded. We must NOT
+		// blindly rely on `defaultQueryTimeoutMs` (it is `number | undefined`; a
+		// consumer can disable it, and `promiseTimeout(undefined)` builds a promise
+		// with NO timeout — query() would then hang forever and, since the
+		// single-flight promise wraps the whole loop, permanently block every future
+		// upload). But we also must NOT clamp a valid config: a consumer's positive
+		// value is honoured and only a disabled/0 timeout falls back to 30s.
+		const PREKEY_UPLOAD_QUERY_TIMEOUT_MS = resolvePrekeyUploadQueryTimeout(defaultQueryTimeoutMs)
 
-			// Generate and save pre-keys atomically (prevents ID collisions on retry)
-			const node = await keys.transaction(async () => {
-				logger.debug({ requestedCount: count }, 'generating pre-keys with requested count')
-				const { update, node } = await getNextPreKeysNode({ creds, keys }, count)
-				// Update credentials immediately to prevent duplicate IDs on retry
-				ev.emit('creds.update', update)
-				return node // Only return node since update is already used
-			}, creds?.me?.id || 'upload-pre-keys')
-
+		const runWithRetries = async () => {
+			// Reconcile both cursors from the authoritative typed table. Besides
+			// rewinding for legacy unsent orphans, this must advance past a durable ACK
+			// when a crash happened before the matching creds.update reached creds.db.
+			// `nextGeneratedId` also prevents regeneration over durable key material if
+			// the allocation-cursor save was the write lost by the crash.
 			try {
-				await query(node)
-				logger.info({ count }, 'uploaded pre-keys successfully')
-				lastUploadTime = Date.now()
-				recordPrekeyUpload()
-			} catch (uploadError) {
-				logger.error({ uploadError: (uploadError as Error).toString(), count }, 'Failed to upload pre-keys to server')
+				const firstUnsent = prekeyUploads?.firstUnsentId()
+				const typedNextGenerated = prekeyUploads?.nextGeneratedId()
+				const unsent = prekeyUploads?.countUnsent()
+				const cursorBefore = {
+					firstUnuploadedPreKeyId: creds.firstUnuploadedPreKeyId,
+					nextPreKeyId: creds.nextPreKeyId
+				}
+				const cursorUpdate = applyReconciledPrekeyCursors(creds, {
+					firstUnsentId: firstUnsent ?? null,
+					nextGeneratedId: typedNextGenerated ?? null,
+					unsentCount: unsent ?? 0
+				})
 
-				// Exponential backoff retry (max 3 retries)
-				if (retryCount < 3) {
-					const backoffDelay = Math.min(1000 * Math.pow(2, retryCount), 10000)
-					logger.info(`Retrying pre-key upload in ${backoffDelay}ms`)
-					await new Promise(resolve => setTimeout(resolve, backoffDelay))
-					return uploadPreKeys(count, retryCount + 1)
+				if (Object.keys(cursorUpdate).length > 0) {
+					logger.info(
+						{
+							from: cursorBefore,
+							to: cursorUpdate,
+							firstUnsent,
+							typedNextGenerated,
+							unsent
+						},
+						'pre-keys: self-heal reconciled creds cursors from authoritative typed prekeys'
+					)
+					ev.emit('creds.update', cursorUpdate)
+				}
+			} catch (err) {
+				logger.debug({ err }, 'multi-db-sqlite: prekey self-heal check failed (non-fatal)')
+			}
+
+			let lastError: unknown
+			for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+				const startedAt = Date.now()
+				// Not committed until the server acks, so a retry reads the SAME
+				// starting cursor and regenerates nothing — it re-sends this range.
+				const firstUnuploadedBefore = creds.firstUnuploadedPreKeyId
+				let committedFirstUnuploaded = firstUnuploadedBefore
+				let allocatedNextPreKeyId = creds.nextPreKeyId
+				let reservationError: unknown
+
+				logger.info(
+					{ requested: count, attempt },
+					`pre-keys: ${attempt ? `retry #${attempt}` : 'starting'} upload of ${count}`
+				)
+
+				// Generate + persist the batch atomically.
+				const node = await keys.transaction(async () => {
+					const { update, node } = await getNextPreKeysNode({ creds, keys }, count)
+					committedFirstUnuploaded = update.firstUnuploadedPreKeyId ?? firstUnuploadedBefore
+					allocatedNextPreKeyId = update.nextPreKeyId ?? creds.nextPreKeyId
+					const generated = committedFirstUnuploaded - firstUnuploadedBefore
+					logger.info(
+						{
+							fromId: firstUnuploadedBefore,
+							toId: committedFirstUnuploaded,
+							keys: generated,
+							nextPreKeyId: allocatedNextPreKeyId
+						},
+						`pre-keys: prepared batch of ${generated} — ids [${firstUnuploadedBefore}..${committedFirstUnuploaded}) — awaiting server ack`
+					)
+					keys.afterCommit(() => {
+						if (!prekeyUploads || !(committedFirstUnuploaded > firstUnuploadedBefore)) return
+						try {
+							const expected = committedFirstUnuploaded - firstUnuploadedBefore
+							const reserved = prekeyUploads.reserveUploadRange(
+								firstUnuploadedBefore,
+								committedFirstUnuploaded,
+								Math.floor(Date.now() / 1000)
+							)
+							if (reserved !== expected) {
+								reservationError = new Error(
+									`pre-keys: authoritative upload reservation covered ${reserved}/${expected} rows for ` +
+										`[${firstUnuploadedBefore}..${committedFirstUnuploaded}); refusing to send an ambiguous batch`
+								)
+							}
+						} catch (err) {
+							reservationError = err
+						}
+					})
+					return node
+				}, creds?.me?.id || 'upload-pre-keys')
+
+				// Keys are now committed to storage → only NOW advance the allocation
+				// counter, so a failed keys.transaction() (rollback) never leaves
+				// `nextPreKeyId` pointing past ids that were never persisted. Holds
+				// back `firstUnuploadedPreKeyId` (upload progress) until the ack below.
+				ev.emit('creds.update', { nextPreKeyId: allocatedNextPreKeyId })
+
+				// afterCommit runs only after the generated key mutations are durable.
+				// A reservation failure must therefore NOT make the caller believe the
+				// whole transaction rolled back: doing so leaves nextPreKeyId stale and
+				// the next attempt regenerates different key material over the same ids.
+				// Advance only the allocation cursor, keep upload progress unchanged, and
+				// retry the exact persisted range without sending an ambiguous IQ.
+				if (reservationError) {
+					lastError = reservationError
+					logger.error(
+						{
+							reservationError: (reservationError as Error)?.toString?.() ?? String(reservationError),
+							fromId: firstUnuploadedBefore,
+							toId: committedFirstUnuploaded,
+							attempt,
+							nextPreKeyId: allocatedNextPreKeyId,
+							firstUnuploadedPreKeyId: firstUnuploadedBefore,
+							action: attempt < MAX_RETRIES ? 'retry-persisted-range' : 'fail-preserving-persisted-range'
+						},
+						'pre-keys: post-commit upload reservation failed; allocation cursor preserved and IQ suppressed'
+					)
+					if (attempt < MAX_RETRIES) {
+						const backoffDelay = Math.min(1000 * Math.pow(2, attempt), 10000)
+						await new Promise(resolve => setTimeout(resolve, backoffDelay))
+					}
+
+					continue
 				}
 
-				throw uploadError
+				try {
+					await query(node, PREKEY_UPLOAD_QUERY_TIMEOUT_MS)
+					const durationMs = Date.now() - startedAt
+					lastUploadTime = Date.now()
+					// Server acked → advance the upload-progress cursor (all backends),
+					// then flip the per-key flag + append prekey_uploads atomically
+					// (multi-db, best-effort self-healing).
+					ev.emit('creds.update', { firstUnuploadedPreKeyId: committedFirstUnuploaded })
+					recordPrekeyUpload(firstUnuploadedBefore, committedFirstUnuploaded)
+					logger.info(
+						{
+							uploaded: committedFirstUnuploaded - firstUnuploadedBefore,
+							fromId: firstUnuploadedBefore,
+							toId: committedFirstUnuploaded,
+							durationMs
+						},
+						`pre-keys: ✓ uploaded & acked in ${durationMs}ms — ` +
+							`${committedFirstUnuploaded - firstUnuploadedBefore} keys [${firstUnuploadedBefore}..${committedFirstUnuploaded}) marked sent_to_server`
+					)
+					return
+				} catch (uploadError) {
+					lastError = uploadError
+					const durationMs = Date.now() - startedAt
+					logger.error(
+						{ uploadError: (uploadError as Error).toString(), count, attempt, durationMs },
+						`pre-keys: ✗ upload failed after ${durationMs}ms — keys [${firstUnuploadedBefore}..${committedFirstUnuploaded}) kept unuploaded`
+					)
+					if (attempt < MAX_RETRIES) {
+						const backoffDelay = Math.min(1000 * Math.pow(2, attempt), 10000)
+						logger.info(`pre-keys: retrying upload in ${backoffDelay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`)
+						await new Promise(resolve => setTimeout(resolve, backoffDelay))
+					}
+				}
 			}
+
+			throw lastError
 		}
 
-		// Add timeout protection
-		uploadPreKeysPromise = Promise.race([
-			uploadLogic(),
-			new Promise<void>((_, reject) =>
-				setTimeout(() => reject(new Boom('Pre-key upload timeout', { statusCode: 408 })), UPLOAD_TIMEOUT)
-			)
-		])
+		// The single-flight promise tracks the WHOLE retry loop — no outer
+		// Promise.race timeout. An external timeout would resolve the guard while
+		// runWithRetries() kept running in the background, letting a subsequent
+		// call start a second, concurrent upload. The loop can't hang because each
+		// query() is given a bounded PREKEY_UPLOAD_QUERY_TIMEOUT_MS (the consumer's
+		// timeout when set, else a 30s fallback — never the disable-able undefined),
+		// so every attempt terminates and the guard is always released.
+		uploadPreKeysPromise = runWithRetries()
 
 		try {
 			await uploadPreKeysPromise
@@ -714,23 +866,24 @@ export const makeSocket = (config: SocketConfig) => {
 			else count = MIN_PREKEY_COUNT
 			const { exists: currentPreKeyExists, currentPreKeyId } = await verifyCurrentPreKeyExists()
 
-			logger.info(`${preKeyCount} pre-keys found on server`)
-			logger.info(`Current prekey ID: ${currentPreKeyId}, exists in storage: ${currentPreKeyExists}`)
-
 			const lowServerCount = preKeyCount <= count
 			const missingCurrentPreKey = !currentPreKeyExists && currentPreKeyId > 0
-
 			const shouldUpload = lowServerCount || missingCurrentPreKey
+
+			logger.info(
+				{ serverCount: preKeyCount, threshold: count, currentPreKeyId, currentPreKeyExists, willUpload: shouldUpload },
+				`pre-keys: server has ${preKeyCount} (threshold ${count}), current prekey #${currentPreKeyId} ${currentPreKeyExists ? 'present' : 'MISSING'} in storage`
+			)
 
 			if (shouldUpload) {
 				const reasons = []
-				if (lowServerCount) reasons.push(`server count low (${preKeyCount})`)
-				if (missingCurrentPreKey) reasons.push(`current prekey ${currentPreKeyId} missing from storage`)
+				if (lowServerCount) reasons.push(`server count low (${preKeyCount} ≤ ${count})`)
+				if (missingCurrentPreKey) reasons.push(`current prekey #${currentPreKeyId} missing from storage`)
 
-				logger.info(`Uploading PreKeys due to: ${reasons.join(', ')}`)
+				logger.info(`pre-keys: upload required — ${reasons.join('; ')}`)
 				await uploadPreKeys(count)
 			} else {
-				logger.info(`PreKey validation passed - Server: ${preKeyCount}, Current prekey ${currentPreKeyId} exists`)
+				logger.info(`pre-keys: validation passed — no upload needed (server ${preKeyCount} > ${count})`)
 			}
 		} catch (error) {
 			logger.error({ error }, 'Failed to check/upload pre-keys during initialization')

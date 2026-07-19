@@ -143,6 +143,13 @@ export class SignalTypedBackend {
 		upsertPrekey: SqliteStatementLike
 		selectPrekey: SqliteStatementLike
 		deletePrekey: SqliteStatementLike
+		markPrekeysUploaded: SqliteStatementLike
+		reservePrekeyUploadRange: SqliteStatementLike
+		markPrekeyDirectDistribution: SqliteStatementLike
+		selectPrekeyDirectDistribution: SqliteStatementLike
+		countUnsentPrekeys: SqliteStatementLike
+		firstUnsentPrekeyId: SqliteStatementLike
+		nextGeneratedPrekeyId: SqliteStatementLike
 		upsertSignedPrekey: SqliteStatementLike
 		selectSignedPrekey: SqliteStatementLike
 		upsertKyberPrekey: SqliteStatementLike
@@ -195,11 +202,69 @@ export class SignalTypedBackend {
 					'AND session_type = ? AND session_scope = ?'
 			),
 			upsertPrekey: this.db.prepare(
-				'INSERT INTO prekeys (prekey_id, record, key_type) VALUES (?, ?, ?) ' +
-					'ON CONFLICT(prekey_id) DO UPDATE SET record = excluded.record'
+				// `sent_to_server = 0` + `direct_distribution = 0` on INSERT mirror
+				// WhatsApp Android's SignalPreKeyStore exactly: a freshly generated
+				// one-time prekey is "not yet uploaded" until the server acks the
+				// batch (then `markPrekeysUploaded` flips sent_to_server to 1). The
+				// real store selects the upload batch with
+				// `WHERE sent_to_server = 0 AND direct_distribution = 0`, so both
+				// columns must be a concrete 0 (not NULL) for that predicate to hold.
+				// InfiniteAPI never produces direct-distribution prekeys, so it is
+				// always 0. The ON CONFLICT clause deliberately updates ONLY `record`
+				// — re-putting an existing id must NOT reset an uploaded key to 0.
+				'INSERT INTO prekeys (prekey_id, record, key_type, sent_to_server, direct_distribution) ' +
+					'VALUES (?, ?, ?, 0, 0) ON CONFLICT(prekey_id) DO UPDATE SET record = excluded.record'
 			),
 			selectPrekey: this.db.prepare('SELECT record FROM prekeys WHERE prekey_id = ?'),
 			deletePrekey: this.db.prepare('DELETE FROM prekeys WHERE prekey_id = ?'),
+			// Flip the just-uploaded batch to sent_to_server=1 + upload_timestamp,
+			// mirroring WhatsApp Android's per-key upload flag. Range is the
+			// half-open [fromId, toId) that the upload IQ carried. Guarded on
+			// `sent_to_server = 0` so a re-run (retry that re-uploads the same
+			// range) is idempotent and never disturbs already-acked keys.
+			markPrekeysUploaded: this.db.prepare(
+				'UPDATE prekeys SET sent_to_server = 1, upload_timestamp = ? ' +
+					'WHERE prekey_id >= ? AND prekey_id < ? AND (sent_to_server IS NULL OR sent_to_server = 0)'
+			),
+			// Stamp every key before the upload IQ leaves the process. A non-null
+			// timestamp is a durable reservation: after a crash we cannot know whether
+			// the server accepted the IQ, so that key must stay on the server-upload
+			// path and must never be handed directly to a peer.
+			reservePrekeyUploadRange: this.db.prepare(
+				'UPDATE prekeys SET upload_timestamp = COALESCE(upload_timestamp, ?) ' +
+					'WHERE prekey_id >= ? AND prekey_id < ? ' +
+					'AND COALESCE(sent_to_server, 0) = 0 AND COALESCE(direct_distribution, 0) = 0'
+			),
+			// Direct-distribution path (retry receipt): the real SignalPreKeyStore
+			// takes ONE unsent key, flags it `direct_distribution = 1` + stamps
+			// `upload_timestamp`, then hands it straight to the peer inline. The flag
+			// excludes it from the normal stock/upload queries (which filter
+			// `direct_distribution = 0`) so it is never also uploaded to the server
+			// pool. `sent_to_server` is intentionally left untouched (the key was
+			// delivered peer-to-peer, not acked by the server pool upload IQ).
+			markPrekeyDirectDistribution: this.db.prepare(
+				'UPDATE prekeys SET direct_distribution = 1, upload_timestamp = ? ' +
+					'WHERE prekey_id = ? AND COALESCE(sent_to_server, 0) = 0 ' +
+					'AND COALESCE(direct_distribution, 0) = 0 AND upload_timestamp IS NULL'
+			),
+			selectPrekeyDirectDistribution: this.db.prepare('SELECT direct_distribution FROM prekeys WHERE prekey_id = ?'),
+			// A00 / A01 of the real SignalPreKeyStore: the unsent-prekey set IS the
+			// upload queue. The mobile store uses `sent_to_server = 0 AND
+			// direct_distribution = 0`; we wrap both columns in COALESCE so rows
+			// generated BEFORE per-key tracking existed (NULL columns) are treated
+			// as unsent instead of vanishing — in SQL `NULL = 0` is not true, which
+			// would otherwise hide every legacy orphan from the self-heal. The
+			// conservative choice is deliberate: a NULL row is indistinguishable
+			// from an orphan, so we re-send it (the server dedups by prekey_id)
+			// rather than trust a possibly-drifted cursor and risk hiding a key the
+			// server never received.
+			countUnsentPrekeys: this.db.prepare(
+				'SELECT COUNT(*) AS count FROM prekeys WHERE COALESCE(sent_to_server, 0) = 0 AND COALESCE(direct_distribution, 0) = 0'
+			),
+			firstUnsentPrekeyId: this.db.prepare(
+				'SELECT MIN(prekey_id) AS id FROM prekeys WHERE COALESCE(sent_to_server, 0) = 0 AND COALESCE(direct_distribution, 0) = 0'
+			),
+			nextGeneratedPrekeyId: this.db.prepare('SELECT MAX(prekey_id) + 1 AS id FROM prekeys'),
 			upsertSignedPrekey: this.db.prepare(
 				'INSERT INTO signed_prekeys (prekey_id, record, timestamp, key_type) VALUES (?, ?, ?, ?) ' +
 					'ON CONFLICT(prekey_id) DO UPDATE SET ' +
@@ -372,6 +437,113 @@ export class SignalTypedBackend {
 
 	putPrekey(prekeyId: number, record: Buffer | Uint8Array, keyType = 0): void {
 		this.stmts.upsertPrekey.run(prekeyId, record, keyType)
+	}
+
+	/**
+	 * Marks the one-time prekeys in the half-open range `[fromId, toId)` as
+	 * uploaded (sent_to_server = 1) with the given `upload_timestamp`, mirroring
+	 * WhatsApp Android's per-key upload flag. Called only AFTER the server acks
+	 * the upload IQ, so a permanently-failed upload leaves the keys at 0 and they
+	 * get re-uploaded on the next attempt — impossible to orphan, unlike a
+	 * monotonic "first unuploaded" counter. Idempotent (guarded on `= 0`).
+	 */
+	markPrekeysUploaded(fromId: number, toId: number, uploadTimestampSec: number = Math.floor(Date.now() / 1000)): void {
+		if (!(toId > fromId)) return
+		this.stmts.markPrekeysUploaded.run(uploadTimestampSec, fromId, toId)
+	}
+
+	/**
+	 * Durably reserves an eligible half-open range for a normal server upload.
+	 * Returns the number of eligible typed rows covered by the reservation.
+	 */
+	reservePrekeyUploadRange(fromId: number, toId: number, uploadTimestampSec: number): number {
+		if (!(toId > fromId)) return 0
+		return this.stmts.reservePrekeyUploadRange.run(uploadTimestampSec, fromId, toId).changes
+	}
+
+	/**
+	 * Flags a single one-time prekey as direct-distributed (`direct_distribution
+	 * = 1`) with its `upload_timestamp`, mirroring what the real SignalPreKeyStore
+	 * does when a key is handed to a peer inline in a retry receipt instead of
+	 * being uploaded to the server pool. The flag removes it from the unsent-stock
+	 * / upload queries (`countUnsentPrekeys` / `firstUnsentPrekeyId`), so it is not
+	 * also re-sent to the server. Returns true only when exactly one durable row
+	 * was marked; retry-receipt callers use that result fail-closed before handing
+	 * the one-time key to a peer. A row whose `upload_timestamp` is already set
+	 * has entered the normal upload path and is intentionally ineligible even
+	 * when its server ACK has not been recorded yet.
+	 */
+	markPrekeyDirectDistribution(prekeyId: number, uploadTimestampSec: number = Math.floor(Date.now() / 1000)): boolean {
+		return this.stmts.markPrekeyDirectDistribution.run(uploadTimestampSec, prekeyId).changes === 1
+	}
+
+	/** True only when the durable typed row is present and direct-distributed. */
+	isPrekeyDirectDistribution(prekeyId: number): boolean {
+		const row = this.stmts.selectPrekeyDirectDistribution.get(prekeyId) as
+			| { direct_distribution: number | null }
+			| undefined
+		return row?.direct_distribution === 1
+	}
+
+	/**
+	 * A00 of the real SignalPreKeyStore — how many one-time prekeys are still
+	 * owed to the server (`sent_to_server = 0 AND direct_distribution = 0`).
+	 */
+	countUnsentPrekeys(): number {
+		const r = this.stmts.countUnsentPrekeys.get() as { count: number } | undefined
+		return Number(r?.count ?? 0)
+	}
+
+	/**
+	 * Lowest prekey id that still needs uploading, or `null` when the server has
+	 * every generated key. This is the table-authoritative equivalent of the
+	 * `firstUnuploadedPreKeyId` creds counter: whenever it points BELOW the
+	 * counter, the counter drifted (e.g. a pre-#665 orphan) and the caller
+	 * rewinds it so those keys get re-sent. Never used to raise the counter, so
+	 * it can only recover keys, never skip an un-acked one.
+	 */
+	firstUnsentPrekeyId(): number | null {
+		const r = this.stmts.firstUnsentPrekeyId.get() as { id: number | null } | undefined
+		return r?.id ?? null
+	}
+
+	/** Next allocation id implied by the highest durable typed prekey. */
+	nextGeneratedPrekeyId(): number | null {
+		const r = this.stmts.nextGeneratedPrekeyId.get() as { id: number | null } | undefined
+		return r?.id ?? null
+	}
+
+	/**
+	 * A03 of the real SignalPreKeyStore, atomically: on server ack, flip the
+	 * uploaded ids to `sent_to_server = 1` + `upload_timestamp` in chunks of 200,
+	 * THEN append one `prekey_uploads` log row — all inside a single transaction,
+	 * committed only if every step succeeds (order + chunk size confirmed from the
+	 * deobfuscated store). This makes the two writes atomic: a mid-way failure
+	 * rolls back, so the DB never claims an upload that didn't fully land. Range
+	 * is the half-open `[fromId, toId)` the IQ carried; `uploadTimestampSec` is
+	 * epoch SECONDS (WhatsApp Android stores seconds, not millis).
+	 */
+	commitPrekeyUpload(fromId: number, toId: number, uploadTimestampSec: number): void {
+		// Guard the public contract: an empty/invalid range must NOT append a
+		// prekey_uploads row (that would log an upload that flipped zero keys).
+		if (!(toId > fromId)) return
+		const CHUNK = 200
+		this.db.exec('BEGIN IMMEDIATE')
+		try {
+			for (let start = fromId; start < toId; start += CHUNK) {
+				const end = Math.min(start + CHUNK, toId)
+				this.stmts.markPrekeysUploaded.run(uploadTimestampSec, start, end)
+			}
+
+			this.stmts.insertPrekeyUpload.run(uploadTimestampSec, 0)
+			this.db.exec('COMMIT')
+		} catch (err) {
+			try {
+				this.db.exec('ROLLBACK')
+			} catch {}
+
+			throw err
+		}
 	}
 
 	getPrekey(prekeyId: number): Buffer | null {

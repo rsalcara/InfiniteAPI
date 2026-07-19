@@ -24,19 +24,41 @@ export type TrustedContactsBackendStats = {
 	sentCount: number
 }
 
+export type TrustedContactReplacement = {
+	incoming: { token: Buffer | Uint8Array; timestamp: number } | null
+	sent: { sentTimestamp: number; realIssueTimestamp: number } | null
+}
+
+const CLEAR_MARKER_KEY = 'auth_keys_clear_in_progress'
+// #671 used this narrower name while the marker only guaranteed tctoken
+// recovery. Treat it as the same global-clear intent during upgrades: that
+// version wrote the marker before attempting the remaining key-store deletes.
+const LEGACY_CLEAR_MARKER_KEY = 'tctoken_clear_in_progress'
+
 export class TrustedContactsBackend {
 	private readonly stmts: {
 		upsertIncoming: SqliteStatementLike
 		selectIncoming: SqliteStatementLike
 		delIncoming: SqliteStatementLike
+		listIncoming: SqliteStatementLike
 		upsertSent: SqliteStatementLike
 		selectSent: SqliteStatementLike
 		delSent: SqliteStatementLike
+		listSentJids: SqliteStatementLike
 		countIncoming: SqliteStatementLike
 		countSent: SqliteStatementLike
+		clearIncoming: SqliteStatementLike
+		clearSent: SqliteStatementLike
+		upsertMetadata: SqliteStatementLike
+		selectMetadata: SqliteStatementLike
+		deleteMetadata: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
+	private readonly replaceTx: (jid: string, replacement: TrustedContactReplacement) => void
+	private readonly replaceManyTx: (entries: ReadonlyArray<readonly [string, TrustedContactReplacement]>) => void
+	private readonly beginClearTx: () => void
+	private readonly finishClearTx: () => void
 
 	constructor(db: SqliteDbLike) {
 		this.db = db
@@ -51,6 +73,13 @@ export class TrustedContactsBackend {
 				'SELECT incoming_tc_token, incoming_tc_token_timestamp FROM wa_trusted_contacts WHERE jid = ?'
 			),
 			delIncoming: this.db.prepare('DELETE FROM wa_trusted_contacts WHERE jid = ?'),
+			// Enumeration = the table itself (PK jid). This is what replaces the
+			// opaque `__index` list the legacy signal_kv path kept (whose
+			// read-merge-write had a lost-update race): here every contact is its
+			// own row, so listing is a plain SELECT with no shared list to clobber.
+			listIncoming: this.db.prepare(
+				'SELECT jid, incoming_tc_token_timestamp FROM wa_trusted_contacts WHERE length(incoming_tc_token) > 0'
+			),
 			upsertSent: this.db.prepare(
 				'INSERT INTO wa_trusted_contacts_send (jid, sent_tc_token_timestamp, real_issue_timestamp) VALUES (?, ?, ?) ' +
 					'ON CONFLICT(jid) DO UPDATE SET ' +
@@ -61,9 +90,59 @@ export class TrustedContactsBackend {
 				'SELECT sent_tc_token_timestamp, real_issue_timestamp FROM wa_trusted_contacts_send WHERE jid = ?'
 			),
 			delSent: this.db.prepare('DELETE FROM wa_trusted_contacts_send WHERE jid = ?'),
+			listSentJids: this.db.prepare('SELECT jid FROM wa_trusted_contacts_send'),
 			countIncoming: this.db.prepare('SELECT COUNT(*) AS n FROM wa_trusted_contacts'),
-			countSent: this.db.prepare('SELECT COUNT(*) AS n FROM wa_trusted_contacts_send')
+			countSent: this.db.prepare('SELECT COUNT(*) AS n FROM wa_trusted_contacts_send'),
+			clearIncoming: this.db.prepare('DELETE FROM wa_trusted_contacts'),
+			clearSent: this.db.prepare('DELETE FROM wa_trusted_contacts_send'),
+			upsertMetadata: this.db.prepare(
+				'INSERT INTO infiniteapi_metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+			),
+			selectMetadata: this.db.prepare('SELECT value FROM infiniteapi_metadata WHERE key = ?'),
+			deleteMetadata: this.db.prepare('DELETE FROM infiniteapi_metadata WHERE key = ?')
 		}
+
+		const applyReplacement = (jid: string, replacement: TrustedContactReplacement): void => {
+			if (replacement.incoming) {
+				this.stmts.upsertIncoming.run(jid, replacement.incoming.token, replacement.incoming.timestamp)
+			} else {
+				this.stmts.delIncoming.run(jid)
+			}
+
+			if (replacement.sent) {
+				this.stmts.upsertSent.run(jid, replacement.sent.sentTimestamp, replacement.sent.realIssueTimestamp)
+			} else {
+				this.stmts.delSent.run(jid)
+			}
+		}
+
+		this.replaceTx = this.db.transaction(applyReplacement).immediate
+		this.replaceManyTx = this.db.transaction((entries: ReadonlyArray<readonly [string, TrustedContactReplacement]>) => {
+			for (const [jid, replacement] of entries) applyReplacement(jid, replacement)
+		}).immediate
+
+		this.beginClearTx = this.db.transaction(() => {
+			this.stmts.upsertMetadata.run(CLEAR_MARKER_KEY, String(Date.now()))
+			this.stmts.deleteMetadata.run(LEGACY_CLEAR_MARKER_KEY)
+			this.stmts.clearIncoming.run()
+			this.stmts.clearSent.run()
+		}).immediate
+
+		this.finishClearTx = this.db.transaction(() => {
+			this.stmts.deleteMetadata.run(CLEAR_MARKER_KEY)
+			this.stmts.deleteMetadata.run(LEGACY_CLEAR_MARKER_KEY)
+		}).immediate
+	}
+
+	/** Atomically replaces both halves of one bundled tctoken inside wa.db. */
+	replace(jid: string, replacement: TrustedContactReplacement): void {
+		this.replaceTx(jid, replacement)
+	}
+
+	/** Atomically replaces both halves for every JID in one wa.db transaction. */
+	replaceMany(entries: ReadonlyArray<readonly [string, TrustedContactReplacement]>): void {
+		if (entries.length === 0) return
+		this.replaceManyTx(entries)
 	}
 
 	/** Stores (or updates) the incoming TC token for a contact JID. */
@@ -107,10 +186,47 @@ export class TrustedContactsBackend {
 		return this.stmts.delSent.run(jid).changes > 0
 	}
 
+	/**
+	 * Enumerates every stored incoming-token contact as `{ jid, timestamp }`.
+	 * Replaces the legacy `__index` jid-list (which the prune path read, merged
+	 * and rewrote — a lost-update race). The prune can filter by `timestamp`
+	 * without an extra point-read per jid.
+	 */
+	listIncoming(): Array<{ jid: string; timestamp: number }> {
+		const rows = this.stmts.listIncoming.all() as Array<{ jid: string; incoming_tc_token_timestamp: number }>
+		return rows.map(r => ({ jid: r.jid, timestamp: r.incoming_tc_token_timestamp }))
+	}
+
+	/** Every jid that has an incoming TC token (PK enumeration). */
+	listIncomingJids(): string[] {
+		return (this.stmts.listIncoming.all() as Array<{ jid: string }>).map(r => r.jid)
+	}
+
+	/** Every jid that has an outbound (sent/scheduled) TC token row. */
+	listSentJids(): string[] {
+		return (this.stmts.listSentJids.all() as Array<{ jid: string }>).map(r => r.jid)
+	}
+
 	/** Diagnostic stats for ops visibility. */
 	stats(): TrustedContactsBackendStats {
 		const inc = this.stmts.countIncoming.get() as { n: number }
 		const sent = this.stmts.countSent.get() as { n: number }
 		return { incomingCount: inc.n, sentCount: sent.n }
+	}
+
+	/** Records a global key-clear intent and wipes both wa.db token tables atomically. */
+	beginClear(): void {
+		this.beginClearTx()
+	}
+
+	hasPendingClear(): boolean {
+		return (
+			this.stmts.selectMetadata.get(CLEAR_MARKER_KEY) !== undefined ||
+			this.stmts.selectMetadata.get(LEGACY_CLEAR_MARKER_KEY) !== undefined
+		)
+	}
+
+	finishClear(): void {
+		this.finishClearTx()
 	}
 }

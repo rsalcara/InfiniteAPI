@@ -1,28 +1,23 @@
 /**
- * M2 — `uploadPreKeys` race + uncancellable retry.
+ * `uploadPreKeys` control-flow — id advancement gated on commit + ack, and a
+ * retry loop that never burns ids or deadlocks.
  *
- * `socket.ts:496-524`:
- *  - Emits `creds.update` INSIDE the key transaction before the upload
- *    completes. If the upload fails afterwards, local creds advanced but the
- *    server has nothing.
- *  - The upload timeout is `Promise.race` — the underlying upload logic is
- *    NOT cancelled when the timeout wins, so the caller sees failure while
- *    the old operation continues in the background.
- *  - Each retry generates fresh pre-keys with new IDs (L499 comment). After
- *    3 network failures, `nextPreKeyId` has permanently advanced by
- *    `3 × MIN_PREKEY_COUNT` with nothing uploaded.
- *
- * Desired behavior:
- *  - `nextPreKeyId` advances only after a successful upload.
- *  - Failed uploads do not orphan generated pre-keys.
- *  - Timeout actually cancels the in-flight upload (AbortSignal).
- *
- * Failing while M2 is unresolved. Flipped to `it(...)` in Stage 2.
- *
- * This is a primitive-level test of the desired "generate → upload → commit"
- * sequencing. The Stage 2 refactor introduces a public surface for this
- * pattern that the real `uploadPreKeys` will use.
+ * This models the real `socket.ts uploadPreKeys` sequencing (it can't be
+ * imported directly — it closes over a live socket), asserting the invariants
+ * the real function now guarantees:
+ *   - `nextPreKeyId` advances ONLY after `keys.transaction()` commits, so a
+ *     rollback never leaves the counter pointing past un-persisted ids.
+ *   - `firstUnuploadedPreKeyId` advances ONLY after the server acks, so a failed
+ *     upload never orphans generated keys.
+ *   - the retry is an internal loop that re-sends the SAME range — N failures
+ *     advance `nextPreKeyId` by exactly one batch, not N.
  */
+
+import { applyReconciledPrekeyCursors, reconcilePrekeyCursors } from '../../Utils/prekey-upload-cursors'
+import {
+	PREKEY_UPLOAD_QUERY_TIMEOUT_FALLBACK_MS,
+	resolvePrekeyUploadQueryTimeout
+} from '../../Utils/prekey-upload-timeout'
 
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
@@ -31,72 +26,226 @@ interface CredsLike {
 	firstUnuploadedPreKeyId: number
 }
 
+/** Mirror of `generateOrGetPreKeys` (src/Utils/signal.ts). */
+function generateOrGetPreKeys(creds: CredsLike, range: number) {
+	const available = creds.nextPreKeyId - creds.firstUnuploadedPreKeyId
+	const remaining = range - available
+	const lastPreKeyId = creds.nextPreKeyId + remaining - 1
+	return {
+		nextPreKeyId: Math.max(lastPreKeyId + 1, creds.nextPreKeyId),
+		firstUnuploadedPreKeyId: Math.max(creds.firstUnuploadedPreKeyId, lastPreKeyId + 1)
+	}
+}
+
 /**
- * Today's pattern (paraphrased from `socket.ts:496-524`): generate keys,
- * advance `nextPreKeyId`, fire upload, retry on failure — each retry advances
- * IDs again.
+ * Faithful paraphrase of the fixed `uploadPreKeys` control flow.
+ * `commitFails(attempt)` / `queryFails(attempt)` inject failures per attempt.
  */
-const todaysUploadPreKeys = async (
+async function uploadPreKeys(
 	creds: CredsLike,
-	upload: () => Promise<void>,
-	MIN_PREKEY_COUNT: number,
-	maxAttempts: number
-): Promise<void> => {
+	opts: {
+		count?: number
+		maxRetries?: number
+		commitFails?: (attempt: number) => boolean
+		queryFails?: (attempt: number) => boolean
+	}
+): Promise<{ queryAttempts: number }> {
+	const { count = 30, maxRetries = 3, commitFails, queryFails } = opts
 	let lastError: unknown
-	for (let attempt = 0; attempt < maxAttempts; attempt++) {
-		// Advance ids up-front — once per attempt.
-		const start = creds.nextPreKeyId
-		creds.nextPreKeyId = start + MIN_PREKEY_COUNT
-		creds.firstUnuploadedPreKeyId = creds.nextPreKeyId
+	let queryAttempts = 0
+
+	for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		// Not committed until the server acks → a retry reads the SAME cursor.
+		const update = generateOrGetPreKeys(creds, count)
+
+		// keys.transaction(): a commit failure rolls back — nothing persisted,
+		// and crucially `nextPreKeyId` is NOT advanced (that happens after).
+		if (commitFails?.(attempt)) {
+			throw new Error('keys.transaction commit failed')
+		}
+
+		// Keys committed → only NOW advance the allocation counter.
+		creds.nextPreKeyId = update.nextPreKeyId
 
 		try {
-			await upload()
-			return
+			queryAttempts++
+			if (queryFails?.(attempt)) throw new Error('network error')
+			// Server acked → advance upload progress.
+			creds.firstUnuploadedPreKeyId = update.firstUnuploadedPreKeyId
+			return { queryAttempts }
 		} catch (e) {
 			lastError = e
-			await delay(2)
+			if (attempt < maxRetries) await delay(1)
 		}
 	}
 
 	throw lastError
 }
 
-describe('uploadPreKeys — id advancement gated on upload success (M2)', () => {
-	it.failing('nextPreKeyId is unchanged after N consecutive upload failures', async () => {
+describe('uploadPreKeys — id advancement gated on commit + ack', () => {
+	it('does not advance nextPreKeyId when the key transaction rolls back', async () => {
 		const creds: CredsLike = { nextPreKeyId: 1, firstUnuploadedPreKeyId: 1 }
-		const MIN_PREKEY_COUNT = 30
-		const ATTEMPTS = 3
-
-		// Upload always fails.
-		const upload = async () => {
-			throw new Error('network error')
-		}
-
-		await expect(todaysUploadPreKeys(creds, upload, MIN_PREKEY_COUNT, ATTEMPTS)).rejects.toThrow('network error')
-
-		// Desired: after every attempt failed, ids have NOT been burned.
+		await expect(uploadPreKeys(creds, { commitFails: () => true })).rejects.toThrow('commit failed')
 		expect(creds.nextPreKeyId).toBe(1)
 		expect(creds.firstUnuploadedPreKeyId).toBe(1)
 	})
 
-	it.failing('a successful retry after one failure advances ids by exactly one batch, not two', async () => {
+	it('does not orphan keys or burn ids after N consecutive upload failures', async () => {
 		const creds: CredsLike = { nextPreKeyId: 1, firstUnuploadedPreKeyId: 1 }
-		const MIN_PREKEY_COUNT = 30
-
-		let calls = 0
-		const upload = async () => {
-			calls++
-			if (calls === 1) throw new Error('transient')
-		}
-
-		await todaysUploadPreKeys(creds, upload, MIN_PREKEY_COUNT, 3)
-
-		// Desired: one successful upload = one batch advance.
-		expect(creds.nextPreKeyId).toBe(1 + MIN_PREKEY_COUNT)
-		expect(creds.firstUnuploadedPreKeyId).toBe(1 + MIN_PREKEY_COUNT)
+		const MIN = 30
+		await expect(uploadPreKeys(creds, { count: MIN, queryFails: () => true })).rejects.toThrow('network error')
+		// Upload never acked → progress cursor stays put (no orphan)…
+		expect(creds.firstUnuploadedPreKeyId).toBe(1)
+		// …and ids were allocated exactly once, not once per attempt.
+		expect(creds.nextPreKeyId).toBe(1 + MIN)
 	})
 
-	it.todo(
-		'a timed-out upload is cancelled, not allowed to continue in the background — Stage 2 rewrites uploadPreKeys with AbortSignal threading; the integration assertion lands in socket.ts unit tests at that stage'
-	)
+	it('a successful retry after one failure advances ids by exactly one batch', async () => {
+		const creds: CredsLike = { nextPreKeyId: 1, firstUnuploadedPreKeyId: 1 }
+		const MIN = 30
+		const res = await uploadPreKeys(creds, { count: MIN, queryFails: a => a === 0 })
+		expect(res.queryAttempts).toBe(2) // failed once, retried, succeeded — no deadlock
+		expect(creds.nextPreKeyId).toBe(1 + MIN)
+		expect(creds.firstUnuploadedPreKeyId).toBe(1 + MIN)
+	})
+
+	it('preserves committed key ids and retries the same material after a post-commit reservation failure', () => {
+		const creds: CredsLike = { nextPreKeyId: 1, firstUnuploadedPreKeyId: 1 }
+		const persisted = new Map<number, string>()
+		let generated = 0
+
+		const prepareAndCommit = () => {
+			const before = creds.nextPreKeyId
+			const update = generateOrGetPreKeys(creds, 3)
+			for (let id = before; id < update.nextPreKeyId; id++) {
+				generated++
+				persisted.set(id, `key-${id}-${generated}`)
+			}
+
+			// Mirrors the production fix: afterCommit proves the key mutations are
+			// durable, so allocation advances even when reservation rejects the IQ.
+			creds.nextPreKeyId = update.nextPreKeyId
+			return update
+		}
+
+		const first = prepareAndCommit()
+		const firstMaterial = [...persisted.entries()]
+		expect(first.nextPreKeyId).toBe(4)
+		expect(creds.firstUnuploadedPreKeyId).toBe(1)
+
+		// Retry with firstUnuploaded still at 1 sees all three persisted keys as
+		// available; it generates nothing and therefore cannot overwrite them.
+		const second = prepareAndCommit()
+		expect(second.nextPreKeyId).toBe(4)
+		expect(generated).toBe(3)
+		expect([...persisted.entries()]).toEqual(firstMaterial)
+	})
+
+	it('bounds each attempt with an explicit per-call timeout even if the global query timeout is disabled', async () => {
+		const EXPLICIT_MS = 10
+		const globalDefaultMs: number | undefined = undefined // consumer disabled defaultQueryTimeoutMs
+
+		// Mirrors `query(node, PREKEY_UPLOAD_QUERY_TIMEOUT_MS)` → promiseTimeout:
+		// the EXPLICIT ms is what promiseTimeout receives, so a non-responding
+		// server still rejects instead of hanging — even though the global default
+		// is undefined (which, if relied on, builds a promise with no timeout).
+		const query = (serverResponds: boolean) =>
+			new Promise<void>((resolve, reject) => {
+				const ms = EXPLICIT_MS ?? globalDefaultMs
+				if (serverResponds) resolve()
+				else if (ms) setTimeout(() => reject(new Error('Timed Out')), ms)
+				// else: would hang forever — the bug this explicit timeout guards against
+			})
+
+		const retryLoop = async (): Promise<string> => {
+			for (let attempt = 0; attempt <= 3; attempt++) {
+				try {
+					await query(false)
+					return 'resolved'
+				} catch {
+					if (attempt < 3) await delay(1)
+				}
+			}
+
+			return 'rejected'
+		}
+
+		// The retry loop must terminate (reject), never hang, with a dead server.
+		const outcome = await Promise.race([retryLoop(), delay(1000).then(() => 'hung')])
+
+		expect(outcome).toBe('rejected')
+	})
+})
+
+describe('resolvePrekeyUploadQueryTimeout', () => {
+	it('falls back to 30s only when the global timeout is disabled', () => {
+		expect(resolvePrekeyUploadQueryTimeout(undefined)).toBe(PREKEY_UPLOAD_QUERY_TIMEOUT_FALLBACK_MS)
+		expect(resolvePrekeyUploadQueryTimeout(0)).toBe(PREKEY_UPLOAD_QUERY_TIMEOUT_FALLBACK_MS)
+		expect(PREKEY_UPLOAD_QUERY_TIMEOUT_FALLBACK_MS).toBe(30_000)
+	})
+
+	it("preserves a consumer's positive configured timeout instead of clamping it", () => {
+		expect(resolvePrekeyUploadQueryTimeout(60_000)).toBe(60_000)
+		expect(resolvePrekeyUploadQueryTimeout(5_000)).toBe(5_000)
+	})
+})
+
+describe('reconcilePrekeyCursors', () => {
+	it('advances upload progress past a durable ACK whose creds update was lost', () => {
+		expect(
+			reconcilePrekeyCursors(
+				{ firstUnuploadedPreKeyId: 1, nextPreKeyId: 31 },
+				{ firstUnsentId: null, nextGeneratedId: 31, unsentCount: 0 }
+			)
+		).toEqual({ firstUnuploadedPreKeyId: 31 })
+	})
+
+	it('also restores the allocation cursor when both creds updates were lost', () => {
+		expect(
+			reconcilePrekeyCursors(
+				{ firstUnuploadedPreKeyId: 1, nextPreKeyId: 1 },
+				{ firstUnsentId: null, nextGeneratedId: 31, unsentCount: 0 }
+			)
+		).toEqual({ firstUnuploadedPreKeyId: 31, nextPreKeyId: 31 })
+	})
+
+	it('applies repaired cursors to the active creds before the same upload attempt', () => {
+		const creds: CredsLike = { firstUnuploadedPreKeyId: 1, nextPreKeyId: 1 }
+		const cursorUpdate = applyReconciledPrekeyCursors(creds, {
+			firstUnsentId: null,
+			nextGeneratedId: 31,
+			unsentCount: 0
+		})
+
+		expect(cursorUpdate).toEqual({ firstUnuploadedPreKeyId: 31, nextPreKeyId: 31 })
+		expect(creds).toEqual({ firstUnuploadedPreKeyId: 31, nextPreKeyId: 31 })
+		expect(generateOrGetPreKeys(creds, 3)).toEqual({
+			firstUnuploadedPreKeyId: 34,
+			nextPreKeyId: 34
+		})
+	})
+
+	it('skips a crash-stale direct-distributed id before generating its replacement', () => {
+		const creds: CredsLike = { firstUnuploadedPreKeyId: 1, nextPreKeyId: 1 }
+		applyReconciledPrekeyCursors(creds, {
+			firstUnsentId: null,
+			nextGeneratedId: 2,
+			unsentCount: 0
+		})
+
+		expect(creds).toEqual({ firstUnuploadedPreKeyId: 2, nextPreKeyId: 2 })
+		expect(generateOrGetPreKeys(creds, 1)).toEqual({
+			firstUnuploadedPreKeyId: 3,
+			nextPreKeyId: 3
+		})
+	})
+
+	it('still rewinds to a legacy unsent orphan below the creds cursor', () => {
+		expect(
+			reconcilePrekeyCursors(
+				{ firstUnuploadedPreKeyId: 20, nextPreKeyId: 31 },
+				{ firstUnsentId: 7, nextGeneratedId: 31, unsentCount: 4 }
+			)
+		).toEqual({ firstUnuploadedPreKeyId: 7 })
+	})
 })

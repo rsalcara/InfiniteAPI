@@ -38,6 +38,8 @@ export function wrapKeysWithJidMap(
 	lidChatState?: LidChatStateBackend
 ): SignalKeyStoreWithTransaction {
 	return {
+		trustedContactTokens: inner.trustedContactTokens,
+		prekeyUploads: inner.prekeyUploads,
 		isInTransaction: () => inner.isInTransaction(),
 		transaction: (exec, key) => inner.transaction(exec, key),
 		transactWith: inner.transactWith ? (scope, work) => inner.transactWith!(scope, work) : undefined,
