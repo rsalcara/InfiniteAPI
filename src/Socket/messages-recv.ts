@@ -2079,6 +2079,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				throw err
 			}
 		}
+
 		await authState.keys.transaction(async () => {
 			receipt = {
 				tag: 'receipt',
@@ -4351,6 +4352,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								fetchedForRecipient = await recoveryPromise.catch(() => false)
 								tokenUsability = await readTcTokenUsability(jid)
 							}
+
 							if (!tokenUsability.usable) {
 								logger.warn(
 									{
