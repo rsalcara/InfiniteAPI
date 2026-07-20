@@ -23,9 +23,65 @@
  * default behavior the gateway already depends on.
  */
 
+import { AsyncLocalStorage } from 'async_hooks'
+
 const SESSION_LIFECYCLE_RE = /^(Closing session|Removing old closed session)/
 
 let installed = false
+
+export type LibsignalFailureKind =
+	| 'bad-mac'
+	| 'message-counter'
+	| 'key-already-used'
+	| 'decrypt-failed'
+	| 'session-error'
+
+export interface LibsignalFailureDiagnostic {
+	kind: LibsignalFailureKind
+}
+
+/**
+ * `libsignal` tries every stored session and logs each candidate failure, but
+ * ultimately throws only `No matching sessions found for message`. Keep the
+ * non-secret failure classes in the async decrypt context so callers can send
+ * the same retry reason as the official client. Ciphertext, keys, stacks and
+ * unmasked phone numbers are deliberately not retained here.
+ */
+const diagnosticContext = new AsyncLocalStorage<LibsignalFailureDiagnostic[]>()
+
+export class LibsignalDecryptError extends Error {
+	constructor(
+		message: string,
+		readonly diagnostics: readonly LibsignalFailureDiagnostic[],
+		readonly originalError: unknown
+	) {
+		super(message)
+		this.name = 'LibsignalDecryptError'
+		;(this as Error & { cause?: unknown }).cause = originalError
+	}
+}
+
+export const classifyLibsignalFailure = (message: string): LibsignalFailureKind | undefined => {
+	if (message.includes('Bad MAC')) return 'bad-mac'
+	if (message.includes('MessageCounterError')) return 'message-counter'
+	if (message.includes('Key used already')) return 'key-already-used'
+	if (message.includes('Failed to decrypt')) return 'decrypt-failed'
+	if (message.includes('Session error')) return 'session-error'
+	return undefined
+}
+
+export async function withLibsignalDiagnosticCapture<T>(work: () => Promise<T>): Promise<T> {
+	const diagnostics: LibsignalFailureDiagnostic[] = []
+	try {
+		return await diagnosticContext.run(diagnostics, work)
+	} catch (error) {
+		if (error instanceof LibsignalDecryptError || diagnostics.length === 0) throw error
+
+		const hasBadMac = diagnostics.some(item => item.kind === 'bad-mac')
+		const fallbackMessage = error instanceof Error ? error.message : String(error)
+		throw new LibsignalDecryptError(hasBadMac ? 'Bad MAC' : fallbackMessage, [...diagnostics], error)
+	}
+}
 
 /**
  * Install the libsignal log filter. Safe to call multiple times (subsequent
@@ -66,7 +122,7 @@ export function suppressLibsignalLogs(): void {
 
 	console.error = function (...args: unknown[]) {
 		if (args.length > 0 && typeof args[0] === 'string') {
-			const msg = args[0]
+			const msg = args.map(arg => (arg instanceof Error ? arg.message : String(arg ?? ''))).join(' ')
 			// Stack-frame detection: libsignal frames carry the filename in the
 			// V8 stack output. In minified / containerized builds this filename
 			// may be rewritten — if that happens, the filter degrades into a
@@ -76,6 +132,11 @@ export function suppressLibsignalLogs(): void {
 			const isFromLibsignal = stack.includes('libsignal') || stack.includes('session_cipher')
 
 			if (isFromLibsignal) {
+				const failureKind = classifyLibsignalFailure(msg)
+				if (failureKind) {
+					diagnosticContext.getStore()?.push({ kind: failureKind })
+				}
+
 				if (msg.startsWith('Closing session')) {
 					return
 				}
@@ -93,7 +154,7 @@ export function suppressLibsignalLogs(): void {
 						errorType = '🔢 Counter Error'
 					else if (msg.includes('Failed to decrypt')) errorType = '🔌 Decryption Failed'
 
-					const jidMatch = (msg + String(args[1] ?? '')).match(/(\d{10,}(?:_\d+\.\d+)?)/)
+					const jidMatch = msg.match(/(\d{10,}(?:_\d+\.\d+)?)/)
 					const jid = jidMatch ? jidMatch[1] : null
 					const maskedJid = jid && jid.length > 8 ? `${jid.substring(0, 4)}****${jid.substring(jid.length - 4)}` : jid
 
