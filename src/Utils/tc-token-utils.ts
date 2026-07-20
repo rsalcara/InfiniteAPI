@@ -3,10 +3,10 @@ import type { BinaryNode } from '../WABinary'
 import {
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
+	isAnyLidUser,
 	isHostedLidUser,
 	isHostedPnUser,
 	isJidMetaAI,
-	isLidUser,
 	isPnUser,
 	jidNormalizedUser
 } from '../WABinary'
@@ -28,7 +28,7 @@ export function isRegularUser(jid: string | undefined): boolean {
 	if (user === '0') return false // PSA
 	if (BOT_PHONE_REGEX.test(user)) return false // Bot by phone pattern
 	if (isJidMetaAI(jid)) return false // MetaAI (@bot server)
-	return !!(isPnUser(jid) || isLidUser(jid) || isHostedPnUser(jid) || isHostedLidUser(jid) || jid.endsWith('@c.us'))
+	return !!(isPnUser(jid) || isAnyLidUser(jid) || isHostedPnUser(jid) || isHostedLidUser(jid) || jid.endsWith('@c.us'))
 }
 
 /** 7 days in seconds — matches WA Web AB prop tctoken_duration */
@@ -91,6 +91,175 @@ export function shouldSendNewTcToken(senderTimestamp: number | undefined): boole
 	return currentBucket > senderBucket
 }
 
+export type TcTokenAliasResolvers = {
+	getLIDForPN: (pn: string) => Promise<string | null>
+	getPNForLID?: (lid: string) => Promise<string | null>
+}
+
+/**
+ * Returns the canonical LID first and its PN alias second when both are known.
+ * The Android store performs the equivalent `jid IN (LID, PN)` lookup and
+ * persists new rows under LID. Keeping the order stable also gives callers a
+ * single canonical key for writes without hiding a legacy PN row during reads.
+ */
+export async function resolveTcTokenAliases(jid: string, resolvers: TcTokenAliasResolvers): Promise<string[]> {
+	const normalized = jidNormalizedUser(jid)
+	const lid = isAnyLidUser(normalized) ? normalized : await resolvers.getLIDForPN(normalized)
+	const canonical = lid ? jidNormalizedUser(lid) : normalized
+	const pn = isAnyLidUser(canonical) ? await resolvers.getPNForLID?.(canonical) : normalized
+
+	return [...new Set([canonical, pn ? jidNormalizedUser(pn) : undefined].filter((value): value is string => !!value))]
+}
+
+/** Includes the notification's authoritative PN even before the LID map is populated. */
+export async function resolveIncomingTcTokenAliases(
+	from: string,
+	senderLid: string | undefined,
+	resolvers: TcTokenAliasResolvers
+): Promise<string[]> {
+	const resolved = await resolveTcTokenAliases(senderLid || from, resolvers)
+
+	return [...new Set([...resolved, jidNormalizedUser(from)])]
+}
+
+export type SelectedTcToken = TcTokenUsability & {
+	jid?: string
+	entry?: SignalDataTypeMap['tctoken']
+}
+
+/** Selects the newest non-empty, non-expired incoming token across PN/LID aliases. */
+export function selectNewestUsableTcToken(
+	candidates: ReadonlyArray<readonly [jid: string, entry: SignalDataTypeMap['tctoken'] | null | undefined]>
+): SelectedTcToken {
+	const present = candidates.filter(
+		(candidate): candidate is readonly [string, SignalDataTypeMap['tctoken']] => !!candidate[1]
+	)
+	if (present.length === 0) return { usable: false, reason: 'missing-token' }
+	const nonEmpty = present.filter(([, entry]) => !!entry.token?.length)
+	if (nonEmpty.length === 0) return { usable: false, reason: 'empty-token' }
+	const usable = nonEmpty
+		.filter(([, entry]) => !isTcTokenExpired(entry.timestamp))
+		.sort(([, left], [, right]) => Number(right.timestamp ?? 0) - Number(left.timestamp ?? 0))[0]
+	if (!usable) return { usable: false, reason: 'expired-token' }
+
+	return { usable: true, jid: usable[0], entry: usable[1] }
+}
+
+export type TcTokenIssueAliasGroup = {
+	requestedJid: string
+	aliases: string[]
+}
+
+/**
+ * Joins in-flight work by canonical contact key. Callers serialize invocation
+ * while inspecting the map; cleanup is identity-checked so an old completion
+ * can never delete a newer flight registered for the same contact.
+ */
+export function getOrCreateTcTokenIssueFlight<T>(
+	flights: Map<string, Promise<T>>,
+	keys: string[],
+	create: (uncoveredKeys: string[]) => Promise<T>
+): Promise<T> {
+	const uniqueKeys = [...new Set(keys)]
+	const existing = [
+		...new Set(uniqueKeys.map(key => flights.get(key)).filter((flight): flight is Promise<T> => !!flight))
+	]
+	const uncovered = uniqueKeys.filter(key => !flights.has(key))
+	if (!uncovered.length && existing.length) {
+		return existing.length === 1 ? existing[0]! : Promise.all(existing).then(results => results.at(-1)!)
+	}
+
+	const flight = create(uncovered)
+	for (const key of uncovered) flights.set(key, flight)
+	const release = () => {
+		for (const key of uncovered) {
+			if (flights.get(key) === flight) flights.delete(key)
+		}
+	}
+
+	flight.then(release, release)
+
+	return existing.length ? Promise.all([...existing, flight]).then(results => results.at(-1)!) : flight
+}
+
+/**
+ * Mirrors the observed mobile sent-token state machine in the key-store
+ * abstraction so relational authority and signal_kv backup move together:
+ * scheduled = realIssueTimestamp 0, confirmed = NULL. The confirmation
+ * checks the newest alias timestamp under the same record lock, preventing a
+ * late ACK from overwriting a newer issue, then removes only the PN sent half.
+ */
+export async function updateTcTokenIssueState({
+	keys,
+	aliasGroups,
+	issueTimestamp,
+	phase,
+	onStaleAck
+}: {
+	keys: SignalKeyStoreWithTransaction
+	aliasGroups: TcTokenIssueAliasGroup[]
+	issueTimestamp: number
+	phase: 'scheduled' | 'confirmed'
+	onStaleAck?: (details: { requestedJid: string; canonicalJid: string; newerTimestamp: number }) => void
+}): Promise<boolean> {
+	const records = aliasGroups.flatMap(({ aliases }) => aliases.map(id => ({ type: 'tctoken' as const, id })))
+	let applied = true
+	const work = async () => {
+		for (const { requestedJid, aliases } of aliasGroups) {
+			const canonicalJid = aliases[0]!
+			const current = await keys.get('tctoken', aliases)
+			const sentEntries = aliases
+				.map(alias => current[alias])
+				.filter((entry): entry is SignalDataTypeMap['tctoken'] => entry?.senderTimestamp !== undefined)
+				.sort((left, right) => Number(right.senderTimestamp) - Number(left.senderTimestamp))
+			const newestSent = sentEntries[0]
+
+			if (phase === 'confirmed' && Number(newestSent?.senderTimestamp ?? 0) > issueTimestamp) {
+				applied = false
+				onStaleAck?.({
+					requestedJid,
+					canonicalJid,
+					newerTimestamp: Number(newestSent!.senderTimestamp)
+				})
+				continue
+			}
+
+			const canonical = current[canonicalJid]
+			const bucket: Record<string, SignalDataTypeMap['tctoken'] | null> = {
+				[canonicalJid]: {
+					...canonical,
+					token: canonical?.token ?? Buffer.alloc(0),
+					senderTimestamp: issueTimestamp,
+					realIssueTimestamp:
+						phase === 'confirmed'
+							? null
+							: newestSent?.realIssueTimestamp === null
+								? 0
+								: (newestSent?.realIssueTimestamp ?? 0)
+				}
+			}
+
+			if (phase === 'confirmed') {
+				for (const alias of aliases.slice(1)) {
+					const aliasEntry = current[alias]
+					if (aliasEntry?.senderTimestamp === undefined) continue
+					bucket[alias] = aliasEntry.token?.length ? { token: aliasEntry.token, timestamp: aliasEntry.timestamp } : null
+				}
+			}
+
+			await keys.set({ tctoken: bucket })
+		}
+	}
+
+	if (keys.transactWith) {
+		await keys.transactWith({ records }, work)
+	} else {
+		await keys.transaction(work, `privacy-token-issue:${records.map(record => record.id).join(',')}`)
+	}
+
+	return applied
+}
+
 /**
  * Resolve a JID to its LID for tctoken storage, mirroring how Signal sessions
  * use LID keys via resolveLIDSignalAddress.
@@ -107,7 +276,7 @@ export async function resolveTcTokenJid(
 	getLIDForPN: (pn: string) => Promise<string | null>
 ): Promise<string> {
 	const normalized = jidNormalizedUser(jid)
-	if (isLidUser(normalized)) return normalized
+	if (isAnyLidUser(normalized)) return normalized
 	const lid = await getLIDForPN(normalized)
 	return lid ?? normalized
 }
@@ -119,6 +288,7 @@ type TcTokenParams = {
 		keys: SignalKeyStoreWithTransaction
 	}
 	getLIDForPN?: (pn: string) => Promise<string | null>
+	getPNForLID?: (lid: string) => Promise<string | null>
 }
 
 /**
@@ -161,21 +331,41 @@ type ResolvedTcToken = { buffer?: Buffer }
 async function resolveTcTokenForJid({
 	authState,
 	jid,
-	getLIDForPN
-}: Pick<TcTokenParams, 'authState' | 'jid' | 'getLIDForPN'>): Promise<ResolvedTcToken> {
+	getLIDForPN,
+	getPNForLID
+}: Pick<TcTokenParams, 'authState' | 'jid' | 'getLIDForPN' | 'getPNForLID'>): Promise<ResolvedTcToken> {
 	try {
-		const storageJid = getLIDForPN ? await resolveTcTokenJid(jid, getLIDForPN) : jid
-		const tcTokenData = await authState.keys.get('tctoken', [storageJid])
-		const entry = tcTokenData?.[storageJid]
+		const aliases = getLIDForPN
+			? await resolveTcTokenAliases(jid, { getLIDForPN, getPNForLID })
+			: [jidNormalizedUser(jid)]
+		const tcTokenData = await authState.keys.get('tctoken', aliases)
+		const selected = selectNewestUsableTcToken(aliases.map(alias => [alias, tcTokenData?.[alias]] as const))
+		const entry = selected.entry
 		const tcTokenBuffer = entry?.token
 
-		if (!tcTokenBuffer?.length || isTcTokenExpired(entry?.timestamp)) {
-			if (tcTokenBuffer?.length) {
-				const cleared =
-					entry?.senderTimestamp !== undefined
-						? { token: Buffer.alloc(0), senderTimestamp: entry.senderTimestamp }
-						: null
-				await authState.keys.set({ tctoken: { [storageJid]: cleared } })
+		if (!selected.usable || !tcTokenBuffer?.length) {
+			if (selected.reason === 'expired-token') {
+				const expired: Record<string, SignalDataTypeMap['tctoken'] | null> = {}
+				const expiredAliases = aliases.filter(alias => {
+					const candidate = tcTokenData?.[alias]
+
+					return !!candidate?.token?.length && isTcTokenExpired(candidate.timestamp)
+				})
+
+				for (const alias of expiredAliases) {
+					const candidate = tcTokenData[alias]!
+
+					expired[alias] =
+						candidate.senderTimestamp !== undefined
+							? {
+									token: Buffer.alloc(0),
+									senderTimestamp: candidate.senderTimestamp,
+									realIssueTimestamp: candidate.realIssueTimestamp
+								}
+							: null
+				}
+
+				if (Object.keys(expired).length) await authState.keys.set({ tctoken: expired })
 			}
 
 			return {}
@@ -202,9 +392,10 @@ export async function buildTcTokenFromJid({
 	authState,
 	jid,
 	baseContent = [],
-	getLIDForPN
+	getLIDForPN,
+	getPNForLID
 }: TcTokenParams): Promise<BinaryNode[] | undefined> {
-	const { buffer } = await resolveTcTokenForJid({ authState, jid, getLIDForPN })
+	const { buffer } = await resolveTcTokenForJid({ authState, jid, getLIDForPN, getPNForLID })
 
 	if (!buffer) {
 		return baseContent.length > 0 ? baseContent : undefined
@@ -228,9 +419,10 @@ export async function buildTcTokenFromJid({
 export async function buildTcTokenNode({
 	authState,
 	jid,
-	getLIDForPN
+	getLIDForPN,
+	getPNForLID
 }: Omit<TcTokenParams, 'baseContent'>): Promise<BinaryNode | undefined> {
-	const { buffer } = await resolveTcTokenForJid({ authState, jid, getLIDForPN })
+	const { buffer } = await resolveTcTokenForJid({ authState, jid, getLIDForPN, getPNForLID })
 
 	return buffer ? { tag: 'tctoken', attrs: {}, content: buffer } : undefined
 }
@@ -249,10 +441,48 @@ export type StoreTcTokensResult = {
 	validTokenNodes: number
 }
 
+export type ParsedTrustedContactToken = {
+	from: string
+	senderLid?: string
+	timestamp?: string
+	timestampSource?: 'token-node' | 'notification-node'
+	childTimestamp?: string
+	outerTimestamp?: string
+	token: Buffer
+}
+
+/** Parses the outer notification attributes with child overrides, as WABA does. */
+export function parseTrustedContactTokenNotification(node: BinaryNode): ParsedTrustedContactToken[] {
+	const tokensNode = getBinaryNodeChild(node, 'tokens')
+	if (!tokensNode) return []
+	const from = jidNormalizedUser(node.attrs.from)
+	const outerSenderLid = node.attrs.sender_lid ? jidNormalizedUser(node.attrs.sender_lid) : undefined
+	return getBinaryNodeChildren(tokensNode, 'token').flatMap(tokenNode => {
+		if (tokenNode.attrs.type !== 'trusted_contact' || !(tokenNode.content instanceof Uint8Array)) return []
+		const childTimestamp = tokenNode.attrs.t
+		const outerTimestamp = node.attrs.t
+		return [
+			{
+				from,
+				senderLid:
+					outerSenderLid || (tokenNode.attrs.sender_lid ? jidNormalizedUser(tokenNode.attrs.sender_lid) : undefined),
+				timestamp: childTimestamp || outerTimestamp,
+				timestampSource: childTimestamp ? 'token-node' : outerTimestamp ? 'notification-node' : undefined,
+				childTimestamp,
+				outerTimestamp,
+				token: Buffer.from(tokenNode.content)
+			}
+		]
+	})
+}
+
 /**
- * Parse and store tctoken(s) from an IQ result node.
- * Includes timestamp monotonicity guard matching WA Web's handleIncomingTcToken.
- * Used by both the blocking fetch (messages-send) and IQ response (messages-recv) paths.
+ * Parse and store peer tctoken(s) from a legacy result-shaped node.
+ * Includes the timestamp monotonicity guard used by incoming notifications.
+ *
+ * @deprecated A privacy `type=set` IQ is issuance and its empty result is an
+ * ACK, not a peer-token response. New socket paths ingest peer tokens only
+ * from `privacy_token` notifications; this remains for API compatibility.
  */
 export async function storeTcTokensFromIqResult({
 	result,
@@ -302,10 +532,7 @@ export async function storeTcTokensFromIqResult({
 		const tokenEntry = {
 			...existingEntry,
 			token: Buffer.from(tokenNode.content),
-			timestamp: tokenNode.attrs.t,
-			// WABA Android: resets real_issue_timestamp to null when storing a new token
-			// (UPDATE wa_trusted_contacts_send SET real_issue_timestamp=null)
-			realIssueTimestamp: null
+			timestamp: tokenNode.attrs.t
 		}
 
 		// Store under the resolved identity and under fallbackJid only when both

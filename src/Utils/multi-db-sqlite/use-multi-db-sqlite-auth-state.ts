@@ -326,6 +326,11 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		return Number.isFinite(parsed) ? parsed : 0
 	}
 
+	const finiteNumberOrNull = (value: unknown): number | null => {
+		if (value === null) return null
+		return finiteNumberOrZero(value)
+	}
+
 	// Build both relational halves for replacement in one wa.db transaction. A fully deleted
 	// value leaves an empty-token tombstone: relational reads can distinguish a
 	// deliberate delete from a pre-migration miss and therefore never resurrect
@@ -351,7 +356,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			sent: hasSent
 				? {
 						sentTimestamp: finiteNumberOrZero(value.senderTimestamp),
-						realIssueTimestamp: finiteNumberOrZero(value.realIssueTimestamp)
+						realIssueTimestamp: finiteNumberOrNull(value.realIssueTimestamp)
 					}
 				: null
 		}
@@ -642,7 +647,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 											current.value.senderTimestamp !== undefined
 												? {
 														sentTimestamp: finiteNumberOrZero(current.value.senderTimestamp),
-														realIssueTimestamp: finiteNumberOrZero(current.value.realIssueTimestamp)
+														realIssueTimestamp: finiteNumberOrNull(current.value.realIssueTimestamp)
 													}
 												: null
 									})

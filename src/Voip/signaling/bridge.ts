@@ -152,28 +152,14 @@ export class SignalingBridge {
 		const cached = await this.#getTcToken(userJid)
 		if (cached?.length) return cached
 
-		try {
-			const response = await (this.#sock as any).getPrivacyTokens([userJid])
-			const { getBinaryNodeChild, getAllBinaryNodeChildren } = this.#baileys
-			const tokensNode =
-				getBinaryNodeChild(response, 'tokens') ?? getBinaryNodeChild(getBinaryNodeChild(response, 'iq'), 'tokens')
-			const tokenNodes = tokensNode ? getAllBinaryNodeChildren(tokensNode).filter((c: any) => c.tag === 'token') : []
+		// Register before issuing so a notification that races the IQ ACK cannot be
+		// missed. The IQ only announces our token; the peer token arrives later via
+		// privacy_token notification and the keys.set hook resolves this waiter.
+		const tokenNotification = this.#waitForTcToken(userJid, TC_TOKEN_REQUEST_TIMEOUT_MS)
+		const issue = (this.#sock as any).issuePrivacyTokens ?? (this.#sock as any).getPrivacyTokens
+		void Promise.resolve(issue?.([userJid])).catch(() => undefined)
 
-			for (const tokenNode of tokenNodes) {
-				const tokenJid = String(tokenNode.attrs.jid ?? '')
-				if (this.#baileys.jidNormalizedUser(tokenJid) !== this.#baileys.jidNormalizedUser(userJid)) continue
-				const content = tokenNode.content
-				if (content instanceof Uint8Array && content.length > 0) {
-					const token = Buffer.from(content)
-					await this.#sock.authState.keys.set({
-						tctoken: { [userJid]: { token, timestamp: String(tokenNode.attrs.t ?? '') } }
-					})
-					return token
-				}
-			}
-		} catch {}
-
-		return this.#getTcToken(userJid)
+		return tokenNotification
 	}
 
 	ensureTcToken = async (...jids: string[]): Promise<Uint8Array | undefined> => {
@@ -184,10 +170,7 @@ export class SignalingBridge {
 		}
 
 		for (const jid of uniqueJids) {
-			const fetched = await Promise.race<Uint8Array | undefined>([
-				this.requestTcToken(jid),
-				new Promise<undefined>(r => setTimeout(() => r(undefined), TC_TOKEN_REQUEST_TIMEOUT_MS))
-			])
+			const fetched = await this.requestTcToken(jid)
 			if (fetched?.length) return fetched
 		}
 
@@ -721,6 +704,34 @@ export class SignalingBridge {
 			this.#pendingTcTokenWaiters.delete(bareJid)
 			for (const w of waiters) w(Buffer.from(token))
 		}
+	}
+
+	#waitForTcToken = (jid: string, timeoutMs: number): Promise<Uint8Array | undefined> => {
+		const bareJid = this.#toBareJid(jid)
+
+		return new Promise(resolve => {
+			let settled = false
+			const waiter = (token: Uint8Array | undefined) => {
+				if (settled) return
+				settled = true
+				clearTimeout(timer)
+				const waiters = this.#pendingTcTokenWaiters.get(bareJid)?.filter(candidate => candidate !== waiter)
+				if (waiters?.length) this.#pendingTcTokenWaiters.set(bareJid, waiters)
+				else this.#pendingTcTokenWaiters.delete(bareJid)
+				resolve(token)
+			}
+
+			const waiters = this.#pendingTcTokenWaiters.get(bareJid) ?? []
+			waiters.push(waiter)
+			this.#pendingTcTokenWaiters.set(bareJid, waiters)
+			const timer = setTimeout(() => waiter(undefined), timeoutMs)
+
+			// Close the gap between the caller's initial cache read and waiter
+			// registration without issuing a second IQ.
+			void this.#getTcToken(bareJid).then(token => {
+				if (token?.length) waiter(token)
+			})
+		})
 	}
 
 	#getTcToken = async (jid: string): Promise<Uint8Array | undefined> => {

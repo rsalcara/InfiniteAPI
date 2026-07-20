@@ -159,7 +159,7 @@ export type VoipSdkConfig = {
  *  1. Auth + event bus — `authState`, `ev`, `ws`.
  *  2. Signaling primitives — `query`, `sendNode`, `waitForMessage`,
  *     `generateMessageTag`, `signalRepository`, `getUSyncDevices`,
- *     `presenceSubscribe`, `getPrivacyTokens`, `end`.
+ *     `presenceSubscribe`, `issuePrivacyTokens` (`getPrivacyTokens` legacy alias), `end`.
  *  3. Call helpers from PR #245 — `offerCall`/`acceptCall`/...
  */
 export interface VoipSocketLike {
@@ -185,6 +185,7 @@ export interface VoipSocketLike {
 	getUSyncDevices(jids: string[], ignoreZeroDevices: boolean, forceQuery: boolean): Promise<Array<{ jid: string }>>
 	presenceSubscribe(jid: string): Promise<void>
 	getPrivacyTokens?(jids: string[]): Promise<unknown>
+	issuePrivacyTokens?(jids: string[]): Promise<unknown>
 	end?(error?: Error): void
 	offerCall(jid: string, isVideo?: boolean): Promise<{ callId: string; stanzaId: string }>
 	acceptCall(callId: string, callFrom: string, isVideo?: boolean): Promise<void>
