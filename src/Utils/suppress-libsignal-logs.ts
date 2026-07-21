@@ -17,24 +17,96 @@
  * History: this code used to live at the top of `src/index.ts` and ran as
  * an import side effect. That meant any consumer of the library — even
  * one importing only types — had their process-wide `console` rewritten.
- * Moving it into an explicit function makes the override opt-in for
- * library consumers; `src/index.ts` calls it automatically when
- * `INFINITEAPI_DISABLE_LIBSIGNAL_LOG_FILTER` is NOT set, preserving the
- * default behavior the gateway already depends on.
+ * Moving it into an explicit installer avoids an import-time dependency on
+ * the Socket graph. `src/prelude.ts` always installs diagnostic capture; the
+ * `INFINITEAPI_DISABLE_LIBSIGNAL_LOG_FILTER` flag controls only whether the
+ * noisy output is suppressed.
  */
+
+import { AsyncLocalStorage } from 'async_hooks'
 
 const SESSION_LIFECYCLE_RE = /^(Closing session|Removing old closed session)/
 
 let installed = false
+let suppressOutput = true
+
+export type LibsignalFailureKind =
+	| 'bad-mac'
+	| 'message-counter'
+	| 'key-already-used'
+	| 'decrypt-failed'
+	| 'session-error'
+
+export interface LibsignalFailureDiagnostic {
+	kind: LibsignalFailureKind
+}
 
 /**
- * Install the libsignal log filter. Safe to call multiple times (subsequent
- * calls are no-ops). Once installed it is intentionally not removable —
- * the original console methods are captured by closure but never restored,
- * because the filter is a process-wide commitment for the lifetime of the
- * gateway.
+ * `libsignal` tries every stored session and logs each candidate failure, but
+ * ultimately throws only `No matching sessions found for message`. Keep the
+ * non-secret failure classes in the async decrypt context so callers can send
+ * the same retry reason as the official client. Ciphertext, keys, stacks and
+ * unmasked phone numbers are deliberately not retained here.
  */
-export function suppressLibsignalLogs(): void {
+const diagnosticContext = new AsyncLocalStorage<LibsignalFailureDiagnostic[]>()
+
+export const recordLibsignalFailureDiagnostic = (message: string): LibsignalFailureKind | undefined => {
+	const failureKind = classifyLibsignalFailure(message)
+	if (failureKind) diagnosticContext.getStore()?.push({ kind: failureKind })
+	return failureKind
+}
+
+export class LibsignalDecryptError extends Error {
+	constructor(
+		message: string,
+		readonly diagnostics: readonly LibsignalFailureDiagnostic[],
+		readonly originalError: unknown
+	) {
+		super(message)
+		this.name = 'LibsignalDecryptError'
+		;(this as Error & { cause?: unknown }).cause = originalError
+	}
+}
+
+export const classifyLibsignalFailure = (message: string): LibsignalFailureKind | undefined => {
+	if (message.includes('Bad MAC')) return 'bad-mac'
+	if (message.includes('MessageCounterError')) return 'message-counter'
+	if (message.includes('Key used already')) return 'key-already-used'
+	if (message.includes('Failed to decrypt')) return 'decrypt-failed'
+	if (message.includes('Session error')) return 'session-error'
+	return undefined
+}
+
+export async function withLibsignalDiagnosticCapture<T>(work: () => Promise<T>): Promise<T> {
+	const diagnostics: LibsignalFailureDiagnostic[] = []
+	try {
+		return await diagnosticContext.run(diagnostics, work)
+	} catch (error) {
+		if (error instanceof LibsignalDecryptError || diagnostics.length === 0) throw error
+
+		const hasBadMac = diagnostics.some(item => item.kind === 'bad-mac')
+		const fallbackMessage = error instanceof Error ? error.message : String(error)
+		throw new LibsignalDecryptError(hasBadMac ? 'Bad MAC' : fallbackMessage, [...diagnostics], error)
+	}
+}
+
+/**
+ * Install the libsignal diagnostic interceptor. Safe to call multiple times;
+ * subsequent calls update only the suppression preference. The interceptor
+ * is intentionally not removable because candidate failure capture must stay
+ * active for the lifetime of the gateway.
+ */
+export type LibsignalDiagnosticOptions = {
+	suppressLogs?: boolean
+}
+
+/**
+ * Install the diagnostic interceptor independently from log suppression.
+ * Consumers may disable filtering while still retaining the candidate failure
+ * classes needed to produce the correct retry reason.
+ */
+export function installLibsignalDiagnostics(options: LibsignalDiagnosticOptions = {}): void {
+	suppressOutput = options.suppressLogs ?? true
 	if (installed) return
 	installed = true
 
@@ -43,7 +115,7 @@ export function suppressLibsignalLogs(): void {
 	const origConsoleInfo = console.info
 
 	console.log = function (...args: unknown[]) {
-		if (args.length > 0 && typeof args[0] === 'string' && SESSION_LIFECYCLE_RE.test(args[0])) {
+		if (suppressOutput && args.length > 0 && typeof args[0] === 'string' && SESSION_LIFECYCLE_RE.test(args[0])) {
 			return
 		}
 
@@ -51,7 +123,7 @@ export function suppressLibsignalLogs(): void {
 	}
 
 	console.info = function (...args: unknown[]) {
-		if (args.length > 0 && typeof args[0] === 'string' && SESSION_LIFECYCLE_RE.test(args[0])) {
+		if (suppressOutput && args.length > 0 && typeof args[0] === 'string' && SESSION_LIFECYCLE_RE.test(args[0])) {
 			return
 		}
 
@@ -66,7 +138,7 @@ export function suppressLibsignalLogs(): void {
 
 	console.error = function (...args: unknown[]) {
 		if (args.length > 0 && typeof args[0] === 'string') {
-			const msg = args[0]
+			const msg = args.map(arg => (arg instanceof Error ? arg.message : String(arg ?? ''))).join(' ')
 			// Stack-frame detection: libsignal frames carry the filename in the
 			// V8 stack output. In minified / containerized builds this filename
 			// may be rewritten — if that happens, the filter degrades into a
@@ -76,6 +148,13 @@ export function suppressLibsignalLogs(): void {
 			const isFromLibsignal = stack.includes('libsignal') || stack.includes('session_cipher')
 
 			if (isFromLibsignal) {
+				recordLibsignalFailureDiagnostic(msg)
+
+				if (!suppressOutput) {
+					origConsoleError.apply(console, args)
+					return
+				}
+
 				if (msg.startsWith('Closing session')) {
 					return
 				}
@@ -93,7 +172,7 @@ export function suppressLibsignalLogs(): void {
 						errorType = '🔢 Counter Error'
 					else if (msg.includes('Failed to decrypt')) errorType = '🔌 Decryption Failed'
 
-					const jidMatch = (msg + String(args[1] ?? '')).match(/(\d{10,}(?:_\d+\.\d+)?)/)
+					const jidMatch = msg.match(/(\d{10,}(?:_\d+\.\d+)?)/)
 					const jid = jidMatch ? jidMatch[1] : null
 					const maskedJid = jid && jid.length > 8 ? `${jid.substring(0, 4)}****${jid.substring(jid.length - 4)}` : jid
 
@@ -124,4 +203,9 @@ export function suppressLibsignalLogs(): void {
 
 		origConsoleError.apply(console, args)
 	}
+}
+
+/** Preserve the existing public API: explicit calls enable suppression. */
+export function suppressLibsignalLogs(): void {
+	installLibsignalDiagnostics({ suppressLogs: true })
 }

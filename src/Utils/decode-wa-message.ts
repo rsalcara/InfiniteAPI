@@ -28,6 +28,7 @@ import {
 	OrphanMsmsgError
 } from './meta-ai-msmsg'
 import { retry, RetryExhaustedError, type RetryOptions } from './retry-utils'
+import { LibsignalDecryptError } from './suppress-libsignal-logs'
 
 /**
  * Re-used sentinel for the msgBuffer initializer when the e2e type is `msmsg`
@@ -680,6 +681,9 @@ export const decryptMessageNode = (
 							isSessionRecordError: isSessionRecord,
 							isCorruptedSession: isCorrupted,
 							isOrphanMsmsg,
+							...(originalError instanceof LibsignalDecryptError && {
+								signalFailureKinds: [...new Set(originalError.diagnostics.map(item => item.kind))]
+							}),
 							...(isRetryExhausted && { retriesExhausted: true, attempts: err.attempts })
 						}
 

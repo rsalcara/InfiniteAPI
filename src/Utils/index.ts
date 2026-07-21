@@ -43,6 +43,7 @@ export * from './prometheus-metrics'
 // Resilience and performance
 export * from './cache-utils'
 export * from './retry-utils'
+export * from './retry-receipt'
 
 // Telemetry and detection mitigation
 export * from './unified-session'

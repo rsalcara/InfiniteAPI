@@ -15,6 +15,7 @@ import { generateSignalPubKey } from '../Utils'
 import type { ILogger } from '../Utils/logger'
 import { createLIDMappingStoreWithSqlite } from '../Utils/multi-db-sqlite/factories'
 import { metrics } from '../Utils/prometheus-metrics.js'
+import { withLibsignalDiagnosticCapture } from '../Utils/suppress-libsignal-logs'
 import { isAnyLidUser, isAnyPnUser, jidDecode, transferDevice, WAJIDDomains } from '../WABinary'
 import type { SenderKeyStore } from './Group/group_cipher'
 import { SenderKeyName } from './Group/sender-key-name'
@@ -619,12 +620,13 @@ export function makeLibSignalRepository(
 					}
 				}
 
-				let result: Buffer
-				if (type === 'pkmsg') {
-					result = await session.decryptPreKeyWhisperMessage(ciphertext)
-				} else {
-					result = await session.decryptWhisperMessage(ciphertext)
-				}
+				const result = await withLibsignalDiagnosticCapture(async () => {
+					if (type === 'pkmsg') {
+						return session.decryptPreKeyWhisperMessage(ciphertext)
+					}
+
+					return session.decryptWhisperMessage(ciphertext)
+				})
 
 				return result
 			})

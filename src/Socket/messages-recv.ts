@@ -53,17 +53,25 @@ import {
 	getNextPreKeys,
 	getStatusFromReceiptType,
 	handleIdentityChange,
+	hasRetrySendBudget,
 	hkdf,
 	isCorruptedSessionError,
+	isNodeCacheFullError,
 	makeMsmsgSecretCache,
 	MISSING_KEYS_ERROR_TEXT,
 	NACK_REASONS,
 	NO_MESSAGE_FOUND_ERROR_TEXT,
 	normalizeKeyLidToPn,
 	normalizeMessageJids,
+	parseRetryErrorCode,
+	persistRetrySendReservation,
 	resolveContactPictureIdentity,
 	resolveLidToPn,
+	resolveRetryReceiptRoute,
+	RetryReason,
+	retryReasonFromDecryptionError,
 	safeCacheSet,
+	shouldIncludeRetryKeysForSession,
 	toNumber,
 	unixTimestampSeconds,
 	xmppPreKey,
@@ -160,7 +168,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		maxMsgRetryCount,
 		getMessage,
 		shouldIgnoreJid,
-		enableAutoSessionRecreation,
 		enableCTWARecovery,
 		sessionCleanupConfig
 	} = config
@@ -330,11 +337,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	/**
 	 * Stage 6 H9 (upstream #2576): per-(msgId, participant) keyed lock for
 	 * the `msgRetryCache` read-modify-write. The cache is mutated by two call
-	 * paths — `sendRetryRequest` and `updateSendMessageAgainCount` — and the
+	 * paths — `sendRetryRequest` and `reserveSendMessageAgainAttempt` — and the
 	 * classic `await get → +1 → await set` sequence loses increments without
-	 * a shared lock chain. `incrementRetryAndGet` collapses get+inc+set into
-	 * one critical section per `(msgId, participant)` so both paths cannot
-	 * step on each other.
+	 * a shared lock chain. Each path therefore performs its complete counter
+	 * transition inside the same per-`(msgId, participant)` critical section.
 	 *
 	 * InfiniteAPI hybrid: we KEEP the outer `retryMutex` (line ~145) that
 	 * wraps the inbound dispatch's retry handler — it serializes the whole
@@ -354,17 +360,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		namespace: '__msg_retry__',
 		id: `${msgId}:${participant}`
 	})
-	const incrementRetryAndGet = async (msgId: string, participant: string): Promise<number> => {
-		return retryLocks.withLock(retryLockRef(msgId, participant), async () => {
-			const key = `${msgId}:${participant}`
-			const next = ((await msgRetryCache.get<number>(key)) ?? 0) + 1
-			// BOT-001-B: wrap NodeCache.set so a maxKeys saturation degrades
-			// gracefully (debug-logged) instead of propagating up into the
-			// retry handler and tripping `onUnexpectedError` / socket teardown.
-			await safeCacheSet(msgRetryCache, key, next, logger, 'msgRetryCache')
-			return next
-		})
-	}
 
 	// Debounce identity-change session refreshes per JID to avoid bursts
 	// Audit IDENTITY-CACHE — TTL 5s + uso esporádico mantém o cap baixo na
@@ -1820,7 +1815,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		return await query(stanza)
 	}
 
-	const sendRetryRequest = async (node: BinaryNode, forceIncludeKeys = false) => {
+	const sendRetryRequest = async (
+		node: BinaryNode,
+		forceIncludeKeys = false,
+		retryReason: RetryReason = RetryReason.UnknownError
+	) => {
 		const { fullMessage } = decodeMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '')
 		const { key: msgKey } = fullMessage
 		const msgId = msgKey.id!
@@ -1910,7 +1909,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			// Stage 6 H9 (upstream #2576): mirror the retry count to the durable
 			// cache via `retryLocks` so this set cannot race against
-			// `updateSendMessageAgainCount`'s increment for the same key. Both
+			// `reserveSendMessageAgainAttempt` for the same key. Both
 			// paths now route through `retryLocks.withLock` on the same
 			// `(msgId, participant)` ref.
 			await retryLocks.withLock(retryLockRef(msgId, String(msgKey?.participant)), async () => {
@@ -1970,42 +1969,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const retryCount = (await msgRetryCache.get<number>(key)) || 1
 
 		const { account, signedPreKey, signedIdentityKey: identityKey } = authState.creds
-		const fromJid = node.attrs.from!
-
-		// Check if we should recreate the session
-		let shouldRecreateSession = false
-		let recreateReason = ''
-
-		if (enableAutoSessionRecreation && messageRetryManager && retryCount >= 1) {
-			try {
-				// Check if we have a session with this JID
-				const sessionId = signalRepository.jidToSignalProtocolAddress(fromJid)
-				const hasSession = await signalRepository.validateSession(fromJid)
-
-				// Extract error code from retry node if present (for MAC error detection)
-				const retryNode = getBinaryNodeChild(node, 'retry')
-				const errorAttr = retryNode?.attrs?.error
-				const errorCode = messageRetryManager.parseRetryErrorCode(errorAttr)
-
-				const result = messageRetryManager.shouldRecreateSession(fromJid, hasSession.exists, errorCode)
-				shouldRecreateSession = result.recreate
-				recreateReason = result.reason
-
-				if (shouldRecreateSession) {
-					logger.debug({ fromJid, retryCount, reason: recreateReason, errorCode }, 'recreating session for retry')
-					// Delete existing session to force recreation
-					// CRITICAL: Use same transaction key as encrypt/decrypt operations to prevent race
-					// Using meId ensures this delete serializes with sendMessage() and other session operations
-					await authState.keys.transaction(async () => {
-						await authState.keys.set({ session: { [sessionId]: null } })
-					}, authState.creds.me?.id || 'session-operation')
-					forceIncludeKeys = true
-				}
-			} catch (error) {
-				logger.warn({ error, fromJid }, 'failed to check session recreation')
-			}
-		}
-
 		if (retryCount <= 2) {
 			// Use new retry manager for phone requests if available
 			if (messageRetryManager) {
@@ -2036,7 +1999,26 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		let directDistributionMarkError: unknown
 		let directDistributionWasAlreadyMarked = false
 		let includeDirectDistributionKey = false
-		const shouldIncludeRetryKeys = retryCount > 1 || forceIncludeKeys || shouldRecreateSession
+		let retrySessionExists: boolean | undefined
+		if (retryCount === 1 && !forceIncludeKeys) {
+			const retryPeerJid = msgKey.participant || node.attrs.from
+			const validation = await signalRepository.validateSession(retryPeerJid!)
+			const validationFailed = validation.reason === 'validation error'
+			retrySessionExists = validationFailed ? undefined : validation.exists
+			if (validationFailed) {
+				logger.warn(
+					{ msgId, retryPeerJid, reason: validation.reason },
+					'retry session validation failed; preserving the normal first-retry key policy'
+				)
+			} else if (!validation.exists) {
+				logger.info(
+					{ msgId, retryPeerJid, reason: validation.reason },
+					'retry peer has no usable local session; including key bundle without deleting session state'
+				)
+			}
+		}
+
+		const shouldIncludeRetryKeys = shouldIncludeRetryKeysForSession(retryCount, forceIncludeKeys, retrySessionExists)
 		if (shouldIncludeRetryKeys && prekeyUploads) {
 			try {
 				const firstUnsent = prekeyUploads.firstUnsentId()
@@ -2079,8 +2061,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							id: node.attrs.id!,
 							t: node.attrs.t!,
 							v: '1',
-							// ADD ERROR FIELD
-							error: '0'
+							error: retryReason.toString()
 						}
 					},
 					{
@@ -2207,7 +2188,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		await sendNode(receipt)
 		logger.info(
-			{ msgAttrs: node.attrs, retryCount, includedDirectDistributionKey: includeDirectDistributionKey },
+			{
+				msgAttrs: node.attrs,
+				retryCount,
+				retryReason,
+				retryReasonName: RetryReason[retryReason],
+				includedDirectDistributionKey: includeDirectDistributionKey
+			},
 			'sent retry receipt'
 		)
 	}
@@ -2926,17 +2913,43 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		return data instanceof Buffer ? data : Buffer.from(data)
 	}
 
-	const willSendMessageAgain = async (id: string, participant: string) => {
-		const key = `${id}:${participant}`
-		const retryCount = (await msgRetryCache.get<number>(key)) || 0
-		return retryCount < maxMsgRetryCount
+	const reserveSendMessageAgainAttempt = async (id: string, participant: string) => {
+		return retryLocks.withLock(retryLockRef(id, participant), async () => {
+			const key = `${id}:${participant}`
+			try {
+				const attempt = await persistRetrySendReservation(msgRetryCache, key, maxMsgRetryCount)
+				if (attempt.reservationFailure) {
+					logger.warn(
+						{ id, participant, reason: attempt.reservationFailure },
+						'retry resend suppressed because its bounded counter could not be persisted'
+					)
+				}
+
+				return attempt
+			} catch (err) {
+				if (!isNodeCacheFullError(err)) {
+					logger.error(
+						{ id, participant, err },
+						'retry resend counter persistence failed; relay suppressed before sending'
+					)
+					throw err
+				}
+
+				logger.warn(
+					{ id, participant, err },
+					'retry resend suppressed because msgRetryCache is full and cannot enforce the retry cap'
+				)
+				return { proceed: false, count: maxMsgRetryCount, reservationFailure: 'write-rejected' as const }
+			}
+		})
 	}
 
-	const updateSendMessageAgainCount = async (id: string, participant: string) => {
-		// Stage 6 H9 (upstream #2576): route through `incrementRetryAndGet` so
-		// this increment cannot race against `sendRetryRequest`'s update to the
-		// same key. Both paths share `retryLocks` keyed by `(msgId, participant)`.
-		await incrementRetryAndGet(id, participant)
+	const hasSendMessageAgainBudget = async (id: string, participant: string): Promise<boolean> => {
+		return retryLocks.withLock(retryLockRef(id, participant), async () => {
+			const key = `${id}:${participant}`
+			const current = (await msgRetryCache.get<number>(key)) ?? 0
+			return hasRetrySendBudget(current, maxMsgRetryCount)
+		})
 	}
 
 	const sendMessagesAgain = async (
@@ -2945,12 +2958,33 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		retryNode: BinaryNode,
 		receiptNode: BinaryNode
 	) => {
-		const remoteJid = key.remoteJid!
+		const remoteJid = key.remoteJid
+		if (!remoteJid || !jidDecode(remoteJid)) {
+			throw new Boom('Retry receipt has no valid relay destination', {
+				statusCode: 400,
+				data: { messageIds: ids, participant: key.participant, remoteJid }
+			})
+		}
+
 		const participant = key.participant || remoteJid
 
 		const retryCount = +retryNode.attrs.count! || 1
 		const msgId = ids[0]
 		const sessionId = signalRepository.jidToSignalProtocolAddress(participant)
+		const retryErrorCode = parseRetryErrorCode(retryNode.attrs.error)
+		if (retryNode.attrs.error !== undefined) {
+			logger.debug(
+				{
+					participant,
+					retryCount,
+					retryErrorAttr: retryNode.attrs.error,
+					retryErrorCode,
+					retryErrorName: retryErrorCode === undefined ? 'unparseable' : RetryReason[retryErrorCode],
+					sessionPolicy: 'registration-id-and-base-key'
+				},
+				'retry receipt error recorded; session mutation remains gated by registration/base-key evidence'
+			)
+		}
 
 		// Helper: delete the session at BOTH the PN- and LID-addressed keys.
 		// InfiniteAPI's signal storage (`signalStorage.loadSession`) canonicalizes
@@ -3037,9 +3071,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				if (cachedMsg) {
 					msg = cachedMsg.message
 					logger.debug({ jid: remoteJid, id }, 'found message in retry cache')
-
-					// Mark retry as successful since we found the message
-					messageRetryManager.markRetrySuccess(id)
 				}
 			}
 
@@ -3048,14 +3079,27 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				msg = await getMessage({ ...key, id })
 				if (msg) {
 					logger.debug({ jid: remoteJid, id }, 'found message via getMessage')
-					// Also mark as successful if found via getMessage
-					if (messageRetryManager) {
-						messageRetryManager.markRetrySuccess(id)
-					}
 				}
 			}
 
 			msgs.push(msg)
+		}
+
+		let hasRetryableMessage = false
+		for (let i = 0; i < ids.length; i++) {
+			const id = ids[i]
+			if (id && msgs[i] && (await hasSendMessageAgainBudget(id, participant))) {
+				hasRetryableMessage = true
+				break
+			}
+		}
+
+		if (!hasRetryableMessage) {
+			logger.info(
+				{ jid: remoteJid, ids, participant },
+				'retry receipt ignored before session preparation because no message has retry budget'
+			)
+			return
 		}
 
 		// if it's the primary jid sending the request
@@ -3132,42 +3176,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 		}
 
-		// --- InfiniteAPI session-recreation + MAC-error detection ---
-		// Only runs when we did NOT inject a fresh session from the bundle.
-		// Preserves the parseRetryErrorCode / shouldRecreateSession heuristics
-		// added by 52aa6402 (WABA Android alignment) and a3dd21c9 (Bad MAC loop break).
-		let shouldRecreateSession = false
-		let recreateReason = ''
-
-		if (enableAutoSessionRecreation && messageRetryManager && retryCount >= 1 && !injectedFromBundle) {
-			try {
-				const hasSession = await signalRepository.validateSession(participant)
-
-				// Extract error code from retry node if present (for MAC error detection)
-				const errorAttr = retryNode?.attrs?.error as string | undefined
-				const errorCode = messageRetryManager.parseRetryErrorCode(errorAttr)
-
-				const result = messageRetryManager.shouldRecreateSession(participant, hasSession.exists, errorCode)
-				shouldRecreateSession = result.recreate
-				recreateReason = result.reason
-
-				if (shouldRecreateSession) {
-					logger.debug(
-						{ participant, retryCount, reason: recreateReason, errorCode },
-						'recreating session for outgoing retry'
-					)
-					// Use deleteCanonicalSession so the LID-keyed copy is also cleared
-					// (signalStorage.loadSession resolves PN→LID — see helper above).
-					// The race-prevention via me?.id transaction key is preserved inside
-					// the helper, matching the original a3dd21c9 / 52aa6402 contract.
-					await deleteCanonicalSession()
-					await verifyCanonicalDelete('outgoing_retry_recreate')
-				}
-			} catch (error) {
-				logger.warn({ error, participant }, 'failed to check session recreation for outgoing retry')
-			}
-		}
-
 		if (!injectedFromBundle) {
 			await assertSessions([participant], true)
 		}
@@ -3176,16 +3184,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			await authState.keys.set({ 'sender-key-memory': { [remoteJid]: null } })
 		}
 
-		logger.debug(
-			{ participant, sendToAll, shouldRecreateSession, recreateReason, injectedFromBundle },
-			'prepared session for retry resend'
-		)
+		logger.debug({ participant, sendToAll, injectedFromBundle }, 'prepared session for retry resend')
 
 		for (const [i, msg] of msgs.entries()) {
 			if (!ids[i]) continue
 
-			if (msg && (await willSendMessageAgain(ids[i], participant))) {
-				await updateSendMessageAgainCount(ids[i], participant)
+			if (msg) {
+				const attempt = await reserveSendMessageAgainAttempt(ids[i], participant)
+				if (!attempt.proceed) {
+					logger.info(
+						{ jid: remoteJid, id: ids[i], participant, retryCount: attempt.count },
+						'will not send message again, as sent too many times'
+					)
+					continue
+				}
+
 				const msgRelayOpts: MessageRelayOptions = { messageId: ids[i] }
 
 				if (sendToAll) {
@@ -3197,7 +3210,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					}
 				}
 
-				await relayMessage(key.remoteJid!, msg, msgRelayOpts)
+				await relayMessage(remoteJid, msg, msgRelayOpts)
+				messageRetryManager?.markRetrySuccess(ids[i])
 			} else {
 				logger.debug({ jid: key.remoteJid, id: ids[i] }, 'recv retry request, but message not available')
 			}
@@ -3211,8 +3225,55 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			attrs.participant || attrs.from,
 			isLid ? authState.creds.me?.lid : authState.creds.me?.id
 		)
-		const remoteJid = !isNodeFromMe || isJidGroup(attrs.from) ? attrs.from : attrs.recipient
 		const fromMe = !attrs.recipient || ((attrs.type === 'retry' || attrs.type === 'sender') && isNodeFromMe)
+		const recentRetryMessage =
+			attrs.type === 'retry' && fromMe && attrs.id && messageRetryManager
+				? messageRetryManager.getRecentMessage(attrs.recipient ?? attrs.from!, attrs.id)
+				: undefined
+		const retryRoute = resolveRetryReceiptRoute({
+			stanzaFrom: attrs.from!,
+			recipient: attrs.recipient,
+			isNodeFromMe,
+			isGroup: isJidGroup(attrs.from) ?? false,
+			isRetry: attrs.type === 'retry',
+			recentMessageTo: recentRetryMessage?.to
+		})
+		let remoteJid = retryRoute.remoteJid
+
+		if (attrs.type === 'retry' && fromMe && !attrs.recipient) {
+			const routeContext = {
+				id: attrs.id,
+				stanzaFrom: attrs.from,
+				resolvedRemoteJid: remoteJid,
+				routeSource: retryRoute.source
+			}
+			if (recentRetryMessage) {
+				logger.debug(
+					routeContext,
+					'retry receipt omitted recipient; restored original relay destination from recent-message cache'
+				)
+			} else {
+				logger.warn(
+					routeContext,
+					'retry receipt omitted recipient and recent message was unavailable; refusing to infer the destination from the own-device stanza'
+				)
+			}
+		}
+
+		if (!remoteJid) {
+			logger.error(
+				{
+					id: attrs.id,
+					stanzaFrom: attrs.from,
+					participant: attrs.participant,
+					recipient: attrs.recipient,
+					routeSource: retryRoute.source
+				},
+				'retry receipt omitted the original destination and no cached route exists; resend suppressed'
+			)
+			await sendMessageAck(node)
+			return
+		}
 
 		const key: proto.IMessageKey = {
 			remoteJid,
@@ -3229,8 +3290,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		])
 		if (resolvedRemoteJid) key.remoteJid = resolvedRemoteJid
 		if (resolvedParticipant) key.participant = resolvedParticipant
+		remoteJid = key.remoteJid ?? remoteJid
 
-		if (shouldIgnoreJid(remoteJid!) && remoteJid !== S_WHATSAPP_NET) {
+		if (shouldIgnoreJid(remoteJid) && remoteJid !== S_WHATSAPP_NET) {
 			logger.trace({ remoteJid }, 'ignoring receipt from jid')
 			await sendMessageAck(node)
 			return
@@ -3252,7 +3314,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						// or another device of ours has read some messages
 						(status >= proto.WebMessageInfo.Status.SERVER_ACK || !isNodeFromMe)
 					) {
-						if (isJidGroup(remoteJid) || isJidStatusBroadcast(remoteJid!)) {
+						if (isJidGroup(remoteJid) || isJidStatusBroadcast(remoteJid)) {
 							if (attrs.participant) {
 								const updateKey: keyof MessageUserReceipt =
 									status === proto.WebMessageInfo.Status.DELIVERY_ACK ? 'receiptTimestamp' : 'readTimestamp'
@@ -3274,7 +3336,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								// to affect receipt processing: best-effort side channel,
 								// same rule as the other optional multi-db-sqlite mirrors
 								// in this codebase.
-								if (statusBackend && isJidStatusBroadcast(remoteJid!) && updateKey === 'readTimestamp') {
+								if (statusBackend && isJidStatusBroadcast(remoteJid) && updateKey === 'readTimestamp') {
 									try {
 										for (const id of ids) {
 											statusBackend.recordSeenReceipt({
@@ -3373,10 +3435,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						// correctly set who is asking for the retry
 						key.participant = key.participant || attrs.from
 						const retryNode = getBinaryNodeChild(node, 'retry')
-						if (ids[0] && key.participant && (await willSendMessageAgain(ids[0], key.participant))) {
+						if (ids[0] && key.participant) {
 							if (key.fromMe) {
 								try {
-									await updateSendMessageAgainCount(ids[0], key.participant)
 									logger.debug({ attrs, key }, 'recv retry request')
 									await sendMessagesAgain(key, ids, retryNode!, node)
 								} catch (error: unknown) {
@@ -3389,7 +3450,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								logger.info({ attrs, key }, 'recv retry for not fromMe message')
 							}
 						} else {
-							logger.info({ attrs, key }, 'will not send message again, as sent too many times')
+							logger.warn(
+								{ attrs, key, reason: ids[0] ? 'missing-retry-participant' : 'missing-message-id' },
+								'retry receipt is incomplete; resend suppressed before consuming an attempt'
+							)
 						}
 					}
 				})
@@ -3805,7 +3869,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							}
 
 							const encNode = getBinaryNodeChild(node, 'enc')
-							await sendRetryRequest(node, !encNode)
+							const retryReason = retryReasonFromDecryptionError(errorMessage)
+							await sendRetryRequest(node, !encNode, retryReason)
 							if (retryRequestDelayMs) {
 								await delay(retryRequestDelayMs)
 							}
@@ -3814,7 +3879,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							// Still attempt retry even if pre-key upload failed
 							try {
 								const encNode = getBinaryNodeChild(node, 'enc')
-								await sendRetryRequest(node, !encNode)
+								const retryReason = retryReasonFromDecryptionError(errorMessage)
+								await sendRetryRequest(node, !encNode, retryReason)
 							} catch (retryErr) {
 								logger.error({ retryErr }, 'Failed to send retry after error handling')
 							}
