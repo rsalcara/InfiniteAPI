@@ -71,6 +71,7 @@ import { USyncQuery, USyncUser } from '../WAUSync/'
 import { WebSocketClient } from './Client'
 import { executeWMexQuery } from './mex'
 import { createOfflineBufferState } from './offline-buffer-state'
+import { makeReachoutTimelockRemediation, type RemoveReachoutTimelockServerResult } from './reachout-remediation'
 
 /**
  * Connects to WA servers and performs:
@@ -92,6 +93,7 @@ export const makeSocket = (config: SocketConfig) => {
 		transactionOpts,
 		qrTimeout,
 		makeSignalRepository,
+		experimentalReachoutTimelockRemediation,
 		// If enableUnifiedSession is explicitly set (true/false), use it
 		// Otherwise (undefined), check env var, then default to true
 		enableUnifiedSession: enableUnifiedSessionConfig
@@ -1912,6 +1914,21 @@ export const makeSocket = (config: SocketConfig) => {
 		return result
 	}
 
+	const reachoutTimelockRemediation = makeReachoutTimelockRemediation({
+		config: experimentalReachoutTimelockRemediation,
+		fetchState: fetchAccountReachoutTimelock,
+		removeOnServer: variables =>
+			executeWMexQuery<RemoveReachoutTimelockServerResult>(
+				variables,
+				QueryIds.REMOVE_REACHOUT_TIMELOCK,
+				XWAPaths.xwa2_remove_account_reachout_timelock,
+				query,
+				generateMessageTag
+			),
+		callerTimeoutMs: 10_000,
+		log: (level, details, message) => logger[level](details, message)
+	})
+
 	/**
 	 * Fetches your account's new chat limits.
 	 * Port de upstream `4dbbba2891` (PR #2442).
@@ -1961,6 +1978,10 @@ export const makeSocket = (config: SocketConfig) => {
 		onWhatsApp,
 		// Port de upstream `4dbbba2891` (PR #2442) — reachout timelock + new chat message cap
 		fetchAccountReachoutTimelock,
+		/** Returns fresh server eligibility plus the official video URL, without mutating state. */
+		getReachoutTimelockRemediationEligibility: reachoutTimelockRemediation.getEligibility,
+		/** Explicitly attempts the opt-in BIZ_QUALITY remediation and verifies the server state afterwards. */
+		removeAccountReachoutTimelock: reachoutTimelockRemediation.remove,
 		fetchNewChatMessageCap,
 		// Unified Session Telemetry
 		/** Send unified_session telemetry manually */
