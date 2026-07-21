@@ -25,7 +25,34 @@ type RemediationDependencies = {
 	config?: ReachoutTimelockRemediationConfig
 	fetchState: (emitUpdate?: boolean) => Promise<ReachoutTimelockState>
 	removeOnServer: (variables: typeof REMOVE_REACHOUT_TIMELOCK_INPUT) => Promise<RemoveReachoutTimelockServerResult>
+	callerTimeoutMs?: number
 	log: (level: 'info' | 'warn', details: Record<string, unknown>, message: string) => void
+}
+
+const errorMessage = (error: unknown): string => {
+	if (error instanceof Error) return error.message
+	if (typeof error === 'string') return error
+
+	return 'unknown server error'
+}
+
+const withCallerTimeout = <T>(operation: Promise<T>, timeoutMs?: number): Promise<T> => {
+	if (!timeoutMs || timeoutMs <= 0) return operation
+
+	let timeout: NodeJS.Timeout | undefined
+	const deadline = new Promise<T>((_, reject) => {
+		timeout = setTimeout(
+			() =>
+				reject(
+					new Boom('Reachout remediation request timed out; the server outcome is still pending', { statusCode: 408 })
+				),
+			timeoutMs
+		)
+	})
+
+	return Promise.race([operation, deadline]).finally(() => {
+		if (timeout) clearTimeout(timeout)
+	})
 }
 
 const validOfficialVideoUrl = (value?: string): string | undefined => {
@@ -79,7 +106,7 @@ export const makeReachoutTimelockRemediation = (dependencies: RemediationDepende
 			})
 		}
 
-		if (inFlight) return inFlight
+		if (inFlight) return withCallerTimeout(inFlight, dependencies.callerTimeoutMs)
 
 		const operation: Promise<ReachoutTimelockRemediationResult> = (async () => {
 			const eligibility = await getEligibility()
@@ -96,7 +123,20 @@ export const makeReachoutTimelockRemediation = (dependencies: RemediationDepende
 				throw new Boom(`Reachout remediation is not eligible: ${eligibility.reason}`, { statusCode: 409 })
 			}
 
-			const serverResult = await dependencies.removeOnServer(REMOVE_REACHOUT_TIMELOCK_INPUT)
+			let serverResult: RemoveReachoutTimelockServerResult
+			try {
+				serverResult = await dependencies.removeOnServer(REMOVE_REACHOUT_TIMELOCK_INPUT)
+			} catch (error) {
+				const serverError = errorMessage(error)
+				dependencies.log('warn', { serverError }, 'reachout remediation mutation request failed')
+				return {
+					removed: false,
+					status: 'server-rejected',
+					before: eligibility.state,
+					serverSuccess: false,
+					serverError
+				} satisfies ReachoutTimelockRemediationResult
+			}
 			if (serverResult?.success !== true) {
 				const serverError = serverResult?.error_message || 'server returned success=false without an error message'
 				dependencies.log('warn', { serverError }, 'reachout remediation mutation was rejected by the server')
@@ -109,7 +149,24 @@ export const makeReachoutTimelockRemediation = (dependencies: RemediationDepende
 				} satisfies ReachoutTimelockRemediationResult
 			}
 
-			const after = await dependencies.fetchState(true)
+			let after: ReachoutTimelockState
+			try {
+				after = await dependencies.fetchState(true)
+			} catch (error) {
+				const verificationError = errorMessage(error)
+				dependencies.log(
+					'warn',
+					{ status: 'server-accepted-pending-verification', verificationError },
+					'reachout remediation was accepted but the verification read failed'
+				)
+				return {
+					removed: false,
+					status: 'server-accepted-pending-verification',
+					before: eligibility.state,
+					serverSuccess: true,
+					verificationError
+				} satisfies ReachoutTimelockRemediationResult
+			}
 			// Fail closed: an omitted/malformed `is_active` is not proof that the
 			// server lifted the restriction. Only an explicit `false` confirms it.
 			const removed = after.isActive === false
@@ -136,7 +193,7 @@ export const makeReachoutTimelockRemediation = (dependencies: RemediationDepende
 		})
 		inFlight = operation
 
-		return operation
+		return withCallerTimeout(operation, dependencies.callerTimeoutMs)
 	}
 
 	return { getEligibility, remove }

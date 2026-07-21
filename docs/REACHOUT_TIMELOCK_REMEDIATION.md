@@ -70,7 +70,7 @@ if (eligibility.eligible) {
 }
 ```
 
-Concurrent confirmations are coalesced into one mutation. Every attempt re-fetches eligibility before the mutation and re-fetches account state afterwards. The result is `removed` only when that final server read reports the restriction inactive. Server rejection text is returned and logged verbatim rather than replaced with a generic error.
+Concurrent confirmations are coalesced into one mutation. A caller-facing timeout does not release that single-flight guard: the underlying MEX request remains authoritative until it settles, preventing an immediate retry from submitting a duplicate mutation. Every attempt re-fetches eligibility before the mutation and re-fetches account state afterwards. The result is `removed` only when that final server read reports the restriction inactive. If the server accepted the mutation but the verification read fails, the result remains `server-accepted-pending-verification`; it is never reported as a failed mutation. Server rejection and transport errors are returned and logged with their concrete reason rather than replaced with a generic error.
 
 ## Deliberate non-goals
 

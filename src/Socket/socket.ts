@@ -1918,17 +1918,14 @@ export const makeSocket = (config: SocketConfig) => {
 		config: experimentalReachoutTimelockRemediation,
 		fetchState: fetchAccountReachoutTimelock,
 		removeOnServer: variables =>
-			promiseTimeout<RemoveReachoutTimelockServerResult>(10_000, (resolve, reject) =>
-				executeWMexQuery<RemoveReachoutTimelockServerResult>(
-					variables,
-					QueryIds.REMOVE_REACHOUT_TIMELOCK,
-					XWAPaths.xwa2_remove_account_reachout_timelock,
-					query,
-					generateMessageTag
-				)
-					.then(resolve)
-					.catch(reject)
+			executeWMexQuery<RemoveReachoutTimelockServerResult>(
+				variables,
+				QueryIds.REMOVE_REACHOUT_TIMELOCK,
+				XWAPaths.xwa2_remove_account_reachout_timelock,
+				query,
+				generateMessageTag
 			),
+		callerTimeoutMs: 10_000,
 		log: (level, details, message) => logger[level](details, message)
 	})
 

@@ -137,6 +137,46 @@ describe('experimental reachout timelock remediation', () => {
 		})
 	})
 
+	it('converts a rejected mutation request into a detailed server result', async () => {
+		const { remediation, removeOnServer, log } = makeHarness([eligibleState])
+		removeOnServer.mockReset().mockRejectedValueOnce(new Error('GraphQL permission denied'))
+
+		await expect(remediation.remove(confirmation)).resolves.toMatchObject({
+			removed: false,
+			status: 'server-rejected',
+			serverSuccess: false,
+			serverError: 'GraphQL permission denied'
+		})
+		expect(log).toHaveBeenCalledWith(
+			'warn',
+			{ serverError: 'GraphQL permission denied' },
+			'reachout remediation mutation request failed'
+		)
+	})
+
+	it('keeps an accepted mutation pending when the verification read fails', async () => {
+		const { remediation, fetchState, log } = makeHarness([eligibleState])
+		fetchState
+			.mockReset()
+			.mockResolvedValueOnce(eligibleState)
+			.mockRejectedValueOnce(new Error('verification query timed out'))
+
+		await expect(remediation.remove(confirmation)).resolves.toMatchObject({
+			removed: false,
+			status: 'server-accepted-pending-verification',
+			serverSuccess: true,
+			verificationError: 'verification query timed out'
+		})
+		expect(log).toHaveBeenCalledWith(
+			'warn',
+			{
+				status: 'server-accepted-pending-verification',
+				verificationError: 'verification query timed out'
+			},
+			'reachout remediation was accepted but the verification read failed'
+		)
+	})
+
 	it('does not claim removal when mutation succeeds but the fresh state is still active', async () => {
 		const { remediation } = makeHarness([eligibleState, eligibleState])
 
@@ -184,6 +224,35 @@ describe('experimental reachout timelock remediation', () => {
 		releaseMutation({ success: true })
 
 		await expect(Promise.all([first, second])).resolves.toHaveLength(2)
+		expect(removeOnServer).toHaveBeenCalledTimes(1)
+	})
+
+	it('keeps the mutation single-flight after caller timeouts until the underlying request settles', async () => {
+		let releaseMutation!: (value: RemoveReachoutTimelockServerResult) => void
+		const mutation = new Promise<RemoveReachoutTimelockServerResult>(resolve => {
+			releaseMutation = resolve
+		})
+		const fetchState = jest
+			.fn<(emitUpdate?: boolean) => Promise<ReachoutTimelockState>>()
+			.mockResolvedValueOnce(eligibleState)
+			.mockResolvedValueOnce({ isActive: false })
+		const removeOnServer = jest
+			.fn<(variables: typeof REMOVE_REACHOUT_TIMELOCK_INPUT) => Promise<RemoveReachoutTimelockServerResult>>()
+			.mockReturnValue(mutation)
+		const remediation = makeReachoutTimelockRemediation({
+			config: eligibleConfig,
+			fetchState,
+			removeOnServer,
+			callerTimeoutMs: 5,
+			log: () => undefined
+		})
+
+		await expect(remediation.remove(confirmation)).rejects.toThrow(/outcome is still pending/)
+		await expect(remediation.remove(confirmation)).rejects.toThrow(/outcome is still pending/)
+		expect(removeOnServer).toHaveBeenCalledTimes(1)
+
+		releaseMutation({ success: true })
+		await new Promise(resolve => setTimeout(resolve, 0))
 		expect(removeOnServer).toHaveBeenCalledTimes(1)
 	})
 })

@@ -106,6 +106,7 @@ export type ReachoutTimelockRemediationResult = {
 	after?: ReachoutTimelockState
 	serverSuccess: boolean
 	serverError?: string
+	verificationError?: string
 }
 
 export enum ReachoutTimelockEnforcementType {
