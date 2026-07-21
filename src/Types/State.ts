@@ -60,6 +60,54 @@ export type ReachoutTimelockState = {
 	enforcementType?: ReachoutTimelockEnforcementType
 }
 
+/**
+ * Opt-in configuration for the experimental BIZ_QUALITY remediation flow.
+ *
+ * WhatsApp Android gates this flow with a remotely configured feature flag and
+ * video URL. Neither value is available to a Web companion, so callers must
+ * supply values captured from an eligible official-client session. Merely
+ * enabling this object never changes message sending or removes a restriction.
+ */
+export type ReachoutTimelockRemediationConfig = {
+	/** Master switch. The feature is disabled unless this is exactly `true`. */
+	enabled?: boolean
+	/** Whether Android remote feature flag 21412 was observed as enabled. */
+	androidFeatureFlagEnabled?: boolean
+	/** Official remediation video URL obtained from Android remote config key 24562. */
+	officialVideoUrl?: string
+}
+
+export type ReachoutTimelockRemediationEligibilityReason =
+	| 'eligible'
+	| 'feature-disabled'
+	| 'restriction-inactive'
+	| 'wrong-enforcement-type'
+	| 'android-feature-flag-not-confirmed'
+	| 'official-video-url-missing-or-invalid'
+
+export type ReachoutTimelockRemediationEligibility = {
+	eligible: boolean
+	reason: ReachoutTimelockRemediationEligibilityReason
+	state: ReachoutTimelockState
+	officialVideoUrl?: string
+}
+
+export type ReachoutTimelockRemediationRequest = {
+	/** Explicit assertion made only after the user watched the configured official video. */
+	videoWatched: true
+	/** Prevents a generic boolean or accidental call from authorizing a server mutation. */
+	confirmation: 'USER_WATCHED_OFFICIAL_VIDEO'
+}
+
+export type ReachoutTimelockRemediationResult = {
+	removed: boolean
+	status: 'removed' | 'server-rejected' | 'server-accepted-pending-verification'
+	before: ReachoutTimelockState
+	after?: ReachoutTimelockState
+	serverSuccess: boolean
+	serverError?: string
+}
+
 export enum ReachoutTimelockEnforcementType {
 	BIZ_COMMERCE_VIOLATION_ALCOHOL = 'BIZ_COMMERCE_VIOLATION_ALCOHOL',
 	BIZ_COMMERCE_VIOLATION_ADULT = 'BIZ_COMMERCE_VIOLATION_ADULT',
@@ -77,8 +125,11 @@ export enum ReachoutTimelockEnforcementType {
 	BIZ_COMMERCE_VIOLATION_VIOLENT_CONTENT = 'BIZ_COMMERCE_VIOLATION_VIOLENT_CONTENT',
 	BIZ_COMMERCE_VIOLATION_WEAPONS = 'BIZ_COMMERCE_VIOLATION_WEAPONS',
 	BIZ_QUALITY = 'BIZ_QUALITY',
-	/** This means there is no restriction */
+	BULK_MESSAGING = 'BULK_MESSAGING',
+	/** The generic server category. `isActive`, not this value, determines whether a restriction exists. */
 	DEFAULT = 'DEFAULT',
+	RESTRICT_ALL_COMPANIONS = 'RESTRICT_ALL_COMPANIONS',
+	SCAM = 'SCAM',
 	WEB_COMPANION_ONLY = 'WEB_COMPANION_ONLY'
 }
 
