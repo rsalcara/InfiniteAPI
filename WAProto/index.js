@@ -62958,6 +62958,10 @@ export const proto = $root.proto = (() => {
                 case 13:
                     m.peerDataOperationRequestType = 13;
                     break;
+                case "CONTACT_REFRESH_REQUEST":
+                case 14:
+                    m.peerDataOperationRequestType = 14;
+                    break;
                 }
                 if (d.requestStickerReupload) {
                     if (!Array.isArray(d.requestStickerReupload))
@@ -64678,6 +64682,10 @@ export const proto = $root.proto = (() => {
                 case "BUSINESS_BROADCAST_INSIGHTS_REFRESH":
                 case 13:
                     m.peerDataOperationRequestType = 13;
+                    break;
+                case "CONTACT_REFRESH_REQUEST":
+                case 14:
+                    m.peerDataOperationRequestType = 14;
                     break;
                 }
                 if (d.stanzaId != null) {
@@ -67289,6 +67297,7 @@ export const proto = $root.proto = (() => {
             values[valuesById[11] = "GALAXY_FLOW_ACTION"] = 11;
             values[valuesById[12] = "BUSINESS_BROADCAST_INSIGHTS_DELIVERED_TO"] = 12;
             values[valuesById[13] = "BUSINESS_BROADCAST_INSIGHTS_REFRESH"] = 13;
+            values[valuesById[14] = "CONTACT_REFRESH_REQUEST"] = 14;
             return values;
         })();
 
