@@ -9,11 +9,11 @@ import type {
 import { ReachoutTimelockEnforcementType } from '../Types'
 
 export const REMOVE_REACHOUT_TIMELOCK_INPUT = Object.freeze({
-	input: {
+	input: Object.freeze({
 		violation_type: 'SPAM',
 		reason: 'User watched remediation video',
 		reachout_timelock_type: 'BIZ_QUALITY'
-	}
+	})
 })
 
 export type RemoveReachoutTimelockServerResult = {

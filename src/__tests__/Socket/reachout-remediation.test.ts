@@ -56,6 +56,8 @@ describe('experimental reachout timelock remediation', () => {
 				reachout_timelock_type: 'BIZ_QUALITY'
 			}
 		})
+		expect(Object.isFrozen(REMOVE_REACHOUT_TIMELOCK_INPUT)).toBe(true)
+		expect(Object.isFrozen(REMOVE_REACHOUT_TIMELOCK_INPUT.input)).toBe(true)
 	})
 
 	it.each([
