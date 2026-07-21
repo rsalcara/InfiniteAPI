@@ -7,22 +7,42 @@ import {
 	WA_ADV_DEVICE_SIG_PREFIX,
 	WA_ADV_HOSTED_ACCOUNT_SIG_PREFIX
 } from '../Defaults'
-import type { AuthenticationCreds, SignalCreds, SocketConfig } from '../Types'
+import type { AuthenticationCreds, SocketConfig } from '../Types'
 import { type BinaryNode, getBinaryNodeChild, jidDecode, S_WHATSAPP_NET } from '../WABinary'
 import { Curve, hmacSign } from './crypto'
 import { encodeBigEndian } from './generics'
 import { createSignalIdentity } from './signal'
 
-// Equivalent territory: upstream PR WhiskeySockets/Baileys#2201 ("add android
-// browser, can receive viewonce") flipped `platform` to ANDROID / dropped
-// WebInfo to make the companion show up as Android. We cover the same
-// outcome WITHOUT breaking the WA\x06\x03 (web) handshake: keep
-// `platform: WEB` here (server-side requirement — ANDROID/SMB_ANDROID lets
-// pair-code connect but fails at registration), keep WebInfo, and route the
-// "appears as Android" part through `DeviceProps.platformType = ANDROID_PHONE`
-// in the registration node below. Validated in production: pair code works
-// and the device shows up as "Android (14)" in Linked Devices.
-const getUserAgent = (config: SocketConfig): proto.ClientPayload.IUserAgent => {
+// The two profiles must stay coherent across ClientPayload, DeviceProps and
+// link-code registration. Web retains the production-proven payload; the
+// experimental SMB_ANDROID profile follows the fields observed in WhatsApp
+// Business Android 2.26.27.83 and deliberately omits WebInfo.
+
+export const getUserAgent = (
+	config: SocketConfig,
+	creds?: Pick<AuthenticationCreds, 'smbAndroidDeviceIdentity'>
+): proto.ClientPayload.IUserAgent => {
+	if (config.pairingCodeProfile === 'smb_android') {
+		const [primary, secondary, tertiary, quaternary] = config.smbAndroidVersion
+		const deviceProfile = creds?.smbAndroidDeviceIdentity?.deviceProfile ?? config.smbAndroidDevice
+		return {
+			appVersion: { primary, secondary, tertiary, quaternary },
+			platform: proto.ClientPayload.UserAgent.Platform.SMB_ANDROID,
+			releaseChannel: proto.ClientPayload.UserAgent.ReleaseChannel.RELEASE,
+			osVersion: deviceProfile.osVersion,
+			manufacturer: deviceProfile.manufacturer,
+			device: deviceProfile.device,
+			osBuildNumber: deviceProfile.osBuildNumber,
+			phoneId: creds?.smbAndroidDeviceIdentity?.phoneId,
+			deviceExpId: creds?.smbAndroidDeviceIdentity?.deviceExpId,
+			deviceType: proto.ClientPayload.UserAgent.DeviceType.PHONE,
+			localeLanguageIso6391: 'en',
+			mnc: '000',
+			mcc: '000',
+			localeCountryIso31661Alpha2: config.countryCode
+		}
+	}
+
 	return {
 		appVersion: {
 			primary: config.version[0],
@@ -60,14 +80,17 @@ const getWebInfo = (config: SocketConfig): proto.ClientPayload.IWebInfo => {
 	return { webSubPlatform }
 }
 
-const getClientPayload = (config: SocketConfig) => {
+export const getClientPayload = (
+	config: SocketConfig,
+	creds?: Pick<AuthenticationCreds, 'smbAndroidDeviceIdentity'>
+) => {
 	const payload: proto.IClientPayload = {
 		connectType: proto.ClientPayload.ConnectType.WIFI_UNKNOWN,
 		connectReason: proto.ClientPayload.ConnectReason.USER_ACTIVATED,
-		userAgent: getUserAgent(config)
+		userAgent: getUserAgent(config, creds)
 	}
 
-	payload.webInfo = getWebInfo(config)
+	if (config.pairingCodeProfile === 'web') payload.webInfo = getWebInfo(config)
 
 	// Upstream #2432: expose pushName for mock-phone harness deterministic assignment.
 	if (config.pushName) {
@@ -77,10 +100,14 @@ const getClientPayload = (config: SocketConfig) => {
 	return payload
 }
 
-export const generateLoginNode = (userJid: string, config: SocketConfig): proto.IClientPayload => {
+export const generateLoginNode = (
+	userJid: string,
+	config: SocketConfig,
+	creds?: Pick<AuthenticationCreds, 'smbAndroidDeviceIdentity'>
+): proto.IClientPayload => {
 	const { user, device } = jidDecode(userJid)!
 	const payload: proto.IClientPayload = {
-		...getClientPayload(config),
+		...getClientPayload(config, creds),
 		passive: true,
 		pull: true,
 		username: +user,
@@ -106,22 +133,31 @@ const getPlatformType = (platform: string): proto.DeviceProps.PlatformType => {
  * sent (single source of truth — no drift between the wire payload and the
  * mirrored row).
  */
-export const buildCompanionDeviceProps = (config: SocketConfig): proto.IDeviceProps => ({
-	os: config.browser[0],
-	platformType: getPlatformType(config.browser[1]),
+export const buildCompanionDeviceProps = (
+	config: SocketConfig,
+	creds?: Pick<AuthenticationCreds, 'smbAndroidDeviceIdentity'>
+): proto.IDeviceProps => ({
+	os:
+		config.pairingCodeProfile === 'smb_android'
+			? `Android ${creds?.smbAndroidDeviceIdentity?.deviceProfile?.osVersion ?? config.smbAndroidDevice.osVersion}`
+			: config.browser[0],
+	platformType:
+		config.pairingCodeProfile === 'smb_android'
+			? proto.DeviceProps.PlatformType.ANDROID_PHONE
+			: getPlatformType(config.browser[1]),
 	requireFullSync: config.syncFullHistory,
 	historySyncConfig: {
 		storageQuotaMb: 10240,
 		inlineInitialPayloadInE2EeMsg: true,
 		recentSyncDaysLimit: undefined,
-		supportCallLogHistory: false,
+		supportCallLogHistory: config.pairingCodeProfile === 'smb_android',
 		supportBotUserAgentChatHistory: true,
 		supportCagReactionsAndPolls: true,
-		supportBizHostedMsg: true,
+		supportBizHostedMsg: config.pairingCodeProfile !== 'smb_android',
 		supportRecentSyncChunkMessageCountTuning: true,
 		supportHostedGroupMsg: true,
 		supportFbidBotChatHistory: true,
-		supportAddOnHistorySyncMigration: undefined,
+		supportAddOnHistorySyncMigration: config.pairingCodeProfile === 'smb_android' ? true : undefined,
 		supportMessageAssociation: true,
 		supportGroupHistory: false,
 		onDemandReady: undefined,
@@ -134,22 +170,20 @@ export const buildCompanionDeviceProps = (config: SocketConfig): proto.IDevicePr
 	}
 })
 
-export const generateRegistrationNode = (
-	{ registrationId, signedPreKey, signedIdentityKey }: SignalCreds,
-	config: SocketConfig
-) => {
+export const generateRegistrationNode = (creds: AuthenticationCreds, config: SocketConfig) => {
+	const { registrationId, signedPreKey, signedIdentityKey } = creds
 	// the app version needs to be md5 hashed
 	// and passed in
 	const appVersionBuf = createHash('md5')
 		.update(config.version.join('.')) // join as string
 		.digest()
 
-	const companion = buildCompanionDeviceProps(config)
+	const companion = buildCompanionDeviceProps(config, creds)
 
 	const companionProto = proto.DeviceProps.encode(companion).finish()
 
 	const registerPayload: proto.IClientPayload = {
-		...getClientPayload(config),
+		...getClientPayload(config, creds),
 		passive: false,
 		pull: false,
 		devicePairingData: {
@@ -255,7 +289,16 @@ export const configureSuccessfulPairing = (
 		account,
 		me: { id: jid!, name: bizName, lid },
 		signalIdentities: [...(signalIdentities || []), identity],
-		platform: platformNode?.attrs.name
+		platform: platformNode?.attrs.name,
+		pairSuccessMetadata: {
+			platform: platformNode?.attrs.name,
+			deviceJid: jid!,
+			deviceLid: lid,
+			businessName: bizName,
+			accountType: accountType ?? undefined,
+			advDeviceType: deviceIdentity.deviceType ?? undefined,
+			keyIndex: deviceIdentity.keyIndex ?? undefined
+		}
 	}
 
 	return {

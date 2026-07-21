@@ -1,6 +1,7 @@
 import type { proto } from '../../WAProto/index.js'
 import type { Contact } from './Contact'
 import type { MinimalMessage } from './Message'
+import type { PairingCodeProfile, PairSuccessMetadata, SmbAndroidDeviceIdentity } from './Pairing'
 
 export type KeyPair = { public: Uint8Array; private: Uint8Array }
 export type SignedKeyPair = {
@@ -66,6 +67,15 @@ export type AuthenticationCreds = SignalCreds & {
 	accountSettings: AccountSettings
 	registered: boolean
 	pairingCode: string | undefined
+	/**
+	 * Pairing/connection profile bound to these credentials. Missing on older
+	 * credential files means the session was created by the legacy Web flow.
+	 */
+	pairingCodeProfile?: PairingCodeProfile
+	/** Stable virtual Android identifiers used only by the SMB_ANDROID profile. */
+	smbAndroidDeviceIdentity?: SmbAndroidDeviceIdentity
+	/** Exact metadata fields supplied by the server at pair-success. */
+	pairSuccessMetadata?: PairSuccessMetadata
 	lastPropHash: string | undefined
 	routingInfo: Buffer | undefined
 	additionalData?: any | undefined

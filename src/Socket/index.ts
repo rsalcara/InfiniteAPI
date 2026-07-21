@@ -2,6 +2,7 @@ import { DEFAULT_CONNECTION_CONFIG } from '../Defaults'
 import type { SocketConfig, UserFacingSocketConfig, WAVersion } from '../Types'
 import { attachAdminAbuseDetector } from '../Utils/admin-abuse-detector'
 import { attachMeUsernameSync } from '../Utils/me-username-sync'
+import { ensureSmbAndroidDeviceIdentity, resolveSessionPairingCodeProfile } from '../Utils/pairing-code-profile'
 import {
 	createMessageQuarantineRecorder,
 	MsgRetryCounterSqliteAdapter,
@@ -67,6 +68,17 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	const newConfig = {
 		...DEFAULT_CONNECTION_CONFIG,
 		...config
+	}
+	newConfig.pairingCodeProfile = resolveSessionPairingCodeProfile(newConfig.pairingCodeProfile, newConfig.auth.creds)
+	if (newConfig.pairingCodeProfile === 'smb_android') {
+		const hadPersistedProfile = Boolean(newConfig.auth.creds.smbAndroidDeviceIdentity?.deviceProfile)
+		const identity = ensureSmbAndroidDeviceIdentity(newConfig.auth.creds)
+		if (!hadPersistedProfile && identity.deviceProfile) {
+			newConfig.logger.info(
+				{ selectedProfileId: identity.deviceProfile.catalogId },
+				'SMB_ANDROID device profile selected and bound to this session'
+			)
+		}
 	}
 
 	wireRemainingMsgstoreAdapters(newConfig)

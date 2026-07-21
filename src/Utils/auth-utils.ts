@@ -896,6 +896,8 @@ export const initAuthCreds = (): AuthenticationCreds => {
 		},
 		registered: false,
 		pairingCode: undefined,
+		pairingCodeProfile: undefined,
+		smbAndroidDeviceIdentity: undefined,
 		lastPropHash: undefined,
 		routingInfo: undefined,
 		additionalData: undefined

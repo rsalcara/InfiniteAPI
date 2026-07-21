@@ -22,6 +22,7 @@ import {
 	aesEncryptCTR,
 	bindWaitForConnectionUpdate,
 	buildPairingQRData,
+	buildPairingCodeCompanionHello,
 	bytesToCrockford,
 	configureSuccessfulPairing,
 	Curve,
@@ -29,6 +30,7 @@ import {
 	generateLoginNode,
 	generateMdTagPrefix,
 	generateRegistrationNode,
+	getPairingCodeWireProfile,
 	getCodeFromWSError,
 	getErrorCodeFromStreamError,
 	getNextPreKeysNode,
@@ -38,7 +40,7 @@ import {
 	signedKeyPair,
 	xmppSignedPreKey
 } from '../Utils'
-import { getPlatformId, isAndroidBrowser } from '../Utils/browser-utils'
+import { isAndroidBrowser } from '../Utils/browser-utils'
 import { applyReconciledPrekeyCursors } from '../Utils/prekey-upload-cursors'
 import { resolvePrekeyUploadQueryTimeout } from '../Utils/prekey-upload-timeout'
 import {
@@ -579,7 +581,7 @@ export const makeSocket = (config: SocketConfig) => {
 			node = generateRegistrationNode(creds, config)
 			logger.info({ node }, 'not logged in, attempting registration...')
 		} else {
-			node = generateLoginNode(creds.me.id, config)
+			node = generateLoginNode(creds.me.id, config, creds)
 			logger.info({ node }, 'logging in...')
 		}
 
@@ -1452,81 +1454,39 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 
 		authState.creds.pairingCode = pairingCode
+		authState.creds.pairingCodeProfile = config.pairingCodeProfile
 
 		authState.creds.me = {
 			id: jidEncode(phoneNumber, 's.whatsapp.net'),
 			name: '~'
 		}
 
-		// Pair code companion_platform_id must be Chrome (1) when using Android
-		// browser preset. ANDROID_PHONE (16) causes silent timeout (server ignores),
-		// UWP (21) causes "cannot connect device" rejection. Only Chrome (1) works
-		// for pair code via web protocol (WA\x06\x03). The device still appears as
-		// "Android" in linked devices because DeviceProps.platformType=ANDROID_PHONE
-		// is set separately in the registration node.
-		const isAndroid = isAndroidBrowser(browser)
-		const pairPlatformId = isAndroid ? getPlatformId('Chrome') : getPlatformId(browser[1])
-		const pairPlatformDisplay = isAndroid ? 'Chrome (Mac OS)' : `${browser[1]} (${browser[0]})`
+		const wireProfile = getPairingCodeWireProfile(
+			config.pairingCodeProfile,
+			browser,
+			authState.creds.smbAndroidDeviceIdentity?.deviceProfile?.osVersion
+		)
 
 		logger.info(
 			{
 				pairCode: pairingCode,
 				jid: authState.creds.me.id,
-				companionPlatformId: pairPlatformId,
-				companionPlatformDisplay: pairPlatformDisplay,
-				isAndroid
+				pairingCodeProfile: wireProfile.profile,
+				companionPlatformId: wireProfile.platformId,
+				companionPlatformDisplay: wireProfile.platformDisplay
 			},
-			`pair code requested | companion: ${pairPlatformDisplay} | ${isAndroid ? 'android override -> Chrome' : 'native platform'}`
+			`pair code requested | profile: ${wireProfile.profile} | companion: ${wireProfile.platformDisplay}`
 		)
 
 		ev.emit('creds.update', authState.creds)
-		await sendNode({
-			tag: 'iq',
-			attrs: {
-				to: S_WHATSAPP_NET,
-				type: 'set',
-				id: generateMessageTag(),
-				xmlns: 'md'
-			},
-			content: [
-				{
-					tag: 'link_code_companion_reg',
-					attrs: {
-						jid: authState.creds.me.id,
-						stage: 'companion_hello',
-
-						should_show_push_notification: 'true'
-					},
-					content: [
-						{
-							tag: 'link_code_pairing_wrapped_companion_ephemeral_pub',
-							attrs: {},
-							content: await generatePairingKey()
-						},
-						{
-							tag: 'companion_server_auth_key_pub',
-							attrs: {},
-							content: authState.creds.noiseKey.public
-						},
-						{
-							tag: 'companion_platform_id',
-							attrs: {},
-							content: pairPlatformId
-						},
-						{
-							tag: 'companion_platform_display',
-							attrs: {},
-							content: pairPlatformDisplay
-						},
-						{
-							tag: 'link_code_pairing_nonce',
-							attrs: {},
-							content: '0'
-						}
-					]
-				}
-			]
+		const companionHello = buildPairingCodeCompanionHello({
+			jid: authState.creds.me.id,
+			messageId: generateMessageTag(),
+			wrappedCompanionEphemeralPublicKey: await generatePairingKey(),
+			companionServerAuthPublicKey: authState.creds.noiseKey.public,
+			wireProfile
 		})
+		await sendNode(companionHello)
 		return authState.creds.pairingCode
 	}
 
@@ -1624,6 +1584,7 @@ export const makeSocket = (config: SocketConfig) => {
 		logger.debug('pair success recv')
 		try {
 			const { reply, creds: updatedCreds } = configureSuccessfulPairing(stanza, creds)
+			updatedCreds.pairingCodeProfile = config.pairingCodeProfile
 
 			logger.info(
 				{ me: updatedCreds.me, platform: updatedCreds.platform },
@@ -1646,10 +1607,10 @@ export const makeSocket = (config: SocketConfig) => {
 	})
 	// login complete
 	ws.on('CB:success', async (node: BinaryNode) => {
-		const isAndroid = isAndroidBrowser(browser)
+		const isAndroid = config.pairingCodeProfile === 'smb_android' || isAndroidBrowser(browser)
 		const phoneId = authState.creds.me?.id?.split(':')[0]?.split('@')[0] || 'new session'
 		logger.info(
-			`${isAndroid ? '\uD83D\uDCF1' : '\uD83D\uDDA5\uFE0F'} Connected to WA | ${phoneId} | platform: ${isAndroid ? 'SMB_ANDROID' : 'MACOS'} | device: ${isAndroid ? 'Android' : 'Desktop'} | platformType: ${isAndroid ? 'ANDROID_PHONE' : 'CHROME'}`
+			`${isAndroid ? '\uD83D\uDCF1' : '\uD83D\uDDA5\uFE0F'} Connected to WA | ${phoneId} | clientPayload: ${config.pairingCodeProfile === 'smb_android' ? 'SMB_ANDROID' : 'WEB'} | platformType: ${config.pairingCodeProfile === 'smb_android' ? 'ANDROID_PHONE' : browser[1]}`
 		)
 		clearTimeout(qrTimer) // will never happen in all likelyhood -- but just in case WA sends success on first try
 

@@ -24,6 +24,8 @@ export * from './message-retry-manager'
 export * from './orphan-queue'
 export * from './browser-utils'
 export * from './companion-reg-client-utils'
+export * from './pairing-code-profile'
+export * from './smb-android-device-catalog'
 
 // === Identity and Session Management ===
 export * from './contact-picture-identity'

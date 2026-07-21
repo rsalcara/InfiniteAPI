@@ -3,6 +3,7 @@ import { makeLibSignalRepository } from '../Signal/libsignal'
 import type { AuthenticationState, SocketConfig, WAVersion } from '../Types'
 import { Browsers } from '../Utils/browser-utils'
 import logger from '../Utils/logger'
+import { resolvePairingCodeProfileFromEnv } from '../Utils/pairing-code-profile'
 // Single source of truth for WhatsApp Web version - imported from JSON
 import baileysVersionData from './baileys-version.json' with { type: 'json' }
 
@@ -80,6 +81,22 @@ const resolveDefaultBrowser = (): [string, string, string] => {
 }
 
 export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
+	pairingCodeProfile: resolvePairingCodeProfileFromEnv(),
+	// Version verified against the WhatsApp Business Android APK used for the
+	// protocol study. Override when validating a newer Android build.
+	smbAndroidVersion: [2, 26, 27, 83],
+	// Compatibility-only fallback for a registered SMB_ANDROID credential file
+	// created before device-profile snapshots existed. New sessions always use
+	// one verified catalog profile and persist it in AuthenticationCreds.
+	smbAndroidDevice: {
+		catalogId: 'legacy-infiniteapi-companion',
+		commercialName: 'InfiniteAPI SMB Android Companion',
+		osVersion: '14',
+		manufacturer: 'InfiniteAPI',
+		device: 'SMB Android Companion',
+		osBuildNumber: '14',
+		verified: true
+	},
 	version: version as WAVersion,
 	versionCheckIntervalMs: SIX_HOURS_MS,
 	browser: resolveDefaultBrowser(),

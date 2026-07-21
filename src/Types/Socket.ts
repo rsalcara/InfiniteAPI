@@ -8,6 +8,7 @@ import { type MediaConnInfo, type WAMessageKey } from './Message'
 import type { SessionCleanupConfig } from './SessionCleanup'
 import type { SignalRepositoryWithLIDStore } from './Signal'
 import type { ReachoutTimelockRemediationConfig } from './State'
+import type { PairingCodeProfile, SmbAndroidDeviceMetadata, SmbAndroidVersion } from './Pairing'
 
 export type WAVersion = [number, number, number]
 export type WABrowserDescription = [string, string, string]
@@ -34,6 +35,16 @@ export type PossiblyExtendedCacheStore = CacheStore & {
 export type PatchedMessageWithRecipientJID = proto.IMessage & { recipientJid?: string }
 
 export type SocketConfig = {
+	/**
+	 * Wire profile used by registration and phone-number pairing.
+	 * `smb_android` is the new default for fresh sessions. `web` preserves the
+	 * established WhatsApp Web pair-code path.
+	 */
+	pairingCodeProfile: PairingCodeProfile
+	/** WhatsApp Business Android version announced by the SMB_ANDROID profile. */
+	smbAndroidVersion: SmbAndroidVersion
+	/** Compatibility fallback for pre-catalog registered SMB_ANDROID credentials. */
+	smbAndroidDevice: SmbAndroidDeviceMetadata
 	/** the WS url to connect to WA */
 	waWebSocketUrl: string | URL
 	/** Fails the connection if the socket times out in this interval */

@@ -1931,7 +1931,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 
 		try {
-			const props = buildCompanionDeviceProps(config)
+			const props = buildCompanionDeviceProps(config, authState.creds)
 			const hsc = props.historySyncConfig || {}
 			let advKeyIndex = 0
 			try {
