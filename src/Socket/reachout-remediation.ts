@@ -137,6 +137,7 @@ export const makeReachoutTimelockRemediation = (dependencies: RemediationDepende
 					serverError
 				} satisfies ReachoutTimelockRemediationResult
 			}
+
 			if (serverResult?.success !== true) {
 				const serverError = serverResult?.error_message || 'server returned success=false without an error message'
 				dependencies.log('warn', { serverError }, 'reachout remediation mutation was rejected by the server')
@@ -167,6 +168,7 @@ export const makeReachoutTimelockRemediation = (dependencies: RemediationDepende
 					verificationError
 				} satisfies ReachoutTimelockRemediationResult
 			}
+
 			// Fail closed: an omitted/malformed `is_active` is not proof that the
 			// server lifted the restriction. Only an explicit `false` confirms it.
 			const removed = after.isActive === false
