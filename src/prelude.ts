@@ -3,16 +3,17 @@
  *
  * In native ESM the module body of index.ts runs only after ALL static
  * imports (and their transitive deps) have been evaluated. Placing the
- * suppressLibsignalLogs call in the index.ts body therefore installs the
- * filter too late — libsignal has already loaded. This prelude module has
- * no dependency on Socket/index so the ESM loader evaluates it first,
- * guaranteeing the console filter is active before libsignal initialises.
+ * a diagnostics installer call in the index.ts body would therefore run too
+ * late — libsignal has already loaded. This prelude module has no dependency
+ * on Socket/index so the ESM loader evaluates it first, guaranteeing capture
+ * is active before libsignal initialises. The environment flag disables only
+ * output filtering, never diagnostic capture.
  *
  * Import order in index.ts must keep `./prelude` as the FIRST static
  * import to preserve this guarantee.
  */
-import { suppressLibsignalLogs } from './Utils/suppress-libsignal-logs.js'
+import { installLibsignalDiagnostics } from './Utils/suppress-libsignal-logs.js'
 
-if (process.env.INFINITEAPI_DISABLE_LIBSIGNAL_LOG_FILTER !== 'true') {
-	suppressLibsignalLogs()
-}
+installLibsignalDiagnostics({
+	suppressLogs: process.env.INFINITEAPI_DISABLE_LIBSIGNAL_LOG_FILTER !== 'true'
+})

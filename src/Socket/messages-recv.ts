@@ -52,23 +52,26 @@ import {
 	getHistoryMsg,
 	getNextPreKeys,
 	getStatusFromReceiptType,
+	hasRetrySendBudget,
 	handleIdentityChange,
 	hkdf,
 	isCorruptedSessionError,
+	isNodeCacheFullError,
 	makeMsmsgSecretCache,
 	MISSING_KEYS_ERROR_TEXT,
 	NACK_REASONS,
-	nextRetrySendAttempt,
 	NO_MESSAGE_FOUND_ERROR_TEXT,
 	normalizeKeyLidToPn,
 	normalizeMessageJids,
 	parseRetryErrorCode,
+	persistRetrySendReservation,
 	resolveContactPictureIdentity,
 	resolveLidToPn,
 	resolveRetryReceiptRoute,
 	RetryReason,
 	retryReasonFromDecryptionError,
 	safeCacheSet,
+	shouldIncludeRetryKeysForSession,
 	toNumber,
 	unixTimestampSeconds,
 	xmppPreKey,
@@ -336,9 +339,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	 * the `msgRetryCache` read-modify-write. The cache is mutated by two call
 	 * paths — `sendRetryRequest` and `reserveSendMessageAgainAttempt` — and the
 	 * classic `await get → +1 → await set` sequence loses increments without
-	 * a shared lock chain. `incrementRetryAndGet` collapses get+inc+set into
-	 * one critical section per `(msgId, participant)` so both paths cannot
-	 * step on each other.
+	 * a shared lock chain. Each path therefore performs its complete counter
+	 * transition inside the same per-`(msgId, participant)` critical section.
 	 *
 	 * InfiniteAPI hybrid: we KEEP the outer `retryMutex` (line ~145) that
 	 * wraps the inbound dispatch's retry handler — it serializes the whole
@@ -358,17 +360,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		namespace: '__msg_retry__',
 		id: `${msgId}:${participant}`
 	})
-	const incrementRetryAndGet = async (msgId: string, participant: string): Promise<number> => {
-		return retryLocks.withLock(retryLockRef(msgId, participant), async () => {
-			const key = `${msgId}:${participant}`
-			const next = ((await msgRetryCache.get<number>(key)) ?? 0) + 1
-			// BOT-001-B: wrap NodeCache.set so a maxKeys saturation degrades
-			// gracefully (debug-logged) instead of propagating up into the
-			// retry handler and tripping `onUnexpectedError` / socket teardown.
-			await safeCacheSet(msgRetryCache, key, next, logger, 'msgRetryCache')
-			return next
-		})
-	}
 
 	// Debounce identity-change session refreshes per JID to avoid bursts
 	// Audit IDENTITY-CACHE — TTL 5s + uso esporádico mantém o cap baixo na
@@ -2008,7 +1999,26 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		let directDistributionMarkError: unknown
 		let directDistributionWasAlreadyMarked = false
 		let includeDirectDistributionKey = false
-		const shouldIncludeRetryKeys = retryCount > 1 || forceIncludeKeys
+		let retrySessionExists: boolean | undefined
+		if (retryCount === 1 && !forceIncludeKeys) {
+			const retryPeerJid = msgKey.participant || node.attrs.from
+			const validation = await signalRepository.validateSession(retryPeerJid!)
+			const validationFailed = validation.reason === 'validation error'
+			retrySessionExists = validationFailed ? undefined : validation.exists
+			if (validationFailed) {
+				logger.warn(
+					{ msgId, retryPeerJid, reason: validation.reason },
+					'retry session validation failed; preserving the normal first-retry key policy'
+				)
+			} else if (!validation.exists) {
+				logger.info(
+					{ msgId, retryPeerJid, reason: validation.reason },
+					'retry peer has no usable local session; including key bundle without deleting session state'
+				)
+			}
+		}
+
+		const shouldIncludeRetryKeys = shouldIncludeRetryKeysForSession(retryCount, forceIncludeKeys, retrySessionExists)
 		if (shouldIncludeRetryKeys && prekeyUploads) {
 			try {
 				const firstUnsent = prekeyUploads.firstUnsentId()
@@ -2906,12 +2916,39 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const reserveSendMessageAgainAttempt = async (id: string, participant: string) => {
 		return retryLocks.withLock(retryLockRef(id, participant), async () => {
 			const key = `${id}:${participant}`
-			const current = (await msgRetryCache.get<number>(key)) ?? 0
-			const attempt = nextRetrySendAttempt(current, maxMsgRetryCount)
-			if (!attempt.proceed) return attempt
+			try {
+				const attempt = await persistRetrySendReservation(msgRetryCache, key, maxMsgRetryCount)
+				if (attempt.reservationFailure) {
+					logger.warn(
+						{ id, participant, reason: attempt.reservationFailure },
+						'retry resend suppressed because its bounded counter could not be persisted'
+					)
+				}
 
-			await safeCacheSet(msgRetryCache, key, attempt.count, logger, 'msgRetryCache')
-			return attempt
+				return attempt
+			} catch (err) {
+				if (!isNodeCacheFullError(err)) {
+					logger.error(
+						{ id, participant, err },
+						'retry resend counter persistence failed; relay suppressed before sending'
+					)
+					throw err
+				}
+
+				logger.warn(
+					{ id, participant, err },
+					'retry resend suppressed because msgRetryCache is full and cannot enforce the retry cap'
+				)
+				return { proceed: false, count: maxMsgRetryCount, reservationFailure: 'write-rejected' as const }
+			}
+		})
+	}
+
+	const hasSendMessageAgainBudget = async (id: string, participant: string): Promise<boolean> => {
+		return retryLocks.withLock(retryLockRef(id, participant), async () => {
+			const key = `${id}:${participant}`
+			const current = (await msgRetryCache.get<number>(key)) ?? 0
+			return hasRetrySendBudget(current, maxMsgRetryCount)
 		})
 	}
 
@@ -3048,6 +3085,23 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			msgs.push(msg)
 		}
 
+		let hasRetryableMessage = false
+		for (let i = 0; i < ids.length; i++) {
+			const id = ids[i]
+			if (id && msgs[i] && (await hasSendMessageAgainBudget(id, participant))) {
+				hasRetryableMessage = true
+				break
+			}
+		}
+
+		if (!hasRetryableMessage) {
+			logger.info(
+				{ jid: remoteJid, ids, participant },
+				'retry receipt ignored before session preparation because no message has retry budget'
+			)
+			return
+		}
+
 		// if it's the primary jid sending the request
 		// just re-send the message to everyone
 		// prevents the first message decryption failure
@@ -3181,6 +3235,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			recipient: attrs.recipient,
 			isNodeFromMe,
 			isGroup: isJidGroup(attrs.from) ?? false,
+			isRetry: attrs.type === 'retry',
 			recentMessageTo: recentRetryMessage?.to
 		})
 		let remoteJid = retryRoute.remoteJid
@@ -3200,9 +3255,24 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			} else {
 				logger.warn(
 					routeContext,
-					'retry receipt omitted recipient and recent message was unavailable; using stanza remote context fallback'
+					'retry receipt omitted recipient and recent message was unavailable; refusing to infer the destination from the own-device stanza'
 				)
 			}
+		}
+
+		if (!remoteJid) {
+			logger.error(
+				{
+					id: attrs.id,
+					stanzaFrom: attrs.from,
+					participant: attrs.participant,
+					recipient: attrs.recipient,
+					routeSource: retryRoute.source
+				},
+				'retry receipt omitted the original destination and no cached route exists; resend suppressed'
+			)
+			await sendMessageAck(node)
+			return
 		}
 
 		const key: proto.IMessageKey = {

@@ -1,10 +1,15 @@
-export type RetryReceiptRouteSource = 'recent-message-cache' | 'recipient-attribute' | 'stanza-remote-context'
+export type RetryReceiptRouteSource =
+	| 'recent-message-cache'
+	| 'recipient-attribute'
+	| 'stanza-remote-context'
+	| 'unresolved'
 
 export interface RetryReceiptRouteInput {
 	stanzaFrom: string
 	recipient?: string
 	isNodeFromMe: boolean
 	isGroup: boolean
+	isRetry: boolean
 	recentMessageTo?: string
 }
 
@@ -18,14 +23,63 @@ export const resolveRetryReceiptRoute = ({
 	recipient,
 	isNodeFromMe,
 	isGroup,
+	isRetry,
 	recentMessageTo
-}: RetryReceiptRouteInput): { remoteJid: string; source: RetryReceiptRouteSource } => {
+}: RetryReceiptRouteInput): { remoteJid: string | undefined; source: RetryReceiptRouteSource } => {
 	if (recentMessageTo) return { remoteJid: recentMessageTo, source: 'recent-message-cache' }
 	if (!isNodeFromMe || isGroup) return { remoteJid: stanzaFrom, source: 'stanza-remote-context' }
 	if (recipient) return { remoteJid: recipient, source: 'recipient-attribute' }
+	if (isRetry) return { remoteJid: undefined, source: 'unresolved' }
 	return { remoteJid: stanzaFrom, source: 'stanza-remote-context' }
 }
 
 /** Pure state transition used inside the per-message retry lock. */
 export const nextRetrySendAttempt = (current: number, maximum: number): { proceed: boolean; count: number } =>
 	current >= maximum ? { proceed: false, count: current } : { proceed: true, count: current + 1 }
+
+export const hasRetrySendBudget = (current: number, maximum: number): boolean => current < maximum
+
+export const shouldIncludeRetryKeysForSession = (
+	retryCount: number,
+	forceIncludeKeys: boolean,
+	sessionExists?: boolean
+): boolean => retryCount > 1 || forceIncludeKeys || sessionExists === false
+
+export type RetryCounterStore = {
+	get(key: string): Promise<number | undefined> | number | undefined
+	set(key: string, value: number): Promise<void> | void | number | boolean
+}
+
+export type RetrySendReservation = {
+	proceed: boolean
+	count: number
+	reservationFailure?: 'write-rejected' | 'verification-failed'
+}
+
+/**
+ * Reserve one resend attempt and prove that the counter was persisted before
+ * allowing the relay. A saturated or lossy cache must fail closed; otherwise
+ * each repeated receipt would observe the same old value and bypass the cap.
+ * Callers still provide the per-key lock around this operation.
+ */
+export const persistRetrySendReservation = async (
+	store: RetryCounterStore,
+	key: string,
+	maximum: number
+): Promise<RetrySendReservation> => {
+	const current = (await store.get(key)) ?? 0
+	const attempt = nextRetrySendAttempt(current, maximum)
+	if (!attempt.proceed) return attempt
+
+	const writeResult = await store.set(key, attempt.count)
+	if (writeResult === false) {
+		return { proceed: false, count: current, reservationFailure: 'write-rejected' }
+	}
+
+	const stored = await store.get(key)
+	if (stored !== attempt.count) {
+		return { proceed: false, count: current, reservationFailure: 'verification-failed' }
+	}
+
+	return attempt
+}

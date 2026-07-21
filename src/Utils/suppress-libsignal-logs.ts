@@ -17,10 +17,10 @@
  * History: this code used to live at the top of `src/index.ts` and ran as
  * an import side effect. That meant any consumer of the library — even
  * one importing only types — had their process-wide `console` rewritten.
- * Moving it into an explicit function makes the override opt-in for
- * library consumers; `src/index.ts` calls it automatically when
- * `INFINITEAPI_DISABLE_LIBSIGNAL_LOG_FILTER` is NOT set, preserving the
- * default behavior the gateway already depends on.
+ * Moving it into an explicit installer avoids an import-time dependency on
+ * the Socket graph. `src/prelude.ts` always installs diagnostic capture; the
+ * `INFINITEAPI_DISABLE_LIBSIGNAL_LOG_FILTER` flag controls only whether the
+ * noisy output is suppressed.
  */
 
 import { AsyncLocalStorage } from 'async_hooks'
@@ -28,6 +28,7 @@ import { AsyncLocalStorage } from 'async_hooks'
 const SESSION_LIFECYCLE_RE = /^(Closing session|Removing old closed session)/
 
 let installed = false
+let suppressOutput = true
 
 export type LibsignalFailureKind =
 	| 'bad-mac'
@@ -48,6 +49,12 @@ export interface LibsignalFailureDiagnostic {
  * unmasked phone numbers are deliberately not retained here.
  */
 const diagnosticContext = new AsyncLocalStorage<LibsignalFailureDiagnostic[]>()
+
+export const recordLibsignalFailureDiagnostic = (message: string): LibsignalFailureKind | undefined => {
+	const failureKind = classifyLibsignalFailure(message)
+	if (failureKind) diagnosticContext.getStore()?.push({ kind: failureKind })
+	return failureKind
+}
 
 export class LibsignalDecryptError extends Error {
 	constructor(
@@ -84,13 +91,22 @@ export async function withLibsignalDiagnosticCapture<T>(work: () => Promise<T>):
 }
 
 /**
- * Install the libsignal log filter. Safe to call multiple times (subsequent
- * calls are no-ops). Once installed it is intentionally not removable —
- * the original console methods are captured by closure but never restored,
- * because the filter is a process-wide commitment for the lifetime of the
- * gateway.
+ * Install the libsignal diagnostic interceptor. Safe to call multiple times;
+ * subsequent calls update only the suppression preference. The interceptor
+ * is intentionally not removable because candidate failure capture must stay
+ * active for the lifetime of the gateway.
  */
-export function suppressLibsignalLogs(): void {
+export type LibsignalDiagnosticOptions = {
+	suppressLogs?: boolean
+}
+
+/**
+ * Install the diagnostic interceptor independently from log suppression.
+ * Consumers may disable filtering while still retaining the candidate failure
+ * classes needed to produce the correct retry reason.
+ */
+export function installLibsignalDiagnostics(options: LibsignalDiagnosticOptions = {}): void {
+	suppressOutput = options.suppressLogs ?? true
 	if (installed) return
 	installed = true
 
@@ -99,7 +115,7 @@ export function suppressLibsignalLogs(): void {
 	const origConsoleInfo = console.info
 
 	console.log = function (...args: unknown[]) {
-		if (args.length > 0 && typeof args[0] === 'string' && SESSION_LIFECYCLE_RE.test(args[0])) {
+		if (suppressOutput && args.length > 0 && typeof args[0] === 'string' && SESSION_LIFECYCLE_RE.test(args[0])) {
 			return
 		}
 
@@ -107,7 +123,7 @@ export function suppressLibsignalLogs(): void {
 	}
 
 	console.info = function (...args: unknown[]) {
-		if (args.length > 0 && typeof args[0] === 'string' && SESSION_LIFECYCLE_RE.test(args[0])) {
+		if (suppressOutput && args.length > 0 && typeof args[0] === 'string' && SESSION_LIFECYCLE_RE.test(args[0])) {
 			return
 		}
 
@@ -132,9 +148,11 @@ export function suppressLibsignalLogs(): void {
 			const isFromLibsignal = stack.includes('libsignal') || stack.includes('session_cipher')
 
 			if (isFromLibsignal) {
-				const failureKind = classifyLibsignalFailure(msg)
-				if (failureKind) {
-					diagnosticContext.getStore()?.push({ kind: failureKind })
+				recordLibsignalFailureDiagnostic(msg)
+
+				if (!suppressOutput) {
+					origConsoleError.apply(console, args)
+					return
 				}
 
 				if (msg.startsWith('Closing session')) {
@@ -185,4 +203,9 @@ export function suppressLibsignalLogs(): void {
 
 		origConsoleError.apply(console, args)
 	}
+}
+
+/** Preserve the existing public API: explicit calls enable suppression. */
+export function suppressLibsignalLogs(): void {
+	installLibsignalDiagnostics({ suppressLogs: true })
 }
