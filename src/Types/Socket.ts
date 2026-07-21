@@ -1,6 +1,5 @@
 import type { Agent } from 'https'
 import type { URL } from 'url'
-
 import { proto } from '../../WAProto/index.js'
 import type { ILogger } from '../Utils/logger'
 import type { AuthenticationState, LIDMapping, SignalAuthState, TransactionCapabilityOptions } from './Auth'

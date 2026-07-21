@@ -3,7 +3,6 @@ import { Boom } from '@hapi/boom'
 import { randomBytes } from 'crypto'
 import { URL } from 'url'
 import { promisify } from 'util'
-
 import { proto } from '../../WAProto/index.js'
 import {
 	DEF_CALLBACK_PREFIX,

@@ -1,7 +1,6 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-
 import { useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
 import { ensureSmbAndroidDeviceIdentity } from '../../Utils/pairing-code-profile'
 import { useMultiFileAuthState } from '../../Utils/use-multi-file-auth-state'
