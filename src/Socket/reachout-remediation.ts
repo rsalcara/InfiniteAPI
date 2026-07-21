@@ -110,7 +110,9 @@ export const makeReachoutTimelockRemediation = (dependencies: RemediationDepende
 			}
 
 			const after = await dependencies.fetchState(true)
-			const removed = after.isActive !== true
+			// Fail closed: an omitted/malformed `is_active` is not proof that the
+			// server lifted the restriction. Only an explicit `false` confirms it.
+			const removed = after.isActive === false
 			const status: ReachoutTimelockRemediationResult['status'] = removed
 				? 'removed'
 				: 'server-accepted-pending-verification'

@@ -146,6 +146,18 @@ describe('experimental reachout timelock remediation', () => {
 		})
 	})
 
+	it('does not claim removal when the verification response omits isActive', async () => {
+		const incompleteState = { enforcementType: ReachoutTimelockEnforcementType.BIZ_QUALITY }
+		const { remediation } = makeHarness([eligibleState, incompleteState])
+
+		await expect(remediation.remove(confirmation)).resolves.toMatchObject({
+			removed: false,
+			status: 'server-accepted-pending-verification',
+			serverSuccess: true,
+			after: incompleteState
+		})
+	})
+
 	it('coalesces concurrent confirmations into one server mutation', async () => {
 		let releaseMutation!: (value: RemoveReachoutTimelockServerResult) => void
 		const mutation = new Promise<RemoveReachoutTimelockServerResult>(resolve => {
