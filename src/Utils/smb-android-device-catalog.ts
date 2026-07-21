@@ -233,6 +233,7 @@ export const validateSmbAndroidDeviceCatalog = (
 		if (required.some(value => typeof value !== 'string' || !value.trim())) {
 			throw new Error(`SMB_ANDROID device profile ${profile.catalogId || '<missing-id>'} is incomplete`)
 		}
+
 		if (profile.verified !== true) throw new Error(`SMB_ANDROID device profile ${profile.catalogId} is not verified`)
 		if (ids.has(profile.catalogId)) throw new Error(`Duplicate SMB_ANDROID device profile id: ${profile.catalogId}`)
 		ids.add(profile.catalogId)
@@ -240,11 +241,13 @@ export const validateSmbAndroidDeviceCatalog = (
 		if (profile.manufacturer !== 'samsung' || !/^SM-[GS]\d{3}[BF]$/.test(profile.device)) {
 			throw new Error(`SMB_ANDROID device profile ${profile.catalogId} has an incoherent Samsung model identity`)
 		}
+
 		if (EXPECTED_MODEL_BY_COMMERCIAL_NAME[profile.commercialName] !== profile.device) {
 			throw new Error(
 				`SMB_ANDROID device profile ${profile.catalogId} does not match the verified model code for ${profile.commercialName}`
 			)
 		}
+
 		const generation = /Galaxy S(\d{2})/.exec(profile.commercialName)?.[1]
 		const expectedLaunchAndroid = generation ? String(Number(generation) - 10) : undefined
 		if (profile.osVersion !== expectedLaunchAndroid) {
@@ -252,6 +255,7 @@ export const validateSmbAndroidDeviceCatalog = (
 				`SMB_ANDROID device profile ${profile.catalogId} has Android ${profile.osVersion}; ${profile.commercialName} requires launch Android ${expectedLaunchAndroid}`
 			)
 		}
+
 		const buildPrefix = BUILD_PREFIX_BY_ANDROID_VERSION[profile.osVersion]
 		if (!buildPrefix || !profile.osBuildNumber.startsWith(buildPrefix)) {
 			throw new Error(

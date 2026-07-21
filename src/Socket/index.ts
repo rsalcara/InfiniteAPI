@@ -2,13 +2,13 @@ import { DEFAULT_CONNECTION_CONFIG } from '../Defaults'
 import type { SocketConfig, UserFacingSocketConfig, WAVersion } from '../Types'
 import { attachAdminAbuseDetector } from '../Utils/admin-abuse-detector'
 import { attachMeUsernameSync } from '../Utils/me-username-sync'
-import { ensureSmbAndroidDeviceIdentity, resolveSessionPairingCodeProfile } from '../Utils/pairing-code-profile'
 import {
 	createMessageQuarantineRecorder,
 	MsgRetryCounterSqliteAdapter,
 	type MultiDbSqliteStore,
 	UserDeviceCacheSqliteAdapter
 } from '../Utils/multi-db-sqlite'
+import { ensureSmbAndroidDeviceIdentity, resolveSessionPairingCodeProfile } from '../Utils/pairing-code-profile'
 import type { VersionCacheLogger } from '../Utils/version-cache'
 import { clearVersionCache, getCachedVersion, getVersionCacheStatus, refreshVersionCache } from '../Utils/version-cache'
 import { makeCommunitiesSocket } from './communities'

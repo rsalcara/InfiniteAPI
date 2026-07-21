@@ -10,8 +10,8 @@ import {
 	resolveSessionPairingCodeProfile
 } from '../../Utils/pairing-code-profile'
 import {
-	SMB_ANDROID_DEVICE_CATALOG,
 	selectVerifiedSmbAndroidDeviceProfile,
+	SMB_ANDROID_DEVICE_CATALOG,
 	validateSmbAndroidDeviceCatalog
 } from '../../Utils/smb-android-device-catalog'
 import { buildCompanionDeviceProps, getClientPayload } from '../../Utils/validate-connection'

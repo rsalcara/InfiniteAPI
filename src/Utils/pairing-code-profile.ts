@@ -56,6 +56,7 @@ export const ensureSmbAndroidDeviceIdentity = (
 			'Registered SMB_ANDROID credentials are missing their device identity; refusing to generate a different companion identity'
 		)
 	}
+
 	creds.smbAndroidDeviceIdentity ??= {
 		phoneId: randomUUID(),
 		deviceExpId: randomBytes(16).toString('base64'),
@@ -65,6 +66,7 @@ export const ensureSmbAndroidDeviceIdentity = (
 	if (!creds.registered && !creds.smbAndroidDeviceIdentity.deviceProfile) {
 		creds.smbAndroidDeviceIdentity.deviceProfile = selectVerifiedSmbAndroidDeviceProfile()
 	}
+
 	return creds.smbAndroidDeviceIdentity
 }
 
