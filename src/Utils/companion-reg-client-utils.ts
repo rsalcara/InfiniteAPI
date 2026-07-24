@@ -1,4 +1,4 @@
-import type { WABrowserDescription } from '../Types'
+import type { ConnectionTransportProfile, WABrowserDescription } from '../Types'
 
 export enum CompanionWebClientType {
 	UNKNOWN = 0,
@@ -49,7 +49,8 @@ export const buildPairingQRData = (
 	noiseKeyB64: string,
 	identityKeyB64: string,
 	advB64: string,
-	browser: WABrowserDescription
+	browser: WABrowserDescription,
+	transportProfile: ConnectionTransportProfile = 'web'
 ): string => {
 	// InfiniteAPI keeps the legacy 4-field QR payload (`<ref>,<noise>,<identity>,<adv>`)
 	// because:
@@ -59,5 +60,9 @@ export const buildPairingQRData = (
 	//    breaking pair-code companions that must declare Chrome (1).
 	// The browser argument is preserved for API parity with upstream.
 	void browser
-	return [ref, noiseKeyB64, identityKeyB64, advB64].join(',')
+	const payload = [ref, noiseKeyB64, identityKeyB64, advB64].join(',')
+
+	// The official Android companion scanner presents the linked-devices URL form.
+	// Web keeps its historical bare payload byte-for-byte unchanged.
+	return transportProfile === 'native_android' ? `https://wa.me/settings/linked_devices#${payload}` : payload
 }

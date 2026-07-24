@@ -20,10 +20,13 @@ import { DisconnectReason, QueryIds, ReachoutTimelockEnforcementType, XWAPaths }
 import {
 	addTransactionCapability,
 	aesEncryptCTR,
+	appendNativeAndroidPairingAttestation,
 	bindWaitForConnectionUpdate,
 	buildPairingQRData,
 	bytesToCrockford,
 	configureSuccessfulPairing,
+	createNativeAndroidClientPayloadContext,
+	createNativeAndroidFallbackDeviceProfile,
 	Curve,
 	derivePairingCodeKey,
 	generateLoginNode,
@@ -32,9 +35,12 @@ import {
 	getCodeFromWSError,
 	getErrorCodeFromStreamError,
 	getNextPreKeysNode,
+	incrementNativeAndroidConnectionLc,
 	makeEventBuffer,
 	makeNoiseHandler,
 	promiseTimeout,
+	resolveTransportSession,
+	shouldFallbackNativeAndroidProfile,
 	signedKeyPair,
 	xmppSignedPreKey
 } from '../Utils'
@@ -68,7 +74,7 @@ import {
 } from '../WABinary'
 import { BinaryInfo } from '../WAM/BinaryInfo.js'
 import { USyncQuery, USyncUser } from '../WAUSync/'
-import { WebSocketClient } from './Client'
+import { TcpSocketClient, WebSocketClient } from './Client'
 import { executeWMexQuery } from './mex'
 import { createOfflineBufferState } from './offline-buffer-state'
 import { makeReachoutTimelockRemediation, type RemoveReachoutTimelockServerResult } from './reachout-remediation'
@@ -98,6 +104,8 @@ export const makeSocket = (config: SocketConfig) => {
 		// Otherwise (undefined), check env var, then default to true
 		enableUnifiedSession: enableUnifiedSessionConfig
 	} = config
+	const transportSession = resolveTransportSession(config, authState.creds)
+	const isNativeAndroid = transportSession.profile === 'native_android'
 
 	// Resolve enableUnifiedSession: explicit config > env var > default (true)
 	const enableUnifiedSession =
@@ -117,10 +125,30 @@ export const makeSocket = (config: SocketConfig) => {
 		)
 	}
 
-	const url = typeof waWebSocketUrl === 'string' ? new URL(waWebSocketUrl) : waWebSocketUrl
+	const url = isNativeAndroid
+		? new URL(
+				`tcp://${transportSession.nativeAndroid!.host || 'g.whatsapp.net'}:${transportSession.nativeAndroid!.port || 443}`
+			)
+		: typeof waWebSocketUrl === 'string'
+			? new URL(waWebSocketUrl)
+			: waWebSocketUrl
 
-	if (config.mobile || url.protocol === 'tcp:') {
+	const nativeClientPayloadContext = isNativeAndroid
+		? createNativeAndroidClientPayloadContext({
+				registered: authState.creds.registered,
+				connectionLc: authState.creds.nativeAndroidIdentity?.connectionLc,
+				port: url.port ? Number.parseInt(url.port, 10) : 443
+			})
+		: undefined
+
+	if (config.mobile) {
 		throw new Boom('Mobile API is not supported anymore', { statusCode: DisconnectReason.loggedOut })
+	}
+
+	if ((isNativeAndroid && url.protocol !== 'tcp:') || (!isNativeAndroid && url.protocol === 'tcp:')) {
+		throw new Boom('transport profile and socket URL protocol do not match', {
+			statusCode: DisconnectReason.badSession
+		})
 	}
 
 	// If clearRoutingInfoOnStart is enabled, discard the stored routing hint so WhatsApp
@@ -130,7 +158,7 @@ export const makeSocket = (config: SocketConfig) => {
 	// hadStaleRoutingInfo is used below to skip the offline buffer on reconnect scenarios
 	// (restart of an already-authenticated session) so live messages are not held hostage by the backlog buffer.
 	let hadStaleRoutingInfo = false
-	if (config.clearRoutingInfoOnStart && authState?.creds?.routingInfo) {
+	if (!isNativeAndroid && config.clearRoutingInfoOnStart && authState?.creds?.routingInfo) {
 		logger.info('clearRoutingInfoOnStart: discarding stored routingInfo to force fresh edge server assignment')
 		authState.creds.routingInfo = undefined
 		hadStaleRoutingInfo = true
@@ -147,21 +175,38 @@ export const makeSocket = (config: SocketConfig) => {
 	// lets the chats.ts flush drop the refcount to 0 and release messages immediately.
 	const skipOfflineBuffer = hadStaleRoutingInfo || (authState?.creds?.accountSyncCounter ?? 0) > 0
 
-	if (url.protocol === 'wss' && authState?.creds?.routingInfo) {
+	if (!isNativeAndroid && url.protocol === 'wss' && authState?.creds?.routingInfo) {
 		url.searchParams.append('ED', authState.creds.routingInfo.toString('base64url'))
 	}
 
 	/** ephemeral key pair used to encrypt/decrypt communication. Unique for each connection */
 	const ephemeralKeyPair = Curve.generateKeyPair()
+	const nativeInitialRoutingInfo = transportSession.nativeAndroid?.initialRoutingInfo
+	const noiseRoutingInfo =
+		authState?.creds?.routingInfo ||
+		(nativeInitialRoutingInfo?.byteLength ? Buffer.from(nativeInitialRoutingInfo) : undefined)
+	const persistedNativeServerStatic = authState.creds.nativeAndroidIdentity?.serverStaticPublicKey
+	const useNativeIK = Boolean(
+		isNativeAndroid &&
+		authState.creds.registered &&
+		authState.creds.me &&
+		persistedNativeServerStatic?.byteLength === 32
+	)
 	/** WA noise protocol wrapper */
 	const noise = makeNoiseHandler({
 		keyPair: ephemeralKeyPair,
 		NOISE_HEADER: NOISE_WA_HEADER,
 		logger,
-		routingInfo: authState?.creds?.routingInfo
+		routingInfo: noiseRoutingInfo,
+		nativeIK: useNativeIK
+			? {
+					initiatorStatic: authState.creds.noiseKey,
+					responderStatic: persistedNativeServerStatic!
+				}
+			: undefined
 	})
 
-	const ws = new WebSocketClient(url, config)
+	const ws = isNativeAndroid ? new TcpSocketClient(url, config) : new WebSocketClient(url, config)
 
 	ws.connect()
 
@@ -454,8 +499,26 @@ export const makeSocket = (config: SocketConfig) => {
 	// Persist the routingInfo clearing so the consumer's saveCreds() writes the clean state to disk.
 	// This ensures that if the process restarts again before the server assigns new routingInfo,
 	// the stale value is not reused.
-	if (config.clearRoutingInfoOnStart && !authState?.creds?.routingInfo) {
+	if (!isNativeAndroid && config.clearRoutingInfoOnStart && !authState?.creds?.routingInfo) {
 		ev.emit('creds.update', authState.creds)
+	}
+
+	if (transportSession.credsChanged) {
+		// Consumers attach `creds.update` after makeWASocket returns. Emitting
+		// synchronously here loses the first durable transport identity and a QR
+		// refresh can then select a different catalog entry.
+		setTimeout(
+			() =>
+				ev.emit('creds.update', {
+					nativeAndroidIdentity: authState.creds.nativeAndroidIdentity,
+					registered: authState.creds.registered
+				}),
+			0
+		)
+		logger.info(
+			{ transportProfile: 'native_android', selectedProfileId: transportSession.nativeAndroid!.device.profileId },
+			'native_android identity selected and persisted for this session'
+		)
 	}
 
 	const { creds } = authState
@@ -560,6 +623,79 @@ export const makeSocket = (config: SocketConfig) => {
 
 	/** connection handshake */
 	const validateConnection = async () => {
+		const persistCertifiedNativeResponder = () => {
+			if (!isNativeAndroid) return
+
+			const serverStaticPublicKey = noise.getServerStaticKey()
+			const persistedIdentity = authState.creds.nativeAndroidIdentity
+			if (
+				serverStaticPublicKey &&
+				persistedIdentity &&
+				(!persistedIdentity.serverStaticPublicKey ||
+					!Buffer.from(persistedIdentity.serverStaticPublicKey).equals(serverStaticPublicKey))
+			) {
+				persistedIdentity.serverStaticPublicKey = serverStaticPublicKey
+				ev.emit('creds.update', { nativeAndroidIdentity: persistedIdentity })
+				logger.debug(
+					{
+						transportProfile: transportSession.profile,
+						selectedProfileId: transportSession.nativeAndroid?.device.profileId,
+						action: 'persist-certified-noise-responder-key'
+					},
+					'native_android: certified Noise responder identity persisted'
+				)
+			}
+		}
+
+		if (useNativeIK) {
+			const node = generateLoginNode(creds.me!.id, config, nativeClientPayloadContext)
+			const payload = proto.ClientPayload.encode(node).finish()
+			const init = noise.createIKClientHello(payload)
+			logger.info(
+				{
+					transportProfile: transportSession.profile,
+					handshake: 'IK',
+					platform: node.userAgent?.platform,
+					appVersion: node.userAgent?.appVersion,
+					selectedProfileId: transportSession.nativeAndroid?.device.profileId,
+					clientPayloadLength: payload.byteLength
+				},
+				'native_android: reconnecting with persisted certified responder identity'
+			)
+
+			const result = await awaitNextMessage<Uint8Array>(init)
+			const handshake = proto.HandshakeMessage.decode(result)
+			if (noise.requiresXXFallback(handshake)) {
+				logger.warn(
+					{
+						transportProfile: transportSession.profile,
+						handshake: 'XXfallback',
+						selectedProfileId: transportSession.nativeAndroid?.device.profileId,
+						reason: 'server-hello-contained-static-key'
+					},
+					'native_android: server rejected IK resume; completing the official XX fallback transcript'
+				)
+				noise.resetToXXFallback()
+				const keyEnc = noise.processHandshake(handshake, creds.noiseKey)
+				persistCertifiedNativeResponder()
+				const payloadEnc = noise.encrypt(payload)
+				await sendRawMessage(
+					proto.HandshakeMessage.encode({
+						clientFinish: {
+							static: keyEnc,
+							payload: payloadEnc
+						}
+					}).finish()
+				)
+			} else {
+				noise.processIKServerHello(handshake)
+			}
+
+			await noise.finishInit()
+			startKeepAliveRequest()
+			return
+		}
+
 		let helloMsg: proto.IHandshakeMessage = {
 			clientHello: { ephemeral: ephemeralKeyPair.public }
 		}
@@ -573,14 +709,31 @@ export const makeSocket = (config: SocketConfig) => {
 		logger.trace({ handshake }, 'handshake recv from WA')
 
 		const keyEnc = noise.processHandshake(handshake, creds.noiseKey)
+		persistCertifiedNativeResponder()
 
 		let node: proto.IClientPayload
 		if (!creds.me) {
-			node = generateRegistrationNode(creds, config)
-			logger.info({ node }, 'not logged in, attempting registration...')
+			node = generateRegistrationNode(creds, config, nativeClientPayloadContext)
+			logger.info(
+				{
+					transportProfile: transportSession.profile,
+					platform: node.userAgent?.platform,
+					appVersion: node.userAgent?.appVersion,
+					selectedProfileId: transportSession.nativeAndroid?.device.profileId
+				},
+				'not logged in, attempting registration...'
+			)
 		} else {
-			node = generateLoginNode(creds.me.id, config)
-			logger.info({ node }, 'logging in...')
+			node = generateLoginNode(creds.me.id, config, nativeClientPayloadContext)
+			logger.info(
+				{
+					transportProfile: transportSession.profile,
+					platform: node.userAgent?.platform,
+					appVersion: node.userAgent?.appVersion,
+					selectedProfileId: transportSession.nativeAndroid?.device.profileId
+				},
+				'logging in...'
+			)
 		}
 
 		const payloadEnc = noise.encrypt(proto.ClientPayload.encode(node).finish())
@@ -1445,6 +1598,13 @@ export const makeSocket = (config: SocketConfig) => {
 	}
 
 	const requestPairingCode = async (phoneNumber: string, customPairingCode?: string): Promise<string> => {
+		if (isNativeAndroid) {
+			throw new Boom(
+				'native_android uses the official QR companion flow; phone-number pair code remains available only on the Web transport',
+				{ statusCode: 400 }
+			)
+		}
+
 		const pairingCode = customPairingCode ?? bytesToCrockford(randomBytes(5))
 
 		if (customPairingCode && customPairingCode?.length !== 8) {
@@ -1608,7 +1768,7 @@ export const makeSocket = (config: SocketConfig) => {
 			}
 
 			const ref = (refNode.content as Buffer).toString('utf-8')
-			const qr = buildPairingQRData(ref, noiseKeyB64, identityKeyB64, advB64, browser)
+			const qr = buildPairingQRData(ref, noiseKeyB64, identityKeyB64, advB64, browser, transportSession.profile)
 
 			ev.emit('connection.update', { qr })
 
@@ -1624,6 +1784,37 @@ export const makeSocket = (config: SocketConfig) => {
 		logger.debug('pair success recv')
 		try {
 			const { reply, creds: updatedCreds } = configureSuccessfulPairing(stanza, creds)
+			if (isNativeAndroid) {
+				const provider = transportSession.nativeAndroid!.attestationProvider
+				if (!provider) {
+					throw new Boom(
+						'native_android: genuine pairing attestation is required; no synthetic fallback is permitted',
+						{ statusCode: DisconnectReason.badSession }
+					)
+				}
+
+				const attestation = await provider({
+					stanza,
+					profileId: transportSession.nativeAndroid!.device.profileId
+				})
+				if (attestation) {
+					appendNativeAndroidPairingAttestation(reply, attestation)
+				} else {
+					logger.warn(
+						{
+							transportProfile: transportSession.profile,
+							selectedProfileId: transportSession.nativeAndroid!.device.profileId,
+							attestationAction: 'explicitly-omitted'
+						},
+						'native_android pairing probe continuing without attestation artifacts'
+					)
+				}
+
+				// QR pair-success is the authoritative transition from a fresh
+				// native identity to a registered companion. Persist it together
+				// with account/me so reconnects cannot rotate the device profile.
+				updatedCreds.registered = true
+			}
 
 			logger.info(
 				{ me: updatedCreds.me, platform: updatedCreds.platform },
@@ -1646,7 +1837,7 @@ export const makeSocket = (config: SocketConfig) => {
 	})
 	// login complete
 	ws.on('CB:success', async (node: BinaryNode) => {
-		const isAndroid = isAndroidBrowser(browser)
+		const isAndroid = isNativeAndroid || isAndroidBrowser(browser)
 		const phoneId = authState.creds.me?.id?.split(':')[0]?.split('@')[0] || 'new session'
 		logger.info(
 			`${isAndroid ? '\uD83D\uDCF1' : '\uD83D\uDDA5\uFE0F'} Connected to WA | ${phoneId} | platform: ${isAndroid ? 'SMB_ANDROID' : 'MACOS'} | device: ${isAndroid ? 'Android' : 'Desktop'} | platformType: ${isAndroid ? 'ANDROID_PHONE' : 'CHROME'}`
@@ -1654,6 +1845,20 @@ export const makeSocket = (config: SocketConfig) => {
 		clearTimeout(qrTimer) // will never happen in all likelyhood -- but just in case WA sends success on first try
 
 		ev.emit('creds.update', { me: { ...authState.creds.me!, lid: node.attrs.lid } })
+
+		if (isNativeAndroid && authState.creds.nativeAndroidIdentity && nativeClientPayloadContext) {
+			const connectionLc = incrementNativeAndroidConnectionLc(nativeClientPayloadContext.connectionLc)
+			authState.creds.nativeAndroidIdentity.connectionLc = connectionLc
+			ev.emit('creds.update', { nativeAndroidIdentity: authState.creds.nativeAndroidIdentity })
+			logger.debug(
+				{
+					transportProfile: transportSession.profile,
+					selectedProfileId: transportSession.nativeAndroid?.device.profileId,
+					connectionLc
+				},
+				'native_android: successful-login counter advanced after server success'
+			)
+		}
 
 		// Mark this socket active BEFORE emitting `connection.update`. That
 		// emit is NOT buffered (connection.update is absent from
@@ -1769,6 +1974,43 @@ export const makeSocket = (config: SocketConfig) => {
 	// stream fail, possible logout
 	ws.on('CB:failure', (node: BinaryNode) => {
 		const reason = +(node.attrs.reason || 500)
+		const currentNativeDevice = transportSession.nativeAndroid?.device
+		if (
+			isNativeAndroid &&
+			currentNativeDevice &&
+			shouldFallbackNativeAndroidProfile({
+				registered: authState.creds.registered,
+				hasAccount: Boolean(authState.creds.account),
+				hasMe: Boolean(authState.creds.me),
+				serverFailureReason: reason,
+				profileId: currentNativeDevice.profileId
+			})
+		) {
+			const fallback = createNativeAndroidFallbackDeviceProfile({
+				mcc: currentNativeDevice.mcc,
+				mnc: currentNativeDevice.mnc,
+				localeLanguageIso6391: currentNativeDevice.localeLanguageIso6391,
+				localeCountryIso31661Alpha2: currentNativeDevice.localeCountryIso31661Alpha2
+			})
+			authState.creds.nativeAndroidIdentity = {
+				schemaVersion: 1,
+				profile: 'native_android',
+				device: fallback
+			}
+			transportSession.nativeAndroid!.device = fallback
+			config.nativeAndroid!.device = fallback
+			ev.emit('creds.update', { nativeAndroidIdentity: authState.creds.nativeAndroidIdentity })
+			logger.warn(
+				{
+					rejectedProfileId: currentNativeDevice.profileId,
+					selectedProfileId: fallback.profileId,
+					serverFailureReason: reason,
+					fallbackAction: 'persisted-for-next-fresh-pairing'
+				},
+				'native_android catalog profile rejected before registration; generic captured profile selected as fallback'
+			)
+		}
+
 		void end(new Boom('Connection Failure', { statusCode: reason, data: node.attrs }))
 	})
 

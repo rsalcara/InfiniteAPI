@@ -317,6 +317,62 @@ type PollContext = {
 	voterJid: string
 }
 
+const getKeyAddressingCandidates = (key: WAMessageKey): string[] =>
+	[key.participant, key.remoteJid, key.participantAlt, key.remoteJidAlt].filter(
+		(jid, index, all): jid is string => !!jid && all.indexOf(jid) === index
+	)
+
+/**
+ * Resolves the exact identity domain used by the sender when deriving poll
+ * vote encryption keys. Storage normalisation may turn the primary LID into a
+ * PN, but the cryptographic transcript must continue to follow
+ * `addressing_mode`; PN and LID strings are not interchangeable in its HMAC/AAD.
+ */
+export const resolvePollCryptoAuthor = async (
+	key: WAMessageKey,
+	addressingMode: string | undefined,
+	meId: string,
+	meLid: string | undefined,
+	lidMapping: LIDMappingStore
+): Promise<string> => {
+	const mode = key.addressingMode || addressingMode
+	const candidates = getKeyAddressingCandidates(key)
+
+	if (key.fromMe) {
+		if (mode === 'lid') {
+			return (
+				(meLid && jidNormalizedUser(meLid)) ||
+				(await lidMapping.getLIDForPN(jidNormalizedUser(meId))) ||
+				jidNormalizedUser(meId)
+			)
+		}
+
+		return jidNormalizedUser(meId)
+	}
+
+	if (mode === 'lid') {
+		const lid = candidates.find(isAnyLidUser)
+		if (lid) return jidNormalizedUser(lid)
+
+		const pn = candidates.find(isAnyPnUser)
+		if (pn) {
+			const mapped = await lidMapping.getLIDForPN(jidNormalizedUser(pn))
+			if (mapped) return jidNormalizedUser(mapped)
+		}
+	} else {
+		const pn = candidates.find(isAnyPnUser)
+		if (pn) return jidNormalizedUser(pn)
+
+		const lid = candidates.find(isAnyLidUser)
+		if (lid) {
+			const mapped = await lidMapping.getPNForLID(jidNormalizedUser(lid))
+			if (mapped) return jidNormalizedUser(mapped)
+		}
+	}
+
+	return jidNormalizedUser(getKeyAuthor(key, jidNormalizedUser(meId)))
+}
+
 type EventContext = {
 	/** normalised jid of the person that created the event */
 	eventCreatorJid: string
@@ -942,10 +998,24 @@ const processMessage = async (
 			const pollEncKey = pollRow ? messageStoreBackend.getMessageSecret(pollRow._id) : null
 			if (pollRow && pollEncKey && pollKey?.id) {
 				const meIdNorm = jidNormalizedUser(meId)
-				const voterJid = getKeyAuthor(message.key, meIdNorm)
+				const addressingMode = message.key.addressingMode
+				const voterJid = await resolvePollCryptoAuthor(
+					message.key,
+					addressingMode,
+					meIdNorm,
+					meUser.lid,
+					signalRepository.lidMapping
+				)
+				const pollCreatorJid = await resolvePollCryptoAuthor(
+					pollKey,
+					addressingMode,
+					meIdNorm,
+					meUser.lid,
+					signalRepository.lidMapping
+				)
 				const voteMsg = decryptPollVote(content.pollUpdateMessage.vote, {
 					pollEncKey,
-					pollCreatorJid: getKeyAuthor(pollKey, meIdNorm),
+					pollCreatorJid,
 					pollMsgId: pollKey.id,
 					voterJid
 				})
@@ -970,7 +1040,18 @@ const processMessage = async (
 				})
 			}
 		} catch (err) {
-			logger?.warn({ err }, 'failed to record poll vote mirror')
+			const vote = content.pollUpdateMessage.vote
+			logger?.warn(
+				{
+					err,
+					addressingMode: message.key.addressingMode,
+					pollMsgId: content.pollUpdateMessage.pollCreationMessageKey?.id,
+					voteMsgId: message.key.id,
+					encPayloadLength: vote.encPayload?.length ?? 0,
+					encIvLength: vote.encIv?.length ?? 0
+				},
+				'failed to record poll vote mirror'
+			)
 		}
 	}
 

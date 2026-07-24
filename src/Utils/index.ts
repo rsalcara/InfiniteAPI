@@ -50,6 +50,8 @@ export * from './unified-session'
 
 // Version management
 export * from './version-cache'
+export * from './native-android-transport'
+export * from './native-android-device-catalog'
 
 // Health monitoring
 export * from './health-status'

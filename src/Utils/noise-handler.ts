@@ -1,7 +1,7 @@
 import { Boom } from '@hapi/boom'
 import { Mutex } from 'async-mutex'
 import { proto } from '../../WAProto/index.js'
-import { NOISE_MODE, WA_CERT_DETAILS } from '../Defaults'
+import { NOISE_IK_MODE, NOISE_MODE, NOISE_XX_FALLBACK_MODE, WA_CERT_DETAILS } from '../Defaults'
 import type { KeyPair } from '../Types'
 import type { BinaryNode } from '../WABinary'
 import { decodeBinaryNode } from '../WABinary'
@@ -86,22 +86,33 @@ export const makeNoiseHandler = ({
 	keyPair: { private: privateKey, public: publicKey },
 	NOISE_HEADER,
 	logger,
-	routingInfo
+	routingInfo,
+	nativeIK
 }: {
 	keyPair: KeyPair
 	NOISE_HEADER: Uint8Array
 	logger: ILogger
 	routingInfo?: Buffer | undefined
+	nativeIK?: {
+		initiatorStatic: KeyPair
+		responderStatic: Uint8Array
+	}
 }) => {
 	logger = logger.child({ class: 'ns' })
 
-	const data = Buffer.from(NOISE_MODE)
+	if (nativeIK && nativeIK.responderStatic.byteLength !== 32) {
+		throw new Boom('native IK responder static key must be exactly 32 bytes', { statusCode: 400 })
+	}
+
+	const data = Buffer.from(nativeIK ? NOISE_IK_MODE : NOISE_MODE)
 	let hash = data.byteLength === 32 ? data : sha256(data)
 	let salt: Buffer = hash
 	let encKey: Buffer = hash
 	let decKey: Buffer = hash
 	let counter = 0
 	let sentIntro = false
+	let serverStaticKey: Buffer | undefined
+	let handshakePattern: 'XX' | 'IK' | 'XXfallback' = nativeIK ? 'IK' : 'XX'
 
 	let inBytes: Buffer = Buffer.alloc(0)
 
@@ -223,7 +234,14 @@ export const makeNoiseHandler = ({
 	}
 
 	authenticate(NOISE_HEADER)
-	authenticate(publicKey)
+	if (nativeIK) {
+		// Noise IK pre-message: the initiator already knows and authenticates
+		// the responder's certified static public key.
+		authenticate(nativeIK.responderStatic)
+	} else {
+		// Noise XX message 1 starts with the initiator ephemeral.
+		authenticate(publicKey)
+	}
 
 	return {
 		encrypt,
@@ -231,7 +249,75 @@ export const makeNoiseHandler = ({
 		authenticate,
 		mixIntoKey,
 		finishInit,
+		createIKClientHello: (payload: Uint8Array): Uint8Array => {
+			if (!nativeIK) {
+				throw new Boom('native IK handshake is not configured', { statusCode: 500 })
+			}
+
+			// Noise IK message 1: -> e, es, s, ss, payload
+			authenticate(publicKey)
+			mixIntoKey(Curve.sharedKey(privateKey, nativeIK.responderStatic))
+			const staticCiphertext = encrypt(nativeIK.initiatorStatic.public)
+			mixIntoKey(Curve.sharedKey(nativeIK.initiatorStatic.private, nativeIK.responderStatic))
+			const payloadCiphertext = encrypt(payload)
+
+			return proto.HandshakeMessage.encode({
+				clientHello: {
+					ephemeral: publicKey,
+					static: staticCiphertext,
+					payload: payloadCiphertext
+				}
+			}).finish()
+		},
+		processIKServerHello: ({ serverHello }: proto.HandshakeMessage): Uint8Array => {
+			if (!nativeIK || handshakePattern !== 'IK') {
+				throw new Boom('native IK handshake is not configured', { statusCode: 500 })
+			}
+
+			if (!serverHello?.ephemeral) {
+				throw new Boom('native IK server hello is missing its ephemeral key', { statusCode: 500 })
+			}
+
+			// The official client interprets a static key in an IK ServerHello as
+			// an explicit request to restart the transcript through XXfallback.
+			if (serverHello.static?.byteLength) {
+				return Buffer.alloc(0)
+			}
+
+			if (!serverHello.payload) {
+				throw new Boom('native IK server hello is missing its payload', { statusCode: 500 })
+			}
+
+			// Noise IK message 2: <- e, ee, se, payload
+			authenticate(serverHello.ephemeral)
+			mixIntoKey(Curve.sharedKey(privateKey, serverHello.ephemeral))
+			mixIntoKey(Curve.sharedKey(nativeIK.initiatorStatic.private, serverHello.ephemeral))
+			return decrypt(serverHello.payload)
+		},
+		requiresXXFallback: ({ serverHello }: proto.HandshakeMessage) =>
+			Boolean(handshakePattern === 'IK' && serverHello?.static?.byteLength),
+		resetToXXFallback: () => {
+			if (!nativeIK || handshakePattern !== 'IK') {
+				throw new Boom('native IK handshake is not eligible for XX fallback', { statusCode: 500 })
+			}
+
+			const fallbackData = Buffer.from(NOISE_XX_FALLBACK_MODE)
+			hash = fallbackData.byteLength === 32 ? fallbackData : sha256(fallbackData)
+			salt = hash
+			encKey = hash
+			decKey = hash
+			counter = 0
+			handshakePattern = 'XXfallback'
+			authenticate(NOISE_HEADER)
+			// The official fallback transcript replays the original IK/XX
+			// initiator ephemeral before consuming the already-received hello.
+			authenticate(publicKey)
+		},
 		processHandshake: ({ serverHello }: proto.HandshakeMessage, noiseKey: KeyPair) => {
+			if (handshakePattern === 'IK') {
+				throw new Boom('XX handshake cannot run in native IK mode', { statusCode: 500 })
+			}
+
 			if (!serverHello?.ephemeral) {
 				throw new Boom('Missing server hello ephemeral', { statusCode: 500 })
 			}
@@ -290,11 +376,18 @@ export const makeNoiseHandler = ({
 				throw new Boom('certification match failed', { statusCode: 400 })
 			}
 
+			// At this point the responder static key is both decrypted and covered
+			// by the verified WhatsApp certificate chain. Retain only the public
+			// key so the caller can persist it for a future native Android IK
+			// reconnect. Never expose it before certificate validation.
+			serverStaticKey = Buffer.from(decStaticContent)
+
 			const keyEnc = encrypt(noiseKey.public)
 			mixIntoKey(Curve.sharedKey(noiseKey.private, serverHello.ephemeral))
 
 			return keyEnc
 		},
+		getServerStaticKey: () => (serverStaticKey ? Buffer.from(serverStaticKey) : undefined),
 		encodeFrame: (data: Buffer | Uint8Array) => {
 			if (transport) {
 				data = transport.encrypt(data)

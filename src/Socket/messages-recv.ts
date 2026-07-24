@@ -82,6 +82,7 @@ import { applyDeviceListDelta } from '../Utils/device-list-delta'
 import { makeLockManager } from '../Utils/lock-manager'
 import { makeMutex } from '../Utils/make-mutex'
 import { getMessageAckErrorPolicy } from '../Utils/message-ack-error'
+import { parseTextStatusSideSubNotification } from '../Utils/mex-notifications'
 import {
 	JidMapBackend,
 	MessageStoreBackend,
@@ -905,6 +906,28 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const handleMexNotification = async (node: BinaryNode) => {
 		const updateNode = getBinaryNodeChild(node, 'update')
 		const opName = updateNode?.attrs?.op_name
+
+		if (updateNode && opName === 'TextStatusUpdateNotificationSideSub') {
+			if (!updateNode.content || Array.isArray(updateNode.content)) {
+				logger.warn({ opName }, 'text-status side-sub notification has no valid content')
+				return
+			}
+
+			try {
+				const update = parseTextStatusSideSubNotification(updateNode.content)
+				if (!update) {
+					logger.warn({ opName }, 'text-status side-sub notification is missing its hash')
+					return
+				}
+
+				ev.emit('text-status-side-sub.update', { from: node.attrs.from, hash: update.hash })
+				logger.debug({ opName }, 'received text-status side-sub notification')
+			} catch (err) {
+				logger.error({ err, opName }, 'failed to parse text-status side-sub notification')
+			}
+
+			return
+		}
 
 		if (updateNode && opName === 'NotificationUserReachoutTimelockUpdate') {
 			// NULL-001 fix (PR #487 review): guard explicit `null/undefined content`

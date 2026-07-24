@@ -31,9 +31,13 @@ export const STATUS_EXPIRY_SECONDS = 24 * 60 * 60
 export const PLACEHOLDER_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 export const NOISE_MODE = 'Noise_XX_25519_AESGCM_SHA256\0\0\0\0'
+export const NOISE_IK_MODE = 'Noise_IK_25519_AESGCM_SHA256\0\0\0\0'
+export const NOISE_XX_FALLBACK_MODE = 'Noise_XXfallback_25519_AESGCM_SHA256'
 export const DICT_VERSION = 3
 export const KEY_BUNDLE_TYPE = Buffer.from([5])
-export const NOISE_WA_HEADER = Buffer.from([87, 65, 6, DICT_VERSION]) // last is "DICT_VERSION"
+// Shared by the Web transport and the captured official Android chat transport.
+// WAM\x05 belongs to analytics telemetry and is not a chat/Noise header.
+export const NOISE_WA_HEADER = Buffer.from([87, 65, 6, DICT_VERSION]) // "WA\x06\x03"
 /** from: https://stackoverflow.com/questions/3809401/what-is-a-good-regular-expression-to-match-a-url */
 export const URL_REGEX = /https:\/\/(?![^:@\/\s]+:[^:@\/\s]+@)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(:\d+)?(\/[^\s]*)?/g
 
@@ -80,6 +84,7 @@ const resolveDefaultBrowser = (): [string, string, string] => {
 }
 
 export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
+	transportProfile: 'web',
 	version: version as WAVersion,
 	versionCheckIntervalMs: SIX_HOURS_MS,
 	browser: resolveDefaultBrowser(),

@@ -1,6 +1,7 @@
 import { jest } from '@jest/globals'
-import { NOISE_WA_HEADER } from '../../Defaults'
-import { Curve } from '../../Utils/crypto'
+import { proto } from '../../../WAProto/index.js'
+import { NOISE_IK_MODE, NOISE_WA_HEADER } from '../../Defaults'
+import { aesDecryptGCM, aesEncryptGCM, Curve, hkdf, sha256 } from '../../Utils/crypto'
 import { makeNoiseHandler } from '../../Utils/noise-handler'
 import type { BinaryNode } from '../../WABinary/types'
 
@@ -26,6 +27,159 @@ const createFrame = (payload: Buffer) => {
 }
 
 describe('Noise Handler', () => {
+	it('reproduces the exact classic IK ClientHello field sizes captured from official Android', () => {
+		const ephemeral = Curve.generateKeyPair()
+		const initiatorStatic = Curve.generateKeyPair()
+		const responderStatic = Curve.generateKeyPair()
+		const handler = makeNoiseHandler({
+			keyPair: ephemeral,
+			NOISE_HEADER: NOISE_WA_HEADER,
+			logger: createMockLogger() as any,
+			nativeIK: {
+				initiatorStatic,
+				responderStatic: responderStatic.public
+			}
+		})
+
+		// The official capture contains a 320-byte encrypted payload. AES-GCM
+		// appends a 16-byte tag, so its plaintext ClientPayload is 304 bytes.
+		const encoded = handler.createIKClientHello(Buffer.alloc(304, 0x2a))
+		const hello = proto.HandshakeMessage.decode(encoded).clientHello!
+
+		expect(encoded).toHaveLength(410)
+		expect(hello.ephemeral).toHaveLength(32)
+		expect(hello.static).toHaveLength(48)
+		expect(hello.payload).toHaveLength(320)
+	})
+
+	it('detects an IK ServerHello that explicitly requests the official XX fallback path', () => {
+		const handler = makeNoiseHandler({
+			keyPair: Curve.generateKeyPair(),
+			NOISE_HEADER: NOISE_WA_HEADER,
+			logger: createMockLogger() as any,
+			nativeIK: {
+				initiatorStatic: Curve.generateKeyPair(),
+				responderStatic: Curve.generateKeyPair().public
+			}
+		})
+
+		handler.createIKClientHello(Buffer.from('payload'))
+		const handshake = proto.HandshakeMessage.fromObject({
+			serverHello: {
+				ephemeral: Curve.generateKeyPair().public,
+				static: Buffer.alloc(48),
+				payload: Buffer.alloc(16)
+			}
+		})
+		expect(handler.requiresXXFallback(handshake)).toBe(true)
+		handler.resetToXXFallback()
+		expect(handler.requiresXXFallback(handshake)).toBe(false)
+	})
+
+	it('completes classic IK against an independent responder state and derives matching transport keys', async () => {
+		const ephemeral = Curve.generateKeyPair()
+		const initiatorStatic = Curve.generateKeyPair()
+		const responderStatic = Curve.generateKeyPair()
+		const handler = makeNoiseHandler({
+			keyPair: ephemeral,
+			NOISE_HEADER: NOISE_WA_HEADER,
+			logger: createMockLogger() as any,
+			nativeIK: {
+				initiatorStatic,
+				responderStatic: responderStatic.public
+			}
+		})
+		const clientPayload = Buffer.from('native-client-payload')
+		const encoded = handler.createIKClientHello(clientPayload)
+		const hello = proto.HandshakeMessage.decode(encoded).clientHello!
+
+		let hash = Buffer.from(NOISE_IK_MODE)
+		let salt = hash
+		let cipherKey: Buffer | undefined
+		let counter = 0
+		const mixHash = (data: Uint8Array) => {
+			hash = sha256(Buffer.concat([hash, data]))
+		}
+
+		const mixKey = (data: Uint8Array) => {
+			const material = hkdf(Buffer.from(data), 64, { salt, info: '' })
+			salt = Buffer.from(material.subarray(0, 32))
+			cipherKey = Buffer.from(material.subarray(32))
+			counter = 0
+		}
+
+		const iv = () => {
+			const value = Buffer.alloc(12)
+			value.writeUInt32BE(counter++, 8)
+			return value
+		}
+
+		const decryptAndHash = (ciphertext: Uint8Array) => {
+			const plaintext = aesDecryptGCM(ciphertext, cipherKey!, iv(), hash)
+			mixHash(ciphertext)
+			return plaintext
+		}
+
+		const encryptAndHash = (plaintext: Uint8Array) => {
+			const ciphertext = aesEncryptGCM(plaintext, cipherKey!, iv(), hash)
+			mixHash(ciphertext)
+			return ciphertext
+		}
+
+		// Independent responder processing of IK message 1: e, es, s, ss.
+		mixHash(NOISE_WA_HEADER)
+		mixHash(responderStatic.public)
+		mixHash(hello.ephemeral!)
+		mixKey(Curve.sharedKey(responderStatic.private, hello.ephemeral!))
+		const decodedInitiatorStatic = decryptAndHash(hello.static!)
+		expect(decodedInitiatorStatic).toEqual(Buffer.from(initiatorStatic.public))
+		mixKey(Curve.sharedKey(responderStatic.private, decodedInitiatorStatic))
+		expect(decryptAndHash(hello.payload!)).toEqual(clientPayload)
+
+		// Independent responder construction of IK message 2: e, ee, se.
+		const responderEphemeral = Curve.generateKeyPair()
+		mixHash(responderEphemeral.public)
+		mixKey(Curve.sharedKey(responderEphemeral.private, hello.ephemeral!))
+		mixKey(Curve.sharedKey(responderEphemeral.private, decodedInitiatorStatic))
+		const responsePayload = Buffer.from('server-finished')
+		const decodedResponse = handler.processIKServerHello(
+			proto.HandshakeMessage.fromObject({
+				serverHello: {
+					ephemeral: responderEphemeral.public,
+					payload: encryptAndHash(responsePayload)
+				}
+			})
+		)
+		expect(decodedResponse).toEqual(responsePayload)
+
+		await handler.finishInit()
+		const split = hkdf(Buffer.alloc(0), 64, { salt, info: '' })
+		const encryptedTransportFrame = handler.encrypt(Buffer.from('transport-data'))
+		expect(aesDecryptGCM(encryptedTransportFrame, split.subarray(0, 32), Buffer.alloc(12), Buffer.alloc(0))).toEqual(
+			Buffer.from('transport-data')
+		)
+	})
+
+	it('matches the captured official Android ED routing and WA Noise intro bytes', () => {
+		const routingInfo = Buffer.from('08020812080d', 'hex')
+		const payload = Buffer.from([0x12, 0x97, 0x03])
+		const handler = makeNoiseHandler({
+			keyPair: Curve.generateKeyPair(),
+			NOISE_HEADER: NOISE_WA_HEADER,
+			logger: createMockLogger() as any,
+			routingInfo
+		})
+
+		const encoded = handler.encodeFrame(payload)
+
+		expect(encoded.subarray(0, 4)).toEqual(Buffer.from([0x45, 0x44, 0x00, 0x01]))
+		expect(encoded.subarray(4, 7)).toEqual(Buffer.from([0x00, 0x00, 0x06]))
+		expect(encoded.subarray(7, 13)).toEqual(routingInfo)
+		expect(encoded.subarray(13, 17)).toEqual(Buffer.from([0x57, 0x41, 0x06, 0x03]))
+		expect(encoded.subarray(17, 20)).toEqual(Buffer.from([0x00, 0x00, payload.length]))
+		expect(encoded.subarray(20)).toEqual(payload)
+	})
+
 	describe('decodeFrame with multiple frames in buffer', () => {
 		it('should process multiple unencrypted frames in single buffer', async () => {
 			const keyPair = Curve.generateKeyPair()

@@ -1,6 +1,7 @@
 import type { proto } from '../../WAProto/index.js'
 import type { Contact } from './Contact'
 import type { MinimalMessage } from './Message'
+import type { PersistedNativeAndroidIdentity } from './Transport'
 
 export type KeyPair = { public: Uint8Array; private: Uint8Array }
 export type SignedKeyPair = {
@@ -69,6 +70,11 @@ export type AuthenticationCreds = SignalCreds & {
 	lastPropHash: string | undefined
 	routingInfo: Buffer | undefined
 	additionalData?: any | undefined
+	/**
+	 * Durable protocol marker and complete device identity for experimental
+	 * native-Android sessions. Absent means the established Web session format.
+	 */
+	nativeAndroidIdentity?: PersistedNativeAndroidIdentity
 }
 
 export type SignalDataTypeMap = {
