@@ -25,7 +25,8 @@ import {
 	encodeNativeAndroidConnectionSequenceInfo,
 	generateLoginNode,
 	generateRegistrationNode,
-	incrementNativeAndroidConnectionLc
+	incrementNativeAndroidConnectionLc,
+	resolveNativeAndroidClientPayloadPhase
 } from '../../Utils/validate-connection'
 import type { BinaryNode } from '../../WABinary'
 
@@ -74,12 +75,60 @@ const nativeConfig = (): SocketConfig => ({
 
 const registrationContext = () =>
 	createNativeAndroidClientPayloadContext({
-		registered: false,
+		phase: 'registration',
 		connectionLc: 0,
 		sessionId: 1
 	})
 
+const freshCaptureHex =
+	'18002aee01080a12080802101a181b20531a0333313022033236302a0231323206476f6f676c653a17656d756c61746f7236345f7838365f36345f61726d3634424273646b5f6770686f6e6536345f7838365f36342d75736572646562756720313220534531412e3232303832362e303038203130353634343538206465762d6b6579734a2430653238386663642d623530362d346564332d393230312d3966613663323939643231335a02656e620255536a0f676f6c64666973685f7838365f363472163849685866756739536a6148316f704d3846615a3677780082011373646b5f6770686f6e6536345f7838365f36344daf06e1c45001606b68067a0578008001018001009a0187020a045187da0f1201051a203783812c369259712c7c30fc6386d39792bf80f6ebce9facfbce0fa0296c275b22035d5c982a20d9924c4f087ce88707f4764912308e864ffbd606d61658e37176c9c80b7f223b32401c5721fc9ffca9eef4f4537e62cdfd55da030178c4247b789bc4a7fbc744c37cdb5b4aac1b532bd19bc754b839b45b13013cb3cb0d3b912351a04533da07090b3a1873cddfe39dddf1de357b477ce3befde386f8e5f7f7d38ebb42570a02313212080802101a181b2053181120012a4308ed0210322001280030013801400148005801600168017001780180010188010090010098015aa80101b00100ba011031383037303535393436363437363936c80101b80101c00100a002e00fa802c001c00200dd0285000000e00200'
+
+const initialPairLoginCaptureHex =
+	'08c0c891d1c4a00118012aee01080a12080802101a181b20531a0333313022033236302a0231323206476f6f676c653a17656d756c61746f7236345f7838365f36345f61726d3634424273646b5f6770686f6e6536345f7838365f36342d75736572646562756720313220534531412e3232303832362e303038203130353634343538206465762d6b6579734a2430653238386663642d623530362d346564332d393230312d3966613663323939643231335a02656e620255536a0f676f6c64666973685f7838365f363472163849685866756739536a6148316f704d3846615a3677780082011373646b5f6770686f6e6536345f7838365f36344d0b6c65a55001606b68067a057800800101800100900160b80101c00100a002e00fa802c001c00200dd0286000000e00200'
+
+const capturedFreshConfig = (): SocketConfig => ({
+	...nativeConfig(),
+	syncFullHistory: true,
+	nativeAndroid: {
+		...nativeAndroid,
+		historySync: {
+			fullSyncDaysLimit: 365,
+			fullSyncSizeMbLimit: 50,
+			thumbnailSyncDaysLimit: 90,
+			supportGroupHistory: true,
+			onDemandReady: true,
+			supportHatchHistory: false,
+			supportedBotChannelFbids: ['1807055946647696']
+		},
+		device: {
+			...CAPTURED_NATIVE_ANDROID_HARDWARE_PROFILES[0],
+			phoneId: '0e288fcd-b506-4ed3-9201-9fa6c299d213',
+			deviceExpId: '8IhXfug9SjaH1opM8FaZ6w',
+			mcc: '310',
+			mnc: '260',
+			localeLanguageIso6391: 'en',
+			localeCountryIso31661Alpha2: 'US'
+		}
+	}
+})
+
 describe('native_android transport contract', () => {
+	it('selects the captured registration, first-login and reconnect payload phases', () => {
+		expect(resolveNativeAndroidClientPayloadPhase({ hasRegisteredIdentity: false })).toBe('registration')
+		expect(
+			resolveNativeAndroidClientPayloadPhase({
+				hasRegisteredIdentity: true,
+				accountSyncCounter: 0
+			})
+		).toBe('initial_pair_login')
+		expect(
+			resolveNativeAndroidClientPayloadPhase({
+				hasRegisteredIdentity: true,
+				accountSyncCounter: 1
+			})
+		).toBe('reconnect')
+	})
+
 	it('ships a complete experimental catalog plus a captured generic fallback', () => {
 		expect(() => assertValidNativeAndroidHardwareCatalog(NATIVE_ANDROID_HARDWARE_CATALOG)).not.toThrow()
 		expect(EXPERIMENTAL_SAMSUNG_NATIVE_ANDROID_HARDWARE_PROFILES).toHaveLength(21)
@@ -193,6 +242,56 @@ describe('native_android transport contract', () => {
 		)
 	})
 
+	it('matches the captured official fresh-registration ClientPayload byte for byte', () => {
+		const captured = proto.ClientPayload.decode(Buffer.from(freshCaptureHex, 'hex'))
+		const pairing = captured.devicePairingData!
+		const creds = {
+			registrationId: Buffer.from(pairing.eRegid!).readUInt32BE(),
+			signedIdentityKey: {
+				public: pairing.eIdent!,
+				private: Buffer.alloc(32)
+			},
+			signedPreKey: {
+				keyId: Buffer.from(pairing.eSkeyId!).readUIntBE(0, 3),
+				keyPair: {
+					public: pairing.eSkeyVal!,
+					private: Buffer.alloc(32)
+				},
+				signature: pairing.eSkeySig!
+			}
+		}
+		const context = createNativeAndroidClientPayloadContext({
+			phase: 'registration',
+			connectionLc: 0,
+			port: 443,
+			sequenceStep: 1,
+			sessionId: -991885649
+		})
+		const encoded = proto.ClientPayload.encode(generateRegistrationNode(creds, capturedFreshConfig(), context)).finish()
+		const companion = proto.DeviceProps.decode(pairing.deviceProps!)
+
+		expect(companion.platformType).toBe(proto.DeviceProps.PlatformType.ANDROID_AMBIGUOUS)
+		expect(companion.historySyncConfig?.recentSyncDaysLimit).toBe(0)
+		expect(Buffer.from(encoded).toString('hex')).toBe(freshCaptureHex)
+		expect(encoded).toHaveLength(557)
+	})
+
+	it('matches the captured official first login after QR byte for byte', () => {
+		const context = createNativeAndroidClientPayloadContext({
+			phase: 'initial_pair_login',
+			connectionLc: 0,
+			port: 5222,
+			sequenceStep: 1,
+			sessionId: -1520079861
+		})
+		const encoded = proto.ClientPayload.encode(
+			generateLoginNode('5515981907008:96@s.whatsapp.net', capturedFreshConfig(), context)
+		).finish()
+
+		expect(Buffer.from(encoded).toString('hex')).toBe(initialPairLoginCaptureHex)
+		expect(encoded).toHaveLength(301)
+	})
+
 	it('does not change the existing Web registration payload', () => {
 		const node = generateRegistrationNode(initAuthCreds(), DEFAULT_CONNECTION_CONFIG)
 		expect(node.userAgent?.platform).toBe(14)
@@ -215,7 +314,7 @@ describe('native_android transport contract', () => {
 			nativeAndroid: { ...nativeAndroid, device: capturedDevice }
 		}
 		const context = createNativeAndroidClientPayloadContext({
-			registered: true,
+			phase: 'reconnect',
 			connectionLc: 11,
 			port: 443,
 			sequenceStep: 1,

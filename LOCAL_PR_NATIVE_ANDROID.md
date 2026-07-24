@@ -134,6 +134,35 @@ The APK explains these changes: `sessionId` comes from `Random.nextInt()`;
 success; `connectionSequenceInfo` is a compact port/address-source/proxy/
 sequence/network-capability bit field.
 
+## Official fresh-registration evidence
+
+A fresh isolated Android user was paired twice with the read-only capture
+active. Both runs produced the same protocol shape with new per-installation
+identity/key material:
+
+- fresh registration payload: exactly 557 bytes;
+- first login after QR: exactly 301 bytes;
+- `shortConnect=true` in both phases;
+- fresh registration: `passive=false`, `connectReason=UNKNOWN`,
+  `dnsSource={SYSTEM,true}`, `lc=0`, port-derived sequence value `133`;
+- first login: `passive=true`, the same DNS/reason tuple, `lc=0`,
+  port-derived sequence value `134`;
+- neither phase emits `pull` or `lidDbMigrated`;
+- the registration `DeviceProps.platformType` is `ANDROID_AMBIGUOUS`, not
+  `ANDROID_PHONE`;
+- `recentSyncDaysLimit=0` is explicitly present in the captured DeviceProps.
+
+The implementation now models `registration`, `initial_pair_login` and
+`reconnect` as separate payload phases. Regression tests reproduce the full
+557-byte registration payload, the full 301-byte first-login payload and the
+previously captured 304-byte reconnect payload byte for byte.
+
+The final reply-node content remains supplied through the attestation provider.
+The controlled emulator could build and complete the companion registration,
+but its platform-integrity service was not available after the host restart.
+The library therefore keeps the existing fail-closed provider boundary and
+does not synthesize device-integrity output.
+
 ## Configuration contract
 
 The consumer must explicitly select `transportProfile: 'native_android'` and
@@ -159,9 +188,12 @@ synthetic default.
 - TypeScript `tsc --noEmit`: pass.
 - Exact ClientPayload regression: the generated registered payload equals the
   full captured 304-byte hex string, not only a selected field subset.
-- Focused transport/contract/persistence tests: 12/12 pass.
-- Focused native transport tests: 16/16 pass after the registration recovery
-  and header-evidence additions.
+- Exact fresh-registration and first-login regressions reproduce the captured
+  557-byte and 301-byte payloads byte for byte.
+- Focused transport/contract/persistence matrix: 12 suites pass, 92 tests pass
+  and 2 existing TODOs remain.
+- Focused native transport tests: 21/21 pass after the registration lifecycle,
+  exact-payload and phase-selection additions.
 - Existing Noise tests now include an exact regression for the captured
   `ED + routing + WA\x06\x03 + 3-byte length` intro.
 - An independent responder test validates the complete classic IK key schedule,
@@ -169,18 +201,15 @@ synthetic default.
   proves both sides derive the same first transport key.
 - A capture-shape regression proves a 304-byte plaintext produces the official
   410-byte protobuf frame with fields `32 / 48 / 320`.
-- Latest Linux/Node 22 focused matrix: 35/35 pass across native transport,
-  classic IK/XXfallback and legacy/mono-DB/multi-DB identity persistence.
 - Linux/Node 22 build: pass.
-- Full Linux suite: 106 suites and 1,393 tests pass. One unrelated,
+- Full Linux suite: 106 suites and 1,401 tests pass. One unrelated,
   environment-sensitive `browser-utils` suite has three pre-existing failures
   because Debian 12 is detected as version `"12"` while that test assumes an
   Ubuntu `major.minor` release.
 - Global lint is currently blocked by pre-existing CRLF files under
-  `src/Signal/Group`; all files touched by this local implementation lint with
-  zero errors.
-- Full repository suite: 106 suites passed, 1,382 tests passed; 3 suites are
-  explicitly skipped, with 6 skipped tests and 5 TODOs.
+  `src/Signal/Group`; all files touched by this implementation pass the
+  repository Prettier configuration.
+- Three suites are explicitly skipped, with 6 skipped tests and 5 TODOs.
 - Real SQLite tests executed under Node 22, matching the installed native ABI.
 - `git diff --check`: pass.
 
@@ -189,9 +218,8 @@ synthetic default.
 This remains experimental until all of the following pass against a controlled
 official-device attestation source:
 
-1. capture and reproduce the fresh-registration `ClientPayload` (registered
-   reconnect is complete and byte-identical);
-2. fresh QR pairing;
+1. capture the genuine final pairing reply from a supported official device;
+2. complete fresh QR pairing against the live native endpoint;
 3. live IK reconnect without identity change;
 4. live server-requested XXfallback;
 5. outbound text and interactive messages;
@@ -201,10 +229,11 @@ official-device attestation source:
 9. routingInfo rotation/reconnect;
 10. negative tests for missing/invalid attestation.
 
-The registered native login payload now has exact byte parity with the
-official 304-byte plaintext (the 320-byte IK payload field is plaintext plus a
-16-byte AEAD tag). Fresh registration, genuine attestation and live lifecycle
-validation remain mandatory before this branch can be described as “99.9%
-native Android”; it therefore remains local and experimental.
+Fresh registration (557 bytes), first paired login (301 bytes), and registered
+reconnect (304 bytes) now have exact byte parity with their official plaintext
+captures. The 320-byte IK reconnect payload field is the 304-byte plaintext
+plus a 16-byte AEAD tag. Genuine final attestation and live lifecycle validation
+remain mandatory before this branch can be described as “99.9% native
+Android”; it therefore remains experimental.
 
 No item above should be reported as passed merely from unit tests.

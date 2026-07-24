@@ -14,7 +14,9 @@ import { encodeBigEndian } from './generics'
 import { createSignalIdentity } from './signal'
 
 export type NativeAndroidClientPayloadContext = {
+	phase: 'registration' | 'initial_pair_login' | 'reconnect'
 	sessionId: number
+	passive: boolean
 	shortConnect: boolean
 	connectType: proto.ClientPayload.ConnectType
 	connectReason: proto.ClientPayload.ConnectReason
@@ -24,12 +26,12 @@ export type NativeAndroidClientPayloadContext = {
 	connectionSequenceInfo: number
 	connectionLc: number
 	trafficAnonymization: proto.ClientPayload.TrafficAnonymization
-	lidDbMigrated: boolean
+	lidDbMigrated?: boolean
 	paaLink: boolean
 }
 
 type NativeAndroidClientPayloadContextOptions = {
-	registered: boolean
+	phase: NativeAndroidClientPayloadContext['phase']
 	connectionLc?: number
 	port?: number
 	sequenceStep?: number
@@ -40,6 +42,15 @@ type NativeAndroidClientPayloadContextOptions = {
 	dnsAppCached?: boolean
 	connectAttemptCount?: number
 }
+
+export const resolveNativeAndroidClientPayloadPhase = ({
+	hasRegisteredIdentity,
+	accountSyncCounter
+}: {
+	hasRegisteredIdentity: boolean
+	accountSyncCounter?: number
+}): NativeAndroidClientPayloadContext['phase'] =>
+	!hasRegisteredIdentity ? 'registration' : (accountSyncCounter ?? 0) === 0 ? 'initial_pair_login' : 'reconnect'
 
 const nativeAndroidSessionId = () => randomBytes(4).readInt32BE(0)
 
@@ -100,18 +111,29 @@ export const createNativeAndroidClientPayloadContext = (
 		throw new Boom(`native_android: connection lc is invalid: ${connectionLc}`, { statusCode: 400 })
 	}
 
+	const isReconnect = options.phase === 'reconnect'
+	const isInitialPairLogin = options.phase === 'initial_pair_login'
+
 	return {
+		phase: options.phase,
 		sessionId: options.sessionId ?? nativeAndroidSessionId(),
-		shortConnect: options.registered,
-		connectType: options.connectType ?? proto.ClientPayload.ConnectType.WIFI_UNKNOWN,
-		connectReason: options.connectReason ?? proto.ClientPayload.ConnectReason.USER_ACTIVATED,
-		dnsMethod: options.dnsMethod ?? proto.ClientPayload.DNSSource.DNSResolutionMethod.MNS,
-		dnsAppCached: options.dnsAppCached ?? false,
+		passive: isInitialPairLogin,
+		shortConnect: true,
+		connectType: options.connectType ?? proto.ClientPayload.ConnectType.CELLULAR_HSPA,
+		connectReason:
+			options.connectReason ??
+			(isReconnect ? proto.ClientPayload.ConnectReason.USER_ACTIVATED : proto.ClientPayload.ConnectReason.UNKNOWN),
+		dnsMethod:
+			options.dnsMethod ??
+			(isReconnect
+				? proto.ClientPayload.DNSSource.DNSResolutionMethod.MNS
+				: proto.ClientPayload.DNSSource.DNSResolutionMethod.SYSTEM),
+		dnsAppCached: options.dnsAppCached ?? !isReconnect,
 		connectAttemptCount: options.connectAttemptCount ?? 0,
 		connectionSequenceInfo: encodeNativeAndroidConnectionSequenceInfo({ port, sequenceStep }),
 		connectionLc,
 		trafficAnonymization: proto.ClientPayload.TrafficAnonymization.OFF,
-		lidDbMigrated: options.registered,
+		lidDbMigrated: isReconnect ? true : undefined,
 		paaLink: false
 	}
 }
@@ -126,7 +148,7 @@ export const incrementNativeAndroidConnectionLc = (current: number) => (current 
 // outcome WITHOUT breaking the WA\x06\x03 (web) handshake: keep
 // `platform: WEB` here (server-side requirement — ANDROID/SMB_ANDROID lets
 // pair-code connect but fails at registration), keep WebInfo, and route the
-// "appears as Android" part through `DeviceProps.platformType = ANDROID_PHONE`
+// "appears as Android" part through DeviceProps on the registration node.
 // in the registration node below. Validated in production: pair code works
 // and the device shows up as "Android (14)" in Linked Devices.
 const getUserAgent = (config: SocketConfig): proto.ClientPayload.IUserAgent => {
@@ -222,7 +244,9 @@ const getClientPayload = (config: SocketConfig, nativeContext?: NativeAndroidCli
 		payload.connectionSequenceInfo = nativeContext.connectionSequenceInfo
 		payload.lc = nativeContext.connectionLc
 		payload.trafficAnonymization = nativeContext.trafficAnonymization
-		payload.lidDbMigrated = nativeContext.lidDbMigrated
+		if (nativeContext.lidDbMigrated !== undefined) {
+			payload.lidDbMigrated = nativeContext.lidDbMigrated
+		}
 		payload.paaLink = nativeContext.paaLink
 		payload.oc = config.nativeAndroid?.device.oc
 		payload.yearClass = config.nativeAndroid?.device.yearClass
@@ -247,7 +271,7 @@ export const generateLoginNode = (
 		config.transportProfile === 'native_android'
 			? {
 					...getClientPayload(config, nativeContext),
-					passive: false,
+					passive: nativeContext!.passive,
 					username: +user,
 					device: device
 				}
@@ -282,7 +306,7 @@ export const buildCompanionDeviceProps = (config: SocketConfig): proto.IDevicePr
 	os: config.transportProfile === 'native_android' ? config.nativeAndroid?.device.osVersion : config.browser[0],
 	platformType:
 		config.transportProfile === 'native_android'
-			? proto.DeviceProps.PlatformType.ANDROID_PHONE
+			? proto.DeviceProps.PlatformType.ANDROID_AMBIGUOUS
 			: getPlatformType(config.browser[1]),
 	requireFullSync: config.syncFullHistory,
 	historySyncConfig:
@@ -291,6 +315,7 @@ export const buildCompanionDeviceProps = (config: SocketConfig): proto.IDevicePr
 					fullSyncDaysLimit: config.nativeAndroid!.historySync.fullSyncDaysLimit,
 					fullSyncSizeMbLimit: config.nativeAndroid!.historySync.fullSyncSizeMbLimit,
 					inlineInitialPayloadInE2EeMsg: true,
+					recentSyncDaysLimit: 0,
 					supportCallLogHistory: true,
 					supportBotUserAgentChatHistory: true,
 					supportCagReactionsAndPolls: true,
@@ -362,7 +387,6 @@ export const generateRegistrationNode = (
 	const registerPayload: proto.IClientPayload = {
 		...getClientPayload(config, nativeContext),
 		passive: false,
-		pull: false,
 		devicePairingData: {
 			buildHash: appVersionBuf,
 			deviceProps: companionProto,
@@ -373,6 +397,9 @@ export const generateRegistrationNode = (
 			eSkeyVal: signedPreKey.keyPair.public,
 			eSkeySig: signedPreKey.signature
 		}
+	}
+	if (config.transportProfile !== 'native_android') {
+		registerPayload.pull = false
 	}
 
 	return proto.ClientPayload.fromObject(registerPayload)

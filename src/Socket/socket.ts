@@ -39,6 +39,7 @@ import {
 	makeEventBuffer,
 	makeNoiseHandler,
 	promiseTimeout,
+	resolveNativeAndroidClientPayloadPhase,
 	resolveTransportSession,
 	shouldFallbackNativeAndroidProfile,
 	signedKeyPair,
@@ -135,7 +136,10 @@ export const makeSocket = (config: SocketConfig) => {
 
 	const nativeClientPayloadContext = isNativeAndroid
 		? createNativeAndroidClientPayloadContext({
-				registered: authState.creds.registered,
+				phase: resolveNativeAndroidClientPayloadPhase({
+					hasRegisteredIdentity: Boolean(authState.creds.me),
+					accountSyncCounter: authState.creds.accountSyncCounter
+				}),
 				connectionLc: authState.creds.nativeAndroidIdentity?.connectionLc,
 				port: url.port ? Number.parseInt(url.port, 10) : 443
 			})
