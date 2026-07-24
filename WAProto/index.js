@@ -94289,6 +94289,10 @@ export const proto = $root.proto = (() => {
                 case 5:
                     m.category = 5;
                     break;
+                case "HANDOFF_REMOVAL_TIMING":
+                case 6:
+                    m.category = 6;
+                    break;
                 }
                 if (d.version != null) {
                     if ($util.Long)
@@ -94360,6 +94364,7 @@ export const proto = $root.proto = (() => {
                 values[valuesById[3] = "EXAMPLE_RESPONSES"] = 3;
                 values[valuesById[4] = "KNOWLEDGE"] = 4;
                 values[valuesById[5] = "LEAD_GEN"] = 5;
+                values[valuesById[6] = "HANDOFF_REMOVAL_TIMING"] = 6;
                 return values;
             })();
 
