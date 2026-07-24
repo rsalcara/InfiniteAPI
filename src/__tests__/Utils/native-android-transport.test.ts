@@ -440,31 +440,38 @@ describe('native_android transport contract', () => {
 		const reply: BinaryNode = {
 			tag: 'iq',
 			attrs: {},
-			content: [{ tag: 'pair-device-sign', attrs: {}, content: [] }]
+			content: [
+				{
+					tag: 'pair-device-sign',
+					attrs: {},
+					content: [{ tag: 'device-signature', attrs: {}, content: Buffer.from([0]) }]
+				}
+			]
 		}
 		appendNativeAndroidPairingAttestation(reply, {
-			keyAttestation: Buffer.from([1]),
-			gpia: Buffer.alloc(0)
+			keyAttestation: Buffer.alloc(2039, 1),
+			gpia: Buffer.alloc(0),
+			clientAppId: '473039703209605'
 		})
 		const pairSign = (reply.content as BinaryNode[])[0]!
-		expect((pairSign.content as BinaryNode[]).map(node => node.tag)).toEqual(['key_attestation', 'gpia'])
+		const children = pairSign.content as BinaryNode[]
+		expect(children.map(node => node.tag)).toEqual(['device-signature', 'key_attestation', 'gpia', 'client-app-id'])
+		expect(Buffer.from(children[1]!.content as Uint8Array)).toHaveLength(2039)
+		expect(Buffer.from(children[2]!.content as Uint8Array)).toHaveLength(0)
+		expect(children[3]!.content).toBe('473039703209605')
 
-		const extendedReply: BinaryNode = {
+		const invalidReply: BinaryNode = {
 			tag: 'iq',
 			attrs: {},
 			content: [{ tag: 'pair-device-sign', attrs: {}, content: [] }]
 		}
-		appendNativeAndroidPairingAttestation(extendedReply, {
-			keyAttestation: Buffer.from([1]),
-			gpia: Buffer.alloc(0),
-			clientAppId: 'fixture-client-app-id'
-		})
-		const extendedPairSign = (extendedReply.content as BinaryNode[])[0]!
-		expect((extendedPairSign.content as BinaryNode[]).map(node => node.tag)).toEqual([
-			'key_attestation',
-			'gpia',
-			'client-app-id'
-		])
+		expect(() =>
+			appendNativeAndroidPairingAttestation(invalidReply, {
+				keyAttestation: Buffer.from([1]),
+				gpia: Buffer.alloc(0),
+				clientAppId: ''
+			})
+		).toThrow('empty client-app-id')
 	})
 })
 

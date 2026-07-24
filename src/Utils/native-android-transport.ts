@@ -234,9 +234,8 @@ export const appendNativeAndroidPairingAttestation = (
 	}
 
 	if (
-		attestation.clientAppId !== undefined &&
-		((typeof attestation.clientAppId === 'string' && attestation.clientAppId.length === 0) ||
-			(attestation.clientAppId instanceof Uint8Array && attestation.clientAppId.byteLength === 0))
+		(typeof attestation.clientAppId === 'string' && attestation.clientAppId.length === 0) ||
+		(attestation.clientAppId instanceof Uint8Array && attestation.clientAppId.byteLength === 0)
 	) {
 		throw new Boom('native_android: attestation provider returned an empty client-app-id', { statusCode: 400 })
 	}
@@ -265,12 +264,10 @@ export const appendNativeAndroidPairingAttestation = (
 		}
 	)
 
-	if (attestation.clientAppId !== undefined) {
-		pairDeviceSign.content.push({
-			tag: 'client-app-id',
-			attrs: {},
-			content:
-				typeof attestation.clientAppId === 'string' ? attestation.clientAppId : Buffer.from(attestation.clientAppId)
-		})
-	}
+	pairDeviceSign.content.push({
+		tag: 'client-app-id',
+		attrs: {},
+		content:
+			typeof attestation.clientAppId === 'string' ? attestation.clientAppId : Buffer.from(attestation.clientAppId)
+	})
 }

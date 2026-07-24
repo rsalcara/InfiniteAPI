@@ -85,9 +85,9 @@ independent chat socket.
 - Phone-number pair code fails explicitly in native mode instead of pretending
   that the Web pair-code flow is Android-native.
 - Pairing requires a provider of genuine `key_attestation`, `gpia` and
-  optional capture-specific `client-app-id` artifacts. The controlled WABA QR
-  capture emits exactly `key_attestation` + empty `gpia`; no extra node is
-  synthesized.
+  `client-app-id` artifacts. The controlled WABA 2.26.27.83 fresh-QR capture
+  emitted a 2,039-byte `key_attestation`, an empty `gpia` node and a 15-byte
+  `client-app-id`, in that order. No value is synthesized.
 - Full native identity is persisted in `AuthenticationCreds` and reused across
   reconnects/restarts.
 - Native QR `pair-success` now persists `registered: true`. Existing local
@@ -218,8 +218,8 @@ synthetic default.
 This remains experimental until all of the following pass against a controlled
 official-device attestation source:
 
-1. capture the genuine final pairing reply from a supported official device;
-2. complete fresh QR pairing against the live native endpoint;
+1. complete fresh QR pairing against the live native endpoint;
+2. verify the challenge-bound attestation provider against a second fresh QR;
 3. live IK reconnect without identity change;
 4. live server-requested XXfallback;
 5. outbound text and interactive messages;
@@ -232,8 +232,11 @@ official-device attestation source:
 Fresh registration (557 bytes), first paired login (301 bytes), and registered
 reconnect (304 bytes) now have exact byte parity with their official plaintext
 captures. The 320-byte IK reconnect payload field is the 304-byte plaintext
-plus a 16-byte AEAD tag. Genuine final attestation and live lifecycle validation
-remain mandatory before this branch can be described as “99.9% native
-Android”; it therefore remains experimental.
+plus a 16-byte AEAD tag. The genuine final official pairing shape is also
+captured: `pair-device-sign` contains four children, ending in
+`key_attestation`, empty `gpia` and `client-app-id`. A live provider-backed
+pairing and the remaining lifecycle validation are still mandatory before this
+branch can be described as “99.9% native Android”; it therefore remains
+experimental.
 
 No item above should be reported as passed merely from unit tests.

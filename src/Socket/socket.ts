@@ -1801,18 +1801,7 @@ export const makeSocket = (config: SocketConfig) => {
 					stanza,
 					profileId: transportSession.nativeAndroid!.device.profileId
 				})
-				if (attestation) {
-					appendNativeAndroidPairingAttestation(reply, attestation)
-				} else {
-					logger.warn(
-						{
-							transportProfile: transportSession.profile,
-							selectedProfileId: transportSession.nativeAndroid!.device.profileId,
-							attestationAction: 'explicitly-omitted'
-						},
-						'native_android pairing probe continuing without attestation artifacts'
-					)
-				}
+				appendNativeAndroidPairingAttestation(reply, attestation)
 
 				// QR pair-success is the authoritative transition from a fresh
 				// native identity to a registered companion. Persist it together
