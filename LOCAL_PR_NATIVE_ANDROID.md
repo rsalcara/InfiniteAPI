@@ -5,6 +5,14 @@ Status: experimental work-in-progress branch; published for preservation and con
 Base: `origin/develop` at `47ab8d6e`
 Branch: `codex/native-android-transport`
 
+The repository also contains `android-provider-bridge/`, a separately compiled
+Android test component with its own package/signing identity. It uses Android
+Keystore, exposes only public attestation artifacts on Android loopback, and is
+consumed through `makeNativeAndroidBridgeAttestationProvider()`. Runtime
+selection is explicit: `INFINITEAPI_TRANSPORT=web|native_android` and
+`INFINITEAPI_AUTH_STORAGE=json|sqlite|multi_db_sqlite`. Web remains the default
+until the complete native lifecycle is proven.
+
 ## Forensic correction that defines this implementation
 
 The captured `WAM\x05` stream is WhatsApp Analytics Metrics telemetry, not the
@@ -191,6 +199,18 @@ synthetic default.
 
 ## Validation completed locally
 
+- Android provider APK: Gradle 8.9 `:app:assembleDebug` passes with the
+  repository wrapper.
+- Provider smoke test on the controlled emulator: install/start passes,
+  loopback `/health` reports the expected package, and `/v1/attestation`
+  returns a fresh Android Keystore certificate chain. The TypeScript bridge
+  accepts that live response and reports 2,058 bytes of public attestation
+  data, an empty `gpia`, and the configured test client id. The placeholder
+  client id used for this local contract test is not evidence of WhatsApp
+  server authorization.
+- Provider/transport/persistence regression on Linux Node 22: 3 suites and
+  28/28 tests pass, including legacy JSON, monolithic SQLite and multi-DB
+  SQLite persistence.
 - TypeScript `tsc --noEmit`: pass.
 - Exact ClientPayload regression: the generated registered payload equals the
   full captured 304-byte hex string, not only a selected field subset.
