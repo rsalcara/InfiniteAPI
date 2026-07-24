@@ -88,6 +88,12 @@ independent chat socket.
   `client-app-id` artifacts. The controlled WABA 2.26.27.83 fresh-QR capture
   emitted a 2,039-byte `key_attestation`, an empty `gpia` node and a 15-byte
   `client-app-id`, in that order. No value is synthesized.
+- The official client does not generate attestation from the pair-success
+  stanza. `94R.A00()` refreshes a cached artifact through
+  `KeyAttestationLifetimeManagerKt`, controlled by remote parameters `0x1921`
+  and `0x1922`; the pairing coroutine reads that cache. Consequently the
+  provider owns refresh/freshness, while InfiniteAPI deliberately never stores
+  captured attestation bytes in auth state.
 - Full native identity is persisted in `AuthenticationCreds` and reused across
   reconnects/restarts.
 - Native QR `pair-success` now persists `registered: true`. Existing local
@@ -219,7 +225,7 @@ This remains experimental until all of the following pass against a controlled
 official-device attestation source:
 
 1. complete fresh QR pairing against the live native endpoint;
-2. verify the challenge-bound attestation provider against a second fresh QR;
+2. verify the lifetime-managed attestation provider against a second fresh QR;
 3. live IK reconnect without identity change;
 4. live server-requested XXfallback;
 5. outbound text and interactive messages;

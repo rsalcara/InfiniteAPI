@@ -444,7 +444,7 @@ describe('native_android transport contract', () => {
 				{
 					tag: 'pair-device-sign',
 					attrs: {},
-					content: [{ tag: 'device-signature', attrs: {}, content: Buffer.from([0]) }]
+					content: [{ tag: 'device-identity', attrs: { 'key-index': '1' }, content: Buffer.from([0]) }]
 				}
 			]
 		}
@@ -455,7 +455,7 @@ describe('native_android transport contract', () => {
 		})
 		const pairSign = (reply.content as BinaryNode[])[0]!
 		const children = pairSign.content as BinaryNode[]
-		expect(children.map(node => node.tag)).toEqual(['device-signature', 'key_attestation', 'gpia', 'client-app-id'])
+		expect(children.map(node => node.tag)).toEqual(['device-identity', 'key_attestation', 'gpia', 'client-app-id'])
 		expect(Buffer.from(children[1]!.content as Uint8Array)).toHaveLength(2039)
 		expect(Buffer.from(children[2]!.content as Uint8Array)).toHaveLength(0)
 		expect(children[3]!.content).toBe('473039703209605')
