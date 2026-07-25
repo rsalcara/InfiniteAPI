@@ -195,6 +195,12 @@ export type TransactionScope = {
 export type SignalKeyStoreWithTransaction = SignalKeyStore & {
 	isInTransaction: () => boolean
 	/**
+	 * Runs work without inheriting the current AsyncLocalStorage transaction.
+	 * Required for deferred callbacks (timers/socket cleanup) that must start a
+	 * fresh durable write after the transaction that scheduled them is sealed.
+	 */
+	runOutsideTransaction?<T>(work: () => Promise<T>): Promise<T>
+	/**
 	 * Register work that runs only after the outermost durable commit succeeds,
 	 * while the transaction's locks are still held. This is for side effects
 	 * that must observe committed state without opening a race window before a
@@ -249,6 +255,7 @@ export type SignalKeyStoreWithTransaction = SignalKeyStore & {
 export type SignalKeyStoreWithRecordTransaction = SignalKeyStoreWithTransaction & {
 	transactWith<T>(scope: TransactionScope, work: () => Promise<T>): Promise<T>
 	afterCommit(work: () => Awaitable<void>): void
+	runOutsideTransaction<T>(work: () => Promise<T>): Promise<T>
 }
 
 export type TransactionCapabilityOptions = {

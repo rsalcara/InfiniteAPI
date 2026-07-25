@@ -53,6 +53,7 @@ export * from './version-cache'
 export * from './native-android-transport'
 export * from './native-android-device-catalog'
 export * from './native-android-provider-bridge'
+export * from './native-android-node-x509-study'
 export * from './runtime-profile'
 
 // Health monitoring

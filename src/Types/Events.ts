@@ -181,6 +181,15 @@ export type BaileysEventMap = {
 	 * this hash through its private side-list index before refreshing contacts.
 	 */
 	'text-status-side-sub.update': { from?: string; hash: string }
+	/** Full text-status/about update for a specific contact. */
+	'text-status.update': {
+		from?: string
+		jid: string
+		lastUpdateTime: string
+		text: string
+		emoji: string | null
+		ephemeralDurationSec: number
+	}
 
 	/** Settings and actions sync events */
 	'chats.lock': { id: string; locked: boolean }

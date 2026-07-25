@@ -1,7 +1,12 @@
 import { createHash } from 'crypto'
 import net from 'net'
 import { proto } from '../../../WAProto/index.js'
-import { DEFAULT_CONNECTION_CONFIG, NOISE_WA_HEADER } from '../../Defaults'
+import {
+	DEFAULT_CONNECTION_CONFIG,
+	NOISE_WA_HEADER,
+	WHATSAPP_MESSENGER_CLIENT_APP_ID,
+	WABA_CLIENT_APP_ID
+} from '../../Defaults'
 import { TcpSocketClient } from '../../Socket/Client'
 import type { NativeAndroidTransportConfig, SocketConfig } from '../../Types'
 import { initAuthCreds } from '../../Utils/auth-utils'
@@ -17,6 +22,8 @@ import {
 } from '../../Utils/native-android-device-catalog'
 import {
 	appendNativeAndroidPairingAttestation,
+	detectNativeAndroidAppVariant,
+	resolveNativeAndroidPairingAppVariant,
 	resolveTransportSession,
 	validateNativeAndroidConfig
 } from '../../Utils/native-android-transport'
@@ -32,6 +39,7 @@ import type { BinaryNode } from '../../WABinary'
 
 const nativeAndroid: NativeAndroidTransportConfig = {
 	enabled: true,
+	appVariant: 'business',
 	appVersion: [2, 26, 27, 83],
 	historySync: {
 		fullSyncDaysLimit: 365,
@@ -45,7 +53,7 @@ const nativeAndroid: NativeAndroidTransportConfig = {
 	attestationProvider: async () => ({
 		keyAttestation: Buffer.from([1]),
 		gpia: Buffer.alloc(0),
-		clientAppId: 'fixture-client-app-id'
+		clientAppId: WABA_CLIENT_APP_ID
 	}),
 	device: {
 		profileId: 'controlled-device-fixture',
@@ -242,6 +250,27 @@ describe('native_android transport contract', () => {
 		)
 	})
 
+	it('builds the Consumer ClientPayload with its own platform and version', () => {
+		const config: SocketConfig = {
+			...nativeConfig(),
+			nativeAndroid: {
+				...nativeAndroid,
+				appVariant: 'consumer',
+				appVersion: [2, 26, 29, 5]
+			}
+		}
+		const node = generateRegistrationNode(initAuthCreds(), config, registrationContext())
+
+		expect(node.userAgent?.platform).toBe(proto.ClientPayload.UserAgent.Platform.ANDROID)
+		expect(node.userAgent?.appVersion).toMatchObject({
+			primary: 2,
+			secondary: 26,
+			tertiary: 29,
+			quaternary: 5
+		})
+		expect(node.webInfo).toBeNull()
+	})
+
 	it('matches the captured official fresh-registration ClientPayload byte for byte', () => {
 		const captured = proto.ClientPayload.decode(Buffer.from(freshCaptureHex, 'hex'))
 		const pairing = captured.devicePairingData!
@@ -436,6 +465,124 @@ describe('native_android transport contract', () => {
 		).toThrow('attestationProvider is required before starting a fresh QR pairing')
 	})
 
+	it('detects the primary app at pair-success and persists an automatic Consumer fallback', () => {
+		expect(detectNativeAndroidAppVariant('smba')).toBe('business')
+		expect(detectNativeAndroidAppVariant('smbi')).toBe('business')
+		expect(detectNativeAndroidAppVariant('android')).toBe('consumer')
+		expect(detectNativeAndroidAppVariant('iphone')).toBe('consumer')
+		expect(detectNativeAndroidAppVariant('unknown')).toBeUndefined()
+
+		const creds = initAuthCreds()
+		const config: NativeAndroidTransportConfig = {
+			...nativeAndroid,
+			appVariant: 'business',
+			autoDetectAppVariant: true,
+			appVersions: {
+				business: [2, 26, 27, 83],
+				consumer: [2, 26, 29, 5]
+			}
+		}
+		resolveTransportSession({ ...nativeConfig(), nativeAndroid: config }, creds)
+
+		const resolution = resolveNativeAndroidPairingAppVariant(config, creds, 'android')
+
+		expect(resolution).toMatchObject({
+			variant: 'consumer',
+			fallbackApplied: true,
+			detected: true
+		})
+		expect(config.appVersion).toEqual([2, 26, 29, 5])
+		expect(creds.nativeAndroidIdentity).toMatchObject({
+			appVariant: 'consumer',
+			clientAppId: WHATSAPP_MESSENGER_CLIENT_APP_ID
+		})
+	})
+
+	it('never guesses an app variant or changes a registered session silently', () => {
+		const autoCreds = initAuthCreds()
+		const autoConfig: NativeAndroidTransportConfig = {
+			...nativeAndroid,
+			autoDetectAppVariant: true,
+			appVersions: {
+				business: [2, 26, 27, 83],
+				consumer: [2, 26, 29, 5]
+			}
+		}
+		resolveTransportSession({ ...nativeConfig(), nativeAndroid: autoConfig }, autoCreds)
+		expect(() => resolveNativeAndroidPairingAppVariant(autoConfig, autoCreds, undefined)).toThrow('refusing to guess')
+
+		const explicitCreds = initAuthCreds()
+		resolveTransportSession(nativeConfig(), explicitCreds)
+		expect(() => resolveNativeAndroidPairingAppVariant(nativeAndroid, explicitCreds, 'android')).toThrow(
+			'configured as business'
+		)
+
+		const registeredCreds = initAuthCreds()
+		resolveTransportSession(nativeConfig(), registeredCreds)
+		registeredCreds.registered = true
+		expect(() => resolveNativeAndroidPairingAppVariant(nativeAndroid, registeredCreds, 'android')).toThrow(
+			'cannot be changed after registration'
+		)
+		expect(registeredCreds.nativeAndroidIdentity?.appVariant).toBe('business')
+	})
+
+	it('allows only an unregistered attempt to issue a fresh QR with the alternative app', () => {
+		const creds = initAuthCreds()
+		resolveTransportSession(nativeConfig(), creds)
+
+		const consumerConfig: NativeAndroidTransportConfig = {
+			...nativeAndroid,
+			appVariant: 'consumer',
+			appVersion: [2, 26, 29, 5]
+		}
+		const retry = resolveTransportSession({ ...nativeConfig(), nativeAndroid: consumerConfig }, creds)
+
+		expect(retry.credsChanged).toBe(true)
+		expect(retry.nativeAndroid?.appVariant).toBe('consumer')
+		expect(creds.nativeAndroidIdentity).toMatchObject({
+			appVariant: 'consumer',
+			clientAppId: WHATSAPP_MESSENGER_CLIENT_APP_ID
+		})
+
+			creds.registered = true
+			creds.account = {}
+			creds.me = { id: '123@s.whatsapp.net', name: 'registered-consumer' }
+			const reconnect = resolveTransportSession(
+				{
+					...nativeConfig(),
+					nativeAndroid: {
+						...nativeAndroid,
+						appVersions: {
+							business: [2, 26, 27, 83],
+							consumer: [2, 26, 29, 5]
+						}
+					}
+				},
+				creds
+			)
+			expect(reconnect.nativeAndroid?.appVariant).toBe('consumer')
+			expect(reconnect.nativeAndroid?.appVersion).toEqual([2, 26, 29, 5])
+			expect(creds.nativeAndroidIdentity?.appVariant).toBe('consumer')
+		})
+
+	it('migrates a registered pre-variant native session to Business without rotating it', () => {
+		const creds = initAuthCreds()
+		resolveTransportSession(nativeConfig(), creds)
+		creds.registered = true
+		creds.account = {}
+		creds.me = { id: '123@s.whatsapp.net', name: 'legacy-native' }
+		delete creds.nativeAndroidIdentity!.appVariant
+		delete creds.nativeAndroidIdentity!.clientAppId
+
+		const resolved = resolveTransportSession(nativeConfig(), creds)
+
+		expect(resolved.credsChanged).toBe(true)
+		expect(creds.nativeAndroidIdentity).toMatchObject({
+			appVariant: 'business',
+			clientAppId: WABA_CLIENT_APP_ID
+		})
+	})
+
 	it('adds only provider-supplied attestation artifacts to pair-device-sign', () => {
 		const reply: BinaryNode = {
 			tag: 'iq',
@@ -451,14 +598,14 @@ describe('native_android transport contract', () => {
 		appendNativeAndroidPairingAttestation(reply, {
 			keyAttestation: Buffer.alloc(2039, 1),
 			gpia: Buffer.alloc(0),
-			clientAppId: '473039703209605'
+			clientAppId: WABA_CLIENT_APP_ID
 		})
 		const pairSign = (reply.content as BinaryNode[])[0]!
 		const children = pairSign.content as BinaryNode[]
 		expect(children.map(node => node.tag)).toEqual(['device-identity', 'key_attestation', 'gpia', 'client-app-id'])
 		expect(Buffer.from(children[1]!.content as Uint8Array)).toHaveLength(2039)
 		expect(Buffer.from(children[2]!.content as Uint8Array)).toHaveLength(0)
-		expect(children[3]!.content).toBe('473039703209605')
+		expect(children[3]!.content).toBe(WABA_CLIENT_APP_ID)
 
 		const invalidReply: BinaryNode = {
 			tag: 'iq',
@@ -471,7 +618,29 @@ describe('native_android transport contract', () => {
 				gpia: Buffer.alloc(0),
 				clientAppId: ''
 			})
-		).toThrow('empty client-app-id')
+		).toThrow('unexpected client-app-id')
+	})
+
+	it('writes the Messenger client-app-id only for a validated Consumer pairing', () => {
+		const reply: BinaryNode = {
+			tag: 'iq',
+			attrs: {},
+			content: [{ tag: 'pair-device-sign', attrs: {}, content: [] }]
+		}
+		appendNativeAndroidPairingAttestation(
+			reply,
+			{
+				keyAttestation: Buffer.from([1]),
+				gpia: Buffer.alloc(0),
+				clientAppId: WHATSAPP_MESSENGER_CLIENT_APP_ID
+			},
+			WHATSAPP_MESSENGER_CLIENT_APP_ID
+		)
+		const children = ((reply.content as BinaryNode[])[0]!.content || []) as BinaryNode[]
+		expect(children.at(-1)).toMatchObject({
+			tag: 'client-app-id',
+			content: WHATSAPP_MESSENGER_CLIENT_APP_ID
+		})
 	})
 })
 

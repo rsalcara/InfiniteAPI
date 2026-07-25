@@ -11,11 +11,7 @@ class MainActivity : Activity() {
 		super.onCreate(savedInstanceState)
 		startForegroundService(Intent(this, AttestationProviderService::class.java))
 
-		val status = if (BuildConfig.CLIENT_APP_ID.isBlank()) {
-			"Provider blocked: build with -PINFINITEAPI_ANDROID_CLIENT_APP_ID=<your-authorized-id>"
-		} else {
-			"Provider ready on Android loopback port ${LocalBridgeServer.PORT}"
-		}
+		val status = "Provider ready on Android loopback port ${LocalBridgeServer.PORT}"
 
 		setContentView(
 			LinearLayout(this).apply {

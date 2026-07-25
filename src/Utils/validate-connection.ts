@@ -164,7 +164,10 @@ const getUserAgent = (config: SocketConfig): proto.ClientPayload.IUserAgent => {
 		const device = native.device
 		return {
 			appVersion: { primary, secondary, tertiary, quaternary },
-			platform: proto.ClientPayload.UserAgent.Platform.SMB_ANDROID,
+			platform:
+				native.appVariant === 'consumer'
+					? proto.ClientPayload.UserAgent.Platform.ANDROID
+					: proto.ClientPayload.UserAgent.Platform.SMB_ANDROID,
 			mcc: device.mcc,
 			mnc: device.mnc,
 			osVersion: device.osVersion,

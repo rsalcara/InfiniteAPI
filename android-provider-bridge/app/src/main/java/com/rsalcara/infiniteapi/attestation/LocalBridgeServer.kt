@@ -75,7 +75,33 @@ class LocalBridgeServer(
 			}
 			method == "POST" && path == "/v1/attestation" -> {
 				try {
-					val snapshot = repository.current()
+					val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
+					check(contentLength in 1..16_384) { "invalid-content-length" }
+					val bodyChars = CharArray(contentLength)
+					var offset = 0
+					while (offset < contentLength) {
+						val count = reader.read(bodyChars, offset, contentLength - offset)
+						check(count > 0) { "incomplete-request-body" }
+						offset += count
+					}
+					val request = JSONObject(String(bodyChars))
+					val appVariant = request.optString("appVariant")
+					val clientAppId = request.optString("clientAppId")
+					val targetPackageName = request.optString("packageName")
+					val expectedClientAppId = when (appVariant) {
+						"business" -> BuildConfig.WABA_CLIENT_APP_ID
+						"consumer" -> BuildConfig.WA_MESSENGER_CLIENT_APP_ID
+						else -> error("unsupported-app-variant")
+					}
+					val expectedPackageName = when (appVariant) {
+						"business" -> "com.whatsapp.w4b"
+						"consumer" -> "com.whatsapp"
+						else -> error("unsupported-app-variant")
+					}
+					check(clientAppId == expectedClientAppId) { "client-app-id-mismatch" }
+					check(targetPackageName == expectedPackageName) { "target-package-mismatch" }
+
+					val snapshot = repository.current(clientAppId)
 					respond(
 						socket,
 						200,
@@ -84,6 +110,8 @@ class LocalBridgeServer(
 							.put("gpiaBase64", snapshot.gpiaBase64)
 							.put("clientAppId", snapshot.clientAppId)
 							.put("packageName", snapshot.packageName)
+							.put("appVariant", appVariant)
+							.put("targetPackageName", targetPackageName)
 							.put("generatedAtMs", snapshot.generatedAtMs)
 							.put("expiresAtMs", snapshot.expiresAtMs)
 							.toString()

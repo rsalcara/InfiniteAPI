@@ -181,7 +181,7 @@ describe('LIDMappingStore', () => {
 			expect(() => lidMappingStore.destroy()).not.toThrow()
 		})
 
-		it('should complete active operations before destroying resources (graceful degradation)', async () => {
+		it('should drain active operations before destroy resolves', async () => {
 			const pn = '12345@s.whatsapp.net'
 
 			// Mock slow DB operation (simulates long-running operation)
@@ -204,13 +204,21 @@ describe('LIDMappingStore', () => {
 			expect(operationStarted).toBe(true)
 			expect(operationCompleted).toBe(false)
 
-			// Call destroy while operation is in progress
-			lidMappingStore.destroy()
+			// Call destroy while operation is in progress. It must reject new
+			// work immediately but not resolve until the active operation ends.
+			let destroyResolved = false
+			const destroyPromise = lidMappingStore.destroy().then(() => {
+				destroyResolved = true
+			})
+			await new Promise(resolve => setTimeout(resolve, 10))
+			expect(destroyResolved).toBe(false)
 
 			// Operation should still complete successfully (graceful degradation)
 			const result = await operationPromise
 			expect(result).toBe('aaaaa@lid')
 			expect(operationCompleted).toBe(true)
+			await destroyPromise
+			expect(destroyResolved).toBe(true)
 
 			// But new operations should be rejected
 			await expect(lidMappingStore.getLIDForPN(pn)).rejects.toThrow('LIDMappingStore has been destroyed')

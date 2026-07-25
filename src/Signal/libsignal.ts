@@ -820,14 +820,14 @@ export function makeLibSignalRepository(
 		// repository (every LRU cache + lidMapping) in memory. On reconnect the consumer builds a
 		// fresh repository, so a stale interval would keep the OLD one alive forever — the dominant
 		// source of the gradual memory growth seen across many daily reconnects.
-		close() {
+		async close() {
 			clearInterval(cacheMetricsInterval)
-			storage.clearPendingPreKeyDeletions()
+			await storage.clearPendingPreKeyDeletions()
 			identityKeyCache.clear()
 			deviceListCache.clear()
 			migrationInFlight.clear()
 			migratedSessionCache.clear()
-			lidMapping.destroy()
+			await lidMapping.destroy()
 		},
 
 		/**
@@ -1166,7 +1166,7 @@ type ExtendedSignalStorage = SenderKeyStore &
 
 		/** Cancel pending PreKey deletion timers (5-min grace window) — called on socket close so the
 		 * Map entries stop pinning the storage closure across reconnects. */
-		clearPendingPreKeyDeletions(): void
+		clearPendingPreKeyDeletions(): Promise<void>
 	}
 
 function signalStorage(
@@ -1176,6 +1176,7 @@ function signalStorage(
 	ev?: BaileysEventEmitter,
 	logger?: ILogger
 ): ExtendedSignalStorage {
+	const transactionalKeys = keys as SignalKeyStoreWithRecordTransaction
 	// Shared function to resolve PN signal address to LID if mapping exists.
 	// Delegates to the module-level `resolveSignalAddressId` so the two
 	// resolvers can't drift apart. The previous local copy threw on a
@@ -1224,7 +1225,7 @@ function signalStorage(
 		 * the keystore is being torn down concurrently the .catch swallows
 		 * the failure — same contract the timer body itself used.
 		 */
-		clearPendingPreKeyDeletions: () => {
+		clearPendingPreKeyDeletions: async () => {
 			// Collect all pending deletions, then issue ONE keys.set instead of
 			// N (PR #451 CodeRabbit quick-win). For SQL-backed stores this
 			// collapses N round-trips + N lock acquisitions into 1 and gives
@@ -1237,19 +1238,10 @@ function signalStorage(
 			}
 
 			if (Object.keys(deletions).length > 0) {
-				// `keys.set` return type is `Awaitable<void>` = `void | Promise<void>`.
-				// Defer the call into a `.then` (PR #451 CodeRabbit follow-up):
-				// a non-async implementation that throws SYNCHRONOUSLY would
-				// otherwise escape before `.catch` is attached. Wrapping with
-				// `Promise.resolve().then(() => keys.set(...))` converts any
-				// synchronous throw into a rejection that the `.catch` below
-				// can swallow uniformly with async rejections. Our in-repo
-				// implementations are all async, but the type allows non-async
-				// (third-party stores in Astra-Api etc).
-				void Promise.resolve()
-					.then(() => keys.set({ 'pre-key': deletions }))
-					.catch(() => {
-						// Keystore may be destroyed if connection closed — safe to ignore
+				await transactionalKeys
+					.runOutsideTransaction(() => Promise.resolve(keys.set({ 'pre-key': deletions })))
+					.catch(error => {
+						logger?.warn({ error, count: Object.keys(deletions).length }, 'failed to flush consumed prekeys')
 					})
 			}
 
@@ -1358,13 +1350,13 @@ function signalStorage(
 			}
 
 			// Schedule deletion after grace period
-			const timer = setTimeout(async () => {
+			const timer = setTimeout(() => {
 				pendingPreKeyDeletions.delete(keyId)
-				try {
-					await keys.set({ 'pre-key': { [id]: null } })
-				} catch {
-					// Keystore may be destroyed if connection closed — safe to ignore
-				}
+				void transactionalKeys
+					.runOutsideTransaction(() => Promise.resolve(keys.set({ 'pre-key': { [id]: null } })))
+					.catch(error => {
+						logger?.warn({ error, preKeyId: id }, 'failed to delete consumed prekey')
+					})
 			}, PREKEY_GRACE_PERIOD_MS)
 			// Audit PROTO-003 — sem `unref()`, esse timer de 5 min bloqueia
 			// SIGTERM se `close()` não for chamado antes. PM2 manda SIGKILL

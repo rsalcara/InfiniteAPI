@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
 import type { AddressInfo } from 'net'
+import { WHATSAPP_MESSENGER_CLIENT_APP_ID, WABA_CLIENT_APP_ID } from '../../Defaults'
 import { makeNativeAndroidBridgeAttestationProvider, resolveInfiniteApiRuntimeProfile } from '../../Utils'
 
 const listen = async (handler: (request: IncomingMessage, response: ServerResponse) => void) => {
@@ -10,6 +11,14 @@ const listen = async (handler: (request: IncomingMessage, response: ServerRespon
 		baseUrl: `http://127.0.0.1:${address.port}`,
 		close: () => new Promise<void>((resolve, reject) => server.close(error => (error ? reject(error) : resolve())))
 	}
+}
+
+const businessContext = {
+	stanza: { tag: 'iq', attrs: {} },
+	profileId: 'captured-generic-android',
+	appVariant: 'business' as const,
+	clientAppId: WABA_CLIENT_APP_ID,
+	packageName: 'com.whatsapp.w4b'
 }
 
 describe('native Android provider bridge', () => {
@@ -26,8 +35,10 @@ describe('native Android provider bridge', () => {
 				JSON.stringify({
 					keyAttestationBase64: Buffer.from([1, 2, 3]).toString('base64'),
 					gpiaBase64: '',
-					clientAppId: '123456789012345',
+					clientAppId: WABA_CLIENT_APP_ID,
 					packageName: 'com.rsalcara.infiniteapi.attestation',
+					appVariant: 'business',
+					targetPackageName: 'com.whatsapp.w4b',
 					generatedAtMs: 1_700_000_000_000,
 					expiresAtMs: 1_700_000_600_000
 				})
@@ -41,13 +52,10 @@ describe('native Android provider bridge', () => {
 				expectedPackageName: 'com.rsalcara.infiniteapi.attestation',
 				now: () => 1_700_000_100_000
 			})
-			const result = await provider({
-				stanza: { tag: 'iq', attrs: {} },
-				profileId: 'captured-generic-android'
-			})
+			const result = await provider(businessContext)
 			expect(Buffer.from(result.keyAttestation)).toEqual(Buffer.from([1, 2, 3]))
 			expect(Buffer.from(result.gpia as Uint8Array)).toHaveLength(0)
-			expect(result.clientAppId).toBe('123456789012345')
+			expect(result.clientAppId).toBe(WABA_CLIENT_APP_ID)
 			expect(receivedAuthorization).toBe('Bearer test-token')
 			expect(receivedProfileId).toBe('captured-generic-android')
 		} finally {
@@ -76,15 +84,16 @@ describe('native Android provider bridge', () => {
 				expectedPackageName: 'com.rsalcara.infiniteapi.attestation',
 				now: () => 100
 			})
-			await expect(wrongPackage({ stanza: { tag: 'iq', attrs: {} }, profileId: 'fixture' })).rejects.toThrow(
+			await expect(wrongPackage({ ...businessContext, profileId: 'fixture' })).rejects.toThrow(
 				'provider package mismatch'
 			)
 
 			const stale = makeNativeAndroidBridgeAttestationProvider({
 				baseUrl: bridge.baseUrl,
+				expectedPackageName: 'unexpected.package',
 				now: () => 1_000
 			})
-			await expect(stale({ stanza: { tag: 'iq', attrs: {} }, profileId: 'fixture' })).rejects.toThrow(
+			await expect(stale({ ...businessContext, profileId: 'fixture' })).rejects.toThrow(
 				'expired or insufficiently fresh'
 			)
 		} finally {
@@ -102,7 +111,7 @@ describe('native Android provider bridge', () => {
 			const rejected = makeNativeAndroidBridgeAttestationProvider({
 				baseUrl: rejectedBridge.baseUrl
 			})
-			await expect(rejected({ stanza: { tag: 'iq', attrs: {} }, profileId: 'fixture' })).rejects.toThrow('HTTP 503')
+			await expect(rejected({ ...businessContext, profileId: 'fixture' })).rejects.toThrow('HTTP 503')
 		} finally {
 			await rejectedBridge.close()
 		}
@@ -113,7 +122,7 @@ describe('native Android provider bridge', () => {
 				JSON.stringify({
 					keyAttestationBase64: 'not base64',
 					gpiaBase64: '',
-					clientAppId: '123',
+					clientAppId: WABA_CLIENT_APP_ID,
 					packageName: 'com.rsalcara.infiniteapi.attestation',
 					expiresAtMs: 1_700_000_600_000
 				})
@@ -125,11 +134,55 @@ describe('native Android provider bridge', () => {
 				baseUrl: malformedBridge.baseUrl,
 				now: () => 1_700_000_100_000
 			})
-			await expect(malformed({ stanza: { tag: 'iq', attrs: {} }, profileId: 'fixture' })).rejects.toThrow(
+			await expect(malformed({ ...businessContext, profileId: 'fixture' })).rejects.toThrow(
 				'keyAttestationBase64 is not valid base64'
 			)
 		} finally {
 			await malformedBridge.close()
+		}
+	})
+
+	it('routes a consumer pairing request with the Messenger identity', async () => {
+		let receivedBody: Record<string, string> | undefined
+		const bridge = await listen(async (request, response) => {
+			const chunks: Buffer[] = []
+			for await (const chunk of request) chunks.push(Buffer.from(chunk))
+			receivedBody = JSON.parse(Buffer.concat(chunks).toString())
+			response.setHeader('content-type', 'application/json')
+			response.end(
+				JSON.stringify({
+					keyAttestationBase64: Buffer.from([4, 5, 6]).toString('base64'),
+					gpiaBase64: '',
+					clientAppId: WHATSAPP_MESSENGER_CLIENT_APP_ID,
+					packageName: 'com.rsalcara.infiniteapi.attestation',
+					appVariant: 'consumer',
+					targetPackageName: 'com.whatsapp',
+					generatedAtMs: 1_700_000_000_000,
+					expiresAtMs: 1_700_000_600_000
+				})
+			)
+		})
+
+		try {
+			const provider = makeNativeAndroidBridgeAttestationProvider({
+				baseUrl: bridge.baseUrl,
+				now: () => 1_700_000_100_000
+			})
+			const result = await provider({
+				...businessContext,
+				appVariant: 'consumer',
+				clientAppId: WHATSAPP_MESSENGER_CLIENT_APP_ID,
+				packageName: 'com.whatsapp'
+			})
+
+			expect(result.clientAppId).toBe(WHATSAPP_MESSENGER_CLIENT_APP_ID)
+			expect(receivedBody).toMatchObject({
+				appVariant: 'consumer',
+				clientAppId: WHATSAPP_MESSENGER_CLIENT_APP_ID,
+				packageName: 'com.whatsapp'
+			})
+		} finally {
+			await bridge.close()
 		}
 	})
 

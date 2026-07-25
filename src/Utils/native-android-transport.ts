@@ -1,7 +1,9 @@
 import { Boom } from '@hapi/boom'
+import { NATIVE_ANDROID_APP_IDENTITIES, WABA_CLIENT_APP_ID } from '../Defaults'
 import type {
 	AuthenticationCreds,
 	ConnectionTransportProfile,
+	NativeAndroidAppVariant,
 	NativeAndroidDeviceProfile,
 	NativeAndroidPairingAttestation,
 	NativeAndroidTransportConfig,
@@ -43,6 +45,23 @@ const requiredString = (value: unknown, field: string) => {
 	}
 }
 
+export const getNativeAndroidAppIdentity = (variant: NativeAndroidAppVariant) => NATIVE_ANDROID_APP_IDENTITIES[variant]
+
+export const detectNativeAndroidAppVariant = (
+	platform: string | null | undefined
+): NativeAndroidAppVariant | undefined => {
+	switch (platform?.trim().toLowerCase()) {
+		case 'smba':
+		case 'smbi':
+			return 'business'
+		case 'android':
+		case 'iphone':
+			return 'consumer'
+		default:
+			return undefined
+	}
+}
+
 export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig) => {
 	if (config.enabled !== true) {
 		throw new Boom('native_android: explicit enabled=true gate is required', { statusCode: 400 })
@@ -50,6 +69,27 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 
 	if (config.appVersion.length !== 4) {
 		throw new Boom('native_android: appVersion must contain the four official Android components', { statusCode: 400 })
+	}
+
+	const appVariant = config.appVariant
+	if (appVariant !== 'business' && appVariant !== 'consumer') {
+		throw new Boom('native_android: explicit appVariant must be business or consumer', { statusCode: 400 })
+	}
+
+	for (const [variant, version] of Object.entries(config.appVersions || {})) {
+		if (
+			(variant !== 'business' && variant !== 'consumer') ||
+			!Array.isArray(version) ||
+			version.length !== 4 ||
+			version.some(component => !Number.isSafeInteger(component) || component < 0)
+		) {
+			throw new Boom(`native_android: appVersions.${variant} is invalid`, { statusCode: 400 })
+		}
+	}
+	if (config.autoDetectAppVariant === true && (!config.appVersions?.business || !config.appVersions?.consumer)) {
+		throw new Boom('native_android: automatic app fallback requires official business and consumer appVersions', {
+			statusCode: 400
+		})
 	}
 
 	if (config.initialRoutingInfo && config.initialRoutingInfo.byteLength > 0xffffff) {
@@ -170,6 +210,7 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 	validateNativeAndroidConfig(config.nativeAndroid)
 	const hasCompletedPairing = creds.registered || Boolean(creds.account && creds.me)
 	let recoveredRegisteredMarker = false
+	let migratedAppIdentity = false
 
 	// Native QR pairing historically persisted account + me + the durable native
 	// identity without setting registered. Recover only that unambiguous state;
@@ -192,6 +233,24 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 		)
 	}
 
+	if (persisted && (!persisted.appVariant || !persisted.clientAppId)) {
+		// Every native session created before app-variant support used WABA.
+		persisted.appVariant = 'business'
+		persisted.clientAppId = WABA_CLIENT_APP_ID
+		migratedAppIdentity = true
+	}
+
+	const configuredVariant = config.nativeAndroid.appVariant
+	// A registered session owns its persisted application identity. Environment
+	// changes only select the identity for future registrations; they never
+	// convert or prevent reconnecting an existing Consumer/Business companion.
+	if (!hasCompletedPairing && persisted?.appVariant && persisted.appVariant !== configuredVariant) {
+		const configuredIdentity = getNativeAndroidAppIdentity(configuredVariant)
+		persisted.appVariant = configuredVariant
+		persisted.clientAppId = configuredIdentity.clientAppId
+		migratedAppIdentity = true
+	}
+
 	if (
 		persisted &&
 		persisted.device.profileId !== GENERIC_NATIVE_ANDROID_FALLBACK_PROFILE_ID &&
@@ -208,36 +267,105 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 	}
 
 	if (!persisted) {
+		const appIdentity = getNativeAndroidAppIdentity(configuredVariant)
 		creds.nativeAndroidIdentity = {
 			schemaVersion: 1,
 			profile: 'native_android',
+			appVariant: configuredVariant,
+			clientAppId: appIdentity.clientAppId,
 			device: { ...config.nativeAndroid.device }
 		}
 	}
 
+	const effectiveVariant = persisted?.appVariant ?? configuredVariant
+	const effectiveVersion = config.nativeAndroid.appVersions?.[effectiveVariant] ?? config.nativeAndroid.appVersion
 	return {
 		profile,
 		nativeAndroid: {
 			...config.nativeAndroid,
+			appVariant: effectiveVariant,
+			appVersion: effectiveVersion,
 			device: { ...(persisted?.device || config.nativeAndroid.device) }
 		},
-		credsChanged: !persisted || recoveredRegisteredMarker
+		credsChanged: !persisted || recoveredRegisteredMarker || migratedAppIdentity
+	}
+}
+
+/**
+ * Resolves the primary application's identity from pair-success, before the
+ * pair-device-sign response is constructed. Registered sessions never enter
+ * this path and therefore cannot change application identity on reconnect.
+ */
+export const resolveNativeAndroidPairingAppVariant = (
+	config: NativeAndroidTransportConfig,
+	creds: AuthenticationCreds,
+	pairingPlatform: string | null | undefined
+) => {
+	if (creds.registered || (creds.account && creds.me)) {
+		throw new Boom('native_android: application variant cannot be changed after registration', {
+			statusCode: 409
+		})
+	}
+
+	const configuredVariant = config.appVariant ?? 'business'
+	const detectedVariant = detectNativeAndroidAppVariant(pairingPlatform)
+	if (!detectedVariant) {
+		if (config.autoDetectAppVariant === true) {
+			throw new Boom(
+				`native_android: pair-success did not identify a supported primary application (platform=${pairingPlatform || 'missing'}); refusing to guess`,
+				{ statusCode: 409 }
+			)
+		}
+
+		return {
+			variant: configuredVariant,
+			identity: getNativeAndroidAppIdentity(configuredVariant),
+			fallbackApplied: false,
+			detected: false
+		}
+	}
+
+	if (detectedVariant !== configuredVariant && config.autoDetectAppVariant !== true) {
+		throw new Boom(
+			`native_android: QR belongs to a ${detectedVariant} account, but the companion is configured as ${configuredVariant}`,
+			{ statusCode: 409 }
+		)
+	}
+
+	const identity = getNativeAndroidAppIdentity(detectedVariant)
+	config.appVariant = detectedVariant
+	config.appVersion = config.appVersions?.[detectedVariant] ?? config.appVersion
+	if (!creds.nativeAndroidIdentity) {
+		throw new Boom('native_android: durable identity is missing during pair-success', { statusCode: 500 })
+	}
+	creds.nativeAndroidIdentity.appVariant = detectedVariant
+	creds.nativeAndroidIdentity.clientAppId = identity.clientAppId
+
+	return {
+		variant: detectedVariant,
+		identity,
+		fallbackApplied: detectedVariant !== configuredVariant,
+		detected: true
 	}
 }
 
 export const appendNativeAndroidPairingAttestation = (
 	reply: BinaryNode,
-	attestation: NativeAndroidPairingAttestation
+	attestation: NativeAndroidPairingAttestation,
+	expectedClientAppId: string = WABA_CLIENT_APP_ID
 ) => {
 	if (!(attestation.keyAttestation instanceof Uint8Array) || attestation.keyAttestation.byteLength === 0) {
 		throw new Boom('native_android: attestation provider returned an empty key_attestation', { statusCode: 400 })
 	}
 
-	if (
-		(typeof attestation.clientAppId === 'string' && attestation.clientAppId.length === 0) ||
-		(attestation.clientAppId instanceof Uint8Array && attestation.clientAppId.byteLength === 0)
-	) {
-		throw new Boom('native_android: attestation provider returned an empty client-app-id', { statusCode: 400 })
+	const clientAppId =
+		typeof attestation.clientAppId === 'string'
+			? attestation.clientAppId
+			: Buffer.from(attestation.clientAppId).toString('utf8')
+	if (clientAppId !== expectedClientAppId) {
+		throw new Boom('native_android: attestation provider returned an unexpected client-app-id', {
+			statusCode: 400
+		})
 	}
 
 	const pairDeviceSign = Array.isArray(reply.content)
@@ -267,7 +395,6 @@ export const appendNativeAndroidPairingAttestation = (
 	pairDeviceSign.content.push({
 		tag: 'client-app-id',
 		attrs: {},
-		content:
-			typeof attestation.clientAppId === 'string' ? attestation.clientAppId : Buffer.from(attestation.clientAppId)
+		content: expectedClientAppId
 	})
 }

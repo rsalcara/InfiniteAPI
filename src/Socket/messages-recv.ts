@@ -82,7 +82,7 @@ import { applyDeviceListDelta } from '../Utils/device-list-delta'
 import { makeLockManager } from '../Utils/lock-manager'
 import { makeMutex } from '../Utils/make-mutex'
 import { getMessageAckErrorPolicy } from '../Utils/message-ack-error'
-import { parseTextStatusSideSubNotification } from '../Utils/mex-notifications'
+import { parseTextStatusSideSubNotification, parseTextStatusUpdateNotification } from '../Utils/mex-notifications'
 import {
 	JidMapBackend,
 	MessageStoreBackend,
@@ -924,6 +924,28 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				logger.debug({ opName }, 'received text-status side-sub notification')
 			} catch (err) {
 				logger.error({ err, opName }, 'failed to parse text-status side-sub notification')
+			}
+
+			return
+		}
+
+		if (updateNode && opName === 'TextStatusUpdateNotification') {
+			if (!updateNode.content || Array.isArray(updateNode.content)) {
+				logger.warn({ opName }, 'text-status notification has no valid content')
+				return
+			}
+
+			try {
+				const update = parseTextStatusUpdateNotification(updateNode.content)
+				if (!update) {
+					logger.warn({ opName }, 'text-status notification has invalid content')
+					return
+				}
+
+				ev.emit('text-status.update', { from: node.attrs.from, ...update })
+				logger.debug({ opName, jid: update.jid }, 'received text-status notification')
+			} catch (err) {
+				logger.error({ err, opName }, 'failed to parse text-status notification')
 			}
 
 			return

@@ -24,14 +24,16 @@ class AttestationRepository(private val context: Context) {
 	private val secureRandom = SecureRandom()
 
 	@Synchronized
-	fun current(): AttestationSnapshot {
-		check(BuildConfig.CLIENT_APP_ID.isNotBlank()) {
-			"INFINITEAPI_ANDROID_CLIENT_APP_ID is not configured"
-		}
+	fun current(clientAppId: String): AttestationSnapshot {
+		check(
+			clientAppId == BuildConfig.WABA_CLIENT_APP_ID ||
+				clientAppId == BuildConfig.WA_MESSENGER_CLIENT_APP_ID
+		) { "Unsupported client-app-id" }
 
 		val now = System.currentTimeMillis()
-		var alias = preferences.getString("alias", null)
-		var generatedAtMs = preferences.getLong("generated_at_ms", 0L)
+		val preferenceSuffix = clientAppId
+		var alias = preferences.getString("alias_$preferenceSuffix", null)
+		var generatedAtMs = preferences.getLong("generated_at_ms_$preferenceSuffix", 0L)
 		val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
 		if (
 			alias == null ||
@@ -40,10 +42,14 @@ class AttestationRepository(private val context: Context) {
 			!keyStore.containsAlias(alias)
 		) {
 			alias?.let { if (keyStore.containsAlias(it)) keyStore.deleteEntry(it) }
-			alias = "infiniteapi_attestation_$now"
+			alias = "infiniteapi_attestation_${clientAppId}_$now"
 			generateAttestedKey(alias)
 			generatedAtMs = now
-			preferences.edit().putString("alias", alias).putLong("generated_at_ms", generatedAtMs).commit()
+			preferences
+				.edit()
+				.putString("alias_$preferenceSuffix", alias)
+				.putLong("generated_at_ms_$preferenceSuffix", generatedAtMs)
+				.commit()
 			keyStore.load(null)
 		}
 
@@ -57,7 +63,7 @@ class AttestationRepository(private val context: Context) {
 		return AttestationSnapshot(
 			keyAttestationBase64 = Base64.encodeToString(rootFirstDer, Base64.NO_WRAP),
 			gpiaBase64 = "",
-			clientAppId = BuildConfig.CLIENT_APP_ID,
+			clientAppId = clientAppId,
 			packageName = BuildConfig.APPLICATION_ID,
 			generatedAtMs = generatedAtMs,
 			expiresAtMs = generatedAtMs + BuildConfig.ATTESTATION_TTL_MS

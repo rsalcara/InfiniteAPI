@@ -88,6 +88,55 @@ type ProcessMessageContext = {
 	historySyncCompanionBackend?: HistorySyncCompanionBackend
 }
 
+/**
+ * Persist history-sync messages into the same typed message/chat tables used
+ * by live traffic. History events remain available to consumers, but the
+ * relational store no longer stays nearly empty after a successful bootstrap.
+ */
+export const mirrorHistoryMessagesToStore = (
+	messages: WAMessage[],
+	messageStoreBackend: MessageStoreBackend,
+	logger?: ILogger
+): { stored: number; failed: number } => {
+	let stored = 0
+	let failed = 0
+
+	for (const message of messages) {
+		const remoteJid = message.key?.remoteJid
+		const keyId = message.key?.id
+		const content = normalizeMessageContent(message.message)
+		if (!remoteJid || !keyId || !content) continue
+
+		try {
+			const timestamp = toNumber(message.messageTimestamp ?? 0)
+			const senderJid = message.key.fromMe
+				? null
+				: jidNormalizedUser(message.key.participant || message.key.remoteJid || '')
+			messageStoreBackend.recordMessage({
+				chatJid: jidNormalizedUser(remoteJid),
+				fromMe: !!message.key.fromMe,
+				keyId,
+				senderJid,
+				timestamp,
+				receivedTimestamp: timestamp > 0 ? timestamp * 1000 : null,
+				messageType: mapContentTypeToMessageType(getContentType(content)),
+				textData: content.extendedTextMessage?.text ?? content.conversation ?? null,
+				authorDeviceJid: senderJid,
+				messageSecret: content.messageContextInfo?.messageSecret
+					? Buffer.from(content.messageContextInfo.messageSecret)
+					: null,
+				incrementUnread: false
+			})
+			stored++
+		} catch (err) {
+			failed++
+			logger?.warn({ err, messageId: keyId, chatJid: remoteJid }, 'multi-db-sqlite: history message mirror failed')
+		}
+	}
+
+	return { stored, failed }
+}
+
 const REAL_MSG_STUB_TYPES = new Set([
 	WAMessageStubType.CALL_MISSED_GROUP_VIDEO,
 	WAMessageStubType.CALL_MISSED_GROUP_VOICE,
@@ -1261,6 +1310,14 @@ const processMessage = async (
 						// `downloadAndProcessHistorySyncNotification` rejects (the delete
 						// used to sit after the await, so a throw skipped it).
 						dropHistMirror(histMirrorId)
+					}
+
+					if (messageStoreBackend && data.messages?.length) {
+						const result = mirrorHistoryMessagesToStore(data.messages, messageStoreBackend, logger)
+						logger?.info(
+							{ input: data.messages.length, stored: result.stored, failed: result.failed },
+							'multi-db-sqlite: history messages mirrored'
+						)
 					}
 
 					// Emit LID-PN mappings from history sync

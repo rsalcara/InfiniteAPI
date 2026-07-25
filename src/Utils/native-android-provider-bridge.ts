@@ -16,6 +16,8 @@ type BridgeAttestationResponse = {
 	gpiaBase64?: unknown
 	clientAppId?: unknown
 	packageName?: unknown
+	appVariant?: unknown
+	targetPackageName?: unknown
 	generatedAtMs?: unknown
 	expiresAtMs?: unknown
 }
@@ -64,6 +66,7 @@ export const makeNativeAndroidBridgeAttestationProvider = (
 	const minValidityMs = options.minValidityMs ?? 30_000
 	const fetchImplementation = options.fetchImplementation ?? globalThis.fetch
 	const now = options.now ?? Date.now
+	const expectedProviderPackageName = options.expectedPackageName ?? 'com.rsalcara.infiniteapi.attestation'
 
 	if (typeof fetchImplementation !== 'function') {
 		throw new Boom('native_android provider: fetch is unavailable', { statusCode: 500 })
@@ -79,7 +82,7 @@ export const makeNativeAndroidBridgeAttestationProvider = (
 		})
 	}
 
-	return async ({ profileId }): Promise<NativeAndroidPairingAttestation> => {
+	return async ({ profileId, appVariant, clientAppId, packageName }): Promise<NativeAndroidPairingAttestation> => {
 		const controller = new AbortController()
 		const timeout = setTimeout(() => controller.abort(), timeoutMs)
 		let response: Response
@@ -90,7 +93,7 @@ export const makeNativeAndroidBridgeAttestationProvider = (
 					'content-type': 'application/json',
 					...(options.bearerToken ? { authorization: `Bearer ${options.bearerToken}` } : {})
 				},
-				body: JSON.stringify({ profileId }),
+				body: JSON.stringify({ profileId, appVariant, clientAppId, packageName }),
 				signal: controller.signal
 			})
 		} catch (error) {
@@ -115,12 +118,22 @@ export const makeNativeAndroidBridgeAttestationProvider = (
 			throw new Boom('native_android provider returned invalid JSON', { statusCode: 502 })
 		}
 
-		if (
-			options.expectedPackageName &&
-			(typeof payload.packageName !== 'string' || payload.packageName !== options.expectedPackageName)
-		) {
+		if (typeof payload.packageName !== 'string' || payload.packageName !== expectedProviderPackageName) {
 			throw new Boom(
-				`native_android provider package mismatch: expected ${options.expectedPackageName}, received ${String(payload.packageName)}`,
+				`native_android provider package mismatch: expected ${expectedProviderPackageName}, received ${String(payload.packageName)}`,
+				{ statusCode: 502 }
+			)
+		}
+
+		if (payload.appVariant !== undefined && payload.appVariant !== appVariant) {
+			throw new Boom(`native_android provider returned an unexpected app variant: ${String(payload.appVariant)}`, {
+				statusCode: 502
+			})
+		}
+
+		if (payload.targetPackageName !== undefined && payload.targetPackageName !== packageName) {
+			throw new Boom(
+				`native_android provider target package mismatch: expected ${packageName}, received ${String(payload.targetPackageName)}`,
 				{ statusCode: 502 }
 			)
 		}
@@ -135,14 +148,16 @@ export const makeNativeAndroidBridgeAttestationProvider = (
 			})
 		}
 
-		if (typeof payload.clientAppId !== 'string' || payload.clientAppId.length === 0) {
-			throw new Boom('native_android provider returned an empty client-app-id', { statusCode: 502 })
+		if (payload.clientAppId !== clientAppId) {
+			throw new Boom(`native_android provider returned an unexpected client-app-id for ${appVariant}`, {
+				statusCode: 502
+			})
 		}
 
 		return {
 			keyAttestation: decodeBase64(payload.keyAttestationBase64, 'keyAttestationBase64', false),
 			gpia: decodeBase64(payload.gpiaBase64, 'gpiaBase64', true),
-			clientAppId: payload.clientAppId
+			clientAppId
 		}
 	}
 }

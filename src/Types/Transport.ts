@@ -3,6 +3,7 @@ import type { BinaryNode } from '../WABinary'
 export type ConnectionTransportProfile = 'web' | 'native_android'
 
 export type NativeAndroidAppVersion = readonly [number, number, number, number]
+export type NativeAndroidAppVariant = 'business' | 'consumer'
 
 /** Immutable Build.* values captured together from one Android installation. */
 export type NativeAndroidHardwareProfile = {
@@ -55,8 +56,8 @@ export type NativeAndroidPairingAttestation = {
 	keyAttestation: Uint8Array
 	gpia: Uint8Array | string
 	/**
-	 * The official WABA 2.26.27.83 fresh-QR flow emits this as the fourth
-	 * pair-device-sign child, after key_attestation and an empty gpia node.
+	 * The official fresh-QR flow emits the application-specific value as the
+	 * fourth pair-device-sign child, after key_attestation and gpia.
 	 */
 	clientAppId: Uint8Array | string
 }
@@ -75,6 +76,9 @@ export type NativeAndroidHistorySyncProfile = {
 export type NativeAndroidAttestationProvider = (context: {
 	stanza: BinaryNode
 	profileId: string
+	appVariant: NativeAndroidAppVariant
+	clientAppId: string
+	packageName: string
 }) => Promise<NativeAndroidPairingAttestation>
 
 export type NativeAndroidTransportConfig = {
@@ -88,6 +92,18 @@ export type NativeAndroidTransportConfig = {
 	 */
 	initialRoutingInfo?: Uint8Array
 	appVersion: NativeAndroidAppVersion
+	/** Concrete, explicitly selected app identity used for the first registration attempt. */
+	appVariant: NativeAndroidAppVariant
+	/**
+	 * When true, pair-success platform is authoritative and may replace the
+	 * initial app variant before pair-device-sign is sent. If the scanner
+	 * rejects the advertised application before pair-success, orchestration
+	 * must start a fresh attempt with the other variant; an emitted QR cannot
+	 * be reclassified retroactively.
+	 */
+	autoDetectAppVariant?: boolean
+	/** Optional per-app versions used when auto-detection changes the variant. */
+	appVersions?: Partial<Record<NativeAndroidAppVariant, NativeAndroidAppVersion>>
 	device: NativeAndroidDeviceProfile
 	historySync: NativeAndroidHistorySyncProfile
 	/**
@@ -102,6 +118,9 @@ export type NativeAndroidTransportConfig = {
 export type PersistedNativeAndroidIdentity = {
 	schemaVersion: 1
 	profile: 'native_android'
+	/** Missing on legacy native sessions, which always used the Business ID. */
+	appVariant?: NativeAndroidAppVariant
+	clientAppId?: string
 	device: NativeAndroidDeviceProfile
 	/**
 	 * Successful-login counter sent as ClientPayload.lc. The official client
