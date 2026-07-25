@@ -165,6 +165,197 @@ describe('msgstore.db message-store backends', () => {
 			})
 		})
 
+		it('records the complete Android sticker-pack manifest and pack media atomically', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const rowId = backend.recordMessage({
+				chatJid,
+				fromMe: false,
+				keyId: 'STICKER-PACK',
+				messageType: 105,
+				stickerPack: {
+					stickerPackId: 'PACK-1',
+					trayIconFileName: 'tray.png',
+					packName: 'Pacote',
+					packDescription: 'Descrição',
+					publisher: 'InfiniteAPI',
+					imageDataHash: 'image-data-hash',
+					stickerPackSize: 424_035,
+					stickerPackOrigin: 2,
+					fileLength: 425_251,
+					mediaKey: Buffer.alloc(32, 1),
+					mediaKeyTimestamp: 1_785_013_000_000,
+					directPath: '/m1/sticker-pack.enc',
+					fileSha256: Buffer.alloc(32, 2),
+					fileEncSha256: Buffer.alloc(32, 3),
+					stickers: [
+						{
+							fileName: 'one.webp',
+							isAnimated: false,
+							emojis: '😀, 🚀',
+							accessibilityLabel: 'primeira',
+							isLottie: false,
+							mimetype: 'image/webp'
+						},
+						{
+							fileName: 'two.webp',
+							isAnimated: true,
+							emojis: '',
+							accessibilityLabel: '',
+							isLottie: false,
+							mimetype: 'image/webp'
+						}
+					]
+				}
+			})
+
+			expect(backend.getMessageByKeyId(chatJid, false, 'STICKER-PACK')).toMatchObject({ message_type: 105 })
+			expect(
+				store.handle('msgstore.db').prepare('SELECT * FROM message_sticker_pack WHERE message_row_id = ?').get(rowId)
+			).toMatchObject({
+				sticker_pack_id: 'PACK-1',
+				tray_icon_file_name: 'tray.png',
+				pack_name: 'Pacote',
+				pack_description: 'Descrição',
+				publisher: 'InfiniteAPI',
+				image_data_hash: 'image-data-hash',
+				sticker_pack_size: 424_035,
+				sticker_pack_origin: 2
+			})
+			expect(
+				store
+					.handle('msgstore.db')
+					.prepare(
+						'SELECT file_name, is_animated, emojis, accessibility_label, is_lottie, mimetype ' +
+							'FROM message_sticker_pack_stickers WHERE message_row_id = ? ORDER BY _id'
+					)
+					.all(rowId)
+			).toEqual([
+				{
+					file_name: 'one.webp',
+					is_animated: 0,
+					emojis: '😀, 🚀',
+					accessibility_label: 'primeira',
+					is_lottie: 0,
+					mimetype: 'image/webp'
+				},
+				{
+					file_name: 'two.webp',
+					is_animated: 1,
+					emojis: '',
+					accessibility_label: '',
+					is_lottie: 0,
+					mimetype: 'image/webp'
+				}
+			])
+			expect(
+				store
+					.handle('msgstore.db')
+					.prepare(
+						'SELECT mime_type, file_length, length(media_key) AS media_key_len, media_key_timestamp, ' +
+							'direct_path, file_hash, enc_file_hash FROM message_media WHERE message_row_id = ?'
+					)
+					.get(rowId)
+			).toMatchObject({
+				mime_type: null,
+				file_length: 425_251,
+				media_key_len: 32,
+				media_key_timestamp: 1_785_013_000_000,
+				direct_path: '/m1/sticker-pack.enc',
+				file_hash: Buffer.alloc(32, 2).toString('base64'),
+				enc_file_hash: Buffer.alloc(32, 3).toString('base64')
+			})
+
+			// A richer/retried decode replaces the manifest instead of
+			// duplicating children under the same natural message key.
+			const retriedRowId = backend.recordMessage({
+				chatJid,
+				fromMe: false,
+				keyId: 'STICKER-PACK',
+				messageType: 105,
+				stickerPack: {
+					stickerPackId: 'PACK-1',
+					trayIconFileName: 'tray.png',
+					packName: 'Pacote atualizado',
+					packDescription: 'Descrição',
+					publisher: 'InfiniteAPI',
+					imageDataHash: 'image-data-hash',
+					stickerPackSize: 424_035,
+					stickerPackOrigin: 2,
+					fileLength: 425_251,
+					mediaKey: Buffer.alloc(32, 1),
+					mediaKeyTimestamp: 1_785_013_000_000,
+					directPath: '/m1/sticker-pack.enc',
+					fileSha256: Buffer.alloc(32, 2),
+					fileEncSha256: Buffer.alloc(32, 3),
+					stickers: [
+						{
+							fileName: 'one.webp',
+							isAnimated: false,
+							emojis: '😀, 🚀',
+							accessibilityLabel: 'primeira',
+							isLottie: false,
+							mimetype: 'image/webp'
+						}
+					]
+				}
+			})
+			expect(retriedRowId).toBe(rowId)
+			expect(
+				store
+					.handle('msgstore.db')
+					.prepare('SELECT pack_name FROM message_sticker_pack WHERE message_row_id = ?')
+					.get(rowId)
+			).toEqual({ pack_name: 'Pacote atualizado' })
+			expect(
+				store
+					.handle('msgstore.db')
+					.prepare('SELECT COUNT(*) AS count FROM message_sticker_pack_stickers WHERE message_row_id = ?')
+					.get(rowId)
+			).toEqual({ count: 1 })
+		})
+
+		it('rolls back the base message when a sticker-pack manifest row is invalid', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+
+			expect(() =>
+				backend.recordMessage({
+					chatJid,
+					fromMe: false,
+					keyId: 'INVALID-STICKER-PACK',
+					messageType: 105,
+					stickerPack: {
+						stickerPackId: 'PACK-INVALID',
+						trayIconFileName: 'tray.png',
+						packName: 'Inválido',
+						packDescription: null,
+						publisher: null,
+						imageDataHash: null,
+						stickerPackSize: null,
+						stickerPackOrigin: null,
+						fileLength: null,
+						mediaKey: null,
+						mediaKeyTimestamp: null,
+						directPath: null,
+						fileSha256: null,
+						fileEncSha256: null,
+						stickers: [
+							{
+								fileName: null as unknown as string,
+								isAnimated: false,
+								emojis: '',
+								accessibilityLabel: null,
+								isLottie: false,
+								mimetype: null
+							}
+						]
+					}
+				})
+			).toThrow()
+			expect(backend.getMessageByKeyId(chatJid, false, 'INVALID-STICKER-PACK')).toBeNull()
+		})
+
 		it('does not move the chat last-message pointer backwards for older history', () => {
 			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
 			const chatJid = '5515991426667@s.whatsapp.net'

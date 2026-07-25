@@ -266,6 +266,30 @@ export type RecordMessageInput = {
 		expectedImageCount: number
 		expectedVideoCount: number
 	} | null
+	stickerPack?: {
+		stickerPackId: string
+		trayIconFileName: string
+		packName: string
+		packDescription: string | null
+		publisher: string | null
+		imageDataHash: string | null
+		stickerPackSize: number | null
+		stickerPackOrigin: number | null
+		fileLength: number | null
+		mediaKey: Buffer | null
+		mediaKeyTimestamp: number | null
+		directPath: string | null
+		fileSha256: Buffer | null
+		fileEncSha256: Buffer | null
+		stickers: Array<{
+			fileName: string
+			isAnimated: boolean
+			emojis: string
+			accessibilityLabel: string | null
+			isLottie: boolean
+			mimetype: string | null
+		}>
+	} | null
 	/** When true, `chat.unseen_message_count` is incremented (mirrors real
 	 * Android's own increment-on-inbound behavior). Callers pass this only
 	 * for genuinely new, unread inbound messages — never on upsert-retry
@@ -334,6 +358,10 @@ export class MessageStoreBackend implements ChatRowResolver {
 		upsertMessageDetails: SqliteStatementLike
 		upsertMessageSecret: SqliteStatementLike
 		upsertMessageAlbum: SqliteStatementLike
+		upsertMessageStickerPack: SqliteStatementLike
+		deleteMessageStickerPackStickers: SqliteStatementLike
+		insertMessageStickerPackSticker: SqliteStatementLike
+		upsertMessageStickerPackMedia: SqliteStatementLike
 		updateMessageForRevoke: SqliteStatementLike
 		upsertMessageRevoked: SqliteStatementLike
 		getMessageSecret: SqliteStatementLike
@@ -401,6 +429,32 @@ export class MessageStoreBackend implements ChatRowResolver {
 					'VALUES (?, 0, 0, ?, ?) ON CONFLICT(message_row_id) DO UPDATE SET ' +
 					'expected_image_count = excluded.expected_image_count, ' +
 					'expected_video_count = excluded.expected_video_count'
+			),
+			upsertMessageStickerPack: this.db.prepare(
+				'INSERT INTO message_sticker_pack ' +
+					'(message_row_id, sticker_pack_id, tray_icon_file_name, pack_name, pack_description, publisher, ' +
+					'image_data_hash, sticker_pack_size, sticker_pack_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+					'ON CONFLICT(message_row_id) DO UPDATE SET sticker_pack_id = excluded.sticker_pack_id, ' +
+					'tray_icon_file_name = excluded.tray_icon_file_name, pack_name = excluded.pack_name, ' +
+					'pack_description = excluded.pack_description, publisher = excluded.publisher, ' +
+					'image_data_hash = excluded.image_data_hash, sticker_pack_size = excluded.sticker_pack_size, ' +
+					'sticker_pack_origin = excluded.sticker_pack_origin'
+			),
+			deleteMessageStickerPackStickers: this.db.prepare(
+				'DELETE FROM message_sticker_pack_stickers WHERE message_row_id = ?'
+			),
+			insertMessageStickerPackSticker: this.db.prepare(
+				'INSERT INTO message_sticker_pack_stickers ' +
+					'(message_row_id, file_name, is_animated, emojis, accessibility_label, is_lottie, mimetype) ' +
+					'VALUES (?, ?, ?, ?, ?, ?, ?)'
+			),
+			upsertMessageStickerPackMedia: this.db.prepare(
+				'INSERT INTO message_media ' +
+					'(message_row_id, mime_type, file_length, media_key, media_key_timestamp, direct_path, file_hash, enc_file_hash) ' +
+					'VALUES (?, NULL, ?, ?, ?, ?, ?, ?) ON CONFLICT(message_row_id) DO UPDATE SET ' +
+					'mime_type = NULL, file_length = excluded.file_length, media_key = excluded.media_key, ' +
+					'media_key_timestamp = excluded.media_key_timestamp, direct_path = excluded.direct_path, ' +
+					'file_hash = excluded.file_hash, enc_file_hash = excluded.enc_file_hash'
 			),
 			updateMessageForRevoke: this.db.prepare('UPDATE message SET message_type = ?, text_data = NULL WHERE _id = ?'),
 			upsertMessageRevoked: this.db.prepare(
@@ -532,6 +586,42 @@ export class MessageStoreBackend implements ChatRowResolver {
 
 		if (input.album) {
 			this.stmts.upsertMessageAlbum.run(row._id, input.album.expectedImageCount, input.album.expectedVideoCount)
+		}
+
+		if (input.stickerPack) {
+			const pack = input.stickerPack
+			this.stmts.upsertMessageStickerPack.run(
+				row._id,
+				pack.stickerPackId,
+				pack.trayIconFileName,
+				pack.packName,
+				pack.packDescription,
+				pack.publisher,
+				pack.imageDataHash,
+				pack.stickerPackSize,
+				pack.stickerPackOrigin
+			)
+			this.stmts.upsertMessageStickerPackMedia.run(
+				row._id,
+				pack.fileLength,
+				pack.mediaKey,
+				pack.mediaKeyTimestamp,
+				pack.directPath,
+				pack.fileSha256?.toString('base64') ?? null,
+				pack.fileEncSha256?.toString('base64') ?? null
+			)
+			this.stmts.deleteMessageStickerPackStickers.run(row._id)
+			for (const sticker of pack.stickers) {
+				this.stmts.insertMessageStickerPackSticker.run(
+					row._id,
+					sticker.fileName,
+					sticker.isAnimated ? 1 : 0,
+					sticker.emojis,
+					sticker.accessibilityLabel,
+					sticker.isLottie ? 1 : 0,
+					sticker.mimetype
+				)
+			}
 		}
 
 		this.stmts.updateChatAggregate.run(

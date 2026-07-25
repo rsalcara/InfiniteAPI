@@ -238,6 +238,43 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 					expected_video_count INTEGER
 				);
 			`
+		},
+		{
+			version: 6,
+			name: 'add Android sticker-pack message mirror',
+			// Exact WhatsApp Business 2.26.27.83 msgstore tables and indexes.
+			// Existing type-105 rows cannot be reconstructed: their protobuf
+			// manifest was never retained. Live/history reprocessing fills the
+			// tables through the natural-key upsert without guessing metadata.
+			sql: `
+				CREATE TABLE IF NOT EXISTS message_sticker_pack (
+					message_row_id INTEGER PRIMARY KEY,
+					sticker_pack_id TEXT NOT NULL,
+					tray_icon_file_name TEXT NOT NULL,
+					pack_name TEXT NOT NULL,
+					pack_description TEXT,
+					publisher TEXT,
+					image_data_hash TEXT,
+					sticker_pack_size INTEGER,
+					sticker_pack_origin INTEGER
+				);
+				CREATE INDEX IF NOT EXISTS message_sticker_pack_name_index
+					ON message_sticker_pack (pack_name);
+				CREATE INDEX IF NOT EXISTS message_sticker_pack_publisher_index
+					ON message_sticker_pack (publisher);
+				CREATE TABLE IF NOT EXISTS message_sticker_pack_stickers (
+					_id INTEGER PRIMARY KEY AUTOINCREMENT,
+					message_row_id INTEGER NOT NULL,
+					file_name TEXT NOT NULL,
+					is_animated INTEGER NOT NULL DEFAULT 0,
+					emojis TEXT,
+					accessibility_label TEXT,
+					is_lottie INTEGER NOT NULL DEFAULT 0,
+					mimetype TEXT
+				);
+				CREATE INDEX IF NOT EXISTS sticker_pack_stickers_message_row_id_index
+					ON message_sticker_pack_stickers (message_row_id);
+			`
 		}
 	],
 	'status.db': [

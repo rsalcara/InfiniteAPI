@@ -99,6 +99,47 @@ const HISTORY_MIRROR_BATCH_SIZE = 128
 
 const yieldHistoryMirror = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 
+const mapStickerPackToMirror = (
+	pack: proto.Message.IStickerPackMessage | null | undefined
+): NonNullable<RecordMessageInput['stickerPack']> | null => {
+	if (!pack) return null
+
+	return {
+		// Generated protobuf strings default to empty in the official client.
+		// The three matching Android columns are NOT NULL, so preserve that
+		// behavior instead of dropping a structurally valid pack.
+		stickerPackId: pack.stickerPackId ?? '',
+		trayIconFileName: pack.trayIconFileName ?? '',
+		packName: pack.name ?? '',
+		packDescription: pack.packDescription ?? '',
+		publisher: pack.publisher ?? '',
+		imageDataHash: pack.imageDataHash ?? '',
+		stickerPackSize:
+			pack.stickerPackSize === null || pack.stickerPackSize === undefined ? null : toNumber(pack.stickerPackSize),
+		stickerPackOrigin: pack.stickerPackOrigin ?? 0,
+		fileLength: pack.fileLength === null || pack.fileLength === undefined ? null : toNumber(pack.fileLength),
+		mediaKey: pack.mediaKey ? Buffer.from(pack.mediaKey) : null,
+		// Android's FMessage mapper converts the protobuf seconds value to
+		// milliseconds before message_media persistence.
+		mediaKeyTimestamp:
+			pack.mediaKeyTimestamp === null || pack.mediaKeyTimestamp === undefined
+				? null
+				: toNumber(pack.mediaKeyTimestamp) * 1000,
+		directPath: pack.directPath ?? null,
+		fileSha256: pack.fileSha256 ? Buffer.from(pack.fileSha256) : null,
+		fileEncSha256: pack.fileEncSha256 ? Buffer.from(pack.fileEncSha256) : null,
+		stickers: (pack.stickers ?? []).map(sticker => ({
+			fileName: sticker.fileName ?? '',
+			isAnimated: !!sticker.isAnimated,
+			// Official mapper joins the repeated protobuf field with ", ".
+			emojis: (sticker.emojis ?? []).join(', '),
+			accessibilityLabel: sticker.accessibilityLabel ?? '',
+			isLottie: !!sticker.isLottie,
+			mimetype: sticker.mimetype ?? ''
+		}))
+	}
+}
+
 export const mirrorHistoryMessagesToStore = async (
 	messages: WAMessage[],
 	messageStoreBackend: MessageStoreBackend,
@@ -139,6 +180,7 @@ export const mirrorHistoryMessagesToStore = async (
 							expectedVideoCount: content.albumMessage.expectedVideoCount ?? 0
 						}
 					: null,
+				stickerPack: mapStickerPackToMirror(content.stickerPackMessage),
 				incrementUnread: false
 			})
 		} catch (err) {
@@ -920,6 +962,7 @@ const processMessage = async (
 							expectedVideoCount: content.albumMessage.expectedVideoCount ?? 0
 						}
 					: null,
+				stickerPack: mapStickerPackToMirror(content?.stickerPackMessage),
 				incrementUnread: shouldIncrementChatUnread(message)
 			})
 			canReplayOrphans = true

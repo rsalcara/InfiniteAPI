@@ -60,6 +60,73 @@ describe('history-sync message mirror', () => {
 		])
 	})
 
+	it('carries the complete Android sticker-pack manifest into the relational history mirror', async () => {
+		const recordMessages = jest.fn(() => [105])
+		const backend = { recordMessages } as any
+		const messages: WAMessage[] = [
+			{
+				key: {
+					remoteJid: '5511999999999@s.whatsapp.net',
+					fromMe: false,
+					id: 'HISTORY-STICKER-PACK'
+				},
+				messageTimestamp: 1_700_000_000,
+				message: {
+					stickerPackMessage: {
+						stickerPackId: 'PACK-HISTORY',
+						name: 'Histórico',
+						publisher: 'InfiniteAPI',
+						packDescription: 'Pacote histórico',
+						trayIconFileName: 'tray.png',
+						imageDataHash: 'hash',
+						stickerPackSize: 1234,
+						stickerPackOrigin: 2,
+						fileLength: 1300,
+						mediaKey: Buffer.alloc(32, 1),
+						mediaKeyTimestamp: 1_700_000_000,
+						directPath: '/m1/history-pack.enc',
+						fileSha256: Buffer.alloc(32, 2),
+						fileEncSha256: Buffer.alloc(32, 3),
+						stickers: [
+							{
+								fileName: 'one.webp',
+								isAnimated: false,
+								emojis: ['😀', '🚀'],
+								accessibilityLabel: 'primeira',
+								isLottie: false,
+								mimetype: 'image/webp'
+							}
+						]
+					}
+				}
+			}
+		]
+
+		await expect(mirrorHistoryMessagesToStore(messages, backend)).resolves.toEqual({ stored: 1, failed: 0 })
+		expect(recordMessages).toHaveBeenCalledWith([
+			expect.objectContaining({
+				keyId: 'HISTORY-STICKER-PACK',
+				messageType: 105,
+				stickerPack: expect.objectContaining({
+					stickerPackId: 'PACK-HISTORY',
+					packName: 'Histórico',
+					stickerPackOrigin: 2,
+					mediaKeyTimestamp: 1_700_000_000_000,
+					stickers: [
+						{
+							fileName: 'one.webp',
+							isAnimated: false,
+							emojis: '😀, 🚀',
+							accessibilityLabel: 'primeira',
+							isLottie: false,
+							mimetype: 'image/webp'
+						}
+					]
+				})
+			})
+		])
+	})
+
 	it('isolates a malformed row and continues mirroring the remaining history', async () => {
 		const recordMessages = jest.fn((rows: Array<{ keyId: string }>) => {
 			if (rows.some(row => row.keyId === 'A')) throw new Error('row failed')
