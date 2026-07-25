@@ -70,6 +70,7 @@ export {
 	ANDROID_MESSAGE_STATUS,
 	mapWebMessageStatusToAndroid,
 	mapContentTypeToMessageType,
+	mapMessageToAndroidType,
 	MessageStoreBackend,
 	type ChatRowResolver,
 	type JidResolver,

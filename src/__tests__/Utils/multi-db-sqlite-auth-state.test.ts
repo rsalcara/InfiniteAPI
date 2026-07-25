@@ -478,16 +478,10 @@ describe('useMultiDbSqliteAuthState', () => {
 		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: false })
 		await state.keys.set({ 'identity-key': { '123456789_1.0': Buffer.from([0xaa]) as Uint8Array } })
 
-		const jidRowId = store
-			.handle('msgstore.db')
-			.prepare('SELECT _id FROM jid WHERE raw_string = ?')
-			.get('123456789@lid') as { _id: number } | undefined
-		expect(jidRowId).toBeDefined()
-
 		const row = store
 			.handle('axolotl.db')
 			.prepare('SELECT public_key, recipient_type FROM identities WHERE recipient_id = ?')
-			.get(jidRowId!._id) as { public_key: Buffer; recipient_type: number } | undefined
+			.get(123456789) as { public_key: Buffer; recipient_type: number } | undefined
 		expect(row).toBeDefined()
 		expect(row?.recipient_type).toBe(1)
 		expect(Buffer.from(row!.public_key).toString('hex')).toBe('aa')

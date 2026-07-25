@@ -23,8 +23,11 @@
  * with a `signal_kv` write in the SAME axolotl.db transaction (both tables
  * live in one file, so the dual-write is atomic and can never diverge), and
  * falls back to `signal_kv` on a typed-table miss so pre-migration rows keep
- * resolving. See that file for the full read/write policy.
+ * resolving. Identity keys are the one deliberate representation exception:
+ * `signal_kv` keeps BufferJSON for public API compatibility, while the typed
+ * Android-compatible table stores the decoded raw public-key bytes.
  */
+import { BufferJSON } from '../generics'
 import type { ILogger } from '../logger'
 import type { JidMapBackend } from './lid-mapping-backend'
 import type { IdentityKeyFallback } from './signal-id-parsing'
@@ -65,12 +68,10 @@ const writeAliases = (out: { [id: string]: string }, aliases: string[] | undefin
 
 export class SignalTypedSourceStore {
 	private readonly backend: SignalTypedBackend
-	private readonly jidMap: JidMapBackend
 	private readonly logger?: ILogger
 
-	constructor(backend: SignalTypedBackend, jidMap: JidMapBackend, logger?: ILogger) {
+	constructor(backend: SignalTypedBackend, _jidMap: JidMapBackend, logger?: ILogger) {
 		this.backend = backend
-		this.jidMap = jidMap
 		this.logger = logger
 	}
 
@@ -118,13 +119,10 @@ export class SignalTypedSourceStore {
 				}
 
 				case 'identity-key': {
-					// Read-only jid resolution: an unknown jid returns null (→
-					// caller falls back to signal_kv) instead of materializing a
-					// junk `jid` row on a pure read.
 					const key = this.identityKeyForRead(id)
 					if (!key) return null
 					const row = this.backend.getIdentity(key)
-					return row ? row.publicKey.toString('utf-8') : null
+					return row ? JSON.stringify(row.publicKey, BufferJSON.replacer) : null
 				}
 			}
 		} catch (err) {
@@ -242,7 +240,7 @@ export class SignalTypedSourceStore {
 
 					for (const row of this.backend.getManyIdentities(keys)) {
 						const aliases = aliasesByKey.get(tupleKey(row.recipient_id, row.recipient_type, row.device_id))
-						writeAliases(out, aliases, row.public_key.toString('utf-8'))
+						writeAliases(out, aliases, JSON.stringify(row.public_key, BufferJSON.replacer))
 					}
 
 					return out
@@ -308,18 +306,25 @@ export class SignalTypedSourceStore {
 			}
 
 			case 'identity-key': {
-				// Write path: resolve-or-create the jid row — storing an identity
-				// for a not-yet-seen contact must materialize its jid row (same
-				// as the mirror does).
 				const parsed = classifyIdentityKey(id)
 				if (parsed.kind === 'fallback') return this.warnIdentityFallback(id, parsed)
+				const publicKey = JSON.parse(valueString, BufferJSON.reviver)
+				if (!(publicKey instanceof Uint8Array)) {
+					this.backend.deleteIdentity({
+						recipientId: parsed.key.recipientId,
+						recipientType: parsed.key.recipientType,
+						deviceId: parsed.key.deviceId
+					})
+					return this.warnUnparsed(type, id)
+				}
+
 				this.backend.putIdentity(
 					{
-						recipientId: this.jidMap.resolveJidRowId(parsed.key.jid),
+						recipientId: parsed.key.recipientId,
 						recipientType: parsed.key.recipientType,
 						deviceId: parsed.key.deviceId
 					},
-					record
+					publicKey
 				)
 				return
 			}
@@ -381,18 +386,15 @@ export class SignalTypedSourceStore {
 	}
 
 	/**
-	 * Read-only identity-key resolution for get/del: resolves the jid row id via
-	 * a pure lookup, returning `null` if the id is deliberately left to
-	 * signal_kv or the jid was never seen — so a read never mutates
-	 * `msgstore.db.jid`.
+	 * Resolves the protocol address to Android's numeric recipient_id. The
+	 * identities table does not reference msgstore.jid: official captures store
+	 * the actual PN/LID number here (and -1 for the local identity).
 	 */
 	private identityKeyForRead(id: string): IdentityKeyRow | null {
 		const parsed = parseIdentityKey(id)
 		if (!parsed) return null
-		const recipientId = this.jidMap.lookupJidRowId(parsed.jid)
-		if (recipientId === null) return null
 		return {
-			recipientId,
+			recipientId: parsed.recipientId,
 			recipientType: parsed.recipientType,
 			deviceId: parsed.deviceId
 		}

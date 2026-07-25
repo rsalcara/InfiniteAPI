@@ -108,6 +108,25 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 			name: 'add sender_keys.bucket_id (schema fidelity)',
 			// Idempotent ADD COLUMN (audit #629) — see wa_contacts.username above.
 			run: db => addColumnIfMissing(db, 'sender_keys', 'bucket_id', "TEXT NOT NULL DEFAULT ''")
+		},
+		{
+			version: 2,
+			name: 'complete identities verification columns',
+			run: db => {
+				addColumnIfMissing(db, 'identities', 'account_encryption_attestation_type', 'INTEGER NOT NULL DEFAULT 0')
+				addColumnIfMissing(db, 'identities', 'mark_as_verified', 'INTEGER')
+				addColumnIfMissing(db, 'identities', 'mark_as_verified_action_seq', 'INTEGER')
+			}
+		},
+		{
+			version: 3,
+			name: 'drop legacy jid-row keyed identity mirrors',
+			// Older InfiniteAPI builds used msgstore.jid._id as recipient_id
+			// and stored BufferJSON text in public_key. Neither matches Android,
+			// whose key is the numeric PN/LID and whose public_key is raw bytes.
+			// signal_kv remains the complete compatibility copy; auth-state
+			// initialization rehydrates corrected typed rows from it.
+			sql: `DELETE FROM identities WHERE recipient_id <> -1;`
 		}
 	],
 	'msgstore.db': [
@@ -158,6 +177,48 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 				UPDATE message
 				SET status = CASE WHEN from_me = 1 THEN 4 ELSE 0 END
 				WHERE status IS NULL;
+			`
+		},
+		{
+			version: 4,
+			name: 'backfill provable Android message types from satellites',
+			// Payload protos are intentionally not retained in msgstore.db, so
+			// only repair rows whose relational satellites prove the exact type.
+			// Ambiguous legacy UI rows remain NULL until a richer reprocess heals
+			// them through the upsert; inventing 45/54/55 would not be 1:1.
+			sql: `
+				UPDATE message
+				SET message_type = 20
+				WHERE message_type IS NULL
+				AND EXISTS (
+					SELECT 1 FROM message_media mm
+					WHERE mm.message_row_id = message._id
+					AND mm.mime_type IN ('image/webp', 'application/was')
+				);
+				UPDATE message
+				SET message_type = 66
+				WHERE message_type IS NULL
+				AND EXISTS (
+					SELECT 1 FROM message_poll_option mpo
+					WHERE mpo.message_row_id = message._id
+				);
+				UPDATE message
+				SET message_type = 57
+				WHERE message_type IS NULL
+				AND EXISTS (SELECT 1 FROM message_ui_elements ui WHERE ui.message_row_id = message._id)
+				AND EXISTS (
+					SELECT 1 FROM message_media mm
+					WHERE mm.message_row_id = message._id AND mm.mime_type LIKE 'image/%'
+				);
+				UPDATE message
+				SET message_type = 63
+				WHERE message_type IS NULL
+				AND EXISTS (SELECT 1 FROM message_ui_elements ui WHERE ui.message_row_id = message._id)
+				AND EXISTS (
+					SELECT 1 FROM message_media mm
+					WHERE mm.message_row_id = message._id
+					AND mm.mime_type = 'application/pdf'
+				);
 			`
 		}
 	],

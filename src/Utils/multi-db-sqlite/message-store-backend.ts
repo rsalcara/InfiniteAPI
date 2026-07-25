@@ -33,9 +33,16 @@
  * Android-internal `_id`-reuse detail with no externally observable
  * difference for a gateway that doesn't render a UI.
  */
+import type { proto } from '../../../WAProto/index.js'
 import type { SqliteDbLike, SqliteStatementLike } from './types'
 
-/** Values directly confirmed against a live capture; anything else, leave `null`. */
+/**
+ * Android msgstore `message.message_type` values confirmed by joining real
+ * WhatsApp Business rows to their typed satellite tables, or by correlating
+ * the exact captured protobuf shape with the resulting row. Add-on payloads
+ * (reactions, poll votes and keep-in-chat) deliberately are not listed here:
+ * Android persists them in `message_add_on*`, not as a new base-message type.
+ */
 export const ANDROID_MESSAGE_TYPE = {
 	TEXT: 0,
 	IMAGE: 1,
@@ -44,8 +51,30 @@ export const ANDROID_MESSAGE_TYPE = {
 	CONTACT: 4,
 	LOCATION: 5,
 	DOCUMENT: 9,
+	GIF: 13,
 	LIVE_LOCATION: 16,
-	REVOKED: 15
+	REVOKED: 15,
+	STICKER: 20,
+	PRODUCT: 23,
+	TEMPLATE_IMAGE: 25,
+	TEMPLATE_DOCUMENT: 26,
+	TEMPLATE_TEXT: 27,
+	BUTTON_REPLY: 32,
+	VIEW_ONCE_IMAGE: 42,
+	VIEW_ONCE_VIDEO: 43,
+	BUTTONS: 45,
+	LIST: 46,
+	INTERACTIVE_RESPONSE: 49,
+	INTERACTIVE: 55,
+	INTERACTIVE_IMAGE: 57,
+	INTERACTIVE_DOCUMENT: 63,
+	POLL: 66,
+	PTV: 81,
+	VIEW_ONCE_AUDIO: 82,
+	EVENT: 92,
+	NEWSLETTER_ADMIN_INVITE: 94,
+	STICKER_PACK: 105,
+	NEWSLETTER_FOLLOWER_INVITE: 124
 } as const
 
 /**
@@ -107,6 +136,37 @@ export const mapContentTypeToMessageType = (contentType: string | undefined): nu
 			return ANDROID_MESSAGE_TYPE.AUDIO
 		case 'videoMessage':
 			return ANDROID_MESSAGE_TYPE.VIDEO
+		case 'stickerMessage':
+			return ANDROID_MESSAGE_TYPE.STICKER
+		case 'productMessage':
+			return ANDROID_MESSAGE_TYPE.PRODUCT
+		case 'buttonsMessage':
+			return ANDROID_MESSAGE_TYPE.BUTTONS
+		case 'listMessage':
+			return ANDROID_MESSAGE_TYPE.LIST
+		case 'interactiveMessage':
+			return ANDROID_MESSAGE_TYPE.INTERACTIVE
+		case 'templateButtonReplyMessage':
+		case 'buttonsResponseMessage':
+			return ANDROID_MESSAGE_TYPE.BUTTON_REPLY
+		case 'interactiveResponseMessage':
+			return ANDROID_MESSAGE_TYPE.INTERACTIVE_RESPONSE
+		case 'pollCreationMessage':
+		case 'pollCreationMessageV2':
+		case 'pollCreationMessageV3':
+		case 'pollCreationMessageV5':
+		case 'pollCreationMessageV6':
+			return ANDROID_MESSAGE_TYPE.POLL
+		case 'eventMessage':
+			return ANDROID_MESSAGE_TYPE.EVENT
+		case 'ptvMessage':
+			return ANDROID_MESSAGE_TYPE.PTV
+		case 'stickerPackMessage':
+			return ANDROID_MESSAGE_TYPE.STICKER_PACK
+		case 'newsletterAdminInviteMessage':
+			return ANDROID_MESSAGE_TYPE.NEWSLETTER_ADMIN_INVITE
+		case 'newsletterFollowerInviteMessageV2':
+			return ANDROID_MESSAGE_TYPE.NEWSLETTER_FOLLOWER_INVITE
 		case 'contactMessage':
 		case 'contactsArrayMessage':
 			return ANDROID_MESSAGE_TYPE.CONTACT
@@ -119,6 +179,71 @@ export const mapContentTypeToMessageType = (contentType: string | undefined): nu
 		default:
 			return null
 	}
+}
+
+/**
+ * Shape-aware Android message type mapping. This preserves distinctions that
+ * getContentType alone cannot express (GIF/video, view-once media, template
+ * header type and interactive media header).
+ */
+export const mapMessageToAndroidType = (message: proto.IMessage | null | undefined): number | null => {
+	if (!message) return null
+
+	let content = message
+	let viewOnce = false
+	for (let depth = 0; depth < 5; depth++) {
+		const wrapped =
+			content.ephemeralMessage ||
+			content.documentWithCaptionMessage ||
+			content.editedMessage ||
+			content.associatedChildMessage ||
+			content.groupStatusMessage ||
+			content.groupStatusMessageV2 ||
+			content.lottieStickerMessage
+		const viewOnceWrapped = content.viewOnceMessage || content.viewOnceMessageV2 || content.viewOnceMessageV2Extension
+		if (viewOnceWrapped) {
+			viewOnce = true
+			content = viewOnceWrapped.message || {}
+			continue
+		}
+
+		if (!wrapped) break
+		content = wrapped.message || {}
+	}
+
+	if (content.imageMessage) return viewOnce ? ANDROID_MESSAGE_TYPE.VIEW_ONCE_IMAGE : ANDROID_MESSAGE_TYPE.IMAGE
+	if (content.audioMessage) {
+		return viewOnce || content.audioMessage.viewOnce ? ANDROID_MESSAGE_TYPE.VIEW_ONCE_AUDIO : ANDROID_MESSAGE_TYPE.AUDIO
+	}
+
+	if (content.ptvMessage) return ANDROID_MESSAGE_TYPE.PTV
+	if (content.videoMessage) {
+		if (viewOnce || content.videoMessage.viewOnce) return ANDROID_MESSAGE_TYPE.VIEW_ONCE_VIDEO
+		if (content.videoMessage.gifPlayback) return ANDROID_MESSAGE_TYPE.GIF
+		return ANDROID_MESSAGE_TYPE.VIDEO
+	}
+
+	if (content.templateMessage) {
+		const template =
+			content.templateMessage.hydratedFourRowTemplate ||
+			content.templateMessage.hydratedTemplate ||
+			content.templateMessage.fourRowTemplate
+		if (template?.imageMessage) return ANDROID_MESSAGE_TYPE.TEMPLATE_IMAGE
+		if (template?.documentMessage) return ANDROID_MESSAGE_TYPE.TEMPLATE_DOCUMENT
+		return ANDROID_MESSAGE_TYPE.TEMPLATE_TEXT
+	}
+
+	if (content.interactiveMessage) {
+		const header = content.interactiveMessage.header
+		if (header?.imageMessage) return ANDROID_MESSAGE_TYPE.INTERACTIVE_IMAGE
+		if (header?.documentMessage) return ANDROID_MESSAGE_TYPE.INTERACTIVE_DOCUMENT
+		return ANDROID_MESSAGE_TYPE.INTERACTIVE
+	}
+
+	const contentType = Object.keys(content).find(
+		key => (key === 'conversation' || key.includes('Message')) && key !== 'senderKeyDistributionMessage'
+	)
+	return mapContentTypeToMessageType(contentType)
 }
 
 export type RecordMessageInput = {
@@ -242,7 +367,9 @@ export class MessageStoreBackend implements ChatRowResolver {
 					'WHEN (CASE excluded.status WHEN 0 THEN 0 WHEN 4 THEN 1 WHEN 5 THEN 2 WHEN 13 THEN 3 WHEN 8 THEN 4 ELSE -1 END) ' +
 					'>= (CASE message.status WHEN 0 THEN 0 WHEN 4 THEN 1 WHEN 5 THEN 2 WHEN 13 THEN 3 WHEN 8 THEN 4 ELSE 99 END) ' +
 					'THEN excluded.status ELSE message.status END, ' +
-					'received_timestamp = excluded.received_timestamp'
+					'received_timestamp = COALESCE(excluded.received_timestamp, message.received_timestamp), ' +
+					'message_type = COALESCE(excluded.message_type, message.message_type), ' +
+					'text_data = COALESCE(excluded.text_data, message.text_data)'
 			),
 			getMessageByNaturalKey: this.db.prepare(
 				'SELECT * FROM message WHERE chat_row_id = ? AND from_me = ? AND key_id = ? AND sender_jid_row_id IS ?'

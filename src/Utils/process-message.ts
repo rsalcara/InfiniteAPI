@@ -44,14 +44,14 @@ import {
 	type AppStateBackend,
 	type HistorySyncCompanionBackend,
 	type LocationBackend,
-	mapContentTypeToMessageType,
+	mapMessageToAndroidType,
 	mapWebMessageStatusToAndroid,
 	type MessageAddOnBackend,
 	type MessageMediaBackend,
-	type RecordMessageInput,
 	type MessageStoreBackend,
 	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
 	type ReceiptBackend,
+	type RecordMessageInput,
 	type StatusBackend,
 	UI_ELEMENT_TYPE
 } from './multi-db-sqlite'
@@ -127,7 +127,7 @@ export const mirrorHistoryMessagesToStore = async (
 				status: mapWebMessageStatusToAndroid(message.status) ?? (message.key.fromMe ? 4 : 0),
 				timestamp,
 				receivedTimestamp: timestamp > 0 ? timestamp * 1000 : null,
-				messageType: mapContentTypeToMessageType(getContentType(content)),
+				messageType: mapMessageToAndroidType(message.message),
 				textData: content.extendedTextMessage?.text ?? content.conversation ?? null,
 				authorDeviceJid: senderJid,
 				messageSecret: content.messageContextInfo?.messageSecret
@@ -889,7 +889,7 @@ const processMessage = async (
 				status: mapWebMessageStatusToAndroid(message.status) ?? 0,
 				timestamp: toNumber(message.messageTimestamp ?? 0),
 				receivedTimestamp: Date.now(),
-				messageType: mapContentTypeToMessageType(getContentType(content)),
+				messageType: mapMessageToAndroidType(message.message),
 				textData: content?.extendedTextMessage?.text ?? content?.conversation ?? null,
 				authorDeviceJid: jidNormalizedUser(senderJid),
 				messageSecret: content?.messageContextInfo?.messageSecret

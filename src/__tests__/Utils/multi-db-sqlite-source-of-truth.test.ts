@@ -116,6 +116,31 @@ describe('useMultiDbSqliteAuthState — signalSourceOfTruth', () => {
 
 	it('stores an identity-key in identities with recipient_type=0 (PN) / 1 (LID) and round-trips', async () => {
 		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: true })
+		const ownIdentity = store
+			.handle('axolotl.db')
+			.prepare(
+				'SELECT recipient_id, recipient_type, device_id, registration_id, length(public_key) AS public_len, ' +
+					'length(private_key) AS private_len, next_prekey_id FROM identities WHERE recipient_id = -1'
+			)
+			.get() as {
+			recipient_id: number
+			recipient_type: number
+			device_id: number
+			registration_id: number
+			public_len: number
+			private_len: number
+			next_prekey_id: number
+		}
+		expect(ownIdentity).toMatchObject({
+			recipient_id: -1,
+			recipient_type: 0,
+			device_id: 0,
+			registration_id: state.creds.registrationId,
+			public_len: 33,
+			private_len: 32,
+			next_prekey_id: state.creds.nextPreKeyId
+		})
+
 		await state.keys.set({
 			'identity-key': {
 				[IDENTITY_JID]: Buffer.from([0xc1]) as Uint8Array,
@@ -123,32 +148,57 @@ describe('useMultiDbSqliteAuthState — signalSourceOfTruth', () => {
 			}
 		})
 
-		const pnRowId = store
-			.handle('msgstore.db')
-			.prepare('SELECT _id FROM jid WHERE raw_string = ?')
-			.get(IDENTITY_JID) as {
-			_id: number
-		}
 		const pnIdentity = store
 			.handle('axolotl.db')
-			.prepare('SELECT recipient_type FROM identities WHERE recipient_id = ?')
-			.get(pnRowId._id) as { recipient_type: number }
+			.prepare('SELECT recipient_type, length(public_key) AS key_len FROM identities WHERE recipient_id = ?')
+			.get(5511999999999) as { recipient_type: number; key_len: number }
 		expect(pnIdentity.recipient_type).toBe(0)
+		expect(pnIdentity.key_len).toBe(1)
 
-		const lidRowId = store
-			.handle('msgstore.db')
-			.prepare('SELECT _id FROM jid WHERE raw_string = ?')
-			.get(LID_IDENTITY_JID) as { _id: number }
 		const lidIdentity = store
 			.handle('axolotl.db')
 			.prepare('SELECT recipient_type FROM identities WHERE recipient_id = ?')
-			.get(lidRowId._id) as { recipient_type: number }
+			.get(99887766554433) as { recipient_type: number }
 		expect(lidIdentity.recipient_type).toBe(1)
 
 		const got = await state.keys.get('identity-key', [IDENTITY_JID, LID_IDENTITY_JID])
 		expect(Buffer.from(got[IDENTITY_JID] as Uint8Array).toString('hex')).toBe('c1')
 		expect(Buffer.from(got[LID_IDENTITY_JID] as Uint8Array).toString('hex')).toBe('c2')
 		close()
+	})
+
+	it("migrates the legacy recipient_id=jid._id identity row back to Android's numeric recipient id", async () => {
+		const first = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: true })
+		await first.state.keys.set({
+			'identity-key': { [IDENTITY_JID]: Buffer.from([0xca, 0xfe]) as Uint8Array }
+		})
+		const axolotl = first.store.handle('axolotl.db')
+		axolotl.prepare('DELETE FROM identities WHERE recipient_id = ?').run(5511999999999)
+		axolotl
+			.prepare(
+				'INSERT INTO identities (recipient_id, recipient_type, device_id, public_key, timestamp) VALUES (4, 0, 0, ?, ?)'
+			)
+			.run(Buffer.from('legacy-bufferjson-text'), 1)
+		axolotl.prepare('DELETE FROM schema_migrations WHERE version = 3').run()
+		first.close()
+
+		const second = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: true })
+		const rows = second.store
+			.handle('axolotl.db')
+			.prepare(
+				'SELECT recipient_id, recipient_type, device_id, hex(public_key) AS public_hex ' +
+					'FROM identities WHERE recipient_id <> -1 ORDER BY recipient_id'
+			)
+			.all() as Array<{ recipient_id: number; recipient_type: number; device_id: number; public_hex: string }>
+		expect(rows).toEqual([
+			{
+				recipient_id: 5511999999999,
+				recipient_type: 0,
+				device_id: 0,
+				public_hex: 'CAFE'
+			}
+		])
+		second.close()
 	})
 
 	it('delete removes the typed row too, so it cannot shadow the delete on read', async () => {
@@ -342,7 +392,9 @@ describe('useMultiDbSqliteAuthState — signalSourceOfTruth', () => {
 		const typedRows = store.handle('axolotl.db').prepare('SELECT COUNT(*) AS n FROM identities').get() as {
 			n: number
 		}
-		expect(typedRows.n).toBe(1)
+		// One local sentinel row (-1) plus the PN contact. Hosted/unsupported
+		// identities remain only in signal_kv.
+		expect(typedRows.n).toBe(2)
 
 		const kvRows = store
 			.handle('axolotl.db')

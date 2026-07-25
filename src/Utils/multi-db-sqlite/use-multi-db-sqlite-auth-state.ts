@@ -1,6 +1,7 @@
 import { proto } from '../../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDataTypeMap } from '../../Types'
 import { initAuthCreds } from '../auth-utils'
+import { generateSignalPubKey } from '../crypto'
 import { BufferJSON } from '../generics'
 import type { ILogger } from '../logger'
 import { makeMutex } from '../make-mutex'
@@ -185,10 +186,12 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		// In default mode it's the write target for the best-effort mirror
 		// (signal-typed-mirror.ts); when `signalSourceOfTruth` is on it backs
 		// the authoritative SignalTypedSourceStore below. `signalMirrorJidMap`
-		// resolves identity-key jids to `msgstore.db.jid` row ids either way.
+		// remains required by the other typed mirrors; identities themselves
+		// use Android's numeric PN/LID recipient_id and do not reference jid._id.
 		signalTypedBackend = new SignalTypedBackend(store.handle('axolotl.db'))
 		signalMirrorJidMap = new JidMapBackend(store.handle('msgstore.db'))
 		signalTypedSource = new SignalTypedSourceStore(signalTypedBackend, signalMirrorJidMap, opts.logger)
+		rehydrateTypedIdentities(store, signalTypedSource, opts.logger)
 		trustedContactsBackend = new TrustedContactsBackend(store.handle('wa.db'))
 	} catch (err) {
 		// Only close the store if WE opened it — injected stores belong to
@@ -222,14 +225,31 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		}
 	}
 
+	const mirrorOwnIdentity = (): void => {
+		const current = credsRef.current
+		if (!current?.signedIdentityKey || !signalTypedBackend) return
+		try {
+			signalTypedBackend.putOwnIdentity({
+				registrationId: current.registrationId,
+				publicKey: generateSignalPubKey(current.signedIdentityKey.public),
+				privateKey: current.signedIdentityKey.private,
+				nextPrekeyId: current.nextPreKeyId
+			})
+		} catch (err) {
+			opts.logger?.debug?.({ err }, 'multi-db-sqlite: local identities row mirror failed (non-fatal)')
+		}
+	}
+
 	const persistCreds = (): void => {
 		credsStmts.upsert.run(CREDS_ROW_KEY, JSON.stringify(credsRef.current, BufferJSON.replacer), Date.now())
 		mirrorSignedPrekey()
+		mirrorOwnIdentity()
 	}
 
 	// Initial mirror on load — covers a session that reconnects but never
 	// re-saves creds.
 	mirrorSignedPrekey()
+	mirrorOwnIdentity()
 
 	// Cached batched `IN (…)` SELECT — see use-sqlite-auth-state.ts for
 	// rationale (one round-trip per batched get instead of N).
@@ -1054,6 +1074,42 @@ function migrateLegacyAppStateSyncKeys(store: MultiDbSqliteStore, logger: ILogge
 		{ count: legacyRows.length },
 		'multi-db-sqlite: migrated app-state-sync-key rows from axolotl.signal_kv to creds.app_state_sync_keys'
 	)
+}
+
+/**
+ * Rebuilds corrected Android-shaped identity rows from signal_kv, which stays
+ * the complete compatibility copy. This heals the pre-v3 format that keyed
+ * recipient_id by msgstore.jid._id and stored BufferJSON text in public_key.
+ */
+function rehydrateTypedIdentities(
+	store: MultiDbSqliteStore,
+	typedSource: SignalTypedSourceStore,
+	logger: ILogger | undefined
+): void {
+	const rows = store
+		.handle('axolotl.db')
+		.prepare("SELECT id, value FROM signal_kv WHERE type = 'identity-key' ORDER BY id")
+		.all() as Array<{ id: string; value: string }>
+	let repaired = 0
+	for (const row of rows) {
+		try {
+			if (typedSource.get('identity-key', row.id) === row.value) continue
+			typedSource.set('identity-key', row.id, row.value)
+			repaired++
+		} catch (err) {
+			logger?.warn?.(
+				{ err, id: row.id },
+				'multi-db-sqlite: identity-key typed rehydrate failed, signal_kv remains available'
+			)
+		}
+	}
+
+	if (repaired > 0) {
+		logger?.info?.(
+			{ repaired, scanned: rows.length },
+			'multi-db-sqlite: rebuilt Android-shaped identity rows from signal_kv'
+		)
+	}
 }
 
 function loadCreds(stmts: ReturnType<typeof prepareCredsStatements>, logger: ILogger | undefined): AuthenticationCreds {

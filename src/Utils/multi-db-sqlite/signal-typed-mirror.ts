@@ -148,7 +148,7 @@ export function mirrorSignalEntry(
 
 				deps.signalTypedBackend.putIdentity(
 					{
-						recipientId: deps.jidMapBackend.resolveJidRowId(parsed.key.jid),
+						recipientId: parsed.key.recipientId,
 						recipientType: parsed.key.recipientType,
 						deviceId: parsed.key.deviceId
 					},

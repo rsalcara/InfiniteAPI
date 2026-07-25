@@ -128,6 +128,14 @@ export type SignalIdentityKey = {
 	deviceId?: number | null
 }
 
+export type SignalOwnIdentity = {
+	registrationId: number
+	publicKey: Buffer | Uint8Array
+	privateKey: Buffer | Uint8Array
+	nextPrekeyId: number
+	nextKyberPrekeyId?: number | null
+}
+
 export type SignalSenderKeyKey = {
 	groupId: string
 	deviceId: number
@@ -155,6 +163,7 @@ export class SignalTypedBackend {
 		upsertKyberPrekey: SqliteStatementLike
 		selectKyberPrekey: SqliteStatementLike
 		upsertIdentity: SqliteStatementLike
+		upsertOwnIdentity: SqliteStatementLike
 		selectIdentity: SqliteStatementLike
 		upsertSenderKey: SqliteStatementLike
 		selectSenderKey: SqliteStatementLike
@@ -288,6 +297,15 @@ export class SignalTypedBackend {
 					'VALUES (?, ?, ?, ?, ?) ' +
 					'ON CONFLICT(recipient_id, recipient_type, device_id) ' +
 					'DO UPDATE SET public_key = excluded.public_key, timestamp = excluded.timestamp'
+			),
+			upsertOwnIdentity: this.db.prepare(
+				'INSERT INTO identities (recipient_id, recipient_type, device_id, registration_id, public_key, private_key, ' +
+					'next_prekey_id, next_kyber_prekey_id, timestamp, account_encryption_attestation_type) ' +
+					'VALUES (-1, 0, 0, ?, ?, ?, ?, ?, ?, 0) ' +
+					'ON CONFLICT(recipient_id, recipient_type, device_id) DO UPDATE SET ' +
+					'registration_id = excluded.registration_id, public_key = excluded.public_key, ' +
+					'private_key = excluded.private_key, next_prekey_id = excluded.next_prekey_id, ' +
+					'next_kyber_prekey_id = excluded.next_kyber_prekey_id, timestamp = excluded.timestamp'
 			),
 			selectIdentity: this.db.prepare(
 				// `device_id = ?` (not `IS ?`) because `putIdentity` coerces a
@@ -592,7 +610,11 @@ export class SignalTypedBackend {
 
 	// ============ identities (dual LID + PN) ============
 
-	putIdentity(key: SignalIdentityKey, publicKey: Buffer | Uint8Array, timestamp: number = Date.now()): void {
+	putIdentity(
+		key: SignalIdentityKey,
+		publicKey: Buffer | Uint8Array,
+		timestamp: number = Math.floor(Date.now() / 1000)
+	): void {
 		// Coerce missing/null deviceId to the IDENTITY_DEVICE_ID_SENTINEL so
 		// ON CONFLICT(recipient_id, recipient_type, device_id) actually fires
 		// for "no-device" identities. SQLite considers two NULLs distinct
@@ -604,6 +626,21 @@ export class SignalTypedBackend {
 			key.recipientType,
 			key.deviceId ?? IDENTITY_DEVICE_ID_SENTINEL,
 			publicKey,
+			timestamp
+		)
+	}
+
+	/**
+	 * Mirrors the local Signal identity into Android's sentinel row
+	 * `(recipient_id=-1, recipient_type=0, device_id=0)`.
+	 */
+	putOwnIdentity(identity: SignalOwnIdentity, timestamp: number = Math.floor(Date.now() / 1000)): void {
+		this.stmts.upsertOwnIdentity.run(
+			identity.registrationId,
+			toBuf(identity.publicKey),
+			toBuf(identity.privateKey),
+			identity.nextPrekeyId,
+			identity.nextKyberPrekeyId ?? null,
 			timestamp
 		)
 	}

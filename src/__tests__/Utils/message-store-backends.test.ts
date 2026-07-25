@@ -15,6 +15,7 @@ import { join } from 'path'
 import {
 	JidMapBackend,
 	LidChatStateBackend,
+	mapMessageToAndroidType,
 	mapWebMessageStatusToAndroid,
 	MessageAddOnBackend,
 	MessageMediaBackend,
@@ -86,6 +87,50 @@ describe('msgstore.db message-store backends', () => {
 				.get(rowId) as any
 			expect(chat.unseen_message_count).toBe(1)
 			expect(chat.last_message_row_id).toBe(rowId)
+		})
+
+		it('heals message_type and text_data when a richer decode reprocesses the same row', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			backend.recordMessage({ chatJid, fromMe: false, keyId: 'HEAL-1', timestamp: 1_000 })
+			backend.recordMessage({
+				chatJid,
+				fromMe: false,
+				keyId: 'HEAL-1',
+				timestamp: 1_000,
+				messageType: 20,
+				textData: 'sticker metadata'
+			})
+			expect(backend.getMessageByKeyId(chatJid, false, 'HEAL-1')).toMatchObject({
+				message_type: 20,
+				text_data: 'sticker metadata'
+			})
+		})
+
+		it('maps Android subtypes from the complete proto shape', () => {
+			expect(mapMessageToAndroidType({ stickerMessage: {} })).toBe(20)
+			expect(mapMessageToAndroidType({ videoMessage: { gifPlayback: true } })).toBe(13)
+			expect(mapMessageToAndroidType({ ptvMessage: {} })).toBe(81)
+			expect(mapMessageToAndroidType({ viewOnceMessageV2: { message: { imageMessage: {} } } })).toBe(42)
+			expect(mapMessageToAndroidType({ viewOnceMessageV2: { message: { videoMessage: {} } } })).toBe(43)
+			expect(mapMessageToAndroidType({ audioMessage: { viewOnce: true } })).toBe(82)
+			expect(mapMessageToAndroidType({ pollCreationMessageV3: { name: 'poll' } })).toBe(66)
+			expect(mapMessageToAndroidType({ eventMessage: { name: 'event' } })).toBe(92)
+			expect(
+				mapMessageToAndroidType({
+					templateMessage: { hydratedFourRowTemplate: { documentMessage: {} } }
+				})
+			).toBe(26)
+			expect(
+				mapMessageToAndroidType({
+					interactiveMessage: { header: { imageMessage: {} }, nativeFlowMessage: {} }
+				})
+			).toBe(57)
+			// Android stores these as message_add_on rows linked to the target
+			// message. They must not fabricate a base message_type.
+			expect(mapMessageToAndroidType({ reactionMessage: { text: '👍' } })).toBeNull()
+			expect(mapMessageToAndroidType({ pollUpdateMessage: {} })).toBeNull()
+			expect(mapMessageToAndroidType({ keepInChatMessage: {} })).toBeNull()
 		})
 
 		it('does not move the chat last-message pointer backwards for older history', () => {
