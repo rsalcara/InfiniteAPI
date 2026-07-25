@@ -18,12 +18,10 @@
  * below are the ones directly observed in the capture; anything not in
  * this list is left `null` rather than guessed:
  *   0 = text, 1 = image, 2 = audio, 3 = video, 4 = vcard/contact,
- *   5 = location, 9 = document, 16 = live location, 15 = revoked
- *   (delete-for-everyone tombstone — confirmed).
- * `13`/`20`/`54`/`66`/`81` also appeared in the capture but couldn't be
- * pinned to a single content type with confidence (some of those senders
- * were sending in quick succession, ambiguous ordering) — left unmapped
- * here rather than asserting an unconfirmed guess.
+ *   5 = location, 9 = document, 15 = revoked, 16 = live location,
+ *   20 = sticker, 66 = poll, 81 = PTV and 99 = album root.
+ * Values are added only after the protobuf shape has been correlated with
+ * the official Android row or a type-specific satellite table.
  *
  * `message_revoked`: real Android DELETEs the original row and re-INSERTs
  * a tombstone at the SAME `_id`. This backend achieves the same
@@ -73,6 +71,7 @@ export const ANDROID_MESSAGE_TYPE = {
 	VIEW_ONCE_AUDIO: 82,
 	EVENT: 92,
 	NEWSLETTER_ADMIN_INVITE: 94,
+	ALBUM: 99,
 	STICKER_PACK: 105,
 	NEWSLETTER_FOLLOWER_INVITE: 124
 } as const
@@ -159,6 +158,8 @@ export const mapContentTypeToMessageType = (contentType: string | undefined): nu
 			return ANDROID_MESSAGE_TYPE.POLL
 		case 'eventMessage':
 			return ANDROID_MESSAGE_TYPE.EVENT
+		case 'albumMessage':
+			return ANDROID_MESSAGE_TYPE.ALBUM
 		case 'ptvMessage':
 			return ANDROID_MESSAGE_TYPE.PTV
 		case 'stickerPackMessage':
@@ -211,7 +212,10 @@ export const mapMessageToAndroidType = (message: proto.IMessage | null | undefin
 		content = wrapped.message || {}
 	}
 
-	if (content.imageMessage) return viewOnce ? ANDROID_MESSAGE_TYPE.VIEW_ONCE_IMAGE : ANDROID_MESSAGE_TYPE.IMAGE
+	if (content.imageMessage) {
+		return viewOnce || content.imageMessage.viewOnce ? ANDROID_MESSAGE_TYPE.VIEW_ONCE_IMAGE : ANDROID_MESSAGE_TYPE.IMAGE
+	}
+
 	if (content.audioMessage) {
 		return viewOnce || content.audioMessage.viewOnce ? ANDROID_MESSAGE_TYPE.VIEW_ONCE_AUDIO : ANDROID_MESSAGE_TYPE.AUDIO
 	}
@@ -258,6 +262,10 @@ export type RecordMessageInput = {
 	textData?: string | null
 	authorDeviceJid?: string | null
 	messageSecret?: Buffer | null
+	album?: {
+		expectedImageCount: number
+		expectedVideoCount: number
+	} | null
 	/** When true, `chat.unseen_message_count` is incremented (mirrors real
 	 * Android's own increment-on-inbound behavior). Callers pass this only
 	 * for genuinely new, unread inbound messages — never on upsert-retry
@@ -325,6 +333,7 @@ export class MessageStoreBackend implements ChatRowResolver {
 		updateMessageStatusByKey: SqliteStatementLike
 		upsertMessageDetails: SqliteStatementLike
 		upsertMessageSecret: SqliteStatementLike
+		upsertMessageAlbum: SqliteStatementLike
 		updateMessageForRevoke: SqliteStatementLike
 		upsertMessageRevoked: SqliteStatementLike
 		getMessageSecret: SqliteStatementLike
@@ -385,6 +394,13 @@ export class MessageStoreBackend implements ChatRowResolver {
 			upsertMessageSecret: this.db.prepare(
 				'INSERT INTO message_secret (message_row_id, message_secret) VALUES (?, ?) ' +
 					'ON CONFLICT(message_row_id) DO UPDATE SET message_secret = excluded.message_secret'
+			),
+			upsertMessageAlbum: this.db.prepare(
+				'INSERT INTO message_album ' +
+					'(message_row_id, image_count, video_count, expected_image_count, expected_video_count) ' +
+					'VALUES (?, 0, 0, ?, ?) ON CONFLICT(message_row_id) DO UPDATE SET ' +
+					'expected_image_count = excluded.expected_image_count, ' +
+					'expected_video_count = excluded.expected_video_count'
 			),
 			updateMessageForRevoke: this.db.prepare('UPDATE message SET message_type = ?, text_data = NULL WHERE _id = ?'),
 			upsertMessageRevoked: this.db.prepare(
@@ -512,6 +528,10 @@ export class MessageStoreBackend implements ChatRowResolver {
 
 		if (input.messageSecret) {
 			this.stmts.upsertMessageSecret.run(row._id, input.messageSecret)
+		}
+
+		if (input.album) {
+			this.stmts.upsertMessageAlbum.run(row._id, input.album.expectedImageCount, input.album.expectedVideoCount)
 		}
 
 		this.stmts.updateChatAggregate.run(

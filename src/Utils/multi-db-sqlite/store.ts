@@ -220,6 +220,24 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 					AND mm.mime_type = 'application/pdf'
 				);
 			`
+		},
+		{
+			version: 5,
+			name: 'add Android album root mirror',
+			// Official WhatsApp Business 2.26.27.83 stores AlbumMessage roots
+			// as message_type=99 and attaches their counters here. Existing
+			// NULL rows cannot be backfilled safely because msgstore does not
+			// retain the original protobuf; live/history reprocessing heals
+			// them through the natural-key upsert.
+			sql: `
+				CREATE TABLE IF NOT EXISTS message_album (
+					message_row_id INTEGER PRIMARY KEY,
+					image_count INTEGER NOT NULL DEFAULT 0,
+					video_count INTEGER NOT NULL DEFAULT 0,
+					expected_image_count INTEGER,
+					expected_video_count INTEGER
+				);
+			`
 		}
 	],
 	'status.db': [

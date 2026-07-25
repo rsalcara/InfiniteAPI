@@ -35,6 +35,31 @@ describe('history-sync message mirror', () => {
 		)
 	})
 
+	it('carries Android album-root counters into the relational history mirror', async () => {
+		const recordMessages = jest.fn(() => [99])
+		const backend = { recordMessages } as any
+		const messages: WAMessage[] = [
+			{
+				key: {
+					remoteJid: '5511999999999@s.whatsapp.net',
+					fromMe: false,
+					id: 'HISTORY-ALBUM'
+				},
+				messageTimestamp: 1_700_000_000,
+				message: { albumMessage: { expectedImageCount: 4, expectedVideoCount: 3 } }
+			}
+		]
+
+		await expect(mirrorHistoryMessagesToStore(messages, backend)).resolves.toEqual({ stored: 1, failed: 0 })
+		expect(recordMessages).toHaveBeenCalledWith([
+			expect.objectContaining({
+				keyId: 'HISTORY-ALBUM',
+				messageType: 99,
+				album: { expectedImageCount: 4, expectedVideoCount: 3 }
+			})
+		])
+	})
+
 	it('isolates a malformed row and continues mirroring the remaining history', async () => {
 		const recordMessages = jest.fn((rows: Array<{ keyId: string }>) => {
 			if (rows.some(row => row.keyId === 'A')) throw new Error('row failed')

@@ -112,10 +112,13 @@ describe('msgstore.db message-store backends', () => {
 			expect(mapMessageToAndroidType({ videoMessage: { gifPlayback: true } })).toBe(13)
 			expect(mapMessageToAndroidType({ ptvMessage: {} })).toBe(81)
 			expect(mapMessageToAndroidType({ viewOnceMessageV2: { message: { imageMessage: {} } } })).toBe(42)
+			expect(mapMessageToAndroidType({ imageMessage: { viewOnce: true } })).toBe(42)
 			expect(mapMessageToAndroidType({ viewOnceMessageV2: { message: { videoMessage: {} } } })).toBe(43)
+			expect(mapMessageToAndroidType({ videoMessage: { viewOnce: true } })).toBe(43)
 			expect(mapMessageToAndroidType({ audioMessage: { viewOnce: true } })).toBe(82)
 			expect(mapMessageToAndroidType({ pollCreationMessageV3: { name: 'poll' } })).toBe(66)
 			expect(mapMessageToAndroidType({ eventMessage: { name: 'event' } })).toBe(92)
+			expect(mapMessageToAndroidType({ albumMessage: { expectedImageCount: 4, expectedVideoCount: 3 } })).toBe(99)
 			expect(
 				mapMessageToAndroidType({
 					templateMessage: { hydratedFourRowTemplate: { documentMessage: {} } }
@@ -131,6 +134,35 @@ describe('msgstore.db message-store backends', () => {
 			expect(mapMessageToAndroidType({ reactionMessage: { text: '👍' } })).toBeNull()
 			expect(mapMessageToAndroidType({ pollUpdateMessage: {} })).toBeNull()
 			expect(mapMessageToAndroidType({ keepInChatMessage: {} })).toBeNull()
+		})
+
+		it('records an Android album root and its expected media counters atomically', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const rowId = backend.recordMessage({
+				chatJid: '5515991426667@s.whatsapp.net',
+				fromMe: false,
+				keyId: 'ALBUM-ROOT',
+				messageType: 99,
+				album: { expectedImageCount: 4, expectedVideoCount: 3 }
+			})
+
+			expect(backend.getMessageByKeyId('5515991426667@s.whatsapp.net', false, 'ALBUM-ROOT')).toMatchObject({
+				message_type: 99
+			})
+			expect(
+				store
+					.handle('msgstore.db')
+					.prepare(
+						'SELECT image_count, video_count, expected_image_count, expected_video_count ' +
+							'FROM message_album WHERE message_row_id = ?'
+					)
+					.get(rowId)
+			).toMatchObject({
+				image_count: 0,
+				video_count: 0,
+				expected_image_count: 4,
+				expected_video_count: 3
+			})
 		})
 
 		it('does not move the chat last-message pointer backwards for older history', () => {

@@ -26,6 +26,9 @@
  *   - `message_details` — author device (multi-device attribution)
  *   - `message_secret` — 32-byte per-message key used to derive
  *     reaction/poll-vote/edit HMAC keys
+ *   - `message_album` — album root counters. Android stores the root as
+ *     `message_type=99`; received roots start with actual counts at zero and
+ *     carry the expected image/video counts from the protobuf.
  *   - `message_revoked` — "delete for everyone" — live capture confirms
  *     WA DELETEs the original row, re-INSERTs a tombstone at the SAME
  *     `_id` (message_type=15, text_data=null), then links it here via
@@ -308,6 +311,14 @@ CREATE TABLE IF NOT EXISTS message_details (
 CREATE TABLE IF NOT EXISTS message_secret (
   message_row_id INTEGER PRIMARY KEY,
   message_secret BLOB
+);
+
+CREATE TABLE IF NOT EXISTS message_album (
+  message_row_id INTEGER PRIMARY KEY,
+  image_count INTEGER NOT NULL DEFAULT 0,
+  video_count INTEGER NOT NULL DEFAULT 0,
+  expected_image_count INTEGER,
+  expected_video_count INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS message_revoked (

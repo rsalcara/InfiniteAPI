@@ -133,6 +133,12 @@ export const mirrorHistoryMessagesToStore = async (
 				messageSecret: content.messageContextInfo?.messageSecret
 					? Buffer.from(content.messageContextInfo.messageSecret)
 					: null,
+				album: content.albumMessage
+					? {
+							expectedImageCount: content.albumMessage.expectedImageCount ?? 0,
+							expectedVideoCount: content.albumMessage.expectedVideoCount ?? 0
+						}
+					: null,
 				incrementUnread: false
 			})
 		} catch (err) {
@@ -881,6 +887,19 @@ const processMessage = async (
 		let messageRowId: number | undefined
 		try {
 			const senderJid = getKeyAuthor(message.key, meId)
+			const androidMessageType = mapMessageToAndroidType(message.message)
+			if (androidMessageType === null) {
+				logger?.warn(
+					{
+						messageId: message.key.id,
+						chatJid: chat.id,
+						fromMe: !!message.key.fromMe,
+						contentKeys: Object.keys(content ?? message.message ?? {})
+					},
+					'multi-db-sqlite: real message has no confirmed Android message_type mapping'
+				)
+			}
+
 			messageRowId = messageStoreBackend.recordMessage({
 				chatJid: chat.id!,
 				fromMe: !!message.key.fromMe,
@@ -889,11 +908,17 @@ const processMessage = async (
 				status: mapWebMessageStatusToAndroid(message.status) ?? 0,
 				timestamp: toNumber(message.messageTimestamp ?? 0),
 				receivedTimestamp: Date.now(),
-				messageType: mapMessageToAndroidType(message.message),
+				messageType: androidMessageType,
 				textData: content?.extendedTextMessage?.text ?? content?.conversation ?? null,
 				authorDeviceJid: jidNormalizedUser(senderJid),
 				messageSecret: content?.messageContextInfo?.messageSecret
 					? Buffer.from(content.messageContextInfo.messageSecret)
+					: null,
+				album: content?.albumMessage
+					? {
+							expectedImageCount: content.albumMessage.expectedImageCount ?? 0,
+							expectedVideoCount: content.albumMessage.expectedVideoCount ?? 0
+						}
 					: null,
 				incrementUnread: shouldIncrementChatUnread(message)
 			})
