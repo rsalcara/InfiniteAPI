@@ -3,9 +3,9 @@ import type { WAMessage } from '../../Types'
 import { mirrorHistoryMessagesToStore } from '../../Utils/process-message'
 
 describe('history-sync message mirror', () => {
-	it('persists historical messages without incrementing unread state', () => {
-		const recordMessage = jest.fn(() => 1)
-		const backend = { recordMessage } as any
+	it('persists historical messages without incrementing unread state', async () => {
+		const recordMessages = jest.fn(() => [1])
+		const backend = { recordMessages } as any
 		const messages: WAMessage[] = [
 			{
 				key: {
@@ -19,37 +19,60 @@ describe('history-sync message mirror', () => {
 			}
 		]
 
-		expect(mirrorHistoryMessagesToStore(messages, backend)).toEqual({ stored: 1, failed: 0 })
-		expect(recordMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				chatJid: '5511999999999@s.whatsapp.net',
-				keyId: 'HISTORY-1',
-				textData: 'historical text',
-				incrementUnread: false,
-				timestamp: 1_700_000_000,
-				receivedTimestamp: 1_700_000_000_000
-			})
+		await expect(mirrorHistoryMessagesToStore(messages, backend)).resolves.toEqual({ stored: 1, failed: 0 })
+		expect(recordMessages).toHaveBeenCalledWith(
+			expect.arrayContaining([
+				expect.objectContaining({
+					chatJid: '5511999999999@s.whatsapp.net',
+					keyId: 'HISTORY-1',
+					textData: 'historical text',
+					status: 0,
+					incrementUnread: false,
+					timestamp: 1_700_000_000,
+					receivedTimestamp: 1_700_000_000_000
+				})
+			])
 		)
 	})
 
-	it('isolates a malformed row and continues mirroring the remaining history', () => {
-		const recordMessage = jest
-			.fn()
-			.mockImplementationOnce(() => {
-				throw new Error('row failed')
-			})
-			.mockReturnValueOnce(2)
-		const backend = { recordMessage } as any
+	it('isolates a malformed row and continues mirroring the remaining history', async () => {
+		const recordMessages = jest.fn((rows: Array<{ keyId: string }>) => {
+			if (rows.some(row => row.keyId === 'A')) throw new Error('row failed')
+			return rows.map(() => 2)
+		})
+		const backend = { recordMessages } as any
 		const makeMessage = (id: string): WAMessage => ({
 			key: { remoteJid: '120363000000000000@g.us', fromMe: true, id },
 			messageTimestamp: 1,
 			message: { conversation: id }
 		})
 
-		expect(mirrorHistoryMessagesToStore([makeMessage('A'), makeMessage('B')], backend)).toEqual({
+		await expect(mirrorHistoryMessagesToStore([makeMessage('A'), makeMessage('B')], backend)).resolves.toEqual({
 			stored: 1,
 			failed: 1
 		})
-		expect(recordMessage).toHaveBeenCalledTimes(2)
+		// Initial atomic batch fails, then binary isolation retries A and B.
+		expect(recordMessages).toHaveBeenCalledTimes(3)
+	})
+
+	it('persists large histories in bounded pages and yields between them', async () => {
+		const recordMessages = jest.fn((rows: unknown[]) => rows.map((_, index) => index + 1))
+		const backend = { recordMessages } as any
+		const messages = Array.from(
+			{ length: 300 },
+			(_, index): WAMessage => ({
+				key: {
+					remoteJid: '5511999999999@s.whatsapp.net',
+					fromMe: false,
+					id: `HISTORY-${index}`
+				},
+				messageTimestamp: index + 1,
+				message: { conversation: `message ${index}` }
+			})
+		)
+
+		await expect(mirrorHistoryMessagesToStore(messages, backend)).resolves.toEqual({ stored: 300, failed: 0 })
+		expect(recordMessages).toHaveBeenCalledTimes(3)
+		expect(recordMessages.mock.calls.map(([rows]) => rows.length)).toEqual([128, 128, 44])
 	})
 })

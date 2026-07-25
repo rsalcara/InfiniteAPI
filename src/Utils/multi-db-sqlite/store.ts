@@ -145,6 +145,20 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 				CREATE UNIQUE INDEX IF NOT EXISTS message_add_on_poll_vote_selected_option_unique_idx
 				ON message_add_on_poll_vote_selected_option (message_add_on_row_id, message_poll_option_id);
 			`
+		},
+		{
+			// Older mirror writers left message.status NULL. The official
+			// Android history importer initializes received messages to 0 and
+			// own-account history to at least server-ack (4). This conservative
+			// repair makes legacy rows usable without claiming delivery/read;
+			// later live receipts advance them through 5/13/8.
+			version: 3,
+			name: 'backfill missing Android message status values',
+			sql: `
+				UPDATE message
+				SET status = CASE WHEN from_me = 1 THEN 4 ELSE 0 END
+				WHERE status IS NULL;
+			`
 		}
 	],
 	'status.db': [

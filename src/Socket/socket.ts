@@ -584,6 +584,15 @@ export const makeSocket = (config: SocketConfig) => {
 	const registerSocketEndHandler = (handler: (error: Error | undefined) => void | Promise<void>) => {
 		socketEndHandlers.push(handler)
 	}
+	// Higher socket layers register work that must finish before Signal, LID
+	// mapping and the auth-key transaction capability are destroyed. This is
+	// intentionally separate from socketEndHandlers: those are post-close
+	// cache/timer cleanup callbacks and historically run after repository
+	// teardown.
+	const socketDrainHandlers: Array<(error: Error | undefined) => void | Promise<void>> = []
+	const registerSocketDrainHandler = (handler: (error: Error | undefined) => void | Promise<void>) => {
+		socketDrainHandlers.push(handler)
+	}
 
 	// Session TTL and cleanup
 	const SESSION_TTL = 7 * 24 * 60 * 60 * 1000 // 7 days
@@ -1443,6 +1452,19 @@ export const makeSocket = (config: SocketConfig) => {
 		// Clean up unified session manager
 		unifiedSessionManager?.destroy()
 
+		// Start every drain handler before touching the transport. Calling an
+		// async handler runs its synchronous prefix immediately, so receivers
+		// stop admitting new high-level work before the first await. Keep the
+		// raw message listener alive for now: in-flight IQ/USync requests still
+		// need it to receive a final response while the socket remains usable.
+		const drainPromises = socketDrainHandlers.map(async handler => {
+			try {
+				await handler(error)
+			} catch (err) {
+				logger.error({ err, connectionId }, 'error draining socket processing')
+			}
+		})
+
 		// CRITICAL: Wait for pending pre-key upload before destroying transaction capability
 		// This prevents destroying resources while they're in use
 		if (uploadPreKeysPromise) {
@@ -1457,6 +1479,19 @@ export const makeSocket = (config: SocketConfig) => {
 				logger.warn({ error }, 'Pending pre-key upload failed during cleanup')
 			}
 		}
+
+		// Closing the transport rejects every waitForMessage() through its
+		// close listener. Without this step, a synthetic keep-alive disconnect
+		// leaves pending app-state/USync queries waiting for their full timeout,
+		// while teardown waits for those same handlers to drain.
+		if (!ws.isClosed && !ws.isClosing) {
+			try {
+				await ws.close()
+			} catch {}
+		}
+
+		await Promise.allSettled(drainPromises)
+		socketDrainHandlers.length = 0
 
 		// Drain Signal/LID work while the transaction capability and backing
 		// auth store are still alive. Closing keys first caused history-sync
@@ -1475,12 +1510,6 @@ export const makeSocket = (config: SocketConfig) => {
 		ws.removeAllListeners('close')
 		ws.removeAllListeners('open')
 		ws.removeAllListeners('message')
-
-		if (!ws.isClosed && !ws.isClosing) {
-			try {
-				await ws.close()
-			} catch {}
-		}
 
 		// Detect socket-level session errors that require recreation
 		const statusCode = (error as Boom)?.output?.statusCode || 0
@@ -2250,6 +2279,7 @@ export const makeSocket = (config: SocketConfig) => {
 		logout,
 		end,
 		registerSocketEndHandler,
+		registerSocketDrainHandler,
 		onUnexpectedError,
 		uploadPreKeys,
 		uploadPreKeysToServerIfRequired,

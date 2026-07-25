@@ -67,6 +67,8 @@ export {
 } from './stickers-backend'
 export {
 	ANDROID_MESSAGE_TYPE,
+	ANDROID_MESSAGE_STATUS,
+	mapWebMessageStatusToAndroid,
 	mapContentTypeToMessageType,
 	MessageStoreBackend,
 	type ChatRowResolver,

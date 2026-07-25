@@ -15,6 +15,7 @@ import { join } from 'path'
 import {
 	JidMapBackend,
 	LidChatStateBackend,
+	mapWebMessageStatusToAndroid,
 	MessageAddOnBackend,
 	MessageMediaBackend,
 	MessageStoreBackend,
@@ -115,6 +116,56 @@ describe('msgstore.db message-store backends', () => {
 				last_message_sort_id: 2_000,
 				unseen_message_count: 2
 			})
+		})
+
+		it('records a history page atomically and rolls the whole page back on failure', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+
+			const rowIds = backend.recordMessages([
+				{ chatJid, fromMe: false, keyId: 'BATCH-1', timestamp: 1_000 },
+				{ chatJid, fromMe: false, keyId: 'BATCH-2', timestamp: 1_001 }
+			])
+			expect(rowIds).toHaveLength(2)
+
+			expect(() =>
+				backend.recordMessages([
+					{ chatJid, fromMe: false, keyId: 'ROLLBACK-1', timestamp: 2_000 },
+					{ chatJid, fromMe: false, keyId: undefined as unknown as string, timestamp: 2_001 }
+				])
+			).toThrow()
+			expect(backend.getMessageByKeyId(chatJid, false, 'ROLLBACK-1')).toBeNull()
+		})
+
+		it('uses Android status values and advances receipts without numeric-order bugs', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			backend.recordMessage({
+				chatJid,
+				fromMe: true,
+				keyId: 'STATUS-1',
+				status: mapWebMessageStatusToAndroid(1)
+			})
+
+			expect(backend.updateMessageStatus(chatJid, true, 'STATUS-1', mapWebMessageStatusToAndroid(2)!)).toBe(true)
+			expect(backend.updateMessageStatus(chatJid, true, 'STATUS-1', mapWebMessageStatusToAndroid(4)!)).toBe(true)
+			backend.recordMessage({
+				chatJid,
+				fromMe: true,
+				keyId: 'STATUS-1',
+				status: mapWebMessageStatusToAndroid(1)
+			})
+			expect(backend.getMessageByKeyId(chatJid, true, 'STATUS-1')?.status).toBe(13)
+			// DELIVERY_ACK=5 numerically, READ=13, PLAYED=8. Explicit app
+			// ordering must reject both replayed pending state and a late
+			// delivery receipt, but accept played.
+			expect(backend.updateMessageStatus(chatJid, true, 'STATUS-1', mapWebMessageStatusToAndroid(3)!)).toBe(false)
+			expect(backend.updateMessageStatus(chatJid, true, 'STATUS-1', mapWebMessageStatusToAndroid(5)!)).toBe(true)
+			expect(backend.getMessageByKeyId(chatJid, true, 'STATUS-1')?.status).toBe(8)
+
+			backend.recordMessage({ chatJid, fromMe: true, keyId: 'SYSTEM-STATUS', status: 6 })
+			expect(backend.updateMessageStatus(chatJid, true, 'SYSTEM-STATUS', 5)).toBe(false)
+			expect(backend.getMessageByKeyId(chatJid, true, 'SYSTEM-STATUS')?.status).toBe(6)
 		})
 
 		it('recordRevoke updates the target row to the tombstone type and links message_revoked', () => {

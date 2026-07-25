@@ -49,6 +49,48 @@ export const ANDROID_MESSAGE_TYPE = {
 } as const
 
 /**
+ * Android msgstore status values confirmed against the official app:
+ *   0 pending/new, 4 server ack, 5 delivered, 13 read, 8 played.
+ *
+ * These are not numerically identical to WebMessageInfo.Status after PENDING,
+ * so storing the protobuf enum directly would corrupt msgstore semantics.
+ */
+export const ANDROID_MESSAGE_STATUS = {
+	PENDING: 0,
+	SERVER_ACK: 4,
+	DELIVERY_ACK: 5,
+	READ: 13,
+	PLAYED: 8
+} as const
+
+export const mapWebMessageStatusToAndroid = (status: number | null | undefined): number | null => {
+	switch (status) {
+		case 1:
+			return ANDROID_MESSAGE_STATUS.PENDING
+		case 2:
+			return ANDROID_MESSAGE_STATUS.SERVER_ACK
+		case 3:
+			return ANDROID_MESSAGE_STATUS.DELIVERY_ACK
+		case 4:
+			return ANDROID_MESSAGE_STATUS.READ
+		case 5:
+			return ANDROID_MESSAGE_STATUS.PLAYED
+		default:
+			// Web ERROR=0 does not identify which Android terminal failure
+			// state applies, so do not fabricate one.
+			return null
+	}
+}
+
+const ANDROID_MESSAGE_STATUS_ORDER = [
+	ANDROID_MESSAGE_STATUS.PENDING,
+	ANDROID_MESSAGE_STATUS.SERVER_ACK,
+	ANDROID_MESSAGE_STATUS.DELIVERY_ACK,
+	ANDROID_MESSAGE_STATUS.READ,
+	ANDROID_MESSAGE_STATUS.PLAYED
+] as const
+
+/**
  * Maps Baileys' own content-type key (from `getContentType`) to the
  * confirmed Android `message_type` int. Returns `null` for anything not
  * directly confirmed against the capture (see class doc) rather than
@@ -155,6 +197,7 @@ export class MessageStoreBackend implements ChatRowResolver {
 		upsertMessage: SqliteStatementLike
 		getMessageByNaturalKey: SqliteStatementLike
 		getMessageByKeyId: SqliteStatementLike
+		updateMessageStatusByKey: SqliteStatementLike
 		upsertMessageDetails: SqliteStatementLike
 		upsertMessageSecret: SqliteStatementLike
 		updateMessageForRevoke: SqliteStatementLike
@@ -193,12 +236,21 @@ export class MessageStoreBackend implements ChatRowResolver {
 					'received_timestamp, message_type, text_data, sort_id) ' +
 					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
 					'ON CONFLICT(chat_row_id, from_me, key_id, sender_jid_row_id) DO UPDATE SET ' +
-					'status = excluded.status, received_timestamp = excluded.received_timestamp'
+					'status = CASE ' +
+					'WHEN excluded.status IS NULL THEN message.status ' +
+					'WHEN message.status IS NULL THEN excluded.status ' +
+					'WHEN (CASE excluded.status WHEN 0 THEN 0 WHEN 4 THEN 1 WHEN 5 THEN 2 WHEN 13 THEN 3 WHEN 8 THEN 4 ELSE -1 END) ' +
+					'>= (CASE message.status WHEN 0 THEN 0 WHEN 4 THEN 1 WHEN 5 THEN 2 WHEN 13 THEN 3 WHEN 8 THEN 4 ELSE 99 END) ' +
+					'THEN excluded.status ELSE message.status END, ' +
+					'received_timestamp = excluded.received_timestamp'
 			),
 			getMessageByNaturalKey: this.db.prepare(
 				'SELECT * FROM message WHERE chat_row_id = ? AND from_me = ? AND key_id = ? AND sender_jid_row_id IS ?'
 			),
 			getMessageByKeyId: this.db.prepare('SELECT * FROM message WHERE chat_row_id = ? AND from_me = ? AND key_id = ?'),
+			updateMessageStatusByKey: this.db.prepare(
+				'UPDATE message SET status = ? WHERE chat_row_id = ? AND from_me = ? AND key_id = ?'
+			),
 			upsertMessageDetails: this.db.prepare(
 				'INSERT INTO message_details (message_row_id, author_device_jid) VALUES (?, ?) ' +
 					'ON CONFLICT(message_row_id) DO UPDATE SET author_device_jid = excluded.author_device_jid'
@@ -269,65 +321,83 @@ export class MessageStoreBackend implements ChatRowResolver {
 	 */
 	recordMessage(input: RecordMessageInput): number {
 		return this.db.transaction((): number => {
-			const chatRowId = this.resolveChatRowId(input.chatJid)
-			// `jid._id` is 1-based, so 0 is a safe "no sender" sentinel — see
-			// NO_SENDER_SENTINEL doc. Using `null` here defeated the natural-key
-			// ON CONFLICT upsert (confirmed real bug: every retry of a fromMe/
-			// no-sender message inserted a fresh duplicate row).
-			const senderRowId = input.senderJid ? this.jidMap.resolveJidRowId(input.senderJid) : NO_SENDER_SENTINEL
-
-			// Existence check BEFORE the upsert — `incrementUnread` must only
-			// apply the first time this natural key is recorded. Without this,
-			// a retried decode of the same message (same key_id) re-ran
-			// updateChatAggregate's increment on every call and inflated
-			// unseen_message_count on every reprocess (confirmed real bug).
-			const existing = this.stmts.getMessageByNaturalKey.get(
-				chatRowId,
-				input.fromMe ? 1 : 0,
-				input.keyId,
-				senderRowId
-			) as MessageRow | undefined
-			const isNewMessage = !existing
-
-			this.stmts.upsertMessage.run(
-				chatRowId,
-				input.fromMe ? 1 : 0,
-				input.keyId,
-				senderRowId,
-				input.status ?? null,
-				input.timestamp ?? null,
-				input.receivedTimestamp ?? null,
-				input.messageType ?? null,
-				input.textData ?? null,
-				input.timestamp ?? 0
-			)
-
-			const row = this.stmts.getMessageByNaturalKey.get(chatRowId, input.fromMe ? 1 : 0, input.keyId, senderRowId) as
-				| MessageRow
-				| undefined
-			if (!row) throw new Error(`MessageStoreBackend: failed to materialize message row for key_id ${input.keyId}`)
-
-			if (input.authorDeviceJid) {
-				const deviceRowId = this.jidMap.resolveJidRowId(input.authorDeviceJid)
-				this.stmts.upsertMessageDetails.run(row._id, deviceRowId)
-			}
-
-			if (input.messageSecret) {
-				this.stmts.upsertMessageSecret.run(row._id, input.messageSecret)
-			}
-
-			this.stmts.updateChatAggregate.run(
-				input.timestamp ?? 0,
-				row._id,
-				input.timestamp ?? 0,
-				input.timestamp ?? 0,
-				input.timestamp ?? 0,
-				isNewMessage && input.incrementUnread ? 1 : 0,
-				chatRowId
-			)
-
-			return row._id
+			return this.recordMessageInsideTransaction(input)
 		})()
+	}
+
+	/**
+	 * Records a bounded group under one outer transaction. Nested resolver
+	 * transactions become SQLite savepoints, so an individual row still keeps
+	 * its existing invariants while the batch performs only one durable commit.
+	 *
+	 * History sync deliberately calls this method in pages and yields between
+	 * pages; keeping the transaction bounded prevents both thousands of fsyncs
+	 * and one uninterruptibly large write transaction.
+	 */
+	recordMessages(inputs: readonly RecordMessageInput[]): number[] {
+		if (inputs.length === 0) return []
+		return this.db.transaction(() => inputs.map(input => this.recordMessageInsideTransaction(input)))()
+	}
+
+	private recordMessageInsideTransaction(input: RecordMessageInput): number {
+		const chatRowId = this.resolveChatRowId(input.chatJid)
+		// `jid._id` is 1-based, so 0 is a safe "no sender" sentinel — see
+		// NO_SENDER_SENTINEL doc. Using `null` here defeated the natural-key
+		// ON CONFLICT upsert (confirmed real bug: every retry of a fromMe/
+		// no-sender message inserted a fresh duplicate row).
+		const senderRowId = input.senderJid ? this.jidMap.resolveJidRowId(input.senderJid) : NO_SENDER_SENTINEL
+
+		// Existence check BEFORE the upsert — `incrementUnread` must only
+		// apply the first time this natural key is recorded. Without this,
+		// a retried decode of the same message (same key_id) re-ran
+		// updateChatAggregate's increment on every call and inflated
+		// unseen_message_count on every reprocess (confirmed real bug).
+		const existing = this.stmts.getMessageByNaturalKey.get(
+			chatRowId,
+			input.fromMe ? 1 : 0,
+			input.keyId,
+			senderRowId
+		) as MessageRow | undefined
+		const isNewMessage = !existing
+
+		this.stmts.upsertMessage.run(
+			chatRowId,
+			input.fromMe ? 1 : 0,
+			input.keyId,
+			senderRowId,
+			input.status ?? null,
+			input.timestamp ?? null,
+			input.receivedTimestamp ?? null,
+			input.messageType ?? null,
+			input.textData ?? null,
+			input.timestamp ?? 0
+		)
+
+		const row = this.stmts.getMessageByNaturalKey.get(chatRowId, input.fromMe ? 1 : 0, input.keyId, senderRowId) as
+			| MessageRow
+			| undefined
+		if (!row) throw new Error(`MessageStoreBackend: failed to materialize message row for key_id ${input.keyId}`)
+
+		if (input.authorDeviceJid) {
+			const deviceRowId = this.jidMap.resolveJidRowId(input.authorDeviceJid)
+			this.stmts.upsertMessageDetails.run(row._id, deviceRowId)
+		}
+
+		if (input.messageSecret) {
+			this.stmts.upsertMessageSecret.run(row._id, input.messageSecret)
+		}
+
+		this.stmts.updateChatAggregate.run(
+			input.timestamp ?? 0,
+			row._id,
+			input.timestamp ?? 0,
+			input.timestamp ?? 0,
+			input.timestamp ?? 0,
+			isNewMessage && input.incrementUnread ? 1 : 0,
+			chatRowId
+		)
+
+		return row._id
 	}
 
 	/** Looks up a message by its natural (chat, direction, key) identity, ignoring sender. Pure read — never creates a `chat` row. */
@@ -336,6 +406,28 @@ export class MessageStoreBackend implements ChatRowResolver {
 		if (chatRowId === null) return null
 		const row = this.stmts.getMessageByKeyId.get(chatRowId, fromMe ? 1 : 0, keyId) as MessageRow | undefined
 		return row ?? null
+	}
+
+	/**
+	 * Advances the Android delivery state for an existing message. Receipt
+	 * states are ordered by the app's own lifecycle, not by their numeric value
+	 * (`READ=13`, `PLAYED=8`), so compare through the explicit order above.
+	 */
+	updateMessageStatus(chatJid: string, fromMe: boolean, keyId: string, status: number): boolean {
+		const chatRowId = this.tryGetChatRowId(chatJid)
+		if (chatRowId === null) return false
+		const row = this.stmts.getMessageByKeyId.get(chatRowId, fromMe ? 1 : 0, keyId) as MessageRow | undefined
+		if (!row) return false
+
+		const currentOrder = row.status === null ? -1 : ANDROID_MESSAGE_STATUS_ORDER.indexOf(row.status as never)
+		const nextOrder = ANDROID_MESSAGE_STATUS_ORDER.indexOf(status as never)
+		// The official app has additional status values for special/system
+		// messages. Do not reinterpret or overwrite an unknown Android state
+		// with the ordinary delivery lifecycle.
+		if (nextOrder < 0 || (row.status !== null && currentOrder < 0) || currentOrder >= nextOrder) return false
+
+		this.stmts.updateMessageStatusByKey.run(status, chatRowId, fromMe ? 1 : 0, keyId)
+		return true
 	}
 
 	/**

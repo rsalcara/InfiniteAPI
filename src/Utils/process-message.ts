@@ -45,8 +45,10 @@ import {
 	type HistorySyncCompanionBackend,
 	type LocationBackend,
 	mapContentTypeToMessageType,
+	mapWebMessageStatusToAndroid,
 	type MessageAddOnBackend,
 	type MessageMediaBackend,
+	type RecordMessageInput,
 	type MessageStoreBackend,
 	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
 	type ReceiptBackend,
@@ -93,13 +95,18 @@ type ProcessMessageContext = {
  * by live traffic. History events remain available to consumers, but the
  * relational store no longer stays nearly empty after a successful bootstrap.
  */
-export const mirrorHistoryMessagesToStore = (
+const HISTORY_MIRROR_BATCH_SIZE = 128
+
+const yieldHistoryMirror = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
+
+export const mirrorHistoryMessagesToStore = async (
 	messages: WAMessage[],
 	messageStoreBackend: MessageStoreBackend,
 	logger?: ILogger
-): { stored: number; failed: number } => {
+): Promise<{ stored: number; failed: number }> => {
 	let stored = 0
 	let failed = 0
+	const inputs: RecordMessageInput[] = []
 
 	for (const message of messages) {
 		const remoteJid = message.key?.remoteJid
@@ -112,11 +119,12 @@ export const mirrorHistoryMessagesToStore = (
 			const senderJid = message.key.fromMe
 				? null
 				: jidNormalizedUser(message.key.participant || message.key.remoteJid || '')
-			messageStoreBackend.recordMessage({
+			inputs.push({
 				chatJid: jidNormalizedUser(remoteJid),
 				fromMe: !!message.key.fromMe,
 				keyId,
 				senderJid,
+				status: mapWebMessageStatusToAndroid(message.status) ?? (message.key.fromMe ? 4 : 0),
 				timestamp,
 				receivedTimestamp: timestamp > 0 ? timestamp * 1000 : null,
 				messageType: mapContentTypeToMessageType(getContentType(content)),
@@ -127,11 +135,42 @@ export const mirrorHistoryMessagesToStore = (
 					: null,
 				incrementUnread: false
 			})
-			stored++
 		} catch (err) {
 			failed++
 			logger?.warn({ err, messageId: keyId, chatJid: remoteJid }, 'multi-db-sqlite: history message mirror failed')
 		}
+	}
+
+	const persistBatch = async (batch: readonly RecordMessageInput[]): Promise<void> => {
+		try {
+			const rowIds = messageStoreBackend.recordMessages(batch)
+			stored += rowIds.length
+		} catch (err) {
+			// A batch is atomic. Split only the failed batch until the malformed
+			// row is isolated, preserving best-effort history import without
+			// reverting successfully validated neighbouring rows.
+			if (batch.length > 1) {
+				const midpoint = Math.ceil(batch.length / 2)
+				await persistBatch(batch.slice(0, midpoint))
+				await persistBatch(batch.slice(midpoint))
+				return
+			}
+
+			failed++
+			const input = batch[0]
+			logger?.warn(
+				{ err, messageId: input?.keyId, chatJid: input?.chatJid },
+				'multi-db-sqlite: history message mirror failed'
+			)
+		}
+	}
+
+	for (let offset = 0; offset < inputs.length; offset += HISTORY_MIRROR_BATCH_SIZE) {
+		await persistBatch(inputs.slice(offset, offset + HISTORY_MIRROR_BATCH_SIZE))
+		// The official Android client executes history chunks in background
+		// workers. Node has one event loop, so yield between bounded commits to
+		// keep Noise frames, keepalive and close callbacks responsive.
+		await yieldHistoryMirror()
 	}
 
 	return { stored, failed }
@@ -847,6 +886,7 @@ const processMessage = async (
 				fromMe: !!message.key.fromMe,
 				keyId: message.key.id,
 				senderJid: message.key.fromMe ? null : jidNormalizedUser(senderJid),
+				status: mapWebMessageStatusToAndroid(message.status) ?? 0,
 				timestamp: toNumber(message.messageTimestamp ?? 0),
 				receivedTimestamp: Date.now(),
 				messageType: mapContentTypeToMessageType(getContentType(content)),
@@ -1243,7 +1283,11 @@ const processMessage = async (
 
 				logger?.info(
 					{
-						histNotification,
+						syncType: histNotification.syncType,
+						chunkOrder: histNotification.chunkOrder,
+						progress: histNotification.progress,
+						fileLength: histNotification.fileLength ? toNumber(histNotification.fileLength) : 0,
+						hasInlinePayload: Boolean(histNotification.initialHistBootstrapInlinePayload?.length),
 						process,
 						id: message.key.id,
 						isLatest
@@ -1313,7 +1357,7 @@ const processMessage = async (
 					}
 
 					if (messageStoreBackend && data.messages?.length) {
-						const result = mirrorHistoryMessagesToStore(data.messages, messageStoreBackend, logger)
+						const result = await mirrorHistoryMessagesToStore(data.messages, messageStoreBackend, logger)
 						logger?.info(
 							{ input: data.messages.length, stored: result.stored, failed: result.failed },
 							'multi-db-sqlite: history messages mirrored'
