@@ -813,14 +813,56 @@ describe('msgstore.db message-store backends', () => {
 			const locRowId = messageStore.recordMessage({ chatJid, fromMe: false, keyId: 'MSG-LOC', timestamp: 1_000 })
 			const vcardRowId = messageStore.recordMessage({ chatJid, fromMe: false, keyId: 'MSG-VCARD', timestamp: 1_001 })
 
-			addOns.recordLocation({ messageRowId: locRowId, chatJid, latitude: -23.5, longitude: -46.6, placeName: 'SP' })
+			addOns.recordLocation({
+				messageRowId: locRowId,
+				chatJid,
+				latitude: -23.5,
+				longitude: -46.6,
+				placeName: 'SP',
+				liveLocationShareDurationSecs: 900,
+				liveLocationSequenceNumber: 123,
+				liveLocationFinalLatitude: -23.51,
+				liveLocationFinalLongitude: -46.61,
+				liveLocationFinalTimestampMs: 1_700_000_030_000,
+				mapDownloadStatus: 0
+			})
 			addOns.recordVcard({ messageRowId: vcardRowId, vcard: 'BEGIN:VCARD\nEND:VCARD' })
 
 			const locRow = store
 				.handle('msgstore.db')
 				.prepare('SELECT * FROM message_location WHERE message_row_id = ?')
 				.get(locRowId) as any
-			expect(locRow).toMatchObject({ latitude: -23.5, longitude: -46.6, place_name: 'SP' })
+			expect(locRow).toMatchObject({
+				latitude: -23.5,
+				longitude: -46.6,
+				place_name: 'SP',
+				live_location_share_duration: 900,
+				live_location_sequence_number: 123,
+				live_location_final_latitude: -23.51,
+				live_location_final_longitude: -46.61,
+				live_location_final_timestamp: 1_700_000_030_000,
+				map_download_status: 0
+			})
+
+			addOns.recordFinalLiveLocation({
+				messageRowId: locRowId,
+				latitude: -23.52,
+				longitude: -46.62,
+				timestampMs: 1_700_000_060_000
+			})
+			expect(
+				store
+					.handle('msgstore.db')
+					.prepare(
+						'SELECT live_location_final_latitude, live_location_final_longitude, ' +
+							'live_location_final_timestamp FROM message_location WHERE message_row_id = ?'
+					)
+					.get(locRowId)
+			).toMatchObject({
+				live_location_final_latitude: -23.52,
+				live_location_final_longitude: -46.62,
+				live_location_final_timestamp: 1_700_000_060_000
+			})
 
 			const vcardRow = store
 				.handle('msgstore.db')

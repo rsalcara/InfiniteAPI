@@ -105,6 +105,23 @@ describe('retry receipt routing parity', () => {
 		expect(cached?.message).toBe(carousel)
 		expect(cached?.to).toBe('5511000000002@s.whatsapp.net')
 	})
+
+	it('keeps live-location transport duration with the recent message', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const liveLocation = {
+			liveLocationMessage: {
+				degreesLatitude: -23.5,
+				degreesLongitude: -47.4
+			}
+		} as proto.IMessage
+		manager.addRecentMessage('5511000000002@s.whatsapp.net', 'LIVE-1', liveLocation, {
+			liveLocationDuration: 1800
+		})
+
+		const cached = manager.getRecentMessage('100000000000001@lid', 'LIVE-1')
+		expect(cached?.message).toBe(liveLocation)
+		expect(cached?.liveLocationDuration).toBe(1800)
+	})
 })
 
 describe('retry attempt accounting', () => {

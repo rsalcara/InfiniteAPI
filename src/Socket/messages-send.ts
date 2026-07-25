@@ -223,6 +223,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		})
 	/** Serializes writes to userDevicesCache across USync refresh and device-notification handling. */
 	const devicesMutex = makeMutex()
+	let lastLiveLocationSequenceNumber = 0
+	const nextLiveLocationSequenceNumber = (): number => {
+		// Android uses a microsecond-scale, monotonically increasing sequence.
+		// `Date.now() * 1000` is still below Number.MAX_SAFE_INTEGER.
+		const candidate = Date.now() * 1000 + 1
+		lastLiveLocationSequenceNumber = Math.max(candidate, lastLiveLocationSequenceNumber + 1)
+		return lastLiveLocationSequenceNumber
+	}
 
 	// Initialize message retry manager if enabled. Pass a typed backend when a
 	// multi-db-sqlite store is wired so base-key anchors mirror into the
@@ -236,12 +244,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		? new MessageRetryManager(logger, maxMsgRetryCount, retryTypedBackend, retryTypedBackend)
 		: null
 
-	// Send-side location.db mirror. On a SENT live location the
-	// duration is chosen by us (the originator), so unlike the receive path
-	// (companion never gets the peer's duration — proven: the wire only carries
-	// lat/lng/sequenceNumber/jpegThumbnail) we CAN populate the real
-	// `expires`/share window on the `from_me=1` sharer row. Same shared
-	// `location.db` handle as the receive/consume backend in chats.ts.
+	// Send-side location.db mirror. Duration is also attached to every
+	// encrypted child by relayMessage, matching Android's live-location
+	// transport contract.
 	let sendLocationBackend: LocationBackend | undefined
 	if (config.multiDbStore) {
 		try {
@@ -1129,7 +1134,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			additionalNodes,
 			useUserDevicesCache,
 			useCachedGroupMetadata,
-			statusJidList
+			statusJidList,
+			liveLocationDuration
 		}: MessageRelayOptions
 	) => {
 		const meId = authState.creds.me?.id
@@ -1243,6 +1249,18 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 
 		const extraAttrs: BinaryNodeAttributes = {}
+		if (message.liveLocationMessage && liveLocationDuration !== undefined) {
+			if (!Number.isSafeInteger(liveLocationDuration) || liveLocationDuration < 0) {
+				throw new Boom('Invalid live-location duration', {
+					statusCode: 400,
+					data: { liveLocationDuration }
+				})
+			}
+
+			// Official Android attaches the duration to every encrypted child.
+			// The receiver's IncomingLiveLocationHandler reads this exact attr.
+			extraAttrs.duration = String(liveLocationDuration)
+		}
 
 		if (participant) {
 			if (!isGroup && !isStatus) {
@@ -2227,7 +2245,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			// Add message to retry cache if enabled
 			if (messageRetryManager && !participant) {
-				messageRetryManager.addRecentMessage(jidNormalizedUser(destinationJid), msgId, message)
+				messageRetryManager.addRecentMessage(jidNormalizedUser(destinationJid), msgId, message, {
+					liveLocationDuration
+				})
 			}
 
 			// Track session activity for cleanup (all target JIDs)
@@ -3081,20 +3101,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		},
 		/**
 		 * Sends a live-location message (`liveLocationMessage`) and mirrors the
-		 * `from_me=1` share into `location.db` with the real `expires` — unlike a
-		 * RECEIVED share (where the companion never gets the peer's duration:
-		 * proven, the wire only carries lat/lng/sequenceNumber/jpegThumbnail),
-		 * on a SEND we are the originator and know the duration.
-		 *
-		 * COMPANION LIMITATION (empirically proven, kept intentionally): WhatsApp's
-		 * native "live location" is a PRIMARY-DEVICE-ONLY server session. A linked
-		 * companion (every Baileys socket) cannot register that session, so the
-		 * server does NOT fan a bare `liveLocationMessage` out to the recipient
-		 * (server ack but zero delivery receipt in testing) and no "view live
-		 * location" card renders. A plain `locationMessage` (`sendMessage({ location })`)
-		 * IS delivered as a static map. This method is kept complete for schema
-		 * parity/mirroring and for consumer↔consumer flows that render the
-		 * position stream themselves — it will not produce a native live card.
+		 * `from_me=1` share into `location.db` with the real `expires`.
+		 * Duration is carried as `<enc duration="…">`, matching Android. Earlier
+		 * revisions omitted that transport attribute, so the server acknowledged
+		 * the bare protobuf without establishing a usable live-location share.
 		 */
 		sendLiveLocation: async (
 			jid: string,
@@ -3113,6 +3123,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			options: MiscMessageGenerationOptions = {}
 		) => {
 			const userJid = authState.creds.me!.id
+			const durationSecs = location.durationSecs ?? 15 * 60
+			if (!Number.isSafeInteger(durationSecs) || durationSecs <= 0 || durationSecs > 8 * 60 * 60) {
+				throw new Boom('Live-location duration must be an integer between 1 and 28800 seconds', {
+					statusCode: 400,
+					data: { durationSecs }
+				})
+			}
+
+			const messageTimestampMs = options.timestamp?.getTime() ?? Date.now()
 			const content: proto.IMessage = {
 				liveLocationMessage: {
 					degreesLatitude: location.degreesLatitude,
@@ -3121,7 +3140,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					speedInMps: location.speedInMps,
 					degreesClockwiseFromMagneticNorth: location.degreesClockwiseFromMagneticNorth,
 					caption: location.caption,
-					sequenceNumber: location.sequenceNumber ?? unixTimestampSeconds() * 1000,
+					sequenceNumber: location.sequenceNumber ?? nextLiveLocationSequenceNumber(),
 					jpegThumbnail: location.jpegThumbnail
 				}
 			}
@@ -3131,23 +3150,19 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				messageId: generateMessageIDV2(sock.user?.id),
 				...options
 			})
+			fullMsg.duration = durationSecs
 
 			await relayMessage(jid, fullMsg.message!, {
 				messageId: fullMsg.key.id!,
 				useCachedGroupMetadata: options.useCachedGroupMetadata,
-				statusJidList: options.statusJidList
+				statusJidList: options.statusJidList,
+				liveLocationDuration: durationSecs
 			})
 
-			// Best-effort from_me=1 mirror — never blocks the send. We know the
-			// duration here, so `expires` is real (0 = open-ended when unset).
-			// UNITS: seconds, to match the receive path (`message.messageTimestamp`
-			// is unix seconds). Using ms here would leave the sent row's
-			// `location_ts` permanently ahead of any received update and the
-			// `location_cache` guard (`excluded.location_ts >= …`) would then never
-			// let a received position overwrite it.
+			// Best-effort from_me=1 mirror — never blocks the send. Android stores
+			// one location_sharer row per recipient/resource.
 			if (sendLocationBackend) {
 				try {
-					const nowSecs = unixTimestampSeconds()
 					sendLocationBackend.upsertLocationCache({
 						jid: jidNormalizedUser(userJid),
 						latitude: location.degreesLatitude,
@@ -3155,15 +3170,29 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						accuracy: location.accuracyInMeters ?? 0,
 						speed: location.speedInMps ?? 0,
 						bearing: location.degreesClockwiseFromMagneticNorth ?? 0,
-						locationTs: nowSecs
+						locationTs: messageTimestampMs
 					})
-					sendLocationBackend.upsertLocationSharer({
-						remoteJid: jidNormalizedUser(jid),
-						fromMe: 1,
-						remoteResource: '',
-						expires: location.durationSecs ? nowSecs + location.durationSecs : 0,
-						messageId: fullMsg.key.id!
-					})
+
+					let remoteResources: string[]
+					if (isJidGroup(jid)) {
+						const metadata = await groupMetadata(jid)
+						remoteResources = metadata.participants
+							.map(participant => jidNormalizedUser(participant.id))
+							.filter(resource => !areJidsSameUser(resource, userJid))
+					} else {
+						remoteResources = [jidNormalizedUser(jid)]
+					}
+
+					for (const remoteResource of [...new Set(remoteResources)]) {
+						if (!remoteResource) continue
+						sendLocationBackend.upsertLocationSharer({
+							remoteJid: jidNormalizedUser(jid),
+							fromMe: 1,
+							remoteResource,
+							expires: messageTimestampMs + durationSecs * 1000,
+							messageId: fullMsg.key.id!
+						})
+					}
 				} catch (err) {
 					logger.debug({ err, jid }, 'location.db sent-live-location mirror failed (best-effort)')
 				}

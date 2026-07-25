@@ -2371,9 +2371,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// Reads the location.db live-location mirror. Best-effort:
 	// returns null/[] on miss or error so the consumer falls back to the live
 	// `messages.upsert` stream (each liveLocationMessage arrives as a message).
-	// Note: for a RECEIVED share the `expires` is always 0 (companion never gets
-	// the peer's duration — see LocationBackend docs); a SENT share (from_me=1)
-	// carries the real `expires` we chose in `sendLiveLocation`.
+	// `expires` follows the Android millisecond contract. Received duration is
+	// decoded from `<enc duration>`; zero-duration shares use the open-ended
+	// sentinel until a final-location update closes them.
 	const getLiveLocation = (jid: string): LocationCacheRow | null => {
 		if (!locationBackend || !jid) {
 			return null
@@ -2393,9 +2393,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 
 		try {
-			// Only non-expired shares (expires in unix seconds, matching the
-			// receive/send mirror). Open-ended rows (expires=0) stay included.
-			return locationBackend.listActiveLocationSharers(Math.floor(Date.now() / 1000))
+			return locationBackend.listActiveLocationSharers(Date.now())
 		} catch (err) {
 			logger.debug({ err }, 'location getActiveLiveLocations failed (fallback to legacy)')
 			return []

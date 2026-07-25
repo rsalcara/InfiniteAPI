@@ -30,6 +30,7 @@ import {
 	isHostedLidUser,
 	isHostedPnUser,
 	isJidBroadcast,
+	isJidGroup,
 	isJidStatusBroadcast,
 	isLidUser,
 	jidDecode,
@@ -43,6 +44,7 @@ import type { ILogger } from './logger'
 import {
 	type AppStateBackend,
 	type HistorySyncCompanionBackend,
+	LOCATION_OPEN_ENDED_EXPIRES_MS,
 	type LocationBackend,
 	mapMessageToAndroidType,
 	mapWebMessageStatusToAndroid,
@@ -1215,11 +1217,20 @@ const processMessage = async (
 	// Mirror static/live location into location.db when configured.
 	// Never allowed to affect message processing: best-effort side channel,
 	// same rule as the other optional multi-db-sqlite mirrors in this file.
-	if (locationBackend && (content?.locationMessage || content?.liveLocationMessage)) {
+	if (
+		(locationBackend || addOnBackend) &&
+		(content?.locationMessage || content?.liveLocationMessage || message.finalLiveLocation)
+	) {
 		try {
-			const loc = content.locationMessage || content.liveLocationMessage
+			const liveLocation = content?.liveLocationMessage
+			const finalLiveLocation = message.finalLiveLocation
+			const loc = content?.locationMessage || liveLocation || finalLiveLocation
 			const senderJid = getKeyAuthor(message.key, meId)
+			const rawTimestamp = toNumber(message.messageTimestamp ?? 0)
+			const messageTimestampMs =
+				rawTimestamp >= 1_000_000_000_000 ? rawTimestamp : rawTimestamp > 0 ? rawTimestamp * 1000 : Date.now()
 			if (
+				locationBackend &&
 				loc?.degreesLatitude !== undefined &&
 				loc?.degreesLatitude !== null &&
 				loc?.degreesLongitude !== undefined &&
@@ -1232,44 +1243,57 @@ const processMessage = async (
 					accuracy: loc.accuracyInMeters ?? 0,
 					speed: loc.speedInMps ?? 0,
 					bearing: loc.degreesClockwiseFromMagneticNorth ?? 0,
-					locationTs: toNumber(message.messageTimestamp ?? 0)
+					locationTs:
+						finalLiveLocation?.timeOffset !== undefined && finalLiveLocation.timeOffset !== null
+							? messageTimestampMs + finalLiveLocation.timeOffset * 1000
+							: messageTimestampMs
 				})
 			}
 
-			if (content?.liveLocationMessage && message.key.id) {
-				// `expires` = 0 on the receive path is CORRECT parity, not a gap:
-				// the share duration is a primary-device-only datum, never on the
-				// companion wire. Proven by decoding the raw plaintext of a real
-				// received share (only lat/lng/sequenceNumber/jpegThumbnail present;
-				// no duration field in the E2E proto) — see LocationBackend's doc.
-				// A SENT share carries a real expires (see sendLiveLocation).
-				locationBackend.upsertLocationSharer({
-					remoteJid: jidNormalizedUser(message.key.remoteJid ?? ''),
-					fromMe: message.key.fromMe ? 1 : 0,
-					remoteResource: message.key.participant ? jidNormalizedUser(message.key.participant) : '',
-					expires: 0,
-					messageId: message.key.id,
-					// Last-activity time drives received-share retention (#636): the
-					// share ages out this many seconds after its final update.
-					receivedTs: message.key.fromMe ? undefined : toNumber(message.messageTimestamp ?? 0) || undefined
-				})
+			if (locationBackend && liveLocation && message.key.id) {
+				const durationSecs =
+					typeof message.duration === 'number' && Number.isSafeInteger(message.duration) && message.duration >= 0
+						? message.duration
+						: 0
+				const remoteJid = jidNormalizedUser(message.key.remoteJid ?? '')
+				const fromMe = message.key.fromMe ? 1 : 0
+				const remoteResource = jidNormalizedUser(
+					message.key.fromMe
+						? message.key.participant || (isJidGroup(remoteJid) ? '' : remoteJid)
+						: message.key.participant || senderJid
+				)
+				const expires = durationSecs > 0 ? messageTimestampMs + durationSecs * 1000 : LOCATION_OPEN_ENDED_EXPIRES_MS
+
+				if (remoteJid && remoteResource) {
+					locationBackend.upsertLocationSharer({
+						remoteJid,
+						fromMe,
+						remoteResource,
+						expires,
+						messageId: message.key.id
+					})
+				}
 			}
 
 			// Also mirrors the per-message location row (msgstore.db's
 			// message_location — a different concern than location.db above:
 			// this is the location DATA attached to this specific message,
 			// not the jid-level live-share state).
-			if (
-				addOnBackend &&
-				messageStoreBackend &&
-				message.key.id &&
-				loc?.degreesLatitude !== undefined &&
-				loc?.degreesLatitude !== null &&
-				loc?.degreesLongitude !== undefined &&
-				loc?.degreesLongitude !== null
-			) {
+			if (addOnBackend && messageStoreBackend && message.key.id && (content?.locationMessage || liveLocation)) {
 				const row = messageStoreBackend.getMessageByKeyId(chat.id!, !!message.key.fromMe, message.key.id)
-				if (row) {
+				if (
+					row &&
+					loc?.degreesLatitude !== undefined &&
+					loc?.degreesLatitude !== null &&
+					loc?.degreesLongitude !== undefined &&
+					loc?.degreesLongitude !== null
+				) {
+					const finalTimestampMs =
+						finalLiveLocation?.timeOffset !== undefined && finalLiveLocation.timeOffset !== null
+							? messageTimestampMs + finalLiveLocation.timeOffset * 1000
+							: finalLiveLocation
+								? messageTimestampMs
+								: null
 					addOnBackend.recordLocation({
 						messageRowId: row._id,
 						chatJid: chat.id!,
@@ -1278,15 +1302,43 @@ const processMessage = async (
 						placeName: content?.locationMessage?.name ?? null,
 						placeAddress: content?.locationMessage?.address ?? null,
 						url: content?.locationMessage?.url ?? null,
-						// Null for received shares: the share-duration is never on the
-						// companion wire (raw-plaintext-proven — only lat/lng/
-						// sequenceNumber/jpegThumbnail arrive). See LocationBackend doc.
-						liveLocationShareDurationSecs: null,
-						liveLocationSequenceNumber: content?.liveLocationMessage?.sequenceNumber
-							? toNumber(content.liveLocationMessage.sequenceNumber)
-							: null
+						liveLocationShareDurationSecs: liveLocation ? (message.duration ?? 0) : null,
+						liveLocationSequenceNumber: liveLocation?.sequenceNumber ? toNumber(liveLocation.sequenceNumber) : null,
+						liveLocationFinalLatitude: finalLiveLocation?.degreesLatitude ?? null,
+						liveLocationFinalLongitude: finalLiveLocation?.degreesLongitude ?? null,
+						liveLocationFinalTimestampMs: finalTimestampMs,
+						mapDownloadStatus: 0
 					})
 				}
+			}
+
+			if (finalLiveLocation && message.key.id) {
+				if (addOnBackend && messageStoreBackend) {
+					const row = messageStoreBackend.getMessageByKeyId(chat.id!, !!message.key.fromMe, message.key.id)
+					if (
+						row &&
+						finalLiveLocation.degreesLatitude !== undefined &&
+						finalLiveLocation.degreesLatitude !== null &&
+						finalLiveLocation.degreesLongitude !== undefined &&
+						finalLiveLocation.degreesLongitude !== null
+					) {
+						addOnBackend.recordFinalLiveLocation({
+							messageRowId: row._id,
+							latitude: finalLiveLocation.degreesLatitude,
+							longitude: finalLiveLocation.degreesLongitude,
+							timestampMs:
+								finalLiveLocation.timeOffset !== undefined && finalLiveLocation.timeOffset !== null
+									? messageTimestampMs + finalLiveLocation.timeOffset * 1000
+									: messageTimestampMs
+						})
+					}
+				}
+
+				locationBackend?.endLocationSharersForMessage(
+					jidNormalizedUser(message.key.remoteJid ?? ''),
+					message.key.fromMe ? 1 : 0,
+					message.key.id
+				)
 			}
 		} catch (err) {
 			logger?.warn({ err }, 'failed to record location.db row')

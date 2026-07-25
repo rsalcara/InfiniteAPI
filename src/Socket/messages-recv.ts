@@ -3129,14 +3129,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		// Try to get messages from cache first, then fallback to getMessage
 		const msgs: (proto.IMessage | undefined)[] = []
+		const liveLocationDurations: (number | undefined)[] = []
 		for (const id of ids) {
 			let msg: proto.IMessage | undefined
+			let liveLocationDuration: number | undefined
 
 			// Try to get from retry cache first if enabled
 			if (messageRetryManager) {
 				const cachedMsg = messageRetryManager.getRecentMessage(remoteJid, id)
 				if (cachedMsg) {
 					msg = cachedMsg.message
+					liveLocationDuration = cachedMsg.liveLocationDuration
 					logger.debug({ jid: remoteJid, id }, 'found message in retry cache')
 				}
 			}
@@ -3150,6 +3153,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 
 			msgs.push(msg)
+			liveLocationDurations.push(liveLocationDuration)
 		}
 
 		let hasRetryableMessage = false
@@ -3267,6 +3271,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 
 				const msgRelayOpts: MessageRelayOptions = { messageId: ids[i] }
+				msgRelayOpts.liveLocationDuration = liveLocationDurations[i]
 
 				if (sendToAll) {
 					msgRelayOpts.useUserDevicesCache = false

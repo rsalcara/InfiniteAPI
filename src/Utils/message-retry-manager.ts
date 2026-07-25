@@ -104,6 +104,12 @@ export interface RecentMessage {
 	to: string
 	message: proto.IMessage
 	timestamp: number
+	/**
+	 * Transport metadata carried by the encrypted child rather than IMessage.
+	 * It must survive an immediate retry so a live-location resend retains the
+	 * official `<enc duration="…">` attribute.
+	 */
+	liveLocationDuration?: number
 }
 
 export interface SessionRecreateHistory {
@@ -271,7 +277,12 @@ export class MessageRetryManager {
 	/**
 	 * Add a recent message to the cache for retry handling
 	 */
-	addRecentMessage(to: string, id: string, message: proto.IMessage): void {
+	addRecentMessage(
+		to: string,
+		id: string,
+		message: proto.IMessage,
+		metadata?: { liveLocationDuration?: number }
+	): void {
 		const key: RecentMessageKey = { to, id }
 		const keyStr = this.keyToString(key)
 
@@ -279,7 +290,8 @@ export class MessageRetryManager {
 		this.recentMessagesMap.set(keyStr, {
 			to,
 			message,
-			timestamp: Date.now()
+			timestamp: Date.now(),
+			liveLocationDuration: metadata?.liveLocationDuration
 		})
 		this.messageKeyIndex.set(id, keyStr)
 

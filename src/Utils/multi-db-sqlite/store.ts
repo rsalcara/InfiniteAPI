@@ -19,6 +19,7 @@
  * and those all live inside `axolotl.db`, so the trade-off is fine.
  */
 import type { ILogger } from '../logger'
+import { repairOpenEndedLocationSharerExpiry, restoreCanonicalLocationSharerSchema } from './location-migrations'
 import { STATUS_LAST_TIMESTAMP_TRIGGER_NAME, STATUS_LAST_TIMESTAMP_TRIGGER_SQL } from './schemas/status'
 import { addColumnIfMissing, type Migration, runMigrations } from './schema-migrations'
 import { MULTI_DB_FILES, type MultiDbFile, SCHEMAS } from './schemas'
@@ -317,6 +318,22 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 			version: 1,
 			name: 'add location_sharer.received_ts (received-share retention)',
 			run: db => addColumnIfMissing(db, 'location_sharer', 'received_ts', 'INTEGER NOT NULL DEFAULT 0')
+		},
+		{
+			// The receive path now consumes the official `<enc duration="…">`
+			// metadata. Restore the canonical mobile table and remove the
+			// obsolete last-activity heuristic without losing existing rows.
+			version: 2,
+			name: 'restore canonical location_sharer schema',
+			run: restoreCanonicalLocationSharerSchema
+		},
+		{
+			// The legacy receive mirror used zero as its open-ended sentinel.
+			// Android uses Long.MAX_VALUE, which is also what the canonical
+			// active-window query expects.
+			version: 3,
+			name: 'repair open-ended location_sharer expiry sentinel',
+			run: repairOpenEndedLocationSharerExpiry
 		}
 	]
 }
