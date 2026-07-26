@@ -77,6 +77,7 @@ import {
 import { BinaryInfo } from '../WAM/BinaryInfo.js'
 import { USyncQuery, USyncUser } from '../WAUSync/'
 import { TcpSocketClient, WebSocketClient } from './Client'
+import { getAuthStoreDrainBarrier, registerAuthStoreDrainBarrier } from './auth-store-drain-barrier'
 import { executeWMexQuery } from './mex'
 import { createOfflineBufferState } from './offline-buffer-state'
 import { makeReachoutTimelockRemediation, type RemoveReachoutTimelockServerResult } from './reachout-remediation'
@@ -108,6 +109,7 @@ export const makeSocket = (config: SocketConfig) => {
 	} = config
 	const transportSession = resolveTransportSession(config, authState.creds)
 	const isNativeAndroid = transportSession.profile === 'native_android'
+	let closed = false
 	// ClientPayload must use the resolved, persisted native identity rather than
 	// the caller's current environment values. This keeps reconnects immutable.
 	const payloadConfig: SocketConfig = isNativeAndroid
@@ -218,7 +220,17 @@ export const makeSocket = (config: SocketConfig) => {
 
 	const ws = isNativeAndroid ? new TcpSocketClient(url, config) : new WebSocketClient(url, config)
 
-	ws.connect()
+	const previousAuthStoreDrain = getAuthStoreDrainBarrier(authState.keys)
+	if (previousAuthStoreDrain) {
+		logger.warn('waiting for the previous socket auth-store drain before reconnecting')
+		void previousAuthStoreDrain.then(() => {
+			if (!closed) {
+				ws.connect()
+			}
+		})
+	} else {
+		ws.connect()
+	}
 
 	const sendPromise = promisify(ws.send)
 	/** send a raw buffer */
@@ -571,8 +583,6 @@ export const makeSocket = (config: SocketConfig) => {
 	 * USAGE: Always check this flag BEFORE accessing socket resources (ws, keys, etc.)
 	 * The flag is set IMMEDIATELY in end() before any async operations to minimize race window.
 	 */
-	let closed = false
-
 	// Stable id for THIS socket instance, used by the active-connections
 	// gauge. Must be unique per instance (not per JID): two sockets for the
 	// same number — the overlapping-reconnect case — count as 2, and the old
@@ -1538,10 +1548,11 @@ export const makeSocket = (config: SocketConfig) => {
 			await keys.destroy?.()
 		} else {
 			logger.warn({ connectionId }, 'deferring auth-key teardown until active Signal/LID operations have drained')
-			void signalRepository
+			const deferredDrain = signalRepository
 				.waitForClose()
 				.then(() => keys.destroy?.())
 				.catch(err => logger.error({ err, connectionId }, 'error completing deferred auth-key teardown'))
+			registerAuthStoreDrainBarrier(authState.keys, deferredDrain)
 		}
 
 		ws.removeAllListeners('close')
