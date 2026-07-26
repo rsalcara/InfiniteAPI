@@ -109,6 +109,11 @@ export type SignalRepository = {
 // Optimized repository with pre-loaded LID mapping store
 export interface SignalRepositoryWithLIDStore extends SignalRepository {
 	lidMapping: LIDMappingStore
-	/** Release in-memory caches (migrated-session + LID mapping) on socket close. */
-	close?: () => void | Promise<void>
+	/**
+	 * Release in-memory caches on socket close.
+	 * Returns false when LID cleanup exceeded the bounded shutdown budget.
+	 */
+	close?: () => boolean | void | Promise<boolean | void>
+	/** Await deferred LID cleanup before destroying the backing auth key store. */
+	waitForClose: () => Promise<void>
 }

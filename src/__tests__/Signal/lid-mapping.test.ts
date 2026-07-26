@@ -207,7 +207,8 @@ describe('LIDMappingStore', () => {
 			// Call destroy while operation is in progress. It must reject new
 			// work immediately but not resolve until the active operation ends.
 			let destroyResolved = false
-			const destroyPromise = lidMappingStore.destroy().then(() => {
+			const destroyPromise = lidMappingStore.destroy().then(drained => {
+				expect(drained).toBe(true)
 				destroyResolved = true
 			})
 			await new Promise(resolve => setTimeout(resolve, 10))
@@ -222,6 +223,32 @@ describe('LIDMappingStore', () => {
 
 			// But new operations should be rejected
 			await expect(lidMappingStore.getLIDForPN(pn)).rejects.toThrow('LIDMappingStore has been destroyed')
+		})
+
+		it('should bound socket shutdown while keeping cleanup deferred until an active operation drains', async () => {
+			jest.useFakeTimers()
+			let releaseOperation!: () => void
+			const operationBlocked = new Promise<void>(resolve => {
+				releaseOperation = resolve
+			})
+
+			// @ts-ignore
+			mockKeys.get.mockImplementation(async () => {
+				await operationBlocked
+				return { '12345': 'aaaaa' } as unknown as SignalDataTypeMap['lid-mapping']
+			})
+
+			const operationPromise = lidMappingStore.getLIDForPN('12345@s.whatsapp.net')
+			await Promise.resolve()
+
+			const destroyPromise = lidMappingStore.destroy()
+			await jest.advanceTimersByTimeAsync(5_000)
+			await expect(destroyPromise).resolves.toBe(false)
+
+			releaseOperation()
+			await operationPromise
+			await expect(lidMappingStore.waitForDestroy()).resolves.toBeUndefined()
+			jest.useRealTimers()
 		})
 	})
 

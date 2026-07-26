@@ -827,8 +827,9 @@ export function makeLibSignalRepository(
 			deviceListCache.clear()
 			migrationInFlight.clear()
 			migratedSessionCache.clear()
-			await lidMapping.destroy()
+			return lidMapping.destroy()
 		},
+		waitForClose: () => lidMapping.waitForDestroy(),
 
 		/**
 		 * Known limitation (PR #457 round-3 CodeRabbit Major heavy lift):

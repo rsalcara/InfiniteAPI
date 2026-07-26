@@ -1523,15 +1523,26 @@ export const makeSocket = (config: SocketConfig) => {
 		// auth store are still alive. Closing keys first caused history-sync
 		// mapping batches to retry against an already-destroyed transaction
 		// capability and permanently drop valid PN↔LID mappings.
+		let signalRepositoryDrained = true
 		try {
-			await signalRepository.close?.()
+			const closeResult = await signalRepository.close?.()
+			signalRepositoryDrained = closeResult !== false
 		} catch (err) {
+			signalRepositoryDrained = false
 			logger.error({ err, connectionId }, 'error draining signal repository')
 		}
 
-		// Only after Signal/LID work is drained may the transaction capability
-		// tear down its PreKeyManager and reject new work.
-		await keys.destroy?.()
+		if (signalRepositoryDrained) {
+			// Only after Signal/LID work is drained may the transaction
+			// capability tear down its PreKeyManager and reject new work.
+			await keys.destroy?.()
+		} else {
+			logger.warn({ connectionId }, 'deferring auth-key teardown until active Signal/LID operations have drained')
+			void signalRepository
+				.waitForClose()
+				.then(() => keys.destroy?.())
+				.catch(err => logger.error({ err, connectionId }, 'error completing deferred auth-key teardown'))
+		}
 
 		ws.removeAllListeners('close')
 		ws.removeAllListeners('open')
