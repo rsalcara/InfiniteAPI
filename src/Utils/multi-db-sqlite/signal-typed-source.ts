@@ -41,7 +41,7 @@ import {
 } from './signal-id-parsing'
 import type { SignalTypedBackend } from './signal-typed-backend'
 
-export type TypedSignalType = 'session' | 'pre-key' | 'sender-key' | 'identity-key'
+export type TypedSignalType = 'session' | 'pre-key' | 'sender-key' | 'identity-key' | 'fast-ratchet-sender-key'
 
 type IdentityKeyRow = { recipientId: number; recipientType: number; deviceId: number | null }
 
@@ -116,6 +116,20 @@ export class SignalTypedSourceStore {
 						senderAccountType
 					})
 					return row ? row.record.toString('utf-8') : null
+				}
+
+				case 'fast-ratchet-sender-key': {
+					const parsed = parseSenderKeyId(id)
+					if (!parsed) return null
+					const senderAccountType = domainTypeToAccountType(parsed.sender.domainType)
+					if (senderAccountType === null) return null
+					const record = this.backend.getFastRatchetSenderKey({
+						groupId: parsed.groupId,
+						deviceId: parsed.sender.deviceId,
+						senderAccountId: parsed.sender.user,
+						senderAccountType
+					})
+					return record?.toString('utf-8') ?? null
 				}
 
 				case 'identity-key': {
@@ -226,6 +240,17 @@ export class SignalTypedSourceStore {
 					return out
 				}
 
+				case 'fast-ratchet-sender-key': {
+					// Live-location has one state per active conversation, so unlike
+					// group sender-key fanout this path is naturally bounded.
+					for (const id of ids) {
+						const value = this.get(type, id)
+						if (value !== null) out[id] = value
+					}
+
+					return out
+				}
+
 				case 'identity-key': {
 					const aliasesByKey = new Map<string, string[]>()
 					const keys: IdentityKeyRow[] = []
@@ -305,6 +330,23 @@ export class SignalTypedSourceStore {
 				return
 			}
 
+			case 'fast-ratchet-sender-key': {
+				const parsed = parseSenderKeyId(id)
+				if (!parsed) return this.warnUnparsed(type, id)
+				const senderAccountType = domainTypeToAccountType(parsed.sender.domainType)
+				if (senderAccountType === null) return this.warnUnsupportedDomain(type, id, parsed.sender.domainType)
+				this.backend.putFastRatchetSenderKey(
+					{
+						groupId: parsed.groupId,
+						deviceId: parsed.sender.deviceId,
+						senderAccountId: parsed.sender.user,
+						senderAccountType
+					},
+					record
+				)
+				return
+			}
+
 			case 'identity-key': {
 				const parsed = classifyIdentityKey(id)
 				if (parsed.kind === 'fallback') return this.warnIdentityFallback(id, parsed)
@@ -365,6 +407,20 @@ export class SignalTypedSourceStore {
 				const senderAccountType = domainTypeToAccountType(parsed.sender.domainType)
 				if (senderAccountType === null) return
 				this.backend.deleteSenderKey({
+					groupId: parsed.groupId,
+					deviceId: parsed.sender.deviceId,
+					senderAccountId: parsed.sender.user,
+					senderAccountType
+				})
+				return
+			}
+
+			case 'fast-ratchet-sender-key': {
+				const parsed = parseSenderKeyId(id)
+				if (!parsed) return this.warnUnparsed(type, id)
+				const senderAccountType = domainTypeToAccountType(parsed.sender.domainType)
+				if (senderAccountType === null) return
+				this.backend.deleteFastRatchetSenderKey({
 					groupId: parsed.groupId,
 					deviceId: parsed.sender.deviceId,
 					senderAccountId: parsed.sender.user,

@@ -56,6 +56,8 @@ export class LocationBackend {
 	private readonly stmts: {
 		replaceLocationCache: SqliteStatementLike
 		getLocationCache: SqliteStatementLike
+		replaceLocationKeyDistribution: SqliteStatementLike
+		getLocationKeyDistribution: SqliteStatementLike
 		replaceLocationSharer: SqliteStatementLike
 		getLocationSharer: SqliteStatementLike
 		listLocationSharers: SqliteStatementLike
@@ -72,6 +74,7 @@ export class LocationBackend {
 		private readonly db: SqliteDbLike,
 		_opts?: { retentionSecs?: number; pruneIntervalMs?: number }
 	) {
+		void _opts
 		this.stmts = {
 			replaceLocationCache: this.db.prepare(
 				'INSERT OR REPLACE INTO location_cache ' +
@@ -80,6 +83,11 @@ export class LocationBackend {
 			getLocationCache: this.db.prepare(
 				'SELECT jid, latitude, longitude, accuracy, speed, bearing, location_ts FROM location_cache WHERE jid = ?'
 			),
+			replaceLocationKeyDistribution: this.db.prepare(
+				'INSERT INTO location_key_distribution (jid, sent_to_server) VALUES (?, ?) ' +
+					'ON CONFLICT(jid) DO UPDATE SET sent_to_server = excluded.sent_to_server'
+			),
+			getLocationKeyDistribution: this.db.prepare('SELECT sent_to_server FROM location_key_distribution WHERE jid = ?'),
 			replaceLocationSharer: this.db.prepare(
 				'INSERT OR REPLACE INTO location_sharer ' +
 					'(remote_jid, from_me, remote_resource, expires, message_id) VALUES (?, ?, ?, ?, ?)'
@@ -140,6 +148,15 @@ export class LocationBackend {
 		}
 	}
 
+	setLocationKeyDistribution(jid: string, sentToServer: boolean): void {
+		this.stmts.replaceLocationKeyDistribution.run(jid, sentToServer ? 1 : 0)
+	}
+
+	getLocationKeyDistribution(jid: string): boolean | null {
+		const row = this.stmts.getLocationKeyDistribution.get(jid) as { sent_to_server: number | boolean } | undefined
+		return row ? Number(row.sent_to_server) === 1 : null
+	}
+
 	upsertLocationSharer(row: LocationSharerRow): void {
 		this.stmts.replaceLocationSharer.run(
 			row.remoteJid,
@@ -198,6 +215,7 @@ export class LocationBackend {
 	 * a received-activity timeout. Kept as a harmless no-op for compatibility.
 	 */
 	pruneStaleReceivedSharers(_cutoff: number): number {
+		void _cutoff
 		return 0
 	}
 

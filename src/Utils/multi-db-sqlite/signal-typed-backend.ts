@@ -168,6 +168,9 @@ export class SignalTypedBackend {
 		upsertSenderKey: SqliteStatementLike
 		selectSenderKey: SqliteStatementLike
 		deleteSenderKey: SqliteStatementLike
+		upsertFastRatchetSenderKey: SqliteStatementLike
+		selectFastRatchetSenderKey: SqliteStatementLike
+		deleteFastRatchetSenderKey: SqliteStatementLike
 		deleteIdentity: SqliteStatementLike
 		insertPrekeyUpload: SqliteStatementLike
 		upsertMessageBaseKey: SqliteStatementLike
@@ -329,6 +332,19 @@ export class SignalTypedBackend {
 			deleteSenderKey: this.db.prepare(
 				'DELETE FROM sender_keys ' +
 					'WHERE group_id = ? AND device_id = ? AND sender_account_id = ? AND sender_account_type = ?'
+			),
+			upsertFastRatchetSenderKey: this.db.prepare(
+				'INSERT INTO fast_ratchet_sender_keys (group_id, sender_id, sender_type, device_id, record) ' +
+					'VALUES (?, ?, ?, ?, ?) ' +
+					'ON CONFLICT(group_id, sender_id, sender_type, device_id) DO UPDATE SET record = excluded.record'
+			),
+			selectFastRatchetSenderKey: this.db.prepare(
+				'SELECT record FROM fast_ratchet_sender_keys ' +
+					'WHERE group_id = ? AND sender_id = ? AND sender_type = ? AND device_id = ?'
+			),
+			deleteFastRatchetSenderKey: this.db.prepare(
+				'DELETE FROM fast_ratchet_sender_keys ' +
+					'WHERE group_id = ? AND sender_id = ? AND sender_type = ? AND device_id = ?'
 			),
 			deleteIdentity: this.db.prepare(
 				'DELETE FROM identities WHERE recipient_id = ? AND recipient_type = ? AND device_id = ?'
@@ -731,6 +747,35 @@ export class SignalTypedBackend {
 	deleteSenderKey(key: SignalSenderKeyKey): boolean {
 		const r = this.stmts.deleteSenderKey.run(key.groupId, key.deviceId, key.senderAccountId, key.senderAccountType)
 		return r.changes > 0
+	}
+
+	// ============ fast-ratchet sender keys (live location) ============
+
+	putFastRatchetSenderKey(key: SignalSenderKeyKey, record: Buffer | Uint8Array): void {
+		this.stmts.upsertFastRatchetSenderKey.run(
+			key.groupId,
+			key.senderAccountId,
+			key.senderAccountType,
+			key.deviceId,
+			record
+		)
+	}
+
+	getFastRatchetSenderKey(key: SignalSenderKeyKey): Buffer | null {
+		const row = this.stmts.selectFastRatchetSenderKey.get(
+			key.groupId,
+			key.senderAccountId,
+			key.senderAccountType,
+			key.deviceId
+		) as { record: Buffer } | undefined
+		return row?.record ?? null
+	}
+
+	deleteFastRatchetSenderKey(key: SignalSenderKeyKey): boolean {
+		return (
+			this.stmts.deleteFastRatchetSenderKey.run(key.groupId, key.senderAccountId, key.senderAccountType, key.deviceId)
+				.changes > 0
+		)
 	}
 
 	deleteIdentity(key: SignalIdentityKey): boolean {

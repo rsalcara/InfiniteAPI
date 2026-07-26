@@ -316,7 +316,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		// Best-effort introspection mirror — signal_kv stays the authoritative
 		// read source; mirrorSignalEntry swallows its own errors and never
 		// affects the signal_kv write.
-		mirrorSignalEntry(type, id, value as Uint8Array | { public: Uint8Array } | null | undefined, {
+		mirrorSignalEntry(type, id, value as Uint8Array | { public: Uint8Array } | object | null | undefined, {
 			signalTypedBackend,
 			jidMapBackend: signalMirrorJidMap,
 			logger: opts.logger
@@ -325,6 +325,26 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 
 	const isTypedSignalValue = (type: TypedSignalType, value: unknown): boolean => {
 		const isBytes = (candidate: unknown): boolean => Buffer.isBuffer(candidate) || candidate instanceof Uint8Array
+		if (type === 'fast-ratchet-sender-key') {
+			if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+			const state = value as {
+				senderKeyId?: unknown
+				iteration?: unknown
+				chainKeys?: unknown
+				signingPublic?: unknown
+				signingPrivate?: unknown
+			}
+			return (
+				Number.isSafeInteger(state.senderKeyId) &&
+				Number.isSafeInteger(state.iteration) &&
+				Array.isArray(state.chainKeys) &&
+				state.chainKeys.length === 8 &&
+				state.chainKeys.every(isBytes) &&
+				isBytes(state.signingPublic) &&
+				isBytes(state.signingPrivate)
+			)
+		}
+
 		if (type === 'pre-key') {
 			if (!value || typeof value !== 'object' || Array.isArray(value)) return false
 			const pair = value as { public?: unknown; private?: unknown }

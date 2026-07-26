@@ -89,6 +89,18 @@ export type SignalDataTypeMap = {
 	tctoken: { token: Buffer; timestamp?: string; senderTimestamp?: number; realIssueTimestamp?: number | null }
 	/** Identity key for Signal Protocol - used for detecting contact reinstalls */
 	'identity-key': Uint8Array
+	/**
+	 * Eight-chain sender-key state used by Android live-location updates.
+	 * Every auth adapter persists this through its existing key-store path;
+	 * multi-db additionally retains signal_kv as the compatibility fallback.
+	 */
+	'fast-ratchet-sender-key': {
+		senderKeyId: number
+		iteration: number
+		chainKeys: Buffer[]
+		signingPublic: Buffer
+		signingPrivate: Buffer
+	}
 }
 
 export type SignalDataSet = { [T in keyof SignalDataTypeMap]?: { [id: string]: SignalDataTypeMap[T] | null } }

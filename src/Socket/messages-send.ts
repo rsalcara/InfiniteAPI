@@ -3,6 +3,7 @@ import { Boom } from '@hapi/boom'
 import { randomBytes, randomUUID } from 'crypto'
 import { proto } from '../../WAProto/index.js'
 import { DEFAULT_CACHE_MAX_KEYS, DEFAULT_CACHE_TTLS, URL_REGEX, WA_DEFAULT_EPHEMERAL } from '../Defaults'
+import { createFastRatchetSenderKeyState, encodeFastRatchetSenderKeyDistribution } from '../Signal/fast-ratchet'
 import type {
 	AlbumMediaItem,
 	AlbumMediaResult,
@@ -225,8 +226,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const devicesMutex = makeMutex()
 	let lastLiveLocationSequenceNumber = 0
 	const nextLiveLocationSequenceNumber = (): number => {
-		// Android uses a microsecond-scale, monotonically increasing sequence.
-		// `Date.now() * 1000` is still below Number.MAX_SAFE_INTEGER.
+		// LocationSharingManager derives the first persisted sequence from the
+		// server-adjusted millisecond clock multiplied by 1000, then increments
+		// it. Preserve monotonicity when two shares start within one millisecond.
 		const candidate = Date.now() * 1000 + 1
 		lastLiveLocationSequenceNumber = Math.max(candidate, lastLiveLocationSequenceNumber + 1)
 		return lastLiveLocationSequenceNumber
@@ -928,6 +930,127 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		return { nodes, shouldIncludeDeviceIdentity }
 	}
+
+	const liveLocationKeyMutex = makeMutex()
+
+	/**
+	 * Android's SendLiveLocationKeyJob runs after the initial live-location
+	 * message has been queued. It creates one
+	 * eight-chain fast-ratchet sender key, wraps its distribution bytes in
+	 * Message.fastRatchetKeySenderKeyDistributionMessage, individually Signal
+	 * encrypts that message for each recipient primary device, and sends the
+	 * resulting participant list to `location@broadcast`.
+	 *
+	 * The state is durable in every auth backend. Re-sending the distribution
+	 * for a new share is deliberate and idempotent for the receiver; persisting
+	 * the same state prevents restart/reconnect from silently changing keys.
+	 */
+	const sendLiveLocationKeyDistribution = async (conversationJid: string): Promise<void> =>
+		liveLocationKeyMutex.mutex(async () => {
+			const meId = authState.creds.me?.id
+			if (!meId) throw new Boom('Not authenticated', { statusCode: 401 })
+
+			const ownUser = jidDecode(meId)?.user
+			if (!ownUser) throw new Boom('Authenticated JID has no user component', { statusCode: 500 })
+			// Android permits persistence only for the singleton
+			// `location@broadcast` fast-ratchet group. The conversation is not
+			// the cryptographic group id; it is only the recipient of the
+			// initial/final share notification.
+			const fastRatchetGroupId = 'location@broadcast'
+			const stateId = `${fastRatchetGroupId}::${ownUser}::0`
+			const legacyStateId = fastRatchetGroupId
+			const stored = await authState.keys.get('fast-ratchet-sender-key', [stateId, legacyStateId])
+			const state = stored[stateId] || stored[legacyStateId] || createFastRatchetSenderKeyState()
+			if (!stored[stateId]) {
+				await authState.keys.set({ 'fast-ratchet-sender-key': { [stateId]: state } })
+			}
+
+			const rawRecipients = isJidGroup(conversationJid)
+				? (await groupMetadata(conversationJid)).participants.map(participant => participant.id)
+				: [conversationJid]
+			const meLid = authState.creds.me?.lid
+			const normalizedRecipients = rawRecipients
+				.map(jidNormalizedUser)
+				.filter(recipient => !areJidsSameUser(recipient, meId) && (!meLid || !areJidsSameUser(recipient, meLid)))
+			const recipients = await Promise.all(
+				normalizedRecipients.map(async recipient => {
+					if (!isAnyPnUser(recipient)) return recipient
+					const lid = await getLIDForPN(recipient)
+					if (lid) return jidNormalizedUser(lid)
+					logger.warn(
+						{ conversationJid, recipient, reason: 'missing-lid-mapping' },
+						'live-location key distribution downgraded to PN'
+					)
+					return recipient
+				})
+			)
+			if (!recipients.length) return
+
+			// SendLiveLocationKeyJob targets each UserJid's primary device. The
+			// `<to jid>` therefore remains the normalized user jid, while Signal
+			// resolves/creates the device-0 session underneath.
+			await assertSessions(recipients)
+			const distributionMessage: proto.IMessage = {
+				fastRatchetKeySenderKeyDistributionMessage: {
+					groupId: fastRatchetGroupId,
+					axolotlSenderKeyDistributionMessage: encodeFastRatchetSenderKeyDistribution(state)
+				}
+			}
+			// SendLiveLocationKeyJob calls Message.toByteArray() and hands those
+			// bytes directly to the Signal session. Ordinary message fanout uses
+			// encodeWAMessage(), which appends random protobuf padding; that
+			// padded plaintext is not the official key-notification wire shape.
+			const distributionBytes = Buffer.from(proto.Message.encode(distributionMessage).finish())
+			const nodes = (
+				await Promise.all(
+					recipients.map(recipient =>
+						encryptionMutex.mutex(recipient, async () => {
+							try {
+								const { type, ciphertext } = await signalRepository.encryptMessage({
+									jid: recipient,
+									data: distributionBytes
+								})
+								return {
+									tag: 'to',
+									attrs: { jid: recipient },
+									content: [{ tag: 'enc', attrs: { v: '2', type }, content: ciphertext }]
+								} as BinaryNode
+							} catch (err) {
+								logger.error({ recipient, err }, 'failed to encrypt live-location key distribution')
+								return null
+							}
+						})
+					)
+				)
+			).filter((node): node is BinaryNode => node !== null)
+			if (nodes.length !== recipients.length) {
+				throw new Boom('Live-location key distribution could not encrypt for every recipient', {
+					statusCode: 500,
+					data: { expected: recipients.length, encrypted: nodes.length }
+				})
+			}
+
+			const notificationId = generateMessageIDV2(sock.user?.id)
+			await sendNode({
+				tag: 'notification',
+				attrs: {
+					id: notificationId,
+					to: 'location@broadcast',
+					type: 'location'
+				},
+				content: [{ tag: 'participants', attrs: {}, content: nodes }]
+			})
+			if (sendLocationBackend) {
+				for (const recipient of recipients) {
+					sendLocationBackend.setLocationKeyDistribution(recipient, true)
+				}
+			}
+
+			logger.info(
+				{ conversationJid, fastRatchetGroupId, notificationId, recipients, recipientCount: recipients.length },
+				'live-location fast-ratchet key distribution sent'
+			)
+		})
 
 	// Interactive message detection and binary node injection
 
@@ -3113,6 +3236,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				degreesLongitude: number
 				/** Share window in seconds — populates the `from_me=1` sharer `expires`. */
 				durationSecs?: number
+				/** Android UI label: "Add comment". Stored in LiveLocationMessage.caption. */
+				comment?: string
+				/** @deprecated Use `comment`; retained for API compatibility. */
 				caption?: string
 				accuracyInMeters?: number
 				speedInMps?: number
@@ -3124,10 +3250,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		) => {
 			const userJid = authState.creds.me!.id
 			const durationSecs = location.durationSecs ?? 15 * 60
-			if (!Number.isSafeInteger(durationSecs) || durationSecs <= 0 || durationSecs > 8 * 60 * 60) {
-				throw new Boom('Live-location duration must be an integer between 1 and 28800 seconds', {
+			const officialDurations = [15 * 60, 60 * 60, 8 * 60 * 60]
+			if (!officialDurations.includes(durationSecs)) {
+				throw new Boom('Live-location duration must be 900, 3600, or 28800 seconds', {
 					statusCode: 400,
-					data: { durationSecs }
+					data: { durationSecs, allowed: officialDurations }
 				})
 			}
 
@@ -3136,10 +3263,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				liveLocationMessage: {
 					degreesLatitude: location.degreesLatitude,
 					degreesLongitude: location.degreesLongitude,
-					accuracyInMeters: location.accuracyInMeters,
-					speedInMps: location.speedInMps,
-					degreesClockwiseFromMagneticNorth: location.degreesClockwiseFromMagneticNorth,
-					caption: location.caption,
+					caption: location.comment ?? location.caption,
+					// Android's FMessageLiveLocationSerializer writes only
+					// latitude, longitude, thumbnail, caption and the allocated
+					// sequence into the initial message. Accuracy/speed/bearing
+					// belong to encrypted update notifications.
 					sequenceNumber: location.sequenceNumber ?? nextLiveLocationSequenceNumber(),
 					jpegThumbnail: location.jpegThumbnail
 				}
@@ -3152,12 +3280,19 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			})
 			fullMsg.duration = durationSecs
 
-			await relayMessage(jid, fullMsg.message!, {
+			// Keep the initial message addressed to the conversation. Android
+			// canonicalizes PN to LID only inside SendLiveLocationKeyJob.
+			await relayMessage(jidNormalizedUser(jid), fullMsg.message!, {
 				messageId: fullMsg.key.id!,
 				useCachedGroupMetadata: options.useCachedGroupMetadata,
 				statusJidList: options.statusJidList,
 				liveLocationDuration: durationSecs
 			})
+
+			// Match the Android job order: enqueue the initial live-location
+			// message first, then distribute the durable location@broadcast
+			// fast-ratchet sender key to the recipient primary devices.
+			await sendLiveLocationKeyDistribution(jid)
 
 			// Best-effort from_me=1 mirror — never blocks the send. Android stores
 			// one location_sharer row per recipient/resource.
