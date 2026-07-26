@@ -859,7 +859,7 @@ describe('msgstore.db message-store backends', () => {
 				store
 					.handle('msgstore.db')
 					.prepare(
-						'SELECT live_location_final_latitude, live_location_final_longitude, ' +
+						'SELECT place_name, live_location_final_latitude, live_location_final_longitude, ' +
 							'live_location_final_timestamp FROM message_location WHERE message_row_id = ?'
 					)
 					.get(locRowId)
@@ -893,7 +893,7 @@ describe('msgstore.db message-store backends', () => {
 				store
 					.handle('msgstore.db')
 					.prepare(
-						'SELECT live_location_final_latitude, live_location_final_longitude, ' +
+						'SELECT place_name, live_location_final_latitude, live_location_final_longitude, ' +
 							'live_location_final_timestamp FROM message_location WHERE message_row_id = ?'
 					)
 					.get(locRowId)
