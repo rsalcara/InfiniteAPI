@@ -192,39 +192,14 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 			// Ambiguous legacy UI rows remain NULL until a richer reprocess heals
 			// them through the upsert; inventing 45/54/55 would not be 1:1.
 			sql: `
-				UPDATE message
-				SET message_type = 20
-				WHERE message_type IS NULL
-				AND EXISTS (
-					SELECT 1 FROM message_media mm
-					WHERE mm.message_row_id = message._id
-					AND mm.mime_type IN ('image/webp', 'application/was')
-				);
-				UPDATE message
-				SET message_type = 66
-				WHERE message_type IS NULL
-				AND EXISTS (
-					SELECT 1 FROM message_poll_option mpo
-					WHERE mpo.message_row_id = message._id
-				);
-				UPDATE message
-				SET message_type = 57
-				WHERE message_type IS NULL
-				AND EXISTS (SELECT 1 FROM message_ui_elements ui WHERE ui.message_row_id = message._id)
-				AND EXISTS (
-					SELECT 1 FROM message_media mm
-					WHERE mm.message_row_id = message._id AND mm.mime_type LIKE 'image/%'
-				);
-				UPDATE message
-				SET message_type = 63
-				WHERE message_type IS NULL
-				AND EXISTS (SELECT 1 FROM message_ui_elements ui WHERE ui.message_row_id = message._id)
-				AND EXISTS (
-					SELECT 1 FROM message_media mm
-					WHERE mm.message_row_id = message._id
-					AND mm.mime_type = 'application/pdf'
-				);
-			`
+					UPDATE message
+					SET message_type = 66
+					WHERE message_type IS NULL
+					AND EXISTS (
+						SELECT 1 FROM message_poll_option mpo
+						WHERE mpo.message_row_id = message._id
+					);
+				`
 		},
 		{
 			version: 5,
@@ -277,9 +252,19 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 					is_lottie INTEGER NOT NULL DEFAULT 0,
 					mimetype TEXT
 				);
-				CREATE INDEX IF NOT EXISTS sticker_pack_stickers_message_row_id_index
-					ON message_sticker_pack_stickers (message_row_id);
-			`
+					CREATE INDEX IF NOT EXISTS sticker_pack_stickers_message_row_id_index
+						ON message_sticker_pack_stickers (message_row_id);
+				`
+		},
+		{
+			version: 7,
+			name: 'add final live-location columns to legacy message_location',
+			run: db => {
+				addColumnIfMissing(db, 'message_location', 'live_location_final_latitude', 'REAL')
+				addColumnIfMissing(db, 'message_location', 'live_location_final_longitude', 'REAL')
+				addColumnIfMissing(db, 'message_location', 'live_location_final_timestamp', 'INTEGER')
+				addColumnIfMissing(db, 'message_location', 'map_download_status', 'INTEGER')
+			}
 		}
 	],
 	'status.db': [

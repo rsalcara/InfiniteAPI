@@ -223,31 +223,6 @@ describe('LIDMappingStore', () => {
 			// But new operations should be rejected
 			await expect(lidMappingStore.getLIDForPN(pn)).rejects.toThrow('LIDMappingStore has been destroyed')
 		})
-
-		it('should bound destroy when an active mapping operation is stuck', async () => {
-			jest.useFakeTimers()
-			let releaseOperation!: () => void
-			try {
-				mockKeys.get.mockImplementation((async () => {
-					await new Promise<void>(resolve => {
-						releaseOperation = resolve
-					})
-					return { '12345': 'aaaaa' }
-				}) as SignalKeyStoreWithTransaction['get'])
-				const operationPromise = lidMappingStore.getLIDForPN('12345@s.whatsapp.net')
-				await Promise.resolve()
-				expect(mockKeys.get).toHaveBeenCalled()
-
-				const destroyPromise = lidMappingStore.destroy()
-				await jest.advanceTimersByTimeAsync(5_000)
-				await expect(destroyPromise).resolves.toBeUndefined()
-
-				releaseOperation()
-				await expect(operationPromise).resolves.toBe('aaaaa@lid')
-			} finally {
-				jest.useRealTimers()
-			}
-		})
 	})
 
 	// ========================================================================

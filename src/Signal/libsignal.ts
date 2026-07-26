@@ -1239,7 +1239,7 @@ function signalStorage(
 
 			if (Object.keys(deletions).length > 0) {
 				await transactionalKeys
-					.runOutsideTransaction(() => Promise.resolve(keys.set({ 'pre-key': deletions })))
+					.runOutsideTransaction(() => Promise.resolve().then(() => keys.set({ 'pre-key': deletions })))
 					.catch(error => {
 						logger?.warn({ error, count: Object.keys(deletions).length }, 'failed to flush consumed prekeys')
 					})
@@ -1353,7 +1353,7 @@ function signalStorage(
 			const timer = setTimeout(() => {
 				pendingPreKeyDeletions.delete(keyId)
 				void transactionalKeys
-					.runOutsideTransaction(() => Promise.resolve(keys.set({ 'pre-key': { [id]: null } })))
+					.runOutsideTransaction(() => Promise.resolve().then(() => keys.set({ 'pre-key': { [id]: null } })))
 					.catch(error => {
 						logger?.warn({ error, preKeyId: id }, 'failed to delete consumed prekey')
 					})

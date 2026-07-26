@@ -3148,6 +3148,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			if (!msg) {
 				msg = await getMessage({ ...key, id })
 				if (msg) {
+					const persistedDuration = (msg as proto.IMessage & { liveLocationDuration?: number }).liveLocationDuration
+					if (
+						typeof persistedDuration === 'number' &&
+						Number.isSafeInteger(persistedDuration) &&
+						persistedDuration >= 0
+					) {
+						liveLocationDuration = persistedDuration
+					}
+
 					logger.debug({ jid: remoteJid, id }, 'found message via getMessage')
 				}
 			}

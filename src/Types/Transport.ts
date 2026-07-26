@@ -124,6 +124,8 @@ export type PersistedNativeAndroidIdentity = {
 	/** Missing on legacy native sessions, which always used the Business ID. */
 	appVariant?: NativeAndroidAppVariant
 	clientAppId?: string
+	/** App build paired with this application identity; immutable after registration. */
+	appVersion?: NativeAndroidAppVersion
 	device: NativeAndroidDeviceProfile
 	/**
 	 * Successful-login counter sent as ClientPayload.lc. The official client

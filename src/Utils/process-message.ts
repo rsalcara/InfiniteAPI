@@ -167,7 +167,12 @@ export const mirrorHistoryMessagesToStore = async (
 				fromMe: !!message.key.fromMe,
 				keyId,
 				senderJid,
-				status: mapWebMessageStatusToAndroid(message.status) ?? (message.key.fromMe ? 4 : 0),
+				// Web ERROR=0 has no lossless Android status equivalent. Preserve
+				// NULL instead of silently upgrading a failed own message to ACK=4.
+				status:
+					message.status === proto.WebMessageInfo.Status.ERROR
+						? null
+						: (mapWebMessageStatusToAndroid(message.status) ?? (message.key.fromMe ? 4 : 0)),
 				timestamp,
 				receivedTimestamp: timestamp > 0 ? timestamp * 1000 : null,
 				messageType: mapMessageToAndroidType(message.message),

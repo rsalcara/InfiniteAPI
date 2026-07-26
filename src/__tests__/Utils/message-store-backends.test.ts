@@ -864,6 +864,28 @@ describe('msgstore.db message-store backends', () => {
 				live_location_final_timestamp: 1_700_000_060_000
 			})
 
+			addOns.recordLocation({
+				messageRowId: locRowId,
+				chatJid,
+				latitude: -23.53,
+				longitude: -46.63,
+				liveLocationShareDurationSecs: 900,
+				liveLocationSequenceNumber: 124
+			})
+			expect(
+				store
+					.handle('msgstore.db')
+					.prepare(
+						'SELECT live_location_final_latitude, live_location_final_longitude, ' +
+							'live_location_final_timestamp FROM message_location WHERE message_row_id = ?'
+					)
+					.get(locRowId)
+			).toMatchObject({
+				live_location_final_latitude: -23.52,
+				live_location_final_longitude: -46.62,
+				live_location_final_timestamp: 1_700_000_060_000
+			})
+
 			const vcardRow = store
 				.handle('msgstore.db')
 				.prepare('SELECT * FROM message_vcard WHERE message_row_id = ?')

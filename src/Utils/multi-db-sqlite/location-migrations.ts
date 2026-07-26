@@ -24,6 +24,10 @@ export const restoreCanonicalLocationSharerSchema = (db: SqliteDbLike): void => 
 		return
 	}
 
+	const previousSequence = (
+		db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'location_sharer'").get() as { seq?: number } | undefined
+	)?.seq
+
 	db.exec(`
 		CREATE TABLE location_sharer_canonical (
 			_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,6 +61,14 @@ export const restoreCanonicalLocationSharerSchema = (db: SqliteDbLike): void => 
 		CREATE UNIQUE INDEX location_sharer_index
 			ON location_sharer (remote_jid, from_me, remote_resource, message_id);
 	`)
+
+	if (typeof previousSequence === 'number') {
+		db.prepare(
+			`UPDATE sqlite_sequence
+			 SET seq = MAX(seq, ?)
+			 WHERE name = 'location_sharer'`
+		).run(previousSequence)
+	}
 }
 
 /**
@@ -75,9 +87,8 @@ export const repairOpenEndedLocationSharerExpiry = (db: SqliteDbLike): void => {
  * Repairs databases opened by older builds and normalizes the historical
  * seconds-based timestamps before active-window reads compare against unix ms.
  *
- * Received Long.MAX rows can only have been produced by the former unscoped v3
- * migration. Deleting them is fail-closed: a subsequent live update recreates
- * a genuinely active row, while ended historical shares are not resurrected.
+ * Long.MAX is also the official open-ended receive sentinel, so provenance-free
+ * cleanup must preserve it. Only unit normalization is safe here.
  */
 export const normalizeLocationTimestampUnits = (db: SqliteDbLike): void => {
 	db.prepare(
@@ -87,9 +98,5 @@ export const normalizeLocationTimestampUnits = (db: SqliteDbLike): void => {
 	db.prepare(
 		`UPDATE location_sharer SET expires = expires * 1000
 		 WHERE expires > 0 AND expires < ${SECONDS_TO_MILLISECONDS_THRESHOLD}`
-	).run()
-	db.prepare(
-		`DELETE FROM location_sharer
-		 WHERE from_me = 0 AND expires = CAST('${SQLITE_LONG_MAX_TEXT}' AS INTEGER)`
 	).run()
 }

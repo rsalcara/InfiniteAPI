@@ -148,7 +148,6 @@ export enum LIDMappingErrorCode {
  * - Prometheus metrics integration
  */
 export class LIDMappingStore {
-	private static readonly DESTROY_DRAIN_TIMEOUT_MS = 5_000
 	private readonly mappingCache: LRUCache<string, string>
 	private readonly keys: SignalKeyStoreWithTransaction
 	private readonly logger: ILogger
@@ -933,34 +932,9 @@ export class LIDMappingStore {
 					{ operationsInProgress: this.operationsInProgress },
 					'waiting for active LID mapping operations before cleanup'
 				)
-				let timer: ReturnType<typeof setTimeout> | undefined
-				const drained = await Promise.race([
-					new Promise<true>(resolve => {
-						this.resolveDrain = () => resolve(true)
-					}),
-					new Promise<false>(resolve => {
-						timer = setTimeout(() => resolve(false), LIDMappingStore.DESTROY_DRAIN_TIMEOUT_MS)
-						timer.unref?.()
-					})
-				])
-				if (timer) clearTimeout(timer)
-
-				if (!drained && this.operationsInProgress > 0) {
-					this.logger.warn(
-						{
-							operationsInProgress: this.operationsInProgress,
-							waitedMs: LIDMappingStore.DESTROY_DRAIN_TIMEOUT_MS
-						},
-						'LID mapping drain timed out; socket shutdown will continue and cleanup will finish after active operations'
-					)
-					this.resolveDrain = () => {
-						this.resolveDrain = undefined
-						this.clearResources()
-						this.logger.debug('✅ LIDMappingStore deferred cleanup completed')
-					}
-
-					return
-				}
+				await new Promise<void>(resolve => {
+					this.resolveDrain = resolve
+				})
 			}
 
 			this.resolveDrain = undefined

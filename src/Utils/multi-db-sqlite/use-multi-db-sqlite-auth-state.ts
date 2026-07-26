@@ -9,6 +9,7 @@ import { hasPrekeyDirectDistributionIntent } from '../prekey-direct-distribution
 import { prepareInClause } from './in-statement-cache'
 import { JidMapBackend } from './lid-mapping-backend'
 import { SignalTypedBackend } from './signal-typed-backend'
+import { parseIdentityKey } from './signal-id-parsing'
 import { isMirroredSignalType, mirrorSignalEntry } from './signal-typed-mirror'
 import { SignalTypedSourceStore, type TypedSignalType } from './signal-typed-source'
 import { MultiDbSqliteStore, type MultiDbSqliteStoreOptions } from './store'
@@ -1117,6 +1118,9 @@ function rehydrateTypedIdentities(
 	for (const row of rows) {
 		try {
 			if (typedSource.get('identity-key', row.id) === row.value) continue
+			// Hosted/unknown domains and malformed legacy ids deliberately remain
+			// signal_kv-only; do not report a skipped typed write as a repair.
+			if (!parseIdentityKey(row.id)) continue
 			typedSource.set('identity-key', row.id, row.value)
 			repaired++
 		} catch (err) {

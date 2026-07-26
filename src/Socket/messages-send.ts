@@ -1831,6 +1831,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					attrs: {
 						v: '2',
 						type,
+						...extraAttrs,
 						count: participant.count.toString()
 					},
 					content: encryptedContent
@@ -3279,6 +3280,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				...options
 			})
 			fullMsg.duration = durationSecs
+			// Store adapters commonly persist IMessage as JSON. This gateway-only
+			// property survives restart/getMessage while protobuf encoding ignores
+			// unknown fields, allowing retry receipts to restore the <enc duration>.
+			;(fullMsg.message as proto.IMessage & { liveLocationDuration?: number }).liveLocationDuration = durationSecs
 
 			// Keep the initial message addressed to the conversation. Android
 			// canonicalizes PN to LID only inside SendLiveLocationKeyJob.

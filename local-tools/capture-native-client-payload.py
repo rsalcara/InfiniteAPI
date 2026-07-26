@@ -17,6 +17,11 @@ def on_message(message, data):
         print(message["payload"], flush=True)
         if '"hex":' in str(message["payload"]):
             CAPTURED.set()
+    elif message["type"] == "log":
+        payload = message.get("payload", "")
+        print(payload, flush=True)
+        if '"hex":' in str(payload):
+            CAPTURED.set()
     elif message["type"] == "error":
         print(message.get("stack", message), file=sys.stderr, flush=True)
     else:

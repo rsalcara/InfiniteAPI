@@ -11,14 +11,13 @@ import frida
 PACKAGE = os.getenv("FRIDA_PACKAGE", "com.whatsapp.w4b")
 ATTACH = os.getenv("FRIDA_ATTACH", "0") == "1"
 ATTACH_PID = int(os.getenv("FRIDA_PID", "0"))
+TOOL_DIR = Path(__file__).resolve().parent
 HOOK = Path(__file__).with_suffix(".js")
 CAPTURE_SECONDS = float(os.getenv("CAPTURE_SECONDS", "300"))
-OUTPUT = Path(
-    os.getenv(
-        "CAPTURE_OUTPUT",
-        str(Path(__file__).with_name("native-registration-capture.jsonl")),
-    )
-)
+OUTPUT_NAME = Path(os.getenv("CAPTURE_OUTPUT", "native-registration-capture.jsonl"))
+if OUTPUT_NAME.is_absolute() or len(OUTPUT_NAME.parts) != 1:
+    raise ValueError("CAPTURE_OUTPUT must be a file name inside local-tools")
+OUTPUT = TOOL_DIR / OUTPUT_NAME
 COMPLETED = threading.Event()
 SEEN_PAYLOAD = False
 
@@ -28,7 +27,8 @@ def record(payload):
 
     line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     print(line, flush=True)
-    with OUTPUT.open("a", encoding="utf-8", newline="\n") as capture_file:
+    fd = os.open(OUTPUT, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8", newline="\n") as capture_file:
         capture_file.write(line + "\n")
 
     if payload.get("kind") == "client-payload":

@@ -108,6 +108,11 @@ export const makeSocket = (config: SocketConfig) => {
 	} = config
 	const transportSession = resolveTransportSession(config, authState.creds)
 	const isNativeAndroid = transportSession.profile === 'native_android'
+	// ClientPayload must use the resolved, persisted native identity rather than
+	// the caller's current environment values. This keeps reconnects immutable.
+	const payloadConfig: SocketConfig = isNativeAndroid
+		? { ...config, nativeAndroid: transportSession.nativeAndroid }
+		: config
 
 	// Resolve enableUnifiedSession: explicit config > env var > default (true)
 	const enableUnifiedSession =
@@ -663,7 +668,7 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 
 		if (useNativeIK) {
-			const node = generateLoginNode(creds.me!.id, config, nativeClientPayloadContext)
+			const node = generateLoginNode(creds.me!.id, payloadConfig, nativeClientPayloadContext)
 			const payload = proto.ClientPayload.encode(node).finish()
 			const init = noise.createIKClientHello(payload)
 			logger.info(
@@ -728,7 +733,7 @@ export const makeSocket = (config: SocketConfig) => {
 
 		let node: proto.IClientPayload
 		if (!creds.me) {
-			node = generateRegistrationNode(creds, config, nativeClientPayloadContext)
+			node = generateRegistrationNode(creds, payloadConfig, nativeClientPayloadContext)
 			logger.info(
 				{
 					transportProfile: transportSession.profile,
@@ -739,7 +744,7 @@ export const makeSocket = (config: SocketConfig) => {
 				'not logged in, attempting registration...'
 			)
 		} else {
-			node = generateLoginNode(creds.me.id, config, nativeClientPayloadContext)
+			node = generateLoginNode(creds.me.id, payloadConfig, nativeClientPayloadContext)
 			logger.info(
 				{
 					transportProfile: transportSession.profile,
@@ -1308,7 +1313,14 @@ export const makeSocket = (config: SocketConfig) => {
 
 					let anyTriggered = false
 
-					anyTriggered = ws.emit('frame', frame)
+					try {
+						anyTriggered = ws.emit('frame', frame)
+					} catch (error) {
+						logger.error(
+							{ connectionId, jid: authState.creds.me?.id, transportProfile: transportSession.profile, error },
+							'generic frame listener failed; continuing authenticated TAG/CB dispatch'
+						)
+					}
 					// if it's a binary node
 					if (!(frame instanceof Uint8Array)) {
 						const msgId = frame.attrs.id

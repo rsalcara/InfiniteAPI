@@ -35,6 +35,29 @@ describe('history-sync message mirror', () => {
 		)
 	})
 
+	it('does not fabricate a server ACK for an outgoing Web ERROR row', async () => {
+		const recordMessages = jest.fn(() => [1])
+		const backend = { recordMessages } as any
+		const message: WAMessage = {
+			key: {
+				remoteJid: '5511999999999@s.whatsapp.net',
+				fromMe: true,
+				id: 'HISTORY-ERROR'
+			},
+			status: 0,
+			messageTimestamp: 1_700_000_000,
+			message: { conversation: 'failed outgoing text' }
+		}
+
+		await mirrorHistoryMessagesToStore([message], backend)
+		expect(recordMessages).toHaveBeenCalledWith([
+			expect.objectContaining({
+				keyId: 'HISTORY-ERROR',
+				status: null
+			})
+		])
+	})
+
 	it('carries Android album-root counters into the relational history mirror', async () => {
 		const recordMessages = jest.fn(() => [99])
 		const backend = { recordMessages } as any

@@ -241,6 +241,7 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 		// Every native session created before app-variant support used WABA.
 		persisted.appVariant = 'business'
 		persisted.clientAppId = WABA_CLIENT_APP_ID
+		persisted.appVersion = config.nativeAndroid.appVersions?.business ?? config.nativeAndroid.appVersion
 		migratedAppIdentity = true
 	}
 
@@ -252,6 +253,7 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 		const configuredIdentity = getNativeAndroidAppIdentity(configuredVariant)
 		persisted.appVariant = configuredVariant
 		persisted.clientAppId = configuredIdentity.clientAppId
+		persisted.appVersion = config.nativeAndroid.appVersions?.[configuredVariant] ?? config.nativeAndroid.appVersion
 		migratedAppIdentity = true
 	}
 
@@ -277,12 +279,14 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 			profile: 'native_android',
 			appVariant: configuredVariant,
 			clientAppId: appIdentity.clientAppId,
+			appVersion: config.nativeAndroid.appVersions?.[configuredVariant] ?? config.nativeAndroid.appVersion,
 			device: { ...config.nativeAndroid.device }
 		}
 	}
 
 	const effectiveVariant = persisted?.appVariant ?? configuredVariant
-	const effectiveVersion = config.nativeAndroid.appVersions?.[effectiveVariant] ?? config.nativeAndroid.appVersion
+	const effectiveVersion =
+		persisted?.appVersion ?? config.nativeAndroid.appVersions?.[effectiveVariant] ?? config.nativeAndroid.appVersion
 	return {
 		profile,
 		nativeAndroid: {
@@ -346,6 +350,7 @@ export const resolveNativeAndroidPairingAppVariant = (
 
 	creds.nativeAndroidIdentity.appVariant = detectedVariant
 	creds.nativeAndroidIdentity.clientAppId = identity.clientAppId
+	creds.nativeAndroidIdentity.appVersion = config.appVersions?.[detectedVariant] ?? config.appVersion
 
 	return {
 		variant: detectedVariant,

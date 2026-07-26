@@ -495,7 +495,8 @@ describe('native_android transport contract', () => {
 		expect(config.appVersion).toEqual([2, 26, 29, 5])
 		expect(creds.nativeAndroidIdentity).toMatchObject({
 			appVariant: 'consumer',
-			clientAppId: WHATSAPP_MESSENGER_CLIENT_APP_ID
+			clientAppId: WHATSAPP_MESSENGER_CLIENT_APP_ID,
+			appVersion: [2, 26, 29, 5]
 		})
 	})
 
@@ -564,6 +565,7 @@ describe('native_android transport contract', () => {
 		expect(reconnect.nativeAndroid?.appVariant).toBe('consumer')
 		expect(reconnect.nativeAndroid?.appVersion).toEqual([2, 26, 29, 5])
 		expect(creds.nativeAndroidIdentity?.appVariant).toBe('consumer')
+		expect(creds.nativeAndroidIdentity?.appVersion).toEqual([2, 26, 29, 5])
 	})
 
 	it('migrates a registered pre-variant native session to Business without rotating it', () => {

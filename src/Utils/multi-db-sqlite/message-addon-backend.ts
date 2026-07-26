@@ -238,9 +238,9 @@ export class MessageAddOnBackend {
 					'place_name = excluded.place_name, place_address = excluded.place_address, url = excluded.url, ' +
 					'live_location_share_duration = excluded.live_location_share_duration, ' +
 					'live_location_sequence_number = excluded.live_location_sequence_number, ' +
-					'live_location_final_latitude = excluded.live_location_final_latitude, ' +
-					'live_location_final_longitude = excluded.live_location_final_longitude, ' +
-					'live_location_final_timestamp = excluded.live_location_final_timestamp, ' +
+					'live_location_final_latitude = COALESCE(excluded.live_location_final_latitude, live_location_final_latitude), ' +
+					'live_location_final_longitude = COALESCE(excluded.live_location_final_longitude, live_location_final_longitude), ' +
+					'live_location_final_timestamp = COALESCE(excluded.live_location_final_timestamp, live_location_final_timestamp), ' +
 					'map_download_status = excluded.map_download_status'
 			),
 			updateFinalLiveLocation: this.db.prepare(

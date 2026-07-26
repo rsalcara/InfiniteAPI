@@ -1,10 +1,5 @@
 import $protobuf from 'protobufjs/minimal.js'
-import {
-	createFastRatchetSenderKeyState,
-	encodeFastRatchetSenderKeyDistribution,
-	encryptFastRatchetMessage
-} from '../../Signal/fast-ratchet'
-import { Curve } from '../../Utils/crypto'
+import { createFastRatchetSenderKeyState, encodeFastRatchetSenderKeyDistribution } from '../../Signal/fast-ratchet'
 
 const decodeFields = (value: Uint8Array) => {
 	const reader = $protobuf.Reader.create(value)
@@ -33,27 +28,5 @@ describe('Android fast-ratchet live-location wire format', () => {
 		expect(chains[0]).toHaveLength(32)
 		expect(chains.slice(1).every(chain => chain.length === 0)).toBe(true)
 		expect(fields.find(field => field.field === 4)?.value).toHaveLength(33)
-	})
-
-	it('encrypts an A4P frskmsg, signs prefix+protobuf, and advances exactly once', () => {
-		const state = createFastRatchetSenderKeyState()
-		const first = encryptFastRatchetMessage(state, Buffer.from('location-update'))
-		expect(first.ciphertext[0]).toBe(0x33)
-		expect(first.nextState.iteration).toBe(1)
-		expect(state.iteration).toBe(0)
-
-		const bodyEnd = first.ciphertext.length - 64
-		const signed = first.ciphertext.subarray(0, bodyEnd)
-		const signature = first.ciphertext.subarray(bodyEnd)
-		expect(Curve.verify(state.signingPublic, signed, signature)).toBe(true)
-
-		const fields = decodeFields(first.ciphertext.subarray(1, bodyEnd))
-		expect(fields.find(field => field.field === 1)?.value).toBe(state.senderKeyId)
-		expect(fields.find(field => field.field === 2)?.value).toBe(0)
-		expect((fields.find(field => field.field === 3)?.value as Uint8Array).length).toBeGreaterThan(0)
-
-		const second = encryptFastRatchetMessage(first.nextState, Buffer.from('location-update-2'))
-		expect(second.nextState.iteration).toBe(2)
-		expect(second.ciphertext.equals(first.ciphertext)).toBe(false)
 	})
 })

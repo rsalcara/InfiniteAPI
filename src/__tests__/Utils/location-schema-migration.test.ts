@@ -150,7 +150,11 @@ describe('location.db migration v2 — canonical location_sharer', () => {
 		await store.open()
 		const db = store.handle('location.db')
 
-		expect(db.prepare("SELECT * FROM location_sharer WHERE message_id = 'OLD-RX'").get()).toBeUndefined()
+		expect(
+			db.prepare("SELECT CAST(expires AS TEXT) AS expires FROM location_sharer WHERE message_id = 'OLD-RX'").get()
+		).toEqual({
+			expires: '9223372036854775807'
+		})
 		expect(db.prepare("SELECT expires FROM location_sharer WHERE message_id = 'ACTIVE-TX'").get()).toEqual({
 			expires: 1_700_000_900_000
 		})
