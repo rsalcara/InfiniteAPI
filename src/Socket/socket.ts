@@ -1321,6 +1321,7 @@ export const makeSocket = (config: SocketConfig) => {
 							'generic frame listener failed; continuing authenticated TAG/CB dispatch'
 						)
 					}
+
 					// if it's a binary node
 					if (!(frame instanceof Uint8Array)) {
 						const msgId = frame.attrs.id
