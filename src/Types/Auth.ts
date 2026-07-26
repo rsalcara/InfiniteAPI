@@ -71,8 +71,8 @@ export type AuthenticationCreds = SignalCreds & {
 	routingInfo: Buffer | undefined
 	additionalData?: any | undefined
 	/**
-	 * Durable protocol marker and complete device identity for experimental
-	 * native-Android sessions. Absent means the established Web session format.
+	 * Durable protocol marker and complete device identity for native-Android
+	 * sessions. Absent means the established Web session format.
 	 */
 	nativeAndroidIdentity?: PersistedNativeAndroidIdentity
 }

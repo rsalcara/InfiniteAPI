@@ -11,7 +11,7 @@ const samsung = (
 	osBuildNumber: string
 ): NativeAndroidHardwareProfile => ({
 	profileId,
-	quality: 'experimental',
+	quality: 'catalog',
 	commercialName,
 	manufacturer: 'samsung',
 	device: deviceModelType,
@@ -23,11 +23,11 @@ const samsung = (
 })
 
 /**
- * Experimental model/version/base-build tuples used for controlled protocol
- * tests. They are intentionally labelled experimental: unlike the fallback
- * profile, their full Build.* tuple was not captured from each physical model.
+ * Supported, internally coherent model/version/base-build tuples. Unlike the
+ * captured fallback profile, their full Build.* tuple was not captured from
+ * every physical model, so their provenance remains explicit as `catalog`.
  */
-export const EXPERIMENTAL_SAMSUNG_NATIVE_ANDROID_HARDWARE_PROFILES = [
+export const SAMSUNG_NATIVE_ANDROID_HARDWARE_PROFILES = [
 	samsung('samsung-galaxy-s26-ultra', 'Galaxy S26 Ultra', 'SM-S948B', '16', 'WP1A.250812.016'),
 	samsung('samsung-galaxy-s26-plus', 'Galaxy S26+', 'SM-S946B', '16', 'WP1A.250812.016'),
 	samsung('samsung-galaxy-s26', 'Galaxy S26', 'SM-S941B', '16', 'WP1A.250812.016'),
@@ -71,7 +71,7 @@ export const CAPTURED_NATIVE_ANDROID_HARDWARE_PROFILES = [
 ] as const satisfies readonly NativeAndroidHardwareProfile[]
 
 export const NATIVE_ANDROID_HARDWARE_CATALOG = [
-	...EXPERIMENTAL_SAMSUNG_NATIVE_ANDROID_HARDWARE_PROFILES,
+	...SAMSUNG_NATIVE_ANDROID_HARDWARE_PROFILES,
 	...CAPTURED_NATIVE_ANDROID_HARDWARE_PROFILES
 ] as const satisfies readonly NativeAndroidHardwareProfile[]
 
@@ -107,7 +107,7 @@ const validateCatalog = (catalog: readonly NativeAndroidHardwareProfile[]) => {
 			}
 		}
 
-		if (profile.quality !== 'captured' && profile.quality !== 'experimental') {
+		if (profile.quality !== 'captured' && profile.quality !== 'catalog') {
 			throw new Error(`native_android: hardware profile ${profile.profileId} has invalid quality`)
 		}
 
@@ -125,7 +125,7 @@ const validateCatalog = (catalog: readonly NativeAndroidHardwareProfile[]) => {
 			'16': 'W'
 		}
 		const buildPrefix = expectedBuildPrefix[profile.osVersion]
-		if (profile.quality === 'experimental' && buildPrefix && !profile.osBuildNumber.startsWith(buildPrefix)) {
+		if (profile.quality === 'catalog' && buildPrefix && !profile.osBuildNumber.startsWith(buildPrefix)) {
 			throw new Error(
 				`native_android: hardware profile ${profile.profileId} has an incoherent Android/build combination`
 			)

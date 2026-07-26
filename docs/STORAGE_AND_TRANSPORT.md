@@ -115,18 +115,17 @@ makeWASocket({
 É o comportamento histórico, estável e o fallback de produção. Funciona com
 JSON, SQLite único e multi-banco.
 
-### Native Android — opt-in experimental
+### Native Android — suportado e opt-in
 
 ```env
 INFINITEAPI_TRANSPORT=native_android
-INFINITEAPI_ANDROID_PROVIDER_URL=http://android-provider-bridge:8788
 ```
 
-Também podem ser usados:
+O provider Node interno é carregado automaticamente. Opcionalmente, o diretório
+da cadeia persistente pode ser definido:
 
 ```env
-INFINITEAPI_ANDROID_PROVIDER_TOKEN=TOKEN_INTERNO
-INFINITEAPI_ANDROID_PROVIDER_PACKAGE=com.whatsapp.w4b
+INFINITEAPI_NATIVE_ANDROID_STATE_DIR=./sessions/native-android-attestation
 ```
 
 O consumidor/orquestrador deve escolher a variante antes de criar uma sessão:
@@ -151,9 +150,8 @@ Consumer e vice-versa. A API não recebe um evento confiável dizendo que o
 aplicativo errado tentou ler; para trocar a variante é preciso encerrar a
 tentativa não registrada e emitir um novo QR.
 
-Native Android funciona com os três backends, mas permanece experimental até
-passar todo o ciclo de QR, reinício `515`, reconexão, mensagens, histórico e
-restart em produção.
+Native Android funciona com os três backends. O ciclo validado inclui QR,
+reinício `515`, reconexão, mensagens, histórico, persistência e restart.
 
 ---
 
@@ -219,8 +217,6 @@ INFINITEAPI_AUTH_STORAGE=multi_db_sqlite
 INFINITEAPI_TRANSPORT=native_android
 INFINITEAPI_AUTH_STORAGE=multi_db_sqlite
 NATIVE_ANDROID_APP_VARIANT=business
-INFINITEAPI_ANDROID_PROVIDER_URL=http://android-provider-bridge:8788
-INFINITEAPI_ANDROID_PROVIDER_PACKAGE=com.whatsapp.w4b
 ```
 
 ### Native Android Consumer + multi-banco
@@ -229,8 +225,6 @@ INFINITEAPI_ANDROID_PROVIDER_PACKAGE=com.whatsapp.w4b
 INFINITEAPI_TRANSPORT=native_android
 INFINITEAPI_AUTH_STORAGE=multi_db_sqlite
 NATIVE_ANDROID_APP_VARIANT=consumer
-INFINITEAPI_ANDROID_PROVIDER_URL=http://android-provider-bridge:8788
-INFINITEAPI_ANDROID_PROVIDER_PACKAGE=com.whatsapp
 ```
 
 Variáveis inválidas falham com erro de configuração acionável; não há fallback
@@ -277,13 +271,14 @@ uma sessão Web com identidade diferente.
 | produção conservadora | Web + multi-DB SQLite |
 | compatibilidade com instalação antiga | Web + JSON |
 | um único arquivo local | Web + SQLite único |
-| testar identidade Business nativa | Native Android Business + multi-DB |
-| testar identidade Consumer nativa | Native Android Consumer + multi-DB |
+| usar identidade Business nativa | Native Android Business + multi-DB |
+| usar identidade Consumer nativa | Native Android Consumer + multi-DB |
 | consultas relacionais de mensagens/localização | multi-DB SQLite |
 
 Veja também:
 
 - [NATIVE_ANDROID_TRANSPORT.md](./NATIVE_ANDROID_TRANSPORT.md)
+- [NATIVE_ANDROID_NODE_ATTESTATION.md](./NATIVE_ANDROID_NODE_ATTESTATION.md)
 - [LOCATION_MESSAGES.md](./LOCATION_MESSAGES.md)
 - [STICKER_PACKS.md](./STICKER_PACKS.md)
 - [INTERACTIVE_MESSAGES.md](./INTERACTIVE_MESSAGES.md)

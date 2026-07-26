@@ -85,6 +85,7 @@ export const encodeNativeAndroidConnectionSequenceInfo = ({
 			statusCode: 400
 		})
 	}
+
 	if (!Number.isInteger(addressSource) || addressSource < 0 || addressSource > 7) {
 		throw new Boom(`native_android: address source must be in range 0..7, got ${addressSource}`, {
 			statusCode: 400
@@ -250,6 +251,7 @@ const getClientPayload = (config: SocketConfig, nativeContext?: NativeAndroidCli
 		if (nativeContext.lidDbMigrated !== undefined) {
 			payload.lidDbMigrated = nativeContext.lidDbMigrated
 		}
+
 		payload.paaLink = nativeContext.paaLink
 		payload.oc = config.nativeAndroid?.device.oc
 		payload.yearClass = config.nativeAndroid?.device.yearClass

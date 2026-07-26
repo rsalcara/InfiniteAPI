@@ -29,8 +29,7 @@ makeWASocket({
 		appVariant: 'business', // or 'consumer'
 		appVersion: [2, 26, 27, 83],
 		device,
-		historySync,
-		attestationProvider
+		historySync
 	}
 })
 ```
@@ -76,7 +75,9 @@ validates it against the configured identity before building
 Unknown platforms fail closed. A registered session never enters this
 transition and cannot change application identity.
 
-The provider context includes:
+InfiniteAPI initializes its built-in Node X.509 provider for a fresh session.
+Applications may still override it with `attestationProvider`. The custom
+provider context includes:
 
 ```ts
 {
@@ -90,7 +91,8 @@ The provider context includes:
 
 Returned material is checked for non-empty payloads and matching
 `clientAppId`. Provider implementations must maintain their own lifecycle and
-must not expose private material in logs.
+must not expose private material in logs. The built-in provider persists the
+public chain separately for Business and Consumer and never requires an APK.
 
 ## Durable identity
 
@@ -161,8 +163,8 @@ orchestrator should stop with an actionable configuration error.
 
 ## Operational validation
 
-Native Android must remain experimental until all of the following pass for
-both variants and every supported auth backend:
+The supported validation baseline covers the following lifecycle for both
+variants and the supported auth backends:
 
 1. fresh QR registration;
 2. expected cross-application `405`;
@@ -175,7 +177,8 @@ both variants and every supported auth backend:
 9. concurrent teardown without stale store writes;
 10. malformed encrypted frames close only their socket, not the host process.
 
-Web remains the production fallback until those gates are satisfied.
+Web remains the default transport. Native Android is enabled only when the
+consumer explicitly selects it.
 
 ## Runtime resilience and typed-store behavior
 

@@ -1,6 +1,7 @@
 import { Boom } from '@hapi/boom'
+import { resolve } from 'path'
 import type { ConnectionTransportProfile, NativeAndroidAttestationProvider } from '../Types'
-import { makeNativeAndroidBridgeAttestationProvider } from './native-android-provider-bridge'
+import { makeNativeAndroidNodeAttestationProvider } from './native-android-node-attestation'
 
 export type InfiniteApiAuthStorage = 'json' | 'sqlite' | 'multi_db_sqlite'
 
@@ -48,21 +49,15 @@ export const resolveInfiniteApiRuntimeProfile = (
 		return { transportProfile, authStorage }
 	}
 
-	const baseUrl = env.INFINITEAPI_ANDROID_PROVIDER_URL?.trim()
-	if (!baseUrl) {
-		throw new Boom(
-			'native_android requires INFINITEAPI_ANDROID_PROVIDER_URL; set INFINITEAPI_TRANSPORT=web for the established fallback',
-			{ statusCode: 400 }
-		)
-	}
+	const storageDirectory = resolve(
+		env.INFINITEAPI_NATIVE_ANDROID_STATE_DIR?.trim() || '.infiniteapi/native-android-attestation'
+	)
 
 	return {
 		transportProfile,
 		authStorage,
-		attestationProvider: makeNativeAndroidBridgeAttestationProvider({
-			baseUrl,
-			bearerToken: env.INFINITEAPI_ANDROID_PROVIDER_TOKEN?.trim() || undefined,
-			expectedPackageName: env.INFINITEAPI_ANDROID_PROVIDER_PACKAGE?.trim() || undefined
+		attestationProvider: makeNativeAndroidNodeAttestationProvider({
+			storageDirectory
 		})
 	}
 }

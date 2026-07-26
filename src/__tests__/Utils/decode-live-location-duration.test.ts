@@ -1,8 +1,8 @@
 import P from 'pino'
 import { proto } from '../../../WAProto/index.js'
-import type { BinaryNode } from '../../WABinary'
 import { decryptMessageNode } from '../../Utils/decode-wa-message'
 import { writeRandomPadMax16 } from '../../Utils/generics'
+import type { BinaryNode } from '../../WABinary'
 
 describe('live-location transport metadata', () => {
 	it('copies <enc duration> into WebMessageInfo before processing the live payload', async () => {

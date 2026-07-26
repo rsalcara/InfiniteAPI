@@ -584,6 +584,7 @@ export const makeSocket = (config: SocketConfig) => {
 	const registerSocketEndHandler = (handler: (error: Error | undefined) => void | Promise<void>) => {
 		socketEndHandlers.push(handler)
 	}
+
 	// Higher socket layers register work that must finish before Signal, LID
 	// mapping and the auth-key transaction capability are destroyed. This is
 	// intentionally separate from socketEndHandlers: those are post-close
@@ -1865,10 +1866,9 @@ export const makeSocket = (config: SocketConfig) => {
 
 				const provider = transportSession.nativeAndroid!.attestationProvider
 				if (!provider) {
-					throw new Boom(
-						'native_android: genuine pairing attestation is required; no synthetic fallback is permitted',
-						{ statusCode: DisconnectReason.badSession }
-					)
+					throw new Boom('native_android: pairing attestation provider was not initialized', {
+						statusCode: DisconnectReason.badSession
+					})
 				}
 
 				const attestation = await provider({

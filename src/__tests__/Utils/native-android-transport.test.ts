@@ -4,8 +4,8 @@ import { proto } from '../../../WAProto/index.js'
 import {
 	DEFAULT_CONNECTION_CONFIG,
 	NOISE_WA_HEADER,
-	WHATSAPP_MESSENGER_CLIENT_APP_ID,
-	WABA_CLIENT_APP_ID
+	WABA_CLIENT_APP_ID,
+	WHATSAPP_MESSENGER_CLIENT_APP_ID
 } from '../../Defaults'
 import { TcpSocketClient } from '../../Socket/Client'
 import type { NativeAndroidTransportConfig, SocketConfig } from '../../Types'
@@ -15,8 +15,8 @@ import {
 	assertValidNativeAndroidHardwareCatalog,
 	CAPTURED_NATIVE_ANDROID_HARDWARE_PROFILES,
 	createNativeAndroidDeviceProfile,
-	EXPERIMENTAL_SAMSUNG_NATIVE_ANDROID_HARDWARE_PROFILES,
 	NATIVE_ANDROID_HARDWARE_CATALOG,
+	SAMSUNG_NATIVE_ANDROID_HARDWARE_PROFILES,
 	shouldFallbackNativeAndroidProfile,
 	VERIFIED_NATIVE_ANDROID_HARDWARE_PROFILES
 } from '../../Utils/native-android-device-catalog'
@@ -137,9 +137,9 @@ describe('native_android transport contract', () => {
 		).toBe('reconnect')
 	})
 
-	it('ships a complete experimental catalog plus a captured generic fallback', () => {
+	it('ships a complete supported catalog plus a captured generic fallback', () => {
 		expect(() => assertValidNativeAndroidHardwareCatalog(NATIVE_ANDROID_HARDWARE_CATALOG)).not.toThrow()
-		expect(EXPERIMENTAL_SAMSUNG_NATIVE_ANDROID_HARDWARE_PROFILES).toHaveLength(21)
+		expect(SAMSUNG_NATIVE_ANDROID_HARDWARE_PROFILES).toHaveLength(21)
 		expect(CAPTURED_NATIVE_ANDROID_HARDWARE_PROFILES).toHaveLength(1)
 		const context = {
 			mcc: '001',
@@ -150,8 +150,8 @@ describe('native_android transport contract', () => {
 		const first = createNativeAndroidDeviceProfile(context, undefined, () => 0)
 		const second = createNativeAndroidDeviceProfile(context, undefined, () => 0)
 
-		expect(first).toMatchObject(EXPERIMENTAL_SAMSUNG_NATIVE_ANDROID_HARDWARE_PROFILES[0])
-		expect(first.quality).toBe('experimental')
+		expect(first).toMatchObject(SAMSUNG_NATIVE_ANDROID_HARDWARE_PROFILES[0])
+		expect(first.quality).toBe('catalog')
 		expect(first.phoneId).toMatch(/^[0-9a-f-]{36}$/)
 		expect(first.perfDeviceId).toMatch(/^[0-9a-f-]{36}$/)
 		expect(first.deviceExpId).toMatch(/^[A-Za-z0-9_-]{22}$/)
@@ -170,7 +170,7 @@ describe('native_android transport contract', () => {
 	})
 
 	it('uses the generic fallback only for a pre-registration server rejection', () => {
-		const profileId = EXPERIMENTAL_SAMSUNG_NATIVE_ANDROID_HARDWARE_PROFILES[0].profileId
+		const profileId = SAMSUNG_NATIVE_ANDROID_HARDWARE_PROFILES[0].profileId
 		expect(shouldFallbackNativeAndroidProfile({ registered: false, serverFailureReason: 400, profileId })).toBe(true)
 		expect(shouldFallbackNativeAndroidProfile({ registered: false, serverFailureReason: 500, profileId })).toBe(false)
 		expect(shouldFallbackNativeAndroidProfile({ registered: true, serverFailureReason: 400, profileId })).toBe(false)
@@ -456,13 +456,12 @@ describe('native_android transport contract', () => {
 		).toThrow('does not match persisted profile')
 	})
 
-	it('fails before QR when a fresh native session has no genuine attestation provider', () => {
-		expect(() =>
-			resolveTransportSession(
-				{ ...nativeConfig(), nativeAndroid: { ...nativeAndroid, attestationProvider: undefined } },
-				initAuthCreds()
-			)
-		).toThrow('attestationProvider is required before starting a fresh QR pairing')
+	it('uses the built-in Node provider when a fresh native session has no custom provider', () => {
+		const resolved = resolveTransportSession(
+			{ ...nativeConfig(), nativeAndroid: { ...nativeAndroid, attestationProvider: undefined } },
+			initAuthCreds()
+		)
+		expect(resolved.nativeAndroid?.attestationProvider).toBeInstanceOf(Function)
 	})
 
 	it('detects the primary app at pair-success and persists an automatic Consumer fallback', () => {
@@ -544,26 +543,26 @@ describe('native_android transport contract', () => {
 			clientAppId: WHATSAPP_MESSENGER_CLIENT_APP_ID
 		})
 
-			creds.registered = true
-			creds.account = {}
-			creds.me = { id: '123@s.whatsapp.net', name: 'registered-consumer' }
-			const reconnect = resolveTransportSession(
-				{
-					...nativeConfig(),
-					nativeAndroid: {
-						...nativeAndroid,
-						appVersions: {
-							business: [2, 26, 27, 83],
-							consumer: [2, 26, 29, 5]
-						}
+		creds.registered = true
+		creds.account = {}
+		creds.me = { id: '123@s.whatsapp.net', name: 'registered-consumer' }
+		const reconnect = resolveTransportSession(
+			{
+				...nativeConfig(),
+				nativeAndroid: {
+					...nativeAndroid,
+					appVersions: {
+						business: [2, 26, 27, 83],
+						consumer: [2, 26, 29, 5]
 					}
-				},
-				creds
-			)
-			expect(reconnect.nativeAndroid?.appVariant).toBe('consumer')
-			expect(reconnect.nativeAndroid?.appVersion).toEqual([2, 26, 29, 5])
-			expect(creds.nativeAndroidIdentity?.appVariant).toBe('consumer')
-		})
+				}
+			},
+			creds
+		)
+		expect(reconnect.nativeAndroid?.appVariant).toBe('consumer')
+		expect(reconnect.nativeAndroid?.appVersion).toEqual([2, 26, 29, 5])
+		expect(creds.nativeAndroidIdentity?.appVariant).toBe('consumer')
+	})
 
 	it('migrates a registered pre-variant native session to Business without rotating it', () => {
 		const creds = initAuthCreds()

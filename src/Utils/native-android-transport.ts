@@ -14,6 +14,7 @@ import {
 	GENERIC_NATIVE_ANDROID_FALLBACK_PROFILE_ID,
 	isNativeAndroidCatalogProfile
 } from './native-android-device-catalog'
+import { makeNativeAndroidNodeAttestationProvider } from './native-android-node-attestation'
 
 const PROFILE_FIELDS: ReadonlyArray<keyof NativeAndroidDeviceProfile> = [
 	'profileId',
@@ -86,6 +87,7 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 			throw new Boom(`native_android: appVersions.${variant} is invalid`, { statusCode: 400 })
 		}
 	}
+
 	if (config.autoDetectAppVariant === true && (!config.appVersions?.business || !config.appVersions?.consumer)) {
 		throw new Boom('native_android: automatic app fallback requires official business and consumer appVersions', {
 			statusCode: 400
@@ -220,11 +222,13 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 		recoveredRegisteredMarker = true
 	}
 
-	if (!hasCompletedPairing && !config.nativeAndroid.attestationProvider) {
-		throw new Boom('native_android: a genuine attestationProvider is required before starting a fresh QR pairing', {
-			statusCode: 400
-		})
-	}
+	const attestationProvider =
+		config.nativeAndroid.attestationProvider ??
+		(!hasCompletedPairing
+			? makeNativeAndroidNodeAttestationProvider({
+					storageDirectory: config.nativeAndroid.attestationStorageDirectory
+				})
+			: undefined)
 
 	if (hasCompletedPairing && !persisted) {
 		throw new Boom(
@@ -283,6 +287,7 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 		profile,
 		nativeAndroid: {
 			...config.nativeAndroid,
+			attestationProvider,
 			appVariant: effectiveVariant,
 			appVersion: effectiveVersion,
 			device: { ...(persisted?.device || config.nativeAndroid.device) }
@@ -338,6 +343,7 @@ export const resolveNativeAndroidPairingAppVariant = (
 	if (!creds.nativeAndroidIdentity) {
 		throw new Boom('native_android: durable identity is missing during pair-success', { statusCode: 500 })
 	}
+
 	creds.nativeAndroidIdentity.appVariant = detectedVariant
 	creds.nativeAndroidIdentity.clientAppId = identity.clientAppId
 

@@ -8,8 +8,8 @@ export type NativeAndroidAppVariant = 'business' | 'consumer'
 /** Immutable Build.* values captured together from one Android installation. */
 export type NativeAndroidHardwareProfile = {
 	profileId: string
-	/** captured = exact Build.* tuple; experimental = catalog tuple pending a real-device capture. */
-	quality: 'captured' | 'experimental'
+	/** captured = exact Build.* tuple; catalog = internally coherent supported catalog tuple. */
+	quality: 'captured' | 'catalog'
 	commercialName: string
 	fallback?: boolean
 	manufacturer: string
@@ -107,10 +107,13 @@ export type NativeAndroidTransportConfig = {
 	device: NativeAndroidDeviceProfile
 	historySync: NativeAndroidHistorySyncProfile
 	/**
-	 * Returns the genuine, currently valid artifacts maintained by the
-	 * platform provider. The official client refreshes key_attestation through
-	 * its lifetime manager and reads the cached value during pair-success. The
-	 * library neither persists nor synthesizes these artifacts.
+	 * Directory used by the built-in Node X.509 compatibility provider.
+	 * Ignored when a custom attestationProvider is supplied.
+	 */
+	attestationStorageDirectory?: string
+	/**
+	 * Optional custom provider override. When omitted, InfiniteAPI uses its
+	 * built-in persistent Node X.509 compatibility provider.
 	 */
 	attestationProvider?: NativeAndroidAttestationProvider
 }

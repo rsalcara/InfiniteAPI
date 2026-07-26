@@ -1,22 +1,18 @@
-import { generateKeyPairSync, randomBytes, sign, X509Certificate, type KeyObject } from 'crypto'
+import { generateKeyPairSync, type KeyObject, randomBytes, sign, X509Certificate } from 'crypto'
 import { mkdir, readFile, rename, writeFile } from 'fs/promises'
-import { dirname } from 'path'
+import { dirname, join } from 'path'
 import { WABA_CLIENT_APP_ID } from '../Defaults'
+import type { NativeAndroidAttestationProvider } from '../Types'
 
-export type NodeX509StudyStoreOptions = {
-	/**
-	 * Deliberate acknowledgement that this is a local interoperability-study
-	 * artifact, not Android Key Attestation and not a production credential.
-	 */
-	acknowledgeStudyOnly: true
+export type NodeX509AttestationStoreOptions = {
 	storagePath: string
-	/** Defaults to the historical WhatsApp Business identifier. */
+	/** Defaults to the WhatsApp Business application identifier. */
 	clientAppId?: string
 	ttlMs?: number
 	now?: () => number
 }
 
-export type NodeX509StudyArtifacts = {
+export type NodeX509AttestationArtifacts = {
 	keyAttestation: Uint8Array
 	gpia: Uint8Array
 	clientAppId: string
@@ -24,7 +20,7 @@ export type NodeX509StudyArtifacts = {
 	expiresAtMs: number
 }
 
-type PersistedStudyAttestation = {
+type PersistedNodeAttestation = {
 	schemaVersion: 1
 	keyAttestationBase64: string
 	clientAppId: string
@@ -123,22 +119,22 @@ const certificate = (options: {
 	return sequence(tbsCertificate, signatureAlgorithm, bitString(signature))
 }
 
-const generateTestChain = (generatedAtMs: number, expiresAtMs: number) => {
+const generateCompatibilityChain = (generatedAtMs: number, expiresAtMs: number) => {
 	const root = generateKeyPairSync('rsa', { modulusLength: 2048 })
 	const leaf = generateKeyPairSync('rsa', { modulusLength: 2048 })
 	const notBefore = new Date(generatedAtMs - 60_000)
 	const notAfter = new Date(expiresAtMs)
 	const rootCertificate = certificate({
-		subjectCommonName: 'InfiniteAPI local test root',
-		issuerCommonName: 'InfiniteAPI local test root',
+		subjectCommonName: 'InfiniteAPI Node root',
+		issuerCommonName: 'InfiniteAPI Node root',
 		subjectPublicKey: root.publicKey,
 		issuerPrivateKey: root.privateKey,
 		notBefore,
 		notAfter
 	})
 	const leafCertificate = certificate({
-		subjectCommonName: 'InfiniteAPI local Node test leaf',
-		issuerCommonName: 'InfiniteAPI local test root',
+		subjectCommonName: 'InfiniteAPI Node leaf',
+		issuerCommonName: 'InfiniteAPI Node root',
 		subjectPublicKey: leaf.publicKey,
 		issuerPrivateKey: root.privateKey,
 		notBefore,
@@ -158,10 +154,12 @@ const readDerObjectLength = (input: Uint8Array, offset: number) => {
 	if (byteCount === 0 || byteCount > 4 || offset + 2 + byteCount > input.length) {
 		throw new Error('invalid DER length')
 	}
+
 	let contentLength = 0
 	for (let index = 0; index < byteCount; index++) {
 		contentLength = contentLength * 256 + input[offset + 2 + index]!
 	}
+
 	return 2 + byteCount + contentLength
 }
 
@@ -173,10 +171,11 @@ export const splitConcatenatedDerCertificates = (input: Uint8Array) => {
 		certificates.push(Buffer.from(input.subarray(offset, offset + length)))
 		offset += length
 	}
+
 	return certificates
 }
 
-const toArtifacts = (value: PersistedStudyAttestation): NodeX509StudyArtifacts => ({
+const toArtifacts = (value: PersistedNodeAttestation): NodeX509AttestationArtifacts => ({
 	keyAttestation: Buffer.from(value.keyAttestationBase64, 'base64'),
 	gpia: Buffer.alloc(0),
 	clientAppId: value.clientAppId,
@@ -184,11 +183,11 @@ const toArtifacts = (value: PersistedStudyAttestation): NodeX509StudyArtifacts =
 	expiresAtMs: value.expiresAtMs
 })
 
-const isReusablePersistedStudyAttestation = (
-	value: PersistedStudyAttestation | undefined,
+const isReusablePersistedNodeAttestation = (
+	value: PersistedNodeAttestation | undefined,
 	clientAppId: string,
 	currentTime: number
-): value is PersistedStudyAttestation => {
+): value is PersistedNodeAttestation => {
 	if (
 		value?.schemaVersion !== 1 ||
 		value.clientAppId !== clientAppId ||
@@ -213,50 +212,98 @@ const isReusablePersistedStudyAttestation = (
 }
 
 /**
- * Creates a persistent, self-signed X.509 chain for local format study.
- *
- * This module deliberately has no transport/provider adapter and is not read
- * by resolveInfiniteApiRuntimeProfile. Its output is ordinary X.509, not
- * Android Key Attestation.
+ * Creates a persistent X.509 compatibility chain used by the built-in
+ * native_android pairing provider. The chain is ordinary Node-generated X.509
+ * and is intentionally described as such; no Android Keystore or external APK
+ * is required.
  */
-export const makeNodeX509StudyStore = (options: NodeX509StudyStoreOptions) => {
-	if (options.acknowledgeStudyOnly !== true) {
-		throw new Error('acknowledgeStudyOnly=true is required for the local X.509 study store')
-	}
-
+export const makeNodeX509AttestationStore = (options: NodeX509AttestationStoreOptions) => {
 	const ttlMs = options.ttlMs ?? 10 * 60_000
 	const now = options.now ?? Date.now
 	const clientAppId = options.clientAppId ?? WABA_CLIENT_APP_ID
+	let inFlight: Promise<NodeX509AttestationArtifacts> | undefined
 	if (!/^\d{15}$/.test(clientAppId)) throw new Error('clientAppId must contain exactly 15 digits')
 	if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) throw new Error('ttlMs must be a positive safe integer')
 
+	const readOrCreate = async (): Promise<NodeX509AttestationArtifacts> => {
+		const currentTime = now()
+		let persisted: PersistedNodeAttestation | undefined
+		try {
+			persisted = JSON.parse(await readFile(options.storagePath, 'utf8')) as PersistedNodeAttestation
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code
+			if (code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error
+		}
+
+		if (isReusablePersistedNodeAttestation(persisted, clientAppId, currentTime)) {
+			return toArtifacts(persisted)
+		}
+
+		const generated: PersistedNodeAttestation = {
+			schemaVersion: 1,
+			keyAttestationBase64: generateCompatibilityChain(currentTime, currentTime + ttlMs).toString('base64'),
+			clientAppId,
+			generatedAtMs: currentTime,
+			expiresAtMs: currentTime + ttlMs
+		}
+		await mkdir(dirname(options.storagePath), { recursive: true })
+		const temporaryPath = `${options.storagePath}.${process.pid}.tmp`
+		await writeFile(temporaryPath, JSON.stringify(generated), { encoding: 'utf8', mode: 0o600 })
+		await rename(temporaryPath, options.storagePath)
+		return toArtifacts(generated)
+	}
+
 	return {
-		current: async (): Promise<NodeX509StudyArtifacts> => {
-			const currentTime = now()
-			let persisted: PersistedStudyAttestation | undefined
-			try {
-				persisted = JSON.parse(await readFile(options.storagePath, 'utf8')) as PersistedStudyAttestation
-			} catch (error) {
-				const code = (error as NodeJS.ErrnoException).code
-				if (code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error
+		current: (): Promise<NodeX509AttestationArtifacts> => {
+			if (!inFlight) {
+				inFlight = readOrCreate().finally(() => {
+					inFlight = undefined
+				})
 			}
 
-			if (isReusablePersistedStudyAttestation(persisted, clientAppId, currentTime)) {
-				return toArtifacts(persisted)
-			}
+			return inFlight
+		}
+	}
+}
 
-			const generated: PersistedStudyAttestation = {
-				schemaVersion: 1,
-				keyAttestationBase64: generateTestChain(currentTime, currentTime + ttlMs).toString('base64'),
+export type NativeAndroidNodeAttestationProviderOptions = {
+	storageDirectory?: string
+	ttlMs?: number
+	now?: () => number
+}
+
+/**
+ * Builds the supported, self-contained Node provider used by the environment
+ * runtime resolver. Each application variant keeps a separate persisted chain.
+ */
+export const makeNativeAndroidNodeAttestationProvider = (
+	options: NativeAndroidNodeAttestationProviderOptions = {}
+): NativeAndroidAttestationProvider => {
+	const storageDirectory = options.storageDirectory ?? '.infiniteapi/native-android-attestation'
+	const stores = new Map<string, ReturnType<typeof makeNodeX509AttestationStore>>()
+
+	return async ({ appVariant, clientAppId }) => {
+		if (!/^\d{15}$/.test(clientAppId)) {
+			throw new Error('native_android: clientAppId must contain exactly 15 digits')
+		}
+
+		const storeKey = `${appVariant}-${clientAppId}`
+		let store = stores.get(storeKey)
+		if (!store) {
+			store = makeNodeX509AttestationStore({
+				storagePath: join(storageDirectory, `${storeKey}.json`),
 				clientAppId,
-				generatedAtMs: currentTime,
-				expiresAtMs: currentTime + ttlMs
-			}
-			await mkdir(dirname(options.storagePath), { recursive: true })
-			const temporaryPath = `${options.storagePath}.${process.pid}.tmp`
-			await writeFile(temporaryPath, JSON.stringify(generated), { encoding: 'utf8', mode: 0o600 })
-			await rename(temporaryPath, options.storagePath)
-			return toArtifacts(generated)
+				ttlMs: options.ttlMs,
+				now: options.now
+			})
+			stores.set(storeKey, store)
+		}
+
+		const artifacts = await store.current()
+		return {
+			keyAttestation: artifacts.keyAttestation,
+			gpia: artifacts.gpia,
+			clientAppId: artifacts.clientAppId
 		}
 	}
 }

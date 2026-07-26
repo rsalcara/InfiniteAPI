@@ -11,7 +11,6 @@
  * One file covers all four since they share setup/teardown (a single
  * MultiDbSqliteStore handle).
  */
-import { jest } from '@jest/globals'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'

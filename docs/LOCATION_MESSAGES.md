@@ -108,11 +108,11 @@ servidor o entregou ao destinatário.
 Portanto:
 
 - receber, sincronizar, atualizar e armazenar localização ao vivo é suportado;
-- iniciar pelo socket vinculado deve ser tratado como experimental;
+- iniciar pelo socket vinculado está sujeito à capacidade concedida pelo servidor;
 - para produção, use localização estática enquanto essa regra existir no
   servidor.
 
-### REST experimental
+### Exemplo REST
 
 Endpoint: `POST /v1/messages/send_live_location`
 

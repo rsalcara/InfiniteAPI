@@ -19,8 +19,8 @@
  * and those all live inside `axolotl.db`, so the trade-off is fine.
  */
 import type { ILogger } from '../logger'
-import { repairOpenEndedLocationSharerExpiry, restoreCanonicalLocationSharerSchema } from './location-migrations'
 import { STATUS_LAST_TIMESTAMP_TRIGGER_NAME, STATUS_LAST_TIMESTAMP_TRIGGER_SQL } from './schemas/status'
+import { repairOpenEndedLocationSharerExpiry, restoreCanonicalLocationSharerSchema } from './location-migrations'
 import { addColumnIfMissing, type Migration, runMigrations } from './schema-migrations'
 import { MULTI_DB_FILES, type MultiDbFile, SCHEMAS } from './schemas'
 import type { SqliteDbLike } from './types'

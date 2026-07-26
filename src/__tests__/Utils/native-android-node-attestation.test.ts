@@ -2,18 +2,22 @@ import { X509Certificate } from 'crypto'
 import { mkdtemp, readFile, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { WABA_CLIENT_APP_ID } from '../../Defaults'
-import { makeNodeX509StudyStore, splitConcatenatedDerCertificates } from '../../Utils/native-android-node-x509-study'
+import { WABA_CLIENT_APP_ID, WHATSAPP_MESSENGER_CLIENT_APP_ID } from '../../Defaults'
+import {
+	makeNativeAndroidNodeAttestationProvider,
+	makeNodeX509AttestationStore,
+	splitConcatenatedDerCertificates
+} from '../../Utils/native-android-node-attestation'
+import { resolveInfiniteApiRuntimeProfile } from '../../Utils/runtime-profile'
 
-describe('native Android local Node X.509 fixture', () => {
+describe('native Android built-in Node attestation provider', () => {
 	it('creates a structurally valid root-first chain and persists it across provider restarts', async () => {
 		const directory = await mkdtemp(join(tmpdir(), 'infiniteapi-node-x509-'))
 		const storagePath = join(directory, 'attestation.json')
 		let now = Date.UTC(2026, 6, 24, 12, 0, 0)
 
 		try {
-			const firstStore = makeNodeX509StudyStore({
-				acknowledgeStudyOnly: true,
+			const firstStore = makeNodeX509AttestationStore({
 				storagePath,
 				ttlMs: 60_000,
 				now: () => now
@@ -24,16 +28,15 @@ describe('native Android local Node X.509 fixture', () => {
 
 			const root = new X509Certificate(certificates[0]!)
 			const leaf = new X509Certificate(certificates[1]!)
-			expect(root.subject).toContain('InfiniteAPI local test root')
-			expect(leaf.subject).toContain('InfiniteAPI local Node test leaf')
+			expect(root.subject).toContain('InfiniteAPI Node root')
+			expect(leaf.subject).toContain('InfiniteAPI Node leaf')
 			expect(root.verify(root.publicKey)).toBe(true)
 			expect(leaf.verify(root.publicKey)).toBe(true)
 			expect(first.clientAppId).toBe(WABA_CLIENT_APP_ID)
-			expect(Buffer.from(first.gpia as Uint8Array)).toHaveLength(0)
+			expect(Buffer.from(first.gpia)).toHaveLength(0)
 
 			now += 10_000
-			const restartedStore = makeNodeX509StudyStore({
-				acknowledgeStudyOnly: true,
+			const restartedStore = makeNodeX509AttestationStore({
 				storagePath,
 				ttlMs: 60_000,
 				now: () => now
@@ -55,8 +58,7 @@ describe('native Android local Node X.509 fixture', () => {
 		let now = Date.UTC(2026, 6, 24, 12, 0, 0)
 
 		try {
-			const store = makeNodeX509StudyStore({
-				acknowledgeStudyOnly: true,
+			const store = makeNodeX509AttestationStore({
 				storagePath,
 				ttlMs: 1_000,
 				now: () => now
@@ -65,6 +67,20 @@ describe('native Android local Node X.509 fixture', () => {
 			now += 1_001
 			const rotated = await store.current()
 			expect(Buffer.from(rotated.keyAttestation)).not.toEqual(Buffer.from(first.keyAttestation))
+		} finally {
+			await rm(directory, { force: true, recursive: true })
+		}
+	})
+
+	it('deduplicates concurrent generation for the same persisted chain', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'infiniteapi-node-attestation-'))
+		try {
+			const store = makeNodeX509AttestationStore({
+				storagePath: join(directory, 'attestation.json')
+			})
+			const [first, second, third] = await Promise.all([store.current(), store.current(), store.current()])
+			expect(Buffer.from(second.keyAttestation)).toEqual(Buffer.from(first.keyAttestation))
+			expect(Buffer.from(third.keyAttestation)).toEqual(Buffer.from(first.keyAttestation))
 		} finally {
 			await rm(directory, { force: true, recursive: true })
 		}
@@ -88,8 +104,7 @@ describe('native Android local Node X.509 fixture', () => {
 					})
 				)
 			)
-			const store = makeNodeX509StudyStore({
-				acknowledgeStudyOnly: true,
+			const store = makeNodeX509AttestationStore({
 				storagePath,
 				now: () => now
 			})
@@ -108,13 +123,57 @@ describe('native Android local Node X.509 fixture', () => {
 	it('uses the single audited WABA application identifier', async () => {
 		const directory = await mkdtemp(join(tmpdir(), 'infiniteapi-node-x509-'))
 		try {
-			const result = await makeNodeX509StudyStore({
-				acknowledgeStudyOnly: true,
+			const result = await makeNodeX509AttestationStore({
 				storagePath: join(directory, 'attestation.json')
 			}).current()
 			expect(result.clientAppId).toBe('473039703209605')
 		} finally {
 			await rm(directory, { force: true, recursive: true })
 		}
+	})
+
+	it('keeps Business and Consumer chains isolated in the built-in provider', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'infiniteapi-node-attestation-'))
+		try {
+			const provider = makeNativeAndroidNodeAttestationProvider({ storageDirectory: directory })
+			const business = await provider({
+				stanza: { tag: 'iq', attrs: {} },
+				profileId: 'samsung-galaxy-s25-plus',
+				appVariant: 'business',
+				clientAppId: WABA_CLIENT_APP_ID,
+				packageName: 'com.whatsapp.w4b'
+			})
+			const consumer = await provider({
+				stanza: { tag: 'iq', attrs: {} },
+				profileId: 'samsung-galaxy-s25-plus',
+				appVariant: 'consumer',
+				clientAppId: WHATSAPP_MESSENGER_CLIENT_APP_ID,
+				packageName: 'com.whatsapp'
+			})
+
+			expect(business.clientAppId).toBe(WABA_CLIENT_APP_ID)
+			expect(consumer.clientAppId).toBe(WHATSAPP_MESSENGER_CLIENT_APP_ID)
+			expect(Buffer.from(business.keyAttestation)).not.toEqual(Buffer.from(consumer.keyAttestation))
+		} finally {
+			await rm(directory, { force: true, recursive: true })
+		}
+	})
+
+	it('resolves native_android as an opt-in self-contained runtime', () => {
+		expect(
+			resolveInfiniteApiRuntimeProfile({
+				INFINITEAPI_TRANSPORT: 'web',
+				INFINITEAPI_AUTH_STORAGE: 'json'
+			})
+		).toEqual({ transportProfile: 'web', authStorage: 'json' })
+
+		const native = resolveInfiniteApiRuntimeProfile({
+			INFINITEAPI_TRANSPORT: 'native_android',
+			INFINITEAPI_AUTH_STORAGE: 'multi_db_sqlite',
+			INFINITEAPI_NATIVE_ANDROID_STATE_DIR: './sessions/native-attestation'
+		})
+		expect(native.transportProfile).toBe('native_android')
+		expect(native.authStorage).toBe('multi_db_sqlite')
+		expect(native.attestationProvider).toBeInstanceOf(Function)
 	})
 })
