@@ -4,9 +4,9 @@ O InfiniteAPI suporta localização estática e implementa o ciclo de localizaç
 ao vivo: geração do payload, sequência, distribuição da chave
 `location@broadcast`, recepção, atualizações e persistência.
 
-Os exemplos REST usam o adaptador Astra em `POST /v1/messages/*`. Troque
-`SUA_API_KEY`, `instance` e `to` conforme o ambiente. O número deve estar em
-E.164, sem `+`.
+Os exemplos usam a interface REST genérica em `POST /v1/messages/*`. Troque
+`SUA_API_KEY`, `instance`, endereço do servidor e `to` conforme o ambiente. O
+número deve estar em E.164, sem `+`.
 
 ---
 

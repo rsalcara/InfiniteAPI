@@ -34,7 +34,7 @@ O processamento usa `fflate`; conversões de imagem dependem de `sharp`.
 
 ## 1. Enviar uma figurinha individual
 
-O adaptador Astra expõe `POST /v1/messages/send_sticker`:
+A interface HTTP expõe `POST /v1/messages/send_sticker`:
 
 ```bash
 curl -X POST http://localhost:8787/v1/messages/send_sticker \
@@ -132,9 +132,10 @@ expõe uma rota de pacote, ela pode implementar, por exemplo,
 }
 ```
 
-Esse endpoint é um contrato de integração sugerido, não uma rota criada
-automaticamente pela biblioteca. O adaptador deve converter URL/base64 em
-`WAMediaUpload` e chamar `sock.sendMessage({ stickerPack: ... })`.
+Esse endpoint de pacote é um contrato de integração sugerido, não uma rota
+criada automaticamente pela biblioteca. A camada HTTP deve converter
+URL/base64 em `WAMediaUpload` e chamar
+`sock.sendMessage({ stickerPack: ... })`.
 
 ---
 

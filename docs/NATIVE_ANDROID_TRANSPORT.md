@@ -193,5 +193,5 @@ Web remains the production fallback until those gates are satisfied.
   `text-status.update` and `text-status-side-sub.update`.
 
 Consumers should provide a child logger containing their instance identifier.
-The Astra reference integration includes `instance`, `backend` and
-`generation` in InfiniteAPI logs and rejects stale socket callbacks.
+A reference integration should include `instance`, `backend` and `generation`
+in InfiniteAPI logs and reject stale socket callbacks.
