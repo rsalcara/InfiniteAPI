@@ -1,7 +1,14 @@
 import { jest } from '@jest/globals'
+import { proto } from '../../../WAProto'
 import type { WAMessage } from '../../Types'
 import type { SignalRepositoryWithLIDStore } from '../../Types'
-import { cleanMessage, normalizeMessageJids } from '../../Utils/process-message'
+import { aesEncryptGCM, hmacSign } from '../../Utils/crypto'
+import {
+	cleanMessage,
+	decryptPollVote,
+	normalizeMessageJids,
+	resolvePollCryptoAuthor
+} from '../../Utils/process-message'
 
 const createBaseMessage = (key: Partial<WAMessage['key']>, message?: Partial<WAMessage['message']>): WAMessage => {
 	return {
@@ -187,5 +194,78 @@ describe('normalizeMessageJids', () => {
 		await normalizeMessageJids(message, signalRepository)
 
 		expect(message.key.participant).toBe('5511888888888@s.whatsapp.net')
+	})
+})
+
+describe('resolvePollCryptoAuthor', () => {
+	const pn = '5511999999999@s.whatsapp.net'
+	const lid = '123456789012345@lid'
+	const mePn = '5511888888888@s.whatsapp.net'
+	const meLid = '987654321012345@lid'
+	const lidMapping = {
+		getLIDForPN: jest.fn(async (jid: string) => (jid === pn ? lid : jid === mePn ? meLid : null)),
+		getPNForLID: jest.fn(async (jid: string) => (jid === lid ? pn : jid === meLid ? mePn : null))
+	} as unknown as SignalRepositoryWithLIDStore['lidMapping']
+
+	it('restores the LID selected by addressing_mode after storage normalisation', async () => {
+		const key = {
+			remoteJid: pn,
+			remoteJidAlt: pn,
+			fromMe: false,
+			addressingMode: 'lid'
+		}
+
+		await expect(resolvePollCryptoAuthor(key, 'lid', mePn, meLid, lidMapping)).resolves.toBe(lid)
+	})
+
+	it('uses the persisted own LID for a fromMe poll key in LID mode', async () => {
+		const key = { remoteJid: pn, fromMe: true }
+
+		await expect(resolvePollCryptoAuthor(key, 'lid', mePn, meLid, lidMapping)).resolves.toBe(meLid)
+	})
+
+	it('keeps PN identities in PN mode', async () => {
+		const key = { remoteJid: pn, remoteJidAlt: lid, fromMe: false, addressingMode: 'pn' }
+
+		await expect(resolvePollCryptoAuthor(key, 'pn', mePn, meLid, lidMapping)).resolves.toBe(pn)
+	})
+
+	it('produces identities that authenticate a real LID-addressed poll vote', async () => {
+		const pollMsgId = 'poll-message-id'
+		const pollSecret = Buffer.alloc(32, 0x42)
+		const iv = Buffer.alloc(12, 0x24)
+		const selectedOption = Buffer.alloc(32, 0x11)
+		const sign = Buffer.concat([
+			Buffer.from(pollMsgId),
+			Buffer.from(meLid),
+			Buffer.from(lid),
+			Buffer.from('Poll Vote'),
+			Buffer.from([1])
+		])
+		const key0 = hmacSign(pollSecret, Buffer.alloc(32), 'sha256')
+		const encKey = hmacSign(sign, key0, 'sha256')
+		const plaintext = proto.Message.PollVoteMessage.encode({ selectedOptions: [selectedOption] }).finish()
+		const encPayload = aesEncryptGCM(plaintext, encKey, iv, Buffer.from(`${pollMsgId}\u0000${lid}`))
+		const voterJid = await resolvePollCryptoAuthor(
+			{ remoteJid: pn, remoteJidAlt: pn, fromMe: false, addressingMode: 'lid' },
+			'lid',
+			mePn,
+			meLid,
+			lidMapping
+		)
+		const creatorJid = await resolvePollCryptoAuthor({ remoteJid: pn, fromMe: true }, 'lid', mePn, meLid, lidMapping)
+
+		expect(
+			decryptPollVote(
+				{ encPayload, encIv: iv },
+				{ pollEncKey: pollSecret, pollCreatorJid: creatorJid, pollMsgId, voterJid }
+			).selectedOptions?.[0]
+		).toEqual(selectedOption)
+		expect(() =>
+			decryptPollVote(
+				{ encPayload, encIv: iv },
+				{ pollEncKey: pollSecret, pollCreatorJid: mePn, pollMsgId, voterJid: pn }
+			)
+		).toThrow()
 	})
 })

@@ -2047,6 +2047,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			return
 		}
 
+		// On first connection wait briefly for the history-sync notification so
+		// app-state/history establishes its baseline before live events are
+		// released. Four seconds matches the documented event-buffer ordering
+		// contract; the previous accidental 2s value routinely released live
+		// events before the first history chunk arrived.
+		const initialHistorySyncWaitMs = 4_000
 		// perf(inbound-latency): reduced from 20s → 8s → 4s. On first connection we wait for
 		// the history-sync notification so that doAppStateSync runs before live messages are
 		// emitted.  If the notification does not arrive within 4s we stop waiting, go Online,
@@ -2063,7 +2069,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		awaitingSyncTimeout = setTimeout(() => {
 			if (syncState === SyncState.AwaitingInitialSync) {
-				logger.warn('Timeout in AwaitingInitialSync (2s), forcing state to Online and flushing buffer')
+				logger.warn(
+					{ timeoutMs: initialHistorySyncWaitMs },
+					'Timeout in AwaitingInitialSync, forcing state to Online and flushing buffer'
+				)
 				syncState = SyncState.Online
 				ev.flush()
 
@@ -2073,7 +2082,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
 				ev.emit('creds.update', { accountSyncCounter })
 			}
-		}, 2_000)
+		}, initialHistorySyncWaitMs)
 	})
 
 	// When an app state sync key arrives (myAppStateKeyId is set) and there are
@@ -2362,9 +2371,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// Reads the location.db live-location mirror. Best-effort:
 	// returns null/[] on miss or error so the consumer falls back to the live
 	// `messages.upsert` stream (each liveLocationMessage arrives as a message).
-	// Note: for a RECEIVED share the `expires` is always 0 (companion never gets
-	// the peer's duration — see LocationBackend docs); a SENT share (from_me=1)
-	// carries the real `expires` we chose in `sendLiveLocation`.
+	// `expires` follows the Android millisecond contract. Received duration is
+	// decoded from `<enc duration>`; zero-duration shares use the open-ended
+	// sentinel until a final-location update closes them.
 	const getLiveLocation = (jid: string): LocationCacheRow | null => {
 		if (!locationBackend || !jid) {
 			return null
@@ -2384,9 +2393,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 
 		try {
-			// Only non-expired shares (expires in unix seconds, matching the
-			// receive/send mirror). Open-ended rows (expires=0) stay included.
-			return locationBackend.listActiveLocationSharers(Math.floor(Date.now() / 1000))
+			return locationBackend.listActiveLocationSharers(Date.now())
 		} catch (err) {
 			logger.debug({ err }, 'location getActiveLiveLocations failed (fallback to legacy)')
 			return []

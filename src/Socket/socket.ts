@@ -20,10 +20,13 @@ import { DisconnectReason, QueryIds, ReachoutTimelockEnforcementType, XWAPaths }
 import {
 	addTransactionCapability,
 	aesEncryptCTR,
+	appendNativeAndroidPairingAttestation,
 	bindWaitForConnectionUpdate,
 	buildPairingQRData,
 	bytesToCrockford,
 	configureSuccessfulPairing,
+	createNativeAndroidClientPayloadContext,
+	createNativeAndroidFallbackDeviceProfile,
 	Curve,
 	derivePairingCodeKey,
 	generateLoginNode,
@@ -32,9 +35,14 @@ import {
 	getCodeFromWSError,
 	getErrorCodeFromStreamError,
 	getNextPreKeysNode,
+	incrementNativeAndroidConnectionLc,
 	makeEventBuffer,
 	makeNoiseHandler,
 	promiseTimeout,
+	resolveNativeAndroidClientPayloadPhase,
+	resolveNativeAndroidPairingAppVariant,
+	resolveTransportSession,
+	shouldFallbackNativeAndroidProfile,
 	signedKeyPair,
 	xmppSignedPreKey
 } from '../Utils'
@@ -68,7 +76,8 @@ import {
 } from '../WABinary'
 import { BinaryInfo } from '../WAM/BinaryInfo.js'
 import { USyncQuery, USyncUser } from '../WAUSync/'
-import { WebSocketClient } from './Client'
+import { getAuthStoreDrainBarrier, registerAuthStoreDrainBarrier } from './auth-store-drain-barrier'
+import { TcpSocketClient, WebSocketClient } from './Client'
 import { executeWMexQuery } from './mex'
 import { createOfflineBufferState } from './offline-buffer-state'
 import { makeReachoutTimelockRemediation, type RemoveReachoutTimelockServerResult } from './reachout-remediation'
@@ -98,6 +107,14 @@ export const makeSocket = (config: SocketConfig) => {
 		// Otherwise (undefined), check env var, then default to true
 		enableUnifiedSession: enableUnifiedSessionConfig
 	} = config
+	const transportSession = resolveTransportSession(config, authState.creds)
+	const isNativeAndroid = transportSession.profile === 'native_android'
+	let closed = false
+	// ClientPayload must use the resolved, persisted native identity rather than
+	// the caller's current environment values. This keeps reconnects immutable.
+	const payloadConfig: SocketConfig = isNativeAndroid
+		? { ...config, nativeAndroid: transportSession.nativeAndroid }
+		: config
 
 	// Resolve enableUnifiedSession: explicit config > env var > default (true)
 	const enableUnifiedSession =
@@ -117,10 +134,33 @@ export const makeSocket = (config: SocketConfig) => {
 		)
 	}
 
-	const url = typeof waWebSocketUrl === 'string' ? new URL(waWebSocketUrl) : waWebSocketUrl
+	const url = isNativeAndroid
+		? new URL(
+				`tcp://${transportSession.nativeAndroid!.host || 'g.whatsapp.net'}:${transportSession.nativeAndroid!.port || 443}`
+			)
+		: typeof waWebSocketUrl === 'string'
+			? new URL(waWebSocketUrl)
+			: waWebSocketUrl
 
-	if (config.mobile || url.protocol === 'tcp:') {
+	const nativeClientPayloadContext = isNativeAndroid
+		? createNativeAndroidClientPayloadContext({
+				phase: resolveNativeAndroidClientPayloadPhase({
+					hasRegisteredIdentity: Boolean(authState.creds.me),
+					accountSyncCounter: authState.creds.accountSyncCounter
+				}),
+				connectionLc: authState.creds.nativeAndroidIdentity?.connectionLc,
+				port: url.port ? Number.parseInt(url.port, 10) : 443
+			})
+		: undefined
+
+	if (config.mobile) {
 		throw new Boom('Mobile API is not supported anymore', { statusCode: DisconnectReason.loggedOut })
+	}
+
+	if ((isNativeAndroid && url.protocol !== 'tcp:') || (!isNativeAndroid && url.protocol === 'tcp:')) {
+		throw new Boom('transport profile and socket URL protocol do not match', {
+			statusCode: DisconnectReason.badSession
+		})
 	}
 
 	// If clearRoutingInfoOnStart is enabled, discard the stored routing hint so WhatsApp
@@ -130,7 +170,7 @@ export const makeSocket = (config: SocketConfig) => {
 	// hadStaleRoutingInfo is used below to skip the offline buffer on reconnect scenarios
 	// (restart of an already-authenticated session) so live messages are not held hostage by the backlog buffer.
 	let hadStaleRoutingInfo = false
-	if (config.clearRoutingInfoOnStart && authState?.creds?.routingInfo) {
+	if (!isNativeAndroid && config.clearRoutingInfoOnStart && authState?.creds?.routingInfo) {
 		logger.info('clearRoutingInfoOnStart: discarding stored routingInfo to force fresh edge server assignment')
 		authState.creds.routingInfo = undefined
 		hadStaleRoutingInfo = true
@@ -147,23 +187,50 @@ export const makeSocket = (config: SocketConfig) => {
 	// lets the chats.ts flush drop the refcount to 0 and release messages immediately.
 	const skipOfflineBuffer = hadStaleRoutingInfo || (authState?.creds?.accountSyncCounter ?? 0) > 0
 
-	if (url.protocol === 'wss' && authState?.creds?.routingInfo) {
+	if (!isNativeAndroid && url.protocol === 'wss' && authState?.creds?.routingInfo) {
 		url.searchParams.append('ED', authState.creds.routingInfo.toString('base64url'))
 	}
 
 	/** ephemeral key pair used to encrypt/decrypt communication. Unique for each connection */
 	const ephemeralKeyPair = Curve.generateKeyPair()
+	const nativeInitialRoutingInfo = transportSession.nativeAndroid?.initialRoutingInfo
+	const noiseRoutingInfo =
+		authState?.creds?.routingInfo ||
+		(nativeInitialRoutingInfo?.byteLength ? Buffer.from(nativeInitialRoutingInfo) : undefined)
+	const persistedNativeServerStatic = authState.creds.nativeAndroidIdentity?.serverStaticPublicKey
+	const useNativeIK = Boolean(
+		isNativeAndroid &&
+		authState.creds.registered &&
+		authState.creds.me &&
+		persistedNativeServerStatic?.byteLength === 32
+	)
 	/** WA noise protocol wrapper */
 	const noise = makeNoiseHandler({
 		keyPair: ephemeralKeyPair,
 		NOISE_HEADER: NOISE_WA_HEADER,
 		logger,
-		routingInfo: authState?.creds?.routingInfo
+		routingInfo: noiseRoutingInfo,
+		nativeIK: useNativeIK
+			? {
+					initiatorStatic: authState.creds.noiseKey,
+					responderStatic: persistedNativeServerStatic!
+				}
+			: undefined
 	})
 
-	const ws = new WebSocketClient(url, config)
+	const ws = isNativeAndroid ? new TcpSocketClient(url, config) : new WebSocketClient(url, config)
 
-	ws.connect()
+	const previousAuthStoreDrain = getAuthStoreDrainBarrier(authState.keys)
+	if (previousAuthStoreDrain) {
+		logger.warn('waiting for the previous socket auth-store drain before reconnecting')
+		void previousAuthStoreDrain.then(() => {
+			if (!closed) {
+				ws.connect()
+			}
+		})
+	} else {
+		ws.connect()
+	}
 
 	const sendPromise = promisify(ws.send)
 	/** send a raw buffer */
@@ -454,8 +521,26 @@ export const makeSocket = (config: SocketConfig) => {
 	// Persist the routingInfo clearing so the consumer's saveCreds() writes the clean state to disk.
 	// This ensures that if the process restarts again before the server assigns new routingInfo,
 	// the stale value is not reused.
-	if (config.clearRoutingInfoOnStart && !authState?.creds?.routingInfo) {
+	if (!isNativeAndroid && config.clearRoutingInfoOnStart && !authState?.creds?.routingInfo) {
 		ev.emit('creds.update', authState.creds)
+	}
+
+	if (transportSession.credsChanged) {
+		// Consumers attach `creds.update` after makeWASocket returns. Emitting
+		// synchronously here loses the first durable transport identity and a QR
+		// refresh can then select a different catalog entry.
+		setTimeout(
+			() =>
+				ev.emit('creds.update', {
+					nativeAndroidIdentity: authState.creds.nativeAndroidIdentity,
+					registered: authState.creds.registered
+				}),
+			0
+		)
+		logger.info(
+			{ transportProfile: 'native_android', selectedProfileId: transportSession.nativeAndroid!.device.profileId },
+			'native_android identity selected and persisted for this session'
+		)
 	}
 
 	const { creds } = authState
@@ -498,8 +583,6 @@ export const makeSocket = (config: SocketConfig) => {
 	 * USAGE: Always check this flag BEFORE accessing socket resources (ws, keys, etc.)
 	 * The flag is set IMMEDIATELY in end() before any async operations to minimize race window.
 	 */
-	let closed = false
-
 	// Stable id for THIS socket instance, used by the active-connections
 	// gauge. Must be unique per instance (not per JID): two sockets for the
 	// same number — the overlapping-reconnect case — count as 2, and the old
@@ -515,6 +598,16 @@ export const makeSocket = (config: SocketConfig) => {
 	const socketEndHandlers: Array<(error: Error | undefined) => void | Promise<void>> = []
 	const registerSocketEndHandler = (handler: (error: Error | undefined) => void | Promise<void>) => {
 		socketEndHandlers.push(handler)
+	}
+
+	// Higher socket layers register work that must finish before Signal, LID
+	// mapping and the auth-key transaction capability are destroyed. This is
+	// intentionally separate from socketEndHandlers: those are post-close
+	// cache/timer cleanup callbacks and historically run after repository
+	// teardown.
+	const socketDrainHandlers: Array<(error: Error | undefined) => void | Promise<void>> = []
+	const registerSocketDrainHandler = (handler: (error: Error | undefined) => void | Promise<void>) => {
+		socketDrainHandlers.push(handler)
 	}
 
 	// Session TTL and cleanup
@@ -560,6 +653,79 @@ export const makeSocket = (config: SocketConfig) => {
 
 	/** connection handshake */
 	const validateConnection = async () => {
+		const persistCertifiedNativeResponder = () => {
+			if (!isNativeAndroid) return
+
+			const serverStaticPublicKey = noise.getServerStaticKey()
+			const persistedIdentity = authState.creds.nativeAndroidIdentity
+			if (
+				serverStaticPublicKey &&
+				persistedIdentity &&
+				(!persistedIdentity.serverStaticPublicKey ||
+					!Buffer.from(persistedIdentity.serverStaticPublicKey).equals(serverStaticPublicKey))
+			) {
+				persistedIdentity.serverStaticPublicKey = serverStaticPublicKey
+				ev.emit('creds.update', { nativeAndroidIdentity: persistedIdentity })
+				logger.debug(
+					{
+						transportProfile: transportSession.profile,
+						selectedProfileId: transportSession.nativeAndroid?.device.profileId,
+						action: 'persist-certified-noise-responder-key'
+					},
+					'native_android: certified Noise responder identity persisted'
+				)
+			}
+		}
+
+		if (useNativeIK) {
+			const node = generateLoginNode(creds.me!.id, payloadConfig, nativeClientPayloadContext)
+			const payload = proto.ClientPayload.encode(node).finish()
+			const init = noise.createIKClientHello(payload)
+			logger.info(
+				{
+					transportProfile: transportSession.profile,
+					handshake: 'IK',
+					platform: node.userAgent?.platform,
+					appVersion: node.userAgent?.appVersion,
+					selectedProfileId: transportSession.nativeAndroid?.device.profileId,
+					clientPayloadLength: payload.byteLength
+				},
+				'native_android: reconnecting with persisted certified responder identity'
+			)
+
+			const result = await awaitNextMessage<Uint8Array>(init)
+			const handshake = proto.HandshakeMessage.decode(result)
+			if (noise.requiresXXFallback(handshake)) {
+				logger.warn(
+					{
+						transportProfile: transportSession.profile,
+						handshake: 'XXfallback',
+						selectedProfileId: transportSession.nativeAndroid?.device.profileId,
+						reason: 'server-hello-contained-static-key'
+					},
+					'native_android: server rejected IK resume; completing the official XX fallback transcript'
+				)
+				noise.resetToXXFallback()
+				const keyEnc = noise.processHandshake(handshake, creds.noiseKey)
+				persistCertifiedNativeResponder()
+				const payloadEnc = noise.encrypt(payload)
+				await sendRawMessage(
+					proto.HandshakeMessage.encode({
+						clientFinish: {
+							static: keyEnc,
+							payload: payloadEnc
+						}
+					}).finish()
+				)
+			} else {
+				noise.processIKServerHello(handshake)
+			}
+
+			await noise.finishInit()
+			startKeepAliveRequest()
+			return
+		}
+
 		let helloMsg: proto.IHandshakeMessage = {
 			clientHello: { ephemeral: ephemeralKeyPair.public }
 		}
@@ -573,14 +739,31 @@ export const makeSocket = (config: SocketConfig) => {
 		logger.trace({ handshake }, 'handshake recv from WA')
 
 		const keyEnc = noise.processHandshake(handshake, creds.noiseKey)
+		persistCertifiedNativeResponder()
 
 		let node: proto.IClientPayload
 		if (!creds.me) {
-			node = generateRegistrationNode(creds, config)
-			logger.info({ node }, 'not logged in, attempting registration...')
+			node = generateRegistrationNode(creds, payloadConfig, nativeClientPayloadContext)
+			logger.info(
+				{
+					transportProfile: transportSession.profile,
+					platform: node.userAgent?.platform,
+					appVersion: node.userAgent?.appVersion,
+					selectedProfileId: transportSession.nativeAndroid?.device.profileId
+				},
+				'not logged in, attempting registration...'
+			)
 		} else {
-			node = generateLoginNode(creds.me.id, config)
-			logger.info({ node }, 'logging in...')
+			node = generateLoginNode(creds.me.id, payloadConfig, nativeClientPayloadContext)
+			logger.info(
+				{
+					transportProfile: transportSession.profile,
+					platform: node.userAgent?.platform,
+					appVersion: node.userAgent?.appVersion,
+					selectedProfileId: transportSession.nativeAndroid?.device.profileId
+				},
+				'logging in...'
+			)
 		}
 
 		const payloadEnc = noise.encrypt(proto.ClientPayload.encode(node).finish())
@@ -1132,49 +1315,87 @@ export const makeSocket = (config: SocketConfig) => {
 	const cleanupSessionTTL = startSessionTTL()
 
 	const onMessageReceived = async (data: Buffer) => {
-		await noise.decodeFrame(data, frame => {
-			// reset ping timeout
-			lastDateRecv = new Date()
+		try {
+			await noise.decodeFrame(data, frame => {
+				try {
+					// reset ping timeout
+					lastDateRecv = new Date()
 
-			let anyTriggered = false
+					let anyTriggered = false
 
-			anyTriggered = ws.emit('frame', frame)
-			// if it's a binary node
-			if (!(frame instanceof Uint8Array)) {
-				const msgId = frame.attrs.id
+					try {
+						anyTriggered = ws.emit('frame', frame)
+					} catch (error) {
+						logger.error(
+							{ connectionId, jid: authState.creds.me?.id, transportProfile: transportSession.profile, error },
+							'generic frame listener failed; continuing authenticated TAG/CB dispatch'
+						)
+					}
 
-				// Update server time offset from any node with timestamp 't'
-				// This keeps the offset accurate even after long connections
-				const serverTime = extractServerTime(frame)
-				if (serverTime) {
-					unifiedSessionManager?.updateServerTimeOffset(serverTime)
+					// if it's a binary node
+					if (!(frame instanceof Uint8Array)) {
+						const msgId = frame.attrs.id
+
+						// Update server time offset from any node with timestamp 't'
+						// This keeps the offset accurate even after long connections
+						const serverTime = extractServerTime(frame)
+						if (serverTime) {
+							unifiedSessionManager?.updateServerTimeOffset(serverTime)
+						}
+
+						if (logger.level === 'trace') {
+							logger.trace({ xml: binaryNodeToString(frame), msg: 'recv xml' })
+						}
+
+						/* Check if this is a response to a message we sent */
+						anyTriggered = ws.emit(`${DEF_TAG_PREFIX}${msgId}`, frame) || anyTriggered
+						/* Check if this is a response to a message we are expecting */
+						const l0 = frame.tag
+						const l1 = frame.attrs || {}
+						const l2 = Array.isArray(frame.content) ? frame.content[0]?.tag : ''
+
+						for (const key of Object.keys(l1)) {
+							anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}:${l1[key]},${l2}`, frame) || anyTriggered
+							anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}:${l1[key]}`, frame) || anyTriggered
+							anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}`, frame) || anyTriggered
+						}
+
+						anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0},,${l2}`, frame) || anyTriggered
+						anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0}`, frame) || anyTriggered
+
+						if (!anyTriggered && logger.level === 'debug') {
+							logger.debug({ unhandled: true, msgId, fromMe: false, frame }, 'communication recv')
+						}
+					}
+				} catch (error) {
+					logger.error(
+						{
+							connectionId,
+							jid: authState.creds.me?.id,
+							transportProfile: transportSession.profile,
+							error
+						},
+						'transport frame listener failed; authenticated socket remains open'
+					)
 				}
-
-				if (logger.level === 'trace') {
-					logger.trace({ xml: binaryNodeToString(frame), msg: 'recv xml' })
-				}
-
-				/* Check if this is a response to a message we sent */
-				anyTriggered = ws.emit(`${DEF_TAG_PREFIX}${msgId}`, frame) || anyTriggered
-				/* Check if this is a response to a message we are expecting */
-				const l0 = frame.tag
-				const l1 = frame.attrs || {}
-				const l2 = Array.isArray(frame.content) ? frame.content[0]?.tag : ''
-
-				for (const key of Object.keys(l1)) {
-					anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}:${l1[key]},${l2}`, frame) || anyTriggered
-					anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}:${l1[key]}`, frame) || anyTriggered
-					anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}`, frame) || anyTriggered
-				}
-
-				anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0},,${l2}`, frame) || anyTriggered
-				anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0}`, frame) || anyTriggered
-
-				if (!anyTriggered && logger.level === 'debug') {
-					logger.debug({ unhandled: true, msgId, fromMe: false, frame }, 'communication recv')
-				}
-			}
-		})
+			})
+		} catch (error) {
+			logger.error(
+				{
+					connectionId,
+					jid: authState.creds.me?.id,
+					transportProfile: transportSession.profile,
+					error
+				},
+				'transport frame authentication failed; closing affected socket'
+			)
+			await end(
+				new Boom('Transport frame authentication failed', {
+					statusCode: DisconnectReason.connectionClosed,
+					data: { connectionId, cause: error instanceof Error ? error.message : String(error) }
+				})
+			)
+		}
 	}
 
 	const end = async (error: Error | undefined) => {
@@ -1267,6 +1488,19 @@ export const makeSocket = (config: SocketConfig) => {
 		// Clean up unified session manager
 		unifiedSessionManager?.destroy()
 
+		// Start every drain handler before touching the transport. Calling an
+		// async handler runs its synchronous prefix immediately, so receivers
+		// stop admitting new high-level work before the first await. Keep the
+		// raw message listener alive for now: in-flight IQ/USync requests still
+		// need it to receive a final response while the socket remains usable.
+		const drainPromises = socketDrainHandlers.map(async handler => {
+			try {
+				await handler(error)
+			} catch (err) {
+				logger.error({ err, connectionId }, 'error draining socket processing')
+			}
+		})
+
 		// CRITICAL: Wait for pending pre-key upload before destroying transaction capability
 		// This prevents destroying resources while they're in use
 		if (uploadPreKeysPromise) {
@@ -1282,20 +1516,48 @@ export const makeSocket = (config: SocketConfig) => {
 			}
 		}
 
-		// Clean up transaction capability (PreKeyManager). Await: destroy()
-		// drains in-flight transactions before tearing down preKeyManager
-		// (PR #453 CodeRabbit Major fix — active-transaction counter).
-		await keys.destroy?.()
-
-		ws.removeAllListeners('close')
-		ws.removeAllListeners('open')
-		ws.removeAllListeners('message')
-
+		// Closing the transport rejects every waitForMessage() through its
+		// close listener. Without this step, a synthetic keep-alive disconnect
+		// leaves pending app-state/USync queries waiting for their full timeout,
+		// while teardown waits for those same handlers to drain.
 		if (!ws.isClosed && !ws.isClosing) {
 			try {
 				await ws.close()
 			} catch {}
 		}
+
+		await Promise.allSettled(drainPromises)
+		socketDrainHandlers.length = 0
+
+		// Drain Signal/LID work while the transaction capability and backing
+		// auth store are still alive. Closing keys first caused history-sync
+		// mapping batches to retry against an already-destroyed transaction
+		// capability and permanently drop valid PN↔LID mappings.
+		let signalRepositoryDrained = true
+		try {
+			const closeResult = await signalRepository.close?.()
+			signalRepositoryDrained = closeResult !== false
+		} catch (err) {
+			signalRepositoryDrained = false
+			logger.error({ err, connectionId }, 'error draining signal repository')
+		}
+
+		if (signalRepositoryDrained) {
+			// Only after Signal/LID work is drained may the transaction
+			// capability tear down its PreKeyManager and reject new work.
+			await keys.destroy?.()
+		} else {
+			logger.warn({ connectionId }, 'deferring auth-key teardown until active Signal/LID operations have drained')
+			const deferredDrain = signalRepository
+				.waitForClose()
+				.then(() => keys.destroy?.())
+				.catch(err => logger.error({ err, connectionId }, 'error completing deferred auth-key teardown'))
+			registerAuthStoreDrainBarrier(authState.keys, deferredDrain)
+		}
+
+		ws.removeAllListeners('close')
+		ws.removeAllListeners('open')
+		ws.removeAllListeners('message')
 
 		// Detect socket-level session errors that require recreation
 		const statusCode = (error as Boom)?.output?.statusCode || 0
@@ -1322,15 +1584,6 @@ export const makeSocket = (config: SocketConfig) => {
 		// NOW clean up our internal listeners (after they've received the close event)
 		cleanupPreKeyAutoSync()
 		cleanupSessionTTL()
-
-		// Release per-socket caches/state to prevent memory leaks on close (adapted from #2191).
-		// Runs AFTER the close event so consumers are notified first. We intentionally do NOT call
-		// ev.destroy() (it would drop connection.update listeners the consumer needs to reconnect).
-		try {
-			await signalRepository.close?.()
-		} catch (err) {
-			logger.error({ err }, 'error closing signal repository')
-		}
 
 		for (const handler of socketEndHandlers) {
 			try {
@@ -1445,6 +1698,13 @@ export const makeSocket = (config: SocketConfig) => {
 	}
 
 	const requestPairingCode = async (phoneNumber: string, customPairingCode?: string): Promise<string> => {
+		if (isNativeAndroid) {
+			throw new Boom(
+				'native_android uses the official QR companion flow; phone-number pair code remains available only on the Web transport',
+				{ statusCode: 400 }
+			)
+		}
+
 		const pairingCode = customPairingCode ?? bytesToCrockford(randomBytes(5))
 
 		if (customPairingCode && customPairingCode?.length !== 8) {
@@ -1608,7 +1868,7 @@ export const makeSocket = (config: SocketConfig) => {
 			}
 
 			const ref = (refNode.content as Buffer).toString('utf-8')
-			const qr = buildPairingQRData(ref, noiseKeyB64, identityKeyB64, advB64, browser)
+			const qr = buildPairingQRData(ref, noiseKeyB64, identityKeyB64, advB64, browser, transportSession.profile)
 
 			ev.emit('connection.update', { qr })
 
@@ -1624,6 +1884,55 @@ export const makeSocket = (config: SocketConfig) => {
 		logger.debug('pair success recv')
 		try {
 			const { reply, creds: updatedCreds } = configureSuccessfulPairing(stanza, creds)
+			if (isNativeAndroid) {
+				const appResolution = resolveNativeAndroidPairingAppVariant(
+					transportSession.nativeAndroid!,
+					creds,
+					updatedCreds.platform
+				)
+				if (appResolution.fallbackApplied) {
+					logger.warn(
+						{
+							pairingPlatform: updatedCreds.platform,
+							appVariant: appResolution.variant,
+							packageName: appResolution.identity.packageName,
+							selectedProfileId: transportSession.nativeAndroid!.device.profileId
+						},
+						'native_android: QR account type changed the pre-pair application identity'
+					)
+				} else {
+					logger.info(
+						{
+							pairingPlatform: updatedCreds.platform,
+							appVariant: appResolution.variant,
+							packageName: appResolution.identity.packageName
+						},
+						'native_android: QR account type validated'
+					)
+				}
+
+				const provider = transportSession.nativeAndroid!.attestationProvider
+				if (!provider) {
+					throw new Boom('native_android: pairing attestation provider was not initialized', {
+						statusCode: DisconnectReason.badSession
+					})
+				}
+
+				const attestation = await provider({
+					stanza,
+					profileId: transportSession.nativeAndroid!.device.profileId,
+					appVariant: appResolution.variant,
+					clientAppId: appResolution.identity.clientAppId,
+					packageName: appResolution.identity.packageName
+				})
+				appendNativeAndroidPairingAttestation(reply, attestation, appResolution.identity.clientAppId)
+
+				// QR pair-success is the authoritative transition from a fresh
+				// native identity to a registered companion. Persist it together
+				// with account/me so reconnects cannot rotate the device profile.
+				updatedCreds.registered = true
+				updatedCreds.nativeAndroidIdentity = authState.creds.nativeAndroidIdentity
+			}
 
 			logger.info(
 				{ me: updatedCreds.me, platform: updatedCreds.platform },
@@ -1646,14 +1955,29 @@ export const makeSocket = (config: SocketConfig) => {
 	})
 	// login complete
 	ws.on('CB:success', async (node: BinaryNode) => {
-		const isAndroid = isAndroidBrowser(browser)
+		const isAndroid = isNativeAndroid || isAndroidBrowser(browser)
 		const phoneId = authState.creds.me?.id?.split(':')[0]?.split('@')[0] || 'new session'
+		const nativeAppPlatform = transportSession.nativeAndroid?.appVariant === 'consumer' ? 'ANDROID' : 'SMB_ANDROID'
 		logger.info(
-			`${isAndroid ? '\uD83D\uDCF1' : '\uD83D\uDDA5\uFE0F'} Connected to WA | ${phoneId} | platform: ${isAndroid ? 'SMB_ANDROID' : 'MACOS'} | device: ${isAndroid ? 'Android' : 'Desktop'} | platformType: ${isAndroid ? 'ANDROID_PHONE' : 'CHROME'}`
+			`${isAndroid ? '\uD83D\uDCF1' : '\uD83D\uDDA5\uFE0F'} Connected to WA | ${phoneId} | platform: ${isAndroid ? nativeAppPlatform : 'MACOS'} | device: ${isAndroid ? 'Android' : 'Desktop'} | platformType: ${isAndroid ? 'ANDROID_PHONE' : 'CHROME'}`
 		)
 		clearTimeout(qrTimer) // will never happen in all likelyhood -- but just in case WA sends success on first try
 
 		ev.emit('creds.update', { me: { ...authState.creds.me!, lid: node.attrs.lid } })
+
+		if (isNativeAndroid && authState.creds.nativeAndroidIdentity && nativeClientPayloadContext) {
+			const connectionLc = incrementNativeAndroidConnectionLc(nativeClientPayloadContext.connectionLc)
+			authState.creds.nativeAndroidIdentity.connectionLc = connectionLc
+			ev.emit('creds.update', { nativeAndroidIdentity: authState.creds.nativeAndroidIdentity })
+			logger.debug(
+				{
+					transportProfile: transportSession.profile,
+					selectedProfileId: transportSession.nativeAndroid?.device.profileId,
+					connectionLc
+				},
+				'native_android: successful-login counter advanced after server success'
+			)
+		}
 
 		// Mark this socket active BEFORE emitting `connection.update`. That
 		// emit is NOT buffered (connection.update is absent from
@@ -1769,6 +2093,44 @@ export const makeSocket = (config: SocketConfig) => {
 	// stream fail, possible logout
 	ws.on('CB:failure', (node: BinaryNode) => {
 		const reason = +(node.attrs.reason || 500)
+		const currentNativeDevice = transportSession.nativeAndroid?.device
+		if (
+			isNativeAndroid &&
+			currentNativeDevice &&
+			shouldFallbackNativeAndroidProfile({
+				registered: authState.creds.registered,
+				hasAccount: Boolean(authState.creds.account),
+				hasMe: Boolean(authState.creds.me),
+				serverFailureReason: reason,
+				profileId: currentNativeDevice.profileId
+			})
+		) {
+			const fallback = createNativeAndroidFallbackDeviceProfile({
+				mcc: currentNativeDevice.mcc,
+				mnc: currentNativeDevice.mnc,
+				localeLanguageIso6391: currentNativeDevice.localeLanguageIso6391,
+				localeCountryIso31661Alpha2: currentNativeDevice.localeCountryIso31661Alpha2
+			})
+			authState.creds.nativeAndroidIdentity = {
+				...authState.creds.nativeAndroidIdentity,
+				schemaVersion: 1,
+				profile: 'native_android',
+				device: fallback
+			}
+			transportSession.nativeAndroid!.device = fallback
+			config.nativeAndroid!.device = fallback
+			ev.emit('creds.update', { nativeAndroidIdentity: authState.creds.nativeAndroidIdentity })
+			logger.warn(
+				{
+					rejectedProfileId: currentNativeDevice.profileId,
+					selectedProfileId: fallback.profileId,
+					serverFailureReason: reason,
+					fallbackAction: 'persisted-for-next-fresh-pairing'
+				},
+				'native_android catalog profile rejected before registration; generic captured profile selected as fallback'
+			)
+		}
+
 		void end(new Boom('Connection Failure', { statusCode: reason, data: node.attrs }))
 	})
 
@@ -1964,6 +2326,7 @@ export const makeSocket = (config: SocketConfig) => {
 		logout,
 		end,
 		registerSocketEndHandler,
+		registerSocketDrainHandler,
 		onUnexpectedError,
 		uploadPreKeys,
 		uploadPreKeysToServerIfRequired,

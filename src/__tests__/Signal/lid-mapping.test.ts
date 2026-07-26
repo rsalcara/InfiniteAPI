@@ -181,7 +181,7 @@ describe('LIDMappingStore', () => {
 			expect(() => lidMappingStore.destroy()).not.toThrow()
 		})
 
-		it('should complete active operations before destroying resources (graceful degradation)', async () => {
+		it('should drain active operations before destroy resolves', async () => {
 			const pn = '12345@s.whatsapp.net'
 
 			// Mock slow DB operation (simulates long-running operation)
@@ -204,16 +204,51 @@ describe('LIDMappingStore', () => {
 			expect(operationStarted).toBe(true)
 			expect(operationCompleted).toBe(false)
 
-			// Call destroy while operation is in progress
-			lidMappingStore.destroy()
+			// Call destroy while operation is in progress. It must reject new
+			// work immediately but not resolve until the active operation ends.
+			let destroyResolved = false
+			const destroyPromise = lidMappingStore.destroy().then(drained => {
+				expect(drained).toBe(true)
+				destroyResolved = true
+			})
+			await new Promise(resolve => setTimeout(resolve, 10))
+			expect(destroyResolved).toBe(false)
 
 			// Operation should still complete successfully (graceful degradation)
 			const result = await operationPromise
 			expect(result).toBe('aaaaa@lid')
 			expect(operationCompleted).toBe(true)
+			await destroyPromise
+			expect(destroyResolved).toBe(true)
 
 			// But new operations should be rejected
 			await expect(lidMappingStore.getLIDForPN(pn)).rejects.toThrow('LIDMappingStore has been destroyed')
+		})
+
+		it('should bound socket shutdown while keeping cleanup deferred until an active operation drains', async () => {
+			jest.useFakeTimers()
+			let releaseOperation!: () => void
+			const operationBlocked = new Promise<void>(resolve => {
+				releaseOperation = resolve
+			})
+
+			// @ts-ignore
+			mockKeys.get.mockImplementation(async () => {
+				await operationBlocked
+				return { '12345': 'aaaaa' } as unknown as SignalDataTypeMap['lid-mapping']
+			})
+
+			const operationPromise = lidMappingStore.getLIDForPN('12345@s.whatsapp.net')
+			await Promise.resolve()
+
+			const destroyPromise = lidMappingStore.destroy()
+			await jest.advanceTimersByTimeAsync(5_000)
+			await expect(destroyPromise).resolves.toBe(false)
+
+			releaseOperation()
+			await operationPromise
+			await expect(lidMappingStore.waitForDestroy()).resolves.toBeUndefined()
+			jest.useRealTimers()
 		})
 	})
 

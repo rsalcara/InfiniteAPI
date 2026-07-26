@@ -408,14 +408,24 @@ describe('useMultiDbSqliteAuthState', () => {
 		close()
 	})
 
-	it('clear() wipes app_state_sync_keys along with signal_kv and jid_map', async () => {
-		const { state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+	it('clear() wipes app_state_sync_keys and fast-ratchet private state with the remaining Signal stores', async () => {
+		const { state, store, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		await state.keys.set({ 'app-state-sync-key': { x: sampleAppStateSyncKey(1) } })
+		store
+			.handle('axolotl.db')
+			.prepare(
+				'INSERT INTO fast_ratchet_sender_keys (group_id, sender_id, sender_type, device_id, record) ' +
+					'VALUES (?, ?, ?, ?, ?)'
+			)
+			.run('location@broadcast', '5515991426667', 0, 0, Buffer.from('private-ratchet-state'))
 		if (!state.keys.clear) throw new Error('clear not implemented')
 		await state.keys.clear()
 
 		const got = await state.keys.get('app-state-sync-key', ['x'])
 		expect(got['x']).toBeUndefined()
+		expect(store.handle('axolotl.db').prepare('SELECT COUNT(*) AS count FROM fast_ratchet_sender_keys').get()).toEqual({
+			count: 0
+		})
 		close()
 	})
 
@@ -478,16 +488,10 @@ describe('useMultiDbSqliteAuthState', () => {
 		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: false })
 		await state.keys.set({ 'identity-key': { '123456789_1.0': Buffer.from([0xaa]) as Uint8Array } })
 
-		const jidRowId = store
-			.handle('msgstore.db')
-			.prepare('SELECT _id FROM jid WHERE raw_string = ?')
-			.get('123456789@lid') as { _id: number } | undefined
-		expect(jidRowId).toBeDefined()
-
 		const row = store
 			.handle('axolotl.db')
 			.prepare('SELECT public_key, recipient_type FROM identities WHERE recipient_id = ?')
-			.get(jidRowId!._id) as { public_key: Buffer; recipient_type: number } | undefined
+			.get(123456789) as { public_key: Buffer; recipient_type: number } | undefined
 		expect(row).toBeDefined()
 		expect(row?.recipient_type).toBe(1)
 		expect(Buffer.from(row!.public_key).toString('hex')).toBe('aa')

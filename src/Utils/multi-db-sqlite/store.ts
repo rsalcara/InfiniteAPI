@@ -20,6 +20,11 @@
  */
 import type { ILogger } from '../logger'
 import { STATUS_LAST_TIMESTAMP_TRIGGER_NAME, STATUS_LAST_TIMESTAMP_TRIGGER_SQL } from './schemas/status'
+import {
+	normalizeLocationTimestampUnits,
+	repairOpenEndedLocationSharerExpiry,
+	restoreCanonicalLocationSharerSchema
+} from './location-migrations'
 import { addColumnIfMissing, type Migration, runMigrations } from './schema-migrations'
 import { MULTI_DB_FILES, type MultiDbFile, SCHEMAS } from './schemas'
 import type { SqliteDbLike } from './types'
@@ -108,6 +113,25 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 			name: 'add sender_keys.bucket_id (schema fidelity)',
 			// Idempotent ADD COLUMN (audit #629) — see wa_contacts.username above.
 			run: db => addColumnIfMissing(db, 'sender_keys', 'bucket_id', "TEXT NOT NULL DEFAULT ''")
+		},
+		{
+			version: 2,
+			name: 'complete identities verification columns',
+			run: db => {
+				addColumnIfMissing(db, 'identities', 'account_encryption_attestation_type', 'INTEGER NOT NULL DEFAULT 0')
+				addColumnIfMissing(db, 'identities', 'mark_as_verified', 'INTEGER')
+				addColumnIfMissing(db, 'identities', 'mark_as_verified_action_seq', 'INTEGER')
+			}
+		},
+		{
+			version: 3,
+			name: 'drop legacy jid-row keyed identity mirrors',
+			// Older InfiniteAPI builds used msgstore.jid._id as recipient_id
+			// and stored BufferJSON text in public_key. Neither matches Android,
+			// whose key is the numeric PN/LID and whose public_key is raw bytes.
+			// signal_kv remains the complete compatibility copy; auth-state
+			// initialization rehydrates corrected typed rows from it.
+			sql: `DELETE FROM identities WHERE recipient_id <> -1;`
 		}
 	],
 	'msgstore.db': [
@@ -145,6 +169,102 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 				CREATE UNIQUE INDEX IF NOT EXISTS message_add_on_poll_vote_selected_option_unique_idx
 				ON message_add_on_poll_vote_selected_option (message_add_on_row_id, message_poll_option_id);
 			`
+		},
+		{
+			// Older mirror writers left message.status NULL. The official
+			// Android history importer initializes received messages to 0 and
+			// own-account history to at least server-ack (4). This conservative
+			// repair makes legacy rows usable without claiming delivery/read;
+			// later live receipts advance them through 5/13/8.
+			version: 3,
+			name: 'backfill missing Android message status values',
+			sql: `
+				UPDATE message
+				SET status = CASE WHEN from_me = 1 THEN 4 ELSE 0 END
+				WHERE status IS NULL;
+			`
+		},
+		{
+			version: 4,
+			name: 'backfill provable Android message types from satellites',
+			// Payload protos are intentionally not retained in msgstore.db, so
+			// only repair rows whose relational satellites prove the exact type.
+			// Ambiguous legacy UI rows remain NULL until a richer reprocess heals
+			// them through the upsert; inventing 45/54/55 would not be 1:1.
+			sql: `
+					UPDATE message
+					SET message_type = 66
+					WHERE message_type IS NULL
+					AND EXISTS (
+						SELECT 1 FROM message_poll_option mpo
+						WHERE mpo.message_row_id = message._id
+					);
+				`
+		},
+		{
+			version: 5,
+			name: 'add Android album root mirror',
+			// Official WhatsApp Business 2.26.27.83 stores AlbumMessage roots
+			// as message_type=99 and attaches their counters here. Existing
+			// NULL rows cannot be backfilled safely because msgstore does not
+			// retain the original protobuf; live/history reprocessing heals
+			// them through the natural-key upsert.
+			sql: `
+				CREATE TABLE IF NOT EXISTS message_album (
+					message_row_id INTEGER PRIMARY KEY,
+					image_count INTEGER NOT NULL DEFAULT 0,
+					video_count INTEGER NOT NULL DEFAULT 0,
+					expected_image_count INTEGER,
+					expected_video_count INTEGER
+				);
+			`
+		},
+		{
+			version: 6,
+			name: 'add Android sticker-pack message mirror',
+			// Exact WhatsApp Business 2.26.27.83 msgstore tables and indexes.
+			// Existing type-105 rows cannot be reconstructed: their protobuf
+			// manifest was never retained. Live/history reprocessing fills the
+			// tables through the natural-key upsert without guessing metadata.
+			sql: `
+				CREATE TABLE IF NOT EXISTS message_sticker_pack (
+					message_row_id INTEGER PRIMARY KEY,
+					sticker_pack_id TEXT NOT NULL,
+					tray_icon_file_name TEXT NOT NULL,
+					pack_name TEXT NOT NULL,
+					pack_description TEXT,
+					publisher TEXT,
+					image_data_hash TEXT,
+					sticker_pack_size INTEGER,
+					sticker_pack_origin INTEGER
+				);
+				CREATE INDEX IF NOT EXISTS message_sticker_pack_name_index
+					ON message_sticker_pack (pack_name);
+				CREATE INDEX IF NOT EXISTS message_sticker_pack_publisher_index
+					ON message_sticker_pack (publisher);
+				CREATE TABLE IF NOT EXISTS message_sticker_pack_stickers (
+					_id INTEGER PRIMARY KEY AUTOINCREMENT,
+					message_row_id INTEGER NOT NULL,
+					file_name TEXT NOT NULL,
+					is_animated INTEGER NOT NULL DEFAULT 0,
+					emojis TEXT,
+					accessibility_label TEXT,
+					is_lottie INTEGER NOT NULL DEFAULT 0,
+					mimetype TEXT
+				);
+					CREATE INDEX IF NOT EXISTS sticker_pack_stickers_message_row_id_index
+						ON message_sticker_pack_stickers (message_row_id);
+				`
+		},
+		{
+			version: 7,
+			name: 'add final live-location columns to legacy message_location',
+			run: db => {
+				addColumnIfMissing(db, 'message_location', 'live_location_final_latitude', 'REAL')
+				addColumnIfMissing(db, 'message_location', 'live_location_final_longitude', 'REAL')
+				addColumnIfMissing(db, 'message_location', 'live_location_final_timestamp', 'INTEGER')
+				addColumnIfMissing(db, 'message_location', 'map_download_status', 'INTEGER')
+			}
 		}
 	],
 	'status.db': [
@@ -187,6 +307,31 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 			version: 1,
 			name: 'add location_sharer.received_ts (received-share retention)',
 			run: db => addColumnIfMissing(db, 'location_sharer', 'received_ts', 'INTEGER NOT NULL DEFAULT 0')
+		},
+		{
+			// The receive path now consumes the official `<enc duration="…">`
+			// metadata. Restore the canonical mobile table and remove the
+			// obsolete last-activity heuristic without losing existing rows.
+			version: 2,
+			name: 'restore canonical location_sharer schema',
+			run: restoreCanonicalLocationSharerSchema
+		},
+		{
+			// Only sent open-ended rows use Android's Long.MAX_VALUE sentinel.
+			// Received legacy rows were bounded by migration v2 using their
+			// last-activity timestamp.
+			version: 3,
+			name: 'repair open-ended location_sharer expiry sentinel',
+			run: repairOpenEndedLocationSharerExpiry
+		},
+		{
+			// Develop historically stored location timestamps in unix seconds.
+			// Canonical reads now use unix milliseconds. This also repairs
+			// databases opened by an intermediate build whose unscoped v3
+			// converted received legacy rows to Long.MAX_VALUE.
+			version: 4,
+			name: 'normalize location timestamps to milliseconds',
+			run: normalizeLocationTimestampUnits
 		}
 	]
 }

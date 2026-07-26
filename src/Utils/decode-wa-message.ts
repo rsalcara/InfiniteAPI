@@ -538,6 +538,17 @@ export const decryptMessageNode = (
 						fullMessage.retryCount = Number(attrs.count)
 					}
 
+					// Live-location duration is transport metadata on the encrypted
+					// child, not a field of LiveLocationMessage. This mirrors the
+					// official IncomingLiveLocationHandler, which reads
+					// `<enc duration="…">` and places it on WebMessageInfo.
+					if (tag === 'enc' && attrs.duration !== undefined) {
+						const duration = Number(attrs.duration)
+						if (Number.isSafeInteger(duration) && duration >= 0) {
+							fullMessage.duration = duration
+						}
+					}
+
 					if (tag !== 'enc' && tag !== 'plaintext') {
 						continue
 					}

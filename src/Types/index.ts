@@ -12,6 +12,7 @@ export * from './Signal'
 export * from './Newsletter'
 export * from './Username'
 export * from './SessionCleanup'
+export * from './Transport'
 // Re-exports added 2026-06-10 (audit P1-TYPE-01): these types appear in
 // public signatures (addLabel, updateBussinesProfile, labels.* events,
 // USyncQuery primitives) and the LabelAssociationType/LabelColor runtime

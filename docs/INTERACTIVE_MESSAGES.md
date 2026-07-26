@@ -3,7 +3,7 @@
 O InfiniteAPI envia mensagens interativas ricas — menus, botões, CTAs, listas,
 enquetes e carrosséis — que **renderizam em Android, iOS e WhatsApp Web**.
 
-Os exemplos abaixo usam a API REST (Astra) em `POST /v1/messages/*`. Antes de
+Os exemplos abaixo usam a interface REST em `POST /v1/messages/*`. Antes de
 rodar:
 
 - troque `SUA_API_KEY` pela sua chave (header `x-api-key`);

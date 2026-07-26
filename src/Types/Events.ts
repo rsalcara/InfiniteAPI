@@ -175,6 +175,21 @@ export type BaileysEventMap = {
 
 	/** Server-side notification de novo limite de chats — port de upstream `c89d97b13b` (PR #2445). */
 	'message-capping.update': NewChatMessageCapInfo
+	/**
+	 * An opaque side-subscription hash announced that one or more contacts may
+	 * have changed their text status/about. The official Android client resolves
+	 * this hash through its private side-list index before refreshing contacts.
+	 */
+	'text-status-side-sub.update': { from?: string; hash: string }
+	/** Full text-status/about update for a specific contact. */
+	'text-status.update': {
+		from?: string
+		jid: string
+		lastUpdateTime: string
+		text: string
+		emoji: string | null
+		ephemeralDurationSec: number
+	}
 
 	/** Settings and actions sync events */
 	'chats.lock': { id: string; locked: boolean }

@@ -8,6 +8,7 @@ import { type MediaConnInfo, type WAMessageKey } from './Message'
 import type { SessionCleanupConfig } from './SessionCleanup'
 import type { SignalRepositoryWithLIDStore } from './Signal'
 import type { ReachoutTimelockRemediationConfig } from './State'
+import type { ConnectionTransportProfile, NativeAndroidTransportConfig } from './Transport'
 
 export type WAVersion = [number, number, number]
 export type WABrowserDescription = [string, string, string]
@@ -34,6 +35,10 @@ export type PossiblyExtendedCacheStore = CacheStore & {
 export type PatchedMessageWithRecipientJID = proto.IMessage & { recipientJid?: string }
 
 export type SocketConfig = {
+	/** Transport profile. Web remains the stable default. */
+	transportProfile: ConnectionTransportProfile
+	/** Required only when transportProfile is native_android. */
+	nativeAndroid?: NativeAndroidTransportConfig
 	/** the WS url to connect to WA */
 	waWebSocketUrl: string | URL
 	/** Fails the connection if the socket times out in this interval */

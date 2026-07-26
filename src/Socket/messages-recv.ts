@@ -82,8 +82,10 @@ import { applyDeviceListDelta } from '../Utils/device-list-delta'
 import { makeLockManager } from '../Utils/lock-manager'
 import { makeMutex } from '../Utils/make-mutex'
 import { getMessageAckErrorPolicy } from '../Utils/message-ack-error'
+import { parseTextStatusSideSubNotification, parseTextStatusUpdateNotification } from '../Utils/mex-notifications'
 import {
 	JidMapBackend,
+	mapWebMessageStatusToAndroid,
 	MessageStoreBackend,
 	ReceiptBackend,
 	type ReceiptKind,
@@ -118,7 +120,6 @@ import {
 import {
 	areJidsSameUser,
 	type BinaryNode,
-	binaryNodeToString,
 	encodeBinaryNode,
 	type FullJid,
 	getAllBinaryNodeChildren,
@@ -136,6 +137,21 @@ import {
 	jidNormalizedUser,
 	S_WHATSAPP_NET
 } from '../WABinary'
+
+const summarizeInboundNode = (node: BinaryNode) => ({
+	tag: node.tag,
+	attrs: {
+		id: node.attrs.id,
+		from: node.attrs.from,
+		participant: node.attrs.participant,
+		recipient: node.attrs.recipient,
+		type: node.attrs.type,
+		t: node.attrs.t
+	},
+	contentTags: Array.isArray(node.content)
+		? node.content.flatMap(child => (typeof child === 'object' && 'tag' in child ? [child.tag] : []))
+		: []
+})
 import { extractGroupMetadata } from './groups'
 import { makeMessagesSocket } from './messages-send'
 
@@ -199,6 +215,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		messageRetryManager,
 		issuePrivacyTokens,
 		registerSocketEndHandler,
+		registerSocketDrainHandler,
 		// Port de upstream `4dbbba2891` (PR #2442)
 		fetchAccountReachoutTimelock
 	} = sock
@@ -784,7 +801,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const handleMexNewsletterNotification = async (node: BinaryNode) => {
 		const mexNode = getBinaryNodeChild(node, 'mex')
 		if (!mexNode?.content) {
-			logger.warn({ node }, 'Invalid mex newsletter notification')
+			logger.warn({ node: summarizeInboundNode(node) }, 'Invalid mex newsletter notification')
 			return
 		}
 
@@ -807,7 +824,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				typeof payloadContent === 'string' ? payloadContent : Buffer.from(payloadContent).toString('utf8')
 			data = JSON.parse(jsonText)
 		} catch (error) {
-			logger.error({ err: error, node }, 'Failed to parse mex newsletter notification')
+			logger.error({ err: error, node: summarizeInboundNode(node) }, 'Failed to parse mex newsletter notification')
 			return
 		}
 
@@ -905,6 +922,50 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const handleMexNotification = async (node: BinaryNode) => {
 		const updateNode = getBinaryNodeChild(node, 'update')
 		const opName = updateNode?.attrs?.op_name
+
+		if (updateNode && opName === 'TextStatusUpdateNotificationSideSub') {
+			if (!updateNode.content || Array.isArray(updateNode.content)) {
+				logger.warn({ opName }, 'text-status side-sub notification has no valid content')
+				return
+			}
+
+			try {
+				const update = parseTextStatusSideSubNotification(updateNode.content)
+				if (!update) {
+					logger.warn({ opName }, 'text-status side-sub notification is missing its hash')
+					return
+				}
+
+				ev.emit('text-status-side-sub.update', { from: node.attrs.from, hash: update.hash })
+				logger.debug({ opName }, 'received text-status side-sub notification')
+			} catch (err) {
+				logger.error({ err, opName }, 'failed to parse text-status side-sub notification')
+			}
+
+			return
+		}
+
+		if (updateNode && opName === 'TextStatusUpdateNotification') {
+			if (!updateNode.content || Array.isArray(updateNode.content)) {
+				logger.warn({ opName }, 'text-status notification has no valid content')
+				return
+			}
+
+			try {
+				const update = parseTextStatusUpdateNotification(updateNode.content)
+				if (!update) {
+					logger.warn({ opName }, 'text-status notification has invalid content')
+					return
+				}
+
+				ev.emit('text-status.update', { from: node.attrs.from, ...update })
+				logger.debug({ opName, jid: update.jid }, 'received text-status notification')
+			} catch (err) {
+				logger.error({ err, opName }, 'failed to parse text-status notification')
+			}
+
+			return
+		}
 
 		if (updateNode && opName === 'NotificationUserReachoutTimelockUpdate') {
 			// NULL-001 fix (PR #487 review): guard explicit `null/undefined content`
@@ -1093,7 +1154,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 
 				default:
-					logger.warn({ node, child }, 'Unknown newsletter notification child')
+					logger.warn(
+						{ node: summarizeInboundNode(node), child: summarizeInboundNode(child) },
+						'Unknown newsletter notification child'
+					)
 					break
 			}
 		}
@@ -2223,7 +2287,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const countChild = getBinaryNodeChild(node, 'count')
 			const countValue = countChild?.attrs?.value
 			if (!countValue) {
-				logger.warn({ node }, 'PreKeyLow notification missing count child or value attr, skipping')
+				logger.warn(
+					{ node: summarizeInboundNode(node) },
+					'PreKeyLow notification missing count child or value attr, skipping'
+				)
 				return
 			}
 
@@ -2276,7 +2343,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 
 			if (result.action === 'no_identity_node') {
-				logger.info({ node }, 'unknown encrypt notification')
+				logger.info({ node: summarizeInboundNode(node) }, 'unknown encrypt notification')
 			}
 		}
 	}
@@ -2663,7 +2730,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				try {
 					await handleDevicesNotification(node)
 				} catch (error) {
-					logger.error({ error, node }, 'failed to handle devices notification')
+					logger.error({ error, node: summarizeInboundNode(node) }, 'failed to handle devices notification')
 				}
 
 				break
@@ -3062,14 +3129,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		// Try to get messages from cache first, then fallback to getMessage
 		const msgs: (proto.IMessage | undefined)[] = []
+		const liveLocationDurations: (number | undefined)[] = []
 		for (const id of ids) {
 			let msg: proto.IMessage | undefined
+			let liveLocationDuration: number | undefined
 
 			// Try to get from retry cache first if enabled
 			if (messageRetryManager) {
 				const cachedMsg = messageRetryManager.getRecentMessage(remoteJid, id)
 				if (cachedMsg) {
 					msg = cachedMsg.message
+					liveLocationDuration = cachedMsg.liveLocationDuration
 					logger.debug({ jid: remoteJid, id }, 'found message in retry cache')
 				}
 			}
@@ -3078,11 +3148,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			if (!msg) {
 				msg = await getMessage({ ...key, id })
 				if (msg) {
+					const persistedDuration = (msg as proto.IMessage & { liveLocationDuration?: number }).liveLocationDuration
+					if (
+						typeof persistedDuration === 'number' &&
+						Number.isSafeInteger(persistedDuration) &&
+						persistedDuration >= 0
+					) {
+						liveLocationDuration = persistedDuration
+					}
+
 					logger.debug({ jid: remoteJid, id }, 'found message via getMessage')
 				}
 			}
 
 			msgs.push(msg)
+			liveLocationDurations.push(liveLocationDuration)
 		}
 
 		let hasRetryableMessage = false
@@ -3200,6 +3280,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 
 				const msgRelayOpts: MessageRelayOptions = { messageId: ids[i] }
+				msgRelayOpts.liveLocationDuration = liveLocationDurations[i]
 
 				if (sendToAll) {
 					msgRelayOpts.useUserDevicesCache = false
@@ -3398,6 +3479,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 									update: { status, messageTimestamp: toNumber(+(attrs.t ?? 0)) }
 								}))
 							)
+
+							// Android's msgstore status integers are not the same
+							// numbers as WebMessageInfo.Status. Advance the typed
+							// message row using the confirmed Android mapping.
+							if (receiptChatResolver && key.remoteJid) {
+								const androidStatus = mapWebMessageStatusToAndroid(status)
+								if (androidStatus !== null) {
+									try {
+										for (const id of ids) {
+											receiptChatResolver.updateMessageStatus(key.remoteJid, !!key.fromMe, id, androidStatus)
+										}
+									} catch (err) {
+										logger.warn({ err }, 'failed to advance message status mirror')
+									}
+								}
+							}
 
 							// Mirrors 1:1 message receipts into msgstore.db. The other
 							// party IS the receipt_user for a 1:1 chat (no separate
@@ -3850,7 +3947,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					await retryMutex.mutex(async () => {
 						try {
 							if (!ws.isOpen) {
-								logger.debug({ node }, 'Connection closed, skipping retry')
+								logger.debug({ node: summarizeInboundNode(node) }, 'Connection closed, skipping retry')
 								return
 							}
 
@@ -4005,7 +4102,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					'message handle failed (auto-recovering via retry+pkmsg)'
 				)
 			} else {
-				logger.error({ error, node: binaryNodeToString(node) }, 'error in handling message')
+				logger.error({ error, node: summarizeInboundNode(node) }, 'error in handling message')
 			}
 
 			// If nothing acked the message yet (a throw in alt-mapping / migrateSession /
@@ -4259,7 +4356,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		try {
 			await handleCallInner(node)
 		} catch (error) {
-			logger.error({ error, node: binaryNodeToString(node) }, 'error in handling call')
+			logger.error({ error, node: summarizeInboundNode(node) }, 'error in handling call')
 		} finally {
 			await sendMessageAck(node).catch(ackErr => logger.error({ ackErr }, 'failed to ack call'))
 		}
@@ -4384,6 +4481,18 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		return new Promise(resolve => setImmediate(resolve))
 	}
 
+	let acceptingInboundTasks = true
+	const inboundTasks = new Set<Promise<void>>()
+	const trackInboundTask = (identifier: string, factory: () => Promise<void>): void => {
+		if (!acceptingInboundTasks) return
+
+		const task = factory().catch(error =>
+			onUnexpectedError(error instanceof Error ? error : new Error(String(error)), identifier)
+		)
+		inboundTasks.add(task)
+		void task.finally(() => inboundTasks.delete(task))
+	}
+
 	const nodeProcessorMap: Map<MessageType, (node: BinaryNode) => Promise<void>> = new Map([
 		['message', handleMessage],
 		['call', handleCall],
@@ -4402,6 +4511,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		},
 		25
 	)
+
+	registerSocketDrainHandler(async () => {
+		acceptingInboundTasks = false
+		await offlineNodeProcessor.stopAndDrain()
+		while (inboundTasks.size > 0) {
+			await Promise.allSettled([...inboundTasks])
+		}
+	})
 
 	const processNode = async (
 		type: MessageType,
@@ -4456,80 +4573,89 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	// recv a message
-	ws.on('CB:message', async (node: BinaryNode) => {
-		await processNode('message', node, 'processing message', handleMessage)
+	ws.on('CB:message', (node: BinaryNode) => {
+		trackInboundTask('processing message', () => processNode('message', node, 'processing message', handleMessage))
 	})
 
-	ws.on('CB:call', async (node: BinaryNode) => {
-		await processNode('call', node, 'handling call', handleCall)
+	ws.on('CB:call', (node: BinaryNode) => {
+		trackInboundTask('handling call', () => processNode('call', node, 'handling call', handleCall))
 	})
 
 	// Top-level <relay> stanzas carry TURN server info, tokens and crypto keys
-	ws.on('CB:relay', async (node: BinaryNode) => {
-		const callId = node.attrs['call-id']
-		const rawCallCreator = node.attrs['call-creator']
-		// Both callId and callCreator must be present to emit a valid event
-		// (call link relays may arrive without these attrs — just log them)
-		if (callId && rawCallCreator) {
-			// Resolve LID→PN for call creator
-			const callCreator = (await resolveLidToPn(rawCallCreator, signalRepository.lidMapping, logger)) || rawCallCreator
-			logger.debug({ callId, callCreator, uuid: node.attrs.uuid }, 'received relay info')
-			ev.emit('call', [
-				{
-					chatId: callCreator,
-					from: callCreator,
-					id: callId,
-					date: new Date(),
-					offline: false,
-					status: 'relay' as WACallUpdateType
-				}
-			])
-		} else {
-			logger.debug({ attrs: node.attrs }, 'received relay stanza without call-id/call-creator')
-		}
+	ws.on('CB:relay', (node: BinaryNode) => {
+		trackInboundTask('handling relay', async () => {
+			const callId = node.attrs['call-id']
+			const rawCallCreator = node.attrs['call-creator']
+			// Both callId and callCreator must be present to emit a valid event
+			// (call link relays may arrive without these attrs — just log them)
+			if (callId && rawCallCreator) {
+				// Resolve LID→PN for call creator
+				const callCreator =
+					(await resolveLidToPn(rawCallCreator, signalRepository.lidMapping, logger)) || rawCallCreator
+				logger.debug({ callId, callCreator, uuid: node.attrs.uuid }, 'received relay info')
+				ev.emit('call', [
+					{
+						chatId: callCreator,
+						from: callCreator,
+						id: callId,
+						date: new Date(),
+						offline: false,
+						status: 'relay' as WACallUpdateType
+					}
+				])
+			} else {
+				logger.debug({ attrs: node.attrs }, 'received relay stanza without call-id/call-creator')
+			}
+		})
 	})
 
-	ws.on('CB:receipt', async node => {
-		await processNode('receipt', node, 'handling receipt', handleReceipt)
+	ws.on('CB:receipt', node => {
+		trackInboundTask('handling receipt', () => processNode('receipt', node, 'handling receipt', handleReceipt))
 	})
 
-	ws.on('CB:notification', async (node: BinaryNode) => {
-		await processNode('notification', node, 'handling notification', handleNotification)
+	ws.on('CB:notification', (node: BinaryNode) => {
+		trackInboundTask('handling notification', () =>
+			processNode('notification', node, 'handling notification', handleNotification)
+		)
 	})
 	ws.on('CB:ack,class:message', (node: BinaryNode) => {
-		handleBadAck(node).catch(error => onUnexpectedError(error, 'handling bad ack'))
+		trackInboundTask('handling bad ack', () => handleBadAck(node))
 	})
 
-	ev.on('call', async ([call]) => {
-		if (!call) {
-			return
-		}
-
-		// missed call + group call notification message generation
-		if (call.status === 'timeout' || (call.status === 'offer' && call.isGroup)) {
-			const msg: WAMessage = {
-				key: {
-					remoteJid: call.chatId,
-					id: call.id,
-					fromMe: false
-				},
-				messageTimestamp: unixTimestampSeconds(call.date)
+	ev.on('call', ([call]) => {
+		trackInboundTask('recording call message', async () => {
+			if (!call) {
+				return
 			}
-			if (call.status === 'timeout') {
-				if (call.isGroup) {
-					msg.messageStubType = call.isVideo
-						? WAMessageStubType.CALL_MISSED_GROUP_VIDEO
-						: WAMessageStubType.CALL_MISSED_GROUP_VOICE
-				} else {
-					msg.messageStubType = call.isVideo ? WAMessageStubType.CALL_MISSED_VIDEO : WAMessageStubType.CALL_MISSED_VOICE
+
+			// missed call + group call notification message generation
+			if (call.status === 'timeout' || (call.status === 'offer' && call.isGroup)) {
+				const msg: WAMessage = {
+					key: {
+						remoteJid: call.chatId,
+						id: call.id,
+						fromMe: false
+					},
+					messageTimestamp: unixTimestampSeconds(call.date)
 				}
-			} else {
-				msg.message = { call: { callKey: Buffer.from(call.id) } }
-			}
+				if (call.status === 'timeout') {
+					if (call.isGroup) {
+						msg.messageStubType = call.isVideo
+							? WAMessageStubType.CALL_MISSED_GROUP_VIDEO
+							: WAMessageStubType.CALL_MISSED_GROUP_VOICE
+					} else {
+						msg.messageStubType = call.isVideo
+							? WAMessageStubType.CALL_MISSED_VIDEO
+							: WAMessageStubType.CALL_MISSED_VOICE
+					}
+				} else {
+					msg.message = { call: { callKey: Buffer.from(call.id) } }
+				}
 
-			const protoMsg = proto.WebMessageInfo.fromObject(msg) as WAMessage
-			await upsertMessage(protoMsg, call.offline ? 'append' : 'notify')
-		}
+				const protoMsg = proto.WebMessageInfo.fromObject(msg) as WAMessage
+				await upsertMessage(protoMsg, call.offline ? 'append' : 'notify')
+			}
+		})
 	})
 
 	ev.on('connection.update', ({ isOnline, connection }) => {

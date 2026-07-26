@@ -10,6 +10,7 @@ import P from 'pino'
 import { proto } from '../../../WAProto/index.js'
 import type { AuthenticationCreds, BaileysEventEmitter, WAMessage } from '../../Types'
 import { initAuthCreds } from '../../Utils/auth-utils'
+import { LOCATION_OPEN_ENDED_EXPIRES_MS } from '../../Utils/multi-db-sqlite'
 import processMessage from '../../Utils/process-message'
 
 const silent = P({ level: 'silent' })
@@ -21,7 +22,8 @@ const credsWithMe = (): AuthenticationCreds => ({
 
 const makeLocationBackendMock = () => ({
 	upsertLocationCache: jest.fn(),
-	upsertLocationSharer: jest.fn()
+	upsertLocationSharer: jest.fn(),
+	endLocationSharersForMessage: jest.fn()
 })
 
 const makeContext = (locationBackend: ReturnType<typeof makeLocationBackendMock>) => {
@@ -86,6 +88,7 @@ describe('processMessage — location.db mirror', () => {
 				speedInMps: 1.5
 			}
 		})
+		msg.duration = 900
 
 		await processMessage(msg, ctx as any)
 
@@ -96,14 +99,14 @@ describe('processMessage — location.db mirror', () => {
 			expect.objectContaining({
 				remoteJid: 'chat@s.whatsapp.net',
 				fromMe: 0,
+				remoteResource: 'sender@s.whatsapp.net',
 				messageId: 'live-loc-1',
-				expires: 0,
-				receivedTs: 1770000000
+				expires: 1_770_000_900_000
 			})
 		)
 	})
 
-	it('lets the backend use current time when a received live location has no message timestamp', async () => {
+	it('uses the official open-ended sentinel when duration is absent', async () => {
 		const locationBackend = makeLocationBackendMock()
 		const { ctx } = makeContext(locationBackend)
 		const msg = inbound('live-loc-without-ts', {
@@ -114,8 +117,45 @@ describe('processMessage — location.db mirror', () => {
 		await processMessage(msg, ctx as any)
 
 		expect(locationBackend.upsertLocationSharer).toHaveBeenCalledWith(
-			expect.objectContaining({ receivedTs: undefined })
+			expect.objectContaining({
+				remoteResource: 'sender@s.whatsapp.net',
+				expires: LOCATION_OPEN_ENDED_EXPIRES_MS
+			})
 		)
+	})
+
+	it('does not invent a group recipient for a replayed fromMe live location', async () => {
+		const locationBackend = makeLocationBackendMock()
+		const { ctx } = makeContext(locationBackend)
+		const msg = inbound(
+			'group-live',
+			{ liveLocationMessage: { degreesLatitude: -23.5, degreesLongitude: -46.6 } },
+			true
+		)
+		msg.key.remoteJid = '120363000000000000@g.us'
+		msg.duration = 900
+
+		await processMessage(msg, ctx as any)
+
+		expect(locationBackend.upsertLocationSharer).not.toHaveBeenCalled()
+	})
+
+	it('closes the active share when finalLiveLocation arrives', async () => {
+		const locationBackend = makeLocationBackendMock()
+		const { ctx } = makeContext(locationBackend)
+		const msg = inbound('live-final', {})
+		msg.finalLiveLocation = {
+			degreesLatitude: -23.51,
+			degreesLongitude: -46.61,
+			timeOffset: 30
+		}
+
+		await processMessage(msg, ctx as any)
+
+		expect(locationBackend.upsertLocationCache).toHaveBeenCalledWith(
+			expect.objectContaining({ latitude: -23.51, longitude: -46.61, locationTs: 1_770_000_030_000 })
+		)
+		expect(locationBackend.endLocationSharersForMessage).toHaveBeenCalledWith('chat@s.whatsapp.net', 0, 'live-final')
 	})
 
 	it('does nothing when locationBackend is not configured (additive/opt-in)', async () => {

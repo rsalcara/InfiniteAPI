@@ -30,8 +30,11 @@ export function makeOfflineNodeProcessor(
 ) {
 	const nodes: OfflineNode[] = []
 	let isProcessing = false
+	let accepting = true
+	let processingPromise: Promise<void> | undefined
 
 	const enqueue = (type: MessageType, node: BinaryNode) => {
+		if (!accepting) return
 		nodes.push({ type, node })
 
 		if (isProcessing) {
@@ -75,10 +78,19 @@ export function makeOfflineNodeProcessor(
 			}
 		}
 
-		promise().catch(error =>
+		processingPromise = promise().catch(error => {
 			deps.onUnexpectedError(error instanceof Error ? error : new Error(String(error)), 'processing offline nodes')
-		)
+		})
 	}
 
-	return { enqueue }
+	const stopAndDrain = async (): Promise<void> => {
+		accepting = false
+		// Nodes that have not started belong to the disconnected transport and
+		// will be redelivered by the server on reconnect. Do not start them
+		// against repositories that are entering teardown.
+		nodes.length = 0
+		await processingPromise
+	}
+
+	return { enqueue, stopAndDrain }
 }
