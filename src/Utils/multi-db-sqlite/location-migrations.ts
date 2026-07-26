@@ -4,6 +4,10 @@ type TableInfoRow = {
 	name: string
 }
 
+const LOCATION_RECEIVED_RETENTION_MS = 8 * 60 * 60 * 1000
+const SQLITE_LONG_MAX_TEXT = '9223372036854775807'
+const SECONDS_TO_MILLISECONDS_THRESHOLD = 100_000_000_000
+
 /**
  * Restores WhatsApp's canonical `location_sharer` shape.
  *
@@ -32,7 +36,19 @@ export const restoreCanonicalLocationSharerSchema = (db: SqliteDbLike): void => 
 
 		INSERT INTO location_sharer_canonical
 			(_id, remote_jid, from_me, remote_resource, expires, message_id)
-		SELECT _id, remote_jid, from_me, remote_resource, expires, message_id
+		SELECT
+			_id,
+			remote_jid,
+			from_me,
+			remote_resource,
+			CASE
+				WHEN from_me = 0 AND expires = 0
+					THEN (received_ts * 1000) + ${LOCATION_RECEIVED_RETENTION_MS}
+				WHEN expires > 0 AND expires < ${SECONDS_TO_MILLISECONDS_THRESHOLD}
+					THEN expires * 1000
+				ELSE expires
+			END,
+			message_id
 		FROM location_sharer;
 
 		DROP TABLE location_sharer;
@@ -44,10 +60,36 @@ export const restoreCanonicalLocationSharerSchema = (db: SqliteDbLike): void => 
 }
 
 /**
- * The removed retention workaround wrote `expires=0` for open-ended shares.
- * Android represents the same state with Java's Long.MAX_VALUE. Repairing the
- * sentinel keeps upgraded rows visible to the canonical active-window query.
+ * A zero expiry is canonical only for an open-ended share originated by this
+ * account. Legacy received rows used zero because companions did not know the
+ * duration; migration v2 converts those to a bounded eight-hour window before
+ * removing `received_ts`.
  */
 export const repairOpenEndedLocationSharerExpiry = (db: SqliteDbLike): void => {
-	db.prepare("UPDATE location_sharer SET expires = CAST('9223372036854775807' AS INTEGER) WHERE expires = 0").run()
+	db.prepare(
+		`UPDATE location_sharer SET expires = CAST('${SQLITE_LONG_MAX_TEXT}' AS INTEGER) WHERE expires = 0 AND from_me = 1`
+	).run()
+}
+
+/**
+ * Repairs databases opened by older builds and normalizes the historical
+ * seconds-based timestamps before active-window reads compare against unix ms.
+ *
+ * Received Long.MAX rows can only have been produced by the former unscoped v3
+ * migration. Deleting them is fail-closed: a subsequent live update recreates
+ * a genuinely active row, while ended historical shares are not resurrected.
+ */
+export const normalizeLocationTimestampUnits = (db: SqliteDbLike): void => {
+	db.prepare(
+		`UPDATE location_cache SET location_ts = location_ts * 1000
+		 WHERE location_ts > 0 AND location_ts < ${SECONDS_TO_MILLISECONDS_THRESHOLD}`
+	).run()
+	db.prepare(
+		`UPDATE location_sharer SET expires = expires * 1000
+		 WHERE expires > 0 AND expires < ${SECONDS_TO_MILLISECONDS_THRESHOLD}`
+	).run()
+	db.prepare(
+		`DELETE FROM location_sharer
+		 WHERE from_me = 0 AND expires = CAST('${SQLITE_LONG_MAX_TEXT}' AS INTEGER)`
+	).run()
 }

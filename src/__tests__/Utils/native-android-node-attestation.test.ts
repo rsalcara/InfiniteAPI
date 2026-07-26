@@ -86,6 +86,25 @@ describe('native Android built-in Node attestation provider', () => {
 		}
 	})
 
+	it('serializes separate store instances that target the same persisted chain', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'infiniteapi-node-attestation-'))
+		const storagePath = join(directory, 'attestation.json')
+		try {
+			const firstStore = makeNodeX509AttestationStore({ storagePath })
+			const secondStore = makeNodeX509AttestationStore({ storagePath })
+			const [first, second] = await Promise.all([firstStore.current(), secondStore.current()])
+
+			expect(Buffer.from(second.keyAttestation)).toEqual(Buffer.from(first.keyAttestation))
+			expect(splitConcatenatedDerCertificates(first.keyAttestation)).toHaveLength(2)
+			expect(JSON.parse(await readFile(storagePath, 'utf8'))).toMatchObject({
+				schemaVersion: 1,
+				clientAppId: WABA_CLIENT_APP_ID
+			})
+		} finally {
+			await rm(directory, { force: true, recursive: true })
+		}
+	})
+
 	it('replaces structurally invalid persisted content', async () => {
 		const directory = await mkdtemp(join(tmpdir(), 'infiniteapi-node-x509-'))
 		const storagePath = join(directory, 'attestation.json')

@@ -1302,46 +1302,58 @@ export const makeSocket = (config: SocketConfig) => {
 	const onMessageReceived = async (data: Buffer) => {
 		try {
 			await noise.decodeFrame(data, frame => {
-				// reset ping timeout
-				lastDateRecv = new Date()
+				try {
+					// reset ping timeout
+					lastDateRecv = new Date()
 
-				let anyTriggered = false
+					let anyTriggered = false
 
-				anyTriggered = ws.emit('frame', frame)
-				// if it's a binary node
-				if (!(frame instanceof Uint8Array)) {
-					const msgId = frame.attrs.id
+					anyTriggered = ws.emit('frame', frame)
+					// if it's a binary node
+					if (!(frame instanceof Uint8Array)) {
+						const msgId = frame.attrs.id
 
-					// Update server time offset from any node with timestamp 't'
-					// This keeps the offset accurate even after long connections
-					const serverTime = extractServerTime(frame)
-					if (serverTime) {
-						unifiedSessionManager?.updateServerTimeOffset(serverTime)
+						// Update server time offset from any node with timestamp 't'
+						// This keeps the offset accurate even after long connections
+						const serverTime = extractServerTime(frame)
+						if (serverTime) {
+							unifiedSessionManager?.updateServerTimeOffset(serverTime)
+						}
+
+						if (logger.level === 'trace') {
+							logger.trace({ xml: binaryNodeToString(frame), msg: 'recv xml' })
+						}
+
+						/* Check if this is a response to a message we sent */
+						anyTriggered = ws.emit(`${DEF_TAG_PREFIX}${msgId}`, frame) || anyTriggered
+						/* Check if this is a response to a message we are expecting */
+						const l0 = frame.tag
+						const l1 = frame.attrs || {}
+						const l2 = Array.isArray(frame.content) ? frame.content[0]?.tag : ''
+
+						for (const key of Object.keys(l1)) {
+							anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}:${l1[key]},${l2}`, frame) || anyTriggered
+							anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}:${l1[key]}`, frame) || anyTriggered
+							anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}`, frame) || anyTriggered
+						}
+
+						anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0},,${l2}`, frame) || anyTriggered
+						anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0}`, frame) || anyTriggered
+
+						if (!anyTriggered && logger.level === 'debug') {
+							logger.debug({ unhandled: true, msgId, fromMe: false, frame }, 'communication recv')
+						}
 					}
-
-					if (logger.level === 'trace') {
-						logger.trace({ xml: binaryNodeToString(frame), msg: 'recv xml' })
-					}
-
-					/* Check if this is a response to a message we sent */
-					anyTriggered = ws.emit(`${DEF_TAG_PREFIX}${msgId}`, frame) || anyTriggered
-					/* Check if this is a response to a message we are expecting */
-					const l0 = frame.tag
-					const l1 = frame.attrs || {}
-					const l2 = Array.isArray(frame.content) ? frame.content[0]?.tag : ''
-
-					for (const key of Object.keys(l1)) {
-						anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}:${l1[key]},${l2}`, frame) || anyTriggered
-						anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}:${l1[key]}`, frame) || anyTriggered
-						anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}`, frame) || anyTriggered
-					}
-
-					anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0},,${l2}`, frame) || anyTriggered
-					anyTriggered = ws.emit(`${DEF_CALLBACK_PREFIX}${l0}`, frame) || anyTriggered
-
-					if (!anyTriggered && logger.level === 'debug') {
-						logger.debug({ unhandled: true, msgId, fromMe: false, frame }, 'communication recv')
-					}
+				} catch (error) {
+					logger.error(
+						{
+							connectionId,
+							jid: authState.creds.me?.id,
+							transportProfile: transportSession.profile,
+							error
+						},
+						'transport frame listener failed; authenticated socket remains open'
+					)
 				}
 			})
 		} catch (error) {

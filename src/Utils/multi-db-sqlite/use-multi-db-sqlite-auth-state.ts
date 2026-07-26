@@ -496,7 +496,10 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	const axolotlDb = store.handle('axolotl.db')
 	const clearAxolotlTx = axolotlDb.transaction(() => {
 		signalStmts.clear.run()
-		axolotlDb.exec('DELETE FROM sessions; DELETE FROM prekeys; DELETE FROM sender_keys; DELETE FROM identities;')
+		axolotlDb.exec(
+			'DELETE FROM sessions; DELETE FROM prekeys; DELETE FROM sender_keys; ' +
+				'DELETE FROM fast_ratchet_sender_keys; DELETE FROM identities;'
+		)
 	}).immediate
 
 	// Every statement is idempotent. The durable marker lives in wa.db and is

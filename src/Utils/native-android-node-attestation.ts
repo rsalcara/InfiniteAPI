@@ -4,6 +4,8 @@ import { dirname, join } from 'path'
 import { WABA_CLIENT_APP_ID } from '../Defaults'
 import type { NativeAndroidAttestationProvider } from '../Types'
 
+const nodeAttestationWrites = new Map<string, Promise<NodeX509AttestationArtifacts>>()
+
 export type NodeX509AttestationStoreOptions = {
 	storagePath: string
 	/** Defaults to the WhatsApp Business application identifier. */
@@ -247,16 +249,36 @@ export const makeNodeX509AttestationStore = (options: NodeX509AttestationStoreOp
 			expiresAtMs: currentTime + ttlMs
 		}
 		await mkdir(dirname(options.storagePath), { recursive: true })
-		const temporaryPath = `${options.storagePath}.${process.pid}.tmp`
+		const temporaryPath = `${options.storagePath}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
 		await writeFile(temporaryPath, JSON.stringify(generated), { encoding: 'utf8', mode: 0o600 })
 		await rename(temporaryPath, options.storagePath)
 		return toArtifacts(generated)
 	}
 
+	const readOrCreateSerialized = async (): Promise<NodeX509AttestationArtifacts> => {
+		while (true) {
+			const pending = nodeAttestationWrites.get(options.storagePath)
+			if (pending) {
+				await pending.catch(() => undefined)
+				continue
+			}
+
+			const operation = readOrCreate()
+			nodeAttestationWrites.set(options.storagePath, operation)
+			try {
+				return await operation
+			} finally {
+				if (nodeAttestationWrites.get(options.storagePath) === operation) {
+					nodeAttestationWrites.delete(options.storagePath)
+				}
+			}
+		}
+	}
+
 	return {
 		current: (): Promise<NodeX509AttestationArtifacts> => {
 			if (!inFlight) {
-				inFlight = readOrCreate().finally(() => {
+				inFlight = readOrCreateSerialized().finally(() => {
 					inFlight = undefined
 				})
 			}

@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals'
 import { createHash } from 'crypto'
 import net from 'net'
 import { proto } from '../../../WAProto/index.js'
@@ -248,6 +249,7 @@ describe('native_android transport contract', () => {
 		expect(Buffer.from(node.devicePairingData?.buildHash!)).toEqual(
 			Buffer.from(createHash('md5').update('2.26.27.83').digest('hex'), 'base64')
 		)
+		expect(Buffer.from(node.devicePairingData?.buildHash!)).toHaveLength(24)
 	})
 
 	it('builds the Consumer ClientPayload with its own platform and version', () => {
@@ -644,6 +646,23 @@ describe('native_android transport contract', () => {
 })
 
 describe('TcpSocketClient', () => {
+	it('propagates asynchronous socket write errors to the send callback', () => {
+		const client = new TcpSocketClient(new URL('tcp://127.0.0.1:443'), nativeConfig())
+		const writeError = new Error('forced async write failure')
+		;(client as unknown as { state: string }).state = 'open'
+		;(client as unknown as { socket: { destroyed: boolean; write: Function } }).socket = {
+			destroyed: false,
+			write: (_data: Uint8Array | string, callback: (error?: Error) => void) => {
+				callback(writeError)
+				return true
+			}
+		}
+		const callback = jest.fn()
+
+		expect(client.send(Buffer.from([1]), callback)).toBe(true)
+		expect(callback).toHaveBeenCalledWith(writeError)
+	})
+
 	it('carries arbitrary binary chunks without WebSocket framing', async () => {
 		const server = net.createServer(socket => {
 			socket.once('data', data => socket.write(Buffer.concat([Buffer.from([0xaa]), data])))

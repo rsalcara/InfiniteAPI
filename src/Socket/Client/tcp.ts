@@ -91,7 +91,7 @@ export class TcpSocketClient extends AbstractSocketClient {
 		}
 
 		try {
-			return this.socket.write(data, () => callback?.())
+			return this.socket.write(data, error => callback?.(error ?? undefined))
 		} catch (error) {
 			callback?.(error as Error)
 			return false

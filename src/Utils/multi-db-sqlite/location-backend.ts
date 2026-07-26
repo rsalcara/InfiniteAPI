@@ -77,8 +77,12 @@ export class LocationBackend {
 		void _opts
 		this.stmts = {
 			replaceLocationCache: this.db.prepare(
-				'INSERT OR REPLACE INTO location_cache ' +
-					'(jid, latitude, longitude, accuracy, speed, bearing, location_ts) VALUES (?, ?, ?, ?, ?, ?, ?)'
+				'INSERT INTO location_cache ' +
+					'(jid, latitude, longitude, accuracy, speed, bearing, location_ts) VALUES (?, ?, ?, ?, ?, ?, ?) ' +
+					'ON CONFLICT(jid) DO UPDATE SET ' +
+					'latitude = excluded.latitude, longitude = excluded.longitude, accuracy = excluded.accuracy, ' +
+					'speed = excluded.speed, bearing = excluded.bearing, location_ts = excluded.location_ts ' +
+					'WHERE excluded.location_ts >= location_cache.location_ts'
 			),
 			getLocationCache: this.db.prepare(
 				'SELECT jid, latitude, longitude, accuracy, speed, bearing, location_ts FROM location_cache WHERE jid = ?'

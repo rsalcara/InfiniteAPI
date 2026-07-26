@@ -380,6 +380,9 @@ export const generateRegistrationNode = (
 	// and passed in
 	const version = config.transportProfile === 'native_android' ? config.nativeAndroid!.appVersion : config.version
 	const versionString = version.join('.')
+	// Captured official Android registration payloads encode the lowercase MD5
+	// hex string as base64 input (24 bytes), while Web uses the raw 16-byte
+	// digest. Keep the transport-specific representation byte-for-byte.
 	const appVersionBuf =
 		config.transportProfile === 'native_android'
 			? Buffer.from(createHash('md5').update(versionString).digest('hex'), 'base64')

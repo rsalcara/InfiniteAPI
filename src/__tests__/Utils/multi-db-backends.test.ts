@@ -287,6 +287,35 @@ describe('backends', () => {
 			expect(row).toMatchObject({ latitude: -23.56, longitude: -46.64, locationTs: 2_000 })
 		})
 
+		it('does not let an out-of-order location update replace a newer coordinate', () => {
+			const backend = new LocationBackend(store.handle('location.db'))
+			const jid = 'out-of-order@s.whatsapp.net'
+			backend.upsertLocationCache({
+				jid,
+				latitude: -23.56,
+				longitude: -46.64,
+				accuracy: 5,
+				speed: 1,
+				bearing: 90,
+				locationTs: 2_000
+			})
+			backend.upsertLocationCache({
+				jid,
+				latitude: 0,
+				longitude: 0,
+				accuracy: 100,
+				speed: 0,
+				bearing: 0,
+				locationTs: 1_000
+			})
+
+			expect(backend.getLocationCache(jid)).toMatchObject({
+				latitude: -23.56,
+				longitude: -46.64,
+				locationTs: 2_000
+			})
+		})
+
 		it('uses Android REPLACE semantics when a later write has the same timestamp', () => {
 			const backend = new LocationBackend(store.handle('location.db'), {
 				pruneIntervalMs: Number.MAX_SAFE_INTEGER

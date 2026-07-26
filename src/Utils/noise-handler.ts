@@ -1,5 +1,6 @@
 import { Boom } from '@hapi/boom'
 import { Mutex } from 'async-mutex'
+import { timingSafeEqual } from 'crypto'
 import { proto } from '../../WAProto/index.js'
 import { NOISE_IK_MODE, NOISE_MODE, NOISE_XX_FALLBACK_MODE, WA_CERT_DETAILS } from '../Defaults'
 import type { KeyPair } from '../Types'
@@ -11,6 +12,17 @@ import type { ILogger } from './logger'
 const IV_LENGTH = 12
 
 const EMPTY_BUFFER = Buffer.alloc(0)
+
+export const assertNoiseLeafStaticKeyBinding = (leafDetailsBytes: Uint8Array, responderStaticKey: Uint8Array): void => {
+	const leafDetails = proto.CertChain.NoiseCertificate.Details.decode(leafDetailsBytes)
+	const certificateKey = leafDetails.key
+	if (
+		certificateKey?.byteLength !== responderStaticKey.byteLength ||
+		!timingSafeEqual(Buffer.from(certificateKey), Buffer.from(responderStaticKey))
+	) {
+		throw new Boom('noise responder static key does not match leaf certificate', { statusCode: 400 })
+	}
+}
 
 /**
  * Builds a fresh AES-GCM IV from the counter on every call. Stage 7 (M10):
@@ -349,7 +361,6 @@ export const makeNoiseHandler = ({
 			}
 
 			const details = proto.CertChain.NoiseCertificate.Details.decode(certIntermediate.details)
-
 			const { issuerSerial } = details
 
 			if (!details.key) {
@@ -376,10 +387,11 @@ export const makeNoiseHandler = ({
 				throw new Boom('certification match failed', { statusCode: 400 })
 			}
 
-			// At this point the responder static key is both decrypted and covered
-			// by the verified WhatsApp certificate chain. Retain only the public
-			// key so the caller can persist it for a future native Android IK
-			// reconnect. Never expose it before certificate validation.
+			assertNoiseLeafStaticKeyBinding(leaf.details, decStaticContent)
+
+			// The verified leaf certificate is now explicitly bound to the
+			// decrypted responder static key. Retain only that public key for a
+			// future native Android IK reconnect.
 			serverStaticKey = Buffer.from(decStaticContent)
 
 			const keyEnc = encrypt(noiseKey.public)

@@ -2,7 +2,7 @@ import { jest } from '@jest/globals'
 import { proto } from '../../../WAProto/index.js'
 import { NOISE_IK_MODE, NOISE_WA_HEADER } from '../../Defaults'
 import { aesDecryptGCM, aesEncryptGCM, Curve, hkdf, sha256 } from '../../Utils/crypto'
-import { makeNoiseHandler } from '../../Utils/noise-handler'
+import { assertNoiseLeafStaticKeyBinding, makeNoiseHandler } from '../../Utils/noise-handler'
 import type { BinaryNode } from '../../WABinary/types'
 
 // Create a mock logger
@@ -27,6 +27,19 @@ const createFrame = (payload: Buffer) => {
 }
 
 describe('Noise Handler', () => {
+	it('binds the decrypted responder static key to the verified leaf certificate details', () => {
+		const responderStatic = Curve.generateKeyPair().public
+		const matchingDetails = proto.CertChain.NoiseCertificate.Details.encode({ key: responderStatic }).finish()
+		const differentDetails = proto.CertChain.NoiseCertificate.Details.encode({
+			key: Curve.generateKeyPair().public
+		}).finish()
+
+		expect(() => assertNoiseLeafStaticKeyBinding(matchingDetails, responderStatic)).not.toThrow()
+		expect(() => assertNoiseLeafStaticKeyBinding(differentDetails, responderStatic)).toThrow(
+			'noise responder static key does not match leaf certificate'
+		)
+	})
+
 	it('reproduces the exact classic IK ClientHello field sizes captured from official Android', () => {
 		const ephemeral = Curve.generateKeyPair()
 		const initiatorStatic = Curve.generateKeyPair()

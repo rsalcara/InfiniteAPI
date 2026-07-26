@@ -20,7 +20,11 @@
  */
 import type { ILogger } from '../logger'
 import { STATUS_LAST_TIMESTAMP_TRIGGER_NAME, STATUS_LAST_TIMESTAMP_TRIGGER_SQL } from './schemas/status'
-import { repairOpenEndedLocationSharerExpiry, restoreCanonicalLocationSharerSchema } from './location-migrations'
+import {
+	normalizeLocationTimestampUnits,
+	repairOpenEndedLocationSharerExpiry,
+	restoreCanonicalLocationSharerSchema
+} from './location-migrations'
 import { addColumnIfMissing, type Migration, runMigrations } from './schema-migrations'
 import { MULTI_DB_FILES, type MultiDbFile, SCHEMAS } from './schemas'
 import type { SqliteDbLike } from './types'
@@ -328,12 +332,21 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 			run: restoreCanonicalLocationSharerSchema
 		},
 		{
-			// The legacy receive mirror used zero as its open-ended sentinel.
-			// Android uses Long.MAX_VALUE, which is also what the canonical
-			// active-window query expects.
+			// Only sent open-ended rows use Android's Long.MAX_VALUE sentinel.
+			// Received legacy rows were bounded by migration v2 using their
+			// last-activity timestamp.
 			version: 3,
 			name: 'repair open-ended location_sharer expiry sentinel',
 			run: repairOpenEndedLocationSharerExpiry
+		},
+		{
+			// Develop historically stored location timestamps in unix seconds.
+			// Canonical reads now use unix milliseconds. This also repairs
+			// databases opened by an intermediate build whose unscoped v3
+			// converted received legacy rows to Long.MAX_VALUE.
+			version: 4,
+			name: 'normalize location timestamps to milliseconds',
+			run: normalizeLocationTimestampUnits
 		}
 	]
 }
