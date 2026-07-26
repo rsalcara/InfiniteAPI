@@ -197,6 +197,18 @@ describe('Signal retry reason parity', () => {
 		expect(classifyLibsignalFailure('ordinary application error')).toBeUndefined()
 	})
 
+	it('does not coerce arbitrary console arguments while collecting libsignal diagnostics', () => {
+		installLibsignalDiagnostics({ suppressLogs: true })
+		const nullPrototype = Object.create(null)
+		const hostile = {
+			[Symbol.toPrimitive]: () => {
+				throw new Error('must not be coerced')
+			}
+		}
+
+		expect(() => console.error('Session error: Bad MAC', nullPrototype, hostile)).not.toThrow()
+	})
+
 	it('retains Bad MAC diagnostics independently of output suppression', async () => {
 		installLibsignalDiagnostics({ suppressLogs: false })
 

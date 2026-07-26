@@ -7,6 +7,7 @@ type TableInfoRow = {
 const LOCATION_RECEIVED_RETENTION_MS = 8 * 60 * 60 * 1000
 const SQLITE_LONG_MAX_TEXT = '9223372036854775807'
 const SECONDS_TO_MILLISECONDS_THRESHOLD = 100_000_000_000
+const MIN_PLAUSIBLE_UNIX_SECONDS = 1_000_000_000
 
 /**
  * Restores WhatsApp's canonical `location_sharer` shape.
@@ -97,6 +98,7 @@ export const normalizeLocationTimestampUnits = (db: SqliteDbLike): void => {
 	).run()
 	db.prepare(
 		`UPDATE location_sharer SET expires = expires * 1000
-		 WHERE expires > 0 AND expires < ${SECONDS_TO_MILLISECONDS_THRESHOLD}`
+		 WHERE expires >= ${MIN_PLAUSIBLE_UNIX_SECONDS}
+		   AND expires < ${SECONDS_TO_MILLISECONDS_THRESHOLD}`
 	).run()
 }

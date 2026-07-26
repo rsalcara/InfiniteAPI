@@ -43,7 +43,8 @@ describe('location.db migration v2 — canonical location_sharer', () => {
 			VALUES
 				(7, 'chat@s.whatsapp.net', 1, 'sender@s.whatsapp.net', 1700000900, 'LIVE-TIMED', 0),
 				(8, 'received@s.whatsapp.net', 0, 'sender@s.whatsapp.net', 0, 'LIVE-RECEIVED', 1700000000),
-				(9, 'open@s.whatsapp.net', 1, 'open@s.whatsapp.net', 0, 'LIVE-OPEN', 0);
+				(9, 'open@s.whatsapp.net', 1, 'open@s.whatsapp.net', 0, 'LIVE-OPEN', 0),
+				(10, 'unknown-received@s.whatsapp.net', 0, 'sender@s.whatsapp.net', 0, 'LIVE-RX-NO-TS', 0);
 		`)
 		pre.close()
 
@@ -75,6 +76,9 @@ describe('location.db migration v2 — canonical location_sharer', () => {
 		expect(
 			db.prepare("SELECT CAST(expires AS TEXT) AS expires FROM location_sharer WHERE message_id = 'LIVE-OPEN'").get()
 		).toEqual({ expires: '9223372036854775807' })
+		expect(db.prepare("SELECT expires FROM location_sharer WHERE message_id = 'LIVE-RX-NO-TS'").get()).toEqual({
+			expires: 28_800_000
+		})
 		expect(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([
 			{ version: 1 },
 			{ version: 2 },

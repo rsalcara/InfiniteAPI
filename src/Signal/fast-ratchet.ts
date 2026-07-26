@@ -1,6 +1,5 @@
-import { randomBytes, randomInt } from 'crypto'
-import { generateKeyPair } from 'libsignal/src/curve'
 import $protobuf from 'protobufjs/minimal.js'
+import { generateSenderKey, generateSenderKeyId, generateSenderSigningKey } from './Group/keyhelper'
 
 const FAST_RATCHET_VERSION = Buffer.from([0x33])
 const FAST_RATCHET_CHAIN_COUNT = 8
@@ -18,13 +17,13 @@ const writeBytes = ($writer: $protobuf.Writer, field: number, value: Uint8Array)
 }
 
 export const createFastRatchetSenderKeyState = (): FastRatchetSenderKeyState => {
-	const signingKey = generateKeyPair()
+	const signingKey = generateSenderSigningKey()
 	return {
-		senderKeyId: randomInt(0x7fffffff),
+		senderKeyId: generateSenderKeyId(),
 		iteration: 0,
-		chainKeys: [randomBytes(32), ...new Array(FAST_RATCHET_CHAIN_COUNT - 1).fill(null).map(() => Buffer.alloc(0))],
-		signingPublic: Buffer.from(signingKey.pubKey),
-		signingPrivate: Buffer.from(signingKey.privKey)
+		chainKeys: [generateSenderKey(), ...new Array(FAST_RATCHET_CHAIN_COUNT - 1).fill(null).map(() => Buffer.alloc(0))],
+		signingPublic: signingKey.public,
+		signingPrivate: signingKey.private
 	}
 }
 

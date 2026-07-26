@@ -319,7 +319,6 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		// affects the signal_kv write.
 		mirrorSignalEntry(type, id, value as Uint8Array | { public: Uint8Array } | object | null | undefined, {
 			signalTypedBackend,
-			jidMapBackend: signalMirrorJidMap,
 			logger: opts.logger
 		})
 	}

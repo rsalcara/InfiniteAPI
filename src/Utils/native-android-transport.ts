@@ -68,7 +68,7 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 		throw new Boom('native_android: explicit enabled=true gate is required', { statusCode: 400 })
 	}
 
-	if (config.appVersion.length !== 4) {
+	if (!Array.isArray(config.appVersion) || config.appVersion.length !== 4) {
 		throw new Boom('native_android: appVersion must contain the four official Android components', { statusCode: 400 })
 	}
 
@@ -134,6 +134,10 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 	}
 
 	const { device } = config
+	if (!device || typeof device !== 'object' || Array.isArray(device)) {
+		throw new Boom('native_android: a complete device profile is required', { statusCode: 400 })
+	}
+
 	for (const field of [
 		'profileId',
 		'manufacturer',

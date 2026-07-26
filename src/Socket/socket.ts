@@ -2265,7 +2265,9 @@ export const makeSocket = (config: SocketConfig) => {
 		const tsRaw = queryResult?.time_enforcement_ends
 		const tsParsed = tsRaw && tsRaw !== '0' ? parseInt(tsRaw, 10) : NaN
 		const result: ReachoutTimelockState = {
-			isActive: !!queryResult?.is_active,
+			// Omission is not proof that the restriction was removed. Preserve
+			// the tri-state contract consumed by the fail-closed remediation.
+			isActive: typeof queryResult?.is_active === 'boolean' ? queryResult.is_active : undefined,
 			timeEnforcementEnds: Number.isFinite(tsParsed) && tsParsed > 0 ? new Date(tsParsed * 1000) : undefined,
 			enforcementType: queryResult?.enforcement_type ?? ReachoutTimelockEnforcementType.DEFAULT
 		}

@@ -44,6 +44,7 @@ export class TcpSocketClient extends AbstractSocketClient {
 		this.socket.once('connect', () => {
 			if (this.connectTimer) clearTimeout(this.connectTimer)
 			this.connectTimer = undefined
+			if (this.state !== 'connecting') return
 			this.state = 'open'
 			this.emit('open')
 		})

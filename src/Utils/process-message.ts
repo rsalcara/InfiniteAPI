@@ -954,7 +954,13 @@ const processMessage = async (
 				fromMe: !!message.key.fromMe,
 				keyId: message.key.id,
 				senderJid: message.key.fromMe ? null : jidNormalizedUser(senderJid),
-				status: mapWebMessageStatusToAndroid(message.status) ?? 0,
+				// Web ERROR=0 has no lossless Android status equivalent. Match
+				// history-sync mirroring and preserve NULL instead of fabricating
+				// Android PENDING=0 for a terminally failed message.
+				status:
+					message.status === proto.WebMessageInfo.Status.ERROR
+						? null
+						: (mapWebMessageStatusToAndroid(message.status) ?? 0),
 				timestamp: toNumber(message.messageTimestamp ?? 0),
 				receivedTimestamp: Date.now(),
 				messageType: androidMessageType,

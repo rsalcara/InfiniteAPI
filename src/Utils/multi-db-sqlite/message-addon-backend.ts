@@ -235,17 +235,26 @@ export class MessageAddOnBackend {
 					'map_download_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
 					'ON CONFLICT(message_row_id) DO UPDATE SET ' +
 					'chat_row_id = excluded.chat_row_id, latitude = excluded.latitude, longitude = excluded.longitude, ' +
-					'place_name = excluded.place_name, place_address = excluded.place_address, url = excluded.url, ' +
-					'live_location_share_duration = excluded.live_location_share_duration, ' +
-					'live_location_sequence_number = excluded.live_location_sequence_number, ' +
-					'live_location_final_latitude = COALESCE(excluded.live_location_final_latitude, live_location_final_latitude), ' +
-					'live_location_final_longitude = COALESCE(excluded.live_location_final_longitude, live_location_final_longitude), ' +
-					'live_location_final_timestamp = COALESCE(excluded.live_location_final_timestamp, live_location_final_timestamp), ' +
+					'place_name = COALESCE(excluded.place_name, place_name), ' +
+					'place_address = COALESCE(excluded.place_address, place_address), ' +
+					'url = COALESCE(excluded.url, url), ' +
+					'live_location_share_duration = COALESCE(excluded.live_location_share_duration, live_location_share_duration), ' +
+					'live_location_sequence_number = COALESCE(excluded.live_location_sequence_number, live_location_sequence_number), ' +
+					'live_location_final_latitude = CASE WHEN excluded.live_location_final_timestamp IS NOT NULL ' +
+					'AND (live_location_final_timestamp IS NULL OR excluded.live_location_final_timestamp > live_location_final_timestamp) ' +
+					'THEN excluded.live_location_final_latitude ELSE live_location_final_latitude END, ' +
+					'live_location_final_longitude = CASE WHEN excluded.live_location_final_timestamp IS NOT NULL ' +
+					'AND (live_location_final_timestamp IS NULL OR excluded.live_location_final_timestamp > live_location_final_timestamp) ' +
+					'THEN excluded.live_location_final_longitude ELSE live_location_final_longitude END, ' +
+					'live_location_final_timestamp = CASE WHEN excluded.live_location_final_timestamp IS NOT NULL ' +
+					'AND (live_location_final_timestamp IS NULL OR excluded.live_location_final_timestamp > live_location_final_timestamp) ' +
+					'THEN excluded.live_location_final_timestamp ELSE live_location_final_timestamp END, ' +
 					'map_download_status = excluded.map_download_status'
 			),
 			updateFinalLiveLocation: this.db.prepare(
 				'UPDATE message_location SET live_location_final_latitude = ?, ' +
-					'live_location_final_longitude = ?, live_location_final_timestamp = ? WHERE message_row_id = ?'
+					'live_location_final_longitude = ?, live_location_final_timestamp = ? WHERE message_row_id = ? ' +
+					'AND (live_location_final_timestamp IS NULL OR ? > live_location_final_timestamp)'
 			),
 			insertVcard: this.db.prepare('INSERT INTO message_vcard (message_row_id, vcard) VALUES (?, ?)'),
 			getVcardRowId: this.db.prepare('SELECT _id FROM message_vcard WHERE message_row_id = ? AND vcard = ?'),
@@ -405,8 +414,13 @@ export class MessageAddOnBackend {
 
 	recordFinalLiveLocation(input: RecordFinalLiveLocationInput): boolean {
 		return (
-			this.stmts.updateFinalLiveLocation.run(input.latitude, input.longitude, input.timestampMs, input.messageRowId)
-				.changes > 0
+			this.stmts.updateFinalLiveLocation.run(
+				input.latitude,
+				input.longitude,
+				input.timestampMs,
+				input.messageRowId,
+				input.timestampMs
+			).changes > 0
 		)
 	}
 

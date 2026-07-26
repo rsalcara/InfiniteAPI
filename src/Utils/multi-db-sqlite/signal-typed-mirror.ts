@@ -12,7 +12,6 @@
  */
 import { BufferJSON } from '../generics'
 import type { ILogger } from '../logger'
-import type { JidMapBackend } from './lid-mapping-backend'
 import {
 	classifyIdentityKey,
 	domainTypeToAccountType,
@@ -24,8 +23,6 @@ import type { SignalTypedBackend } from './signal-typed-backend'
 
 export type SignalMirrorDeps = {
 	signalTypedBackend: SignalTypedBackend
-	/** Resolves jid row ids against `msgstore.db.jid` — only `identity-key` needs this. */
-	jidMapBackend: JidMapBackend
 	logger?: ILogger
 }
 

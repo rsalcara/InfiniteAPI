@@ -138,7 +138,13 @@ export function installLibsignalDiagnostics(options: LibsignalDiagnosticOptions 
 
 	console.error = function (...args: unknown[]) {
 		if (args.length > 0 && typeof args[0] === 'string') {
-			const msg = args.map(arg => (arg instanceof Error ? arg.message : String(arg ?? ''))).join(' ')
+			// Never coerce arbitrary caller objects: null-prototype objects and
+			// hostile Symbol.toPrimitive implementations can throw here and
+			// must not make a diagnostic filter break application code.
+			const msg = args
+				.map(arg => (arg instanceof Error ? arg.message : typeof arg === 'string' ? arg : ''))
+				.filter(Boolean)
+				.join(' ')
 			// Stack-frame detection: libsignal frames carry the filename in the
 			// V8 stack output. In minified / containerized builds this filename
 			// may be rewritten — if that happens, the filter degrades into a

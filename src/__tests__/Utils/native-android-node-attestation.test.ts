@@ -23,6 +23,7 @@ describe('native Android built-in Node attestation provider', () => {
 				now: () => now
 			})
 			const first = await firstStore.current()
+			expect(first.expiresAtMs % 1000).toBe(0)
 			const certificates = splitConcatenatedDerCertificates(first.keyAttestation)
 			expect(certificates).toHaveLength(2)
 
@@ -32,6 +33,7 @@ describe('native Android built-in Node attestation provider', () => {
 			expect(leaf.subject).toContain('InfiniteAPI Node leaf')
 			expect(root.verify(root.publicKey)).toBe(true)
 			expect(leaf.verify(root.publicKey)).toBe(true)
+			expect(new Date(leaf.validTo).getTime()).toBe(first.expiresAtMs)
 			expect(first.clientAppId).toBe(WABA_CLIENT_APP_ID)
 			expect(Buffer.from(first.gpia)).toHaveLength(0)
 

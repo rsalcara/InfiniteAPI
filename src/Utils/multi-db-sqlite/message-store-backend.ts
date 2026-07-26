@@ -200,7 +200,8 @@ export const mapMessageToAndroidType = (message: proto.IMessage | null | undefin
 			content.associatedChildMessage ||
 			content.groupStatusMessage ||
 			content.groupStatusMessageV2 ||
-			content.lottieStickerMessage
+			content.lottieStickerMessage ||
+			content.pollCreationMessageV4
 		const viewOnceWrapped = content.viewOnceMessage || content.viewOnceMessageV2 || content.viewOnceMessageV2Extension
 		if (viewOnceWrapped) {
 			viewOnce = true

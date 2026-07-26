@@ -1,6 +1,7 @@
 /* eslint-disable max-depth, @typescript-eslint/no-unused-vars */
 import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
+import { AsyncLocalStorage } from 'async_hooks'
 import { randomBytes } from 'crypto'
 import Long from 'long'
 import { proto } from '../../WAProto/index.js'
@@ -2064,7 +2065,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		let directDistributionWasAlreadyMarked = false
 		let includeDirectDistributionKey = false
 		let retrySessionExists: boolean | undefined
-		if (retryCount === 1 && !forceIncludeKeys) {
+		if (config.enableAutoSessionRecreation && retryCount === 1 && !forceIncludeKeys) {
 			const retryPeerJid = msgKey.participant || node.attrs.from
 			const validation = await signalRepository.validateSession(retryPeerJid!)
 			const validationFailed = validation.reason === 'validation error'
@@ -4483,12 +4484,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	let acceptingInboundTasks = true
 	const inboundTasks = new Set<Promise<void>>()
+	const inboundTaskAdmission = new AsyncLocalStorage<boolean>()
 	const trackInboundTask = (identifier: string, factory: () => Promise<void>): void => {
-		if (!acceptingInboundTasks) return
+		const isDerivedFromAdmittedTask = inboundTaskAdmission.getStore() === true
+		if (!acceptingInboundTasks && !isDerivedFromAdmittedTask) return
 
-		const task = factory().catch(error =>
-			onUnexpectedError(error instanceof Error ? error : new Error(String(error)), identifier)
-		)
+		const task = inboundTaskAdmission
+			.run(true, factory)
+			.catch(error => onUnexpectedError(error instanceof Error ? error : new Error(String(error)), identifier))
 		inboundTasks.add(task)
 		void task.finally(() => inboundTasks.delete(task))
 	}

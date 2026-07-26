@@ -1,4 +1,4 @@
-import { generateKeyPairSync, type KeyObject, randomBytes, sign, X509Certificate } from 'crypto'
+import { generateKeyPair, type KeyObject, randomBytes, sign, X509Certificate } from 'crypto'
 import { mkdir, readFile, rename, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
 import { WABA_CLIENT_APP_ID } from '../Defaults'
@@ -121,9 +121,16 @@ const certificate = (options: {
 	return sequence(tbsCertificate, signatureAlgorithm, bitString(signature))
 }
 
-const generateCompatibilityChain = (generatedAtMs: number, expiresAtMs: number) => {
-	const root = generateKeyPairSync('rsa', { modulusLength: 2048 })
-	const leaf = generateKeyPairSync('rsa', { modulusLength: 2048 })
+const generateRsaKeyPair = () =>
+	new Promise<{ publicKey: KeyObject; privateKey: KeyObject }>((resolve, reject) => {
+		generateKeyPair('rsa', { modulusLength: 2048 }, (error, publicKey, privateKey) => {
+			if (error) reject(error)
+			else resolve({ publicKey, privateKey })
+		})
+	})
+
+const generateCompatibilityChain = async (generatedAtMs: number, expiresAtMs: number) => {
+	const [root, leaf] = await Promise.all([generateRsaKeyPair(), generateRsaKeyPair()])
 	const notBefore = new Date(generatedAtMs - 60_000)
 	const notAfter = new Date(expiresAtMs)
 	const rootCertificate = certificate({
@@ -241,12 +248,19 @@ export const makeNodeX509AttestationStore = (options: NodeX509AttestationStoreOp
 			return toArtifacts(persisted)
 		}
 
+		// X.509 UTCTime has one-second precision. Persist the exact rounded
+		// expiry encoded in the certificate so cache reuse cannot cross the
+		// certificate's real notAfter boundary.
+		const expiresAtMs = Math.max(
+			Math.floor((currentTime + ttlMs) / 1000) * 1000,
+			Math.floor(currentTime / 1000) * 1000 + 1000
+		)
 		const generated: PersistedNodeAttestation = {
 			schemaVersion: 1,
-			keyAttestationBase64: generateCompatibilityChain(currentTime, currentTime + ttlMs).toString('base64'),
+			keyAttestationBase64: (await generateCompatibilityChain(currentTime, expiresAtMs)).toString('base64'),
 			clientAppId,
 			generatedAtMs: currentTime,
-			expiresAtMs: currentTime + ttlMs
+			expiresAtMs
 		}
 		await mkdir(dirname(options.storagePath), { recursive: true })
 		const temporaryPath = `${options.storagePath}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`

@@ -3297,7 +3297,18 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// Match the Android job order: enqueue the initial live-location
 			// message first, then distribute the durable location@broadcast
 			// fast-ratchet sender key to the recipient primary devices.
-			await sendLiveLocationKeyDistribution(jid)
+			try {
+				await sendLiveLocationKeyDistribution(jid)
+			} catch (err) {
+				// The conversation message was already accepted by relayMessage.
+				// Do not report a total send failure (which invites callers to
+				// duplicate it); surface the precise partial failure and return
+				// the accepted message just like the other post-relay mirrors.
+				logger.warn(
+					{ err, jid, msgId: fullMsg.key.id, stage: 'post-relay-key-distribution' },
+					'live location message was relayed, but sender-key distribution failed'
+				)
+			}
 
 			// Best-effort from_me=1 mirror — never blocks the send. Android stores
 			// one location_sharer row per recipient/resource.

@@ -53,31 +53,32 @@ def on_message(message, data):
 OUTPUT.parent.mkdir(parents=True, exist_ok=True)
 OUTPUT.unlink(missing_ok=True)
 
-device = frida.get_usb_device(timeout=10)
-print("[NATIVE-REGISTRATION] device acquired", flush=True)
-if ATTACH:
-    pid = ATTACH_PID or device.get_process(PACKAGE).pid
-    print(f"[NATIVE-REGISTRATION] attaching to running {PACKAGE} pid={pid}", flush=True)
-else:
-    pid = device.spawn([PACKAGE])
-    print(f"[NATIVE-REGISTRATION] spawned suspended {PACKAGE} pid={pid}", flush=True)
-session = device.attach(pid)
-print("[NATIVE-REGISTRATION] attached", flush=True)
-script = session.create_script(HOOK.read_text(encoding="utf-8"))
-script.on("message", on_message)
-script.load()
-if not ATTACH:
-    device.resume(pid)
-    print(f"[NATIVE-REGISTRATION] resumed {PACKAGE} pid={pid}", flush=True)
-
+session = None
 try:
+    device = frida.get_usb_device(timeout=10)
+    print("[NATIVE-REGISTRATION] device acquired", flush=True)
+    if ATTACH:
+        pid = ATTACH_PID or device.get_process(PACKAGE).pid
+        print(f"[NATIVE-REGISTRATION] attaching to running {PACKAGE} pid={pid}", flush=True)
+    else:
+        pid = device.spawn([PACKAGE])
+        print(f"[NATIVE-REGISTRATION] spawned suspended {PACKAGE} pid={pid}", flush=True)
+    session = device.attach(pid)
+    print("[NATIVE-REGISTRATION] attached", flush=True)
+    script = session.create_script(HOOK.read_text(encoding="utf-8"))
+    script.on("message", on_message)
+    script.load()
+    if not ATTACH:
+        device.resume(pid)
+        print(f"[NATIVE-REGISTRATION] resumed {PACKAGE} pid={pid}", flush=True)
     deadline = time.monotonic() + CAPTURE_SECONDS
     while time.monotonic() < deadline and not COMPLETED.wait(timeout=0.25):
         pass
 except KeyboardInterrupt:
     pass
 finally:
-    session.detach()
+    if session is not None:
+        session.detach()
 
 if COMPLETED.is_set():
     print(f"[NATIVE-REGISTRATION] complete capture written to {OUTPUT}", flush=True)

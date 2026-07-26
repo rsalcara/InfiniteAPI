@@ -441,6 +441,18 @@ describe('native_android transport contract', () => {
 		expect(() =>
 			validateNativeAndroidConfig({
 				...nativeAndroid,
+				appVersion: undefined as unknown as NativeAndroidTransportConfig['appVersion']
+			})
+		).toThrow('appVersion must contain the four official Android components')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
+				device: undefined as unknown as NativeAndroidTransportConfig['device']
+			})
+		).toThrow('a complete device profile is required')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
 				device: { ...nativeAndroid.device, phoneId: '' }
 			})
 		).toThrow('phoneId is required')

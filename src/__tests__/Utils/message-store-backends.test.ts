@@ -117,6 +117,11 @@ describe('msgstore.db message-store backends', () => {
 			expect(mapMessageToAndroidType({ videoMessage: { viewOnce: true } })).toBe(43)
 			expect(mapMessageToAndroidType({ audioMessage: { viewOnce: true } })).toBe(82)
 			expect(mapMessageToAndroidType({ pollCreationMessageV3: { name: 'poll' } })).toBe(66)
+			expect(
+				mapMessageToAndroidType({
+					pollCreationMessageV4: { message: { pollCreationMessageV3: { name: 'wrapped poll' } } }
+				})
+			).toBe(66)
 			expect(mapMessageToAndroidType({ eventMessage: { name: 'event' } })).toBe(92)
 			expect(mapMessageToAndroidType({ albumMessage: { expectedImageCount: 4, expectedVideoCount: 3 } })).toBe(99)
 			expect(
@@ -864,13 +869,25 @@ describe('msgstore.db message-store backends', () => {
 				live_location_final_timestamp: 1_700_000_060_000
 			})
 
+			expect(
+				addOns.recordFinalLiveLocation({
+					messageRowId: locRowId,
+					latitude: 0,
+					longitude: 0,
+					timestampMs: 1_700_000_059_000
+				})
+			).toBe(false)
+
 			addOns.recordLocation({
 				messageRowId: locRowId,
 				chatJid,
 				latitude: -23.53,
 				longitude: -46.63,
 				liveLocationShareDurationSecs: 900,
-				liveLocationSequenceNumber: 124
+				liveLocationSequenceNumber: 124,
+				liveLocationFinalLatitude: 0,
+				liveLocationFinalLongitude: 0,
+				liveLocationFinalTimestampMs: 1_700_000_059_000
 			})
 			expect(
 				store
@@ -881,6 +898,7 @@ describe('msgstore.db message-store backends', () => {
 					)
 					.get(locRowId)
 			).toMatchObject({
+				place_name: 'SP',
 				live_location_final_latitude: -23.52,
 				live_location_final_longitude: -46.62,
 				live_location_final_timestamp: 1_700_000_060_000
