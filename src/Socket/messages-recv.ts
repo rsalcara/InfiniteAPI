@@ -104,6 +104,7 @@ import {
 	recordMessageReceived,
 	recordMessageRetry
 } from '../Utils/prometheus-metrics.js'
+import { isExpectedSocketTeardownError } from '../Utils/socket-teardown'
 import { buildAckStanza } from '../Utils/stanza-ack'
 import {
 	isRegularUser,
@@ -217,6 +218,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		issuePrivacyTokens,
 		registerSocketEndHandler,
 		registerSocketDrainHandler,
+		isSocketClosed,
 		// Port de upstream `4dbbba2891` (PR #2442)
 		fetchAccountReachoutTimelock
 	} = sock
@@ -1165,6 +1167,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const sendMessageAck = async (node: BinaryNode, errorCode?: number) => {
+		// Once teardown starts, do not emit ACK/NACK on the closing transport.
+		// The server can redeliver the unacknowledged stanza after reconnect;
+		// this is safer than acknowledging work whose transaction may roll
+		// back. The check is synchronous and adds no wait to message delivery.
+		if (isSocketClosed()) {
+			logger.debug({ tag: node.tag, msgId: node.attrs.id }, 'ack skipped because the socket is closing')
+			return
+		}
+
 		// buildAckStanza mirrors WA Web: always emit `type` when present, and `from=meId` for
 		// message-class ACKs WHEN we know our id. We intentionally do NOT hard-fail when `me` is
 		// momentarily unset (reconnect/pairing edge): buildAckStanza simply omits `from`, so the
@@ -1189,7 +1200,24 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 		}
 
-		await sendNode(stanza)
+		try {
+			await sendNode(stanza)
+		} catch (error) {
+			if (isExpectedSocketTeardownError(error)) {
+				if (signalTypedBackend && preackId !== undefined) {
+					try {
+						signalTypedBackend.deletePreack(preackId)
+					} catch (err) {
+						logger.debug({ err, msgId: node.attrs.id }, 'preacks mirror: teardown cleanup failed (ignored)')
+					}
+				}
+
+				logger.debug({ tag: node.tag, msgId: node.attrs.id }, 'ack cancelled by socket teardown')
+				return
+			}
+
+			throw error
+		}
 
 		if (signalTypedBackend && preackId !== undefined) {
 			try {
@@ -3539,10 +3567,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 									logger.debug({ attrs, key }, 'recv retry request')
 									await sendMessagesAgain(key, ids, retryNode!, node)
 								} catch (error: unknown) {
-									logger.error(
-										{ key, ids, trace: error instanceof Error ? error.stack : 'Unknown error' },
-										'error in sending message again'
-									)
+									if (isExpectedSocketTeardownError(error)) {
+										logger.debug({ key, ids }, 'message retry cancelled by socket teardown')
+									} else {
+										logger.error(
+											{ key, ids, trace: error instanceof Error ? error.stack : 'Unknown error' },
+											'error in sending message again'
+										)
+									}
 								}
 							} else {
 								logger.info({ attrs, key }, 'recv retry for not fromMe message')
@@ -4087,6 +4119,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 			})
 		} catch (error) {
+			if (isExpectedSocketTeardownError(error)) {
+				logger.debug(
+					{ from: node.attrs?.from, msgId: node.attrs?.id },
+					'message processing cancelled by socket teardown; server redelivery remains eligible'
+				)
+				return
+			}
+
 			// For recoverable Signal Protocol failures (Bad MAC, MessageCounterError,
 			// old counter, missing prekey) the retry+pkmsg flow recovers automatically.
 			// Logging the full stanza here just floods the log with the raw ciphertext
