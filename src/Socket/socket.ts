@@ -1411,11 +1411,22 @@ export const makeSocket = (config: SocketConfig) => {
 
 		closed = true // ← Set IMMEDIATELY to close race window
 
-		logger.info({ trace: error?.stack }, error ? 'connection errored' : 'connection closed')
+		const statusCode = error ? (error as Boom)?.output?.statusCode || 0 : 0
+		const restartRequired = statusCode === DisconnectReason.restartRequired
+
+		if (restartRequired) {
+			logger.debug(
+				{ statusCode, reason: 'restartRequired' },
+				'closing initial socket for the required authenticated restart'
+			)
+		} else {
+			logger.info({ trace: error?.stack }, error ? 'connection errored' : 'connection closed')
+		}
 
 		// Record connection error metric
-		if (error) {
-			const statusCode = (error as Boom)?.output?.statusCode || 0
+		// restartRequired (515) is expected control flow after pairing or
+		// registration, not a failed connection attempt.
+		if (error && !restartRequired) {
 			let errorType = 'unknown'
 			switch (statusCode) {
 				case DisconnectReason.connectionClosed:
@@ -1435,9 +1446,6 @@ export const makeSocket = (config: SocketConfig) => {
 					break
 				case DisconnectReason.badSession:
 					errorType = 'bad_session'
-					break
-				case DisconnectReason.restartRequired:
-					errorType = 'restart_required'
 					break
 				case DisconnectReason.multideviceMismatch:
 					errorType = 'multidevice_mismatch'
@@ -1560,10 +1568,14 @@ export const makeSocket = (config: SocketConfig) => {
 		ws.removeAllListeners('message')
 
 		// Detect socket-level session errors that require recreation
-		const statusCode = (error as Boom)?.output?.statusCode || 0
 		const isSessionError = statusCode === DisconnectReason.badSession || statusCode === DisconnectReason.restartRequired
 
-		if (isSessionError) {
+		if (restartRequired) {
+			logger.info(
+				{ statusCode, reason: DisconnectReason[statusCode], action: 'recreate-socket' },
+				'🔄 Pairing/registration completed; recreate the socket to continue with the authenticated session (expected)'
+			)
+		} else if (isSessionError) {
 			logger.warn(
 				{ statusCode, reason: DisconnectReason[statusCode] },
 				'🔴 Socket-level session error - consumer should recreate socket'
@@ -2084,6 +2096,11 @@ export const makeSocket = (config: SocketConfig) => {
 			logger.warn({ node }, 'stream error: sent malformed stanza (xml-not-well-formed)')
 		} else if (reason === 'ack') {
 			logger.warn({ ackId: reasonNode?.attrs?.id, node }, 'stream error: ack-based error')
+		} else if (statusCode === DisconnectReason.restartRequired) {
+			logger.info(
+				{ reason, statusCode, action: 'recreate-socket' },
+				'🔄 Server requested the expected authenticated socket restart after pairing/registration'
+			)
 		} else {
 			logger.error({ reason, statusCode, node }, 'stream errored out')
 		}
