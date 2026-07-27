@@ -3,6 +3,7 @@ import { Boom } from '@hapi/boom'
 import { randomBytes, randomUUID } from 'crypto'
 import { proto } from '../../WAProto/index.js'
 import { DEFAULT_CACHE_MAX_KEYS, DEFAULT_CACHE_TTLS, URL_REGEX, WA_DEFAULT_EPHEMERAL } from '../Defaults'
+import { createFastRatchetSenderKeyState, encodeFastRatchetSenderKeyDistribution } from '../Signal/fast-ratchet'
 import type {
 	AlbumMediaItem,
 	AlbumMediaResult,
@@ -56,12 +57,15 @@ import {
 	StickersBackend
 } from '../Utils/multi-db-sqlite'
 import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prometheus-metrics'
+import { appendParticipantFanoutNode } from '../Utils/relay-stanza'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import {
-	isTcTokenExpired,
-	resolveTcTokenJid,
+	getOrCreateTcTokenIssueFlight,
+	resolveTcTokenAliases,
+	selectNewestUsableTcToken,
 	shouldSendNewTcToken,
-	storeTcTokensFromIqResult
+	type TcTokenIssueAliasGroup,
+	updateTcTokenIssueState
 } from '../Utils/tc-token-utils'
 import {
 	areJidsSameUser,
@@ -201,6 +205,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
 
 	const userDevicesCache =
 		config.userDevicesCache ||
@@ -219,6 +224,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		})
 	/** Serializes writes to userDevicesCache across USync refresh and device-notification handling. */
 	const devicesMutex = makeMutex()
+	let lastLiveLocationSequenceNumber = 0
+	const nextLiveLocationSequenceNumber = (): number => {
+		// LocationSharingManager derives the first persisted sequence from the
+		// server-adjusted millisecond clock multiplied by 1000, then increments
+		// it. Preserve monotonicity when two shares start within one millisecond.
+		const candidate = Date.now() * 1000 + 1
+		lastLiveLocationSequenceNumber = Math.max(candidate, lastLiveLocationSequenceNumber + 1)
+		return lastLiveLocationSequenceNumber
+	}
 
 	// Initialize message retry manager if enabled. Pass a typed backend when a
 	// multi-db-sqlite store is wired so base-key anchors mirror into the
@@ -232,12 +246,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		? new MessageRetryManager(logger, maxMsgRetryCount, retryTypedBackend, retryTypedBackend)
 		: null
 
-	// Send-side location.db mirror. On a SENT live location the
-	// duration is chosen by us (the originator), so unlike the receive path
-	// (companion never gets the peer's duration — proven: the wire only carries
-	// lat/lng/sequenceNumber/jpegThumbnail) we CAN populate the real
-	// `expires`/share window on the `from_me=1` sharer row. Same shared
-	// `location.db` handle as the receive/consume backend in chats.ts.
+	// Send-side location.db mirror. Duration is also attached to every
+	// encrypted child by relayMessage, matching Android's live-location
+	// transport contract.
 	let sendLocationBackend: LocationBackend | undefined
 	if (config.multiDbStore) {
 		try {
@@ -263,8 +274,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	// Prevent race conditions in Signal session encryption by user
 	const encryptionMutex = makeKeyedMutex()
 
-	// Tracks JIDs with an in-flight getPrivacyTokens IQ to avoid duplicate concurrent fetches
-	const tcTokenFetchingJids = new Set<string>()
+	// The official client single-flights GeneratePrivacyTokenJob per canonical JID.
+	// Keep the guard at the public issuance boundary so message send, session
+	// refresh, VoIP, and external callers all share it.
+	const tcTokenIssueFlights = new Map<string, Promise<BinaryNode>>()
+	const tcTokenIssueMutex = makeMutex()
 
 	let mediaConn: Promise<MediaConnInfo> | undefined
 	/**
@@ -917,6 +931,127 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return { nodes, shouldIncludeDeviceIdentity }
 	}
 
+	const liveLocationKeyMutex = makeMutex()
+
+	/**
+	 * Android's SendLiveLocationKeyJob runs after the initial live-location
+	 * message has been queued. It creates one
+	 * eight-chain fast-ratchet sender key, wraps its distribution bytes in
+	 * Message.fastRatchetKeySenderKeyDistributionMessage, individually Signal
+	 * encrypts that message for each recipient primary device, and sends the
+	 * resulting participant list to `location@broadcast`.
+	 *
+	 * The state is durable in every auth backend. Re-sending the distribution
+	 * for a new share is deliberate and idempotent for the receiver; persisting
+	 * the same state prevents restart/reconnect from silently changing keys.
+	 */
+	const sendLiveLocationKeyDistribution = async (conversationJid: string): Promise<void> =>
+		liveLocationKeyMutex.mutex(async () => {
+			const meId = authState.creds.me?.id
+			if (!meId) throw new Boom('Not authenticated', { statusCode: 401 })
+
+			const ownUser = jidDecode(meId)?.user
+			if (!ownUser) throw new Boom('Authenticated JID has no user component', { statusCode: 500 })
+			// Android permits persistence only for the singleton
+			// `location@broadcast` fast-ratchet group. The conversation is not
+			// the cryptographic group id; it is only the recipient of the
+			// initial/final share notification.
+			const fastRatchetGroupId = 'location@broadcast'
+			const stateId = `${fastRatchetGroupId}::${ownUser}::0`
+			const legacyStateId = fastRatchetGroupId
+			const stored = await authState.keys.get('fast-ratchet-sender-key', [stateId, legacyStateId])
+			const state = stored[stateId] || stored[legacyStateId] || createFastRatchetSenderKeyState()
+			if (!stored[stateId]) {
+				await authState.keys.set({ 'fast-ratchet-sender-key': { [stateId]: state } })
+			}
+
+			const rawRecipients = isJidGroup(conversationJid)
+				? (await groupMetadata(conversationJid)).participants.map(participant => participant.id)
+				: [conversationJid]
+			const meLid = authState.creds.me?.lid
+			const normalizedRecipients = rawRecipients
+				.map(jidNormalizedUser)
+				.filter(recipient => !areJidsSameUser(recipient, meId) && (!meLid || !areJidsSameUser(recipient, meLid)))
+			const recipients = await Promise.all(
+				normalizedRecipients.map(async recipient => {
+					if (!isAnyPnUser(recipient)) return recipient
+					const lid = await getLIDForPN(recipient)
+					if (lid) return jidNormalizedUser(lid)
+					logger.warn(
+						{ conversationJid, recipient, reason: 'missing-lid-mapping' },
+						'live-location key distribution downgraded to PN'
+					)
+					return recipient
+				})
+			)
+			if (!recipients.length) return
+
+			// SendLiveLocationKeyJob targets each UserJid's primary device. The
+			// `<to jid>` therefore remains the normalized user jid, while Signal
+			// resolves/creates the device-0 session underneath.
+			await assertSessions(recipients)
+			const distributionMessage: proto.IMessage = {
+				fastRatchetKeySenderKeyDistributionMessage: {
+					groupId: fastRatchetGroupId,
+					axolotlSenderKeyDistributionMessage: encodeFastRatchetSenderKeyDistribution(state)
+				}
+			}
+			// SendLiveLocationKeyJob calls Message.toByteArray() and hands those
+			// bytes directly to the Signal session. Ordinary message fanout uses
+			// encodeWAMessage(), which appends random protobuf padding; that
+			// padded plaintext is not the official key-notification wire shape.
+			const distributionBytes = Buffer.from(proto.Message.encode(distributionMessage).finish())
+			const nodes = (
+				await Promise.all(
+					recipients.map(recipient =>
+						encryptionMutex.mutex(recipient, async () => {
+							try {
+								const { type, ciphertext } = await signalRepository.encryptMessage({
+									jid: recipient,
+									data: distributionBytes
+								})
+								return {
+									tag: 'to',
+									attrs: { jid: recipient },
+									content: [{ tag: 'enc', attrs: { v: '2', type }, content: ciphertext }]
+								} as BinaryNode
+							} catch (err) {
+								logger.error({ recipient, err }, 'failed to encrypt live-location key distribution')
+								return null
+							}
+						})
+					)
+				)
+			).filter((node): node is BinaryNode => node !== null)
+			if (nodes.length !== recipients.length) {
+				throw new Boom('Live-location key distribution could not encrypt for every recipient', {
+					statusCode: 500,
+					data: { expected: recipients.length, encrypted: nodes.length }
+				})
+			}
+
+			const notificationId = generateMessageIDV2(sock.user?.id)
+			await sendNode({
+				tag: 'notification',
+				attrs: {
+					id: notificationId,
+					to: 'location@broadcast',
+					type: 'location'
+				},
+				content: [{ tag: 'participants', attrs: {}, content: nodes }]
+			})
+			if (sendLocationBackend) {
+				for (const recipient of recipients) {
+					sendLocationBackend.setLocationKeyDistribution(recipient, true)
+				}
+			}
+
+			logger.info(
+				{ conversationJid, fastRatchetGroupId, notificationId, recipients, recipientCount: recipients.length },
+				'live-location fast-ratchet key distribution sent'
+			)
+		})
+
 	// Interactive message detection and binary node injection
 
 	/**
@@ -1122,7 +1257,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			additionalNodes,
 			useUserDevicesCache,
 			useCachedGroupMetadata,
-			statusJidList
+			statusJidList,
+			liveLocationDuration
 		}: MessageRelayOptions
 	) => {
 		const meId = authState.creds.me?.id
@@ -1146,19 +1282,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		useUserDevicesCache = useUserDevicesCache !== false
 		useCachedGroupMetadata = useCachedGroupMetadata !== false && !isStatus
 
-		// Stage 2 (PR #457) M5 guard fix: any tctoken fire-and-forget chain registered
+		// Stage 2 (PR #457) M5 guard fix: a tctoken issue chain registered
 		// *inside* the outer authState.keys.transaction(...) below would inherit the
 		// transaction's AsyncLocalStorage ctx via .then()/promise continuations. When
 		// the tx returns, ctx.sealed=true → set({ tctoken }) becomes a no-op, breaking
-		// Web rendering of interactive messages (buttons / CTA / list) which need a
-		// persisted tctoken. Carousel uses a BLOCKING fetch inside the tx (intentional)
-		// so its writes go into mutations and commit normally; only the deferred chains
-		// need to escape. We collect the kick-offs here and invoke them AFTER the
+		// durable sent-state mirror. We collect the kick-off here and invoke it AFTER the
 		// transaction completes — the .then() callbacks then register under the OUTER
 		// ALS ctx (no tx ctx → set() commits directly).
-		let deferredTcTokenFetchJid: string | null = null
-		let deferredTcTokenFetchStorageKey: string | null = null
-		let deferredTcTokenReissue: { jid: string; tcTokenJid: string; issueTimestamp: number } | null = null
+		let deferredTcTokenReissue: { jid: string; issueTimestamp: number } | null = null
 
 		// Convert nativeFlowMessage with single_select to direct listMessage (legacy format)
 		// This is required because WhatsApp expects listMessage format with biz > list node
@@ -1241,20 +1372,30 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 
 		const extraAttrs: BinaryNodeAttributes = {}
+		if (message.liveLocationMessage && liveLocationDuration !== undefined) {
+			if (!Number.isSafeInteger(liveLocationDuration) || liveLocationDuration < 0) {
+				throw new Boom('Invalid live-location duration', {
+					statusCode: 400,
+					data: { liveLocationDuration }
+				})
+			}
+
+			// Official Android attaches the duration to every encrypted child.
+			// The receiver's IncomingLiveLocationHandler reads this exact attr.
+			extraAttrs.duration = String(liveLocationDuration)
+		}
 
 		if (participant) {
 			if (!isGroup && !isStatus) {
 				additionalAttributes = { ...additionalAttributes, device_fanout: 'false' }
 			}
 
-			const participantDecoded = jidDecode(participant.jid)
-			if (!participantDecoded) throw new Boom('Invalid participant JID')
-			const { user, device } = participantDecoded
-			devices.push({
-				user,
-				device,
-				jid: participant.jid
-			})
+			// `participant` means a direct retry resend. The dedicated block below
+			// encrypts exactly one top-level <enc> for this device. Do not also add
+			// it to `devices`: doing so builds a second ciphertext under
+			// <participants>, producing the invalid `enc + participants` stanza
+			// shape rejected by the server with SmaxInvalid (479).
+			if (!jidDecode(participant.jid)) throw new Boom('Invalid participant JID')
 		}
 
 		// WORKAROUND (Stage 2 #2572 — round 3, narrowed in round 4 per cubic P2):
@@ -1690,27 +1831,19 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					attrs: {
 						v: '2',
 						type,
+						...extraAttrs,
 						count: participant.count.toString()
 					},
 					content: encryptedContent
 				})
 			}
 
-			if (participants.length) {
-				if (additionalAttributes?.['category'] === 'peer') {
-					const peerNode = participants[0]?.content?.[0] as BinaryNode
-					if (peerNode) {
-						binaryNodeContent.push(peerNode) // push only enc
-					}
-				} else {
-					binaryNodeContent.push({
-						tag: 'participants',
-						attrs: {},
-
-						content: participants
-					})
-				}
-			}
+			appendParticipantFanoutNode(
+				binaryNodeContent,
+				participants,
+				isRetryResend,
+				additionalAttributes?.['category'] === 'peer'
+			)
 
 			const stanza: BinaryNode = {
 				tag: 'message',
@@ -2005,112 +2138,36 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 			}
 
-			// tctoken lifecycle: fetch, validate expiry, proactive re-fetch if missing/expired
+			// Incoming tctoken lifecycle: read the newest valid PN/LID alias and attach it
+			// only when present. The privacy IQ issued after send announces OUR token; it
+			// does not fetch the contact's token. The latter arrives independently through
+			// a `privacy_token` notification.
 			// WA Web never attaches tctoken to peer (AppStateSync) messages — server
 			const isPeerMessage = additionalAttributes?.['category'] === 'peer'
 			const is1on1Send = !isGroup && !isRetryResend && !isStatus && !isNewsletter && !isPeerMessage
 
-			// Resolve destination to LID for tctoken storage — matches Signal session key pattern
-			const tcTokenJid = is1on1Send ? await resolveTcTokenJid(destinationJid, getLIDForPN) : destinationJid
-			const contactTcTokenData = is1on1Send ? await authState.keys.get('tctoken', [tcTokenJid]) : {}
-			const existingTokenEntry = contactTcTokenData[tcTokenJid]
-			let tcTokenBuffer = existingTokenEntry?.token
-
-			// Treat expired tokens the same as missing — re-fetch from server
-			if (tcTokenBuffer?.length && isTcTokenExpired(existingTokenEntry?.timestamp)) {
-				logTcToken('expired', { jid: destinationJid, timestamp: existingTokenEntry?.timestamp })
-				tcTokenBuffer = undefined
-				// Opportunistic cleanup: drop the expired token but preserve senderTimestamp so the
-				// fire-and-forget issuance dedupe (shouldSendNewTcToken) survives the cleanup.
-				const cleared =
-					existingTokenEntry?.senderTimestamp !== undefined
-						? { token: Buffer.alloc(0), senderTimestamp: existingTokenEntry.senderTimestamp }
-						: null
-				try {
-					await authState.keys.set({ tctoken: { [tcTokenJid]: cleared } })
-				} catch {
-					/* ignore cleanup errors */
-				}
-			}
-
-			// If tctoken is missing for a 1:1 send, fetch it.
-			//
-			// CAROUSEL DELIVERY NOTE (validated in staging 2026-05-20): the carousel
-			// DELIVERS and RENDERS on phone+Web *without* a tctoken. What the server
-			// actually requires for the carousel is CONSISTENT addressing (envelope `to`
-			// in LID matching the LID-canonicalized participants — see the envelope fix
-			// below). The tctoken below is best-effort: an empty IQ result on a fresh
-			// session is NON-FATAL, so we do not block delivery on it.
-			//
-			// We deliberately do NOT seed tctokens from history sync here (upstream PR
-			// #2339's storeTcTokensFromHistorySync / "E3"): a stale seeded token makes the
-			// server answer 479 (smax-invalid), which our ack handler marks as ERROR — and
-			// it adds NO rendering benefit, since the carousel renders tokenless. Only the
-			// full tctoken lifecycle (fetch+validate+reissue) would make seeding safe.
-			if (!tcTokenBuffer?.length && is1on1Send && !tcTokenFetchingJids.has(tcTokenJid)) {
-				tcTokenFetchingJids.add(tcTokenJid)
-				logTcToken('fetch', { jid: destinationJid })
-
-				if (isCarousel) {
-					// BLOCKING fetch for carousel — best-effort (see CAROUSEL DELIVERY NOTE above)
-					try {
-						const fetchResult = await getPrivacyTokens([destinationJid])
-
-						// Direct extraction from IQ result — bypass store/read key mismatch
-						const tokensNode = getBinaryNodeChild(fetchResult, 'tokens')
-						if (tokensNode) {
-							const tokenNodes = getBinaryNodeChildren(tokensNode, 'token')
-							for (const tokenNode of tokenNodes) {
-								if (tokenNode.attrs.type === 'trusted_contact' && tokenNode.content instanceof Uint8Array) {
-									tcTokenBuffer = Buffer.from(tokenNode.content)
-									logger.info(
-										{
-											jid: destinationJid,
-											tokenLen: tcTokenBuffer.length,
-											tokenJid: tokenNode.attrs.jid,
-											timestamp: tokenNode.attrs.t
-										},
-										'[CAROUSEL] tctoken extracted directly from IQ result'
-									)
-									break
-								}
-							}
-						}
-
-						if (!tcTokenBuffer?.length) {
-							// Debug: dump the IQ result structure
-							const childTags = Array.isArray(fetchResult.content)
-								? (fetchResult.content as BinaryNode[]).map(n => `${n.tag}(${JSON.stringify(n.attrs)})`)
-								: []
-							logger.warn(
-								{ jid: destinationJid, resultTag: fetchResult.tag, resultAttrs: fetchResult.attrs, childTags },
-								'[CAROUSEL] tctoken fetch completed but NO valid token in IQ result'
-							)
-						}
-
-						// Also store for future use. Audit SILENT-001 — antes era
-						// `.catch(() => {})` silencioso; agora loga em debug pra
-						// dar visibilidade em caso de SQLITE_BUSY/JSON parse
-						// errors. Caminho carrossel: falha não derruba o envio.
-						await storeTcTokensFromIqResult({
-							result: fetchResult,
-							fallbackJid: destinationJid,
-							keys: authState.keys,
-							getLIDForPN
-						}).catch(err => logger.debug({ destinationJid, err: err?.message }, '[CAROUSEL] tctoken store failed'))
-					} catch (err: any) {
-						logger.warn({ jid: destinationJid, err: err?.message }, '[CAROUSEL] Blocking tctoken fetch failed')
-					} finally {
-						tcTokenFetchingJids.delete(tcTokenJid)
-					}
-				} else {
-					// Fire-and-forget for non-carousel — DEFERRED to run after the outer
-					// transaction returns (see "Stage 2 (PR #457) M5 guard fix" note at top
-					// of relayMessage). Registering the .then() chain here would attach it
-					// to the tx's sealed ALS ctx and the persistence would silently no-op.
-					deferredTcTokenFetchJid = destinationJid
-					deferredTcTokenFetchStorageKey = tcTokenJid
-				}
+			const tcTokenAliases = is1on1Send
+				? await resolveTcTokenAliases(destinationJid, { getLIDForPN, getPNForLID })
+				: [destinationJid]
+			const contactTcTokenData = is1on1Send ? await authState.keys.get('tctoken', tcTokenAliases) : {}
+			const selectedToken = selectNewestUsableTcToken(
+				tcTokenAliases.map(alias => [alias, contactTcTokenData[alias]] as const)
+			)
+			const existingTokenEntry = tcTokenAliases
+				.map(alias => contactTcTokenData[alias])
+				.filter(entry => entry?.senderTimestamp !== undefined)
+				.sort((left, right) => Number(right!.senderTimestamp) - Number(left!.senderTimestamp))[0]
+			const tcTokenBuffer = selectedToken.entry?.token
+			if (!selectedToken.usable && selectedToken.reason !== 'missing-token') {
+				logger.debug(
+					{
+						jid: destinationJid,
+						aliases: tcTokenAliases,
+						reason: selectedToken.reason,
+						action: 'send-without-tctoken'
+					},
+					'privacy-token lookup found no usable incoming token'
+				)
 			}
 
 			if (tcTokenBuffer?.length) {
@@ -2278,10 +2335,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// ALS ctx → keys.set({ tctoken }) silently no-ops → senderTimestamp never
 			// persists → shouldSendNewTcToken stays true forever → infinite reissue loop
 			// and Web cannot render interactive messages (no persisted token).
-			if (is1on1Send && shouldSendNewTcToken(existingTokenEntry?.senderTimestamp)) {
+			if (
+				is1on1Send &&
+				(shouldSendNewTcToken(existingTokenEntry?.senderTimestamp) || existingTokenEntry?.realIssueTimestamp === 0)
+			) {
 				const issueTimestamp = unixTimestampSeconds()
 				logTcToken('reissue', { jid: destinationJid })
-				deferredTcTokenReissue = { jid: destinationJid, tcTokenJid, issueTimestamp }
+				deferredTcTokenReissue = { jid: destinationJid, issueTimestamp }
 			}
 
 			// Log with [BAILEYS] prefix
@@ -2309,7 +2369,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			// Add message to retry cache if enabled
 			if (messageRetryManager && !participant) {
-				messageRetryManager.addRecentMessage(jidNormalizedUser(destinationJid), msgId, message)
+				messageRetryManager.addRecentMessage(jidNormalizedUser(destinationJid), msgId, message, {
+					liveLocationDuration
+				})
 			}
 
 			// Track session activity for cleanup (all target JIDs)
@@ -2326,95 +2388,26 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 		}
 
-		try {
-			if (_isInteractiveSendBypass) {
-				logger.info(
-					{
-						msgId,
-						kind: isCarouselMessage(message) ? 'carousel' : getButtonType(message),
-						isGroup,
-						isStatus,
-						isNewsletter
-					},
-					'[relayMessage] WORKAROUND ACTIVE: bypassing outer transaction(meId) for interactive 1-on-1 send'
-				)
-				await runSendBody()
-			} else {
-				await authState.keys.transaction(runSendBody, meId)
-			}
-		} catch (err) {
-			// cubic P1 (PR #457): tx may throw BEFORE we reach the deferred-invocation
-			// block below. `tcTokenFetchingJids.add(tcTokenJid)` happens INSIDE the tx
-			// (line ~1705) — without this cleanup, the jid stays in the set forever
-			// and future sends to that contact silently skip the fetch (the gating
-			// `!tcTokenFetchingJids.has(tcTokenJid)` always returns false). The
-			// .finally() on the deferred Promise can't help because the Promise is
-			// never created. Reissue path has no gating flag, so no leak there.
-			if (deferredTcTokenFetchStorageKey) {
-				tcTokenFetchingJids.delete(deferredTcTokenFetchStorageKey)
-			}
-
-			throw err
-		}
-
-		// Fire deferred tctoken fire-and-forget chains OUTSIDE the transaction so
-		// their .then() callbacks register under the caller's ALS ctx (no tx ctx →
-		// keys.set commits directly, bypassing the M5 sealed-ctx guard).
-		// See "Stage 2 (PR #457) M5 guard fix" note inside relayMessage for details.
-		if (deferredTcTokenFetchJid) {
-			const fetchJid = deferredTcTokenFetchJid
-			const storageKey = deferredTcTokenFetchStorageKey!
-			getPrivacyTokens([fetchJid])
-				.then(async fetchResult => {
-					await storeTcTokensFromIqResult({
-						result: fetchResult,
-						fallbackJid: fetchJid,
-						keys: authState.keys,
-						getLIDForPN
-					})
-				})
-				.catch(err => {
-					logger.debug({ jid: fetchJid, err: err?.message }, 'fire-and-forget tctoken fetch failed')
-				})
-				.finally(() => {
-					tcTokenFetchingJids.delete(storageKey)
-				})
+		if (_isInteractiveSendBypass) {
+			logger.info(
+				{
+					msgId,
+					kind: isCarouselMessage(message) ? 'carousel' : getButtonType(message),
+					isGroup,
+					isStatus,
+					isNewsletter
+				},
+				'[relayMessage] WORKAROUND ACTIVE: bypassing outer transaction(meId) for interactive 1-on-1 send'
+			)
+			await runSendBody()
+		} else {
+			await authState.keys.transaction(runSendBody, meId)
 		}
 
 		if (deferredTcTokenReissue) {
-			const { jid: reissueJid, tcTokenJid: reissueStorageKey, issueTimestamp } = deferredTcTokenReissue
-			getPrivacyTokens([reissueJid], issueTimestamp)
-				.then(async result => {
-					// Store any tokens received in the IQ response.
-					// onNewJidStored not passed — pruning index lives in messages-recv (higher layer).
-					// CodeRabbit PR #457: use original JID (reissueJid) as fallback so dual-key
-					// PN+LID storage works (tc-token-utils.ts:209-214). Passing reissueStorageKey
-					// (resolved LID) would make normalizedFallback === storageJid → no dual key
-					// stored → lookups under PN miss. Matches fetch path + messages-recv pattern.
-					await storeTcTokensFromIqResult({
-						result,
-						fallbackJid: reissueJid,
-						keys: authState.keys,
-						getLIDForPN
-					})
-
-					// Persist senderTimestamp unconditionally — WA Web stores it in the chat table
-					// regardless of whether a token exists. Spread preserves token+timestamp if present.
-					// WABA Android: INSERT INTO wa_trusted_contacts_send (jid, sent_tc_token_timestamp, real_issue_timestamp)
-					// VALUES (?, ?, 0) — realIssueTimestamp=0 means issued but not yet confirmed by server
-					const currentData = await authState.keys.get('tctoken', [reissueStorageKey])
-					const currentEntry = currentData[reissueStorageKey]
-					await authState.keys.set({
-						tctoken: {
-							[reissueStorageKey]: {
-								...currentEntry,
-								token: currentEntry?.token ?? Buffer.alloc(0),
-								senderTimestamp: issueTimestamp,
-								realIssueTimestamp: 0
-							}
-						}
-					})
-
+			const { jid: reissueJid, issueTimestamp } = deferredTcTokenReissue
+			issuePrivacyTokens([reissueJid], issueTimestamp)
+				.then(() => {
 					logTcToken('reissue_ok', { jid: reissueJid })
 				})
 				.catch(err => {
@@ -2500,8 +2493,37 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return ''
 	}
 
-	const getPrivacyTokens = async (jids: string[], timestamp?: number, timeoutMs?: number) => {
-		const t = (timestamp ?? unixTimestampSeconds()).toString()
+	const updatePrivacyTokenIssueState = async (
+		aliasGroups: TcTokenIssueAliasGroup[],
+		issueTimestamp: number,
+		phase: 'scheduled' | 'confirmed'
+	): Promise<boolean> => {
+		return updateTcTokenIssueState({
+			keys: authState.keys,
+			aliasGroups,
+			issueTimestamp,
+			phase,
+			onStaleAck: ({ requestedJid, canonicalJid, newerTimestamp }) =>
+				logger.debug(
+					{
+						jid: requestedJid,
+						canonicalJid,
+						ackTimestamp: issueTimestamp,
+						newerTimestamp,
+						action: 'ignored-stale-ack'
+					},
+					'privacy-token issue confirmation did not overwrite a newer issue'
+				)
+		})
+	}
+
+	const runPrivacyTokenIssue = async (
+		aliasGroups: TcTokenIssueAliasGroup[],
+		issueTimestamp: number,
+		timeoutMs?: number
+	): Promise<BinaryNode> => {
+		const t = issueTimestamp.toString()
+		await updatePrivacyTokenIssueState(aliasGroups, issueTimestamp, 'scheduled')
 		const result = await query(
 			{
 				tag: 'iq',
@@ -2514,10 +2536,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					{
 						tag: 'tokens',
 						attrs: {},
-						content: jids.map(jid => ({
+						content: aliasGroups.map(({ requestedJid }) => ({
 							tag: 'token',
 							attrs: {
-								jid: jidNormalizedUser(jid),
+								jid: requestedJid,
 								t,
 								type: 'trusted_contact'
 							}
@@ -2525,11 +2547,45 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 				]
 			},
-			timeoutMs
+			timeoutMs ?? 32_000
+		)
+		const confirmed = await updatePrivacyTokenIssueState(aliasGroups, issueTimestamp, 'confirmed')
+		logger.debug(
+			{
+				jids: aliasGroups.map(group => group.requestedJid),
+				issueTimestamp,
+				confirmed,
+				responseType: result.attrs.type
+			},
+			'privacy-token issuance acknowledged; no peer token is expected in the IQ result'
 		)
 
 		return result
 	}
+
+	const issuePrivacyTokens = async (jids: string[], timestamp?: number, timeoutMs?: number): Promise<BinaryNode> => {
+		const normalizedJids = [...new Set(jids.map(jidNormalizedUser))]
+		const aliasGroups = await Promise.all(
+			normalizedJids.map(async requestedJid => ({
+				requestedJid,
+				aliases: await resolveTcTokenAliases(requestedJid, { getLIDForPN, getPNForLID })
+			}))
+		)
+		let result!: Promise<BinaryNode>
+
+		await tcTokenIssueMutex.mutex(async () => {
+			const groupsByCanonical = new Map(aliasGroups.map(group => [group.aliases[0]!, group]))
+			result = getOrCreateTcTokenIssueFlight(tcTokenIssueFlights, [...groupsByCanonical.keys()], uncoveredKeys => {
+				const uncovered = uncoveredKeys.map(key => groupsByCanonical.get(key)!)
+				return runPrivacyTokenIssue(uncovered, timestamp ?? unixTimestampSeconds(), timeoutMs)
+			})
+		})
+
+		return result
+	}
+
+	/** @deprecated This IQ issues our token; use `issuePrivacyTokens`. */
+	const getPrivacyTokens = issuePrivacyTokens
 
 	const rawWaUploadToServer = getWAUploadToServer(config, refreshMediaConn)
 
@@ -2602,6 +2658,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		...sock,
 		userDevicesCache,
 		devicesMutex,
+		issuePrivacyTokens,
 		getPrivacyTokens,
 		assertSessions,
 		relayMessage,
@@ -3168,20 +3225,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		},
 		/**
 		 * Sends a live-location message (`liveLocationMessage`) and mirrors the
-		 * `from_me=1` share into `location.db` with the real `expires` — unlike a
-		 * RECEIVED share (where the companion never gets the peer's duration:
-		 * proven, the wire only carries lat/lng/sequenceNumber/jpegThumbnail),
-		 * on a SEND we are the originator and know the duration.
-		 *
-		 * COMPANION LIMITATION (empirically proven, kept intentionally): WhatsApp's
-		 * native "live location" is a PRIMARY-DEVICE-ONLY server session. A linked
-		 * companion (every Baileys socket) cannot register that session, so the
-		 * server does NOT fan a bare `liveLocationMessage` out to the recipient
-		 * (server ack but zero delivery receipt in testing) and no "view live
-		 * location" card renders. A plain `locationMessage` (`sendMessage({ location })`)
-		 * IS delivered as a static map. This method is kept complete for schema
-		 * parity/mirroring and for consumer↔consumer flows that render the
-		 * position stream themselves — it will not produce a native live card.
+		 * `from_me=1` share into `location.db` with the real `expires`.
+		 * Duration is carried as `<enc duration="…">`, matching Android. Earlier
+		 * revisions omitted that transport attribute, so the server acknowledged
+		 * the bare protobuf without establishing a usable live-location share.
 		 */
 		sendLiveLocation: async (
 			jid: string,
@@ -3190,6 +3237,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				degreesLongitude: number
 				/** Share window in seconds — populates the `from_me=1` sharer `expires`. */
 				durationSecs?: number
+				/** Android UI label: "Add comment". Stored in LiveLocationMessage.caption. */
+				comment?: string
+				/** @deprecated Use `comment`; retained for API compatibility. */
 				caption?: string
 				accuracyInMeters?: number
 				speedInMps?: number
@@ -3200,15 +3250,26 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			options: MiscMessageGenerationOptions = {}
 		) => {
 			const userJid = authState.creds.me!.id
+			const durationSecs = location.durationSecs ?? 15 * 60
+			const officialDurations = [15 * 60, 60 * 60, 8 * 60 * 60]
+			if (!officialDurations.includes(durationSecs)) {
+				throw new Boom('Live-location duration must be 900, 3600, or 28800 seconds', {
+					statusCode: 400,
+					data: { durationSecs, allowed: officialDurations }
+				})
+			}
+
+			const messageTimestampMs = options.timestamp?.getTime() ?? Date.now()
 			const content: proto.IMessage = {
 				liveLocationMessage: {
 					degreesLatitude: location.degreesLatitude,
 					degreesLongitude: location.degreesLongitude,
-					accuracyInMeters: location.accuracyInMeters,
-					speedInMps: location.speedInMps,
-					degreesClockwiseFromMagneticNorth: location.degreesClockwiseFromMagneticNorth,
-					caption: location.caption,
-					sequenceNumber: location.sequenceNumber ?? unixTimestampSeconds() * 1000,
+					caption: location.comment ?? location.caption,
+					// Android's FMessageLiveLocationSerializer writes only
+					// latitude, longitude, thumbnail, caption and the allocated
+					// sequence into the initial message. Accuracy/speed/bearing
+					// belong to encrypted update notifications.
+					sequenceNumber: location.sequenceNumber ?? nextLiveLocationSequenceNumber(),
 					jpegThumbnail: location.jpegThumbnail
 				}
 			}
@@ -3218,23 +3279,30 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				messageId: generateMessageIDV2(sock.user?.id),
 				...options
 			})
+			fullMsg.duration = durationSecs
+			// Store adapters commonly persist IMessage as JSON. This gateway-only
+			// property survives restart/getMessage while protobuf encoding ignores
+			// unknown fields, allowing retry receipts to restore the <enc duration>.
+			;(fullMsg.message as proto.IMessage & { liveLocationDuration?: number }).liveLocationDuration = durationSecs
 
-			await relayMessage(jid, fullMsg.message!, {
+			// Keep the initial message addressed to the conversation. Android
+			// canonicalizes PN to LID only inside SendLiveLocationKeyJob.
+			await relayMessage(jidNormalizedUser(jid), fullMsg.message!, {
 				messageId: fullMsg.key.id!,
 				useCachedGroupMetadata: options.useCachedGroupMetadata,
-				statusJidList: options.statusJidList
+				statusJidList: options.statusJidList,
+				liveLocationDuration: durationSecs
 			})
 
-			// Best-effort from_me=1 mirror — never blocks the send. We know the
-			// duration here, so `expires` is real (0 = open-ended when unset).
-			// UNITS: seconds, to match the receive path (`message.messageTimestamp`
-			// is unix seconds). Using ms here would leave the sent row's
-			// `location_ts` permanently ahead of any received update and the
-			// `location_cache` guard (`excluded.location_ts >= …`) would then never
-			// let a received position overwrite it.
+			// Match the Android job order: enqueue the initial live-location
+			// message first, then distribute the durable location@broadcast
+			// fast-ratchet sender key to the recipient primary devices.
+			await sendLiveLocationKeyDistribution(jid)
+
+			// Best-effort from_me=1 mirror — never blocks the send. Android stores
+			// one location_sharer row per recipient/resource.
 			if (sendLocationBackend) {
 				try {
-					const nowSecs = unixTimestampSeconds()
 					sendLocationBackend.upsertLocationCache({
 						jid: jidNormalizedUser(userJid),
 						latitude: location.degreesLatitude,
@@ -3242,15 +3310,29 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						accuracy: location.accuracyInMeters ?? 0,
 						speed: location.speedInMps ?? 0,
 						bearing: location.degreesClockwiseFromMagneticNorth ?? 0,
-						locationTs: nowSecs
+						locationTs: messageTimestampMs
 					})
-					sendLocationBackend.upsertLocationSharer({
-						remoteJid: jidNormalizedUser(jid),
-						fromMe: 1,
-						remoteResource: '',
-						expires: location.durationSecs ? nowSecs + location.durationSecs : 0,
-						messageId: fullMsg.key.id!
-					})
+
+					let remoteResources: string[]
+					if (isJidGroup(jid)) {
+						const metadata = await groupMetadata(jid)
+						remoteResources = metadata.participants
+							.map(participant => jidNormalizedUser(participant.id))
+							.filter(resource => !areJidsSameUser(resource, userJid))
+					} else {
+						remoteResources = [jidNormalizedUser(jid)]
+					}
+
+					for (const remoteResource of [...new Set(remoteResources)]) {
+						if (!remoteResource) continue
+						sendLocationBackend.upsertLocationSharer({
+							remoteJid: jidNormalizedUser(jid),
+							fromMe: 1,
+							remoteResource,
+							expires: messageTimestampMs + durationSecs * 1000,
+							messageId: fullMsg.key.id!
+						})
+					}
 				} catch (err) {
 					logger.debug({ err, jid }, 'location.db sent-live-location mirror failed (best-effort)')
 				}

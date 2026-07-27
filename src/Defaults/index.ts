@@ -31,9 +31,51 @@ export const STATUS_EXPIRY_SECONDS = 24 * 60 * 60
 export const PLACEHOLDER_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 export const NOISE_MODE = 'Noise_XX_25519_AESGCM_SHA256\0\0\0\0'
+export const NOISE_IK_MODE = 'Noise_IK_25519_AESGCM_SHA256\0\0\0\0'
+export const NOISE_XX_FALLBACK_MODE = 'Noise_XXfallback_25519_AESGCM_SHA256'
 export const DICT_VERSION = 3
 export const KEY_BUNDLE_TYPE = Buffer.from([5])
-export const NOISE_WA_HEADER = Buffer.from([87, 65, 6, DICT_VERSION]) // last is "DICT_VERSION"
+// Shared by the Web transport and the captured official Android chat transport.
+// WAM\x05 belongs to analytics telemetry and is not a chat/Noise header.
+export const NOISE_WA_HEADER = Buffer.from([87, 65, 6, DICT_VERSION]) // "WA\x06\x03"
+/**
+ * WhatsApp Business application-wide client identifier.
+ *
+ * This value is embedded in the official WhatsApp Business APK and is used as
+ * the content of the `client-app-id` child in the native `pair-device-sign`
+ * registration stanza. It is tied to the WABA application identity, not to
+ * the selected device model, the session or a generated phone identifier.
+ *
+ * Forensic comparison confirmed the same decoded value in WABA 2.26.19.11,
+ * 2.26.25.4, 2.26.27.83, 2.26.28.3 and 2.26.28.5, even though the containing
+ * class names changed due to obfuscation.
+ *
+ * Do not replace this with the WhatsApp Messenger (`com.whatsapp`) value.
+ * Consumer builds use `994766073959253` in their equivalent A0F pairing
+ * constant. The WABA number can also occur in shared Messenger configuration,
+ * but that literal occurrence is not its pairing identity.
+ *
+ * Maintenance requirement: re-extract and verify this constant whenever the
+ * official WABA APK is upgraded. If Meta changes it in a future build, update
+ * this constant, the Android provider BuildConfig and the corresponding tests
+ * together before enabling that APK version.
+ */
+export const WHATSAPP_BUSINESS_CLIENT_APP_ID = '473039703209605'
+export const WHATSAPP_MESSENGER_CLIENT_APP_ID = '994766073959253'
+
+/** Backwards-compatible name retained for existing provider integrations. */
+export const WABA_CLIENT_APP_ID = WHATSAPP_BUSINESS_CLIENT_APP_ID
+
+export const NATIVE_ANDROID_APP_IDENTITIES = {
+	business: {
+		clientAppId: WHATSAPP_BUSINESS_CLIENT_APP_ID,
+		packageName: 'com.whatsapp.w4b'
+	},
+	consumer: {
+		clientAppId: WHATSAPP_MESSENGER_CLIENT_APP_ID,
+		packageName: 'com.whatsapp'
+	}
+} as const
 /** from: https://stackoverflow.com/questions/3809401/what-is-a-good-regular-expression-to-match-a-url */
 export const URL_REGEX = /https:\/\/(?![^:@\/\s]+:[^:@\/\s]+@)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(:\d+)?(\/[^\s]*)?/g
 
@@ -80,6 +122,7 @@ const resolveDefaultBrowser = (): [string, string, string] => {
 }
 
 export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
+	transportProfile: 'web',
 	version: version as WAVersion,
 	versionCheckIntervalMs: SIX_HOURS_MS,
 	browser: resolveDefaultBrowser(),

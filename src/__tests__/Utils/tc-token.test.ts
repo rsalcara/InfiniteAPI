@@ -4,10 +4,16 @@ import { getErrorCodeFromStreamError, SERVER_ERROR_CODES } from '../../Utils'
 import {
 	buildTcTokenFromJid,
 	buildTcTokenNode,
+	getOrCreateTcTokenIssueFlight,
 	isTcTokenExpired,
+	parseTrustedContactTokenNotification,
+	resolveIncomingTcTokenAliases,
+	resolveTcTokenAliases,
+	selectNewestUsableTcToken,
 	selectUsableTcToken,
 	shouldSendNewTcToken,
-	storeTcTokensFromIqResult
+	storeTcTokensFromIqResult,
+	updateTcTokenIssueState
 } from '../../Utils/tc-token-utils'
 import type { BinaryNode } from '../../WABinary'
 
@@ -133,6 +139,200 @@ describe('selectUsableTcToken', () => {
 			usable: false,
 			reason: 'expired-token'
 		})
+	})
+})
+
+describe('privacy_token notification parsing', () => {
+	const token = Buffer.from([0x04, 0x01, 0x31])
+
+	it('reads sender_lid and timestamp from the outer notification', () => {
+		const parsed = parseTrustedContactTokenNotification({
+			tag: 'notification',
+			attrs: { from: '5511999999999@s.whatsapp.net', sender_lid: '1234567890@lid', t: '100' },
+			content: [
+				{
+					tag: 'tokens',
+					attrs: {},
+					content: [{ tag: 'token', attrs: { type: 'trusted_contact' }, content: token }]
+				}
+			]
+		})
+
+		expect(parsed).toEqual([
+			{
+				from: '5511999999999@s.whatsapp.net',
+				senderLid: '1234567890@lid',
+				timestamp: '100',
+				timestampSource: 'notification-node',
+				childTimestamp: undefined,
+				outerTimestamp: '100',
+				token
+			}
+		])
+		expect(parsed[0]).toHaveProperty('childTimestamp', undefined)
+	})
+
+	it('lets child timestamp override the outer fallback', () => {
+		const [parsed] = parseTrustedContactTokenNotification({
+			tag: 'notification',
+			attrs: { from: '5511999999999@s.whatsapp.net', t: '100' },
+			content: [
+				{
+					tag: 'tokens',
+					attrs: {},
+					content: [{ tag: 'token', attrs: { type: 'trusted_contact', t: '101' }, content: token }]
+				}
+			]
+		})
+
+		expect(parsed?.timestamp).toBe('101')
+		expect(parsed?.timestampSource).toBe('token-node')
+	})
+})
+
+describe('PN/LID token selection parity', () => {
+	const pn = '5511999999999@s.whatsapp.net'
+	const lid = '1234567890@lid'
+
+	it('returns canonical LID first and preserves the PN alias', async () => {
+		await expect(
+			resolveTcTokenAliases(pn, {
+				getLIDForPN: async value => (value === pn ? lid : null),
+				getPNForLID: async value => (value === lid ? pn : null)
+			})
+		).resolves.toEqual([lid, pn])
+	})
+
+	it('keeps the notification PN even before reverse LID mapping exists', async () => {
+		await expect(
+			resolveIncomingTcTokenAliases(pn, lid, {
+				getLIDForPN: async () => null,
+				getPNForLID: async () => null
+			})
+		).resolves.toEqual([lid, pn])
+	})
+
+	it('treats hosted.lid as a LID and recovers its hosted PN alias', async () => {
+		const hostedLid = '1234567890@hosted.lid'
+		const hostedPn = '5511999999999@hosted'
+
+		await expect(
+			resolveTcTokenAliases(hostedLid, {
+				getLIDForPN: async () => null,
+				getPNForLID: async value => (value === hostedLid ? hostedPn : null)
+			})
+		).resolves.toEqual([hostedLid, hostedPn])
+	})
+
+	it('selects the newest valid token across both aliases', () => {
+		const older = String(nowSeconds() - 20)
+		const newer = String(nowSeconds() - 10)
+		const selected = selectNewestUsableTcToken([
+			[lid, { token: Buffer.from([1]), timestamp: older }],
+			[pn, { token: Buffer.from([2]), timestamp: newer }]
+		])
+
+		expect(selected).toEqual({
+			usable: true,
+			jid: pn,
+			entry: { token: Buffer.from([2]), timestamp: newer }
+		})
+	})
+
+	it('lets a LID lookup recover a valid legacy PN token', async () => {
+		const keys = createMockKeys()
+		const token = Buffer.from([9, 8, 7])
+		;(keys.get as any).mockResolvedValue({
+			[pn]: { token, timestamp: String(nowSeconds()) }
+		})
+
+		const node = await buildTcTokenNode({
+			authState: { keys },
+			jid: lid,
+			getLIDForPN: async () => lid,
+			getPNForLID: async () => pn
+		})
+
+		expect(keys.get).toHaveBeenCalledWith('tctoken', [lid, pn])
+		expect(node).toEqual({ tag: 'tctoken', attrs: {}, content: token })
+	})
+})
+
+describe('privacy-token issue state machine', () => {
+	const lid = '1234567890@lid'
+	const pn = '5511999999999@s.whatsapp.net'
+
+	const statefulKeys = (initial: Record<string, any> = {}) => {
+		const state = { ...initial }
+		const keys = {
+			get: jest.fn(async (_type: string, ids: string[]) =>
+				Object.fromEntries(ids.filter(id => state[id] !== undefined).map(id => [id, state[id]]))
+			),
+			set: jest.fn(async (data: any) => {
+				for (const [id, value] of Object.entries(data.tctoken ?? {})) {
+					if (value === null) delete state[id]
+					else state[id] = value
+				}
+			}),
+			transaction: jest.fn(async (work: () => Promise<unknown>) => work()),
+			isInTransaction: jest.fn(() => false)
+		} as unknown as SignalKeyStoreWithTransaction
+		return { keys, state }
+	}
+
+	it('persists 0 before the IQ and NULL after ACK while removing only PN sent state', async () => {
+		const incomingPn = { token: Buffer.from([7]), timestamp: String(nowSeconds() - 1), senderTimestamp: 50 }
+		const { keys, state } = statefulKeys({ [pn]: incomingPn })
+		const aliasGroups = [{ requestedJid: pn, aliases: [lid, pn] }]
+
+		await updateTcTokenIssueState({ keys, aliasGroups, issueTimestamp: 100, phase: 'scheduled' })
+		expect(state[lid]).toEqual({ token: Buffer.alloc(0), senderTimestamp: 100, realIssueTimestamp: 0 })
+
+		await updateTcTokenIssueState({ keys, aliasGroups, issueTimestamp: 100, phase: 'confirmed' })
+		expect(state[lid]).toEqual({ token: Buffer.alloc(0), senderTimestamp: 100, realIssueTimestamp: null })
+		expect(state[pn]).toEqual({ token: incomingPn.token, timestamp: incomingPn.timestamp })
+	})
+
+	it('rejects a late ACK instead of overwriting a newer issue', async () => {
+		const { keys, state } = statefulKeys({
+			[lid]: { token: Buffer.alloc(0), senderTimestamp: 200, realIssueTimestamp: 0 }
+		})
+		const onStaleAck = jest.fn()
+
+		await expect(
+			updateTcTokenIssueState({
+				keys,
+				aliasGroups: [{ requestedJid: pn, aliases: [lid, pn] }],
+				issueTimestamp: 100,
+				phase: 'confirmed',
+				onStaleAck
+			})
+		).resolves.toBe(false)
+		expect(state[lid]).toEqual({ token: Buffer.alloc(0), senderTimestamp: 200, realIssueTimestamp: 0 })
+		expect(onStaleAck).toHaveBeenCalledWith({ requestedJid: pn, canonicalJid: lid, newerTimestamp: 200 })
+	})
+})
+
+describe('privacy-token issue single-flight', () => {
+	it('shares one flight per canonical contact and releases it on completion', async () => {
+		const flights = new Map<string, Promise<string>>()
+		let complete!: (value: string) => void
+		const create = jest.fn(
+			() =>
+				new Promise<string>(resolve => {
+					complete = resolve
+				})
+		)
+
+		const first = getOrCreateTcTokenIssueFlight(flights, ['123@lid'], create)
+		const second = getOrCreateTcTokenIssueFlight(flights, ['123@lid'], create)
+
+		expect(second).toBe(first)
+		expect(create).toHaveBeenCalledTimes(1)
+		complete('ack')
+		await expect(first).resolves.toBe('ack')
+		await Promise.resolve()
+		expect(flights.size).toBe(0)
 	})
 })
 
@@ -612,8 +812,8 @@ describe('tctoken integration scenarios', () => {
 		mockKeys = createMockKeys()
 	})
 
-	describe('token fetch and store flow', () => {
-		it('token missing → fetch stores new token → subsequent read finds it', async () => {
+	describe('incoming notification and store flow', () => {
+		it('token missing → notification stores new token → subsequent read finds it', async () => {
 			const recentTs = String(nowSeconds())
 
 			// First read: no token
@@ -623,7 +823,7 @@ describe('tctoken integration scenarios', () => {
 			const result1 = await buildTcTokenFromJid({ authState: { keys: mockKeys }, jid: JID_A })
 			expect(result1).toBeUndefined()
 
-			// Simulate: after fetch, token is stored
+			// Simulate: after privacy_token notification, token is stored
 			await mockKeys.set({ tctoken: { [JID_A]: { token: TOKEN_A, timestamp: recentTs } } })
 			expect(mockKeys.set).toHaveBeenCalledWith({
 				tctoken: { [JID_A]: { token: TOKEN_A, timestamp: recentTs } }
@@ -641,8 +841,8 @@ describe('tctoken integration scenarios', () => {
 		})
 	})
 
-	describe('expired token triggers re-fetch', () => {
-		it('expired token is detected and deleted, then re-fetch stores fresh token', async () => {
+	describe('expired token awaits a fresh notification', () => {
+		it('expired token is deleted, then an incoming notification stores its replacement', async () => {
 			const expiredTs = String(nowSeconds() - 30 * 86400)
 			const freshTs = String(nowSeconds())
 
@@ -657,7 +857,7 @@ describe('tctoken integration scenarios', () => {
 			// Verify expired entry deleted
 			expect(mockKeys.set).toHaveBeenCalledWith({ tctoken: { [JID_A]: null } })
 
-			// After re-fetch, fresh token stored and readable
+			// After a fresh notification, the replacement is readable
 			// @ts-ignore
 			mockKeys.get.mockResolvedValueOnce({ [JID_A]: { token: TOKEN_B, timestamp: freshTs } })
 
@@ -862,15 +1062,15 @@ describe('tctoken integration scenarios', () => {
 	})
 
 	describe('full lifecycle simulation', () => {
-		it('token goes through complete lifecycle: missing → fetch → valid → bucket cross → expired → prune', () => {
+		it('token goes through complete lifecycle: missing → notification → valid → bucket cross → expired → prune', () => {
 			const now = nowSeconds()
 			const bucketStart = Math.floor(now / BUCKET_DURATION) * BUCKET_DURATION
 
-			// Step 1: Token missing → isTcTokenExpired(undefined) triggers fetch
+			// Step 1: no incoming token is available
 			expect(isTcTokenExpired(undefined)).toBe(true)
 			expect(shouldSendNewTcToken(undefined)).toBe(true)
 
-			// Step 2: After fetch — token is fresh, no need to re-issue in same bucket
+			// Step 2: after notification, the token is fresh
 			const fetchTime = now
 			expect(isTcTokenExpired(fetchTime)).toBe(false)
 			expect(shouldSendNewTcToken(fetchTime)).toBe(false)

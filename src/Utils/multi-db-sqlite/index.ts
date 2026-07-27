@@ -50,7 +50,12 @@ export {
 	type StoredHistorySyncCompanionRow
 } from './history-sync-companion-backend'
 export { SignalTypedSourceStore, type TypedSignalType } from './signal-typed-source'
-export { LocationBackend, type LocationCacheRow, type LocationSharerRow } from './location-backend'
+export {
+	LOCATION_OPEN_ENDED_EXPIRES_MS,
+	LocationBackend,
+	type LocationCacheRow,
+	type LocationSharerRow
+} from './location-backend'
 export { ChatSettingsBackend, type ChatSettingsRow } from './chatsettings-backend'
 export {
 	StatusBackend,
@@ -67,7 +72,10 @@ export {
 } from './stickers-backend'
 export {
 	ANDROID_MESSAGE_TYPE,
+	ANDROID_MESSAGE_STATUS,
+	mapWebMessageStatusToAndroid,
 	mapContentTypeToMessageType,
+	mapMessageToAndroidType,
 	MessageStoreBackend,
 	type ChatRowResolver,
 	type JidResolver,

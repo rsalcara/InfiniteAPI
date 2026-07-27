@@ -53,7 +53,8 @@ const _ALL_TYPES_MAP = {
 	'lid-mapping': true,
 	'device-list': true,
 	tctoken: true,
-	'identity-key': true
+	'identity-key': true,
+	'fast-ratchet-sender-key': true
 } as const
 
 // Type-only assertion: if a new SignalDataTypeMap key is added without an

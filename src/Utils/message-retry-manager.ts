@@ -49,11 +49,7 @@ export enum RetryReason {
 	StatusRevokeDelay = 13
 }
 
-/**
- * MAC error codes that indicate identity key mismatch
- * These errors occur when the sender's identity key has changed (e.g., reinstalled WhatsApp)
- * and require immediate session recreation without waiting for the normal timeout
- */
+/** Error codes in the MAC/authentication failure family. */
 export const MAC_ERROR_CODES = new Set<RetryReason>([
 	RetryReason.SignalErrorInvalidMessage,
 	RetryReason.SignalErrorBadMac
@@ -68,6 +64,37 @@ export const SESSION_ERROR_CODES = new Set<RetryReason>([
 	RetryReason.SignalErrorInvalidKey,
 	RetryReason.SignalErrorInvalidKeyId
 ])
+
+/**
+ * Convert a retained decryption failure into the retry reason carried on the
+ * wire. Only mappings verified against the Android client are emitted; an
+ * unclassified failure remains `UnknownError`.
+ */
+export const retryReasonFromDecryptionError = (error: unknown): RetryReason => {
+	const message = error instanceof Error ? error.message : String(error ?? '')
+	if (message.includes('Bad MAC') || message.includes('Bad Mac!')) return RetryReason.SignalErrorBadMac
+	if (message.includes('No matching sessions') || message.includes('No valid sessions')) {
+		return RetryReason.SignalErrorInvalidSession
+	}
+
+	if (message.includes('Invalid signature')) return RetryReason.SignalErrorInvalidSignature
+	if (message.includes('Over 2000 messages into the future')) return RetryReason.SignalErrorFutureMessage
+	if (message.includes('No session record') || message.includes('No Session found')) {
+		return RetryReason.SignalErrorNoSession
+	}
+
+	return RetryReason.UnknownError
+}
+
+export const parseRetryErrorCode = (errorAttr: string | undefined): RetryReason | undefined => {
+	if (errorAttr === undefined || errorAttr === '') return undefined
+
+	const code = Number.parseInt(errorAttr, 10)
+	if (Number.isNaN(code)) return undefined
+	if (code >= RetryReason.UnknownError && code <= RetryReason.StatusRevokeDelay) return code as RetryReason
+	return RetryReason.UnknownError
+}
+
 export interface RecentMessageKey {
 	to: string
 	id: string
@@ -77,6 +104,12 @@ export interface RecentMessage {
 	to: string
 	message: proto.IMessage
 	timestamp: number
+	/**
+	 * Transport metadata carried by the encrypted child rather than IMessage.
+	 * It must survive an immediate retry so a live-location resend retains the
+	 * official `<enc duration="…">` attribute.
+	 */
+	liveLocationDuration?: number
 }
 
 export interface SessionRecreateHistory {
@@ -244,7 +277,12 @@ export class MessageRetryManager {
 	/**
 	 * Add a recent message to the cache for retry handling
 	 */
-	addRecentMessage(to: string, id: string, message: proto.IMessage): void {
+	addRecentMessage(
+		to: string,
+		id: string,
+		message: proto.IMessage,
+		metadata?: { liveLocationDuration?: number }
+	): void {
 		const key: RecentMessageKey = { to, id }
 		const keyStr = this.keyToString(key)
 
@@ -252,7 +290,8 @@ export class MessageRetryManager {
 		this.recentMessagesMap.set(keyStr, {
 			to,
 			message,
-			timestamp: Date.now()
+			timestamp: Date.now(),
+			liveLocationDuration: metadata?.liveLocationDuration
 		})
 		this.messageKeyIndex.set(id, keyStr)
 
@@ -304,7 +343,9 @@ export class MessageRetryManager {
 		hasSession: boolean,
 		errorCode?: RetryReason
 	): { reason: string; recreate: boolean } {
-		// If we don't have a session, always recreate
+		// Missing state still needs session establishment. Existing state is only
+		// deleted by the registration-id and retry-count/base-key checks in the
+		// retry-receipt handler; an error label alone is not sufficient evidence.
 		if (!hasSession) {
 			this.sessionRecreateHistory.set(jid, Date.now())
 			this.statistics.sessionRecreations++
@@ -315,69 +356,11 @@ export class MessageRetryManager {
 			}
 		}
 
-		// MAC errors require session recreation, but rate-limited to prevent loops.
-		// When multiple messages fail with Bad MAC simultaneously, only the first
-		// should trigger recreation; subsequent ones within the cooldown window
-		// piggyback on the same new session established by the retry+pkmsg flow.
-		if (errorCode !== undefined && MAC_ERROR_CODES.has(errorCode)) {
-			const now = Date.now()
-			const prevTime = this.sessionRecreateHistory.get(jid)
-			const MAC_ERROR_COOLDOWN_MS = 1_000 // 1 second — WABA recovers faster
-
-			if (prevTime && now - prevTime < MAC_ERROR_COOLDOWN_MS) {
-				const reasonName = RetryReason[errorCode] || `code_${errorCode}`
-				this.logger.debug(
-					{ jid, errorCode: reasonName, msSinceLast: now - prevTime },
-					'MAC error session recreation skipped — cooldown active'
-				)
-				return {
-					reason: '',
-					recreate: false
-				}
-			}
-
-			this.sessionRecreateHistory.set(jid, now)
-			this.statistics.sessionRecreations++
-			const reasonName = RetryReason[errorCode] || `code_${errorCode}`
-			metrics.signalMacErrors?.inc({ action: 'session_recreation' })
-			metrics.signalSessionRecreations?.inc({ reason: 'mac_error' })
-			this.logger.warn({ jid, errorCode: reasonName }, 'MAC error detected, recreating session')
-			return {
-				reason: `MAC error (${reasonName}) - contact may have reinstalled WhatsApp`,
-				recreate: true
-			}
-		}
-
-		// Session-related errors also warrant recreation
-		if (errorCode !== undefined && SESSION_ERROR_CODES.has(errorCode)) {
-			const now = Date.now()
-			const prevTime = this.sessionRecreateHistory.get(jid)
-			// For session errors, use a shorter timeout (5 minutes) since these are more severe
-			const sessionErrorTimeout = 5 * 60 * 1000
-			if (!prevTime || now - prevTime > sessionErrorTimeout) {
-				this.sessionRecreateHistory.set(jid, now)
-				this.statistics.sessionRecreations++
-				const reasonName = RetryReason[errorCode] || `code_${errorCode}`
-				metrics.signalSessionRecreations?.inc({ reason: 'session_error' })
-				return {
-					reason: `Session error (${reasonName})`,
-					recreate: true
-				}
-			}
-		}
-
-		const now = Date.now()
-		const prevTime = this.sessionRecreateHistory.get(jid)
-
-		// If no previous recreation or it's been more than an hour
-		if (!prevTime || now - prevTime > RECREATE_SESSION_TIMEOUT) {
-			this.sessionRecreateHistory.set(jid, now)
-			this.statistics.sessionRecreations++
-			metrics.signalSessionRecreations?.inc({ reason: 'timeout_exceeded' })
-			return {
-				reason: 'retry count > 1 and over an hour since last recreation',
-				recreate: true
-			}
+		if (errorCode !== undefined) {
+			this.logger.debug(
+				{ jid, errorCode: RetryReason[errorCode] ?? `code_${errorCode}` },
+				'retry error retained for diagnostics; existing session preserved pending registration/base-key checks'
+			)
 		}
 
 		return { reason: '', recreate: false }
@@ -390,22 +373,7 @@ export class MessageRetryManager {
 	 * @returns Parsed RetryReason or undefined if invalid
 	 */
 	parseRetryErrorCode(errorAttr: string | undefined): RetryReason | undefined {
-		if (errorAttr === undefined || errorAttr === '') {
-			return undefined
-		}
-
-		const code = parseInt(errorAttr, 10)
-		if (Number.isNaN(code)) {
-			return undefined
-		}
-
-		// Validate code is within known range
-		if (code >= RetryReason.UnknownError && code <= RetryReason.StatusRevokeDelay) {
-			return code as RetryReason
-		}
-
-		// Unknown code, treat as UnknownError
-		return RetryReason.UnknownError
+		return parseRetryErrorCode(errorAttr)
 	}
 
 	/**

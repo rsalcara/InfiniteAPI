@@ -128,12 +128,14 @@ describe('parseSenderKeyId', () => {
 describe('parseIdentityKey', () => {
 	it('parses a PN protocol-address to a s.whatsapp.net jid, recipient_type 0', () => {
 		expect(parseIdentityKey('5511999999999.0')).toEqual({
+			recipientId: 5511999999999,
 			jid: '5511999999999@s.whatsapp.net',
 			recipientType: 0,
 			deviceId: 0
 		})
 		// device is kept separate from the jid
 		expect(parseIdentityKey('5511999999999.3')).toEqual({
+			recipientId: 5511999999999,
 			jid: '5511999999999@s.whatsapp.net',
 			recipientType: 0,
 			deviceId: 3
@@ -142,6 +144,7 @@ describe('parseIdentityKey', () => {
 
 	it('parses a LID protocol-address to a lid jid, recipient_type 1', () => {
 		expect(parseIdentityKey(`46802258641027_${WAJIDDomains.LID}.0`)).toEqual({
+			recipientId: 46802258641027,
 			jid: '46802258641027@lid',
 			recipientType: 1,
 			deviceId: 0
@@ -185,6 +188,7 @@ describe('parseIdentityKey', () => {
 
 	it('falls back to jidDecode for a jid-shaped id (no device separator)', () => {
 		expect(parseIdentityKey('46802258641027@lid')).toEqual({
+			recipientId: 46802258641027,
 			jid: '46802258641027@lid',
 			recipientType: 1,
 			deviceId: null

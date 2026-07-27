@@ -15,6 +15,7 @@ export enum XWAPaths {
 	xwa2_newsletter_delete_v2 = 'xwa2_newsletter_delete_v2',
 	// Reachout timelock + message capping — port de upstream `4dbbba2891` (PR #2442)
 	xwa2_fetch_account_reachout_timelock = 'xwa2_fetch_account_reachout_timelock',
+	xwa2_remove_account_reachout_timelock = 'xwa2_remove_account_reachout_timelock',
 	xwa2_message_capping_info = 'xwa2_message_capping_info'
 }
 export enum QueryIds {
@@ -32,6 +33,7 @@ export enum QueryIds {
 	DELETE = '30062808666639665',
 	// Port de upstream `4dbbba2891` (PR #2442)
 	REACHOUT_TIMELOCK = '23983697327930364',
+	REMOVE_REACHOUT_TIMELOCK = '25040013452293167',
 	MESSAGE_CAPPING_INFO = '24503548349331633'
 }
 export type NewsletterUpdate = {

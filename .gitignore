@@ -34,5 +34,7 @@ wa-logs*
 coverage
 AUDIT_REPORT_*.md
 logs_analise/
+local-tools/*-capture.jsonl
+__pycache__/
 .claude/
 tsconfig.tsbuildinfo

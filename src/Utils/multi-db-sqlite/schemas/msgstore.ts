@@ -26,6 +26,12 @@
  *   - `message_details` — author device (multi-device attribution)
  *   - `message_secret` — 32-byte per-message key used to derive
  *     reaction/poll-vote/edit HMAC keys
+ *   - `message_album` — album root counters. Android stores the root as
+ *     `message_type=99`; received roots start with actual counts at zero and
+ *     carry the expected image/video counts from the protobuf.
+ *   - `message_sticker_pack` / `message_sticker_pack_stickers` — complete
+ *     StickerPackMessage metadata and its protobuf-ordered sticker manifest
+ *     for Android `message_type=105`.
  *   - `message_revoked` — "delete for everyone" — live capture confirms
  *     WA DELETEs the original row, re-INSERTs a tombstone at the SAME
  *     `_id` (message_type=15, text_data=null), then links it here via
@@ -309,6 +315,45 @@ CREATE TABLE IF NOT EXISTS message_secret (
   message_row_id INTEGER PRIMARY KEY,
   message_secret BLOB
 );
+
+CREATE TABLE IF NOT EXISTS message_album (
+  message_row_id INTEGER PRIMARY KEY,
+  image_count INTEGER NOT NULL DEFAULT 0,
+  video_count INTEGER NOT NULL DEFAULT 0,
+  expected_image_count INTEGER,
+  expected_video_count INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS message_sticker_pack (
+  message_row_id INTEGER PRIMARY KEY,
+  sticker_pack_id TEXT NOT NULL,
+  tray_icon_file_name TEXT NOT NULL,
+  pack_name TEXT NOT NULL,
+  pack_description TEXT,
+  publisher TEXT,
+  image_data_hash TEXT,
+  sticker_pack_size INTEGER,
+  sticker_pack_origin INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS message_sticker_pack_name_index
+  ON message_sticker_pack (pack_name);
+CREATE INDEX IF NOT EXISTS message_sticker_pack_publisher_index
+  ON message_sticker_pack (publisher);
+
+CREATE TABLE IF NOT EXISTS message_sticker_pack_stickers (
+  _id INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_row_id INTEGER NOT NULL,
+  file_name TEXT NOT NULL,
+  is_animated INTEGER NOT NULL DEFAULT 0,
+  emojis TEXT,
+  accessibility_label TEXT,
+  is_lottie INTEGER NOT NULL DEFAULT 0,
+  mimetype TEXT
+);
+
+CREATE INDEX IF NOT EXISTS sticker_pack_stickers_message_row_id_index
+  ON message_sticker_pack_stickers (message_row_id);
 
 CREATE TABLE IF NOT EXISTS message_revoked (
   message_row_id INTEGER PRIMARY KEY,

@@ -30,6 +30,7 @@ import {
 	isHostedLidUser,
 	isHostedPnUser,
 	isJidBroadcast,
+	isJidGroup,
 	isJidStatusBroadcast,
 	isLidUser,
 	jidDecode,
@@ -43,13 +44,16 @@ import type { ILogger } from './logger'
 import {
 	type AppStateBackend,
 	type HistorySyncCompanionBackend,
+	LOCATION_OPEN_ENDED_EXPIRES_MS,
 	type LocationBackend,
-	mapContentTypeToMessageType,
+	mapMessageToAndroidType,
+	mapWebMessageStatusToAndroid,
 	type MessageAddOnBackend,
 	type MessageMediaBackend,
 	type MessageStoreBackend,
 	PEER_MESSAGE_TYPE_APP_STATE_SYNC_KEY_SHARE,
 	type ReceiptBackend,
+	type RecordMessageInput,
 	type StatusBackend,
 	UI_ELEMENT_TYPE
 } from './multi-db-sqlite'
@@ -86,6 +90,145 @@ type ProcessMessageContext = {
 	addOnBackend?: MessageAddOnBackend
 	/** Optional sync.db mirror — per-chunk companion history-sync tracking (history_sync_companion). */
 	historySyncCompanionBackend?: HistorySyncCompanionBackend
+}
+
+/**
+ * Persist history-sync messages into the same typed message/chat tables used
+ * by live traffic. History events remain available to consumers, but the
+ * relational store no longer stays nearly empty after a successful bootstrap.
+ */
+const HISTORY_MIRROR_BATCH_SIZE = 128
+
+const yieldHistoryMirror = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
+
+const mapStickerPackToMirror = (
+	pack: proto.Message.IStickerPackMessage | null | undefined
+): NonNullable<RecordMessageInput['stickerPack']> | null => {
+	if (!pack) return null
+
+	return {
+		// Generated protobuf strings default to empty in the official client.
+		// The three matching Android columns are NOT NULL, so preserve that
+		// behavior instead of dropping a structurally valid pack.
+		stickerPackId: pack.stickerPackId ?? '',
+		trayIconFileName: pack.trayIconFileName ?? '',
+		packName: pack.name ?? '',
+		packDescription: pack.packDescription ?? '',
+		publisher: pack.publisher ?? '',
+		imageDataHash: pack.imageDataHash ?? '',
+		stickerPackSize:
+			pack.stickerPackSize === null || pack.stickerPackSize === undefined ? null : toNumber(pack.stickerPackSize),
+		stickerPackOrigin: pack.stickerPackOrigin ?? 0,
+		fileLength: pack.fileLength === null || pack.fileLength === undefined ? null : toNumber(pack.fileLength),
+		mediaKey: pack.mediaKey ? Buffer.from(pack.mediaKey) : null,
+		// Android's FMessage mapper converts the protobuf seconds value to
+		// milliseconds before message_media persistence.
+		mediaKeyTimestamp:
+			pack.mediaKeyTimestamp === null || pack.mediaKeyTimestamp === undefined
+				? null
+				: toNumber(pack.mediaKeyTimestamp) * 1000,
+		directPath: pack.directPath ?? null,
+		fileSha256: pack.fileSha256 ? Buffer.from(pack.fileSha256) : null,
+		fileEncSha256: pack.fileEncSha256 ? Buffer.from(pack.fileEncSha256) : null,
+		stickers: (pack.stickers ?? []).map(sticker => ({
+			fileName: sticker.fileName ?? '',
+			isAnimated: !!sticker.isAnimated,
+			// Official mapper joins the repeated protobuf field with ", ".
+			emojis: (sticker.emojis ?? []).join(', '),
+			accessibilityLabel: sticker.accessibilityLabel ?? '',
+			isLottie: !!sticker.isLottie,
+			mimetype: sticker.mimetype ?? ''
+		}))
+	}
+}
+
+export const mirrorHistoryMessagesToStore = async (
+	messages: WAMessage[],
+	messageStoreBackend: MessageStoreBackend,
+	logger?: ILogger
+): Promise<{ stored: number; failed: number }> => {
+	let stored = 0
+	let failed = 0
+	const inputs: RecordMessageInput[] = []
+
+	for (const message of messages) {
+		const remoteJid = message.key?.remoteJid
+		const keyId = message.key?.id
+		const content = normalizeMessageContent(message.message)
+		if (!remoteJid || !keyId || !content) continue
+
+		try {
+			const timestamp = toNumber(message.messageTimestamp ?? 0)
+			const senderJid = message.key.fromMe
+				? null
+				: jidNormalizedUser(message.key.participant || message.key.remoteJid || '')
+			inputs.push({
+				chatJid: jidNormalizedUser(remoteJid),
+				fromMe: !!message.key.fromMe,
+				keyId,
+				senderJid,
+				// Web ERROR=0 has no lossless Android status equivalent. Preserve
+				// NULL instead of silently upgrading a failed own message to ACK=4.
+				status:
+					message.status === proto.WebMessageInfo.Status.ERROR
+						? null
+						: (mapWebMessageStatusToAndroid(message.status) ?? (message.key.fromMe ? 4 : 0)),
+				timestamp,
+				receivedTimestamp: timestamp > 0 ? timestamp * 1000 : null,
+				messageType: mapMessageToAndroidType(message.message),
+				textData: content.extendedTextMessage?.text ?? content.conversation ?? null,
+				authorDeviceJid: senderJid,
+				messageSecret: content.messageContextInfo?.messageSecret
+					? Buffer.from(content.messageContextInfo.messageSecret)
+					: null,
+				album: content.albumMessage
+					? {
+							expectedImageCount: content.albumMessage.expectedImageCount ?? 0,
+							expectedVideoCount: content.albumMessage.expectedVideoCount ?? 0
+						}
+					: null,
+				stickerPack: mapStickerPackToMirror(content.stickerPackMessage),
+				incrementUnread: false
+			})
+		} catch (err) {
+			failed++
+			logger?.warn({ err, messageId: keyId, chatJid: remoteJid }, 'multi-db-sqlite: history message mirror failed')
+		}
+	}
+
+	const persistBatch = async (batch: readonly RecordMessageInput[]): Promise<void> => {
+		try {
+			const rowIds = messageStoreBackend.recordMessages(batch)
+			stored += rowIds.length
+		} catch (err) {
+			// A batch is atomic. Split only the failed batch until the malformed
+			// row is isolated, preserving best-effort history import without
+			// reverting successfully validated neighbouring rows.
+			if (batch.length > 1) {
+				const midpoint = Math.ceil(batch.length / 2)
+				await persistBatch(batch.slice(0, midpoint))
+				await persistBatch(batch.slice(midpoint))
+				return
+			}
+
+			failed++
+			const input = batch[0]
+			logger?.warn(
+				{ err, messageId: input?.keyId, chatJid: input?.chatJid },
+				'multi-db-sqlite: history message mirror failed'
+			)
+		}
+	}
+
+	for (let offset = 0; offset < inputs.length; offset += HISTORY_MIRROR_BATCH_SIZE) {
+		await persistBatch(inputs.slice(offset, offset + HISTORY_MIRROR_BATCH_SIZE))
+		// The official Android client executes history chunks in background
+		// workers. Node has one event loop, so yield between bounded commits to
+		// keep Noise frames, keepalive and close callbacks responsive.
+		await yieldHistoryMirror()
+	}
+
+	return { stored, failed }
 }
 
 const REAL_MSG_STUB_TYPES = new Set([
@@ -315,6 +458,62 @@ type PollContext = {
 	pollEncKey: Uint8Array
 	/** jid of the person that voted */
 	voterJid: string
+}
+
+const getKeyAddressingCandidates = (key: WAMessageKey): string[] =>
+	[key.participant, key.remoteJid, key.participantAlt, key.remoteJidAlt].filter(
+		(jid, index, all): jid is string => !!jid && all.indexOf(jid) === index
+	)
+
+/**
+ * Resolves the exact identity domain used by the sender when deriving poll
+ * vote encryption keys. Storage normalisation may turn the primary LID into a
+ * PN, but the cryptographic transcript must continue to follow
+ * `addressing_mode`; PN and LID strings are not interchangeable in its HMAC/AAD.
+ */
+export const resolvePollCryptoAuthor = async (
+	key: WAMessageKey,
+	addressingMode: string | undefined,
+	meId: string,
+	meLid: string | undefined,
+	lidMapping: LIDMappingStore
+): Promise<string> => {
+	const mode = key.addressingMode || addressingMode
+	const candidates = getKeyAddressingCandidates(key)
+
+	if (key.fromMe) {
+		if (mode === 'lid') {
+			return (
+				(meLid && jidNormalizedUser(meLid)) ||
+				(await lidMapping.getLIDForPN(jidNormalizedUser(meId))) ||
+				jidNormalizedUser(meId)
+			)
+		}
+
+		return jidNormalizedUser(meId)
+	}
+
+	if (mode === 'lid') {
+		const lid = candidates.find(isAnyLidUser)
+		if (lid) return jidNormalizedUser(lid)
+
+		const pn = candidates.find(isAnyPnUser)
+		if (pn) {
+			const mapped = await lidMapping.getLIDForPN(jidNormalizedUser(pn))
+			if (mapped) return jidNormalizedUser(mapped)
+		}
+	} else {
+		const pn = candidates.find(isAnyPnUser)
+		if (pn) return jidNormalizedUser(pn)
+
+		const lid = candidates.find(isAnyLidUser)
+		if (lid) {
+			const mapped = await lidMapping.getPNForLID(jidNormalizedUser(lid))
+			if (mapped) return jidNormalizedUser(mapped)
+		}
+	}
+
+	return jidNormalizedUser(getKeyAuthor(key, jidNormalizedUser(meId)))
 }
 
 type EventContext = {
@@ -737,19 +936,40 @@ const processMessage = async (
 		let messageRowId: number | undefined
 		try {
 			const senderJid = getKeyAuthor(message.key, meId)
+			const androidMessageType = mapMessageToAndroidType(message.message)
+			if (androidMessageType === null) {
+				logger?.warn(
+					{
+						messageId: message.key.id,
+						chatJid: chat.id,
+						fromMe: !!message.key.fromMe,
+						contentKeys: Object.keys(content ?? message.message ?? {})
+					},
+					'multi-db-sqlite: real message has no confirmed Android message_type mapping'
+				)
+			}
+
 			messageRowId = messageStoreBackend.recordMessage({
 				chatJid: chat.id!,
 				fromMe: !!message.key.fromMe,
 				keyId: message.key.id,
 				senderJid: message.key.fromMe ? null : jidNormalizedUser(senderJid),
+				status: mapWebMessageStatusToAndroid(message.status) ?? 0,
 				timestamp: toNumber(message.messageTimestamp ?? 0),
 				receivedTimestamp: Date.now(),
-				messageType: mapContentTypeToMessageType(getContentType(content)),
+				messageType: androidMessageType,
 				textData: content?.extendedTextMessage?.text ?? content?.conversation ?? null,
 				authorDeviceJid: jidNormalizedUser(senderJid),
 				messageSecret: content?.messageContextInfo?.messageSecret
 					? Buffer.from(content.messageContextInfo.messageSecret)
 					: null,
+				album: content?.albumMessage
+					? {
+							expectedImageCount: content.albumMessage.expectedImageCount ?? 0,
+							expectedVideoCount: content.albumMessage.expectedVideoCount ?? 0
+						}
+					: null,
+				stickerPack: mapStickerPackToMirror(content?.stickerPackMessage),
 				incrementUnread: shouldIncrementChatUnread(message)
 			})
 			canReplayOrphans = true
@@ -942,10 +1162,24 @@ const processMessage = async (
 			const pollEncKey = pollRow ? messageStoreBackend.getMessageSecret(pollRow._id) : null
 			if (pollRow && pollEncKey && pollKey?.id) {
 				const meIdNorm = jidNormalizedUser(meId)
-				const voterJid = getKeyAuthor(message.key, meIdNorm)
+				const addressingMode = message.key.addressingMode
+				const voterJid = await resolvePollCryptoAuthor(
+					message.key,
+					addressingMode,
+					meIdNorm,
+					meUser.lid,
+					signalRepository.lidMapping
+				)
+				const pollCreatorJid = await resolvePollCryptoAuthor(
+					pollKey,
+					addressingMode,
+					meIdNorm,
+					meUser.lid,
+					signalRepository.lidMapping
+				)
 				const voteMsg = decryptPollVote(content.pollUpdateMessage.vote, {
 					pollEncKey,
-					pollCreatorJid: getKeyAuthor(pollKey, meIdNorm),
+					pollCreatorJid,
 					pollMsgId: pollKey.id,
 					voterJid
 				})
@@ -970,18 +1204,38 @@ const processMessage = async (
 				})
 			}
 		} catch (err) {
-			logger?.warn({ err }, 'failed to record poll vote mirror')
+			const vote = content.pollUpdateMessage.vote
+			logger?.warn(
+				{
+					err,
+					addressingMode: message.key.addressingMode,
+					pollMsgId: content.pollUpdateMessage.pollCreationMessageKey?.id,
+					voteMsgId: message.key.id,
+					encPayloadLength: vote.encPayload?.length ?? 0,
+					encIvLength: vote.encIv?.length ?? 0
+				},
+				'failed to record poll vote mirror'
+			)
 		}
 	}
 
 	// Mirror static/live location into location.db when configured.
 	// Never allowed to affect message processing: best-effort side channel,
 	// same rule as the other optional multi-db-sqlite mirrors in this file.
-	if (locationBackend && (content?.locationMessage || content?.liveLocationMessage)) {
+	if (
+		(locationBackend || addOnBackend) &&
+		(content?.locationMessage || content?.liveLocationMessage || message.finalLiveLocation)
+	) {
 		try {
-			const loc = content.locationMessage || content.liveLocationMessage
+			const liveLocation = content?.liveLocationMessage
+			const finalLiveLocation = message.finalLiveLocation
+			const loc = content?.locationMessage || liveLocation || finalLiveLocation
 			const senderJid = getKeyAuthor(message.key, meId)
+			const rawTimestamp = toNumber(message.messageTimestamp ?? 0)
+			const messageTimestampMs =
+				rawTimestamp >= 1_000_000_000_000 ? rawTimestamp : rawTimestamp > 0 ? rawTimestamp * 1000 : Date.now()
 			if (
+				locationBackend &&
 				loc?.degreesLatitude !== undefined &&
 				loc?.degreesLatitude !== null &&
 				loc?.degreesLongitude !== undefined &&
@@ -994,44 +1248,57 @@ const processMessage = async (
 					accuracy: loc.accuracyInMeters ?? 0,
 					speed: loc.speedInMps ?? 0,
 					bearing: loc.degreesClockwiseFromMagneticNorth ?? 0,
-					locationTs: toNumber(message.messageTimestamp ?? 0)
+					locationTs:
+						finalLiveLocation?.timeOffset !== undefined && finalLiveLocation.timeOffset !== null
+							? messageTimestampMs + finalLiveLocation.timeOffset * 1000
+							: messageTimestampMs
 				})
 			}
 
-			if (content?.liveLocationMessage && message.key.id) {
-				// `expires` = 0 on the receive path is CORRECT parity, not a gap:
-				// the share duration is a primary-device-only datum, never on the
-				// companion wire. Proven by decoding the raw plaintext of a real
-				// received share (only lat/lng/sequenceNumber/jpegThumbnail present;
-				// no duration field in the E2E proto) — see LocationBackend's doc.
-				// A SENT share carries a real expires (see sendLiveLocation).
-				locationBackend.upsertLocationSharer({
-					remoteJid: jidNormalizedUser(message.key.remoteJid ?? ''),
-					fromMe: message.key.fromMe ? 1 : 0,
-					remoteResource: message.key.participant ? jidNormalizedUser(message.key.participant) : '',
-					expires: 0,
-					messageId: message.key.id,
-					// Last-activity time drives received-share retention (#636): the
-					// share ages out this many seconds after its final update.
-					receivedTs: message.key.fromMe ? undefined : toNumber(message.messageTimestamp ?? 0) || undefined
-				})
+			if (locationBackend && liveLocation && message.key.id) {
+				const durationSecs =
+					typeof message.duration === 'number' && Number.isSafeInteger(message.duration) && message.duration >= 0
+						? message.duration
+						: 0
+				const remoteJid = jidNormalizedUser(message.key.remoteJid ?? '')
+				const fromMe = message.key.fromMe ? 1 : 0
+				const remoteResource = jidNormalizedUser(
+					message.key.fromMe
+						? message.key.participant || (isJidGroup(remoteJid) ? '' : remoteJid)
+						: message.key.participant || senderJid
+				)
+				const expires = durationSecs > 0 ? messageTimestampMs + durationSecs * 1000 : LOCATION_OPEN_ENDED_EXPIRES_MS
+
+				if (remoteJid && remoteResource) {
+					locationBackend.upsertLocationSharer({
+						remoteJid,
+						fromMe,
+						remoteResource,
+						expires,
+						messageId: message.key.id
+					})
+				}
 			}
 
 			// Also mirrors the per-message location row (msgstore.db's
 			// message_location — a different concern than location.db above:
 			// this is the location DATA attached to this specific message,
 			// not the jid-level live-share state).
-			if (
-				addOnBackend &&
-				messageStoreBackend &&
-				message.key.id &&
-				loc?.degreesLatitude !== undefined &&
-				loc?.degreesLatitude !== null &&
-				loc?.degreesLongitude !== undefined &&
-				loc?.degreesLongitude !== null
-			) {
+			if (addOnBackend && messageStoreBackend && message.key.id && (content?.locationMessage || liveLocation)) {
 				const row = messageStoreBackend.getMessageByKeyId(chat.id!, !!message.key.fromMe, message.key.id)
-				if (row) {
+				if (
+					row &&
+					loc?.degreesLatitude !== undefined &&
+					loc?.degreesLatitude !== null &&
+					loc?.degreesLongitude !== undefined &&
+					loc?.degreesLongitude !== null
+				) {
+					const finalTimestampMs =
+						finalLiveLocation?.timeOffset !== undefined && finalLiveLocation.timeOffset !== null
+							? messageTimestampMs + finalLiveLocation.timeOffset * 1000
+							: finalLiveLocation
+								? messageTimestampMs
+								: null
 					addOnBackend.recordLocation({
 						messageRowId: row._id,
 						chatJid: chat.id!,
@@ -1040,15 +1307,43 @@ const processMessage = async (
 						placeName: content?.locationMessage?.name ?? null,
 						placeAddress: content?.locationMessage?.address ?? null,
 						url: content?.locationMessage?.url ?? null,
-						// Null for received shares: the share-duration is never on the
-						// companion wire (raw-plaintext-proven — only lat/lng/
-						// sequenceNumber/jpegThumbnail arrive). See LocationBackend doc.
-						liveLocationShareDurationSecs: null,
-						liveLocationSequenceNumber: content?.liveLocationMessage?.sequenceNumber
-							? toNumber(content.liveLocationMessage.sequenceNumber)
-							: null
+						liveLocationShareDurationSecs: liveLocation ? (message.duration ?? 0) : null,
+						liveLocationSequenceNumber: liveLocation?.sequenceNumber ? toNumber(liveLocation.sequenceNumber) : null,
+						liveLocationFinalLatitude: finalLiveLocation?.degreesLatitude ?? null,
+						liveLocationFinalLongitude: finalLiveLocation?.degreesLongitude ?? null,
+						liveLocationFinalTimestampMs: finalTimestampMs,
+						mapDownloadStatus: 0
 					})
 				}
+			}
+
+			if (finalLiveLocation && message.key.id) {
+				if (addOnBackend && messageStoreBackend) {
+					const row = messageStoreBackend.getMessageByKeyId(chat.id!, !!message.key.fromMe, message.key.id)
+					if (
+						row &&
+						finalLiveLocation.degreesLatitude !== undefined &&
+						finalLiveLocation.degreesLatitude !== null &&
+						finalLiveLocation.degreesLongitude !== undefined &&
+						finalLiveLocation.degreesLongitude !== null
+					) {
+						addOnBackend.recordFinalLiveLocation({
+							messageRowId: row._id,
+							latitude: finalLiveLocation.degreesLatitude,
+							longitude: finalLiveLocation.degreesLongitude,
+							timestampMs:
+								finalLiveLocation.timeOffset !== undefined && finalLiveLocation.timeOffset !== null
+									? messageTimestampMs + finalLiveLocation.timeOffset * 1000
+									: messageTimestampMs
+						})
+					}
+				}
+
+				locationBackend?.endLocationSharersForMessage(
+					jidNormalizedUser(message.key.remoteJid ?? ''),
+					message.key.fromMe ? 1 : 0,
+					message.key.id
+				)
 			}
 		} catch (err) {
 			logger?.warn({ err }, 'failed to record location.db row')
@@ -1113,7 +1408,11 @@ const processMessage = async (
 
 				logger?.info(
 					{
-						histNotification,
+						syncType: histNotification.syncType,
+						chunkOrder: histNotification.chunkOrder,
+						progress: histNotification.progress,
+						fileLength: histNotification.fileLength ? toNumber(histNotification.fileLength) : 0,
+						hasInlinePayload: Boolean(histNotification.initialHistBootstrapInlinePayload?.length),
 						process,
 						id: message.key.id,
 						isLatest
@@ -1180,6 +1479,14 @@ const processMessage = async (
 						// `downloadAndProcessHistorySyncNotification` rejects (the delete
 						// used to sit after the await, so a throw skipped it).
 						dropHistMirror(histMirrorId)
+					}
+
+					if (messageStoreBackend && data.messages?.length) {
+						const result = await mirrorHistoryMessagesToStore(data.messages, messageStoreBackend, logger)
+						logger?.info(
+							{ input: data.messages.length, stored: result.stored, failed: result.failed },
+							'multi-db-sqlite: history messages mirrored'
+						)
 					}
 
 					// Emit LID-PN mappings from history sync

@@ -291,6 +291,29 @@ describe('makeOfflineNodeProcessor', () => {
 			await new Promise(r => setTimeout(r, 10))
 			expect(handler).toHaveBeenCalledTimes(3)
 		})
+
+		it('stopAndDrain waits for active work, drops queued nodes and rejects new work', async () => {
+			let releaseFirst: (() => void) | undefined
+			const firstBlocked = new Promise<void>(resolve => {
+				releaseFirst = resolve
+			})
+			const processed: string[] = []
+			const handler = jest.fn<(node: BinaryNode) => Promise<void>>().mockImplementation(async node => {
+				processed.push(node.attrs.id!)
+				if (node.attrs.id === 'msg-1') await firstBlocked
+			})
+			const processor = createProcessor(new Map([['message', handler]]))
+			processor.enqueue('message', makeNode('msg-1'))
+			processor.enqueue('message', makeNode('msg-2'))
+
+			await new Promise(r => setTimeout(r, 5))
+			const drain = processor.stopAndDrain()
+			processor.enqueue('message', makeNode('msg-3'))
+			releaseFirst!()
+			await drain
+
+			expect(processed).toEqual(['msg-1'])
+		})
 	})
 
 	describe('mixed error types', () => {

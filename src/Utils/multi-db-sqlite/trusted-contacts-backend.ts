@@ -26,7 +26,7 @@ export type TrustedContactsBackendStats = {
 
 export type TrustedContactReplacement = {
 	incoming: { token: Buffer | Uint8Array; timestamp: number } | null
-	sent: { sentTimestamp: number; realIssueTimestamp: number } | null
+	sent: { sentTimestamp: number; realIssueTimestamp: number | null } | null
 }
 
 const CLEAR_MARKER_KEY = 'auth_keys_clear_in_progress'
@@ -165,14 +165,14 @@ export class TrustedContactsBackend {
 	}
 
 	/** Stores (or updates) the outbound TC token timestamps for a recipient. */
-	setSent(jid: string, sentTimestamp: number, realIssueTimestamp: number): void {
+	setSent(jid: string, sentTimestamp: number, realIssueTimestamp: number | null): void {
 		this.stmts.upsertSent.run(jid, sentTimestamp, realIssueTimestamp)
 	}
 
 	/** Returns the outbound TC token timestamps for a JID, or null. */
-	getSent(jid: string): { sentTimestamp: number; realIssueTimestamp: number } | null {
+	getSent(jid: string): { sentTimestamp: number; realIssueTimestamp: number | null } | null {
 		const row = this.stmts.selectSent.get(jid) as
-			| { sent_tc_token_timestamp: number; real_issue_timestamp: number }
+			| { sent_tc_token_timestamp: number; real_issue_timestamp: number | null }
 			| undefined
 		if (!row) return null
 		return {

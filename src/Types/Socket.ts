@@ -7,6 +7,8 @@ import type { GroupMetadata } from './GroupMetadata'
 import { type MediaConnInfo, type WAMessageKey } from './Message'
 import type { SessionCleanupConfig } from './SessionCleanup'
 import type { SignalRepositoryWithLIDStore } from './Signal'
+import type { ReachoutTimelockRemediationConfig } from './State'
+import type { ConnectionTransportProfile, NativeAndroidTransportConfig } from './Transport'
 
 export type WAVersion = [number, number, number]
 export type WABrowserDescription = [string, string, string]
@@ -33,12 +35,21 @@ export type PossiblyExtendedCacheStore = CacheStore & {
 export type PatchedMessageWithRecipientJID = proto.IMessage & { recipientJid?: string }
 
 export type SocketConfig = {
+	/** Transport profile. Web remains the stable default. */
+	transportProfile: ConnectionTransportProfile
+	/** Required only when transportProfile is native_android. */
+	nativeAndroid?: NativeAndroidTransportConfig
 	/** the WS url to connect to WA */
 	waWebSocketUrl: string | URL
 	/** Fails the connection if the socket times out in this interval */
 	connectTimeoutMs: number
 	/** Default timeout for queries, undefined for no timeout */
 	defaultQueryTimeoutMs: number | undefined
+	/**
+	 * Experimental, disabled-by-default BIZ_QUALITY remediation support.
+	 * This exposes an explicit API only; it never changes the normal message path.
+	 */
+	experimentalReachoutTimelockRemediation?: ReachoutTimelockRemediationConfig
 	/** ping-pong interval for WS connection */
 	keepAliveIntervalMs: number
 	/** should baileys use the mobile api instead of the multi device api
