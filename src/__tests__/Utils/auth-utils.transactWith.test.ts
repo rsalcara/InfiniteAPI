@@ -267,6 +267,32 @@ describe('addTransactionCapability — transactWith', () => {
 			expect(setCalls).toHaveLength(1)
 			expect(Buffer.from((setCalls[0] as any).session.a)).toEqual(Buffer.from([0x01]))
 		})
+
+		it('allows an explicitly detached callback to start a fresh durable write', async () => {
+			const { store, setCalls } = makeStore()
+			const keys = addTransactionCapability(store, silentLogger(), {
+				maxCommitRetries: 1,
+				delayBetweenTriesMs: 1
+			})
+
+			let deferred!: Promise<void>
+			await keys.transactWith({ records: [{ type: 'session', id: 'deferred' }] }, async () => {
+				deferred = new Promise(resolve => {
+					setTimeout(() => {
+						void keys
+							.runOutsideTransaction(() =>
+								Promise.resolve(keys.set({ session: { deferred: Buffer.from([7]) as any } }))
+							)
+							.then(resolve)
+					}, 0)
+				})
+			})
+
+			await deferred
+
+			expect(setCalls).toHaveLength(1)
+			expect(Buffer.from((setCalls[0] as any).session.deferred)).toEqual(Buffer.from([7]))
+		})
 	})
 
 	describe('interop with deprecated `transaction(work, key)` API', () => {

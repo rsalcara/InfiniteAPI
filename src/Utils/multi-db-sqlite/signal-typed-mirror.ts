@@ -10,8 +10,8 @@
  * Frida capture) and must never be able to affect what the real
  * `signal_kv` read/write path does for message encryption/decryption.
  */
+import { BufferJSON } from '../generics'
 import type { ILogger } from '../logger'
-import type { JidMapBackend } from './lid-mapping-backend'
 import {
 	classifyIdentityKey,
 	domainTypeToAccountType,
@@ -23,8 +23,6 @@ import type { SignalTypedBackend } from './signal-typed-backend'
 
 export type SignalMirrorDeps = {
 	signalTypedBackend: SignalTypedBackend
-	/** Resolves jid row ids against `msgstore.db.jid` — only `identity-key` needs this. */
-	jidMapBackend: JidMapBackend
 	logger?: ILogger
 }
 
@@ -37,9 +35,9 @@ export type SignalMirrorDeps = {
  * mirror write is a no-op here, not a silent data-loss bug.
  */
 export function mirrorSignalEntry(
-	type: 'session' | 'pre-key' | 'sender-key' | 'identity-key',
+	type: 'session' | 'pre-key' | 'sender-key' | 'identity-key' | 'fast-ratchet-sender-key',
 	id: string,
-	value: Uint8Array | { public: Uint8Array } | null | undefined,
+	value: Uint8Array | { public: Uint8Array } | object | null | undefined,
 	deps: SignalMirrorDeps
 ): void {
 	try {
@@ -126,6 +124,36 @@ export function mirrorSignalEntry(
 				return
 			}
 
+			case 'fast-ratchet-sender-key': {
+				const parsed = parseSenderKeyId(id)
+				if (!parsed) {
+					deps.logger?.debug?.(
+						{ id },
+						'multi-db-sqlite: could not parse fast-ratchet sender-key id, signal_kv remains authoritative'
+					)
+					return
+				}
+
+				const senderAccountType = domainTypeToAccountType(parsed.sender.domainType)
+				if (senderAccountType === null) return
+				const key = {
+					groupId: parsed.groupId,
+					deviceId: parsed.sender.deviceId,
+					senderAccountId: parsed.sender.user,
+					senderAccountType
+				}
+				if (value === null || value === undefined) {
+					deps.signalTypedBackend.deleteFastRatchetSenderKey(key)
+				} else {
+					deps.signalTypedBackend.putFastRatchetSenderKey(
+						key,
+						Buffer.from(JSON.stringify(value, BufferJSON.replacer), 'utf-8')
+					)
+				}
+
+				return
+			}
+
 			case 'identity-key': {
 				if (value === null || value === undefined) return // no delete primitive — see doc above
 				// identity-key ids are PROTOCOL ADDRESSES (`user_domainType.device`),
@@ -148,7 +176,7 @@ export function mirrorSignalEntry(
 
 				deps.signalTypedBackend.putIdentity(
 					{
-						recipientId: deps.jidMapBackend.resolveJidRowId(parsed.key.jid),
+						recipientId: parsed.key.recipientId,
 						recipientType: parsed.key.recipientType,
 						deviceId: parsed.key.deviceId
 					},
@@ -167,6 +195,14 @@ export function mirrorSignalEntry(
 }
 
 /** Type guard so callers can filter a generic `SignalDataSet` category name down to the ones this mirror handles. */
-export function isMirroredSignalType(type: string): type is 'session' | 'pre-key' | 'sender-key' | 'identity-key' {
-	return type === 'session' || type === 'pre-key' || type === 'sender-key' || type === 'identity-key'
+export function isMirroredSignalType(
+	type: string
+): type is 'session' | 'pre-key' | 'sender-key' | 'identity-key' | 'fast-ratchet-sender-key' {
+	return (
+		type === 'session' ||
+		type === 'pre-key' ||
+		type === 'sender-key' ||
+		type === 'identity-key' ||
+		type === 'fast-ratchet-sender-key'
+	)
 }

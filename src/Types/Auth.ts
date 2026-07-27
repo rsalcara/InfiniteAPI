@@ -1,6 +1,7 @@
 import type { proto } from '../../WAProto/index.js'
 import type { Contact } from './Contact'
 import type { MinimalMessage } from './Message'
+import type { PersistedNativeAndroidIdentity } from './Transport'
 
 export type KeyPair = { public: Uint8Array; private: Uint8Array }
 export type SignedKeyPair = {
@@ -69,6 +70,11 @@ export type AuthenticationCreds = SignalCreds & {
 	lastPropHash: string | undefined
 	routingInfo: Buffer | undefined
 	additionalData?: any | undefined
+	/**
+	 * Durable protocol marker and complete device identity for native-Android
+	 * sessions. Absent means the established Web session format.
+	 */
+	nativeAndroidIdentity?: PersistedNativeAndroidIdentity
 }
 
 export type SignalDataTypeMap = {
@@ -83,6 +89,18 @@ export type SignalDataTypeMap = {
 	tctoken: { token: Buffer; timestamp?: string; senderTimestamp?: number; realIssueTimestamp?: number | null }
 	/** Identity key for Signal Protocol - used for detecting contact reinstalls */
 	'identity-key': Uint8Array
+	/**
+	 * Eight-chain sender-key state used by Android live-location updates.
+	 * Every auth adapter persists this through its existing key-store path;
+	 * multi-db additionally retains signal_kv as the compatibility fallback.
+	 */
+	'fast-ratchet-sender-key': {
+		senderKeyId: number
+		iteration: number
+		chainKeys: Buffer[]
+		signingPublic: Buffer
+		signingPrivate: Buffer
+	}
 }
 
 export type SignalDataSet = { [T in keyof SignalDataTypeMap]?: { [id: string]: SignalDataTypeMap[T] | null } }
@@ -189,6 +207,12 @@ export type TransactionScope = {
 export type SignalKeyStoreWithTransaction = SignalKeyStore & {
 	isInTransaction: () => boolean
 	/**
+	 * Runs work without inheriting the current AsyncLocalStorage transaction.
+	 * Required for deferred callbacks (timers/socket cleanup) that must start a
+	 * fresh durable write after the transaction that scheduled them is sealed.
+	 */
+	runOutsideTransaction?<T>(work: () => Promise<T>): Promise<T>
+	/**
 	 * Register work that runs only after the outermost durable commit succeeds,
 	 * while the transaction's locks are still held. This is for side effects
 	 * that must observe committed state without opening a race window before a
@@ -243,6 +267,7 @@ export type SignalKeyStoreWithTransaction = SignalKeyStore & {
 export type SignalKeyStoreWithRecordTransaction = SignalKeyStoreWithTransaction & {
 	transactWith<T>(scope: TransactionScope, work: () => Promise<T>): Promise<T>
 	afterCommit(work: () => Awaitable<void>): void
+	runOutsideTransaction<T>(work: () => Promise<T>): Promise<T>
 }
 
 export type TransactionCapabilityOptions = {

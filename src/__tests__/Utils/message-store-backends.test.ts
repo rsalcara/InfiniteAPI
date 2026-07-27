@@ -15,6 +15,8 @@ import { join } from 'path'
 import {
 	JidMapBackend,
 	LidChatStateBackend,
+	mapMessageToAndroidType,
+	mapWebMessageStatusToAndroid,
 	MessageAddOnBackend,
 	MessageMediaBackend,
 	MessageStoreBackend,
@@ -87,6 +89,278 @@ describe('msgstore.db message-store backends', () => {
 			expect(chat.last_message_row_id).toBe(rowId)
 		})
 
+		it('heals message_type and text_data when a richer decode reprocesses the same row', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			backend.recordMessage({ chatJid, fromMe: false, keyId: 'HEAL-1', timestamp: 1_000 })
+			backend.recordMessage({
+				chatJid,
+				fromMe: false,
+				keyId: 'HEAL-1',
+				timestamp: 1_000,
+				messageType: 20,
+				textData: 'sticker metadata'
+			})
+			expect(backend.getMessageByKeyId(chatJid, false, 'HEAL-1')).toMatchObject({
+				message_type: 20,
+				text_data: 'sticker metadata'
+			})
+		})
+
+		it('maps Android subtypes from the complete proto shape', () => {
+			expect(mapMessageToAndroidType({ stickerMessage: {} })).toBe(20)
+			expect(mapMessageToAndroidType({ videoMessage: { gifPlayback: true } })).toBe(13)
+			expect(mapMessageToAndroidType({ ptvMessage: {} })).toBe(81)
+			expect(mapMessageToAndroidType({ viewOnceMessageV2: { message: { imageMessage: {} } } })).toBe(42)
+			expect(mapMessageToAndroidType({ imageMessage: { viewOnce: true } })).toBe(42)
+			expect(mapMessageToAndroidType({ viewOnceMessageV2: { message: { videoMessage: {} } } })).toBe(43)
+			expect(mapMessageToAndroidType({ videoMessage: { viewOnce: true } })).toBe(43)
+			expect(mapMessageToAndroidType({ audioMessage: { viewOnce: true } })).toBe(82)
+			expect(mapMessageToAndroidType({ pollCreationMessageV3: { name: 'poll' } })).toBe(66)
+			expect(
+				mapMessageToAndroidType({
+					pollCreationMessageV4: { message: { pollCreationMessageV3: { name: 'wrapped poll' } } }
+				})
+			).toBe(66)
+			expect(mapMessageToAndroidType({ eventMessage: { name: 'event' } })).toBe(92)
+			expect(mapMessageToAndroidType({ albumMessage: { expectedImageCount: 4, expectedVideoCount: 3 } })).toBe(99)
+			expect(
+				mapMessageToAndroidType({
+					templateMessage: { hydratedFourRowTemplate: { documentMessage: {} } }
+				})
+			).toBe(26)
+			expect(
+				mapMessageToAndroidType({
+					interactiveMessage: { header: { imageMessage: {} }, nativeFlowMessage: {} }
+				})
+			).toBe(57)
+			// Android stores these as message_add_on rows linked to the target
+			// message. They must not fabricate a base message_type.
+			expect(mapMessageToAndroidType({ reactionMessage: { text: '👍' } })).toBeNull()
+			expect(mapMessageToAndroidType({ pollUpdateMessage: {} })).toBeNull()
+			expect(mapMessageToAndroidType({ keepInChatMessage: {} })).toBeNull()
+		})
+
+		it('records an Android album root and its expected media counters atomically', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const rowId = backend.recordMessage({
+				chatJid: '5515991426667@s.whatsapp.net',
+				fromMe: false,
+				keyId: 'ALBUM-ROOT',
+				messageType: 99,
+				album: { expectedImageCount: 4, expectedVideoCount: 3 }
+			})
+
+			expect(backend.getMessageByKeyId('5515991426667@s.whatsapp.net', false, 'ALBUM-ROOT')).toMatchObject({
+				message_type: 99
+			})
+			expect(
+				store
+					.handle('msgstore.db')
+					.prepare(
+						'SELECT image_count, video_count, expected_image_count, expected_video_count ' +
+							'FROM message_album WHERE message_row_id = ?'
+					)
+					.get(rowId)
+			).toMatchObject({
+				image_count: 0,
+				video_count: 0,
+				expected_image_count: 4,
+				expected_video_count: 3
+			})
+		})
+
+		it('records the complete Android sticker-pack manifest and pack media atomically', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const rowId = backend.recordMessage({
+				chatJid,
+				fromMe: false,
+				keyId: 'STICKER-PACK',
+				messageType: 105,
+				stickerPack: {
+					stickerPackId: 'PACK-1',
+					trayIconFileName: 'tray.png',
+					packName: 'Pacote',
+					packDescription: 'Descrição',
+					publisher: 'InfiniteAPI',
+					imageDataHash: 'image-data-hash',
+					stickerPackSize: 424_035,
+					stickerPackOrigin: 2,
+					fileLength: 425_251,
+					mediaKey: Buffer.alloc(32, 1),
+					mediaKeyTimestamp: 1_785_013_000_000,
+					directPath: '/m1/sticker-pack.enc',
+					fileSha256: Buffer.alloc(32, 2),
+					fileEncSha256: Buffer.alloc(32, 3),
+					stickers: [
+						{
+							fileName: 'one.webp',
+							isAnimated: false,
+							emojis: '😀, 🚀',
+							accessibilityLabel: 'primeira',
+							isLottie: false,
+							mimetype: 'image/webp'
+						},
+						{
+							fileName: 'two.webp',
+							isAnimated: true,
+							emojis: '',
+							accessibilityLabel: '',
+							isLottie: false,
+							mimetype: 'image/webp'
+						}
+					]
+				}
+			})
+
+			expect(backend.getMessageByKeyId(chatJid, false, 'STICKER-PACK')).toMatchObject({ message_type: 105 })
+			expect(
+				store.handle('msgstore.db').prepare('SELECT * FROM message_sticker_pack WHERE message_row_id = ?').get(rowId)
+			).toMatchObject({
+				sticker_pack_id: 'PACK-1',
+				tray_icon_file_name: 'tray.png',
+				pack_name: 'Pacote',
+				pack_description: 'Descrição',
+				publisher: 'InfiniteAPI',
+				image_data_hash: 'image-data-hash',
+				sticker_pack_size: 424_035,
+				sticker_pack_origin: 2
+			})
+			expect(
+				store
+					.handle('msgstore.db')
+					.prepare(
+						'SELECT file_name, is_animated, emojis, accessibility_label, is_lottie, mimetype ' +
+							'FROM message_sticker_pack_stickers WHERE message_row_id = ? ORDER BY _id'
+					)
+					.all(rowId)
+			).toEqual([
+				{
+					file_name: 'one.webp',
+					is_animated: 0,
+					emojis: '😀, 🚀',
+					accessibility_label: 'primeira',
+					is_lottie: 0,
+					mimetype: 'image/webp'
+				},
+				{
+					file_name: 'two.webp',
+					is_animated: 1,
+					emojis: '',
+					accessibility_label: '',
+					is_lottie: 0,
+					mimetype: 'image/webp'
+				}
+			])
+			expect(
+				store
+					.handle('msgstore.db')
+					.prepare(
+						'SELECT mime_type, file_length, length(media_key) AS media_key_len, media_key_timestamp, ' +
+							'direct_path, file_hash, enc_file_hash FROM message_media WHERE message_row_id = ?'
+					)
+					.get(rowId)
+			).toMatchObject({
+				mime_type: null,
+				file_length: 425_251,
+				media_key_len: 32,
+				media_key_timestamp: 1_785_013_000_000,
+				direct_path: '/m1/sticker-pack.enc',
+				file_hash: Buffer.alloc(32, 2).toString('base64'),
+				enc_file_hash: Buffer.alloc(32, 3).toString('base64')
+			})
+
+			// A richer/retried decode replaces the manifest instead of
+			// duplicating children under the same natural message key.
+			const retriedRowId = backend.recordMessage({
+				chatJid,
+				fromMe: false,
+				keyId: 'STICKER-PACK',
+				messageType: 105,
+				stickerPack: {
+					stickerPackId: 'PACK-1',
+					trayIconFileName: 'tray.png',
+					packName: 'Pacote atualizado',
+					packDescription: 'Descrição',
+					publisher: 'InfiniteAPI',
+					imageDataHash: 'image-data-hash',
+					stickerPackSize: 424_035,
+					stickerPackOrigin: 2,
+					fileLength: 425_251,
+					mediaKey: Buffer.alloc(32, 1),
+					mediaKeyTimestamp: 1_785_013_000_000,
+					directPath: '/m1/sticker-pack.enc',
+					fileSha256: Buffer.alloc(32, 2),
+					fileEncSha256: Buffer.alloc(32, 3),
+					stickers: [
+						{
+							fileName: 'one.webp',
+							isAnimated: false,
+							emojis: '😀, 🚀',
+							accessibilityLabel: 'primeira',
+							isLottie: false,
+							mimetype: 'image/webp'
+						}
+					]
+				}
+			})
+			expect(retriedRowId).toBe(rowId)
+			expect(
+				store
+					.handle('msgstore.db')
+					.prepare('SELECT pack_name FROM message_sticker_pack WHERE message_row_id = ?')
+					.get(rowId)
+			).toEqual({ pack_name: 'Pacote atualizado' })
+			expect(
+				store
+					.handle('msgstore.db')
+					.prepare('SELECT COUNT(*) AS count FROM message_sticker_pack_stickers WHERE message_row_id = ?')
+					.get(rowId)
+			).toEqual({ count: 1 })
+		})
+
+		it('rolls back the base message when a sticker-pack manifest row is invalid', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+
+			expect(() =>
+				backend.recordMessage({
+					chatJid,
+					fromMe: false,
+					keyId: 'INVALID-STICKER-PACK',
+					messageType: 105,
+					stickerPack: {
+						stickerPackId: 'PACK-INVALID',
+						trayIconFileName: 'tray.png',
+						packName: 'Inválido',
+						packDescription: null,
+						publisher: null,
+						imageDataHash: null,
+						stickerPackSize: null,
+						stickerPackOrigin: null,
+						fileLength: null,
+						mediaKey: null,
+						mediaKeyTimestamp: null,
+						directPath: null,
+						fileSha256: null,
+						fileEncSha256: null,
+						stickers: [
+							{
+								fileName: null as unknown as string,
+								isAnimated: false,
+								emojis: '',
+								accessibilityLabel: null,
+								isLottie: false,
+								mimetype: null
+							}
+						]
+					}
+				})
+			).toThrow()
+			expect(backend.getMessageByKeyId(chatJid, false, 'INVALID-STICKER-PACK')).toBeNull()
+		})
+
 		it('does not move the chat last-message pointer backwards for older history', () => {
 			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
 			const chatJid = '5515991426667@s.whatsapp.net'
@@ -115,6 +389,56 @@ describe('msgstore.db message-store backends', () => {
 				last_message_sort_id: 2_000,
 				unseen_message_count: 2
 			})
+		})
+
+		it('records a history page atomically and rolls the whole page back on failure', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+
+			const rowIds = backend.recordMessages([
+				{ chatJid, fromMe: false, keyId: 'BATCH-1', timestamp: 1_000 },
+				{ chatJid, fromMe: false, keyId: 'BATCH-2', timestamp: 1_001 }
+			])
+			expect(rowIds).toHaveLength(2)
+
+			expect(() =>
+				backend.recordMessages([
+					{ chatJid, fromMe: false, keyId: 'ROLLBACK-1', timestamp: 2_000 },
+					{ chatJid, fromMe: false, keyId: undefined as unknown as string, timestamp: 2_001 }
+				])
+			).toThrow()
+			expect(backend.getMessageByKeyId(chatJid, false, 'ROLLBACK-1')).toBeNull()
+		})
+
+		it('uses Android status values and advances receipts without numeric-order bugs', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			backend.recordMessage({
+				chatJid,
+				fromMe: true,
+				keyId: 'STATUS-1',
+				status: mapWebMessageStatusToAndroid(1)
+			})
+
+			expect(backend.updateMessageStatus(chatJid, true, 'STATUS-1', mapWebMessageStatusToAndroid(2)!)).toBe(true)
+			expect(backend.updateMessageStatus(chatJid, true, 'STATUS-1', mapWebMessageStatusToAndroid(4)!)).toBe(true)
+			backend.recordMessage({
+				chatJid,
+				fromMe: true,
+				keyId: 'STATUS-1',
+				status: mapWebMessageStatusToAndroid(1)
+			})
+			expect(backend.getMessageByKeyId(chatJid, true, 'STATUS-1')?.status).toBe(13)
+			// DELIVERY_ACK=5 numerically, READ=13, PLAYED=8. Explicit app
+			// ordering must reject both replayed pending state and a late
+			// delivery receipt, but accept played.
+			expect(backend.updateMessageStatus(chatJid, true, 'STATUS-1', mapWebMessageStatusToAndroid(3)!)).toBe(false)
+			expect(backend.updateMessageStatus(chatJid, true, 'STATUS-1', mapWebMessageStatusToAndroid(5)!)).toBe(true)
+			expect(backend.getMessageByKeyId(chatJid, true, 'STATUS-1')?.status).toBe(8)
+
+			backend.recordMessage({ chatJid, fromMe: true, keyId: 'SYSTEM-STATUS', status: 6 })
+			expect(backend.updateMessageStatus(chatJid, true, 'SYSTEM-STATUS', 5)).toBe(false)
+			expect(backend.getMessageByKeyId(chatJid, true, 'SYSTEM-STATUS')?.status).toBe(6)
 		})
 
 		it('recordRevoke updates the target row to the tombstone type and links message_revoked', () => {
@@ -494,14 +818,91 @@ describe('msgstore.db message-store backends', () => {
 			const locRowId = messageStore.recordMessage({ chatJid, fromMe: false, keyId: 'MSG-LOC', timestamp: 1_000 })
 			const vcardRowId = messageStore.recordMessage({ chatJid, fromMe: false, keyId: 'MSG-VCARD', timestamp: 1_001 })
 
-			addOns.recordLocation({ messageRowId: locRowId, chatJid, latitude: -23.5, longitude: -46.6, placeName: 'SP' })
+			addOns.recordLocation({
+				messageRowId: locRowId,
+				chatJid,
+				latitude: -23.5,
+				longitude: -46.6,
+				placeName: 'SP',
+				liveLocationShareDurationSecs: 900,
+				liveLocationSequenceNumber: 123,
+				liveLocationFinalLatitude: -23.51,
+				liveLocationFinalLongitude: -46.61,
+				liveLocationFinalTimestampMs: 1_700_000_030_000,
+				mapDownloadStatus: 0
+			})
 			addOns.recordVcard({ messageRowId: vcardRowId, vcard: 'BEGIN:VCARD\nEND:VCARD' })
 
 			const locRow = store
 				.handle('msgstore.db')
 				.prepare('SELECT * FROM message_location WHERE message_row_id = ?')
 				.get(locRowId) as any
-			expect(locRow).toMatchObject({ latitude: -23.5, longitude: -46.6, place_name: 'SP' })
+			expect(locRow).toMatchObject({
+				latitude: -23.5,
+				longitude: -46.6,
+				place_name: 'SP',
+				live_location_share_duration: 900,
+				live_location_sequence_number: 123,
+				live_location_final_latitude: -23.51,
+				live_location_final_longitude: -46.61,
+				live_location_final_timestamp: 1_700_000_030_000,
+				map_download_status: 0
+			})
+
+			addOns.recordFinalLiveLocation({
+				messageRowId: locRowId,
+				latitude: -23.52,
+				longitude: -46.62,
+				timestampMs: 1_700_000_060_000
+			})
+			expect(
+				store
+					.handle('msgstore.db')
+					.prepare(
+						'SELECT place_name, live_location_final_latitude, live_location_final_longitude, ' +
+							'live_location_final_timestamp FROM message_location WHERE message_row_id = ?'
+					)
+					.get(locRowId)
+			).toMatchObject({
+				live_location_final_latitude: -23.52,
+				live_location_final_longitude: -46.62,
+				live_location_final_timestamp: 1_700_000_060_000
+			})
+
+			expect(
+				addOns.recordFinalLiveLocation({
+					messageRowId: locRowId,
+					latitude: 0,
+					longitude: 0,
+					timestampMs: 1_700_000_059_000
+				})
+			).toBe(false)
+
+			addOns.recordLocation({
+				messageRowId: locRowId,
+				chatJid,
+				latitude: -23.53,
+				longitude: -46.63,
+				liveLocationShareDurationSecs: 900,
+				liveLocationSequenceNumber: 124,
+				liveLocationFinalLatitude: 0,
+				liveLocationFinalLongitude: 0,
+				liveLocationFinalTimestampMs: 1_700_000_059_000
+			})
+			expect(
+				store
+					.handle('msgstore.db')
+					.prepare(
+						'SELECT place_name, live_location_final_latitude, live_location_final_longitude, ' +
+							'live_location_final_timestamp FROM message_location WHERE message_row_id = ?'
+					)
+					.get(locRowId)
+			).toMatchObject({
+				place_name: 'SP',
+				live_location_final_latitude: -23.52,
+				live_location_final_longitude: -46.62,
+				live_location_final_timestamp: 1_700_000_060_000
+			})
 
 			const vcardRow = store
 				.handle('msgstore.db')

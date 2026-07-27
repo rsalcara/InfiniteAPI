@@ -36,6 +36,13 @@ describe('TrustedContactsBackend', () => {
 		backend.setSent('56307306467375@lid', 1_773_333_264, 0)
 		const sent = backend.getSent('56307306467375@lid')
 		expect(sent).toEqual({ sentTimestamp: 1_773_333_264, realIssueTimestamp: 0 })
+
+		// SQL NULL is a distinct, durable "server ACK confirmed" state.
+		backend.setSent('56307306467375@lid', 1_773_333_264, null)
+		expect(backend.getSent('56307306467375@lid')).toEqual({
+			sentTimestamp: 1_773_333_264,
+			realIssueTimestamp: null
+		})
 	})
 
 	it('enumerates jids via the PK table (no __index) and stays race-free on re-set', () => {

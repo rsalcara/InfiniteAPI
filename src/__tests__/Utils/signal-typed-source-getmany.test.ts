@@ -9,7 +9,8 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { JidMapBackend, MultiDbSqliteStore, SignalTypedBackend } from '../../Utils/multi-db-sqlite'
+import { BufferJSON } from '../../Utils/generics'
+import { MultiDbSqliteStore, SignalTypedBackend } from '../../Utils/multi-db-sqlite'
 import { SignalTypedSourceStore, type TypedSignalType } from '../../Utils/multi-db-sqlite/signal-typed-source'
 import { WAJIDDomains } from '../../WABinary'
 
@@ -23,8 +24,7 @@ describe('SignalTypedSourceStore.getMany equivalence (#618/#619)', () => {
 		store = new MultiDbSqliteStore({ sessionDir: dir })
 		await store.open()
 		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
-		const jidMap = new JidMapBackend(store.handle('msgstore.db'))
-		source = new SignalTypedSourceStore(backend, jidMap, undefined)
+		source = new SignalTypedSourceStore(backend, undefined)
 	})
 
 	afterEach(async () => {
@@ -72,8 +72,12 @@ describe('SignalTypedSourceStore.getMany equivalence (#618/#619)', () => {
 	})
 
 	it('identity-keys: hits (PN + LID) and a miss', () => {
-		source.set('identity-key', '5511999999999@s.whatsapp.net', 'id-PN')
-		source.set('identity-key', '123456789@lid', 'id-LID')
+		source.set(
+			'identity-key',
+			'5511999999999@s.whatsapp.net',
+			JSON.stringify(Buffer.from('id-PN'), BufferJSON.replacer)
+		)
+		source.set('identity-key', '123456789@lid', JSON.stringify(Buffer.from('id-LID'), BufferJSON.replacer))
 		assertEquivalent('identity-key', [
 			'5511999999999@s.whatsapp.net',
 			'123456789@lid',
@@ -107,13 +111,20 @@ describe('SignalTypedSourceStore.getMany equivalence (#618/#619)', () => {
 		for (const [i, id] of senderKeys.entries()) source.set('sender-key', id, `sender-${i}`)
 
 		const identities = Array.from({ length: 340 }, (_, i) => `${8_000_000_000_000 + i}@s.whatsapp.net`)
-		for (const [i, id] of identities.entries()) source.set('identity-key', id, `identity-${i}`)
+		for (const [i, id] of identities.entries()) {
+			source.set('identity-key', id, JSON.stringify(Buffer.from(`identity-${i}`), BufferJSON.replacer))
+		}
 
 		const cases: Array<[TypedSignalType, string[], string, string]> = [
 			['session', sessions, 'session-0', 'session-204'],
 			['pre-key', prekeys, 'prekey-0', 'prekey-1004'],
 			['sender-key', senderKeys, 'sender-0', 'sender-254'],
-			['identity-key', identities, 'identity-0', 'identity-339']
+			[
+				'identity-key',
+				identities,
+				JSON.stringify(Buffer.from('identity-0'), BufferJSON.replacer),
+				JSON.stringify(Buffer.from('identity-339'), BufferJSON.replacer)
+			]
 		]
 		for (const [type, ids, firstValue, lastValue] of cases) {
 			const result = source.getMany(type, ids)

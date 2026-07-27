@@ -4,6 +4,8 @@ import type { LIDMapping, SignalKeyStoreWithTransaction } from '../Types'
 import type { ILogger } from '../Utils/logger'
 import { isAnyLidUser, isAnyPnUser, isHostedPnUser, jidDecode, jidNormalizedUser, WAJIDDomains } from '../WABinary'
 
+const LID_MAPPING_DESTROY_TIMEOUT_MS = 5_000
+
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
@@ -153,6 +155,9 @@ export class LIDMappingStore {
 	private readonly logger: ILogger
 	private readonly config: LIDMappingConfig
 	private destroyed = false
+	private destroyPromise?: Promise<boolean>
+	private cleanupPromise?: Promise<void>
+	private resolveDrain?: () => void
 
 	/**
 	 * Operation counter for safe resource cleanup
@@ -914,49 +919,76 @@ export class LIDMappingStore {
 	 * Destroy the store and clean up resources
 	 * CRITICAL: Call this when done to prevent memory leaks
 	 *
-	 * IMPORTANT BEHAVIOR (following auth-utils.ts pattern):
-	 * - Always sets destroyed=true to prevent NEW operations
-	 * - If operations are active (operationsInProgress > 0), returns early WITHOUT destroying resources
-	 * - This creates intentional temporary inconsistent state:
-	 *   * destroyed=true (new operations rejected)
-	 *   * resources exist (active operations complete safely)
-	 *   * resources cleaned up by GC after active operations finish
-	 * - If no active operations, destroys resources immediately
+	 * Sets destroyed=true to reject new work, waits for active operations to
+	 * drain, then releases caches. The bounded result lets socket shutdown
+	 * return without destroying the auth transaction capability underneath an
+	 * active mapping write. Call waitForDestroy() before releasing that
+	 * capability when this returns false.
+	 *
+	 * @returns true when cleanup completed within the shutdown budget; false
+	 * when cleanup continues in the background waiting for active operations.
 	 */
-	destroy(): void {
-		if (this.destroyed) {
-			this.logger.debug('LIDMappingStore already destroyed')
-			return
-		}
+	destroy(): Promise<boolean> {
+		if (this.destroyPromise) return this.destroyPromise
 
-		// CRITICAL: Set destroyed flag FIRST to prevent new operations
-		// Note: Flag is set even if early return occurs (see doc above)
 		this.destroyed = true
-		this.logger.debug('🗑️ Cleaning up LIDMappingStore resources')
+		this.logger.debug('🗑️ Draining LIDMappingStore before cleanup')
 
-		// Check if there are operations in progress
+		const drainPromise =
+			this.operationsInProgress > 0
+				? new Promise<void>(resolve => {
+						this.resolveDrain = resolve
+					})
+				: Promise.resolve()
+
 		if (this.operationsInProgress > 0) {
-			this.logger.warn(
+			this.logger.info(
 				{ operationsInProgress: this.operationsInProgress },
-				'⚠️ Cannot destroy LIDMappingStore - operations still in progress. Resources will be cleaned by GC after completion.'
+				'waiting for active LID mapping operations before cleanup'
 			)
-			// Return early WITHOUT destroying resources
-			// This allows active operations to complete safely
-			return
 		}
 
-		// No active operations - safe to destroy resources immediately
-		this.logger.debug('No operations in progress - destroying resources immediately')
+		this.cleanupPromise = drainPromise.then(() => {
+			this.resolveDrain = undefined
+			this.clearResources()
+			this.logger.debug('✅ LIDMappingStore drained and destroyed successfully')
+		})
 
-		// Clear cache
+		this.destroyPromise = new Promise<boolean>(resolve => {
+			const timeout = setTimeout(() => {
+				this.logger.warn(
+					{ operationsInProgress: this.operationsInProgress, timeoutMs: LID_MAPPING_DESTROY_TIMEOUT_MS },
+					'LID mapping cleanup exceeded the socket shutdown budget; auth-key teardown will remain deferred'
+				)
+				resolve(false)
+			}, LID_MAPPING_DESTROY_TIMEOUT_MS)
+			timeout.unref?.()
+
+			this.cleanupPromise!.then(() => {
+				clearTimeout(timeout)
+				resolve(true)
+			})
+		})
+
+		return this.destroyPromise
+	}
+
+	/**
+	 * Wait for the actual resource cleanup after a bounded destroy() timed out.
+	 * Socket teardown uses this barrier before destroying the auth key store.
+	 */
+	async waitForDestroy(): Promise<void> {
+		if (!this.destroyPromise) {
+			await this.destroy()
+		}
+
+		await this.cleanupPromise
+	}
+
+	private clearResources(): void {
 		this.mappingCache.clear()
-
-		// Clear inflight request Maps to prevent memory leaks
-		// Pending Promises will complete but won't be returned to new callers
 		this.inflightLIDLookups.clear()
 		this.inflightPNLookups.clear()
-
-		this.logger.debug('✅ LIDMappingStore destroyed successfully')
 	}
 
 	// ========================================================================
@@ -1000,6 +1032,10 @@ export class LIDMappingStore {
 		} finally {
 			// ALWAYS decrement counter, even on error
 			this.operationsInProgress--
+			if (this.destroyed && this.operationsInProgress === 0) {
+				this.resolveDrain?.()
+				this.resolveDrain = undefined
+			}
 		}
 	}
 

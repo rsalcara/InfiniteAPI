@@ -977,6 +977,12 @@ export type MessageRelayOptions = MinimalRelayOptions & {
 	useUserDevicesCache?: boolean
 	/** jid list of participants for status@broadcast */
 	statusJidList?: string[]
+	/**
+	 * Live-location share window, in seconds. WhatsApp carries this metadata
+	 * on every encrypted child (`<enc duration="…">`), not inside
+	 * `LiveLocationMessage`.
+	 */
+	liveLocationDuration?: number
 }
 
 export type MiscMessageGenerationOptions = MinimalRelayOptions & {

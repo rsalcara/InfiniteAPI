@@ -1,6 +1,7 @@
 /* eslint-disable max-depth, @typescript-eslint/no-unused-vars */
 import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
+import { AsyncLocalStorage } from 'async_hooks'
 import { randomBytes } from 'crypto'
 import Long from 'long'
 import { proto } from '../../WAProto/index.js'
@@ -53,18 +54,25 @@ import {
 	getNextPreKeys,
 	getStatusFromReceiptType,
 	handleIdentityChange,
+	hasRetrySendBudget,
 	hkdf,
 	isCorruptedSessionError,
+	isNodeCacheFullError,
 	makeMsmsgSecretCache,
 	MISSING_KEYS_ERROR_TEXT,
 	NACK_REASONS,
 	NO_MESSAGE_FOUND_ERROR_TEXT,
 	normalizeKeyLidToPn,
 	normalizeMessageJids,
+	parseRetryErrorCode,
+	persistRetrySendReservation,
 	resolveContactPictureIdentity,
 	resolveLidToPn,
+	resolveRetryReceiptRoute,
+	RetryReason,
+	retryReasonFromDecryptionError,
 	safeCacheSet,
-	SERVER_ERROR_CODES,
+	shouldIncludeRetryKeysForSession,
 	toNumber,
 	unixTimestampSeconds,
 	xmppPreKey,
@@ -74,8 +82,11 @@ import { logMessageReceived, logTcToken } from '../Utils/baileys-logger'
 import { applyDeviceListDelta } from '../Utils/device-list-delta'
 import { makeLockManager } from '../Utils/lock-manager'
 import { makeMutex } from '../Utils/make-mutex'
+import { getMessageAckErrorPolicy } from '../Utils/message-ack-error'
+import { parseTextStatusSideSubNotification, parseTextStatusUpdateNotification } from '../Utils/mex-notifications'
 import {
 	JidMapBackend,
+	mapWebMessageStatusToAndroid,
 	MessageStoreBackend,
 	ReceiptBackend,
 	type ReceiptKind,
@@ -97,9 +108,10 @@ import { buildAckStanza } from '../Utils/stanza-ack'
 import {
 	isRegularUser,
 	isTcTokenExpired,
-	resolveTcTokenJid,
-	selectUsableTcToken,
-	storeTcTokensFromIqResult
+	parseTrustedContactTokenNotification,
+	resolveIncomingTcTokenAliases,
+	resolveTcTokenAliases,
+	selectNewestUsableTcToken
 } from '../Utils/tc-token-utils'
 import {
 	handleUsernameDeleteNotification as handleUsernameDeleteNotificationImpl,
@@ -109,7 +121,6 @@ import {
 import {
 	areJidsSameUser,
 	type BinaryNode,
-	binaryNodeToString,
 	encodeBinaryNode,
 	type FullJid,
 	getAllBinaryNodeChildren,
@@ -127,6 +138,21 @@ import {
 	jidNormalizedUser,
 	S_WHATSAPP_NET
 } from '../WABinary'
+
+const summarizeInboundNode = (node: BinaryNode) => ({
+	tag: node.tag,
+	attrs: {
+		id: node.attrs.id,
+		from: node.attrs.from,
+		participant: node.attrs.participant,
+		recipient: node.attrs.recipient,
+		type: node.attrs.type,
+		t: node.attrs.t
+	},
+	contentTags: Array.isArray(node.content)
+		? node.content.flatMap(child => (typeof child === 'object' && 'tag' in child ? [child.tag] : []))
+		: []
+})
 import { extractGroupMetadata } from './groups'
 import { makeMessagesSocket } from './messages-send'
 
@@ -159,7 +185,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		maxMsgRetryCount,
 		getMessage,
 		shouldIgnoreJid,
-		enableAutoSessionRecreation,
 		enableCTWARecovery,
 		sessionCleanupConfig
 	} = config
@@ -189,8 +214,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		uploadPreKeys,
 		sendPeerDataOperationMessage,
 		messageRetryManager,
-		getPrivacyTokens,
+		issuePrivacyTokens,
 		registerSocketEndHandler,
+		registerSocketDrainHandler,
 		// Port de upstream `4dbbba2891` (PR #2442)
 		fetchAccountReachoutTimelock
 	} = sock
@@ -329,11 +355,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	/**
 	 * Stage 6 H9 (upstream #2576): per-(msgId, participant) keyed lock for
 	 * the `msgRetryCache` read-modify-write. The cache is mutated by two call
-	 * paths — `sendRetryRequest` and `updateSendMessageAgainCount` — and the
+	 * paths — `sendRetryRequest` and `reserveSendMessageAgainAttempt` — and the
 	 * classic `await get → +1 → await set` sequence loses increments without
-	 * a shared lock chain. `incrementRetryAndGet` collapses get+inc+set into
-	 * one critical section per `(msgId, participant)` so both paths cannot
-	 * step on each other.
+	 * a shared lock chain. Each path therefore performs its complete counter
+	 * transition inside the same per-`(msgId, participant)` critical section.
 	 *
 	 * InfiniteAPI hybrid: we KEEP the outer `retryMutex` (line ~145) that
 	 * wraps the inbound dispatch's retry handler — it serializes the whole
@@ -353,17 +378,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		namespace: '__msg_retry__',
 		id: `${msgId}:${participant}`
 	})
-	const incrementRetryAndGet = async (msgId: string, participant: string): Promise<number> => {
-		return retryLocks.withLock(retryLockRef(msgId, participant), async () => {
-			const key = `${msgId}:${participant}`
-			const next = ((await msgRetryCache.get<number>(key)) ?? 0) + 1
-			// BOT-001-B: wrap NodeCache.set so a maxKeys saturation degrades
-			// gracefully (debug-logged) instead of propagating up into the
-			// retry handler and tripping `onUnexpectedError` / socket teardown.
-			await safeCacheSet(msgRetryCache, key, next, logger, 'msgRetryCache')
-			return next
-		})
-	}
 
 	// Debounce identity-change session refreshes per JID to avoid bursts
 	// Audit IDENTITY-CACHE — TTL 5s + uso esporádico mantém o cap baixo na
@@ -399,15 +413,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const TC_TOKEN_INDEX_KEY = '__index'
 	const TC_TOKEN_PRUNE_TS_KEY = '__prune_ts'
 	const tcTokenKnownJids = new Set<string>()
-	const tcTokenRetriedMsgIds = new Set<string>()
-	const TC_TOKEN_RECOVERY_QUERY_TIMEOUT_MS = 30_000
-	/**
-	 * Dedupe per-JID in-flight 463 token-refetch IQs.
-	 * Without this, a burst of 463 acks for the same recipient (e.g. multi-recipient
-	 * carousel) would fire N parallel getPrivacyTokens IQs. Adapted from upstream #2517
-	 * (which dedupes issuePrivacyTokens; we dedupe our equivalent getPrivacyTokens path).
-	 */
-	const inFlight463Recoveries = new Map<string, Promise<boolean>>()
 
 	/**
 	 * Dedupe global de `fetchAccountReachoutTimelock` em fire-and-forget.
@@ -461,15 +466,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	// that tctokens are relational/authoritative.
 	const trustedContactTokens = authState.keys.trustedContactTokens
 	const prekeyUploads = authState.keys.prekeyUploads
-	const readTcTokenUsability = async (
-		jid: string
-	): Promise<{ usable: boolean; storageJid: string; reason?: 'missing-token' | 'empty-token' | 'expired-token' }> => {
-		const storageJid = await resolveTcTokenJid(jid, getLIDForPN)
-		const tokenState = await authState.keys.get('tctoken', [storageJid, jid])
-		const aliases = storageJid === jid ? [tokenState[storageJid]] : [tokenState[storageJid], tokenState[jid]]
-		return { ...selectUsableTcToken(aliases), storageJid }
-	}
-
 	/** Debounced save of the tctoken JID index (5s) */
 	const scheduleTcTokenIndexSave = () => {
 		// The authoritative adapter enumerates relational rows plus signal_kv ids
@@ -806,7 +802,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const handleMexNewsletterNotification = async (node: BinaryNode) => {
 		const mexNode = getBinaryNodeChild(node, 'mex')
 		if (!mexNode?.content) {
-			logger.warn({ node }, 'Invalid mex newsletter notification')
+			logger.warn({ node: summarizeInboundNode(node) }, 'Invalid mex newsletter notification')
 			return
 		}
 
@@ -829,7 +825,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				typeof payloadContent === 'string' ? payloadContent : Buffer.from(payloadContent).toString('utf8')
 			data = JSON.parse(jsonText)
 		} catch (error) {
-			logger.error({ err: error, node }, 'Failed to parse mex newsletter notification')
+			logger.error({ err: error, node: summarizeInboundNode(node) }, 'Failed to parse mex newsletter notification')
 			return
 		}
 
@@ -927,6 +923,50 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const handleMexNotification = async (node: BinaryNode) => {
 		const updateNode = getBinaryNodeChild(node, 'update')
 		const opName = updateNode?.attrs?.op_name
+
+		if (updateNode && opName === 'TextStatusUpdateNotificationSideSub') {
+			if (!updateNode.content || Array.isArray(updateNode.content)) {
+				logger.warn({ opName }, 'text-status side-sub notification has no valid content')
+				return
+			}
+
+			try {
+				const update = parseTextStatusSideSubNotification(updateNode.content)
+				if (!update) {
+					logger.warn({ opName }, 'text-status side-sub notification is missing its hash')
+					return
+				}
+
+				ev.emit('text-status-side-sub.update', { from: node.attrs.from, hash: update.hash })
+				logger.debug({ opName }, 'received text-status side-sub notification')
+			} catch (err) {
+				logger.error({ err, opName }, 'failed to parse text-status side-sub notification')
+			}
+
+			return
+		}
+
+		if (updateNode && opName === 'TextStatusUpdateNotification') {
+			if (!updateNode.content || Array.isArray(updateNode.content)) {
+				logger.warn({ opName }, 'text-status notification has no valid content')
+				return
+			}
+
+			try {
+				const update = parseTextStatusUpdateNotification(updateNode.content)
+				if (!update) {
+					logger.warn({ opName }, 'text-status notification has invalid content')
+					return
+				}
+
+				ev.emit('text-status.update', { from: node.attrs.from, ...update })
+				logger.debug({ opName, jid: update.jid }, 'received text-status notification')
+			} catch (err) {
+				logger.error({ err, opName }, 'failed to parse text-status notification')
+			}
+
+			return
+		}
 
 		if (updateNode && opName === 'NotificationUserReachoutTimelockUpdate') {
 			// NULL-001 fix (PR #487 review): guard explicit `null/undefined content`
@@ -1115,7 +1155,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 
 				default:
-					logger.warn({ node, child }, 'Unknown newsletter notification child')
+					logger.warn(
+						{ node: summarizeInboundNode(node), child: summarizeInboundNode(child) },
+						'Unknown newsletter notification child'
+					)
 					break
 			}
 		}
@@ -1837,7 +1880,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		return await query(stanza)
 	}
 
-	const sendRetryRequest = async (node: BinaryNode, forceIncludeKeys = false) => {
+	const sendRetryRequest = async (
+		node: BinaryNode,
+		forceIncludeKeys = false,
+		retryReason: RetryReason = RetryReason.UnknownError
+	) => {
 		const { fullMessage } = decodeMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '')
 		const { key: msgKey } = fullMessage
 		const msgId = msgKey.id!
@@ -1927,7 +1974,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			// Stage 6 H9 (upstream #2576): mirror the retry count to the durable
 			// cache via `retryLocks` so this set cannot race against
-			// `updateSendMessageAgainCount`'s increment for the same key. Both
+			// `reserveSendMessageAgainAttempt` for the same key. Both
 			// paths now route through `retryLocks.withLock` on the same
 			// `(msgId, participant)` ref.
 			await retryLocks.withLock(retryLockRef(msgId, String(msgKey?.participant)), async () => {
@@ -1987,42 +2034,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const retryCount = (await msgRetryCache.get<number>(key)) || 1
 
 		const { account, signedPreKey, signedIdentityKey: identityKey } = authState.creds
-		const fromJid = node.attrs.from!
-
-		// Check if we should recreate the session
-		let shouldRecreateSession = false
-		let recreateReason = ''
-
-		if (enableAutoSessionRecreation && messageRetryManager && retryCount >= 1) {
-			try {
-				// Check if we have a session with this JID
-				const sessionId = signalRepository.jidToSignalProtocolAddress(fromJid)
-				const hasSession = await signalRepository.validateSession(fromJid)
-
-				// Extract error code from retry node if present (for MAC error detection)
-				const retryNode = getBinaryNodeChild(node, 'retry')
-				const errorAttr = retryNode?.attrs?.error
-				const errorCode = messageRetryManager.parseRetryErrorCode(errorAttr)
-
-				const result = messageRetryManager.shouldRecreateSession(fromJid, hasSession.exists, errorCode)
-				shouldRecreateSession = result.recreate
-				recreateReason = result.reason
-
-				if (shouldRecreateSession) {
-					logger.debug({ fromJid, retryCount, reason: recreateReason, errorCode }, 'recreating session for retry')
-					// Delete existing session to force recreation
-					// CRITICAL: Use same transaction key as encrypt/decrypt operations to prevent race
-					// Using meId ensures this delete serializes with sendMessage() and other session operations
-					await authState.keys.transaction(async () => {
-						await authState.keys.set({ session: { [sessionId]: null } })
-					}, authState.creds.me?.id || 'session-operation')
-					forceIncludeKeys = true
-				}
-			} catch (error) {
-				logger.warn({ error, fromJid }, 'failed to check session recreation')
-			}
-		}
-
 		if (retryCount <= 2) {
 			// Use new retry manager for phone requests if available
 			if (messageRetryManager) {
@@ -2053,7 +2064,26 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		let directDistributionMarkError: unknown
 		let directDistributionWasAlreadyMarked = false
 		let includeDirectDistributionKey = false
-		const shouldIncludeRetryKeys = retryCount > 1 || forceIncludeKeys || shouldRecreateSession
+		let retrySessionExists: boolean | undefined
+		if (config.enableAutoSessionRecreation && retryCount === 1 && !forceIncludeKeys) {
+			const retryPeerJid = msgKey.participant || node.attrs.from
+			const validation = await signalRepository.validateSession(retryPeerJid!)
+			const validationFailed = validation.reason === 'validation error'
+			retrySessionExists = validationFailed ? undefined : validation.exists
+			if (validationFailed) {
+				logger.warn(
+					{ msgId, retryPeerJid, reason: validation.reason },
+					'retry session validation failed; preserving the normal first-retry key policy'
+				)
+			} else if (!validation.exists) {
+				logger.info(
+					{ msgId, retryPeerJid, reason: validation.reason },
+					'retry peer has no usable local session; including key bundle without deleting session state'
+				)
+			}
+		}
+
+		const shouldIncludeRetryKeys = shouldIncludeRetryKeysForSession(retryCount, forceIncludeKeys, retrySessionExists)
 		if (shouldIncludeRetryKeys && prekeyUploads) {
 			try {
 				const firstUnsent = prekeyUploads.firstUnsentId()
@@ -2096,8 +2126,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							id: node.attrs.id!,
 							t: node.attrs.t!,
 							v: '1',
-							// ADD ERROR FIELD
-							error: '0'
+							error: retryReason.toString()
 						}
 					},
 					{
@@ -2224,7 +2253,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		await sendNode(receipt)
 		logger.info(
-			{ msgAttrs: node.attrs, retryCount, includedDirectDistributionKey: includeDirectDistributionKey },
+			{
+				msgAttrs: node.attrs,
+				retryCount,
+				retryReason,
+				retryReasonName: RetryReason[retryReason],
+				includedDirectDistributionKey: includeDirectDistributionKey
+			},
 			'sent retry receipt'
 		)
 	}
@@ -2253,7 +2288,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const countChild = getBinaryNodeChild(node, 'count')
 			const countValue = countChild?.attrs?.value
 			if (!countValue) {
-				logger.warn({ node }, 'PreKeyLow notification missing count child or value attr, skipping')
+				logger.warn(
+					{ node: summarizeInboundNode(node) },
+					'PreKeyLow notification missing count child or value attr, skipping'
+				)
 				return
 			}
 
@@ -2280,42 +2318,19 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				logger
 			})
 
-			// When a session is refreshed (identity change), re-issue tctoken fire-and-forget
-			// WABA Android: reissue stores senderTimestamp + realIssueTimestamp after IQ success
+			// When a session is refreshed (identity change), re-issue our token. The
+			// issue helper records 0 before the IQ and NULL only after its ACK.
 			if (result.action === 'session_refreshed') {
 				const normalizedJid = jidNormalizedUser(from)
-				resolveTcTokenJid(normalizedJid, getLIDForPN)
-					.then(async tcJid => {
-						const tcData = await authState.keys.get('tctoken', [tcJid])
-						const entry = tcData[tcJid]
-						if (entry?.token?.length && !isTcTokenExpired(entry.timestamp)) {
+				resolveTcTokenAliases(normalizedJid, { getLIDForPN, getPNForLID })
+					.then(async aliases => {
+						const tcData = await authState.keys.get('tctoken', aliases)
+						const selected = selectNewestUsableTcToken(aliases.map(alias => [alias, tcData[alias]] as const))
+						if (selected.usable) {
 							const senderTs = unixTimestampSeconds()
 							logTcToken('reissue', { jid: normalizedJid, reason: 'session_refreshed' })
-							getPrivacyTokens([normalizedJid], senderTs)
-								.then(async iqResult => {
-									await storeTcTokensFromIqResult({
-										result: iqResult,
-										fallbackJid: normalizedJid,
-										keys: authState.keys,
-										getLIDForPN,
-										onNewJidStored: storedJid => {
-											tcTokenKnownJids.add(storedJid)
-											scheduleTcTokenIndexSave()
-										}
-									})
-									// Persist senderTimestamp + realIssueTimestamp after IQ success
-									const currentData = await authState.keys.get('tctoken', [tcJid])
-									const currentEntry = currentData[tcJid]
-									await authState.keys.set({
-										tctoken: {
-											[tcJid]: {
-												...currentEntry,
-												token: currentEntry?.token ?? Buffer.alloc(0),
-												senderTimestamp: senderTs,
-												realIssueTimestamp: 0
-											}
-										}
-									})
+							issuePrivacyTokens([normalizedJid], senderTs)
+								.then(() => {
 									logTcToken('reissue_ok', { jid: normalizedJid, reason: 'session_refreshed' })
 								})
 								.catch(err => {
@@ -2329,7 +2344,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 
 			if (result.action === 'no_identity_node') {
-				logger.info({ node }, 'unknown encrypt notification')
+				logger.info({ node: summarizeInboundNode(node) }, 'unknown encrypt notification')
 			}
 		}
 	}
@@ -2716,7 +2731,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				try {
 					await handleDevicesNotification(node)
 				} catch (error) {
-					logger.error({ error, node }, 'failed to handle devices notification')
+					logger.error({ error, node: summarizeInboundNode(node) }, 'failed to handle devices notification')
 				}
 
 				break
@@ -2873,62 +2888,79 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handlePrivacyTokenNotification = async (node: BinaryNode) => {
-		const tokensNode = getBinaryNodeChild(node, 'tokens')
-		const from = jidNormalizedUser(node.attrs.from)
+		const parsedTokens = parseTrustedContactTokenNotification(node)
+		if (!parsedTokens.length) return
+		const from = parsedTokens[0]!.from
 
-		if (!tokensNode) return
-
-		// Defensive parity with the IQ-result path (storeTcTokensFromIqResult): never persist a
-		// tctoken for PSA/bot/MetaAI contacts — the same isRegularUser gate, shared across both
-		// token-ingestion paths so notifications can't smuggle one in.
+		// Never persist a tctoken for PSA/bot/MetaAI contacts. Notifications are
+		// the authoritative peer-token ingestion path.
 		if (!isRegularUser(from)) return
 
-		const tokenNodes = getBinaryNodeChildren(tokensNode, 'token')
+		for (const { senderLid, timestamp, timestampSource, childTimestamp, outerTimestamp, token } of parsedTokens) {
+			const aliases = await resolveIncomingTcTokenAliases(from, senderLid, { getLIDForPN, getPNForLID })
+			const storageJid = aliases[0]!
 
-		for (const tokenNode of tokenNodes) {
-			const { attrs, content } = tokenNode
-			const type = attrs.type
-			const timestamp = attrs.t
-
-			if (type === 'trusted_contact' && content instanceof Uint8Array) {
-				// Resolve to LID for consistent storage key
-				const senderLid = attrs.sender_lid ? jidNormalizedUser(attrs.sender_lid) : undefined
-				const storageJid = senderLid || (await resolveTcTokenJid(from, getLIDForPN))
-
-				// Timestamp monotonicity guard — only store if incoming >= existing
-				const existingData = await authState.keys.get('tctoken', [storageJid])
-				const existing = existingData[storageJid]
-				const existingTs = existing?.timestamp ? Number(existing.timestamp) : 0
-				const incomingTs = timestamp ? Number(timestamp) : 0
-				if (existingTs > 0 && incomingTs > 0 && existingTs > incomingTs) {
-					continue
-				}
-
-				// Don't store timestamp-less tokens — they expire immediately and would
-				// corrupt a valid existing entry if one is already present
-				if (!incomingTs) {
-					continue
-				}
-
-				await authState.keys.set({
-					tctoken: {
-						[storageJid]: {
-							...existing,
-							token: Buffer.from(content),
-							timestamp,
-							// WABA Android: resets real_issue_timestamp when a new incoming token arrives
-							// (UPDATE wa_trusted_contacts_send SET real_issue_timestamp=null)
-							realIssueTimestamp: null
-						}
-					}
-				})
-
-				logTcToken('stored', { jid: storageJid, from })
-
-				// Track JID for cross-session pruning
-				tcTokenKnownJids.add(storageJid)
-				scheduleTcTokenIndexSave()
+			// Timestamp monotonicity applies across PN+LID, matching the official
+			// ORDER BY incoming_tc_token_timestamp DESC LIMIT 1 read.
+			const existingData = await authState.keys.get('tctoken', aliases)
+			const existing = existingData[storageJid]
+			const existingTs = Math.max(...aliases.map(alias => Number(existingData[alias]?.timestamp ?? 0)))
+			const incomingTs = timestamp ? Number(timestamp) : 0
+			if (existingTs > 0 && incomingTs > 0 && existingTs > incomingTs) {
+				logger.debug(
+					{ from, senderLid, storageJid, incomingTs, existingTs, action: 'ignored-stale-token' },
+					'privacy-token notification did not overwrite a newer PN/LID token'
+				)
+				continue
 			}
+
+			// Don't store timestamp-less tokens — they expire immediately and would
+			// corrupt a valid existing entry if one is already present
+			if (!incomingTs) {
+				logger.warn(
+					{ from, senderLid, storageJid, childTimestamp, outerTimestamp, action: 'ignored-missing-timestamp' },
+					'privacy-token notification omitted both child and outer timestamps'
+				)
+				continue
+			}
+
+			const bucket: Record<string, NonNullable<typeof existing> | null> = {
+				[storageJid]: {
+					...existing,
+					token,
+					timestamp
+				}
+			}
+			// Official storage converges on LID. Remove only the incoming half of
+			// a legacy PN alias while preserving any sent-state fields it carries.
+			for (const alias of aliases.slice(1)) {
+				const aliasEntry = existingData[alias]
+				if (!aliasEntry?.token?.length) continue
+				bucket[alias] =
+					aliasEntry.senderTimestamp !== undefined
+						? {
+								token: Buffer.alloc(0),
+								senderTimestamp: aliasEntry.senderTimestamp,
+								realIssueTimestamp: aliasEntry.realIssueTimestamp
+							}
+						: null
+			}
+
+			await authState.keys.set({
+				tctoken: bucket
+			})
+
+			logTcToken('stored', {
+				jid: storageJid,
+				from,
+				senderLid,
+				timestampSource,
+				tokenLength: token.length
+			})
+
+			// Track JID for cross-session pruning
+			tcTokenKnownJids.add(storageJid)
+			scheduleTcTokenIndexSave()
 		}
 	}
 
@@ -2949,17 +2981,43 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		return data instanceof Buffer ? data : Buffer.from(data)
 	}
 
-	const willSendMessageAgain = async (id: string, participant: string) => {
-		const key = `${id}:${participant}`
-		const retryCount = (await msgRetryCache.get<number>(key)) || 0
-		return retryCount < maxMsgRetryCount
+	const reserveSendMessageAgainAttempt = async (id: string, participant: string) => {
+		return retryLocks.withLock(retryLockRef(id, participant), async () => {
+			const key = `${id}:${participant}`
+			try {
+				const attempt = await persistRetrySendReservation(msgRetryCache, key, maxMsgRetryCount)
+				if (attempt.reservationFailure) {
+					logger.warn(
+						{ id, participant, reason: attempt.reservationFailure },
+						'retry resend suppressed because its bounded counter could not be persisted'
+					)
+				}
+
+				return attempt
+			} catch (err) {
+				if (!isNodeCacheFullError(err)) {
+					logger.error(
+						{ id, participant, err },
+						'retry resend counter persistence failed; relay suppressed before sending'
+					)
+					throw err
+				}
+
+				logger.warn(
+					{ id, participant, err },
+					'retry resend suppressed because msgRetryCache is full and cannot enforce the retry cap'
+				)
+				return { proceed: false, count: maxMsgRetryCount, reservationFailure: 'write-rejected' as const }
+			}
+		})
 	}
 
-	const updateSendMessageAgainCount = async (id: string, participant: string) => {
-		// Stage 6 H9 (upstream #2576): route through `incrementRetryAndGet` so
-		// this increment cannot race against `sendRetryRequest`'s update to the
-		// same key. Both paths share `retryLocks` keyed by `(msgId, participant)`.
-		await incrementRetryAndGet(id, participant)
+	const hasSendMessageAgainBudget = async (id: string, participant: string): Promise<boolean> => {
+		return retryLocks.withLock(retryLockRef(id, participant), async () => {
+			const key = `${id}:${participant}`
+			const current = (await msgRetryCache.get<number>(key)) ?? 0
+			return hasRetrySendBudget(current, maxMsgRetryCount)
+		})
 	}
 
 	const sendMessagesAgain = async (
@@ -2968,12 +3026,33 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		retryNode: BinaryNode,
 		receiptNode: BinaryNode
 	) => {
-		const remoteJid = key.remoteJid!
+		const remoteJid = key.remoteJid
+		if (!remoteJid || !jidDecode(remoteJid)) {
+			throw new Boom('Retry receipt has no valid relay destination', {
+				statusCode: 400,
+				data: { messageIds: ids, participant: key.participant, remoteJid }
+			})
+		}
+
 		const participant = key.participant || remoteJid
 
 		const retryCount = +retryNode.attrs.count! || 1
 		const msgId = ids[0]
 		const sessionId = signalRepository.jidToSignalProtocolAddress(participant)
+		const retryErrorCode = parseRetryErrorCode(retryNode.attrs.error)
+		if (retryNode.attrs.error !== undefined) {
+			logger.debug(
+				{
+					participant,
+					retryCount,
+					retryErrorAttr: retryNode.attrs.error,
+					retryErrorCode,
+					retryErrorName: retryErrorCode === undefined ? 'unparseable' : RetryReason[retryErrorCode],
+					sessionPolicy: 'registration-id-and-base-key'
+				},
+				'retry receipt error recorded; session mutation remains gated by registration/base-key evidence'
+			)
+		}
 
 		// Helper: delete the session at BOTH the PN- and LID-addressed keys.
 		// InfiniteAPI's signal storage (`signalStorage.loadSession`) canonicalizes
@@ -3051,18 +3130,18 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		// Try to get messages from cache first, then fallback to getMessage
 		const msgs: (proto.IMessage | undefined)[] = []
+		const liveLocationDurations: (number | undefined)[] = []
 		for (const id of ids) {
 			let msg: proto.IMessage | undefined
+			let liveLocationDuration: number | undefined
 
 			// Try to get from retry cache first if enabled
 			if (messageRetryManager) {
 				const cachedMsg = messageRetryManager.getRecentMessage(remoteJid, id)
 				if (cachedMsg) {
 					msg = cachedMsg.message
+					liveLocationDuration = cachedMsg.liveLocationDuration
 					logger.debug({ jid: remoteJid, id }, 'found message in retry cache')
-
-					// Mark retry as successful since we found the message
-					messageRetryManager.markRetrySuccess(id)
 				}
 			}
 
@@ -3070,15 +3149,38 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			if (!msg) {
 				msg = await getMessage({ ...key, id })
 				if (msg) {
-					logger.debug({ jid: remoteJid, id }, 'found message via getMessage')
-					// Also mark as successful if found via getMessage
-					if (messageRetryManager) {
-						messageRetryManager.markRetrySuccess(id)
+					const persistedDuration = (msg as proto.IMessage & { liveLocationDuration?: number }).liveLocationDuration
+					if (
+						typeof persistedDuration === 'number' &&
+						Number.isSafeInteger(persistedDuration) &&
+						persistedDuration >= 0
+					) {
+						liveLocationDuration = persistedDuration
 					}
+
+					logger.debug({ jid: remoteJid, id }, 'found message via getMessage')
 				}
 			}
 
 			msgs.push(msg)
+			liveLocationDurations.push(liveLocationDuration)
+		}
+
+		let hasRetryableMessage = false
+		for (let i = 0; i < ids.length; i++) {
+			const id = ids[i]
+			if (id && msgs[i] && (await hasSendMessageAgainBudget(id, participant))) {
+				hasRetryableMessage = true
+				break
+			}
+		}
+
+		if (!hasRetryableMessage) {
+			logger.info(
+				{ jid: remoteJid, ids, participant },
+				'retry receipt ignored before session preparation because no message has retry budget'
+			)
+			return
 		}
 
 		// if it's the primary jid sending the request
@@ -3155,42 +3257,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 		}
 
-		// --- InfiniteAPI session-recreation + MAC-error detection ---
-		// Only runs when we did NOT inject a fresh session from the bundle.
-		// Preserves the parseRetryErrorCode / shouldRecreateSession heuristics
-		// added by 52aa6402 (WABA Android alignment) and a3dd21c9 (Bad MAC loop break).
-		let shouldRecreateSession = false
-		let recreateReason = ''
-
-		if (enableAutoSessionRecreation && messageRetryManager && retryCount >= 1 && !injectedFromBundle) {
-			try {
-				const hasSession = await signalRepository.validateSession(participant)
-
-				// Extract error code from retry node if present (for MAC error detection)
-				const errorAttr = retryNode?.attrs?.error as string | undefined
-				const errorCode = messageRetryManager.parseRetryErrorCode(errorAttr)
-
-				const result = messageRetryManager.shouldRecreateSession(participant, hasSession.exists, errorCode)
-				shouldRecreateSession = result.recreate
-				recreateReason = result.reason
-
-				if (shouldRecreateSession) {
-					logger.debug(
-						{ participant, retryCount, reason: recreateReason, errorCode },
-						'recreating session for outgoing retry'
-					)
-					// Use deleteCanonicalSession so the LID-keyed copy is also cleared
-					// (signalStorage.loadSession resolves PN→LID — see helper above).
-					// The race-prevention via me?.id transaction key is preserved inside
-					// the helper, matching the original a3dd21c9 / 52aa6402 contract.
-					await deleteCanonicalSession()
-					await verifyCanonicalDelete('outgoing_retry_recreate')
-				}
-			} catch (error) {
-				logger.warn({ error, participant }, 'failed to check session recreation for outgoing retry')
-			}
-		}
-
 		if (!injectedFromBundle) {
 			await assertSessions([participant], true)
 		}
@@ -3199,17 +3265,23 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			await authState.keys.set({ 'sender-key-memory': { [remoteJid]: null } })
 		}
 
-		logger.debug(
-			{ participant, sendToAll, shouldRecreateSession, recreateReason, injectedFromBundle },
-			'prepared session for retry resend'
-		)
+		logger.debug({ participant, sendToAll, injectedFromBundle }, 'prepared session for retry resend')
 
 		for (const [i, msg] of msgs.entries()) {
 			if (!ids[i]) continue
 
-			if (msg && (await willSendMessageAgain(ids[i], participant))) {
-				await updateSendMessageAgainCount(ids[i], participant)
+			if (msg) {
+				const attempt = await reserveSendMessageAgainAttempt(ids[i], participant)
+				if (!attempt.proceed) {
+					logger.info(
+						{ jid: remoteJid, id: ids[i], participant, retryCount: attempt.count },
+						'will not send message again, as sent too many times'
+					)
+					continue
+				}
+
 				const msgRelayOpts: MessageRelayOptions = { messageId: ids[i] }
+				msgRelayOpts.liveLocationDuration = liveLocationDurations[i]
 
 				if (sendToAll) {
 					msgRelayOpts.useUserDevicesCache = false
@@ -3220,7 +3292,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					}
 				}
 
-				await relayMessage(key.remoteJid!, msg, msgRelayOpts)
+				await relayMessage(remoteJid, msg, msgRelayOpts)
+				messageRetryManager?.markRetrySuccess(ids[i])
 			} else {
 				logger.debug({ jid: key.remoteJid, id: ids[i] }, 'recv retry request, but message not available')
 			}
@@ -3234,8 +3307,55 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			attrs.participant || attrs.from,
 			isLid ? authState.creds.me?.lid : authState.creds.me?.id
 		)
-		const remoteJid = !isNodeFromMe || isJidGroup(attrs.from) ? attrs.from : attrs.recipient
 		const fromMe = !attrs.recipient || ((attrs.type === 'retry' || attrs.type === 'sender') && isNodeFromMe)
+		const recentRetryMessage =
+			attrs.type === 'retry' && fromMe && attrs.id && messageRetryManager
+				? messageRetryManager.getRecentMessage(attrs.recipient ?? attrs.from!, attrs.id)
+				: undefined
+		const retryRoute = resolveRetryReceiptRoute({
+			stanzaFrom: attrs.from!,
+			recipient: attrs.recipient,
+			isNodeFromMe,
+			isGroup: isJidGroup(attrs.from) ?? false,
+			isRetry: attrs.type === 'retry',
+			recentMessageTo: recentRetryMessage?.to
+		})
+		let remoteJid = retryRoute.remoteJid
+
+		if (attrs.type === 'retry' && fromMe && !attrs.recipient) {
+			const routeContext = {
+				id: attrs.id,
+				stanzaFrom: attrs.from,
+				resolvedRemoteJid: remoteJid,
+				routeSource: retryRoute.source
+			}
+			if (recentRetryMessage) {
+				logger.debug(
+					routeContext,
+					'retry receipt omitted recipient; restored original relay destination from recent-message cache'
+				)
+			} else {
+				logger.warn(
+					routeContext,
+					'retry receipt omitted recipient and recent message was unavailable; refusing to infer the destination from the own-device stanza'
+				)
+			}
+		}
+
+		if (!remoteJid) {
+			logger.error(
+				{
+					id: attrs.id,
+					stanzaFrom: attrs.from,
+					participant: attrs.participant,
+					recipient: attrs.recipient,
+					routeSource: retryRoute.source
+				},
+				'retry receipt omitted the original destination and no cached route exists; resend suppressed'
+			)
+			await sendMessageAck(node)
+			return
+		}
 
 		const key: proto.IMessageKey = {
 			remoteJid,
@@ -3252,8 +3372,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		])
 		if (resolvedRemoteJid) key.remoteJid = resolvedRemoteJid
 		if (resolvedParticipant) key.participant = resolvedParticipant
+		remoteJid = key.remoteJid ?? remoteJid
 
-		if (shouldIgnoreJid(remoteJid!) && remoteJid !== S_WHATSAPP_NET) {
+		if (shouldIgnoreJid(remoteJid) && remoteJid !== S_WHATSAPP_NET) {
 			logger.trace({ remoteJid }, 'ignoring receipt from jid')
 			await sendMessageAck(node)
 			return
@@ -3275,7 +3396,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						// or another device of ours has read some messages
 						(status >= proto.WebMessageInfo.Status.SERVER_ACK || !isNodeFromMe)
 					) {
-						if (isJidGroup(remoteJid) || isJidStatusBroadcast(remoteJid!)) {
+						if (isJidGroup(remoteJid) || isJidStatusBroadcast(remoteJid)) {
 							if (attrs.participant) {
 								const updateKey: keyof MessageUserReceipt =
 									status === proto.WebMessageInfo.Status.DELIVERY_ACK ? 'receiptTimestamp' : 'readTimestamp'
@@ -3297,7 +3418,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								// to affect receipt processing: best-effort side channel,
 								// same rule as the other optional multi-db-sqlite mirrors
 								// in this codebase.
-								if (statusBackend && isJidStatusBroadcast(remoteJid!) && updateKey === 'readTimestamp') {
+								if (statusBackend && isJidStatusBroadcast(remoteJid) && updateKey === 'readTimestamp') {
 									try {
 										for (const id of ids) {
 											statusBackend.recordSeenReceipt({
@@ -3360,6 +3481,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								}))
 							)
 
+							// Android's msgstore status integers are not the same
+							// numbers as WebMessageInfo.Status. Advance the typed
+							// message row using the confirmed Android mapping.
+							if (receiptChatResolver && key.remoteJid) {
+								const androidStatus = mapWebMessageStatusToAndroid(status)
+								if (androidStatus !== null) {
+									try {
+										for (const id of ids) {
+											receiptChatResolver.updateMessageStatus(key.remoteJid, !!key.fromMe, id, androidStatus)
+										}
+									} catch (err) {
+										logger.warn({ err }, 'failed to advance message status mirror')
+									}
+								}
+							}
+
 							// Mirrors 1:1 message receipts into msgstore.db. The other
 							// party IS the receipt_user for a 1:1 chat (no separate
 							// participant field the way group/status receipts have one).
@@ -3396,10 +3533,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						// correctly set who is asking for the retry
 						key.participant = key.participant || attrs.from
 						const retryNode = getBinaryNodeChild(node, 'retry')
-						if (ids[0] && key.participant && (await willSendMessageAgain(ids[0], key.participant))) {
+						if (ids[0] && key.participant) {
 							if (key.fromMe) {
 								try {
-									await updateSendMessageAgainCount(ids[0], key.participant)
 									logger.debug({ attrs, key }, 'recv retry request')
 									await sendMessagesAgain(key, ids, retryNode!, node)
 								} catch (error: unknown) {
@@ -3412,7 +3548,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								logger.info({ attrs, key }, 'recv retry for not fromMe message')
 							}
 						} else {
-							logger.info({ attrs, key }, 'will not send message again, as sent too many times')
+							logger.warn(
+								{ attrs, key, reason: ids[0] ? 'missing-retry-participant' : 'missing-message-id' },
+								'retry receipt is incomplete; resend suppressed before consuming an attempt'
+							)
 						}
 					}
 				})
@@ -3809,7 +3948,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					await retryMutex.mutex(async () => {
 						try {
 							if (!ws.isOpen) {
-								logger.debug({ node }, 'Connection closed, skipping retry')
+								logger.debug({ node: summarizeInboundNode(node) }, 'Connection closed, skipping retry')
 								return
 							}
 
@@ -3828,7 +3967,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							}
 
 							const encNode = getBinaryNodeChild(node, 'enc')
-							await sendRetryRequest(node, !encNode)
+							const retryReason = retryReasonFromDecryptionError(errorMessage)
+							await sendRetryRequest(node, !encNode, retryReason)
 							if (retryRequestDelayMs) {
 								await delay(retryRequestDelayMs)
 							}
@@ -3837,7 +3977,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							// Still attempt retry even if pre-key upload failed
 							try {
 								const encNode = getBinaryNodeChild(node, 'enc')
-								await sendRetryRequest(node, !encNode)
+								const retryReason = retryReasonFromDecryptionError(errorMessage)
+								await sendRetryRequest(node, !encNode, retryReason)
 							} catch (retryErr) {
 								logger.error({ retryErr }, 'Failed to send retry after error handling')
 							}
@@ -3962,7 +4103,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					'message handle failed (auto-recovering via retry+pkmsg)'
 				)
 			} else {
-				logger.error({ error, node: binaryNodeToString(node) }, 'error in handling message')
+				logger.error({ error, node: summarizeInboundNode(node) }, 'error in handling message')
 			}
 
 			// If nothing acked the message yet (a throw in alt-mapping / migrateSession /
@@ -4216,7 +4357,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		try {
 			await handleCallInner(node)
 		} catch (error) {
-			logger.error({ error, node: binaryNodeToString(node) }, 'error in handling call')
+			logger.error({ error, node: summarizeInboundNode(node) }, 'error in handling call')
 		} finally {
 			await sendMessageAck(node).catch(ackErr => logger.error({ ackErr }, 'failed to ack call'))
 		}
@@ -4225,7 +4366,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const handleBadAck = async ({ attrs }: BinaryNode) => {
 		// Error acks can come from an alternate/device/own-domain JID. The retry
 		// cache records the actual destination used by relayMessage, so prefer it
-		// over attrs.from when deciding whose privacy token must be fetched.
+		// over attrs.from when correlating the failed outbound stanza.
 		const recentMessage = attrs.id ? messageRetryManager?.getRecentMessage(attrs.from ?? '', attrs.id) : undefined
 		const outboundJid = jidNormalizedUser(recentMessage?.to ?? attrs.from ?? '')
 		const key: WAMessageKey = { remoteJid: outboundJid, fromMe: true, id: attrs.id }
@@ -4248,16 +4389,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// error in acknowledgement,
 		// device could not display the message
 		if (attrs.error) {
-			// O servidor reusa o código 463 para dois cenários:
-			//   (a) MissingTcToken — TC token expirado/ausente pra esse contato (caminho original do fork)
-			//   (b) SenderReachoutTimelocked — conta restrita (port de upstream `4dbbba2891`, PR #2442)
-			// O attrs.error sozinho ('463') não distingue, então:
-			//   - Mantemos o caminho TC token (dedupe + retry single-shot) que já existia
-			//   - Emitimos fetchAccountReachoutTimelock em paralelo (fire-and-forget) — se o
-			//     cenário (b) for o real, o evento `connection.update` carrega o ReachoutTimelockState
-			//   - Marcamos messageStubParameters com ACCOUNT_RESTRICTED_TEXT para o consumer
-			//     conseguir distinguir essa classe de falha
-			const is463 = attrs.error === SERVER_ERROR_CODES.MissingTcToken
+			const errorPolicy = getMessageAckErrorPolicy(attrs.error)
+			// 463 is an account/reachout restriction. A privacy `type=set` IQ only
+			// announces our token and cannot fetch the peer token, so retrying the
+			// message after that IQ is both ineffective and capable of worsening the
+			// restriction. Match the official fail-closed behavior and refresh the
+			// reachout state solely for actionable diagnostics.
+			const is463 = errorPolicy.kind === 'message-account-restriction'
 			if (is463) {
 				const msgId = attrs.id
 				const jid = outboundJid
@@ -4278,175 +4416,35 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						})
 				}
 
-				// WABA Android: error 463 triggers getPrivacyTokens() fire-and-forget
-				// to ensure token is available for the retry below.
-				// Per-JID dedupe (adapted from upstream #2517) — burst of 463 acks for the
-				// same recipient must not fan out N parallel IQs.
-				let recoveryPromise = inFlight463Recoveries.get(jid)
-				if (!recoveryPromise) {
-					recoveryPromise = (async () => {
-						const result = await getPrivacyTokens([jid], undefined, TC_TOKEN_RECOVERY_QUERY_TIMEOUT_MS)
-						const stored = await storeTcTokensFromIqResult({
-							result,
-							fallbackJid: jid,
-							keys: authState.keys,
-							getLIDForPN,
-							onNewJidStored: storedJid => {
-								tcTokenKnownJids.add(storedJid)
-								scheduleTcTokenIndexSave()
-							}
-						})
-						const tokenUsability = await readTcTokenUsability(jid)
-						const storedForRecipient = stored.storedJids.some(
-							storedJid => storedJid === jid || storedJid === tokenUsability.storageJid
-						)
-						if (storedForRecipient && tokenUsability.usable) {
-							logTcToken('fetched', { jid, reason: 'error_463' })
-						} else {
-							logger.warn(
-								{
-									jid,
-									reason: !storedForRecipient
-										? stored.validTokenNodes === 0
-											? 'privacy-iq-returned-no-valid-token'
-											: 'privacy-iq-token-for-different-jid'
-										: tokenUsability.reason,
-									validTokenNodes: stored.validTokenNodes,
-									storedJids: stored.storedJids,
-									retryAction: 'suppressed'
-								},
-								'463 recovery: no valid token was persisted for the original recipient; refusing tokenless retry'
-							)
-						}
-
-						return storedForRecipient && tokenUsability.usable
-					})()
-					inFlight463Recoveries.set(jid, recoveryPromise)
-					recoveryPromise
-						.catch(err => {
-							logger.warn(
-								{ jid, err: err?.message, reason: 'privacy-token-fetch-or-store-failed', retryAction: 'suppressed' },
-								'463 recovery: tctoken fetch/store failed; refusing tokenless retry'
-							)
-						})
-						.finally(() => inFlight463Recoveries.delete(jid))
-				}
-
-				// Single-retry: wait 1.5s for the server's tctoken notification to arrive,
-				// then resend. A Set prevents infinite retry loops.
-				// Composite key (jid:msgId) ensures retries are isolated per destination.
-				const retryKey = `${jid}:${msgId}`
-				if (msgId && jid && !tcTokenRetriedMsgIds.has(retryKey)) {
-					tcTokenRetriedMsgIds.add(retryKey)
-					// Each entry auto-expires after 60s — naturally bounded under normal use
-					setTimeout(() => tcTokenRetriedMsgIds.delete(retryKey), 60_000)
-					void (async () => {
-						try {
-							await delay(1500)
-							let tokenUsability = await readTcTokenUsability(jid)
-							let fetchedForRecipient: boolean | undefined
-							if (!tokenUsability.usable) {
-								// The notification path gets the first 1.5s without being blocked by
-								// the IQ. If it did not provide a token, wait for the explicitly
-								// bounded fetch before consuming the message's single retry.
-								fetchedForRecipient = await recoveryPromise.catch(() => false)
-								tokenUsability = await readTcTokenUsability(jid)
-							}
-
-							if (!tokenUsability.usable) {
-								logger.warn(
-									{
-										jid,
-										msgId,
-										reason: tokenUsability.reason,
-										fetchStoredRecipient: fetchedForRecipient,
-										retryAction: 'suppressed'
-									},
-									'463 recovery: retry suppressed because the recipient still has no valid tctoken'
-								)
-								ev.emit('messages.update', [
-									{
-										key,
-										update: {
-											status: WAMessageStatus.ERROR,
-											messageStubParameters: ['463', ACCOUNT_RESTRICTED_TEXT]
-										}
-									}
-								])
-								return
-							}
-
-							const msg =
-								(await getMessage(key)) ??
-								// Fallback: ack can arrive <30ms after send, before store persists
-								recentMessage?.message
-							if (msg) {
-								await relayMessage(jid, msg, { messageId: msgId, useUserDevicesCache: true })
-								logTcToken('retry_463_ok', { jid, msgId })
-							} else {
-								logger.warn({ jid, msgId }, '463 retry: message not found in store')
-								ev.emit('messages.update', [
-									{
-										key,
-										update: { status: WAMessageStatus.ERROR, messageStubParameters: ['463', ACCOUNT_RESTRICTED_TEXT] }
-									}
-								])
-							}
-						} catch (err: any) {
-							logger.warn({ jid, msgId, err: err?.message }, '463 retry failed')
-							ev.emit('messages.update', [
-								{
-									key,
-									update: { status: WAMessageStatus.ERROR, messageStubParameters: ['463', ACCOUNT_RESTRICTED_TEXT] }
-								}
-							])
-						}
-					})()
-
-					return
-				}
-			} else if (attrs.error === SERVER_ERROR_CODES.SmaxInvalid) {
+				logger.warn(
+					{
+						jid,
+						msgId,
+						reason: 'message-account-restriction',
+						tokenAction: 'none-issuance-iq-is-not-a-fetch',
+						retryAction: 'suppressed'
+					},
+					'463 message rejected by account/reachout policy; automatic retry is disabled'
+				)
+			} else if (errorPolicy.kind === 'smax-invalid') {
 				const jid479 = outboundJid
 				logTcToken('error_479', { jid: jid479, msgId: attrs.id })
-				// WABA Android: error 479 (SmaxInvalid) also triggers token re-fetch
-				getPrivacyTokens([jid479], undefined, TC_TOKEN_RECOVERY_QUERY_TIMEOUT_MS)
-					.then(async result => {
-						const stored = await storeTcTokensFromIqResult({
-							result,
-							fallbackJid: jid479,
-							keys: authState.keys,
-							getLIDForPN,
-							onNewJidStored: storedJid => {
-								tcTokenKnownJids.add(storedJid)
-								scheduleTcTokenIndexSave()
-							}
-						})
-						const tokenUsability = await readTcTokenUsability(jid479)
-						const storedForRecipient = stored.storedJids.some(
-							storedJid => storedJid === jid479 || storedJid === tokenUsability.storageJid
-						)
-						if (storedForRecipient && tokenUsability.usable) {
-							logTcToken('fetched', { jid: jid479, reason: 'error_479' })
-						} else {
-							logger.warn(
-								{
-									jid: jid479,
-									reason: !storedForRecipient
-										? stored.validTokenNodes === 0
-											? 'privacy-iq-returned-no-valid-token'
-											: 'privacy-iq-token-for-different-jid'
-										: tokenUsability.reason,
-									storedJids: stored.storedJids
-								},
-								'479 recovery: no valid token was persisted for the original recipient'
-							)
-						}
-					})
-					.catch(err => {
-						// Audit SILENT-002 — antes silenciado; agora `debug` pra
-						// dar visibilidade em falhas sistemáticas de 479 recovery.
-						logger.debug({ jid: jid479, err: err?.message }, '479 recovery: tctoken fetch/store failed')
-					})
+				const decoded = jidDecode(jid479)
+				const messageShape = recentMessage?.message ? Object.keys(recentMessage.message).sort() : []
+				logger.error(
+					{
+						jid: jid479,
+						msgId: attrs.id,
+						ackFrom: attrs.from,
+						domain: decoded?.server,
+						device: decoded?.device,
+						messageShape,
+						reason: 'server-smax-invalid',
+						tokenAction: 'none-official-client-does-not-refetch-on-479',
+						retryAction: 'suppressed'
+					},
+					'479 smax-invalid: inspect the correlated outbound stanza shape and addressing'
+				)
 			} else {
 				logger.warn({ attrs }, 'received error in ack')
 			}
@@ -4484,6 +4482,20 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		return new Promise(resolve => setImmediate(resolve))
 	}
 
+	let acceptingInboundTasks = true
+	const inboundTasks = new Set<Promise<void>>()
+	const inboundTaskAdmission = new AsyncLocalStorage<boolean>()
+	const trackInboundTask = (identifier: string, factory: () => Promise<void>): void => {
+		const isDerivedFromAdmittedTask = inboundTaskAdmission.getStore() === true
+		if (!acceptingInboundTasks && !isDerivedFromAdmittedTask) return
+
+		const task = inboundTaskAdmission
+			.run(true, factory)
+			.catch(error => onUnexpectedError(error instanceof Error ? error : new Error(String(error)), identifier))
+		inboundTasks.add(task)
+		void task.finally(() => inboundTasks.delete(task))
+	}
+
 	const nodeProcessorMap: Map<MessageType, (node: BinaryNode) => Promise<void>> = new Map([
 		['message', handleMessage],
 		['call', handleCall],
@@ -4502,6 +4514,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		},
 		25
 	)
+
+	registerSocketDrainHandler(async () => {
+		acceptingInboundTasks = false
+		await offlineNodeProcessor.stopAndDrain()
+		while (inboundTasks.size > 0) {
+			await Promise.allSettled([...inboundTasks])
+		}
+	})
 
 	const processNode = async (
 		type: MessageType,
@@ -4556,80 +4576,89 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	// recv a message
-	ws.on('CB:message', async (node: BinaryNode) => {
-		await processNode('message', node, 'processing message', handleMessage)
+	ws.on('CB:message', (node: BinaryNode) => {
+		trackInboundTask('processing message', () => processNode('message', node, 'processing message', handleMessage))
 	})
 
-	ws.on('CB:call', async (node: BinaryNode) => {
-		await processNode('call', node, 'handling call', handleCall)
+	ws.on('CB:call', (node: BinaryNode) => {
+		trackInboundTask('handling call', () => processNode('call', node, 'handling call', handleCall))
 	})
 
 	// Top-level <relay> stanzas carry TURN server info, tokens and crypto keys
-	ws.on('CB:relay', async (node: BinaryNode) => {
-		const callId = node.attrs['call-id']
-		const rawCallCreator = node.attrs['call-creator']
-		// Both callId and callCreator must be present to emit a valid event
-		// (call link relays may arrive without these attrs — just log them)
-		if (callId && rawCallCreator) {
-			// Resolve LID→PN for call creator
-			const callCreator = (await resolveLidToPn(rawCallCreator, signalRepository.lidMapping, logger)) || rawCallCreator
-			logger.debug({ callId, callCreator, uuid: node.attrs.uuid }, 'received relay info')
-			ev.emit('call', [
-				{
-					chatId: callCreator,
-					from: callCreator,
-					id: callId,
-					date: new Date(),
-					offline: false,
-					status: 'relay' as WACallUpdateType
-				}
-			])
-		} else {
-			logger.debug({ attrs: node.attrs }, 'received relay stanza without call-id/call-creator')
-		}
+	ws.on('CB:relay', (node: BinaryNode) => {
+		trackInboundTask('handling relay', async () => {
+			const callId = node.attrs['call-id']
+			const rawCallCreator = node.attrs['call-creator']
+			// Both callId and callCreator must be present to emit a valid event
+			// (call link relays may arrive without these attrs — just log them)
+			if (callId && rawCallCreator) {
+				// Resolve LID→PN for call creator
+				const callCreator =
+					(await resolveLidToPn(rawCallCreator, signalRepository.lidMapping, logger)) || rawCallCreator
+				logger.debug({ callId, callCreator, uuid: node.attrs.uuid }, 'received relay info')
+				ev.emit('call', [
+					{
+						chatId: callCreator,
+						from: callCreator,
+						id: callId,
+						date: new Date(),
+						offline: false,
+						status: 'relay' as WACallUpdateType
+					}
+				])
+			} else {
+				logger.debug({ attrs: node.attrs }, 'received relay stanza without call-id/call-creator')
+			}
+		})
 	})
 
-	ws.on('CB:receipt', async node => {
-		await processNode('receipt', node, 'handling receipt', handleReceipt)
+	ws.on('CB:receipt', node => {
+		trackInboundTask('handling receipt', () => processNode('receipt', node, 'handling receipt', handleReceipt))
 	})
 
-	ws.on('CB:notification', async (node: BinaryNode) => {
-		await processNode('notification', node, 'handling notification', handleNotification)
+	ws.on('CB:notification', (node: BinaryNode) => {
+		trackInboundTask('handling notification', () =>
+			processNode('notification', node, 'handling notification', handleNotification)
+		)
 	})
 	ws.on('CB:ack,class:message', (node: BinaryNode) => {
-		handleBadAck(node).catch(error => onUnexpectedError(error, 'handling bad ack'))
+		trackInboundTask('handling bad ack', () => handleBadAck(node))
 	})
 
-	ev.on('call', async ([call]) => {
-		if (!call) {
-			return
-		}
-
-		// missed call + group call notification message generation
-		if (call.status === 'timeout' || (call.status === 'offer' && call.isGroup)) {
-			const msg: WAMessage = {
-				key: {
-					remoteJid: call.chatId,
-					id: call.id,
-					fromMe: false
-				},
-				messageTimestamp: unixTimestampSeconds(call.date)
+	ev.on('call', ([call]) => {
+		trackInboundTask('recording call message', async () => {
+			if (!call) {
+				return
 			}
-			if (call.status === 'timeout') {
-				if (call.isGroup) {
-					msg.messageStubType = call.isVideo
-						? WAMessageStubType.CALL_MISSED_GROUP_VIDEO
-						: WAMessageStubType.CALL_MISSED_GROUP_VOICE
-				} else {
-					msg.messageStubType = call.isVideo ? WAMessageStubType.CALL_MISSED_VIDEO : WAMessageStubType.CALL_MISSED_VOICE
+
+			// missed call + group call notification message generation
+			if (call.status === 'timeout' || (call.status === 'offer' && call.isGroup)) {
+				const msg: WAMessage = {
+					key: {
+						remoteJid: call.chatId,
+						id: call.id,
+						fromMe: false
+					},
+					messageTimestamp: unixTimestampSeconds(call.date)
 				}
-			} else {
-				msg.message = { call: { callKey: Buffer.from(call.id) } }
-			}
+				if (call.status === 'timeout') {
+					if (call.isGroup) {
+						msg.messageStubType = call.isVideo
+							? WAMessageStubType.CALL_MISSED_GROUP_VIDEO
+							: WAMessageStubType.CALL_MISSED_GROUP_VOICE
+					} else {
+						msg.messageStubType = call.isVideo
+							? WAMessageStubType.CALL_MISSED_VIDEO
+							: WAMessageStubType.CALL_MISSED_VOICE
+					}
+				} else {
+					msg.message = { call: { callKey: Buffer.from(call.id) } }
+				}
 
-			const protoMsg = proto.WebMessageInfo.fromObject(msg) as WAMessage
-			await upsertMessage(protoMsg, call.offline ? 'append' : 'notify')
-		}
+				const protoMsg = proto.WebMessageInfo.fromObject(msg) as WAMessage
+				await upsertMessage(protoMsg, call.offline ? 'append' : 'notify')
+			}
+		})
 	})
 
 	ev.on('connection.update', ({ isOnline, connection }) => {
@@ -4725,8 +4754,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// rodar, persistindo índice vazio (review Codex P2 #476).
 		// O conteúdo de `tcTokenKnownJids` é solto naturalmente pelo GC
 		// quando o socket for descartado.
-		tcTokenRetriedMsgIds.clear()
-		inFlight463Recoveries.clear()
 		retryRequestActiveJids.clear()
 		identityInFlightRefreshes.clear()
 		// `tcTokenIndexSaveTimer` é cancelado pelo handler de connection.update

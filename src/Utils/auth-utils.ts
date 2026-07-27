@@ -521,6 +521,8 @@ export const addTransactionCapability = (
 
 		isInTransaction,
 
+		runOutsideTransaction: <T>(work: () => Promise<T>): Promise<T> => txStorage.exit(work),
+
 		afterCommit: work => {
 			const ctx = txStorage.getStore()
 			if (!ctx || ctx.sealed) {

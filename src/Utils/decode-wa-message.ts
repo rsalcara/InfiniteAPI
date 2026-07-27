@@ -28,6 +28,7 @@ import {
 	OrphanMsmsgError
 } from './meta-ai-msmsg'
 import { retry, RetryExhaustedError, type RetryOptions } from './retry-utils'
+import { LibsignalDecryptError } from './suppress-libsignal-logs'
 
 /**
  * Re-used sentinel for the msgBuffer initializer when the e2e type is `msmsg`
@@ -277,9 +278,9 @@ export const SERVER_ERROR_CODES = {
 	 */
 	MissingTcToken: '463',
 	/**
-	 * 1:1 message missing privacy token (tctoken). Usually means the account
-	 * is restricted: WhatsApp blocks starting new chats but preserves existing
-	 * ones, since established chats already carry a tctoken.
+	 * Message rejected by the account/reachout restriction policy. The numeric
+	 * ACK alone does not prove a missing privacy token, and issuing our token is
+	 * not a peer-token fetch, so callers must not automatically retry on 463.
 	 * Port de upstream `0b159bfefc`.
 	 */
 	MessageAccountRestriction: '463',
@@ -537,6 +538,17 @@ export const decryptMessageNode = (
 						fullMessage.retryCount = Number(attrs.count)
 					}
 
+					// Live-location duration is transport metadata on the encrypted
+					// child, not a field of LiveLocationMessage. This mirrors the
+					// official IncomingLiveLocationHandler, which reads
+					// `<enc duration="…">` and places it on WebMessageInfo.
+					if (tag === 'enc' && attrs.duration !== undefined) {
+						const duration = Number(attrs.duration)
+						if (Number.isSafeInteger(duration) && duration >= 0) {
+							fullMessage.duration = duration
+						}
+					}
+
 					if (tag !== 'enc' && tag !== 'plaintext') {
 						continue
 					}
@@ -680,6 +692,9 @@ export const decryptMessageNode = (
 							isSessionRecordError: isSessionRecord,
 							isCorruptedSession: isCorrupted,
 							isOrphanMsmsg,
+							...(originalError instanceof LibsignalDecryptError && {
+								signalFailureKinds: [...new Set(originalError.diagnostics.map(item => item.kind))]
+							}),
 							...(isRetryExhausted && { retriesExhausted: true, attempts: err.attempts })
 						}
 

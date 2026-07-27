@@ -9,7 +9,8 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { JidMapBackend, MultiDbSqliteStore, SignalTypedBackend } from '../../Utils/multi-db-sqlite'
+import { BufferJSON } from '../../Utils/generics'
+import { MultiDbSqliteStore, SignalTypedBackend } from '../../Utils/multi-db-sqlite'
 import { SignalTypedSourceStore } from '../../Utils/multi-db-sqlite/signal-typed-source'
 import { WAJIDDomains } from '../../WABinary'
 
@@ -18,14 +19,18 @@ describe('SignalTypedSourceStore identity typed-mirror (protocol-address ids)', 
 	let store: MultiDbSqliteStore
 	let source: SignalTypedSourceStore
 	let identityCount: () => number
+	const encoded = (value: string) => JSON.stringify(Buffer.from(value), BufferJSON.replacer)
+	const decoded = (value: string | null) =>
+		value === null ? null : Buffer.from(JSON.parse(value, BufferJSON.reviver)).toString()
+	const setIdentity = (id: string, value: string) => source.set('identity-key', id, encoded(value))
+	const getIdentity = (id: string) => decoded(source.get('identity-key', id))
 
 	beforeEach(async () => {
 		dir = await mkdtemp(join(tmpdir(), 'signal-identity-test-'))
 		store = new MultiDbSqliteStore({ sessionDir: dir })
 		await store.open()
 		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
-		const jidMap = new JidMapBackend(store.handle('msgstore.db'))
-		source = new SignalTypedSourceStore(backend, jidMap, undefined)
+		source = new SignalTypedSourceStore(backend, undefined)
 		identityCount = () =>
 			(store.handle('axolotl.db').prepare('SELECT COUNT(*) AS n FROM identities').get() as { n: number }).n
 	})
@@ -39,31 +44,31 @@ describe('SignalTypedSourceStore identity typed-mirror (protocol-address ids)', 
 	it('populates the typed identities table from a protocol-address id (was 0 before)', () => {
 		expect(identityCount()).toBe(0)
 
-		source.set('identity-key', `46802258641027_${WAJIDDomains.LID}.0`, 'PUBKEY-LID') // own LID identity
+		setIdentity(`46802258641027_${WAJIDDomains.LID}.0`, 'PUBKEY-LID')
 		expect(identityCount()).toBe(1)
 
-		source.set('identity-key', '5511999999999.3', 'PUBKEY-PN') // PN, device 3
+		setIdentity('5511999999999.3', 'PUBKEY-PN')
 		expect(identityCount()).toBe(2)
 
 		// A re-store of the same id upserts (no duplicate row).
-		source.set('identity-key', `46802258641027_${WAJIDDomains.LID}.0`, 'PUBKEY-LID-v2')
+		setIdentity(`46802258641027_${WAJIDDomains.LID}.0`, 'PUBKEY-LID-v2')
 		expect(identityCount()).toBe(2)
 	})
 
 	it('round-trips through get() for LID + PN protocol-address ids', () => {
 		const lid = `46802258641027_${WAJIDDomains.LID}.0`
-		source.set('identity-key', lid, 'PUBKEY-LID')
-		source.set('identity-key', '5511999999999.3', 'PUBKEY-PN')
+		setIdentity(lid, 'PUBKEY-LID')
+		setIdentity('5511999999999.3', 'PUBKEY-PN')
 
-		expect(source.get('identity-key', lid)).toBe('PUBKEY-LID')
-		expect(source.get('identity-key', '5511999999999.3')).toBe('PUBKEY-PN')
+		expect(getIdentity(lid)).toBe('PUBKEY-LID')
+		expect(getIdentity('5511999999999.3')).toBe('PUBKEY-PN')
 		expect(source.get('identity-key', '5500000000000.0')).toBeNull() // never stored
 	})
 
 	it('getMany equals the per-id get loop (hits, miss, unparseable)', () => {
 		const lid = `46802258641027_${WAJIDDomains.LID}.0`
-		source.set('identity-key', lid, 'PUBKEY-LID')
-		source.set('identity-key', '5511999999999.3', 'PUBKEY-PN')
+		setIdentity(lid, 'PUBKEY-LID')
+		setIdentity('5511999999999.3', 'PUBKEY-PN')
 
 		const ids = [lid, '5511999999999.3', '5500000000000.0', 'no-device-separator']
 		const expected: { [id: string]: string } = {}
@@ -78,24 +83,24 @@ describe('SignalTypedSourceStore identity typed-mirror (protocol-address ids)', 
 
 	it('a jid-shaped id still resolves via the fallback (belt-and-suspenders)', () => {
 		// A plain jid (no device separator) is handled by the jidDecode fallback.
-		source.set('identity-key', '46802258641027@lid', 'PUBKEY-JID')
+		setIdentity('46802258641027@lid', 'PUBKEY-JID')
 		expect(identityCount()).toBe(1)
-		expect(source.get('identity-key', '46802258641027@lid')).toBe('PUBKEY-JID')
+		expect(getIdentity('46802258641027@lid')).toBe('PUBKEY-JID')
 	})
 
 	it('an unparseable id writes no typed row', () => {
-		source.set('identity-key', 'totally-unparseable', 'X')
+		setIdentity('totally-unparseable', 'X')
 		expect(identityCount()).toBe(0)
 		expect(source.get('identity-key', 'totally-unparseable')).toBeNull()
 	})
 
 	it('an unsupported jid server cannot overwrite the typed PN identity', () => {
 		const user = '123456789'
-		source.set('identity-key', `${user}@s.whatsapp.net`, 'PN-KEY')
-		source.set('identity-key', `${user}@g.us`, 'UNSUPPORTED-SERVER-KEY')
+		setIdentity(`${user}@s.whatsapp.net`, 'PN-KEY')
+		setIdentity(`${user}@g.us`, 'UNSUPPORTED-SERVER-KEY')
 
 		expect(identityCount()).toBe(1)
-		expect(source.get('identity-key', `${user}@s.whatsapp.net`)).toBe('PN-KEY')
+		expect(getIdentity(`${user}@s.whatsapp.net`)).toBe('PN-KEY')
 		expect(source.get('identity-key', `${user}@g.us`)).toBeNull()
 	})
 
@@ -105,14 +110,14 @@ describe('SignalTypedSourceStore identity typed-mirror (protocol-address ids)', 
 	// overwrite the PN public key. They are left to the signal_kv fallback (null).
 	it('HOSTED / HOSTED_LID do not collide with a PN identity for the same user+device', () => {
 		const user = '123456789'
-		source.set('identity-key', `${user}.0`, 'PN-KEY') // WHATSAPP (PN)
-		source.set('identity-key', `${user}_${WAJIDDomains.HOSTED}.0`, 'HOSTED-KEY')
-		source.set('identity-key', `${user}_${WAJIDDomains.HOSTED_LID}.0`, 'HOSTED-LID-KEY')
+		setIdentity(`${user}.0`, 'PN-KEY')
+		setIdentity(`${user}_${WAJIDDomains.HOSTED}.0`, 'HOSTED-KEY')
+		setIdentity(`${user}_${WAJIDDomains.HOSTED_LID}.0`, 'HOSTED-LID-KEY')
 
 		// Only the PN identity is typed — hosted variants fall back to signal_kv.
 		expect(identityCount()).toBe(1)
 		// The PN key was NOT overwritten by a colliding hosted write.
-		expect(source.get('identity-key', `${user}.0`)).toBe('PN-KEY')
+		expect(getIdentity(`${user}.0`)).toBe('PN-KEY')
 		expect(source.get('identity-key', `${user}_${WAJIDDomains.HOSTED}.0`)).toBeNull()
 		expect(source.get('identity-key', `${user}_${WAJIDDomains.HOSTED_LID}.0`)).toBeNull()
 	})
@@ -120,11 +125,11 @@ describe('SignalTypedSourceStore identity typed-mirror (protocol-address ids)', 
 	// PN and LID for the same user+device are DISTINCT namespaces and must both
 	// be stored (different reconstructed servers → different jid rows).
 	it('PN and LID for the same user+device are stored as distinct identities', () => {
-		source.set('identity-key', '555.0', 'PN-KEY')
-		source.set('identity-key', `555_${WAJIDDomains.LID}.0`, 'LID-KEY')
+		setIdentity('555.0', 'PN-KEY')
+		setIdentity(`555_${WAJIDDomains.LID}.0`, 'LID-KEY')
 		expect(identityCount()).toBe(2)
-		expect(source.get('identity-key', '555.0')).toBe('PN-KEY')
-		expect(source.get('identity-key', `555_${WAJIDDomains.LID}.0`)).toBe('LID-KEY')
+		expect(getIdentity('555.0')).toBe('PN-KEY')
+		expect(getIdentity(`555_${WAJIDDomains.LID}.0`)).toBe('LID-KEY')
 	})
 
 	// P2 (audit): reads hit the typed table first, so a delete that failed to
@@ -132,7 +137,7 @@ describe('SignalTypedSourceStore identity typed-mirror (protocol-address ids)', 
 	// the typed identity for a protocol-address id.
 	it('del() removes the typed identity for a protocol-address id', () => {
 		const lid = `46802258641027_${WAJIDDomains.LID}.0`
-		source.set('identity-key', lid, 'PUBKEY-LID')
+		setIdentity(lid, 'PUBKEY-LID')
 		expect(identityCount()).toBe(1)
 
 		source.del('identity-key', lid)

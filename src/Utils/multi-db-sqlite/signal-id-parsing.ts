@@ -115,7 +115,13 @@ export function parseSenderKeyId(id: string): ParsedSenderKeyId | null {
 	return { groupId, sender: { ...parsedUser, deviceId } }
 }
 
-export type ParsedIdentityKey = { jid: string; recipientType: AccountType; deviceId: number | null }
+export type ParsedIdentityKey = {
+	/** Numeric PN/LID stored by WhatsApp in axolotl.identities.recipient_id. */
+	recipientId: number
+	jid: string
+	recipientType: AccountType
+	deviceId: number | null
+}
 
 export type IdentityKeyFallbackReason = 'unparseable' | 'hosted-domain' | 'unknown-domain' | 'unsupported-jid-server'
 
@@ -148,18 +154,27 @@ export function classifyIdentityKey(id: string): IdentityKeyParseResult {
 	const addr = parseProtocolAddressId(id)
 	if (addr) {
 		if (!addr.user) return { kind: 'fallback', reason: 'unparseable' }
+		const recipientId = parseNonNegativeInt(addr.user)
+		if (recipientId === null || !Number.isSafeInteger(recipientId)) {
+			return { kind: 'fallback', reason: 'unparseable' }
+		}
 
 		if (addr.domainType === WAJIDDomains.WHATSAPP) {
 			return {
 				kind: 'typed',
-				key: { jid: jidEncode(addr.user, 's.whatsapp.net'), recipientType: 0, deviceId: addr.deviceId }
+				key: {
+					recipientId,
+					jid: jidEncode(addr.user, 's.whatsapp.net'),
+					recipientType: 0,
+					deviceId: addr.deviceId
+				}
 			}
 		}
 
 		if (addr.domainType === WAJIDDomains.LID) {
 			return {
 				kind: 'typed',
-				key: { jid: jidEncode(addr.user, 'lid'), recipientType: 1, deviceId: addr.deviceId }
+				key: { recipientId, jid: jidEncode(addr.user, 'lid'), recipientType: 1, deviceId: addr.deviceId }
 			}
 		}
 
@@ -172,6 +187,10 @@ export function classifyIdentityKey(id: string): IdentityKeyParseResult {
 
 	const decoded = jidDecode(id)
 	if (!decoded?.user) return { kind: 'fallback', reason: 'unparseable' }
+	const recipientId = parseNonNegativeInt(decoded.user)
+	if (recipientId === null || !Number.isSafeInteger(recipientId)) {
+		return { kind: 'fallback', reason: 'unparseable' }
+	}
 
 	const domainType = decoded.domainType ?? WAJIDDomains.WHATSAPP
 	if (decoded.server === 'hosted' || decoded.server === 'hosted.lid') {
@@ -185,14 +204,24 @@ export function classifyIdentityKey(id: string): IdentityKeyParseResult {
 
 		return {
 			kind: 'typed',
-			key: { jid: jidEncode(decoded.user, 's.whatsapp.net'), recipientType: 0, deviceId: decoded.device ?? null }
+			key: {
+				recipientId,
+				jid: jidEncode(decoded.user, 's.whatsapp.net'),
+				recipientType: 0,
+				deviceId: decoded.device ?? null
+			}
 		}
 	}
 
 	if (decoded.server === 'lid') {
 		return {
 			kind: 'typed',
-			key: { jid: jidEncode(decoded.user, 'lid'), recipientType: 1, deviceId: decoded.device ?? null }
+			key: {
+				recipientId,
+				jid: jidEncode(decoded.user, 'lid'),
+				recipientType: 1,
+				deviceId: decoded.device ?? null
+			}
 		}
 	}
 

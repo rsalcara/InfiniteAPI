@@ -43,12 +43,17 @@ export * from './prometheus-metrics'
 // Resilience and performance
 export * from './cache-utils'
 export * from './retry-utils'
+export * from './retry-receipt'
 
 // Telemetry and detection mitigation
 export * from './unified-session'
 
 // Version management
 export * from './version-cache'
+export * from './native-android-transport'
+export * from './native-android-device-catalog'
+export * from './native-android-node-attestation'
+export * from './runtime-profile'
 
 // Health monitoring
 export * from './health-status'

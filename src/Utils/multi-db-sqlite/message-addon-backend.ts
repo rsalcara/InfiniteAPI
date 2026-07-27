@@ -70,6 +70,19 @@ export type RecordLocationInput = {
 	url?: string | null
 	liveLocationShareDurationSecs?: number | null
 	liveLocationSequenceNumber?: number | null
+	liveLocationFinalLatitude?: number | null
+	liveLocationFinalLongitude?: number | null
+	/** Unix milliseconds. */
+	liveLocationFinalTimestampMs?: number | null
+	mapDownloadStatus?: number | null
+}
+
+export type RecordFinalLiveLocationInput = {
+	messageRowId: number
+	latitude: number
+	longitude: number
+	/** Unix milliseconds. */
+	timestampMs: number
 }
 
 export type RecordVcardInput = {
@@ -152,6 +165,7 @@ export class MessageAddOnBackend {
 		insertPollOption: SqliteStatementLike
 		getPollOptionRowId: SqliteStatementLike
 		upsertLocation: SqliteStatementLike
+		updateFinalLiveLocation: SqliteStatementLike
 		insertVcard: SqliteStatementLike
 		getVcardRowId: SqliteStatementLike
 		insertVcardJid: SqliteStatementLike
@@ -216,10 +230,31 @@ export class MessageAddOnBackend {
 			),
 			upsertLocation: this.db.prepare(
 				'INSERT INTO message_location (message_row_id, chat_row_id, latitude, longitude, place_name, ' +
-					'place_address, url, live_location_share_duration, live_location_sequence_number) ' +
-					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(message_row_id) DO UPDATE SET ' +
-					'latitude = excluded.latitude, longitude = excluded.longitude, ' +
-					'live_location_sequence_number = excluded.live_location_sequence_number'
+					'place_address, url, live_location_share_duration, live_location_sequence_number, ' +
+					'live_location_final_latitude, live_location_final_longitude, live_location_final_timestamp, ' +
+					'map_download_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+					'ON CONFLICT(message_row_id) DO UPDATE SET ' +
+					'chat_row_id = excluded.chat_row_id, latitude = excluded.latitude, longitude = excluded.longitude, ' +
+					'place_name = COALESCE(excluded.place_name, place_name), ' +
+					'place_address = COALESCE(excluded.place_address, place_address), ' +
+					'url = COALESCE(excluded.url, url), ' +
+					'live_location_share_duration = COALESCE(excluded.live_location_share_duration, live_location_share_duration), ' +
+					'live_location_sequence_number = COALESCE(excluded.live_location_sequence_number, live_location_sequence_number), ' +
+					'live_location_final_latitude = CASE WHEN excluded.live_location_final_timestamp IS NOT NULL ' +
+					'AND (live_location_final_timestamp IS NULL OR excluded.live_location_final_timestamp > live_location_final_timestamp) ' +
+					'THEN excluded.live_location_final_latitude ELSE live_location_final_latitude END, ' +
+					'live_location_final_longitude = CASE WHEN excluded.live_location_final_timestamp IS NOT NULL ' +
+					'AND (live_location_final_timestamp IS NULL OR excluded.live_location_final_timestamp > live_location_final_timestamp) ' +
+					'THEN excluded.live_location_final_longitude ELSE live_location_final_longitude END, ' +
+					'live_location_final_timestamp = CASE WHEN excluded.live_location_final_timestamp IS NOT NULL ' +
+					'AND (live_location_final_timestamp IS NULL OR excluded.live_location_final_timestamp > live_location_final_timestamp) ' +
+					'THEN excluded.live_location_final_timestamp ELSE live_location_final_timestamp END, ' +
+					'map_download_status = excluded.map_download_status'
+			),
+			updateFinalLiveLocation: this.db.prepare(
+				'UPDATE message_location SET live_location_final_latitude = ?, ' +
+					'live_location_final_longitude = ?, live_location_final_timestamp = ? WHERE message_row_id = ? ' +
+					'AND (live_location_final_timestamp IS NULL OR ? > live_location_final_timestamp)'
 			),
 			insertVcard: this.db.prepare('INSERT INTO message_vcard (message_row_id, vcard) VALUES (?, ?)'),
 			getVcardRowId: this.db.prepare('SELECT _id FROM message_vcard WHERE message_row_id = ? AND vcard = ?'),
@@ -369,7 +404,23 @@ export class MessageAddOnBackend {
 			input.placeAddress ?? null,
 			input.url ?? null,
 			input.liveLocationShareDurationSecs ?? null,
-			input.liveLocationSequenceNumber ?? null
+			input.liveLocationSequenceNumber ?? null,
+			input.liveLocationFinalLatitude ?? null,
+			input.liveLocationFinalLongitude ?? null,
+			input.liveLocationFinalTimestampMs ?? null,
+			input.mapDownloadStatus ?? 0
+		)
+	}
+
+	recordFinalLiveLocation(input: RecordFinalLiveLocationInput): boolean {
+		return (
+			this.stmts.updateFinalLiveLocation.run(
+				input.latitude,
+				input.longitude,
+				input.timestampMs,
+				input.messageRowId,
+				input.timestampMs
+			).changes > 0
 		)
 	}
 
