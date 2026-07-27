@@ -10,7 +10,7 @@ import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { BufferJSON } from '../../Utils/generics'
-import { JidMapBackend, MultiDbSqliteStore, SignalTypedBackend } from '../../Utils/multi-db-sqlite'
+import { MultiDbSqliteStore, SignalTypedBackend } from '../../Utils/multi-db-sqlite'
 import { SignalTypedSourceStore } from '../../Utils/multi-db-sqlite/signal-typed-source'
 import { WAJIDDomains } from '../../WABinary'
 
@@ -30,8 +30,7 @@ describe('SignalTypedSourceStore identity typed-mirror (protocol-address ids)', 
 		store = new MultiDbSqliteStore({ sessionDir: dir })
 		await store.open()
 		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
-		const jidMap = new JidMapBackend(store.handle('msgstore.db'))
-		source = new SignalTypedSourceStore(backend, jidMap, undefined)
+		source = new SignalTypedSourceStore(backend, undefined)
 		identityCount = () =>
 			(store.handle('axolotl.db').prepare('SELECT COUNT(*) AS n FROM identities').get() as { n: number }).n
 	})

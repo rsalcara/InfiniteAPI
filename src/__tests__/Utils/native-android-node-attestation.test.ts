@@ -180,6 +180,24 @@ describe('native Android built-in Node attestation provider', () => {
 		}
 	})
 
+	it('rejects an unknown app variant before deriving its persistence path', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'infiniteapi-node-attestation-'))
+		try {
+			const provider = makeNativeAndroidNodeAttestationProvider({ storageDirectory: directory })
+			await expect(
+				provider({
+					stanza: { tag: 'iq', attrs: {} },
+					profileId: 'fixture',
+					appVariant: '../outside' as 'business',
+					clientAppId: WABA_CLIENT_APP_ID,
+					packageName: 'com.whatsapp.w4b'
+				})
+			).rejects.toThrow('appVariant must be business or consumer')
+		} finally {
+			await rm(directory, { force: true, recursive: true })
+		}
+	})
+
 	it('resolves native_android as an opt-in self-contained runtime', () => {
 		expect(
 			resolveInfiniteApiRuntimeProfile({

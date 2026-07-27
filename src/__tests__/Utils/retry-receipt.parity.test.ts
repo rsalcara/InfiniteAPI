@@ -16,7 +16,9 @@ import {
 import {
 	classifyLibsignalFailure,
 	installLibsignalDiagnostics,
+	isLibsignalCallerStack,
 	LibsignalDecryptError,
+	recordLibsignalFailureDiagnostic,
 	withLibsignalDiagnosticCapture
 } from '../../Utils/suppress-libsignal-logs'
 
@@ -200,13 +202,34 @@ describe('Signal retry reason parity', () => {
 	it('does not coerce arbitrary console arguments while collecting libsignal diagnostics', () => {
 		installLibsignalDiagnostics({ suppressLogs: true })
 		const nullPrototype = Object.create(null)
+		const hostileError = new Error('placeholder')
+		Object.defineProperty(hostileError, 'message', {
+			get: () => {
+				throw new Error('must not read hostile message')
+			}
+		})
 		const hostile = {
 			[Symbol.toPrimitive]: () => {
 				throw new Error('must not be coerced')
 			}
 		}
 
-		expect(() => console.error('Session error: Bad MAC', nullPrototype, hostile)).not.toThrow()
+		expect(() => console.error('Session error: Bad MAC', nullPrototype, hostile, hostileError)).not.toThrow()
+	})
+
+	it('recognizes only real libsignal caller frames, not the diagnostic wrapper filename', () => {
+		expect(
+			isLibsignalCallerStack(
+				'Error\n    at console.error (C:\\repo\\src\\Utils\\suppress-libsignal-logs.ts:180:49)\n' +
+					'    at applicationFailure (C:\\repo\\src\\Socket\\socket.ts:10:2)'
+			)
+		).toBe(false)
+		expect(
+			isLibsignalCallerStack(
+				'Error\n    at console.error (C:\\repo\\src\\Utils\\suppress-libsignal-logs.ts:180:49)\n' +
+					'    at SessionCipher.decrypt (C:\\repo\\node_modules\\libsignal\\session_cipher.js:42:7)'
+			)
+		).toBe(true)
 	})
 
 	it('retains Bad MAC diagnostics independently of output suppression', async () => {
@@ -214,8 +237,7 @@ describe('Signal retry reason parity', () => {
 
 		await expect(
 			withLibsignalDiagnosticCapture(async () => {
-				const session_cipher_candidate = () => console.error('Session error: Bad MAC for candidate session')
-				session_cipher_candidate()
+				recordLibsignalFailureDiagnostic('Session error: Bad MAC for candidate session')
 				throw new Error('No matching sessions found for message')
 			})
 		).rejects.toMatchObject<Partial<LibsignalDecryptError>>({

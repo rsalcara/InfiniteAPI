@@ -7,7 +7,6 @@ import type { ILogger } from '../logger'
 import { makeMutex } from '../make-mutex'
 import { hasPrekeyDirectDistributionIntent } from '../prekey-direct-distribution'
 import { prepareInClause } from './in-statement-cache'
-import { JidMapBackend } from './lid-mapping-backend'
 import { parseIdentityKey } from './signal-id-parsing'
 import { SignalTypedBackend } from './signal-typed-backend'
 import { isMirroredSignalType, mirrorSignalEntry } from './signal-typed-mirror'
@@ -159,7 +158,6 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	let signalStmts: ReturnType<typeof prepareSignalStatements>
 	let appStateSyncKeyStmts: ReturnType<typeof prepareAppStateSyncKeyStatements>
 	let signalTypedBackend: SignalTypedBackend
-	let signalMirrorJidMap: JidMapBackend
 	let signalTypedSource: SignalTypedSourceStore
 	// Authoritative (PK-jid) store for TC / "privacy" tokens, in wa.db. When
 	// `sourceOfTruth` is on, `'tctoken'` reads/writes route here (signal_kv stays
@@ -186,12 +184,10 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		// Typed-table backend for session/pre-key/sender-key/identity-key.
 		// In default mode it's the write target for the best-effort mirror
 		// (signal-typed-mirror.ts); when `signalSourceOfTruth` is on it backs
-		// the authoritative SignalTypedSourceStore below. `signalMirrorJidMap`
-		// remains required by the other typed mirrors; identities themselves
-		// use Android's numeric PN/LID recipient_id and do not reference jid._id.
+		// the authoritative SignalTypedSourceStore below. Identities use
+		// Android's numeric PN/LID recipient_id and do not reference jid._id.
 		signalTypedBackend = new SignalTypedBackend(store.handle('axolotl.db'))
-		signalMirrorJidMap = new JidMapBackend(store.handle('msgstore.db'))
-		signalTypedSource = new SignalTypedSourceStore(signalTypedBackend, signalMirrorJidMap, opts.logger)
+		signalTypedSource = new SignalTypedSourceStore(signalTypedBackend, opts.logger)
 		rehydrateTypedIdentities(store, signalTypedSource, opts.logger)
 		trustedContactsBackend = new TrustedContactsBackend(store.handle('wa.db'))
 	} catch (err) {
@@ -1113,10 +1109,14 @@ function rehydrateTypedIdentities(
 		.handle('axolotl.db')
 		.prepare("SELECT id, value FROM signal_kv WHERE type = 'identity-key' ORDER BY id")
 		.all() as Array<{ id: string; value: string }>
+	const typedValues = typedSource.getMany(
+		'identity-key',
+		rows.map(row => row.id)
+	)
 	let repaired = 0
 	for (const row of rows) {
 		try {
-			if (typedSource.get('identity-key', row.id) === row.value) continue
+			if (typedValues[row.id] === row.value) continue
 			// Hosted/unknown domains and malformed legacy ids deliberately remain
 			// signal_kv-only; do not report a skipped typed write as a repair.
 			if (!parseIdentityKey(row.id)) continue

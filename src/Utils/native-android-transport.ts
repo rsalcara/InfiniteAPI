@@ -77,6 +77,13 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 		throw new Boom('native_android: explicit appVariant must be business or consumer', { statusCode: 400 })
 	}
 
+	if (
+		config.appVersions !== undefined &&
+		(typeof config.appVersions !== 'object' || config.appVersions === null || Array.isArray(config.appVersions))
+	) {
+		throw new Boom('native_android: appVersions must be an object', { statusCode: 400 })
+	}
+
 	for (const [variant, version] of Object.entries(config.appVersions || {})) {
 		if (
 			(variant !== 'business' && variant !== 'consumer') ||
@@ -92,6 +99,10 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 		throw new Boom('native_android: automatic app fallback requires official business and consumer appVersions', {
 			statusCode: 400
 		})
+	}
+
+	if (config.initialRoutingInfo !== undefined && !(config.initialRoutingInfo instanceof Uint8Array)) {
+		throw new Boom('native_android: initialRoutingInfo must be bytes', { statusCode: 400 })
 	}
 
 	if (config.initialRoutingInfo && config.initialRoutingInfo.byteLength > 0xffffff) {

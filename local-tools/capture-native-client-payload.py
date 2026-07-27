@@ -61,11 +61,16 @@ def on_message(message, data):
 OUTPUT.parent.mkdir(parents=True, exist_ok=True)
 OUTPUT.unlink(missing_ok=True)
 
+device = None
+pid = None
 session = None
+spawned = False
+resumed = False
 try:
     device = frida.get_usb_device(timeout=10)
     print("[NATIVE-CLIENT-PAYLOAD] device acquired", flush=True)
     pid = device.spawn([PACKAGE])
+    spawned = True
     print(f"[NATIVE-CLIENT-PAYLOAD] spawned suspended {PACKAGE} pid={pid}", flush=True)
     session = device.attach(pid)
     print("[NATIVE-CLIENT-PAYLOAD] attached", flush=True)
@@ -73,6 +78,7 @@ try:
     script.on("message", on_message)
     script.load()
     device.resume(pid)
+    resumed = True
     print(f"[NATIVE-CLIENT-PAYLOAD] resumed {PACKAGE} pid={pid}", flush=True)
     deadline = time.monotonic() + float(os.getenv("CAPTURE_SECONDS", "60"))
     while time.monotonic() < deadline and not CAPTURED.wait(timeout=0.25):
@@ -82,3 +88,8 @@ except KeyboardInterrupt:
 finally:
     if session is not None:
         session.detach()
+    if spawned and not resumed and device is not None and pid is not None:
+        try:
+            device.kill(pid)
+        except frida.ProcessNotFoundError:
+            pass

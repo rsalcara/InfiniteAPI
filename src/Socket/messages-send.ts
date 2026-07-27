@@ -59,6 +59,7 @@ import {
 import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prometheus-metrics'
 import { appendParticipantFanoutNode } from '../Utils/relay-stanza'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
+import { resolveSessionFetchJids } from '../Utils/session-fetch-addressing'
 import {
 	getOrCreateTcTokenIssueFlight,
 	resolveTcTokenAliases,
@@ -702,12 +703,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		if (jidsRequiringFetch.length) {
 			// LID if mapped, otherwise original
-			const wireJids = [
-				...jidsRequiringFetch.filter(jid => isAnyLidUser(jid)),
-				...(
-					(await signalRepository.lidMapping.getLIDsForPNs(jidsRequiringFetch.filter(jid => isAnyPnUser(jid)))) || []
-				).map(a => a.lid)
-			]
+			const pnJids = jidsRequiringFetch.filter(jid => isAnyPnUser(jid))
+			const mappings = (await signalRepository.lidMapping.getLIDsForPNs(pnJids)) || []
+			const wireJids = resolveSessionFetchJids(jidsRequiringFetch, mappings)
 
 			logger.debug({ jidsRequiringFetch, wireJids }, 'fetching sessions')
 			const result = await query({

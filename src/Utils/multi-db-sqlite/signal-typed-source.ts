@@ -29,7 +29,6 @@
  */
 import { BufferJSON } from '../generics'
 import type { ILogger } from '../logger'
-import type { JidMapBackend } from './lid-mapping-backend'
 import type { IdentityKeyFallback } from './signal-id-parsing'
 import {
 	classifyIdentityKey,
@@ -70,7 +69,7 @@ export class SignalTypedSourceStore {
 	private readonly backend: SignalTypedBackend
 	private readonly logger?: ILogger
 
-	constructor(backend: SignalTypedBackend, _jidMap: JidMapBackend, logger?: ILogger) {
+	constructor(backend: SignalTypedBackend, logger?: ILogger) {
 		this.backend = backend
 		this.logger = logger
 	}

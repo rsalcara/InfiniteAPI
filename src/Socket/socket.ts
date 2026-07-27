@@ -2118,7 +2118,6 @@ export const makeSocket = (config: SocketConfig) => {
 				device: fallback
 			}
 			transportSession.nativeAndroid!.device = fallback
-			config.nativeAndroid!.device = fallback
 			ev.emit('creds.update', { nativeAndroidIdentity: authState.creds.nativeAndroidIdentity })
 			logger.warn(
 				{

@@ -77,6 +77,32 @@ export const classifyLibsignalFailure = (message: string): LibsignalFailureKind 
 	return undefined
 }
 
+const ownDiagnosticFrame = /[\\/]suppress-libsignal-logs\.(?:[cm]?[jt]s)(?::\d+:\d+)?\)?$/i
+const libsignalFrame =
+	/(?:[\\/]node_modules[\\/](?:@whiskeysockets[\\/])?libsignal[\\/]|[\\/]libsignal[\\/]|session_cipher\.)/i
+
+/**
+ * Match the real caller frames only. The interceptor itself has "libsignal"
+ * in its filename, so testing the complete stack would classify every
+ * application console.error as a Signal failure.
+ */
+export const isLibsignalCallerStack = (stack: string): boolean =>
+	stack
+		.split('\n')
+		.map(line => line.trim())
+		.filter(line => line && !ownDiagnosticFrame.test(line))
+		.some(line => libsignalFrame.test(line))
+
+const safeErrorMessage = (value: unknown): string => {
+	if (typeof value === 'string') return value
+	if (!(value instanceof Error)) return ''
+	try {
+		return typeof value.message === 'string' ? value.message : ''
+	} catch {
+		return ''
+	}
+}
+
 export async function withLibsignalDiagnosticCapture<T>(work: () => Promise<T>): Promise<T> {
 	const diagnostics: LibsignalFailureDiagnostic[] = []
 	try {
@@ -141,17 +167,13 @@ export function installLibsignalDiagnostics(options: LibsignalDiagnosticOptions 
 			// Never coerce arbitrary caller objects: null-prototype objects and
 			// hostile Symbol.toPrimitive implementations can throw here and
 			// must not make a diagnostic filter break application code.
-			const msg = args
-				.map(arg => (arg instanceof Error ? arg.message : typeof arg === 'string' ? arg : ''))
-				.filter(Boolean)
-				.join(' ')
+			const msg = args.map(safeErrorMessage).filter(Boolean).join(' ')
 			// Stack-frame detection: libsignal frames carry the filename in the
 			// V8 stack output. In minified / containerized builds this filename
 			// may be rewritten — if that happens, the filter degrades into a
 			// pure pass-through (no false positives, no false negatives on
 			// non-libsignal callers). That's the safer failure mode.
-			const stack = new Error().stack || ''
-			const isFromLibsignal = stack.includes('libsignal') || stack.includes('session_cipher')
+			const isFromLibsignal = isLibsignalCallerStack(new Error().stack || '')
 
 			if (isFromLibsignal) {
 				recordLibsignalFailureDiagnostic(msg)

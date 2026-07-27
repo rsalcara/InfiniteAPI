@@ -163,7 +163,7 @@ export const mirrorHistoryMessagesToStore = async (
 				? null
 				: jidNormalizedUser(message.key.participant || message.key.remoteJid || '')
 			inputs.push({
-				chatJid: jidNormalizedUser(remoteJid),
+				chatJid: jidNormalizedUser(getChatId(message.key)),
 				fromMe: !!message.key.fromMe,
 				keyId,
 				senderJid,

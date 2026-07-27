@@ -319,6 +319,10 @@ export const makeNativeAndroidNodeAttestationProvider = (
 	const stores = new Map<string, ReturnType<typeof makeNodeX509AttestationStore>>()
 
 	return async ({ appVariant, clientAppId }) => {
+		if (appVariant !== 'business' && appVariant !== 'consumer') {
+			throw new Error('native_android: appVariant must be business or consumer')
+		}
+
 		if (!/^\d{15}$/.test(clientAppId)) {
 			throw new Error('native_android: clientAppId must contain exactly 15 digits')
 		}

@@ -58,6 +58,29 @@ describe('history-sync message mirror', () => {
 		])
 	})
 
+	it('stores an incoming broadcast history row under its participant chat', async () => {
+		const recordMessages = jest.fn(() => [1])
+		const backend = { recordMessages } as any
+		const message: WAMessage = {
+			key: {
+				remoteJid: '12345@broadcast',
+				participant: '5511999999999@s.whatsapp.net',
+				fromMe: false,
+				id: 'HISTORY-BROADCAST'
+			},
+			messageTimestamp: 1_700_000_000,
+			message: { conversation: 'broadcast text' }
+		}
+
+		await mirrorHistoryMessagesToStore([message], backend)
+		expect(recordMessages).toHaveBeenCalledWith([
+			expect.objectContaining({
+				chatJid: '5511999999999@s.whatsapp.net',
+				keyId: 'HISTORY-BROADCAST'
+			})
+		])
+	})
+
 	it('carries Android album-root counters into the relational history mirror', async () => {
 		const recordMessages = jest.fn(() => [99])
 		const backend = { recordMessages } as any

@@ -26,16 +26,23 @@ def record(payload):
     global SEEN_PAYLOAD
 
     line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    print(line, flush=True)
     fd = os.open(OUTPUT, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8", newline="\n") as capture_file:
         capture_file.write(line + "\n")
 
-    if payload.get("kind") == "client-payload":
+    kind = payload.get("kind")
+    tag = payload.get("tag")
+    print(
+        f"[NATIVE-REGISTRATION] captured kind={kind or 'unknown'}"
+        + (f" tag={tag}" if tag else ""),
+        flush=True,
+    )
+
+    if kind == "client-payload":
         SEEN_PAYLOAD = True
     elif (
-        payload.get("kind") == "binary-node"
-        and payload.get("tag") == "pair-device-sign"
+        kind == "binary-node"
+        and tag == "pair-device-sign"
         and SEEN_PAYLOAD
     ):
         COMPLETED.set()

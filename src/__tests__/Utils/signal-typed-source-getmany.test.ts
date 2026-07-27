@@ -10,7 +10,7 @@ import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { BufferJSON } from '../../Utils/generics'
-import { JidMapBackend, MultiDbSqliteStore, SignalTypedBackend } from '../../Utils/multi-db-sqlite'
+import { MultiDbSqliteStore, SignalTypedBackend } from '../../Utils/multi-db-sqlite'
 import { SignalTypedSourceStore, type TypedSignalType } from '../../Utils/multi-db-sqlite/signal-typed-source'
 import { WAJIDDomains } from '../../WABinary'
 
@@ -24,8 +24,7 @@ describe('SignalTypedSourceStore.getMany equivalence (#618/#619)', () => {
 		store = new MultiDbSqliteStore({ sessionDir: dir })
 		await store.open()
 		const backend = new SignalTypedBackend(store.handle('axolotl.db'))
-		const jidMap = new JidMapBackend(store.handle('msgstore.db'))
-		source = new SignalTypedSourceStore(backend, jidMap, undefined)
+		source = new SignalTypedSourceStore(backend, undefined)
 	})
 
 	afterEach(async () => {

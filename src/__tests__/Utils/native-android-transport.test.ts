@@ -456,6 +456,18 @@ describe('native_android transport contract', () => {
 				device: { ...nativeAndroid.device, phoneId: '' }
 			})
 		).toThrow('phoneId is required')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
+				appVersions: 42 as unknown as NativeAndroidTransportConfig['appVersions']
+			})
+		).toThrow('appVersions must be an object')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
+				initialRoutingInfo: 'not-bytes' as unknown as Uint8Array
+			})
+		).toThrow('initialRoutingInfo must be bytes')
 
 		const creds = initAuthCreds()
 		resolveTransportSession(nativeConfig(), creds)

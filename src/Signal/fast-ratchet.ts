@@ -1,16 +1,11 @@
 import $protobuf from 'protobufjs/minimal.js'
+import type { SignalDataTypeMap } from '../Types'
 import { generateSenderKey, generateSenderKeyId, generateSenderSigningKey } from './Group/keyhelper'
 
 const FAST_RATCHET_VERSION = Buffer.from([0x33])
 const FAST_RATCHET_CHAIN_COUNT = 8
 
-export type FastRatchetSenderKeyState = {
-	senderKeyId: number
-	iteration: number
-	chainKeys: Buffer[]
-	signingPublic: Buffer
-	signingPrivate: Buffer
-}
+export type FastRatchetSenderKeyState = SignalDataTypeMap['fast-ratchet-sender-key']
 
 const writeBytes = ($writer: $protobuf.Writer, field: number, value: Uint8Array): void => {
 	$writer.uint32((field << 3) | 2).bytes(value)
