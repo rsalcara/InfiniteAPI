@@ -21,6 +21,7 @@ import { delay, generateRegistrationId } from './generics'
 import { makeLockManager } from './lock-manager'
 import type { ILogger } from './logger'
 import { PreKeyManager } from './pre-key-manager'
+import { isExpectedSocketTeardownError } from './socket-teardown'
 
 /**
  * Transaction context stored in AsyncLocalStorage.
@@ -633,12 +634,16 @@ export const addTransactionCapability = (
 					return result
 				} catch (err) {
 					ctx.sealed = true
-					logger.error(
-						{ err },
-						committed
-							? 'transaction post-commit callback failed; durable mutations remain committed'
-							: 'transaction failed, rolling back'
-					)
+					const message = committed
+						? 'transaction post-commit callback failed; durable mutations remain committed'
+						: 'transaction failed, rolling back'
+
+					if (isExpectedSocketTeardownError(err)) {
+						logger.debug({ err }, message)
+					} else {
+						logger.error({ err }, message)
+					}
+
 					throw err
 				} finally {
 					activeTransactions--

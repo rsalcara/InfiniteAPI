@@ -53,8 +53,10 @@ import {
 	markConnectionActive,
 	markConnectionInactive,
 	recordConnectionAttempt,
-	recordConnectionError
+	recordConnectionError,
+	recordConnectionRestart
 } from '../Utils/prometheus-metrics'
+import { createExpectedSocketTeardownError, isExpectedSocketTeardownError } from '../Utils/socket-teardown'
 import {
 	createUnifiedSessionManager,
 	extractServerTime,
@@ -80,6 +82,7 @@ import { getAuthStoreDrainBarrier, registerAuthStoreDrainBarrier } from './auth-
 import { TcpSocketClient, WebSocketClient } from './Client'
 import { executeWMexQuery } from './mex'
 import { createOfflineBufferState } from './offline-buffer-state'
+import { createPushNameAnnouncementTracker } from './push-name-announcement'
 import { makeReachoutTimelockRemediation, type RemoveReachoutTimelockServerResult } from './reachout-remediation'
 
 /**
@@ -235,6 +238,8 @@ export const makeSocket = (config: SocketConfig) => {
 	const sendPromise = promisify(ws.send)
 	/** send a raw buffer */
 	const sendRawMessage = async (data: Uint8Array | Buffer) => {
+		if (closed) throw createExpectedSocketTeardownError()
+
 		if (!ws.isOpen) {
 			throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
 		}
@@ -245,7 +250,7 @@ export const makeSocket = (config: SocketConfig) => {
 				await sendPromise.call(ws, bytes)
 				resolve()
 			} catch (error) {
-				reject(error)
+				reject(closed ? createExpectedSocketTeardownError() : error)
 			}
 		})
 	}
@@ -283,6 +288,8 @@ export const makeSocket = (config: SocketConfig) => {
 	 * @param timeoutMs timeout after which the promise will reject
 	 */
 	const waitForMessage = async <T>(msgId: string, timeoutMs = defaultQueryTimeoutMs) => {
+		if (closed) throw createExpectedSocketTeardownError()
+
 		let onRecv: ((data: T) => void) | undefined
 		let onErr: ((err: Error) => void) | undefined
 		try {
@@ -293,10 +300,12 @@ export const makeSocket = (config: SocketConfig) => {
 
 				onErr = err => {
 					reject(
-						err ||
-							new Boom('Connection Closed', {
-								statusCode: DisconnectReason.connectionClosed
-							})
+						closed
+							? createExpectedSocketTeardownError()
+							: err ||
+									new Boom('Connection Closed', {
+										statusCode: DisconnectReason.connectionClosed
+									})
 					)
 				}
 
@@ -618,11 +627,30 @@ export const makeSocket = (config: SocketConfig) => {
 
 	/** log & process any unexpected errors */
 	const onUnexpectedError = (err: Error | Boom, msg: string) => {
+		if (isExpectedSocketTeardownError(err)) {
+			logger.debug({ msg }, 'in-flight socket work cancelled by connection teardown')
+			return
+		}
+
 		logger.error({ err }, `unexpected error in '${msg}'`)
+	}
+
+	const mapSocketLifecycleError = (handler: (err: Error) => void) => {
+		const handleWebSocketError = mapWebSocketError(handler)
+
+		return (error: Error) => {
+			if (closed) {
+				handler(createExpectedSocketTeardownError(error))
+			} else {
+				handleWebSocketError(error)
+			}
+		}
 	}
 
 	/** await the next incoming message */
 	const awaitNextMessage = async <T>(sendMsg?: Uint8Array) => {
+		if (closed) throw createExpectedSocketTeardownError()
+
 		if (!ws.isOpen) {
 			throw new Boom('Connection Closed', {
 				statusCode: DisconnectReason.connectionClosed
@@ -634,7 +662,7 @@ export const makeSocket = (config: SocketConfig) => {
 
 		const result = promiseTimeout<T>(connectTimeoutMs, (resolve, reject) => {
 			onOpen = resolve
-			onClose = mapWebSocketError(reject)
+			onClose = mapSocketLifecycleError(reject)
 			ws.on('frame', onOpen)
 			ws.on('close', onClose)
 			ws.on('error', onClose)
@@ -1411,11 +1439,35 @@ export const makeSocket = (config: SocketConfig) => {
 
 		closed = true // ← Set IMMEDIATELY to close race window
 
-		logger.info({ trace: error?.stack }, error ? 'connection errored' : 'connection closed')
+		// Close admission before the first await in teardown. Each async drain
+		// handler executes its synchronous prefix immediately, preventing new
+		// message/receipt/notification work from entering while lifecycle
+		// services are stopping.
+		const drainPromises = socketDrainHandlers.map(async handler => {
+			try {
+				await handler(error)
+			} catch (err) {
+				logger.error({ err, connectionId }, 'error draining socket processing')
+			}
+		})
+
+		const statusCode = error ? (error as Boom)?.output?.statusCode || 0 : 0
+		const restartRequired = statusCode === DisconnectReason.restartRequired
+
+		if (restartRequired) {
+			logger.debug(
+				{ statusCode, reason: 'restartRequired' },
+				'closing initial socket for the required authenticated restart'
+			)
+			recordConnectionRestart('restart_required')
+		} else {
+			logger.info({ trace: error?.stack }, error ? 'connection errored' : 'connection closed')
+		}
 
 		// Record connection error metric
-		if (error) {
-			const statusCode = (error as Boom)?.output?.statusCode || 0
+		// restartRequired (515) is expected control flow after pairing or
+		// registration, not a failed connection attempt.
+		if (error && !restartRequired) {
 			let errorType = 'unknown'
 			switch (statusCode) {
 				case DisconnectReason.connectionClosed:
@@ -1435,9 +1487,6 @@ export const makeSocket = (config: SocketConfig) => {
 					break
 				case DisconnectReason.badSession:
 					errorType = 'bad_session'
-					break
-				case DisconnectReason.restartRequired:
-					errorType = 'restart_required'
 					break
 				case DisconnectReason.multideviceMismatch:
 					errorType = 'multidevice_mismatch'
@@ -1487,19 +1536,6 @@ export const makeSocket = (config: SocketConfig) => {
 
 		// Clean up unified session manager
 		unifiedSessionManager?.destroy()
-
-		// Start every drain handler before touching the transport. Calling an
-		// async handler runs its synchronous prefix immediately, so receivers
-		// stop admitting new high-level work before the first await. Keep the
-		// raw message listener alive for now: in-flight IQ/USync requests still
-		// need it to receive a final response while the socket remains usable.
-		const drainPromises = socketDrainHandlers.map(async handler => {
-			try {
-				await handler(error)
-			} catch (err) {
-				logger.error({ err, connectionId }, 'error draining socket processing')
-			}
-		})
 
 		// CRITICAL: Wait for pending pre-key upload before destroying transaction capability
 		// This prevents destroying resources while they're in use
@@ -1555,18 +1591,25 @@ export const makeSocket = (config: SocketConfig) => {
 			registerAuthStoreDrainBarrier(authState.keys, deferredDrain)
 		}
 
+		// Keep the raw message listener alive until the drain finishes: in-flight
+		// IQ/USync requests may still need one final response while the socket is
+		// usable. Removing it earlier can strand already-sent queries.
 		ws.removeAllListeners('close')
 		ws.removeAllListeners('open')
 		ws.removeAllListeners('message')
 
 		// Detect socket-level session errors that require recreation
-		const statusCode = (error as Boom)?.output?.statusCode || 0
 		const isSessionError = statusCode === DisconnectReason.badSession || statusCode === DisconnectReason.restartRequired
 
-		if (isSessionError) {
+		if (restartRequired) {
+			logger.info(
+				{ statusCode, reason: DisconnectReason[statusCode], action: 'recreate-socket' },
+				'pairing completed; restarting socket to continue with the authenticated session'
+			)
+		} else if (isSessionError) {
 			logger.warn(
 				{ statusCode, reason: DisconnectReason[statusCode] },
-				'🔴 Socket-level session error - consumer should recreate socket'
+				'socket-level session error; consumer should recreate socket'
 			)
 		}
 
@@ -1603,6 +1646,8 @@ export const makeSocket = (config: SocketConfig) => {
 	}
 
 	const waitForSocketOpen = async () => {
+		if (closed) throw createExpectedSocketTeardownError()
+
 		if (ws.isOpen) {
 			return
 		}
@@ -1615,7 +1660,7 @@ export const makeSocket = (config: SocketConfig) => {
 		let onClose: (err: Error) => void
 		await new Promise((resolve, reject) => {
 			onOpen = () => resolve(undefined)
-			onClose = mapWebSocketError(reject)
+			onClose = mapSocketLifecycleError(reject)
 			ws.on('open', onOpen)
 			ws.on('close', onClose)
 			ws.on('error', onClose)
@@ -1652,7 +1697,11 @@ export const makeSocket = (config: SocketConfig) => {
 					},
 					content: [{ tag: 'ping', attrs: {} }]
 				}).catch(err => {
-					logger.error({ trace: err.stack }, 'error in sending keep alive')
+					if (isExpectedSocketTeardownError(err)) {
+						logger.debug('keep alive cancelled by socket teardown')
+					} else {
+						logger.error({ trace: err.stack }, 'error in sending keep alive')
+					}
 				})
 			} else {
 				logger.warn('keep alive called when WS not open')
@@ -2084,6 +2133,8 @@ export const makeSocket = (config: SocketConfig) => {
 			logger.warn({ node }, 'stream error: sent malformed stanza (xml-not-well-formed)')
 		} else if (reason === 'ack') {
 			logger.warn({ ackId: reasonNode?.attrs?.id, node }, 'stream error: ack-based error')
+		} else if (statusCode === DisconnectReason.restartRequired) {
+			logger.debug({ reason, statusCode, action: 'recreate-socket' }, 'stream restart required after pairing')
 		} else {
 			logger.error({ reason, statusCode, node }, 'stream errored out')
 		}
@@ -2214,21 +2265,51 @@ export const makeSocket = (config: SocketConfig) => {
 		ev.emit('connection.update', { receivedPendingNotifications: true })
 	})
 
+	// Network announcement state belongs to this socket, not to durable
+	// credentials. A replacement socket starts undefined and announces the
+	// persisted name again when CB:success emits its creds update.
+	const pushNameAnnouncement = createPushNameAnnouncementTracker()
+
 	// update credentials when required
 	ev.on('creds.update', update => {
 		const name = update.me?.name
-		// if name has just been received
-		if (creds.me?.name !== name) {
-			logger.debug({ name }, 'updated pushName')
-			sendNode({
-				tag: 'presence',
-				attrs: { name: name! }
-			}).catch(err => {
-				logger.warn({ trace: err.stack }, 'error in sending presence update on name change')
-			})
-		}
-
+		// Persist first. Presence is a best-effort network announcement and
+		// must never roll back server-provided credential state.
 		Object.assign(creds, update)
+
+		if (typeof name === 'string' && pushNameAnnouncement.needsAnnouncement(name)) {
+			if (!closed && ws.isOpen) {
+				pushNameAnnouncement.markStarted(name)
+				sendNode({
+					tag: 'presence',
+					attrs: { name }
+				})
+					.then(() => logger.debug('push name persisted and presence announcement sent'))
+					.catch(err => {
+						pushNameAnnouncement.markFailed(name)
+
+						if (isExpectedSocketTeardownError(err)) {
+							logger.debug(
+								{ action: 'retry-on-next-socket' },
+								'push name persisted; presence announcement cancelled because the socket is closing'
+							)
+						} else {
+							logger.warn(
+								{
+									error: err instanceof Error ? err.message : 'unknown presence-send failure',
+									action: 'retry-on-next-credentials-update'
+								},
+								'push name persisted, but presence announcement failed; the credential was not rolled back'
+							)
+						}
+					})
+			} else {
+				logger.debug(
+					{ action: 'announce-on-next-socket' },
+					'push name persisted; presence announcement deferred because the socket is not active'
+				)
+			}
+		}
 	})
 
 	/**
@@ -2328,6 +2409,9 @@ export const makeSocket = (config: SocketConfig) => {
 		end,
 		registerSocketEndHandler,
 		registerSocketDrainHandler,
+		// Internal lifecycle probe used by receive-path guards. It is exposed on
+		// the composed socket object for local modules, not as a consumer API.
+		isSocketClosed: () => closed,
 		onUnexpectedError,
 		uploadPreKeys,
 		uploadPreKeysToServerIfRequired,
