@@ -19,4 +19,15 @@ describe('socket teardown errors', () => {
 		expect(isExpectedSocketTeardownError(new Error('database failed'))).toBe(false)
 		expect(isExpectedSocketTeardownError(undefined)).toBe(false)
 	})
+
+	it('fails closed when unknown error properties throw during inspection', () => {
+		const hostileError = Object.defineProperty({}, 'data', {
+			get: () => {
+				throw new Error('hostile getter')
+			}
+		})
+
+		expect(() => isExpectedSocketTeardownError(hostileError)).not.toThrow()
+		expect(isExpectedSocketTeardownError(hostileError)).toBe(false)
+	})
 })

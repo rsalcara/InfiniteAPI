@@ -25,14 +25,21 @@ export const createExpectedSocketTeardownError = () =>
 export const isExpectedSocketTeardownError = (error: unknown): boolean => {
 	if (!error || typeof error !== 'object') return false
 
-	const candidate = error as BoomLike
-	const data = candidate.data
+	try {
+		const candidate = error as BoomLike
+		const data = candidate.data
 
-	return (
-		candidate.output?.statusCode === CONNECTION_CLOSED_STATUS_CODE &&
-		typeof data === 'object' &&
-		data !== null &&
-		'reason' in data &&
-		(data as { reason?: unknown }).reason === SOCKET_TEARDOWN_REASON
-	)
+		return (
+			candidate.output?.statusCode === CONNECTION_CLOSED_STATUS_CODE &&
+			typeof data === 'object' &&
+			data !== null &&
+			'reason' in data &&
+			(data as { reason?: unknown }).reason === SOCKET_TEARDOWN_REASON
+		)
+	} catch {
+		// Error handling must never replace the original failure with an
+		// exception raised by a hostile Proxy/getter. Unknown shapes remain
+		// visible to the normal error path.
+		return false
+	}
 }
