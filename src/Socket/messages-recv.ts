@@ -1,7 +1,6 @@
 /* eslint-disable max-depth, @typescript-eslint/no-unused-vars */
 import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
-import { AsyncLocalStorage } from 'async_hooks'
 import { randomBytes } from 'crypto'
 import Long from 'long'
 import { proto } from '../../WAProto/index.js'
@@ -155,6 +154,7 @@ const summarizeInboundNode = (node: BinaryNode) => ({
 		: []
 })
 import { extractGroupMetadata } from './groups'
+import { createInboundTaskAdmission } from './inbound-task-admission'
 import { makeMessagesSocket } from './messages-send'
 
 // Set imutável de valores válidos do enum (port de upstream `c89d97b13b`,
@@ -4515,18 +4515,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		return new Promise(resolve => setImmediate(resolve))
 	}
 
-	let acceptingInboundTasks = true
-	const inboundTasks = new Set<Promise<void>>()
-	const inboundTaskAdmission = new AsyncLocalStorage<boolean>()
+	const inboundTaskAdmission = createInboundTaskAdmission(onUnexpectedError)
 	const trackInboundTask = (identifier: string, factory: () => Promise<void>): void => {
-		const isDerivedFromAdmittedTask = inboundTaskAdmission.getStore() === true
-		if (!acceptingInboundTasks && !isDerivedFromAdmittedTask) return
-
-		const task = inboundTaskAdmission
-			.run(true, factory)
-			.catch(error => onUnexpectedError(error instanceof Error ? error : new Error(String(error)), identifier))
-		inboundTasks.add(task)
-		void task.finally(() => inboundTasks.delete(task))
+		inboundTaskAdmission.track(identifier, factory)
 	}
 
 	const nodeProcessorMap: Map<MessageType, (node: BinaryNode) => Promise<void>> = new Map([
@@ -4549,11 +4540,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	)
 
 	registerSocketDrainHandler(async () => {
-		acceptingInboundTasks = false
+		const admittedTasks = inboundTaskAdmission.close()
+		logger.debug({ admittedTasks }, 'socket teardown: inbound admission closed; draining work accepted before shutdown')
 		await offlineNodeProcessor.stopAndDrain()
-		while (inboundTasks.size > 0) {
-			await Promise.allSettled([...inboundTasks])
-		}
+		await inboundTaskAdmission.drain()
+		logger.debug('socket teardown: inbound work drained; auth stores can now close safely')
 	})
 
 	const processNode = async (

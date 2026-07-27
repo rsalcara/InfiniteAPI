@@ -82,6 +82,7 @@ import { getAuthStoreDrainBarrier, registerAuthStoreDrainBarrier } from './auth-
 import { TcpSocketClient, WebSocketClient } from './Client'
 import { executeWMexQuery } from './mex'
 import { createOfflineBufferState } from './offline-buffer-state'
+import { createPushNameAnnouncementTracker } from './push-name-announcement'
 import { makeReachoutTimelockRemediation, type RemoveReachoutTimelockServerResult } from './reachout-remediation'
 
 /**
@@ -2264,43 +2265,51 @@ export const makeSocket = (config: SocketConfig) => {
 		ev.emit('connection.update', { receivedPendingNotifications: true })
 	})
 
+	// Network announcement state belongs to this socket, not to durable
+	// credentials. A replacement socket starts undefined and announces the
+	// persisted name again when CB:success emits its creds update.
+	const pushNameAnnouncement = createPushNameAnnouncementTracker()
+
 	// update credentials when required
 	ev.on('creds.update', update => {
 		const name = update.me?.name
-		// if name has just been received
-		if (typeof name === 'string' && creds.me?.name !== name) {
-			const previousName = creds.me?.name
-			const restorePreviousName = () => {
-				if (creds.me?.name !== name) return
+		// Persist first. Presence is a best-effort network announcement and
+		// must never roll back server-provided credential state.
+		Object.assign(creds, update)
 
-				if (typeof previousName === 'undefined') {
-					delete creds.me.name
-				} else {
-					creds.me.name = previousName
-				}
-			}
-
-			logger.debug({ name }, 'updated pushName')
+		if (typeof name === 'string' && pushNameAnnouncement.needsAnnouncement(name)) {
 			if (!closed && ws.isOpen) {
+				pushNameAnnouncement.markStarted(name)
 				sendNode({
 					tag: 'presence',
 					attrs: { name }
-				}).catch(err => {
-					if (isExpectedSocketTeardownError(err)) {
-						restorePreviousName()
-						logger.debug('presence update skipped because the socket is closing')
-					} else {
-						restorePreviousName()
-						logger.warn({ trace: err.stack }, 'error in sending presence update on name change')
-					}
 				})
+					.then(() => logger.debug('push name persisted and presence announcement sent'))
+					.catch(err => {
+						pushNameAnnouncement.markFailed(name)
+
+						if (isExpectedSocketTeardownError(err)) {
+							logger.debug(
+								{ action: 'retry-on-next-socket' },
+								'push name persisted; presence announcement cancelled because the socket is closing'
+							)
+						} else {
+							logger.warn(
+								{
+									error: err instanceof Error ? err.message : 'unknown presence-send failure',
+									action: 'retry-on-next-credentials-update'
+								},
+								'push name persisted, but presence announcement failed; the credential was not rolled back'
+							)
+						}
+					})
 			} else {
-				queueMicrotask(restorePreviousName)
-				logger.debug('presence update skipped because the socket is not active')
+				logger.debug(
+					{ action: 'announce-on-next-socket' },
+					'push name persisted; presence announcement deferred because the socket is not active'
+				)
 			}
 		}
-
-		Object.assign(creds, update)
 	})
 
 	/**
