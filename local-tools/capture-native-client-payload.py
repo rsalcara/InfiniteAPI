@@ -18,12 +18,31 @@ OUTPUT = TOOL_DIR / OUTPUT_NAME
 CAPTURED = threading.Event()
 
 
+def contains_hex_capture(payload):
+    if isinstance(payload, dict):
+        if isinstance(payload.get("hex"), str) and payload["hex"]:
+            return True
+        return any(contains_hex_capture(value) for value in payload.values())
+    if isinstance(payload, list):
+        return any(contains_hex_capture(value) for value in payload)
+    if not isinstance(payload, str):
+        return False
+
+    json_start = payload.find("{")
+    if json_start < 0:
+        return False
+    try:
+        return contains_hex_capture(json.loads(payload[json_start:]))
+    except json.JSONDecodeError:
+        return False
+
+
 def record(payload):
     line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     fd = os.open(OUTPUT, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8", newline="\n") as capture_file:
         capture_file.write(line + "\n")
-    if '"hex":' in line:
+    if contains_hex_capture(payload):
         CAPTURED.set()
 
 
@@ -38,6 +57,9 @@ def on_message(message, data):
     else:
         print(message, flush=True)
 
+
+OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+OUTPUT.unlink(missing_ok=True)
 
 session = None
 try:
