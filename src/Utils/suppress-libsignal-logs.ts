@@ -93,7 +93,7 @@ export const isLibsignalCallerStack = (stack: string): boolean =>
 		.filter(line => line && !ownDiagnosticFrame.test(line))
 		.some(line => libsignalFrame.test(line))
 
-const safeErrorMessage = (value: unknown): string => {
+export const safeConsoleArgumentMessage = (value: unknown): string => {
 	if (typeof value === 'string') return value
 	if (!(value instanceof Error)) return ''
 	try {
@@ -167,7 +167,7 @@ export function installLibsignalDiagnostics(options: LibsignalDiagnosticOptions 
 			// Never coerce arbitrary caller objects: null-prototype objects and
 			// hostile Symbol.toPrimitive implementations can throw here and
 			// must not make a diagnostic filter break application code.
-			const msg = args.map(safeErrorMessage).filter(Boolean).join(' ')
+			const msg = args.map(safeConsoleArgumentMessage).filter(Boolean).join(' ')
 			// Stack-frame detection: libsignal frames carry the filename in the
 			// V8 stack output. In minified / containerized builds this filename
 			// may be rewritten — if that happens, the filter degrades into a

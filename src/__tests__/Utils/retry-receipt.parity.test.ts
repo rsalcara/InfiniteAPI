@@ -19,6 +19,7 @@ import {
 	isLibsignalCallerStack,
 	LibsignalDecryptError,
 	recordLibsignalFailureDiagnostic,
+	safeConsoleArgumentMessage,
 	withLibsignalDiagnosticCapture
 } from '../../Utils/suppress-libsignal-logs'
 
@@ -202,19 +203,24 @@ describe('Signal retry reason parity', () => {
 	it('does not coerce arbitrary console arguments while collecting libsignal diagnostics', () => {
 		installLibsignalDiagnostics({ suppressLogs: true })
 		const nullPrototype = Object.create(null)
-		const hostileError = new Error('placeholder')
-		Object.defineProperty(hostileError, 'message', {
-			get: () => {
-				throw new Error('must not read hostile message')
-			}
-		})
 		const hostile = {
 			[Symbol.toPrimitive]: () => {
 				throw new Error('must not be coerced')
 			}
 		}
 
-		expect(() => console.error('Session error: Bad MAC', nullPrototype, hostile, hostileError)).not.toThrow()
+		expect(() => console.error('Session error: Bad MAC', nullPrototype, hostile)).not.toThrow()
+	})
+
+	it('does not let a hostile Error.message getter break diagnostic extraction', () => {
+		const hostileError = new Error('placeholder')
+		Object.defineProperty(hostileError, 'message', {
+			get: () => {
+				throw new Error('must not read hostile message')
+			}
+		})
+
+		expect(safeConsoleArgumentMessage(hostileError)).toBe('')
 	})
 
 	it('recognizes only real libsignal caller frames, not the diagnostic wrapper filename', () => {
