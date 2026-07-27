@@ -53,7 +53,8 @@ import {
 	markConnectionActive,
 	markConnectionInactive,
 	recordConnectionAttempt,
-	recordConnectionError
+	recordConnectionError,
+	recordConnectionRestart
 } from '../Utils/prometheus-metrics'
 import { createExpectedSocketTeardownError, isExpectedSocketTeardownError } from '../Utils/socket-teardown'
 import {
@@ -638,7 +639,7 @@ export const makeSocket = (config: SocketConfig) => {
 
 		return (error: Error) => {
 			if (closed) {
-				handler(createExpectedSocketTeardownError())
+				handler(createExpectedSocketTeardownError(error))
 			} else {
 				handleWebSocketError(error)
 			}
@@ -1457,6 +1458,7 @@ export const makeSocket = (config: SocketConfig) => {
 				{ statusCode, reason: 'restartRequired' },
 				'closing initial socket for the required authenticated restart'
 			)
+			recordConnectionRestart('restart_required')
 		} else {
 			logger.info({ trace: error?.stack }, error ? 'connection errored' : 'connection closed')
 		}
@@ -1588,6 +1590,9 @@ export const makeSocket = (config: SocketConfig) => {
 			registerAuthStoreDrainBarrier(authState.keys, deferredDrain)
 		}
 
+		// Keep the raw message listener alive until the drain finishes: in-flight
+		// IQ/USync requests may still need one final response while the socket is
+		// usable. Removing it earlier can strand already-sent queries.
 		ws.removeAllListeners('close')
 		ws.removeAllListeners('open')
 		ws.removeAllListeners('message')
@@ -1598,12 +1603,12 @@ export const makeSocket = (config: SocketConfig) => {
 		if (restartRequired) {
 			logger.info(
 				{ statusCode, reason: DisconnectReason[statusCode], action: 'recreate-socket' },
-				'🔄 Pairing/registration completed; recreate the socket to continue with the authenticated session (expected)'
+				'pairing completed; restarting socket to continue with the authenticated session'
 			)
 		} else if (isSessionError) {
 			logger.warn(
 				{ statusCode, reason: DisconnectReason[statusCode] },
-				'🔴 Socket-level session error - consumer should recreate socket'
+				'socket-level session error; consumer should recreate socket'
 			)
 		}
 
@@ -2128,10 +2133,7 @@ export const makeSocket = (config: SocketConfig) => {
 		} else if (reason === 'ack') {
 			logger.warn({ ackId: reasonNode?.attrs?.id, node }, 'stream error: ack-based error')
 		} else if (statusCode === DisconnectReason.restartRequired) {
-			logger.info(
-				{ reason, statusCode, action: 'recreate-socket' },
-				'🔄 Server requested the expected authenticated socket restart after pairing/registration'
-			)
+			logger.debug({ reason, statusCode, action: 'recreate-socket' }, 'stream restart required after pairing')
 		} else {
 			logger.error({ reason, statusCode, node }, 'stream errored out')
 		}
@@ -2266,20 +2268,34 @@ export const makeSocket = (config: SocketConfig) => {
 	ev.on('creds.update', update => {
 		const name = update.me?.name
 		// if name has just been received
-		if (creds.me?.name !== name) {
+		if (typeof name === 'string' && creds.me?.name !== name) {
+			const previousName = creds.me?.name
+			const restorePreviousName = () => {
+				if (creds.me?.name !== name) return
+
+				if (typeof previousName === 'undefined') {
+					delete creds.me.name
+				} else {
+					creds.me.name = previousName
+				}
+			}
+
 			logger.debug({ name }, 'updated pushName')
 			if (!closed && ws.isOpen) {
 				sendNode({
 					tag: 'presence',
-					attrs: { name: name! }
+					attrs: { name }
 				}).catch(err => {
 					if (isExpectedSocketTeardownError(err)) {
+						restorePreviousName()
 						logger.debug('presence update skipped because the socket is closing')
 					} else {
+						restorePreviousName()
 						logger.warn({ trace: err.stack }, 'error in sending presence update on name change')
 					}
 				})
 			} else {
+				queueMicrotask(restorePreviousName)
 				logger.debug('presence update skipped because the socket is not active')
 			}
 		}
@@ -2384,6 +2400,8 @@ export const makeSocket = (config: SocketConfig) => {
 		end,
 		registerSocketEndHandler,
 		registerSocketDrainHandler,
+		// Internal lifecycle probe used by receive-path guards. It is exposed on
+		// the composed socket object for local modules, not as a consumer API.
 		isSocketClosed: () => closed,
 		onUnexpectedError,
 		uploadPreKeys,

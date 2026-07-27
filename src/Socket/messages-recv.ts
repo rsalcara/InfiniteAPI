@@ -1166,14 +1166,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
-	const sendMessageAck = async (node: BinaryNode, errorCode?: number) => {
+	const sendMessageAck = async (node: BinaryNode, errorCode?: number): Promise<boolean> => {
 		// Once teardown starts, do not emit ACK/NACK on the closing transport.
 		// The server can redeliver the unacknowledged stanza after reconnect;
 		// this is safer than acknowledging work whose transaction may roll
 		// back. The check is synchronous and adds no wait to message delivery.
 		if (isSocketClosed()) {
 			logger.debug({ tag: node.tag, msgId: node.attrs.id }, 'ack skipped because the socket is closing')
-			return
+			return false
 		}
 
 		// buildAckStanza mirrors WA Web: always emit `type` when present, and `from=meId` for
@@ -1182,15 +1182,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// ACK still goes out instead of throwing and letting the server retry forever (Codex #440).
 		const meId = authState.creds.me?.id
 		const stanza = buildAckStanza(node, errorCode, meId)
-		logger.debug({ recv: { tag: node.tag, attrs: node.attrs }, sent: stanza.attrs }, 'sent ack')
 
 		// Best-effort pre-ack mirror (axolotl.db `preacks`): persist the encoded
-		// ack BEFORE sending, drop THIS ack's row AFTER it goes out — the mobile
-		// pre-ack lifecycle. Deleting by exact row id (not a `_id <= ?` prefix
-		// drain) so a concurrent ack cannot remove another ack's not-yet-sent
-		// pre-ack. Gated to message-class stanzas (what the mobile client
-		// pre-acks) and fully wrapped: any mirror error is logged and the ack
-		// still sends (fallback = legacy inline ack).
+		// ack BEFORE sending, drop THIS ack's row AFTER it goes out. During
+		// teardown, delete the unsent row and leave server redelivery eligible;
+		// we do not replay an ack that never reached the transport. Deleting by
+		// exact row id (not a `_id <= ?` prefix drain) keeps concurrent acks
+		// isolated. Any mirror error is logged and the ack still sends.
 		let preackId: number | undefined
 		if (signalTypedBackend && node.tag === 'message') {
 			try {
@@ -1213,11 +1211,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 
 				logger.debug({ tag: node.tag, msgId: node.attrs.id }, 'ack cancelled by socket teardown')
-				return
+				return false
 			}
 
 			throw error
 		}
+
+		logger.debug({ recv: { tag: node.tag, attrs: node.attrs }, sent: stanza.attrs }, 'sent ack')
 
 		if (signalTypedBackend && preackId !== undefined) {
 			try {
@@ -1226,6 +1226,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				logger.debug({ err, msgId: node.attrs.id }, 'preacks mirror: delete failed (ignored)')
 			}
 		}
+
+		return true
 	}
 
 	const rejectCall = async (callId: string, callFrom: string) => {
@@ -3784,8 +3786,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					// Handle "Missing keys" - standard decryption failure
 					// Return NACK with parsing error to signal the issue
 					if (msg?.messageStubParameters?.[0] === MISSING_KEYS_ERROR_TEXT) {
-						await sendMessageAck(node, NACK_REASONS.ParsingError)
-						acked = true
+						acked = await sendMessageAck(node, NACK_REASONS.ParsingError)
 						return
 					}
 
@@ -3807,8 +3808,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					// mismatch — which deserve the Signal retry path, NOT a silent
 					// ACK. cubic audit thread 13 (PR #521).
 					if (msg?.messageStubParameters?.[0]?.startsWith('decryptMsmsgBotMessage: no messageSecret for ')) {
-						await sendMessageAck(node)
-						acked = true
+						acked = await sendMessageAck(node)
 						return
 					}
 
@@ -3831,8 +3831,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								{ msgId: msg.key?.id, remoteJid: msg.key?.remoteJid, error: stubError },
 								'skmsg sender-key stale: NACK 496 to stop retry loop (waiting for fresh SKDM)'
 							)
-							await sendMessageAck(node, NACK_REASONS.SignalErrorOldCounter)
-							acked = true
+							acked = await sendMessageAck(node, NACK_REASONS.SignalErrorOldCounter)
 							return
 						}
 					}
@@ -3854,8 +3853,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								'CTWA: Skipping placeholder resend for unavailable fanout type'
 							)
 							metrics.ctwaRecoveryFailures.inc({ reason: 'unavailable_fanout' })
-							await sendMessageAck(node)
-							acked = true
+							acked = await sendMessageAck(node)
 							return
 						}
 
@@ -3868,8 +3866,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								'CTWA: Skipping placeholder resend for old message'
 							)
 							metrics.ctwaRecoveryFailures.inc({ reason: 'message_too_old' })
-							await sendMessageAck(node)
-							acked = true
+							acked = await sendMessageAck(node)
 							return
 						}
 
@@ -3952,8 +3949,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							)
 						}
 
-						await sendMessageAck(node)
-						acked = true
+						acked = await sendMessageAck(node)
 						return
 					}
 
@@ -3965,8 +3961,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								{ msgId: msg.key.id, messageAge, remoteJid: msg.key.remoteJid },
 								'skipping retry for expired status message'
 							)
-							await sendMessageAck(node)
-							acked = true
+							acked = await sendMessageAck(node)
 							return
 						}
 					}
@@ -4016,8 +4011,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							}
 						}
 
-						await sendMessageAck(node, NACK_REASONS.UnhandledError)
-						acked = true
+						acked = await sendMessageAck(node, NACK_REASONS.UnhandledError)
 					})
 				} else {
 					if (messageRetryManager && msg.key.id) {
@@ -4072,8 +4066,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							await sendReceipt(jid, undefined, [msg.key.id!], 'hist_sync') // TODO: investigate
 						}
 					} else {
-						await sendMessageAck(node)
-						acked = true
+						acked = await sendMessageAck(node)
 						logger.debug({ key: msg.key }, 'processed newsletter message without receipts')
 					}
 				}

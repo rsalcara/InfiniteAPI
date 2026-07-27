@@ -1405,6 +1405,9 @@ export const metrics = {
 	reconnectAttempts: baileysMetrics.register(
 		new Counter('reconnect_attempts_total', 'Total reconnection attempts', ['reason'])
 	),
+	connectionRestarts: baileysMetrics.register(
+		new Counter('connection_restarts_total', 'Expected authenticated socket restarts', ['reason'])
+	),
 	connectionLatency: baileysMetrics.register(
 		new Histogram(
 			'connection_latency_ms',
@@ -1955,6 +1958,19 @@ export function recordBufferOverflow(): void {
 export function recordConnectionError(errorType: string): void {
 	try {
 		metrics.connectionErrors?.inc({ error_type: errorType })
+	} catch {
+		// Metrics not initialized, ignore silently
+	}
+}
+
+/**
+ * Record an expected authenticated socket restart.
+ * Used for 515/restartRequired so operators can observe restart loops without
+ * counting them as failed connection attempts.
+ */
+export function recordConnectionRestart(reason: string): void {
+	try {
+		metrics.connectionRestarts?.inc({ reason })
 	} catch {
 		// Metrics not initialized, ignore silently
 	}

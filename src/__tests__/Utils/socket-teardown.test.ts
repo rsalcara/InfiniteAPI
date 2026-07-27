@@ -15,6 +15,15 @@ describe('socket teardown errors', () => {
 		expect(isExpectedSocketTeardownError(error)).toBe(false)
 	})
 
+	it('does not hide a remote 428 that happens to use the local reason string', () => {
+		const error = new Boom('Connection Closed', {
+			statusCode: 428,
+			data: { reason: 'socket-teardown' }
+		})
+
+		expect(isExpectedSocketTeardownError(error)).toBe(false)
+	})
+
 	it('does not classify unrelated failures', () => {
 		expect(isExpectedSocketTeardownError(new Error('database failed'))).toBe(false)
 		expect(isExpectedSocketTeardownError(undefined)).toBe(false)
