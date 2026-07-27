@@ -633,6 +633,18 @@ export const makeSocket = (config: SocketConfig) => {
 		logger.error({ err }, `unexpected error in '${msg}'`)
 	}
 
+	const mapSocketLifecycleError = (handler: (err: Error) => void) => {
+		const handleWebSocketError = mapWebSocketError(handler)
+
+		return (error: Error) => {
+			if (closed) {
+				handler(createExpectedSocketTeardownError())
+			} else {
+				handleWebSocketError(error)
+			}
+		}
+	}
+
 	/** await the next incoming message */
 	const awaitNextMessage = async <T>(sendMsg?: Uint8Array) => {
 		if (closed) throw createExpectedSocketTeardownError()
@@ -648,7 +660,7 @@ export const makeSocket = (config: SocketConfig) => {
 
 		const result = promiseTimeout<T>(connectTimeoutMs, (resolve, reject) => {
 			onOpen = resolve
-			onClose = mapWebSocketError(reject)
+			onClose = mapSocketLifecycleError(reject)
 			ws.on('frame', onOpen)
 			ws.on('close', onClose)
 			ws.on('error', onClose)
@@ -1642,7 +1654,7 @@ export const makeSocket = (config: SocketConfig) => {
 		let onClose: (err: Error) => void
 		await new Promise((resolve, reject) => {
 			onOpen = () => resolve(undefined)
-			onClose = mapWebSocketError(reject)
+			onClose = mapSocketLifecycleError(reject)
 			ws.on('open', onOpen)
 			ws.on('close', onClose)
 			ws.on('error', onClose)
