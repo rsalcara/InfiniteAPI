@@ -75,4 +75,34 @@ describe('inbound task admission', () => {
 		expect(errors[0]?.identifier).toBe('failing task')
 		expect(errors[0]?.error.message).toBe('failed inside admitted work')
 	})
+
+	it('rejects timer work inherited from a task that already settled', async () => {
+		const admission = createInboundTaskAdmission(() => {})
+		let lateWorkAccepted: boolean | undefined
+		let lateWorkRan = false
+		let resolveTimerAttempt!: () => void
+		const timerAttempted = new Promise<void>(resolve => {
+			resolveTimerAttempt = resolve
+		})
+
+		expect(
+			admission.track('timer parent', async () => {
+				setTimeout(() => {
+					lateWorkAccepted = admission.track('late timer work', async () => {
+						lateWorkRan = true
+					})
+					resolveTimerAttempt()
+				}, 10)
+			})
+		).toBe(true)
+
+		admission.close()
+		await admission.drain()
+		expect(admission.pendingCount()).toBe(0)
+
+		await timerAttempted
+		expect(lateWorkAccepted).toBe(false)
+		expect(lateWorkRan).toBe(false)
+		expect(admission.pendingCount()).toBe(0)
+	})
 })

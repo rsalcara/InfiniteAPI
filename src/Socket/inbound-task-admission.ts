@@ -2,6 +2,10 @@ import { AsyncLocalStorage } from 'async_hooks'
 
 type InboundTaskErrorHandler = (error: Error, identifier: string) => void
 
+type AdmissionToken = {
+	active: boolean
+}
+
 /**
  * Tracks receive-path work admitted by one socket.
  *
@@ -13,17 +17,26 @@ type InboundTaskErrorHandler = (error: Error, identifier: string) => void
 export const createInboundTaskAdmission = (onError: InboundTaskErrorHandler) => {
 	let accepting = true
 	const tasks = new Set<Promise<void>>()
-	const context = new AsyncLocalStorage<boolean>()
+	const context = new AsyncLocalStorage<AdmissionToken>()
 
 	const track = (identifier: string, factory: () => Promise<void>): boolean => {
-		const derivedFromAdmittedTask = context.getStore() === true
+		const derivedFromAdmittedTask = context.getStore()?.active === true
 		if (!accepting && !derivedFromAdmittedTask) return false
 
+		const token: AdmissionToken = { active: true }
 		const task = context
-			.run(true, factory)
+			.run(token, factory)
 			.catch(error => onError(error instanceof Error ? error : new Error(String(error)), identifier))
 		tasks.add(task)
-		void task.finally(() => tasks.delete(task))
+		const finalize = () => {
+			// AsyncLocalStorage propagates into timers created by this task.
+			// Expiring the shared token prevents those callbacks from admitting
+			// work after their originating task has settled and drain returned.
+			token.active = false
+			tasks.delete(task)
+		}
+
+		void task.then(finalize, finalize)
 		return true
 	}
 
