@@ -4066,7 +4066,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							await sendReceipt(jid, undefined, [msg.key.id!], 'hist_sync') // TODO: investigate
 						}
 					} else {
-						acked = await sendMessageAck(node)
+						if (!(acked = await sendMessageAck(node))) return
 						logger.debug({ key: msg.key }, 'processed newsletter message without receipts')
 					}
 				}
@@ -4543,8 +4543,18 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const admittedTasks = inboundTaskAdmission.close()
 		logger.debug({ admittedTasks }, 'socket teardown: inbound admission closed; draining work accepted before shutdown')
 		await offlineNodeProcessor.stopAndDrain()
-		await inboundTaskAdmission.drain()
-		logger.debug('socket teardown: inbound work drained; auth stores can now close safely')
+		const drainResult = await inboundTaskAdmission.drain()
+		if (drainResult.timedOut) {
+			logger.warn(
+				{ pendingTasks: drainResult.pendingTasks, waitedMs: drainResult.waitedMs },
+				'socket teardown: inbound drain timed out; active admission tokens expired'
+			)
+		} else {
+			logger.debug(
+				{ waitedMs: drainResult.waitedMs },
+				'socket teardown: inbound work drained; auth stores can now close safely'
+			)
+		}
 	})
 
 	const processNode = async (

@@ -82,7 +82,7 @@ import { getAuthStoreDrainBarrier, registerAuthStoreDrainBarrier } from './auth-
 import { TcpSocketClient, WebSocketClient } from './Client'
 import { executeWMexQuery } from './mex'
 import { createOfflineBufferState } from './offline-buffer-state'
-import { createPushNameAnnouncementTracker } from './push-name-announcement'
+import { createPushNameAnnouncementTracker, getPushNameForAnnouncement } from './push-name-announcement'
 import { makeReachoutTimelockRemediation, type RemoveReachoutTimelockServerResult } from './reachout-remediation'
 
 /**
@@ -2272,10 +2272,13 @@ export const makeSocket = (config: SocketConfig) => {
 
 	// update credentials when required
 	ev.on('creds.update', update => {
-		const name = update.me?.name
 		// Persist first. Presence is a best-effort network announcement and
 		// must never roll back server-provided credential state.
 		Object.assign(creds, update)
+		// Updates are frequently partial. Read the persisted name after the
+		// merge so a failed announcement can retry on the next credentials
+		// update even when that update does not include `me`.
+		const name = getPushNameForAnnouncement(creds)
 
 		if (typeof name === 'string' && pushNameAnnouncement.needsAnnouncement(name)) {
 			if (!closed && ws.isOpen) {

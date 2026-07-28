@@ -8,6 +8,8 @@ const deferred = () => {
 	return { promise, resolve }
 }
 
+const flushAsyncWork = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
+
 describe('inbound task admission', () => {
 	it('rejects new top-level work after close and drains admitted parent and derived work', async () => {
 		const errors: Array<{ error: Error; identifier: string }> = []
@@ -43,8 +45,7 @@ describe('inbound task admission', () => {
 		})
 
 		releaseParent.resolve()
-		await Promise.resolve()
-		await Promise.resolve()
+		await flushAsyncWork()
 
 		expect(derivedWorkRan).toBe(true)
 		expect(externalWorkRan).toBe(false)
@@ -70,10 +71,78 @@ describe('inbound task admission', () => {
 		).toBe(true)
 
 		admission.close()
-		await expect(admission.drain()).resolves.toBeUndefined()
+		await expect(admission.drain()).resolves.toMatchObject({ timedOut: false, pendingTasks: 0 })
 		expect(errors).toHaveLength(1)
 		expect(errors[0]?.identifier).toBe('failing task')
 		expect(errors[0]?.error.message).toBe('failed inside admitted work')
+	})
+
+	it('routes synchronously thrown factory errors through onError', async () => {
+		const errors: Array<{ error: Error; identifier: string }> = []
+		const admission = createInboundTaskAdmission((error, identifier) => errors.push({ error, identifier }))
+
+		expect(() =>
+			admission.track('sync failure', () => {
+				throw new Error('failed before returning a promise')
+			})
+		).not.toThrow()
+
+		admission.close()
+		await expect(admission.drain()).resolves.toMatchObject({ timedOut: false, pendingTasks: 0 })
+		expect(errors).toHaveLength(1)
+		expect(errors[0]?.identifier).toBe('sync failure')
+		expect(errors[0]?.error.message).toBe('failed before returning a promise')
+	})
+
+	it('reports non-coercible rejection values with a safe fallback error', async () => {
+		const errors: Array<{ error: Error; identifier: string }> = []
+		const admission = createInboundTaskAdmission((error, identifier) => errors.push({ error, identifier }))
+		const hostileValue = {
+			[Symbol.toPrimitive]: () => {
+				throw new Error('coercion denied')
+			}
+		}
+
+		admission.track('hostile rejection', () => Promise.reject(hostileValue))
+		admission.close()
+
+		await expect(admission.drain()).resolves.toMatchObject({ timedOut: false, pendingTasks: 0 })
+		expect(errors).toHaveLength(1)
+		expect(errors[0]?.identifier).toBe('hostile rejection')
+		expect(errors[0]?.error.message).toBe('Inbound task rejected with a non-coercible value')
+	})
+
+	it('bounds drain with one deadline and expires tokens owned by stuck tasks', async () => {
+		const admission = createInboundTaskAdmission(() => {}, { drainTimeoutMs: 20 })
+		const releaseParent = deferred()
+		let inheritedWorkAccepted: boolean | undefined
+		let inheritedWorkRan = false
+		let attemptInheritedWork!: () => void
+		const inheritedWorkAttempted = new Promise<void>(resolve => {
+			attemptInheritedWork = resolve
+		})
+
+		admission.track('stuck parent', async () => {
+			setTimeout(() => {
+				inheritedWorkAccepted = admission.track('late inherited work', async () => {
+					inheritedWorkRan = true
+				})
+				attemptInheritedWork()
+			}, 40)
+			await releaseParent.promise
+		})
+		admission.close()
+
+		await expect(admission.drain()).resolves.toMatchObject({ timedOut: true, pendingTasks: 1 })
+		await inheritedWorkAttempted
+
+		expect(inheritedWorkAccepted).toBe(false)
+		expect(inheritedWorkRan).toBe(false)
+		expect(admission.pendingCount()).toBe(1)
+
+		releaseParent.resolve()
+		await flushAsyncWork()
+		expect(admission.pendingCount()).toBe(0)
 	})
 
 	it('rejects timer work inherited from a task that already settled', async () => {

@@ -5,6 +5,11 @@
  * duplicate presence stanzas on one socket and re-opens delivery after a
  * failed attempt. Creating a replacement socket creates a fresh tracker.
  */
+export const getPushNameForAnnouncement = (credentials: { me?: { name?: string } }): string | undefined => {
+	const name = credentials.me?.name
+	return typeof name === 'string' ? name : undefined
+}
+
 export const createPushNameAnnouncementTracker = () => {
 	let announcedName: string | undefined
 
