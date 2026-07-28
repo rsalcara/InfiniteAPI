@@ -94,6 +94,35 @@ const CATEGORY_PATTERNS: Array<{ pattern: RegExp; category: BaileysLogCategory }
 	{ pattern: /binary|encode|decode|proto|buffer/i, category: 'binary' }
 ]
 
+const MESSAGE_TYPE_ICONS = new Map<string, string>([
+	['text', '📝'],
+	['image', '🖼️'],
+	['video', '🎬'],
+	['gif', '🎞️'],
+	['audio', '🎵'],
+	['voice', '🎙️'],
+	['document', '📄'],
+	['sticker', '🏷️'],
+	['sticker_pack', '📦'],
+	['reaction', '❤️'],
+	['location', '📍'],
+	['live_location', '🛰️'],
+	['contact', '👤'],
+	['contacts', '👥'],
+	['poll', '📊'],
+	['poll_vote', '🗳️'],
+	['interactive', '🧩'],
+	['interactive_response', '✅']
+])
+
+const formatMessageTypeTag = (messageType?: string): string => {
+	if (!messageType) return ''
+
+	const sanitizedType = sanitizeLogString(messageType)
+	const icon = MESSAGE_TYPE_ICONS.get(sanitizedType) ?? ''
+	return ` [type=${sanitizedType}${icon}]`
+}
+
 /**
  * Custom logger for Baileys
  *
@@ -713,7 +742,7 @@ export function logMessageSent(
 	if (!isBaileysLogEnabled()) return
 
 	const prefix = sessionName ? `[BAILEYS] [${sessionName}]` : '[BAILEYS]'
-	const type = messageType ? ` [type=${sanitizeLogString(messageType)}]` : ''
+	const type = formatMessageTypeTag(messageType)
 	// Full message correlation metadata is intentionally preserved by operator
 	// decision. Message content, payloads, credentials and tokens remain
 	// subject to the central redaction policy.
@@ -736,7 +765,7 @@ export function logMessageReceived(
 	if (!isBaileysLogEnabled()) return
 
 	const prefix = sessionName ? `[BAILEYS] [${sessionName}]` : '[BAILEYS]'
-	const type = messageType ? ` [type=${sanitizeLogString(messageType)}]` : ''
+	const type = formatMessageTypeTag(messageType)
 	console.log(`${prefix} 📥 Message received${type}: ${messageId} ← ${senderJid}`)
 }
 

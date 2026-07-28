@@ -138,14 +138,40 @@ describe('Baileys Console Logging Functions', () => {
 		it('should include the normalized content type when provided', () => {
 			logMessageReceived('MSG-IMAGE', '5511888888888@s.whatsapp.net', undefined, 'image')
 			expect(consoleSpy).toHaveBeenCalledWith(
-				'[BAILEYS] 📥 Message received [type=image]: MSG-IMAGE ← 5511888888888@s.whatsapp.net'
+				'[BAILEYS] 📥 Message received [type=image🖼️]: MSG-IMAGE ← 5511888888888@s.whatsapp.net'
 			)
 		})
 
 		it('should include the normalized content type for sent messages', () => {
 			logMessageSent('MSG-VOICE', '5511999999999@s.whatsapp.net', undefined, 'voice')
 			expect(consoleSpy).toHaveBeenCalledWith(
-				'[BAILEYS] 📤 Message sent [type=voice]: MSG-VOICE → 5511999999999@s.whatsapp.net'
+				'[BAILEYS] 📤 Message sent [type=voice🎙️]: MSG-VOICE → 5511999999999@s.whatsapp.net'
+			)
+		})
+
+		it.each([
+			['text', '📝'],
+			['image', '🖼️'],
+			['video', '🎬'],
+			['gif', '🎞️'],
+			['audio', '🎵'],
+			['voice', '🎙️'],
+			['document', '📄'],
+			['sticker', '🏷️'],
+			['sticker_pack', '📦'],
+			['reaction', '❤️'],
+			['location', '📍'],
+			['live_location', '🛰️'],
+			['contact', '👤'],
+			['contacts', '👥'],
+			['poll', '📊'],
+			['poll_vote', '🗳️'],
+			['interactive', '🧩'],
+			['interactive_response', '✅']
+		])('should append the %s message icon inside the type tag', (messageType, icon) => {
+			logMessageReceived('MSG-TYPE', '5511888888888@s.whatsapp.net', undefined, messageType)
+			expect(consoleSpy).toHaveBeenCalledWith(
+				`[BAILEYS] 📥 Message received [type=${messageType}${icon}]: MSG-TYPE ← 5511888888888@s.whatsapp.net`
 			)
 		})
 
