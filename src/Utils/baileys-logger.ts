@@ -226,7 +226,10 @@ export class BaileysLogger implements ILogger {
 	 * Sanitize message payload
 	 */
 	private sanitizePayload(obj: unknown): unknown {
-		const sanitized = sanitizeLogValue(obj)
+		return sanitizeLogValue(obj)
+	}
+
+	private truncatePayload(sanitized: unknown): unknown {
 		if (typeof sanitized !== 'object' || sanitized === null) return sanitized
 
 		const serialized = this.safeStringify(sanitized)
@@ -301,15 +304,17 @@ export class BaileysLogger implements ILogger {
 	private log(level: LogLevel, obj: unknown, msg?: string): void {
 		// Sanitize before classification/metrics so no raw payload is serialized
 		// even on internal diagnostic paths.
-		const sanitizedObj = this.sanitizePayload(obj)
-		const category = this.detectCategory(sanitizedObj, msg)
+		const sanitizedForDiagnostics = this.sanitizePayload(obj)
+		const category = this.detectCategory(sanitizedForDiagnostics, msg)
 
 		if (!this.shouldLogCategory(category, level)) {
 			return
 		}
 
 		// Update metrics
-		this.updateMetrics(category, level, sanitizedObj)
+		this.updateMetrics(category, level, sanitizedForDiagnostics)
+
+		const sanitizedObj = this.truncatePayload(sanitizedForDiagnostics)
 
 		// Add Baileys context
 		const enrichedObj = {

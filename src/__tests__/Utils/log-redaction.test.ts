@@ -13,6 +13,17 @@ describe('central log redaction', () => {
 		expect(sanitized.stack).toContain(REDACTED)
 	})
 
+	it('removes multiline Error message continuations while retaining stack frames', () => {
+		const error = new Error('first secret\nsecond secret')
+		const sanitized = sanitizeLogValue(error) as Record<string, unknown>
+		const stack = String(sanitized.stack)
+
+		expect(stack).toContain(REDACTED)
+		expect(stack).toContain('at ')
+		expect(stack).not.toContain('first secret')
+		expect(stack).not.toContain('second secret')
+	})
+
 	it('omits nested Error stacks when stack traces are disabled', () => {
 		const sanitized = sanitizeLogValue({ nested: new Error('private content') }, { includeErrorStack: false }) as {
 			nested: { stack?: unknown; message: string }
@@ -32,5 +43,20 @@ describe('central log redaction', () => {
 
 		expect(() => sanitizeLogValue(hostile)).not.toThrow()
 		expect(sanitizeLogValue(hostile)).toEqual({ payloadInfo: '[unavailable]' })
+	})
+
+	it('tolerates hostile Error fields with non-string runtime values', () => {
+		const hostile = new Error('private content')
+		Object.defineProperties(hostile, {
+			name: { configurable: true, get: () => ({ secret: true }) },
+			stack: { configurable: true, get: () => ({ secret: true }) }
+		})
+
+		expect(() => sanitizeLogValue(hostile)).not.toThrow()
+		expect(sanitizeLogValue(hostile)).toMatchObject({
+			name: 'Error',
+			message: REDACTED,
+			stack: undefined
+		})
 	})
 })

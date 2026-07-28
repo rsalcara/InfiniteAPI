@@ -236,6 +236,20 @@ describe('Baileys Console Logging Functions', () => {
 			expect(JSON.stringify(entries)).toContain('[REDACTED]')
 			expect(JSON.stringify(entries)).toContain('image')
 		})
+
+		it('classifies and counts oversized object-only events before truncating their output', () => {
+			const categories: string[] = []
+			const logger = new BaileysLogger({
+				level: 'info',
+				maxPayloadSize: 32,
+				eventHandler: category => categories.push(category)
+			})
+
+			logger.info({ event: 'message received', padding: 'x'.repeat(256) })
+
+			expect(categories).toContain('message')
+			expect(logger.getMetrics().messagesReceived).toBe(1)
+		})
 	})
 
 	describe('logLidMapping', () => {

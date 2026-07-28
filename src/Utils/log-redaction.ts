@@ -107,7 +107,10 @@ const safeObjectEntries = (value: object): Array<[string, unknown]> => {
 }
 
 const sanitizeErrorStack = (name: string, stack: string): string => {
-	const frames = stack.split(/\r?\n/).slice(1).join('\n')
+	const frames = stack
+		.split(/\r?\n/)
+		.filter(line => /^\s*at\s/.test(line))
+		.join('\n')
 	const safeHeader = `${sanitizeLogString(name)}: ${REDACTED}`
 	return sanitizeLogString(frames ? `${safeHeader}\n${frames}` : safeHeader, MAX_STACK_LENGTH)
 }
@@ -163,8 +166,8 @@ export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {
 			own[key] = sanitizeLogValue(child, { fieldName: key, extraFields, seen, includeErrorStack })
 		}
 
-		let rawName = 'Error'
-		let rawStack: string | undefined
+		let rawName: unknown = 'Error'
+		let rawStack: unknown
 		try {
 			rawName = value.name || 'Error'
 		} catch {
@@ -177,11 +180,11 @@ export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {
 			// omit an unreadable stack
 		}
 
-		const errorName = sanitizeLogString(rawName)
+		const errorName = typeof rawName === 'string' ? sanitizeLogString(rawName) : 'Error'
 		return {
 			name: errorName,
 			message: REDACTED,
-			stack: includeErrorStack && rawStack ? sanitizeErrorStack(errorName, rawStack) : undefined,
+			stack: includeErrorStack && typeof rawStack === 'string' ? sanitizeErrorStack(errorName, rawStack) : undefined,
 			...own
 		}
 	}

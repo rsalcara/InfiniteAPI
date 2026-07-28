@@ -26,7 +26,7 @@ import { AudioFeeder } from './audio-feeder.js'
 import { type RelayListUpdatePayload, RelayRtcTransport } from './relay-transport.js'
 import { CallState, type VoipSdkConfig } from './types.js'
 
-export type { VoipSdkConfig, CallOptions, CallEvents, AudioConfig } from './types.js'
+export type { VoipSdkConfig, CallOptions, CallEvents, AudioConfig, VoipConnectionUpdate } from './types.js'
 export { CallState } from './types.js'
 
 // Direct imports from our own InfiniteAPI codebase — the third-party
