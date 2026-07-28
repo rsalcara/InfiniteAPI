@@ -101,10 +101,63 @@ describe('StructuredLogger', () => {
 			jsonLogger.info({
 				user: 'test',
 				password: 'secret123',
-				token: 'abc123'
+				token: 'abc123',
+				text: 'private message',
+				contentType: 'image'
 			})
 
-			expect(consoleSpy).toHaveBeenCalled()
+			const output = String(consoleSpy.mock.calls.at(-1)?.[0])
+			expect(output).toContain('[REDACTED]')
+			expect(output).not.toContain('secret123')
+			expect(output).not.toContain('abc123')
+			expect(output).not.toContain('private message')
+			expect(output).toContain('image')
+		})
+
+		it('should sanitize arrays, nested errors, context, JIDs and long stacks', () => {
+			const jsonLogger = createStructuredLogger({
+				level: 'info',
+				jsonFormat: true,
+				context: { owner: '5511991426667@s.whatsapp.net' }
+			})
+			const error = new Error(`failed for 5511991426667@s.whatsapp.net ${'x'.repeat(30_000)}`)
+
+			jsonLogger.info({
+				items: [{ token: 'nested-secret', jid: '5511991426667:46@s.whatsapp.net' }],
+				error
+			})
+
+			const output = String(consoleSpy.mock.calls.at(-1)?.[0])
+			expect(output).not.toContain('nested-secret')
+			expect(output).not.toContain('5511991426667')
+			expect(output).toContain('6667:46@s.whatsapp.net')
+			expect(output.length).toBeLessThan(35_000)
+		})
+
+		it('should preserve complete messageKey correlation metadata while redacting unrelated secrets', () => {
+			const jsonLogger = createStructuredLogger({
+				level: 'info',
+				jsonFormat: true
+			})
+
+			jsonLogger.warn({
+				messageKey: {
+					remoteJid: '5515991426667@s.whatsapp.net',
+					remoteJidAlt: '5515991426667@s.whatsapp.net',
+					fromMe: true,
+					id: '3EB0B9832A0DD4DE4E54D3',
+					participant: '',
+					addressingMode: 'lid',
+					payload: 'must-not-leak'
+				},
+				token: 'must-not-leak-either'
+			})
+
+			const output = String(jest.mocked(console.warn).mock.calls.at(-1)?.[0])
+			expect(output).toContain('5515991426667@s.whatsapp.net')
+			expect(output).toContain('3EB0B9832A0DD4DE4E54D3')
+			expect(output).not.toContain('must-not-leak')
+			expect(output).toContain('[REDACTED]')
 		})
 	})
 

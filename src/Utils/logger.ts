@@ -15,6 +15,7 @@
 
 import { createRequire } from 'module'
 import P, { type Logger as PinoLogger } from 'pino'
+import { sanitizeLogRecord, sanitizeLogString, sanitizeLogValue } from './log-redaction.js'
 
 const require = createRequire(import.meta.url)
 
@@ -74,6 +75,19 @@ function canUsePrettyTransport(): boolean {
  */
 function createFilteredLogger(baseLogger: PinoLogger, config: LoggerConfig): ILogger {
 	const noop = () => {}
+	const wrap =
+		(method: PinoLogger['info']) =>
+		(obj: unknown, msg?: string): void => {
+			const safeObj =
+				typeof obj === 'object' && obj !== null && !Array.isArray(obj)
+					? sanitizeLogRecord(obj as Record<string, unknown>)
+					: sanitizeLogValue(obj)
+			if (msg === undefined) {
+				method.call(baseLogger, safeObj)
+			} else {
+				method.call(baseLogger, safeObj, sanitizeLogString(msg))
+			}
+		}
 
 	return {
 		get level() {
@@ -83,13 +97,13 @@ function createFilteredLogger(baseLogger: PinoLogger, config: LoggerConfig): ILo
 			baseLogger.level = newLevel
 		},
 		child(obj: Record<string, unknown>): ILogger {
-			return createFilteredLogger(baseLogger.child(obj), config)
+			return createFilteredLogger(baseLogger.child(sanitizeLogRecord(obj)), config)
 		},
-		trace: baseLogger.trace.bind(baseLogger),
-		debug: baseLogger.debug.bind(baseLogger),
-		info: config.levelFilters.info ? baseLogger.info.bind(baseLogger) : noop,
-		warn: config.levelFilters.warn ? baseLogger.warn.bind(baseLogger) : noop,
-		error: config.levelFilters.error ? baseLogger.error.bind(baseLogger) : noop
+		trace: wrap(baseLogger.trace),
+		debug: wrap(baseLogger.debug),
+		info: config.levelFilters.info ? wrap(baseLogger.info) : noop,
+		warn: config.levelFilters.warn ? wrap(baseLogger.warn) : noop,
+		error: config.levelFilters.error ? wrap(baseLogger.error) : noop
 	}
 }
 

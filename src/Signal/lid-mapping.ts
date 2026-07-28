@@ -25,8 +25,10 @@ export interface LIDMappingConfig {
 	updateAgeOnGet: boolean
 	/** Enable Prometheus metrics (default: false) */
 	enableMetrics: boolean
-	/** Batch size for bulk operations (default: 100) */
+	/** Batch size for bulk operations (default: 975, matching Android's SQLite chunk) */
 	batchSize: number
+	/** Maximum number of mapping items waiting for the single writer (default: 5000) */
+	maxPendingMappings?: number
 	/** Retry attempts for failed operations (default: 3, max: 10) */
 	retryAttempts: number
 	/** Base retry delay in ms (default: 1000). Uses exponential backoff: delay * 2^(attempt-1) */
@@ -39,14 +41,17 @@ export interface LIDMappingConfig {
  * Load configuration from environment variables
  * Includes bounds validation to prevent DoS from malicious values
  */
-export function loadLIDMappingConfig(): LIDMappingConfig {
+type ResolvedLIDMappingConfig = Omit<LIDMappingConfig, 'maxPendingMappings'> & { maxPendingMappings: number }
+
+export function loadLIDMappingConfig(): ResolvedLIDMappingConfig {
 	// Helper to clamp values within safe bounds
 	const clamp = (value: number, min: number, max: number): number =>
 		Math.max(min, Math.min(max, isNaN(value) ? min : value))
 
 	const cacheTtlMs = parseInt(process.env.BAILEYS_LID_CACHE_TTL_MS || String(3 * 24 * 60 * 60 * 1000), 10)
 	const maxCacheSize = parseInt(process.env.BAILEYS_LID_MAX_CACHE_SIZE || '50000', 10)
-	const batchSize = parseInt(process.env.BAILEYS_LID_BATCH_SIZE || '100', 10)
+	const batchSize = parseInt(process.env.BAILEYS_LID_BATCH_SIZE || '975', 10)
+	const maxPendingMappings = parseInt(process.env.BAILEYS_LID_MAX_PENDING_MAPPINGS || '5000', 10)
 	const retryAttempts = parseInt(process.env.BAILEYS_LID_RETRY_ATTEMPTS || '3', 10)
 	const retryDelayMs = parseInt(process.env.BAILEYS_LID_RETRY_DELAY_MS || '1000', 10)
 
@@ -58,8 +63,10 @@ export function loadLIDMappingConfig(): LIDMappingConfig {
 		cacheAutoPurge: process.env.BAILEYS_LID_CACHE_AUTO_PURGE !== 'false',
 		updateAgeOnGet: process.env.BAILEYS_LID_UPDATE_AGE_ON_GET !== 'false',
 		enableMetrics: process.env.BAILEYS_LID_METRICS === 'true',
-		// Batch size: minimum 1 (prevents infinite loop), maximum 1000
-		batchSize: clamp(batchSize, 1, 1000),
+		// Batch size: minimum 1 (prevents infinite loop), maximum Android chunk size.
+		batchSize: clamp(batchSize, 1, 975),
+		// Bounded admission: enough for bursts without allowing unbounded memory.
+		maxPendingMappings: clamp(maxPendingMappings, 100, 100_000),
 		// Retry attempts: minimum 1, maximum 10
 		retryAttempts: clamp(retryAttempts, 1, 10),
 		// Retry delay: minimum 100ms, maximum 60 seconds
@@ -100,6 +107,12 @@ export interface LIDMappingStatistics {
 	totalOperations: number
 	/** Failed operations */
 	failedOperations: number
+	/** Mapping items currently admitted but not completed */
+	pendingMappings: number
+	/** Writes rejected by bounded admission */
+	rejectedWrites: number
+	/** Highest observed number of queued mapping items */
+	maxPendingMappingsObserved: number
 	/** Store creation timestamp */
 	createdAt: number
 	/** Last operation timestamp */
@@ -130,7 +143,8 @@ export enum LIDMappingErrorCode {
 	DATABASE_ERROR = 'DATABASE_ERROR',
 	USYNC_ERROR = 'USYNC_ERROR',
 	CACHE_ERROR = 'CACHE_ERROR',
-	DESTROYED = 'DESTROYED'
+	DESTROYED = 'DESTROYED',
+	BACKPRESSURE = 'BACKPRESSURE'
 }
 
 // ============================================================================
@@ -153,11 +167,19 @@ export class LIDMappingStore {
 	private readonly mappingCache: LRUCache<string, string>
 	private readonly keys: SignalKeyStoreWithTransaction
 	private readonly logger: ILogger
-	private readonly config: LIDMappingConfig
+	private readonly config: ResolvedLIDMappingConfig
 	private destroyed = false
 	private destroyPromise?: Promise<boolean>
 	private cleanupPromise?: Promise<void>
 	private resolveDrain?: () => void
+	private writeQueueRunning = false
+	private pendingWriteItems = 0
+	private readonly writeQueue: Array<{
+		pairs: LIDMapping[]
+		duplicateSkipped: number
+		resolve: (result: { stored: number; skipped: number; errors: number }) => void
+		reject: (error: unknown) => void
+	}> = []
 
 	/**
 	 * Operation counter for safe resource cleanup
@@ -200,6 +222,9 @@ export class LIDMappingStore {
 		cacheHitRate: 0,
 		totalOperations: 0,
 		failedOperations: 0,
+		pendingMappings: 0,
+		rejectedWrites: 0,
+		maxPendingMappingsObserved: 0,
 		createdAt: Date.now(),
 		lastOperationAt: null
 	}
@@ -213,7 +238,12 @@ export class LIDMappingStore {
 		this.keys = keys
 		this.pnToLIDFunc = pnToLIDFunc
 		this.logger = logger
-		this.config = { ...loadLIDMappingConfig(), ...configOverride }
+		const defaults = loadLIDMappingConfig()
+		this.config = {
+			...defaults,
+			...configOverride,
+			maxPendingMappings: configOverride?.maxPendingMappings ?? defaults.maxPendingMappings
+		}
 
 		// Initialize LRU cache with configuration
 		this.mappingCache = new LRUCache<string, string>({
@@ -334,150 +364,176 @@ export class LIDMappingStore {
 	 */
 	async storeLIDPNMappings(pairs: LIDMapping[]): Promise<{ stored: number; skipped: number; errors: number }> {
 		this.checkDestroyed()
+		const deduplicated = this.deduplicateMappings(pairs)
+		const duplicateSkipped = pairs.length - deduplicated.length
+		if (deduplicated.length === 0) return { stored: 0, skipped: duplicateSkipped, errors: 0 }
 
-		// Track operation to prevent UAF during destroy()
-		return this.trackOperation(async () => {
-			this.stats.totalOperations++
-			this.stats.lastOperationAt = Date.now()
+		if (this.pendingWriteItems + deduplicated.length > this.config.maxPendingMappings) {
+			this.stats.rejectedWrites++
+			throw new LIDMappingError('LID mapping write queue is full', LIDMappingErrorCode.BACKPRESSURE, {
+				pendingMappings: this.pendingWriteItems,
+				incomingMappings: deduplicated.length,
+				maxPendingMappings: this.config.maxPendingMappings
+			})
+		}
 
-			const result = { stored: 0, skipped: 0, errors: 0 }
+		this.pendingWriteItems += deduplicated.length
+		this.stats.pendingMappings = this.pendingWriteItems
+		this.stats.maxPendingMappingsObserved = Math.max(this.stats.maxPendingMappingsObserved, this.pendingWriteItems)
 
-			// Step 1: Validate and collect cache misses
-			const cacheMissPnUsers: string[] = []
-			const pendingValidation = new Map<string, { pnUser: string; lidUser: string }>()
+		return new Promise((resolve, reject) => {
+			this.writeQueue.push({ pairs: deduplicated, duplicateSkipped, resolve, reject })
+			void this.processWriteQueue()
+		})
+	}
 
-			for (const { lid, pn } of pairs) {
-				if (!this.isValidMapping(lid, pn)) {
-					this.logger.warn({ lid, pn }, 'Invalid LID-PN mapping rejected')
-					this.stats.invalidMappings++
-					result.skipped++
-					continue
-				}
+	private async storeLIDPNMappingsNow(
+		pairs: LIDMapping[]
+	): Promise<{ stored: number; skipped: number; errors: number }> {
+		this.stats.totalOperations++
+		this.stats.lastOperationAt = Date.now()
 
-				const lidDecoded = jidDecode(lid)
-				const pnDecoded = jidDecode(pn)
+		const result = { stored: 0, skipped: 0, errors: 0 }
 
-				if (!lidDecoded || !pnDecoded) {
-					result.skipped++
-					continue
-				}
+		// Step 1: Validate and collect cache misses
+		const cacheMissPnUsers: string[] = []
+		const pendingValidation = new Map<string, { pnUser: string; lidUser: string }>()
 
-				const pnUser = pnDecoded.user
-				const lidUser = lidDecoded.user
+		for (const { lid, pn } of pairs) {
+			if (!this.isValidMapping(lid, pn)) {
+				this.logger.warn({ lid, pn }, 'Invalid LID-PN mapping rejected')
+				this.stats.invalidMappings++
+				result.skipped++
+				continue
+			}
 
-				// Check cache first
-				const existingLidUser = this.mappingCache.get(`pn:${pnUser}`)
+			const lidDecoded = jidDecode(lid)
+			const pnDecoded = jidDecode(pn)
 
-				if (existingLidUser !== undefined) {
-					// Cache hit
-					this.stats.cacheHits++
-					if (existingLidUser === lidUser) {
-						if (this.config.debugLogging) {
-							this.logger.debug({ pnUser, lidUser }, 'LID mapping already exists, skipping')
-						}
+			if (!lidDecoded || !pnDecoded) {
+				result.skipped++
+				continue
+			}
 
-						result.skipped++
-					} else {
-						// Different mapping - will be stored
-						pendingValidation.set(pnUser, { pnUser, lidUser })
+			const pnUser = pnDecoded.user
+			const lidUser = lidDecoded.user
+
+			// Check cache first
+			const existingLidUser = this.mappingCache.get(`pn:${pnUser}`)
+
+			if (existingLidUser !== undefined) {
+				// Cache hit
+				this.stats.cacheHits++
+				if (existingLidUser === lidUser) {
+					if (this.config.debugLogging) {
+						this.logger.debug({ pnUser, lidUser }, 'LID mapping already exists, skipping')
 					}
+
+					result.skipped++
 				} else {
-					// Cache miss - queue for batch DB fetch
-					this.stats.cacheMisses++
-					cacheMissPnUsers.push(pnUser)
+					// Different mapping - will be stored
 					pendingValidation.set(pnUser, { pnUser, lidUser })
 				}
+			} else {
+				// Cache miss - queue for batch DB fetch
+				this.stats.cacheMisses++
+				cacheMissPnUsers.push(pnUser)
+				pendingValidation.set(pnUser, { pnUser, lidUser })
 			}
+		}
 
-			// Step 2: Batch fetch all cache misses from DB
-			if (cacheMissPnUsers.length > 0) {
-				const batches = this.chunkArray(cacheMissPnUsers, this.config.batchSize)
+		// Step 2: Batch fetch all cache misses from DB
+		if (cacheMissPnUsers.length > 0) {
+			const batches = this.chunkArray(cacheMissPnUsers, this.config.batchSize)
 
-				for (const batch of batches) {
-					try {
-						const stored = await this.retryOperation(() => this.keys.get('lid-mapping', batch), 'batch-get-mappings')
+			for (const batch of batches) {
+				try {
+					const stored = await this.retryOperation(() => this.keys.get('lid-mapping', batch), 'batch-get-mappings')
 
-						// Update cache and validate against DB
-						for (const pnUser of batch) {
-							const existingLidUser = stored[pnUser]
+					// Update cache and validate against DB
+					for (const pnUser of batch) {
+						const existingLidUser = stored[pnUser]
 
-							if (existingLidUser) {
-								this.stats.dbHits++
-								// Update cache with database value
-								this.mappingCache.set(`pn:${pnUser}`, existingLidUser)
-								this.mappingCache.set(`lid:${existingLidUser}`, pnUser)
+						if (existingLidUser) {
+							this.stats.dbHits++
+							// Update cache with database value
+							this.mappingCache.set(`pn:${pnUser}`, existingLidUser)
+							this.mappingCache.set(`lid:${existingLidUser}`, pnUser)
 
-								// Check if this mapping should be skipped
-								const pending = pendingValidation.get(pnUser)
-								if (existingLidUser === pending?.lidUser) {
-									if (this.config.debugLogging) {
-										this.logger.debug(
-											{ pnUser, lidUser: pending.lidUser },
-											'LID mapping already exists in DB, skipping'
-										)
-									}
-
-									result.skipped++
-									pendingValidation.delete(pnUser)
+							// Check if this mapping should be skipped
+							const pending = pendingValidation.get(pnUser)
+							if (existingLidUser === pending?.lidUser) {
+								if (this.config.debugLogging) {
+									this.logger.debug({ pnUser, lidUser: pending.lidUser }, 'LID mapping already exists in DB, skipping')
 								}
-							} else {
-								this.stats.dbMisses++
+
+								result.skipped++
+								pendingValidation.delete(pnUser)
 							}
+						} else {
+							this.stats.dbMisses++
 						}
-					} catch (error) {
-						this.logger.error({ error, batchSize: batch.length }, 'Failed to batch fetch existing mappings')
-						result.errors += batch.length
-						// Remove failed fetches from pending validation to avoid storing them
-						for (const pnUser of batch) {
-							pendingValidation.delete(pnUser)
-						}
+					}
+				} catch (error) {
+					this.logger.error({ error, batchSize: batch.length }, 'Failed to batch fetch existing mappings')
+					result.errors += batch.length
+					// Remove failed fetches from pending validation to avoid storing them
+					for (const pnUser of batch) {
+						pendingValidation.delete(pnUser)
 					}
 				}
 			}
+		}
 
-			// Step 3: Store new/updated mappings
-			const validPairs = Array.from(pendingValidation.values())
+		// Step 3: Store new/updated mappings
+		const validPairs = Array.from(pendingValidation.values())
 
-			if (validPairs.length === 0) {
-				return result
-			}
-
-			const storeBatches = this.chunkArray(validPairs, this.config.batchSize)
-
-			for (const batch of storeBatches) {
-				try {
-					await this.retryOperation(async () => {
-						await this.keys.transaction(async () => {
-							for (const { pnUser, lidUser } of batch) {
-								await this.keys.set({
-									'lid-mapping': {
-										[pnUser]: lidUser,
-										[`${lidUser}_reverse`]: pnUser
-									}
-								})
-
-								this.mappingCache.set(`pn:${pnUser}`, lidUser)
-								this.mappingCache.set(`lid:${lidUser}`, pnUser)
-								result.stored++
-								this.stats.mappingsStored++
-							}
-						}, 'lid-mapping')
-					}, 'store-mappings')
-				} catch (error) {
-					this.logger.error({ error, batchSize: batch.length }, 'Failed to store mapping batch')
-					result.errors += batch.length
-					this.stats.failedOperations++
-				}
-			}
-
-			this.logger.trace(
-				{ result, totalPairs: pairs.length, cacheMisses: cacheMissPnUsers.length },
-				'Stored LID-PN mappings with batch optimization'
-			)
-			this.recordMetrics('store', result.stored)
-
+		if (validPairs.length === 0) {
 			return result
-		}) // End trackOperation
+		}
+
+		const storeBatches = this.chunkArray(validPairs, this.config.batchSize)
+
+		for (const batch of storeBatches) {
+			try {
+				await this.retryOperation(async () => {
+					const bucket: Record<string, string> = {}
+					for (const { pnUser, lidUser } of batch) {
+						bucket[pnUser] = lidUser
+						bucket[`${lidUser}_reverse`] = pnUser
+					}
+					await this.keys.transaction(async () => {
+						await this.keys.set({ 'lid-mapping': bucket })
+					}, 'lid-mapping')
+
+					// Cache is an after-commit view. Updating it inside the
+					// transaction exposed mappings that could still roll back.
+					// A timed-out destroy cannot cancel the physical key-store
+					// transaction, so a late commit must not repopulate local
+					// state that teardown has already invalidated.
+					if (!this.destroyed) {
+						for (const { pnUser, lidUser } of batch) {
+							this.mappingCache.set(`pn:${pnUser}`, lidUser)
+							this.mappingCache.set(`lid:${lidUser}`, pnUser)
+						}
+					}
+					result.stored += batch.length
+					this.stats.mappingsStored += batch.length
+				}, 'store-mappings')
+			} catch (error) {
+				this.logger.error({ error, batchSize: batch.length }, 'Failed to store mapping batch')
+				result.errors += batch.length
+				this.stats.failedOperations++
+			}
+		}
+
+		this.logger.trace(
+			{ result, totalPairs: pairs.length, cacheMisses: cacheMissPnUsers.length },
+			'Stored LID-PN mappings with batch optimization'
+		)
+		this.recordMetrics('store', result.stored)
+
+		return result
 	}
 
 	/**
@@ -932,6 +988,7 @@ export class LIDMappingStore {
 		if (this.destroyPromise) return this.destroyPromise
 
 		this.destroyed = true
+		this.rejectQueuedWrites(new LIDMappingError('LIDMappingStore has been destroyed', LIDMappingErrorCode.DESTROYED))
 		this.logger.debug('🗑️ Draining LIDMappingStore before cleanup')
 
 		const drainPromise =
@@ -958,8 +1015,9 @@ export class LIDMappingStore {
 			const timeout = setTimeout(() => {
 				this.logger.warn(
 					{ operationsInProgress: this.operationsInProgress, timeoutMs: LID_MAPPING_DESTROY_TIMEOUT_MS },
-					'LID mapping cleanup exceeded the socket shutdown budget; auth-key teardown will remain deferred'
+					'LID mapping cleanup exceeded the socket shutdown budget; invalidating remaining local state'
 				)
+				this.clearResources()
 				resolve(false)
 			}, LID_MAPPING_DESTROY_TIMEOUT_MS)
 			timeout.unref?.()
@@ -981,7 +1039,6 @@ export class LIDMappingStore {
 		if (!this.destroyPromise) {
 			await this.destroy()
 		}
-
 		await this.cleanupPromise
 	}
 
@@ -989,11 +1046,77 @@ export class LIDMappingStore {
 		this.mappingCache.clear()
 		this.inflightLIDLookups.clear()
 		this.inflightPNLookups.clear()
+		this.rejectQueuedWrites(new LIDMappingError('LIDMappingStore has been destroyed', LIDMappingErrorCode.DESTROYED))
 	}
 
 	// ========================================================================
 	// PRIVATE HELPERS
 	// ========================================================================
+
+	private deduplicateMappings(pairs: LIDMapping[]): LIDMapping[] {
+		const byPn = new Map<string, { pair: LIDMapping; lidUser: string; index: number }>()
+		const pnByLid = new Map<string, string>()
+
+		for (let index = 0; index < pairs.length; index++) {
+			const pair = pairs[index]!
+			const pnUser = jidDecode(pair.pn)?.user ?? pair.pn
+			const lidUser = jidDecode(pair.lid)?.user ?? pair.lid
+
+			const previousForPn = byPn.get(pnUser)
+			if (previousForPn) {
+				pnByLid.delete(previousForPn.lidUser)
+			}
+
+			const previousPnForLid = pnByLid.get(lidUser)
+			if (previousPnForLid) {
+				byPn.delete(previousPnForLid)
+			}
+
+			byPn.set(pnUser, { pair, lidUser, index })
+			pnByLid.set(lidUser, pnUser)
+		}
+
+		return [...byPn.values()].sort((left, right) => left.index - right.index).map(({ pair }) => pair)
+	}
+
+	private async processWriteQueue(): Promise<void> {
+		if (this.writeQueueRunning) return
+		this.writeQueueRunning = true
+		try {
+			while (this.writeQueue.length > 0 && !this.destroyed) {
+				const job = this.writeQueue.shift()!
+				try {
+					const result = await this.trackOperation(() => this.storeLIDPNMappingsNow(job.pairs))
+					result.skipped += job.duplicateSkipped
+					job.resolve(result)
+				} catch (error) {
+					job.reject(error)
+				} finally {
+					this.pendingWriteItems -= job.pairs.length
+					this.stats.pendingMappings = this.pendingWriteItems
+				}
+			}
+		} finally {
+			this.writeQueueRunning = false
+			if (this.destroyed) {
+				this.rejectQueuedWrites(
+					new LIDMappingError('LIDMappingStore has been destroyed', LIDMappingErrorCode.DESTROYED)
+				)
+			} else if (this.writeQueue.length > 0) {
+				void this.processWriteQueue()
+			}
+		}
+	}
+
+	private rejectQueuedWrites(error: unknown): void {
+		while (this.writeQueue.length > 0) {
+			const job = this.writeQueue.shift()!
+			this.pendingWriteItems -= job.pairs.length
+			job.reject(error)
+		}
+		this.pendingWriteItems = Math.max(0, this.pendingWriteItems)
+		this.stats.pendingMappings = this.pendingWriteItems
+	}
 
 	/**
 	 * Check if store has been destroyed and throw if so

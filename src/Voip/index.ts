@@ -373,12 +373,7 @@ export class VoipClient extends EventEmitter {
 
 				this.#sock.ev.on('connection.update', (update: any) => {
 					if (update.qr) {
-						void import('qrcode-terminal')
-							.then(qrt => (qrt.default ?? qrt).generate(update.qr, { small: true }))
-							.catch(() => {
-								console.log('Scan this QR code in WhatsApp > Linked Devices:')
-								console.log(update.qr)
-							})
+						console.log('[BAILEYS] QR generated; consume connection.update.qr in the application UI')
 					}
 
 					if (update.connection === 'open') {

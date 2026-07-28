@@ -134,6 +134,13 @@ describe('Baileys Console Logging Functions', () => {
 			expect(consoleSpy).toHaveBeenCalledWith('[BAILEYS] 📥 Message received: MSG456 ← 5511888888888@s.whatsapp.net')
 		})
 
+		it('should include the normalized content type when provided', () => {
+			logMessageReceived('MSG-IMAGE', '5511888888888@s.whatsapp.net', undefined, 'image')
+			expect(consoleSpy).toHaveBeenCalledWith(
+				'[BAILEYS] 📥 Message received [type=image]: MSG-IMAGE ← 5511888888888@s.whatsapp.net'
+			)
+		})
+
 		it('should include session name for messages', () => {
 			logMessageSent('MSG789', 'user@lid', 'session-abc')
 			expect(consoleSpy).toHaveBeenCalledWith('[BAILEYS] [session-abc] 📤 Message sent: MSG789 → user@lid')

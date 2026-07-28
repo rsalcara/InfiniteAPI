@@ -2026,6 +2026,66 @@ export const getContentType = (content: proto.IMessage | undefined) => {
 }
 
 /**
+ * Returns a stable, human-readable label for operational logs and metrics.
+ * Future-proof wrappers (ephemeral, view-once, edited, etc.) are unwrapped
+ * before classification, while unknown protobuf message types still receive
+ * a deterministic snake_case label instead of being collapsed into "other".
+ */
+export const getMessageTypeLabel = (content: WAMessageContent | null | undefined): string => {
+	const normalized = normalizeMessageContent(content)
+	const contentType = getContentType(normalized)
+	if (!contentType) return 'unknown'
+
+	const type = String(contentType)
+	switch (type) {
+		case 'conversation':
+		case 'extendedTextMessage':
+			return 'text'
+		case 'imageMessage':
+			return 'image'
+		case 'videoMessage':
+			return normalized?.videoMessage?.gifPlayback ? 'gif' : 'video'
+		case 'audioMessage':
+			return normalized?.audioMessage?.ptt ? 'voice' : 'audio'
+		case 'documentMessage':
+			return 'document'
+		case 'stickerMessage':
+			return 'sticker'
+		case 'stickerPackMessage':
+			return 'sticker_pack'
+		case 'reactionMessage':
+			return 'reaction'
+		case 'locationMessage':
+			return 'location'
+		case 'liveLocationMessage':
+			return 'live_location'
+		case 'contactMessage':
+			return 'contact'
+		case 'contactsArrayMessage':
+			return 'contacts'
+		case 'pollUpdateMessage':
+			return 'poll_vote'
+		case 'buttonsResponseMessage':
+		case 'listResponseMessage':
+		case 'templateButtonReplyMessage':
+		case 'interactiveResponseMessage':
+			return 'interactive_response'
+		case 'buttonsMessage':
+		case 'listMessage':
+		case 'templateMessage':
+		case 'interactiveMessage':
+			return 'interactive'
+	}
+
+	if (type.startsWith('pollCreationMessage')) return 'poll'
+
+	return type
+		.replace(/Message$/, '')
+		.replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+		.toLowerCase()
+}
+
+/**
  * Normalizes ephemeral, view once messages to regular message content
  * Eg. image messages in ephemeral messages, in view once messages etc.
  * @param content

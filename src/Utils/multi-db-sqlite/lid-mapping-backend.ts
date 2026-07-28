@@ -32,6 +32,7 @@ export class JidMapBackend {
 		insertJid: SqliteStatementLike
 		selectJidIdByRaw: SqliteStatementLike
 		upsertMap: SqliteStatementLike
+		selectMaxSortId: SqliteStatementLike
 		selectPnByLid: SqliteStatementLike
 		selectLidByPn: SqliteStatementLike
 		// Cached so `deleteMapping` doesn't `db.prepare()` per call. Earlier
@@ -91,6 +92,7 @@ export class JidMapBackend {
 					'ON CONFLICT(lid_row_id) DO UPDATE SET ' +
 					'  jid_row_id = excluded.jid_row_id, sort_id = excluded.sort_id'
 			),
+			selectMaxSortId: this.db.prepare('SELECT COALESCE(MAX(sort_id), 0) AS value FROM jid_map'),
 			selectPnByLid: this.db.prepare(
 				'SELECT j.raw_string AS raw FROM jid_map m ' +
 					'JOIN jid j_lid ON j_lid._id = m.lid_row_id ' +
@@ -164,14 +166,22 @@ export class JidMapBackend {
 	 * The `jid` table is not deleted by today's code paths, so this is
 	 * defensive — but cheap enough to keep the invariant explicit.
 	 */
-	private rowIdFor(jid: string): number {
+	private rowIdForInTransaction(jid: string): number {
 		const decoded = decodeJid(jid)
-		return this.db.transaction((rawString: string): number => {
-			this.stmts.insertJid.run(rawString, decoded.user, decoded.server, decoded.typeHint)
-			const row = this.stmts.selectJidIdByRaw.get(rawString) as { _id: number } | undefined
-			if (!row) throw new Error(`JidMapBackend: failed to materialize jid row for "${rawString}"`)
-			return row._id
-		})(jid)
+		this.stmts.insertJid.run(jid, decoded.user, decoded.server, decoded.typeHint)
+		const row = this.stmts.selectJidIdByRaw.get(jid) as { _id: number } | undefined
+		if (!row) throw new Error(`JidMapBackend: failed to materialize jid row for "${jid}"`)
+		return row._id
+	}
+
+	private rowIdFor(jid: string): number {
+		return this.db.transaction((rawString: string): number => this.rowIdForInTransaction(rawString))(jid)
+	}
+
+	private reserveSortIds(): number {
+		const row = this.stmts.selectMaxSortId.get() as { value: number } | undefined
+		const persistedNext = (row?.value ?? 0) + 1
+		return Math.max(persistedNext, Date.now())
 	}
 
 	/**
@@ -213,19 +223,21 @@ export class JidMapBackend {
 	 */
 	storeMapping(pnUser: string, lidUser: string): void {
 		this.db.transaction(() => {
-			const lidRowId = this.rowIdFor(lidUser)
-			const pnRowId = this.rowIdFor(pnUser)
-			// `Date.now()` as sort_id so the latest write wins on PN→LID lookups
-			// even if the mapping points back to an older LID (lower lid_row_id).
-			this.stmts.upsertMap.run(lidRowId, pnRowId, Date.now())
+			const lidRowId = this.rowIdForInTransaction(lidUser)
+			const pnRowId = this.rowIdForInTransaction(pnUser)
+			this.stmts.upsertMap.run(lidRowId, pnRowId, this.reserveSortIds())
 		})()
 	}
 
 	/** Stores N mappings atomically (single transaction). */
 	storeMappingsBatch(pairs: Array<{ pnUser: string; lidUser: string }>): void {
 		this.db.transaction(() => {
-			for (const { pnUser, lidUser } of pairs) {
-				this.storeMapping(pnUser, lidUser)
+			const firstSortId = this.reserveSortIds()
+			for (let index = 0; index < pairs.length; index++) {
+				const { pnUser, lidUser } = pairs[index]!
+				const lidRowId = this.rowIdForInTransaction(lidUser)
+				const pnRowId = this.rowIdForInTransaction(pnUser)
+				this.stmts.upsertMap.run(lidRowId, pnRowId, firstSortId + index)
 			}
 		})()
 	}
@@ -290,8 +302,8 @@ export class JidMapBackend {
 	/**
 	 * Batch lookup: input list of PNs → record of those that resolved. Uses
 	 * a single `IN (?, ?, ...)` SELECT per chunk so the LIDMappingStore's
-	 * default batchSize=100 call from `keys.get('lid-mapping', batch)` lands
-	 * as one DB round-trip instead of N. Chunked at 500 to stay well below
+	 * default batchSize=975 call from `keys.get('lid-mapping', batch)` lands
+	 * as one DB round-trip instead of N, matching Android's headroom below
 	 * SQLite's default 999-variable limit.
 	 */
 	batchGetLidForPn(pnUsers: string[]): Record<string, string> {

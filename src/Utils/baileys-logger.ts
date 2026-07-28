@@ -13,6 +13,7 @@
  */
 
 import type { ILogger } from './logger.js'
+import { obfuscateJid, sanitizeLogRecord, sanitizeLogString, sanitizeLogValue } from './log-redaction.js'
 import { createStructuredLogger, type LogEntry, type LogLevel, StructuredLogger } from './structured-logger.js'
 
 /**
@@ -222,40 +223,13 @@ export class BaileysLogger implements ILogger {
 	 * Sanitize message payload
 	 */
 	private sanitizePayload(obj: unknown): unknown {
-		if (!this.config.logMessagePayloads) {
-			if (typeof obj === 'object' && obj !== null) {
-				const sanitized = { ...(obj as Record<string, unknown>) }
+		const extraFields = this.config.logMessagePayloads ? [] : ['body', 'text', 'content', 'caption', 'payload', 'data']
+		const sanitized = sanitizeLogValue(obj, { extraFields })
+		if (typeof sanitized !== 'object' || sanitized === null) return sanitized
 
-				// Remove sensitive message fields
-				const sensitiveFields = ['body', 'text', 'content', 'caption', 'payload', 'data']
-				for (const field of sensitiveFields) {
-					if (field in sanitized) {
-						const value = sanitized[field]
-						if (typeof value === 'string' && value.length > 0) {
-							sanitized[field] = `[${value.length} chars]`
-						} else if (Buffer.isBuffer(value)) {
-							sanitized[field] = `[Buffer: ${value.length} bytes]`
-						}
-					}
-				}
-
-				return sanitized
-			}
-		}
-
-		// Limit payload size
-		if (typeof obj === 'object' && obj !== null) {
-			const str = JSON.stringify(obj)
-			if (str.length > this.config.maxPayloadSize) {
-				return {
-					_truncated: true,
-					_originalSize: str.length,
-					_preview: str.substring(0, 200) + '...'
-				}
-			}
-		}
-
-		return obj
+		const serialized = JSON.stringify(sanitized)
+		if (serialized.length <= this.config.maxPayloadSize) return sanitized
+		return { _truncated: true, _originalSize: serialized.length }
 	}
 
 	/**
@@ -427,17 +401,7 @@ export class BaileysLogger implements ILogger {
 	 * Sanitize JID for logging (mask part of number)
 	 */
 	private sanitizeJid(jid: string): string {
-		if (process.env.NODE_ENV === 'production') {
-			// In production, mask part of the number
-			const parts = jid.split('@')
-			const localPart = parts[0]
-			const domainPart = parts[1]
-			if (parts.length === 2 && localPart && domainPart && localPart.length > 4) {
-				return `${localPart.substring(0, 4)}****@${domainPart}`
-			}
-		}
-
-		return jid
+		return obfuscateJid(jid)
 	}
 
 	/**
@@ -586,6 +550,7 @@ function safeStringify(value: unknown, seen: WeakSet<object> = new WeakSet()): s
  */
 function formatLogData(data: Record<string, unknown>, singleLine = true): string {
 	if (!data || Object.keys(data).length === 0) return ''
+	data = sanitizeLogRecord(data)
 
 	const seen = new WeakSet<object>()
 
@@ -724,11 +689,20 @@ export function logBufferMetrics(
  * logMessageSent('3EB02FA562D6CCC0876CDE', '5511999999999@s.whatsapp.net')
  * // Output: [BAILEYS] 📤 Message sent: 3EB02FA562D6CCC0876CDE → 5511999999999@s.whatsapp.net
  */
-export function logMessageSent(messageId: string, recipientJid: string, sessionName?: string): void {
+export function logMessageSent(
+	messageId: string,
+	recipientJid: string,
+	sessionName?: string,
+	messageType?: string
+): void {
 	if (!isBaileysLogEnabled()) return
 
 	const prefix = sessionName ? `[BAILEYS] [${sessionName}]` : '[BAILEYS]'
-	console.log(`${prefix} 📤 Message sent: ${messageId} → ${recipientJid}`)
+	const type = messageType ? ` [type=${sanitizeLogString(messageType)}]` : ''
+	// Full message correlation metadata is intentionally preserved by operator
+	// decision. Message content, payloads, credentials and tokens remain
+	// subject to the central redaction policy.
+	console.log(`${prefix} 📤 Message sent${type}: ${messageId} → ${recipientJid}`)
 }
 
 /**
@@ -738,11 +712,17 @@ export function logMessageSent(messageId: string, recipientJid: string, sessionN
  * logMessageReceived('A5E0349897A3F16F3F2778EEF94A065F', '238315571802285@lid')
  * // Output: [BAILEYS] 📥 Message received: A5E0349897A3F16F3F2778EEF94A065F ← 238315571802285@lid
  */
-export function logMessageReceived(messageId: string, senderJid: string, sessionName?: string): void {
+export function logMessageReceived(
+	messageId: string,
+	senderJid: string,
+	sessionName?: string,
+	messageType?: string
+): void {
 	if (!isBaileysLogEnabled()) return
 
 	const prefix = sessionName ? `[BAILEYS] [${sessionName}]` : '[BAILEYS]'
-	console.log(`${prefix} 📥 Message received: ${messageId} ← ${senderJid}`)
+	const type = messageType ? ` [type=${sanitizeLogString(messageType)}]` : ''
+	console.log(`${prefix} 📥 Message received${type}: ${messageId} ← ${senderJid}`)
 }
 
 /**
@@ -947,7 +927,7 @@ export function logTcToken(
 	if (!isBaileysLogEnabled()) return
 
 	const prefix = sessionName ? `[BAILEYS] [${sessionName}]` : '[BAILEYS]'
-	const jid = data?.jid ? ` → ${data.jid}` : ''
+	const jid = typeof data?.jid === 'string' ? ` → ${obfuscateJid(data.jid)}` : ''
 	const rest = data ? { ...data } : undefined
 	if (rest) delete rest.jid
 	const extraStr = rest && Object.keys(rest).length > 0 ? ' ' + formatLogData(rest) : ''

@@ -86,6 +86,87 @@ describe('LIDMappingStore', () => {
 		})
 	})
 
+	describe('bounded mapping writer', () => {
+		it('persists one lid-mapping bucket per batch and updates cache only after commit', async () => {
+			mockKeys.get.mockResolvedValue({} as never)
+			const result = await lidMappingStore.storeLIDPNMappings([
+				{ pn: '11111@s.whatsapp.net', lid: 'aaaaa@lid' },
+				{ pn: '22222@s.whatsapp.net', lid: 'bbbbb@lid' }
+			])
+
+			expect(result).toEqual({ stored: 2, skipped: 0, errors: 0 })
+			expect(mockKeys.set).toHaveBeenCalledTimes(1)
+			expect(mockKeys.set).toHaveBeenCalledWith({
+				'lid-mapping': {
+					'11111': 'aaaaa',
+					aaaaa_reverse: '11111',
+					'22222': 'bbbbb',
+					bbbbb_reverse: '22222'
+				}
+			})
+			await expect(lidMappingStore.getKnownLIDForPN('11111@s.whatsapp.net')).resolves.toBe('aaaaa@lid')
+		})
+
+		it('does not publish a failed batch into cache', async () => {
+			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, { retryAttempts: 1 })
+			mockKeys.get.mockResolvedValue({} as never)
+			;(mockKeys.set as any).mockRejectedValueOnce(new Error('disk full'))
+
+			await expect(
+				lidMappingStore.storeLIDPNMappings([{ pn: '11111@s.whatsapp.net', lid: 'aaaaa@lid' }])
+			).resolves.toEqual({ stored: 0, skipped: 0, errors: 1 })
+
+			mockKeys.get.mockResolvedValue({} as never)
+			await expect(lidMappingStore.getKnownLIDForPN('11111@s.whatsapp.net')).resolves.toBeNull()
+		})
+
+		it('rejects bursts beyond the configured pending-item bound', async () => {
+			let release!: () => void
+			const blocked = new Promise<void>(resolve => {
+				release = resolve
+			})
+			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, {
+				maxPendingMappings: 2,
+				retryAttempts: 1
+			})
+			mockKeys.get.mockResolvedValue({} as never)
+			mockKeys.transaction.mockImplementationOnce(async work => {
+				await blocked
+				return work()
+			})
+
+			const admitted = lidMappingStore.storeLIDPNMappings([{ pn: '11111@s.whatsapp.net', lid: 'aaaaa@lid' }])
+			await Promise.resolve()
+			await expect(
+				lidMappingStore.storeLIDPNMappings([
+					{ pn: '22222@s.whatsapp.net', lid: 'bbbbb@lid' },
+					{ pn: '33333@s.whatsapp.net', lid: 'ccccc@lid' }
+				])
+			).rejects.toMatchObject({ code: 'BACKPRESSURE' })
+
+			release()
+			await admitted
+			expect(lidMappingStore.getStatistics().rejectedWrites).toBe(1)
+		})
+
+		it('deduplicates conflicting mappings with the last pair winning', async () => {
+			mockKeys.get.mockResolvedValue({} as never)
+			const result = await lidMappingStore.storeLIDPNMappings([
+				{ pn: '11111@s.whatsapp.net', lid: 'aaaaa@lid' },
+				{ pn: '11111@s.whatsapp.net', lid: 'bbbbb@lid' },
+				{ pn: '22222@s.whatsapp.net', lid: 'bbbbb@lid' }
+			])
+
+			expect(result.skipped).toBe(2)
+			expect(mockKeys.set).toHaveBeenCalledWith({
+				'lid-mapping': {
+					'22222': 'bbbbb',
+					bbbbb_reverse: '22222'
+				}
+			})
+		})
+	})
+
 	// ========================================================================
 	// M3: REQUEST COALESCING TESTS
 	// ========================================================================
@@ -245,9 +326,17 @@ describe('LIDMappingStore', () => {
 			await jest.advanceTimersByTimeAsync(5_000)
 			await expect(destroyPromise).resolves.toBe(false)
 
+			let fullyDrained = false
+			const waitForDestroy = lidMappingStore.waitForDestroy().then(() => {
+				fullyDrained = true
+			})
+			await Promise.resolve()
+			expect(fullyDrained).toBe(false)
+
 			releaseOperation()
 			await operationPromise
-			await expect(lidMappingStore.waitForDestroy()).resolves.toBeUndefined()
+			await expect(waitForDestroy).resolves.toBeUndefined()
+			expect(fullyDrained).toBe(true)
 			jest.useRealTimers()
 		})
 	})
