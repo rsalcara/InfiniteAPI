@@ -75,13 +75,21 @@ function canUsePrettyTransport(): boolean {
  */
 function createFilteredLogger(baseLogger: PinoLogger, config: LoggerConfig): ILogger {
 	const noop = () => {}
+
+	const sanitizeSafely = (obj: unknown): unknown => {
+		try {
+			return typeof obj === 'object' && obj !== null && !Array.isArray(obj)
+				? sanitizeLogRecord(obj as Record<string, unknown>)
+				: sanitizeLogValue(obj)
+		} catch {
+			return '[unserializable log value]'
+		}
+	}
+
 	const wrap =
 		(method: PinoLogger['info']) =>
 		(obj: unknown, msg?: string): void => {
-			const safeObj =
-				typeof obj === 'object' && obj !== null && !Array.isArray(obj)
-					? sanitizeLogRecord(obj as Record<string, unknown>)
-					: sanitizeLogValue(obj)
+			const safeObj = sanitizeSafely(obj)
 			if (msg === undefined) {
 				method.call(baseLogger, safeObj)
 			} else {
@@ -97,7 +105,15 @@ function createFilteredLogger(baseLogger: PinoLogger, config: LoggerConfig): ILo
 			baseLogger.level = newLevel
 		},
 		child(obj: Record<string, unknown>): ILogger {
-			return createFilteredLogger(baseLogger.child(sanitizeLogRecord(obj)), config)
+			const safeContext = sanitizeSafely(obj)
+			return createFilteredLogger(
+				baseLogger.child(
+					typeof safeContext === 'object' && safeContext !== null
+						? (safeContext as Record<string, unknown>)
+						: { context: safeContext }
+				),
+				config
+			)
 		},
 		trace: wrap(baseLogger.trace),
 		debug: wrap(baseLogger.debug),

@@ -23,9 +23,9 @@
  */
 import {
 	ANDROID_MESSAGE_STATUS,
-	shouldAdvanceAndroidMessageStatus,
 	type ChatRowResolver,
-	type JidResolver
+	type JidResolver,
+	shouldAdvanceAndroidMessageStatus
 } from './message-store-backend'
 import type { SqliteDbLike, SqliteStatementLike } from './types'
 
@@ -139,6 +139,7 @@ export class ReceiptBackend {
 			listOrphaned: this.db.prepare(
 				'SELECT _id, receipt_device_jid_row_id, receipt_recipient_jid_row_id, status, timestamp ' +
 					'FROM receipt_orphaned WHERE chat_row_id = ? AND from_me = ? AND key_id = ? ' +
+					'AND (status IS NULL OR status IN (0, 1, 2, 3)) ' +
 					`ORDER BY _id ASC LIMIT ${RECEIPT_ORPHAN_REPLAY_LIMIT}`
 			),
 			deleteOrphaned: this.db.prepare('DELETE FROM receipt_orphaned WHERE _id = ?'),
@@ -289,10 +290,7 @@ export class ReceiptBackend {
 						if (!stmt) continue
 						stmt.run(messageRowId, recipientRowId, row.timestamp)
 						const receiptStatus = ANDROID_STATUS_BY_ORPHAN_STATUS[row.status]
-						if (
-							receiptStatus !== undefined &&
-							shouldAdvanceAndroidMessageStatus(promotedStatus, receiptStatus)
-						) {
+						if (receiptStatus !== undefined && shouldAdvanceAndroidMessageStatus(promotedStatus, receiptStatus)) {
 							promotedStatus = receiptStatus
 						}
 					}
@@ -302,8 +300,8 @@ export class ReceiptBackend {
 					replayedInBatch += 1
 				}
 
-				// Invalid future status values remain available for diagnosis. Stop
-				// if a full query window cannot make progress, avoiding a tight loop.
+				// Unsupported future status values are excluded by the query and
+				// remain available for diagnosis without blocking valid receipts.
 				if (rows.length < RECEIPT_ORPHAN_REPLAY_LIMIT || replayedInBatch === 0) break
 			}
 

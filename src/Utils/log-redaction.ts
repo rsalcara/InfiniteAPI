@@ -89,17 +89,52 @@ export type SanitizeLogOptions = {
 	fieldName?: string
 	extraFields?: ReadonlyArray<string>
 	seen?: WeakSet<object>
+	includeErrorStack?: boolean
+}
+
+const safeObjectEntries = (value: object): Array<[string, unknown]> => {
+	try {
+		return Object.keys(value).map(key => {
+			try {
+				return [key, (value as Record<string, unknown>)[key]]
+			} catch {
+				return [key, '[unavailable]']
+			}
+		})
+	} catch {
+		return []
+	}
+}
+
+const sanitizeErrorStack = (name: string, stack: string): string => {
+	const frames = stack.split(/\r?\n/).slice(1).join('\n')
+	const safeHeader = `${sanitizeLogString(name)}: ${REDACTED}`
+	return sanitizeLogString(frames ? `${safeHeader}\n${frames}` : safeHeader, MAX_STACK_LENGTH)
 }
 
 export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {}): unknown => {
 	const extraFields = options.extraFields ?? []
+	const includeErrorStack = options.includeErrorStack ?? true
 	if (options.fieldName && isSensitiveField(options.fieldName, extraFields)) return REDACTED
 	if (value === null || value === undefined) return value
 	if (typeof value === 'string') return sanitizeLogString(value)
 	if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return value
-	if (typeof value === 'symbol' || typeof value === 'function') return String(value)
+	if (typeof value === 'symbol' || typeof value === 'function') {
+		try {
+			return String(value)
+		} catch {
+			return '[unserializable log value]'
+		}
+	}
+
 	if (Buffer.isBuffer(value) || value instanceof Uint8Array) return `[binary:${value.byteLength} bytes]`
-	if (typeof value !== 'object') return sanitizeLogString(String(value))
+	if (typeof value !== 'object') {
+		try {
+			return sanitizeLogString(String(value))
+		} catch {
+			return '[unserializable log value]'
+		}
+	}
 
 	const seen = options.seen ?? new WeakSet<object>()
 	if (seen.has(value)) return '[Circular]'
@@ -112,40 +147,69 @@ export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {
 	// so this exception cannot expose message bodies, tokens or payloads.
 	if (options.fieldName === 'messageKey' && !Array.isArray(value) && !(value instanceof Error)) {
 		const messageKey: Record<string, unknown> = {}
-		for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+		for (const [key, child] of safeObjectEntries(value)) {
 			messageKey[key] = MESSAGE_KEY_CORRELATION_FIELDS.has(key)
 				? child
-				: sanitizeLogValue(child, { fieldName: key, extraFields, seen })
+				: sanitizeLogValue(child, { fieldName: key, extraFields, seen, includeErrorStack })
 		}
+
 		return messageKey
 	}
 
 	if (value instanceof Error) {
 		const own: Record<string, unknown> = {}
-		for (const [key, child] of Object.entries(value)) {
-			own[key] = sanitizeLogValue(child, { fieldName: key, extraFields, seen })
+		for (const [key, child] of safeObjectEntries(value)) {
+			if (key === 'message' || key === 'stack') continue
+			own[key] = sanitizeLogValue(child, { fieldName: key, extraFields, seen, includeErrorStack })
 		}
+
+		let rawName = 'Error'
+		let rawStack: string | undefined
+		try {
+			rawName = value.name || 'Error'
+		} catch {
+			// hostile Error subclasses can replace standard fields with getters
+		}
+
+		try {
+			rawStack = value.stack
+		} catch {
+			// omit an unreadable stack
+		}
+
+		const errorName = sanitizeLogString(rawName)
 		return {
-			name: sanitizeLogString(value.name),
-			message: sanitizeLogString(value.message),
-			stack: value.stack ? sanitizeLogString(value.stack, MAX_STACK_LENGTH) : undefined,
+			name: errorName,
+			message: REDACTED,
+			stack: includeErrorStack && rawStack ? sanitizeErrorStack(errorName, rawStack) : undefined,
 			...own
 		}
 	}
 
-	if (value instanceof Date) return value.toISOString()
-	if (Array.isArray(value)) return value.map(item => sanitizeLogValue(item, { extraFields, seen }))
+	if (value instanceof Date) {
+		try {
+			return value.toISOString()
+		} catch {
+			return '[invalid date]'
+		}
+	}
+
+	if (Array.isArray(value)) {
+		return value.map(item => sanitizeLogValue(item, { extraFields, seen, includeErrorStack }))
+	}
 
 	const sanitized: Record<string, unknown> = {}
-	for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-		sanitized[key] = sanitizeLogValue(child, { fieldName: key, extraFields, seen })
+	for (const [key, child] of safeObjectEntries(value)) {
+		sanitized[key] = sanitizeLogValue(child, { fieldName: key, extraFields, seen, includeErrorStack })
 	}
+
 	return sanitized
 }
 
 export const sanitizeLogRecord = (
 	value: Record<string, unknown>,
-	extraFields: ReadonlyArray<string> = []
-): Record<string, unknown> => sanitizeLogValue(value, { extraFields }) as Record<string, unknown>
+	extraFields: ReadonlyArray<string> = [],
+	options: Pick<SanitizeLogOptions, 'includeErrorStack'> = {}
+): Record<string, unknown> => sanitizeLogValue(value, { extraFields, ...options }) as Record<string, unknown>
 
 export { MAX_STACK_LENGTH, REDACTED }

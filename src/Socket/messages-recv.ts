@@ -86,10 +86,10 @@ import { makeMutex } from '../Utils/make-mutex'
 import { getMessageAckErrorPolicy } from '../Utils/message-ack-error'
 import {
 	buildMexDiagnostic,
+	type MexDiagnosticReason,
 	normalizeMexOperation,
 	parseTextStatusSideSubNotification,
-	parseTextStatusUpdateNotification,
-	type MexDiagnosticReason
+	parseTextStatusUpdateNotification
 } from '../Utils/mex-notifications'
 import {
 	JidMapBackend,
@@ -816,12 +816,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const oldestKey = mexDiagnosticCounters.keys().next().value
 			if (oldestKey) mexDiagnosticCounters.delete(oldestKey)
 		}
+
 		const state = mexDiagnosticCounters.get(key) ?? { total: 0, windowStart: now, emitted: 0 }
 		state.total++
 		if (now - state.windowStart >= 60_000) {
 			state.windowStart = now
 			state.emitted = 0
 		}
+
 		mexDiagnosticCounters.set(key, state)
 		if (state.emitted >= 5) return
 		state.emitted++
@@ -3466,6 +3468,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		if (resolvedRemoteJid || key.remoteJid) {
 			key.remoteJid = canonicalizeReceiptChatJid(resolvedRemoteJid ?? key.remoteJid!)
 		}
+
 		if (resolvedParticipant) key.participant = resolvedParticipant
 		remoteJid = key.remoteJid ?? remoteJid
 

@@ -175,7 +175,7 @@ export class JidMapBackend {
 	}
 
 	private rowIdFor(jid: string): number {
-		return this.db.transaction((rawString: string): number => this.rowIdForInTransaction(rawString))(jid)
+		return this.db.transaction((rawString: string): number => this.rowIdForInTransaction(rawString)).immediate(jid)
 	}
 
 	private reserveSortIds(): number {
@@ -222,24 +222,28 @@ export class JidMapBackend {
 	 * this one, which better-sqlite3 promotes to a SAVEPOINT — still safe.
 	 */
 	storeMapping(pnUser: string, lidUser: string): void {
-		this.db.transaction(() => {
-			const lidRowId = this.rowIdForInTransaction(lidUser)
-			const pnRowId = this.rowIdForInTransaction(pnUser)
-			this.stmts.upsertMap.run(lidRowId, pnRowId, this.reserveSortIds())
-		})()
+		this.db
+			.transaction(() => {
+				const lidRowId = this.rowIdForInTransaction(lidUser)
+				const pnRowId = this.rowIdForInTransaction(pnUser)
+				this.stmts.upsertMap.run(lidRowId, pnRowId, this.reserveSortIds())
+			})
+			.immediate()
 	}
 
 	/** Stores N mappings atomically (single transaction). */
 	storeMappingsBatch(pairs: Array<{ pnUser: string; lidUser: string }>): void {
-		this.db.transaction(() => {
-			const firstSortId = this.reserveSortIds()
-			for (let index = 0; index < pairs.length; index++) {
-				const { pnUser, lidUser } = pairs[index]!
-				const lidRowId = this.rowIdForInTransaction(lidUser)
-				const pnRowId = this.rowIdForInTransaction(pnUser)
-				this.stmts.upsertMap.run(lidRowId, pnRowId, firstSortId + index)
-			}
-		})()
+		this.db
+			.transaction(() => {
+				const firstSortId = this.reserveSortIds()
+				for (let index = 0; index < pairs.length; index++) {
+					const { pnUser, lidUser } = pairs[index]!
+					const lidRowId = this.rowIdForInTransaction(lidUser)
+					const pnRowId = this.rowIdForInTransaction(pnUser)
+					this.stmts.upsertMap.run(lidRowId, pnRowId, firstSortId + index)
+				}
+			})
+			.immediate()
 	}
 
 	/**

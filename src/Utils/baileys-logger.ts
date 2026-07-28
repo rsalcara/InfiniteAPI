@@ -1,4 +1,4 @@
-/* eslint-disable max-depth, @typescript-eslint/no-unused-vars */
+/* eslint-disable @typescript-eslint/no-unused-vars */
 /**
  * Custom Logger for Baileys/WhatsApp
  *
@@ -12,8 +12,8 @@
  * @module Utils/baileys-logger
  */
 
-import type { ILogger } from './logger.js'
 import { obfuscateJid, sanitizeLogRecord, sanitizeLogString, sanitizeLogValue } from './log-redaction.js'
+import type { ILogger } from './logger.js'
 import { createStructuredLogger, type LogEntry, type LogLevel, StructuredLogger } from './structured-logger.js'
 
 /**
@@ -44,7 +44,10 @@ export interface BaileysLoggerConfig {
 	ignoredCategories?: BaileysLogCategory[]
 	/** Categories with elevated log level (always debug) */
 	verboseCategories?: BaileysLogCategory[]
-	/** Whether to log message payloads (may be sensitive) */
+	/**
+	 * @deprecated Payload contents are always redacted. Kept only for source
+	 * compatibility with existing consumers.
+	 */
 	logMessagePayloads?: boolean
 	/** Whether to log binary data in hex */
 	logBinaryData?: boolean
@@ -191,7 +194,7 @@ export class BaileysLogger implements ILogger {
 		const searchText = [
 			msg || '',
 			typeof obj === 'string' ? obj : '',
-			typeof obj === 'object' && obj !== null ? JSON.stringify(obj) : ''
+			typeof obj === 'object' && obj !== null ? this.safeStringify(obj) : ''
 		].join(' ')
 
 		for (const { pattern, category } of CATEGORY_PATTERNS) {
@@ -223,20 +226,27 @@ export class BaileysLogger implements ILogger {
 	 * Sanitize message payload
 	 */
 	private sanitizePayload(obj: unknown): unknown {
-		const extraFields = this.config.logMessagePayloads ? [] : ['body', 'text', 'content', 'caption', 'payload', 'data']
-		const sanitized = sanitizeLogValue(obj, { extraFields })
+		const sanitized = sanitizeLogValue(obj)
 		if (typeof sanitized !== 'object' || sanitized === null) return sanitized
 
-		const serialized = JSON.stringify(sanitized)
+		const serialized = this.safeStringify(sanitized)
 		if (serialized.length <= this.config.maxPayloadSize) return sanitized
 		return { _truncated: true, _originalSize: serialized.length }
+	}
+
+	private safeStringify(value: unknown): string {
+		try {
+			return JSON.stringify(value)
+		} catch {
+			return '[unserializable log value]'
+		}
 	}
 
 	/**
 	 * Update metrics based on log
 	 */
 	private updateMetrics(category: BaileysLogCategory, level: LogLevel, obj: unknown): void {
-		const objStr = typeof obj === 'object' ? JSON.stringify(obj) : String(obj)
+		const objStr = typeof obj === 'object' ? this.safeStringify(obj) : String(obj)
 
 		switch (category) {
 			case 'connection':
@@ -289,17 +299,17 @@ export class BaileysLogger implements ILogger {
 	 * Main log method
 	 */
 	private log(level: LogLevel, obj: unknown, msg?: string): void {
-		const category = this.detectCategory(obj, msg)
+		// Sanitize before classification/metrics so no raw payload is serialized
+		// even on internal diagnostic paths.
+		const sanitizedObj = this.sanitizePayload(obj)
+		const category = this.detectCategory(sanitizedObj, msg)
 
 		if (!this.shouldLogCategory(category, level)) {
 			return
 		}
 
 		// Update metrics
-		this.updateMetrics(category, level, obj)
-
-		// Sanitize payload
-		const sanitizedObj = this.sanitizePayload(obj)
+		this.updateMetrics(category, level, sanitizedObj)
 
 		// Add Baileys context
 		const enrichedObj = {

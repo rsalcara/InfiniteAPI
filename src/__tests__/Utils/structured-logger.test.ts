@@ -159,6 +159,26 @@ describe('StructuredLogger', () => {
 			expect(output).not.toContain('must-not-leak')
 			expect(output).toContain('[REDACTED]')
 		})
+
+		it('should omit top-level and nested error stacks when stack traces are disabled', () => {
+			const jsonLogger = createStructuredLogger({
+				level: 'info',
+				jsonFormat: true,
+				includeStackTrace: false
+			})
+
+			jsonLogger.error({
+				error: new Error('private nested error'),
+				token: 'must-not-leak'
+			})
+
+			const output = String(jest.mocked(console.error).mock.calls.at(-1)?.[0])
+			const entry = JSON.parse(output) as { data?: { error?: { stack?: unknown; message?: unknown } } }
+			expect(entry.data?.error?.stack).toBeUndefined()
+			expect(entry.data?.error?.message).toBe('[REDACTED]')
+			expect(output).not.toContain('private nested error')
+			expect(output).not.toContain('must-not-leak')
+		})
 	})
 
 	describe('metrics', () => {

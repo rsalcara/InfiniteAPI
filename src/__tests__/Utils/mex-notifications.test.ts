@@ -47,11 +47,12 @@ describe('safe MEX diagnostics', () => {
 	it('normalizes operation names like the Android dispatcher', () => {
 		expect(normalizeMexOperation(' NotificationNewsletterUpdate ')).toBe('notificationnewsletterupdate')
 		expect(normalizeMexOperation(undefined)).toBeNull()
+		expect(normalizeMexOperation(123)).toBeNull()
+		expect(normalizeMexOperation({ operation: 'NotificationNewsletterUpdate' })).toBeNull()
 	})
 
 	it('records metadata and a hash without including payload or full sender JID', () => {
-		const payload =
-			'{"secret":"must-not-leak","data":{"phone":"5511999999999","message":"private content"}}'
+		const payload = '{"secret":"must-not-leak","data":{"phone":"5511999999999","message":"private content"}}'
 		const diagnostic = buildMexDiagnostic({
 			reason: 'unknown_op_name',
 			opName: 'FutureOperation',

@@ -17,8 +17,8 @@
  * @module Utils/structured-logger
  */
 
-import type { ILogger } from './logger.js'
 import { MAX_STACK_LENGTH, sanitizeLogRecord, sanitizeLogString, sanitizeLogValue } from './log-redaction.js'
+import type { ILogger } from './logger.js'
 
 // ============================================================================
 // CONFIGURATION
@@ -578,16 +578,18 @@ export class StructuredLogger implements ILogger {
 
 		// Process object
 		if (obj instanceof Error) {
-			message = message || sanitizeLogString(obj.message)
-			if (this.config.includeStackTrace && obj.stack) {
-				stack = sanitizeLogString(obj.stack, MAX_STACK_LENGTH)
+			data = sanitizeLogValue(obj, {
+				extraFields: this.config.redactFields,
+				includeErrorStack: this.config.includeStackTrace
+			}) as Record<string, unknown>
+			message = message || sanitizeLogString(String(data.name || 'Error'))
+			if (this.config.includeStackTrace && typeof data.stack === 'string') {
+				stack = sanitizeLogString(data.stack, MAX_STACK_LENGTH)
 			}
-
-			data = sanitizeLogValue(obj, { extraFields: this.config.redactFields }) as Record<string, unknown>
 		} else if (typeof obj === 'object' && obj !== null) {
 			data = this.sanitize(obj as Record<string, unknown>)
-			if (!message && 'msg' in (obj as Record<string, unknown>)) {
-				message = sanitizeLogString(String((obj as Record<string, unknown>).msg))
+			if (!message && data.msg !== undefined) {
+				message = sanitizeLogString(String(data.msg))
 			}
 		} else if (typeof obj === 'string') {
 			message = message || sanitizeLogString(obj)
@@ -605,7 +607,9 @@ export class StructuredLogger implements ILogger {
 			name: this.config.name,
 			context:
 				Object.keys(this.config.context).length > 0
-					? sanitizeLogRecord(this.config.context, this.config.redactFields)
+					? sanitizeLogRecord(this.config.context, this.config.redactFields, {
+							includeErrorStack: this.config.includeStackTrace
+						})
 					: undefined,
 			data,
 			stack,
@@ -618,7 +622,9 @@ export class StructuredLogger implements ILogger {
 	 * Sanitize sensitive data
 	 */
 	private sanitize(obj: Record<string, unknown>): Record<string, unknown> {
-		return sanitizeLogRecord(obj, this.config.redactFields)
+		return sanitizeLogRecord(obj, this.config.redactFields, {
+			includeErrorStack: this.config.includeStackTrace
+		})
 	}
 
 	/**

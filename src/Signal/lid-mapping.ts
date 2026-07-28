@@ -43,11 +43,12 @@ export interface LIDMappingConfig {
  */
 type ResolvedLIDMappingConfig = Omit<LIDMappingConfig, 'maxPendingMappings'> & { maxPendingMappings: number }
 
-export function loadLIDMappingConfig(): ResolvedLIDMappingConfig {
-	// Helper to clamp values within safe bounds
-	const clamp = (value: number, min: number, max: number): number =>
-		Math.max(min, Math.min(max, isNaN(value) ? min : value))
+const clampFinite = (value: number, fallback: number, min: number, max: number): number => {
+	const finiteValue = Number.isFinite(value) ? value : fallback
+	return Math.max(min, Math.min(max, finiteValue))
+}
 
+export function loadLIDMappingConfig(): ResolvedLIDMappingConfig {
 	const cacheTtlMs = parseInt(process.env.BAILEYS_LID_CACHE_TTL_MS || String(3 * 24 * 60 * 60 * 1000), 10)
 	const maxCacheSize = parseInt(process.env.BAILEYS_LID_MAX_CACHE_SIZE || '50000', 10)
 	const batchSize = parseInt(process.env.BAILEYS_LID_BATCH_SIZE || '975', 10)
@@ -57,20 +58,20 @@ export function loadLIDMappingConfig(): ResolvedLIDMappingConfig {
 
 	return {
 		// Cache TTL: minimum 1 minute, maximum 30 days
-		cacheTtlMs: clamp(cacheTtlMs, 60_000, 30 * 24 * 60 * 60 * 1000),
+		cacheTtlMs: clampFinite(cacheTtlMs, 3 * 24 * 60 * 60 * 1000, 60_000, 30 * 24 * 60 * 60 * 1000),
 		// Cache size: minimum 100, maximum 1,000,000
-		maxCacheSize: clamp(maxCacheSize, 100, 1_000_000),
+		maxCacheSize: clampFinite(maxCacheSize, 50_000, 100, 1_000_000),
 		cacheAutoPurge: process.env.BAILEYS_LID_CACHE_AUTO_PURGE !== 'false',
 		updateAgeOnGet: process.env.BAILEYS_LID_UPDATE_AGE_ON_GET !== 'false',
 		enableMetrics: process.env.BAILEYS_LID_METRICS === 'true',
 		// Batch size: minimum 1 (prevents infinite loop), maximum Android chunk size.
-		batchSize: clamp(batchSize, 1, 975),
+		batchSize: clampFinite(batchSize, 975, 1, 975),
 		// Bounded admission: enough for bursts without allowing unbounded memory.
-		maxPendingMappings: clamp(maxPendingMappings, 100, 100_000),
+		maxPendingMappings: clampFinite(maxPendingMappings, 5_000, 100, 100_000),
 		// Retry attempts: minimum 1, maximum 10
-		retryAttempts: clamp(retryAttempts, 1, 10),
+		retryAttempts: clampFinite(retryAttempts, 3, 1, 10),
 		// Retry delay: minimum 100ms, maximum 60 seconds
-		retryDelayMs: clamp(retryDelayMs, 100, 60_000),
+		retryDelayMs: clampFinite(retryDelayMs, 1_000, 100, 60_000),
 		debugLogging: process.env.BAILEYS_LID_DEBUG === 'true'
 	}
 }
@@ -180,6 +181,10 @@ export class LIDMappingStore {
 		resolve: (result: { stored: number; skipped: number; errors: number }) => void
 		reject: (error: unknown) => void
 	}> = []
+	private readonly queueProgressWaiters: Array<{
+		resolve: () => void
+		reject: (error: unknown) => void
+	}> = []
 
 	/**
 	 * Operation counter for safe resource cleanup
@@ -239,10 +244,41 @@ export class LIDMappingStore {
 		this.pnToLIDFunc = pnToLIDFunc
 		this.logger = logger
 		const defaults = loadLIDMappingConfig()
+		const overrideMaxPendingMappings = configOverride?.maxPendingMappings
 		this.config = {
 			...defaults,
 			...configOverride,
-			maxPendingMappings: configOverride?.maxPendingMappings ?? defaults.maxPendingMappings
+			cacheTtlMs: clampFinite(
+				configOverride?.cacheTtlMs ?? defaults.cacheTtlMs,
+				defaults.cacheTtlMs,
+				60_000,
+				2_592_000_000
+			),
+			maxCacheSize: clampFinite(
+				configOverride?.maxCacheSize ?? defaults.maxCacheSize,
+				defaults.maxCacheSize,
+				100,
+				1_000_000
+			),
+			batchSize: clampFinite(configOverride?.batchSize ?? defaults.batchSize, defaults.batchSize, 1, 975),
+			maxPendingMappings: clampFinite(
+				overrideMaxPendingMappings ?? defaults.maxPendingMappings,
+				defaults.maxPendingMappings,
+				100,
+				100_000
+			),
+			retryAttempts: clampFinite(
+				configOverride?.retryAttempts ?? defaults.retryAttempts,
+				defaults.retryAttempts,
+				1,
+				10
+			),
+			retryDelayMs: clampFinite(
+				configOverride?.retryDelayMs ?? defaults.retryDelayMs,
+				defaults.retryDelayMs,
+				100,
+				60_000
+			)
 		}
 
 		// Initialize LRU cache with configuration
@@ -364,27 +400,34 @@ export class LIDMappingStore {
 	 */
 	async storeLIDPNMappings(pairs: LIDMapping[]): Promise<{ stored: number; skipped: number; errors: number }> {
 		this.checkDestroyed()
-		const deduplicated = this.deduplicateMappings(pairs)
-		const duplicateSkipped = pairs.length - deduplicated.length
-		if (deduplicated.length === 0) return { stored: 0, skipped: duplicateSkipped, errors: 0 }
+		const validPairs: LIDMapping[] = []
+		let invalidSkipped = 0
 
-		if (this.pendingWriteItems + deduplicated.length > this.config.maxPendingMappings) {
-			this.stats.rejectedWrites++
-			throw new LIDMappingError('LID mapping write queue is full', LIDMappingErrorCode.BACKPRESSURE, {
-				pendingMappings: this.pendingWriteItems,
-				incomingMappings: deduplicated.length,
-				maxPendingMappings: this.config.maxPendingMappings
-			})
+		for (const pair of pairs) {
+			if (!this.isValidMapping(pair.lid, pair.pn)) {
+				this.logger.warn({ lid: pair.lid, pn: pair.pn }, 'Invalid LID-PN mapping rejected')
+				this.stats.invalidMappings++
+				invalidSkipped++
+				continue
+			}
+
+			validPairs.push(pair)
 		}
 
-		this.pendingWriteItems += deduplicated.length
-		this.stats.pendingMappings = this.pendingWriteItems
-		this.stats.maxPendingMappingsObserved = Math.max(this.stats.maxPendingMappingsObserved, this.pendingWriteItems)
+		const deduplicated = this.deduplicateMappings(validPairs)
+		const duplicateSkipped = validPairs.length - deduplicated.length
+		const result = { stored: 0, skipped: invalidSkipped + duplicateSkipped, errors: 0 }
+		if (deduplicated.length === 0) return result
 
-		return new Promise((resolve, reject) => {
-			this.writeQueue.push({ pairs: deduplicated, duplicateSkipped, resolve, reject })
-			void this.processWriteQueue()
-		})
+		const admissionChunkSize = Math.min(this.config.batchSize, this.config.maxPendingMappings)
+		for (const chunk of this.chunkArray(deduplicated, admissionChunkSize)) {
+			const chunkResult = await this.enqueueMappingWrite(chunk)
+			result.stored += chunkResult.stored
+			result.skipped += chunkResult.skipped
+			result.errors += chunkResult.errors
+		}
+
+		return result
 	}
 
 	private async storeLIDPNMappingsNow(
@@ -502,6 +545,7 @@ export class LIDMappingStore {
 						bucket[pnUser] = lidUser
 						bucket[`${lidUser}_reverse`] = pnUser
 					}
+
 					await this.keys.transaction(async () => {
 						await this.keys.set({ 'lid-mapping': bucket })
 					}, 'lid-mapping')
@@ -517,6 +561,7 @@ export class LIDMappingStore {
 							this.mappingCache.set(`lid:${lidUser}`, pnUser)
 						}
 					}
+
 					result.stored += batch.length
 					this.stats.mappingsStored += batch.length
 				}, 'store-mappings')
@@ -1039,6 +1084,7 @@ export class LIDMappingStore {
 		if (!this.destroyPromise) {
 			await this.destroy()
 		}
+
 		await this.cleanupPromise
 	}
 
@@ -1094,6 +1140,7 @@ export class LIDMappingStore {
 				} finally {
 					this.pendingWriteItems -= job.pairs.length
 					this.stats.pendingMappings = this.pendingWriteItems
+					this.notifyQueueProgress()
 				}
 			}
 		} finally {
@@ -1114,8 +1161,46 @@ export class LIDMappingStore {
 			this.pendingWriteItems -= job.pairs.length
 			job.reject(error)
 		}
+
 		this.pendingWriteItems = Math.max(0, this.pendingWriteItems)
 		this.stats.pendingMappings = this.pendingWriteItems
+		this.rejectQueueProgressWaiters(error)
+	}
+
+	private async enqueueMappingWrite(pairs: LIDMapping[]): Promise<{ stored: number; skipped: number; errors: number }> {
+		while (this.pendingWriteItems + pairs.length > this.config.maxPendingMappings) {
+			this.stats.rejectedWrites++
+			await this.waitForQueueProgress()
+			this.checkDestroyed()
+		}
+
+		this.pendingWriteItems += pairs.length
+		this.stats.pendingMappings = this.pendingWriteItems
+		this.stats.maxPendingMappingsObserved = Math.max(this.stats.maxPendingMappingsObserved, this.pendingWriteItems)
+
+		return new Promise((resolve, reject) => {
+			this.writeQueue.push({ pairs, duplicateSkipped: 0, resolve, reject })
+			void this.processWriteQueue()
+		})
+	}
+
+	private waitForQueueProgress(): Promise<void> {
+		this.checkDestroyed()
+		return new Promise((resolve, reject) => {
+			this.queueProgressWaiters.push({ resolve, reject })
+		})
+	}
+
+	private notifyQueueProgress(): void {
+		for (const waiter of this.queueProgressWaiters.splice(0)) {
+			waiter.resolve()
+		}
+	}
+
+	private rejectQueueProgressWaiters(error: unknown): void {
+		for (const waiter of this.queueProgressWaiters.splice(0)) {
+			waiter.reject(error)
+		}
 	}
 
 	/**

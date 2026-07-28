@@ -12,6 +12,7 @@ describe('getMessageTypeLabel', () => {
 		['voice', { audioMessage: { ptt: true } }],
 		['document', { documentMessage: {} }],
 		['sticker', { stickerMessage: {} }],
+		['sticker_pack', { stickerPackMessage: {} }],
 		['reaction', { reactionMessage: {} }],
 		['location', { locationMessage: {} }],
 		['live_location', { liveLocationMessage: {} }],
@@ -19,6 +20,7 @@ describe('getMessageTypeLabel', () => {
 		['contacts', { contactsArrayMessage: {} }],
 		['poll', { pollCreationMessageV3: {} }],
 		['poll_vote', { pollUpdateMessage: {} }],
+		['interactive', { interactiveMessage: {} }],
 		['interactive_response', { buttonsResponseMessage: {} }]
 	])('classifies %s', (expected, content) => {
 		expect(getMessageTypeLabel(content as any)).toBe(expected)

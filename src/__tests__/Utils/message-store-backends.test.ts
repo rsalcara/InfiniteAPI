@@ -22,8 +22,8 @@ import {
 	MessageMediaBackend,
 	MessageStoreBackend,
 	MultiDbSqliteStore,
-	ReceiptBackend,
 	RECEIPT_ORPHAN_TTL_SECONDS,
+	ReceiptBackend,
 	UI_ELEMENT_TYPE
 } from '../../Utils/multi-db-sqlite'
 
@@ -579,9 +579,7 @@ describe('msgstore.db message-store backends', () => {
 			expect(store.handle('msgstore.db').prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({
 				n: 0
 			})
-			expect(messageStore.getMessageByKeyId(chatJid, true, 'LATE-MESSAGE')?.status).toBe(
-				ANDROID_MESSAGE_STATUS.READ
-			)
+			expect(messageStore.getMessageByKeyId(chatJid, true, 'LATE-MESSAGE')?.status).toBe(ANDROID_MESSAGE_STATUS.READ)
 		})
 
 		it('keeps the newest timestamp when orphan receipts replay out of order', () => {
@@ -634,9 +632,7 @@ describe('msgstore.db message-store backends', () => {
 			db.prepare('UPDATE message SET status = ? WHERE _id = ?').run(ANDROID_MESSAGE_STATUS.READ, messageRowId)
 
 			expect(receipts.replayOrphaned(chatJid, true, 'MONOTONIC')).toBe(1)
-			expect(messageStore.getMessageByKeyId(chatJid, true, 'MONOTONIC')?.status).toBe(
-				ANDROID_MESSAGE_STATUS.READ
-			)
+			expect(messageStore.getMessageByKeyId(chatJid, true, 'MONOTONIC')?.status).toBe(ANDROID_MESSAGE_STATUS.READ)
 		})
 
 		it('rolls back receipt materialization, status promotion and orphan deletion together', () => {
@@ -713,6 +709,7 @@ describe('msgstore.db message-store backends', () => {
 					timestamp: now + index
 				})
 			}
+
 			const messageRowId = messageStore.recordMessage({
 				chatJid,
 				fromMe: true,
@@ -723,9 +720,44 @@ describe('msgstore.db message-store backends', () => {
 			expect(receipts.replayOrphaned(chatJid, true, 'MULTI-BATCH')).toBe(receiptCount)
 			expect(receipts.listUserReceipts(messageRowId)).toHaveLength(receiptCount)
 			expect(db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({ n: 0 })
-			expect(messageStore.getMessageByKeyId(chatJid, true, 'MULTI-BATCH')?.status).toBe(
-				ANDROID_MESSAGE_STATUS.READ
-			)
+			expect(messageStore.getMessageByKeyId(chatJid, true, 'MULTI-BATCH')?.status).toBe(ANDROID_MESSAGE_STATUS.READ)
+		})
+
+		it('does not let retained unknown statuses block a later valid orphan', () => {
+			const db = store.handle('msgstore.db')
+			const messageStore = new MessageStoreBackend(db, jidMap)
+			const receipts = new ReceiptBackend(db, jidMap, messageStore)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const now = Math.floor(Date.now() / 1000)
+
+			for (let index = 0; index < 301; index++) {
+				receipts.recordUserReceipt({
+					chatJid,
+					fromMe: true,
+					keyId: 'UNKNOWN-PREFIX',
+					receiptUserJid: `${5514000000000 + index}@s.whatsapp.net`,
+					kind: index === 300 ? 'read' : 'delivery',
+					timestamp: now + index
+				})
+			}
+
+			db.prepare(
+				'UPDATE receipt_orphaned SET status = 99 WHERE _id IN ' +
+					'(SELECT _id FROM receipt_orphaned WHERE key_id = ? ORDER BY _id ASC LIMIT 300)'
+			).run('UNKNOWN-PREFIX')
+			const messageRowId = messageStore.recordMessage({
+				chatJid,
+				fromMe: true,
+				keyId: 'UNKNOWN-PREFIX',
+				timestamp: now - 1
+			})
+
+			expect(receipts.replayOrphaned(chatJid, true, 'UNKNOWN-PREFIX')).toBe(1)
+			expect(receipts.listUserReceipts(messageRowId)).toHaveLength(1)
+			expect(
+				db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned WHERE key_id = ?').get('UNKNOWN-PREFIX')
+			).toMatchObject({ n: 300 })
+			expect(messageStore.getMessageByKeyId(chatJid, true, 'UNKNOWN-PREFIX')?.status).toBe(ANDROID_MESSAGE_STATUS.READ)
 		})
 
 		it('prunes orphan receipts after Androids 60-day retention window', () => {

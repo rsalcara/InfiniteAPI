@@ -33,8 +33,9 @@ export type MexDiagnostic = {
 	topLevelKeys: string[]
 }
 
-export const normalizeMexOperation = (operation: string | undefined | null): string | null => {
-	const normalized = operation?.trim().toLowerCase()
+export const normalizeMexOperation = (operation: unknown): string | null => {
+	if (typeof operation !== 'string') return null
+	const normalized = operation.trim().toLowerCase()
 	return normalized ? normalized : null
 }
 
