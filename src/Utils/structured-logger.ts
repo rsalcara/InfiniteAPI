@@ -511,7 +511,21 @@ export class StructuredLogger implements ILogger {
 			return
 		}
 
-		const entry = this.createLogEntry(level, obj, msg)
+		let entry: LogEntry
+		try {
+			entry = this.createLogEntry(level, obj, msg)
+		} catch {
+			// Logging must never abort the operation that emitted it. Keep the
+			// fallback independent from the hostile value that failed cleanup.
+			entry = {
+				timestamp: new Date().toISOString(),
+				level,
+				levelValue: LOG_LEVEL_VALUES[level],
+				message: '[log sanitization failed]',
+				name: this.config.name,
+				data: { sanitizationError: '[unavailable]' }
+			}
+		}
 
 		// Update metrics
 		this.updateMetrics(level)

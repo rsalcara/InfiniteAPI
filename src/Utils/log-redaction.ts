@@ -1,6 +1,8 @@
 const REDACTED = '[REDACTED]'
+const MAX_DEPTH_REACHED = '[max depth]'
 const MAX_STACK_LENGTH = 24_000
 const MAX_STRING_LENGTH = 8_192
+const MAX_LOG_DEPTH = 32
 
 const DEFAULT_SENSITIVE_FIELDS = [
 	'password',
@@ -15,6 +17,7 @@ const DEFAULT_SENSITIVE_FIELDS = [
 	'credentials',
 	'privatekey',
 	'private_key',
+	'key',
 	'qr',
 	'pairingcode',
 	'pairing_code',
@@ -25,14 +28,34 @@ const DEFAULT_SENSITIVE_FIELDS = [
 	'payload',
 	'body',
 	'caption',
+	'conversation',
+	'pushname',
+	'vcard',
+	'matchedtext',
+	'selecteddisplaytext',
+	'title',
+	'description',
+	'filename',
+	'displayname',
 	'text',
 	'content',
 	'data'
 ]
 
-const EXACT_SENSITIVE_FIELDS = new Set(['payload', 'body', 'caption', 'text', 'content', 'data'])
+const EXACT_SENSITIVE_FIELDS = new Set([
+	'payload',
+	'body',
+	'caption',
+	'text',
+	'content',
+	'data',
+	'title',
+	'description',
+	'filename',
+	'displayname'
+])
 
-const JID_PATTERN = /([0-9A-Za-z._-]+(?::\d+)?)@([0-9A-Za-z.-]+)/g
+const JID_PATTERN = /(?<![0-9A-Za-z._-])([0-9A-Za-z._-]+(?::\d+)?)@([0-9A-Za-z.-]+)(?![0-9A-Za-z.-])/g
 const PHONE_PATTERN = /(?<![0-9A-Za-z])\+?\d{8,16}(?![0-9A-Za-z])/g
 const MESSAGE_KEY_CORRELATION_FIELDS = new Set([
 	'remoteJid',
@@ -67,12 +90,13 @@ export const obfuscateIdentifier = (value: string): string => {
 }
 
 export const sanitizeLogString = (value: string, limit: number = MAX_STRING_LENGTH): string => {
-	const jidsRedacted = value.replace(JID_PATTERN, match => obfuscateJid(match))
+	const bounded = truncate(value, limit)
+	const jidsRedacted = bounded.replace(JID_PATTERN, match => obfuscateJid(match))
 	const phonesRedacted = jidsRedacted.replace(PHONE_PATTERN, match => {
 		const digits = match.replace(/\D/g, '')
 		return `***${digits.slice(-4)}`
 	})
-	return truncate(phonesRedacted, limit)
+	return phonesRedacted
 }
 
 const isSensitiveField = (key: string, extraFields: ReadonlyArray<string>): boolean => {
@@ -90,6 +114,8 @@ export type SanitizeLogOptions = {
 	extraFields?: ReadonlyArray<string>
 	seen?: WeakSet<object>
 	includeErrorStack?: boolean
+	depth?: number
+	maxDepth?: number
 }
 
 const safeObjectEntries = (value: object): Array<[string, unknown]> => {
@@ -118,8 +144,44 @@ const sanitizeErrorStack = (name: string, stack: string): string => {
 export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {}): unknown => {
 	const extraFields = options.extraFields ?? []
 	const includeErrorStack = options.includeErrorStack ?? true
-	if (options.fieldName && isSensitiveField(options.fieldName, extraFields)) return REDACTED
+	const depth = options.depth ?? 0
+	const maxDepth = options.maxDepth ?? MAX_LOG_DEPTH
+
+	// messageKey is an explicitly approved operational-correlation exception.
+	// It must be handled before generic "*key*" redaction, but only the six
+	// standard fields below bypass sanitization.
+	if (
+		options.fieldName === 'messageKey' &&
+		value !== null &&
+		typeof value === 'object' &&
+		!Array.isArray(value) &&
+		!(value instanceof Error)
+	) {
+		if (depth >= maxDepth) return MAX_DEPTH_REACHED
+
+		const seen = options.seen ?? new WeakSet<object>()
+		if (seen.has(value)) return '[Circular]'
+		seen.add(value)
+
+		const messageKey: Record<string, unknown> = {}
+		for (const [key, child] of safeObjectEntries(value)) {
+			messageKey[key] = MESSAGE_KEY_CORRELATION_FIELDS.has(key)
+				? child
+				: sanitizeLogValue(child, {
+						fieldName: key,
+						extraFields,
+						seen,
+						includeErrorStack,
+						depth: depth + 1,
+						maxDepth
+					})
+		}
+
+		return messageKey
+	}
+
 	if (value === null || value === undefined) return value
+	if (options.fieldName && isSensitiveField(options.fieldName, extraFields)) return REDACTED
 	if (typeof value === 'string') return sanitizeLogString(value)
 	if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return value
 	if (typeof value === 'symbol' || typeof value === 'function') {
@@ -139,31 +201,24 @@ export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {
 		}
 	}
 
+	if (depth >= maxDepth) return MAX_DEPTH_REACHED
+
 	const seen = options.seen ?? new WeakSet<object>()
 	if (seen.has(value)) return '[Circular]'
 	seen.add(value)
-
-	// Message keys are operational correlation metadata used to trace a
-	// transaction end-to-end across InfiniteAPI consumers. Keep the standard
-	// WAMessageKey fields exactly as received, including full PN/LID JIDs and
-	// message id. Unexpected properties still go through the normal sanitizer
-	// so this exception cannot expose message bodies, tokens or payloads.
-	if (options.fieldName === 'messageKey' && !Array.isArray(value) && !(value instanceof Error)) {
-		const messageKey: Record<string, unknown> = {}
-		for (const [key, child] of safeObjectEntries(value)) {
-			messageKey[key] = MESSAGE_KEY_CORRELATION_FIELDS.has(key)
-				? child
-				: sanitizeLogValue(child, { fieldName: key, extraFields, seen, includeErrorStack })
-		}
-
-		return messageKey
-	}
 
 	if (value instanceof Error) {
 		const own: Record<string, unknown> = {}
 		for (const [key, child] of safeObjectEntries(value)) {
 			if (key === 'message' || key === 'stack') continue
-			own[key] = sanitizeLogValue(child, { fieldName: key, extraFields, seen, includeErrorStack })
+			own[key] = sanitizeLogValue(child, {
+				fieldName: key,
+				extraFields,
+				seen,
+				includeErrorStack,
+				depth: depth + 1,
+				maxDepth
+			})
 		}
 
 		let rawName: unknown = 'Error'
@@ -198,12 +253,21 @@ export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {
 	}
 
 	if (Array.isArray(value)) {
-		return value.map(item => sanitizeLogValue(item, { extraFields, seen, includeErrorStack }))
+		return value.map(item =>
+			sanitizeLogValue(item, { extraFields, seen, includeErrorStack, depth: depth + 1, maxDepth })
+		)
 	}
 
 	const sanitized: Record<string, unknown> = {}
 	for (const [key, child] of safeObjectEntries(value)) {
-		sanitized[key] = sanitizeLogValue(child, { fieldName: key, extraFields, seen, includeErrorStack })
+		sanitized[key] = sanitizeLogValue(child, {
+			fieldName: key,
+			extraFields,
+			seen,
+			includeErrorStack,
+			depth: depth + 1,
+			maxDepth
+		})
 	}
 
 	return sanitized
@@ -212,7 +276,7 @@ export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {
 export const sanitizeLogRecord = (
 	value: Record<string, unknown>,
 	extraFields: ReadonlyArray<string> = [],
-	options: Pick<SanitizeLogOptions, 'includeErrorStack'> = {}
+	options: Pick<SanitizeLogOptions, 'includeErrorStack' | 'maxDepth'> = {}
 ): Record<string, unknown> => sanitizeLogValue(value, { extraFields, ...options }) as Record<string, unknown>
 
-export { MAX_STACK_LENGTH, REDACTED }
+export { MAX_DEPTH_REACHED, MAX_LOG_DEPTH, MAX_STACK_LENGTH, REDACTED }

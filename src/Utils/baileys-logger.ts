@@ -333,7 +333,15 @@ export class BaileysLogger implements ILogger {
 	private log(level: LogLevel, obj: unknown, msg?: string): void {
 		// Sanitize before classification/metrics so no raw payload is serialized
 		// even on internal diagnostic paths.
-		const sanitizedForDiagnostics = this.sanitizePayload(obj)
+		let sanitizedForDiagnostics: unknown
+		try {
+			sanitizedForDiagnostics = this.sanitizePayload(obj)
+		} catch {
+			// Never let a hostile/deep diagnostic object abort the WhatsApp
+			// handler that attempted to log it.
+			sanitizedForDiagnostics = { sanitizationError: '[unavailable]' }
+		}
+
 		const category = this.detectCategory(sanitizedForDiagnostics, msg)
 
 		if (!this.shouldLogCategory(category, level)) {

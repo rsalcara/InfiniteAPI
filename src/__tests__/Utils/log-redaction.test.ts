@@ -1,5 +1,11 @@
 import { describe, expect, it } from '@jest/globals'
-import { REDACTED, sanitizeLogValue } from '../../Utils/log-redaction'
+import {
+	MAX_DEPTH_REACHED,
+	MAX_LOG_DEPTH,
+	REDACTED,
+	sanitizeLogString,
+	sanitizeLogValue
+} from '../../Utils/log-redaction'
 
 describe('central log redaction', () => {
 	it('redacts Error messages and the message line embedded in stacks', () => {
@@ -58,5 +64,72 @@ describe('central log redaction', () => {
 			message: REDACTED,
 			stack: undefined
 		})
+	})
+
+	it('redacts WhatsApp message bodies and display metadata', () => {
+		const sanitized = sanitizeLogValue({
+			message: { conversation: 'SEGREDO DO CLIENTE 1234' },
+			pushName: 'Nome privado',
+			vcard: 'BEGIN:VCARD',
+			matchedText: 'texto citado',
+			selectedDisplayText: 'opção privada',
+			title: 'título privado',
+			description: 'descrição privada',
+			fileName: 'documento-secreto.pdf',
+			displayName: 'Contato privado'
+		}) as Record<string, unknown>
+		const serialized = JSON.stringify(sanitized)
+
+		expect(serialized).not.toContain('SEGREDO DO CLIENTE')
+		expect(serialized).not.toContain('Nome privado')
+		expect(serialized).not.toContain('documento-secreto.pdf')
+		expect(serialized).toContain(REDACTED)
+	})
+
+	it('redacts cryptographic key fields while preserving the approved messageKey fields', () => {
+		const sanitized = sanitizeLogValue({
+			mediaKey: 'media-secret',
+			macKey: 'mac-secret',
+			authKey: 'auth-secret',
+			messageKey: {
+				remoteJid: '5515991426667@s.whatsapp.net',
+				remoteJidAlt: '5515991426667@s.whatsapp.net',
+				fromMe: true,
+				id: '3EB0B9832A0DD4DE4E54D3',
+				participant: '',
+				addressingMode: 'lid',
+				authKey: 'nested-secret'
+			}
+		}) as Record<string, unknown>
+		const serialized = JSON.stringify(sanitized)
+
+		expect(serialized).not.toContain('media-secret')
+		expect(serialized).not.toContain('mac-secret')
+		expect(serialized).not.toContain('auth-secret')
+		expect(serialized).not.toContain('nested-secret')
+		expect(serialized).toContain('5515991426667@s.whatsapp.net')
+		expect(serialized).toContain('3EB0B9832A0DD4DE4E54D3')
+	})
+
+	it('bounds very large strings before applying JID and phone redaction', () => {
+		const input = `${'9'.repeat(100_000)} 5515991426667@s.whatsapp.net`
+		const sanitized = sanitizeLogString(input)
+
+		expect(sanitized).toContain('[truncated ')
+		expect(sanitized.length).toBeLessThan(8_300)
+		expect(sanitized).not.toContain('5515991426667@s.whatsapp.net')
+	})
+
+	it('stops recursive sanitization at the configured maximum depth', () => {
+		const root: Record<string, unknown> = {}
+		let cursor = root
+		for (let depth = 0; depth < MAX_LOG_DEPTH + 10; depth++) {
+			const child: Record<string, unknown> = {}
+			cursor.quotedMessage = child
+			cursor = child
+		}
+
+		expect(() => sanitizeLogValue(root)).not.toThrow()
+		expect(JSON.stringify(sanitizeLogValue(root))).toContain(MAX_DEPTH_REACHED)
 	})
 })

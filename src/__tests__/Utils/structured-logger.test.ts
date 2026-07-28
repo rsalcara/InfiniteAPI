@@ -179,6 +179,26 @@ describe('StructuredLogger', () => {
 			expect(output).not.toContain('private nested error')
 			expect(output).not.toContain('must-not-leak')
 		})
+
+		it('does not let a hostile value abort its caller', () => {
+			const jsonLogger = createStructuredLogger({
+				level: 'info',
+				jsonFormat: true
+			})
+			const hostile = new Proxy(
+				{},
+				{
+					getPrototypeOf() {
+						throw new Error('must-not-leak')
+					}
+				}
+			)
+
+			expect(() => jsonLogger.info(hostile)).not.toThrow()
+			const output = String(consoleSpy.mock.calls.at(-1)?.[0])
+			expect(output).toContain('[log sanitization failed]')
+			expect(output).not.toContain('must-not-leak')
+		})
 	})
 
 	describe('metrics', () => {

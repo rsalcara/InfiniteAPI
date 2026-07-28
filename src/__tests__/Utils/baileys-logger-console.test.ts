@@ -276,6 +276,26 @@ describe('Baileys Console Logging Functions', () => {
 			expect(categories).toContain('message')
 			expect(logger.getMetrics().messagesReceived).toBe(1)
 		})
+
+		it('does not let a hostile diagnostic payload abort its caller', () => {
+			const entries: unknown[] = []
+			const logger = new BaileysLogger({
+				level: 'info',
+				eventHandler: (_category, entry) => entries.push(entry)
+			})
+			const hostile = new Proxy(
+				{},
+				{
+					getPrototypeOf() {
+						throw new Error('must-not-leak')
+					}
+				}
+			)
+
+			expect(() => logger.info(hostile, 'diagnostic event')).not.toThrow()
+			expect(JSON.stringify(entries)).toContain('sanitizationError')
+			expect(JSON.stringify(entries)).not.toContain('must-not-leak')
+		})
 	})
 
 	describe('logLidMapping', () => {

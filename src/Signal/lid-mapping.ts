@@ -170,6 +170,7 @@ export class LIDMappingStore {
 	private readonly logger: ILogger
 	private readonly config: ResolvedLIDMappingConfig
 	private destroyed = false
+	private hardStopped = false
 	private destroyPromise?: Promise<boolean>
 	private cleanupPromise?: Promise<void>
 	private resolveDrain?: () => void
@@ -400,34 +401,40 @@ export class LIDMappingStore {
 	 */
 	async storeLIDPNMappings(pairs: LIDMapping[]): Promise<{ stored: number; skipped: number; errors: number }> {
 		this.checkDestroyed()
-		const validPairs: LIDMapping[] = []
-		let invalidSkipped = 0
 
-		for (const pair of pairs) {
-			if (!this.isValidMapping(pair.lid, pair.pn)) {
-				this.logger.warn({ lid: pair.lid, pn: pair.pn }, 'Invalid LID-PN mapping rejected')
-				this.stats.invalidMappings++
-				invalidSkipped++
-				continue
+		// The complete call is admitted atomically before validation/chunking.
+		// Once admitted, every chunk is allowed to finish during graceful
+		// teardown. New public calls still fail immediately via checkDestroyed().
+		return this.trackOperation(async () => {
+			const validPairs: LIDMapping[] = []
+			let invalidSkipped = 0
+
+			for (const pair of pairs) {
+				if (!this.isValidMapping(pair.lid, pair.pn)) {
+					this.logger.warn({ lid: pair.lid, pn: pair.pn }, 'Invalid LID-PN mapping rejected')
+					this.stats.invalidMappings++
+					invalidSkipped++
+					continue
+				}
+
+				validPairs.push(pair)
 			}
 
-			validPairs.push(pair)
-		}
+			const deduplicated = this.deduplicateMappings(validPairs)
+			const duplicateSkipped = validPairs.length - deduplicated.length
+			const result = { stored: 0, skipped: invalidSkipped + duplicateSkipped, errors: 0 }
+			if (deduplicated.length === 0) return result
 
-		const deduplicated = this.deduplicateMappings(validPairs)
-		const duplicateSkipped = validPairs.length - deduplicated.length
-		const result = { stored: 0, skipped: invalidSkipped + duplicateSkipped, errors: 0 }
-		if (deduplicated.length === 0) return result
+			const admissionChunkSize = Math.min(this.config.batchSize, this.config.maxPendingMappings)
+			for (const chunk of this.chunkArray(deduplicated, admissionChunkSize)) {
+				const chunkResult = await this.enqueueMappingWrite(chunk, true)
+				result.stored += chunkResult.stored
+				result.skipped += chunkResult.skipped
+				result.errors += chunkResult.errors
+			}
 
-		const admissionChunkSize = Math.min(this.config.batchSize, this.config.maxPendingMappings)
-		for (const chunk of this.chunkArray(deduplicated, admissionChunkSize)) {
-			const chunkResult = await this.enqueueMappingWrite(chunk)
-			result.stored += chunkResult.stored
-			result.skipped += chunkResult.skipped
-			result.errors += chunkResult.errors
-		}
-
-		return result
+			return result
+		})
 	}
 
 	private async storeLIDPNMappingsNow(
@@ -1033,20 +1040,22 @@ export class LIDMappingStore {
 		if (this.destroyPromise) return this.destroyPromise
 
 		this.destroyed = true
-		this.rejectQueuedWrites(new LIDMappingError('LIDMappingStore has been destroyed', LIDMappingErrorCode.DESTROYED))
 		this.logger.debug('🗑️ Draining LIDMappingStore before cleanup')
 
-		const drainPromise =
-			this.operationsInProgress > 0
-				? new Promise<void>(resolve => {
-						this.resolveDrain = resolve
-					})
-				: Promise.resolve()
+		const drainPromise = this.isFullyDrained()
+			? Promise.resolve()
+			: new Promise<void>(resolve => {
+					this.resolveDrain = resolve
+				})
 
-		if (this.operationsInProgress > 0) {
+		if (!this.isFullyDrained()) {
 			this.logger.info(
-				{ operationsInProgress: this.operationsInProgress },
-				'waiting for active LID mapping operations before cleanup'
+				{
+					operationsInProgress: this.operationsInProgress,
+					queuedJobs: this.writeQueue.length,
+					pendingMappings: this.pendingWriteItems
+				},
+				'waiting for admitted LID mapping writes before cleanup'
 			)
 		}
 
@@ -1058,16 +1067,30 @@ export class LIDMappingStore {
 
 		this.destroyPromise = new Promise<boolean>(resolve => {
 			const timeout = setTimeout(() => {
+				this.hardStopped = true
+				const discardedJobs = this.writeQueue.length
+				const discardedMappings = this.writeQueue.reduce((total, job) => total + job.pairs.length, 0)
 				this.logger.warn(
-					{ operationsInProgress: this.operationsInProgress, timeoutMs: LID_MAPPING_DESTROY_TIMEOUT_MS },
-					'LID mapping cleanup exceeded the socket shutdown budget; invalidating remaining local state'
+					{
+						operationsInProgress: this.operationsInProgress,
+						discardedJobs,
+						discardedMappings,
+						timeoutMs: LID_MAPPING_DESTROY_TIMEOUT_MS
+					},
+					'LID mapping cleanup exceeded the socket shutdown budget; invalidating queued writes'
 				)
-				this.clearResources()
+				this.rejectQueuedWrites(
+					new LIDMappingError('LIDMappingStore teardown timed out', LIDMappingErrorCode.DESTROYED, {
+						discardedJobs,
+						discardedMappings
+					})
+				)
+				this.maybeResolveDrain()
 				resolve(false)
 			}, LID_MAPPING_DESTROY_TIMEOUT_MS)
 			timeout.unref?.()
 
-			this.cleanupPromise!.then(() => {
+			void this.cleanupPromise!.then(() => {
 				clearTimeout(timeout)
 				resolve(true)
 			})
@@ -1092,7 +1115,6 @@ export class LIDMappingStore {
 		this.mappingCache.clear()
 		this.inflightLIDLookups.clear()
 		this.inflightPNLookups.clear()
-		this.rejectQueuedWrites(new LIDMappingError('LIDMappingStore has been destroyed', LIDMappingErrorCode.DESTROYED))
 	}
 
 	// ========================================================================
@@ -1129,10 +1151,10 @@ export class LIDMappingStore {
 		if (this.writeQueueRunning) return
 		this.writeQueueRunning = true
 		try {
-			while (this.writeQueue.length > 0 && !this.destroyed) {
+			while (this.writeQueue.length > 0 && !this.hardStopped) {
 				const job = this.writeQueue.shift()!
 				try {
-					const result = await this.trackOperation(() => this.storeLIDPNMappingsNow(job.pairs))
+					const result = await this.trackOperation(() => this.storeLIDPNMappingsNow(job.pairs), true)
 					result.skipped += job.duplicateSkipped
 					job.resolve(result)
 				} catch (error) {
@@ -1145,13 +1167,15 @@ export class LIDMappingStore {
 			}
 		} finally {
 			this.writeQueueRunning = false
-			if (this.destroyed) {
+			if (this.hardStopped) {
 				this.rejectQueuedWrites(
 					new LIDMappingError('LIDMappingStore has been destroyed', LIDMappingErrorCode.DESTROYED)
 				)
 			} else if (this.writeQueue.length > 0) {
 				void this.processWriteQueue()
 			}
+
+			this.maybeResolveDrain()
 		}
 	}
 
@@ -1167,13 +1191,18 @@ export class LIDMappingStore {
 		this.rejectQueueProgressWaiters(error)
 	}
 
-	private async enqueueMappingWrite(pairs: LIDMapping[]): Promise<{ stored: number; skipped: number; errors: number }> {
+	private async enqueueMappingWrite(
+		pairs: LIDMapping[],
+		admittedBeforeDestroy = false
+	): Promise<{ stored: number; skipped: number; errors: number }> {
+		this.checkWriteAdmission(admittedBeforeDestroy)
 		while (this.pendingWriteItems + pairs.length > this.config.maxPendingMappings) {
 			this.stats.rejectedWrites++
-			await this.waitForQueueProgress()
-			this.checkDestroyed()
+			await this.waitForQueueProgress(admittedBeforeDestroy)
+			this.checkWriteAdmission(admittedBeforeDestroy)
 		}
 
+		this.checkWriteAdmission(admittedBeforeDestroy)
 		this.pendingWriteItems += pairs.length
 		this.stats.pendingMappings = this.pendingWriteItems
 		this.stats.maxPendingMappingsObserved = Math.max(this.stats.maxPendingMappingsObserved, this.pendingWriteItems)
@@ -1184,11 +1213,17 @@ export class LIDMappingStore {
 		})
 	}
 
-	private waitForQueueProgress(): Promise<void> {
-		this.checkDestroyed()
+	private waitForQueueProgress(admittedBeforeDestroy = false): Promise<void> {
+		this.checkWriteAdmission(admittedBeforeDestroy)
 		return new Promise((resolve, reject) => {
 			this.queueProgressWaiters.push({ resolve, reject })
 		})
+	}
+
+	private checkWriteAdmission(admittedBeforeDestroy: boolean): void {
+		if (this.hardStopped || (this.destroyed && !admittedBeforeDestroy)) {
+			throw new LIDMappingError('LIDMappingStore has been destroyed', LIDMappingErrorCode.DESTROYED)
+		}
 	}
 
 	private notifyQueueProgress(): void {
@@ -1200,6 +1235,17 @@ export class LIDMappingStore {
 	private rejectQueueProgressWaiters(error: unknown): void {
 		for (const waiter of this.queueProgressWaiters.splice(0)) {
 			waiter.reject(error)
+		}
+	}
+
+	private isFullyDrained(): boolean {
+		return this.operationsInProgress === 0 && this.writeQueue.length === 0 && !this.writeQueueRunning
+	}
+
+	private maybeResolveDrain(): void {
+		if (this.destroyed && this.isFullyDrained()) {
+			this.resolveDrain?.()
+			this.resolveDrain = undefined
 		}
 	}
 
@@ -1225,14 +1271,14 @@ export class LIDMappingStore {
 	 * @param operation - Async operation to execute
 	 * @returns Promise with operation result
 	 */
-	private async trackOperation<T>(operation: () => Promise<T>): Promise<T> {
+	private async trackOperation<T>(operation: () => Promise<T>, allowDuringDestroy = false): Promise<T> {
 		// Increment counter BEFORE starting operation
 		this.operationsInProgress++
 
 		try {
 			// Recheck destroyed after incrementing counter
 			// This ensures we fail fast if destroyed between checkDestroyed() and here
-			if (this.destroyed) {
+			if (this.hardStopped || (this.destroyed && !allowDuringDestroy)) {
 				throw new LIDMappingError('LIDMappingStore has been destroyed', LIDMappingErrorCode.DESTROYED)
 			}
 
@@ -1240,10 +1286,7 @@ export class LIDMappingStore {
 		} finally {
 			// ALWAYS decrement counter, even on error
 			this.operationsInProgress--
-			if (this.destroyed && this.operationsInProgress === 0) {
-				this.resolveDrain?.()
-				this.resolveDrain = undefined
-			}
+			this.maybeResolveDrain()
 		}
 	}
 

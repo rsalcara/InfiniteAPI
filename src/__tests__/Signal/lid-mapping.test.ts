@@ -177,6 +177,43 @@ describe('LIDMappingStore', () => {
 			expect(mockKeys.set).toHaveBeenCalledTimes(3)
 		})
 
+		it('drains every chunk of an admitted history batch during destroy', async () => {
+			let releaseFirstChunk!: () => void
+			const firstChunkBlocked = new Promise<void>(resolve => {
+				releaseFirstChunk = resolve
+			})
+			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, {
+				batchSize: 100,
+				maxPendingMappings: 100,
+				retryAttempts: 1
+			})
+			mockKeys.get.mockResolvedValue({} as never)
+			mockKeys.transaction.mockImplementationOnce(async <T>(work: () => Promise<T>): Promise<T> => {
+				await firstChunkBlocked
+				return work()
+			})
+
+			const pairs = Array.from({ length: 250 }, (_, index) => ({
+				pn: `${300_000 + index}@s.whatsapp.net`,
+				lid: `${400_000 + index}@lid`
+			}))
+			const storePromise = lidMappingStore.storeLIDPNMappings(pairs)
+			await Promise.resolve()
+
+			let destroySettled = false
+			const destroyPromise = lidMappingStore.destroy().then(result => {
+				destroySettled = true
+				return result
+			})
+			await Promise.resolve()
+			expect(destroySettled).toBe(false)
+
+			releaseFirstChunk()
+			await expect(storePromise).resolves.toEqual({ stored: 250, skipped: 0, errors: 0 })
+			await expect(destroyPromise).resolves.toBe(true)
+			expect(mockKeys.set).toHaveBeenCalledTimes(3)
+		})
+
 		it('normalizes non-finite pending-writer overrides', () => {
 			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, {
 				maxPendingMappings: Number.POSITIVE_INFINITY
@@ -389,6 +426,57 @@ describe('LIDMappingStore', () => {
 			await operationPromise
 			await expect(waitForDestroy).resolves.toBeUndefined()
 			expect(fullyDrained).toBe(true)
+			jest.useRealTimers()
+		})
+
+		it('hard-stops queued writes only after the global destroy timeout', async () => {
+			jest.useFakeTimers()
+			let releaseActiveWrite!: () => void
+			const activeWriteBlocked = new Promise<void>(resolve => {
+				releaseActiveWrite = resolve
+			})
+			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, { retryAttempts: 1 })
+			mockKeys.get.mockResolvedValue({} as never)
+			mockKeys.transaction.mockImplementationOnce(async <T>(work: () => Promise<T>): Promise<T> => {
+				await activeWriteBlocked
+				return work()
+			})
+
+			const active = lidMappingStore.storeLIDPNMappings([{ pn: '11111@s.whatsapp.net', lid: 'aaaaa@lid' }])
+			await Promise.resolve()
+			const queued = [
+				lidMappingStore.storeLIDPNMappings([{ pn: '22222@s.whatsapp.net', lid: 'bbbbb@lid' }]),
+				lidMappingStore.storeLIDPNMappings([{ pn: '33333@s.whatsapp.net', lid: 'ccccc@lid' }])
+			]
+			const queuedOutcomes = Promise.all(
+				queued.map(promise =>
+					promise.then(
+						() => 'resolved' as const,
+						error => error as Error
+					)
+				)
+			)
+
+			const destroyPromise = lidMappingStore.destroy()
+			await jest.advanceTimersByTimeAsync(5_000)
+			await expect(destroyPromise).resolves.toBe(false)
+			const outcomes = await queuedOutcomes
+			expect(outcomes).toHaveLength(2)
+			expect(outcomes.every(outcome => outcome instanceof Error && /timed out|destroyed/.test(outcome.message))).toBe(
+				true
+			)
+
+			let fullyDrained = false
+			const waitForDestroy = lidMappingStore.waitForDestroy().then(() => {
+				fullyDrained = true
+			})
+			await Promise.resolve()
+			expect(fullyDrained).toBe(false)
+
+			releaseActiveWrite()
+			await expect(active).resolves.toEqual({ stored: 1, skipped: 0, errors: 0 })
+			await expect(waitForDestroy).resolves.toBeUndefined()
+			expect(mockKeys.set).toHaveBeenCalledTimes(1)
 			jest.useRealTimers()
 		})
 	})
