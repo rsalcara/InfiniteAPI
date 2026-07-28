@@ -1,7 +1,6 @@
 /* eslint-disable max-depth, @typescript-eslint/no-unused-vars */
 import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
-import { AsyncLocalStorage } from 'async_hooks'
 import { randomBytes } from 'crypto'
 import Long from 'long'
 import { proto } from '../../WAProto/index.js'
@@ -104,6 +103,7 @@ import {
 	recordMessageReceived,
 	recordMessageRetry
 } from '../Utils/prometheus-metrics.js'
+import { isExpectedSocketTeardownError } from '../Utils/socket-teardown'
 import { buildAckStanza } from '../Utils/stanza-ack'
 import {
 	isRegularUser,
@@ -154,6 +154,7 @@ const summarizeInboundNode = (node: BinaryNode) => ({
 		: []
 })
 import { extractGroupMetadata } from './groups'
+import { createInboundTaskAdmission } from './inbound-task-admission'
 import { makeMessagesSocket } from './messages-send'
 
 // Set imutável de valores válidos do enum (port de upstream `c89d97b13b`,
@@ -217,6 +218,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		issuePrivacyTokens,
 		registerSocketEndHandler,
 		registerSocketDrainHandler,
+		isSocketClosed,
 		// Port de upstream `4dbbba2891` (PR #2442)
 		fetchAccountReachoutTimelock
 	} = sock
@@ -1164,22 +1166,29 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 	}
 
-	const sendMessageAck = async (node: BinaryNode, errorCode?: number) => {
+	const sendMessageAck = async (node: BinaryNode, errorCode?: number): Promise<boolean> => {
+		// Once teardown starts, do not emit ACK/NACK on the closing transport.
+		// The server can redeliver the unacknowledged stanza after reconnect;
+		// this is safer than acknowledging work whose transaction may roll
+		// back. The check is synchronous and adds no wait to message delivery.
+		if (isSocketClosed()) {
+			logger.debug({ tag: node.tag, msgId: node.attrs.id }, 'ack skipped because the socket is closing')
+			return false
+		}
+
 		// buildAckStanza mirrors WA Web: always emit `type` when present, and `from=meId` for
 		// message-class ACKs WHEN we know our id. We intentionally do NOT hard-fail when `me` is
 		// momentarily unset (reconnect/pairing edge): buildAckStanza simply omits `from`, so the
 		// ACK still goes out instead of throwing and letting the server retry forever (Codex #440).
 		const meId = authState.creds.me?.id
 		const stanza = buildAckStanza(node, errorCode, meId)
-		logger.debug({ recv: { tag: node.tag, attrs: node.attrs }, sent: stanza.attrs }, 'sent ack')
 
 		// Best-effort pre-ack mirror (axolotl.db `preacks`): persist the encoded
-		// ack BEFORE sending, drop THIS ack's row AFTER it goes out — the mobile
-		// pre-ack lifecycle. Deleting by exact row id (not a `_id <= ?` prefix
-		// drain) so a concurrent ack cannot remove another ack's not-yet-sent
-		// pre-ack. Gated to message-class stanzas (what the mobile client
-		// pre-acks) and fully wrapped: any mirror error is logged and the ack
-		// still sends (fallback = legacy inline ack).
+		// ack BEFORE sending, drop THIS ack's row AFTER it goes out. During
+		// teardown, delete the unsent row and leave server redelivery eligible;
+		// we do not replay an ack that never reached the transport. Deleting by
+		// exact row id (not a `_id <= ?` prefix drain) keeps concurrent acks
+		// isolated. Any mirror error is logged and the ack still sends.
 		let preackId: number | undefined
 		if (signalTypedBackend && node.tag === 'message') {
 			try {
@@ -1189,7 +1198,26 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 		}
 
-		await sendNode(stanza)
+		try {
+			await sendNode(stanza)
+		} catch (error) {
+			if (isExpectedSocketTeardownError(error)) {
+				if (signalTypedBackend && preackId !== undefined) {
+					try {
+						signalTypedBackend.deletePreack(preackId)
+					} catch (err) {
+						logger.debug({ err, msgId: node.attrs.id }, 'preacks mirror: teardown cleanup failed (ignored)')
+					}
+				}
+
+				logger.debug({ tag: node.tag, msgId: node.attrs.id }, 'ack cancelled by socket teardown')
+				return false
+			}
+
+			throw error
+		}
+
+		logger.debug({ recv: { tag: node.tag, attrs: node.attrs }, sent: stanza.attrs }, 'sent ack')
 
 		if (signalTypedBackend && preackId !== undefined) {
 			try {
@@ -1198,6 +1226,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				logger.debug({ err, msgId: node.attrs.id }, 'preacks mirror: delete failed (ignored)')
 			}
 		}
+
+		return true
 	}
 
 	const rejectCall = async (callId: string, callFrom: string) => {
@@ -3539,10 +3569,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 									logger.debug({ attrs, key }, 'recv retry request')
 									await sendMessagesAgain(key, ids, retryNode!, node)
 								} catch (error: unknown) {
-									logger.error(
-										{ key, ids, trace: error instanceof Error ? error.stack : 'Unknown error' },
-										'error in sending message again'
-									)
+									if (isExpectedSocketTeardownError(error)) {
+										logger.debug({ key, ids }, 'message retry cancelled by socket teardown')
+									} else {
+										logger.error(
+											{ key, ids, trace: error instanceof Error ? error.stack : 'Unknown error' },
+											'error in sending message again'
+										)
+									}
 								}
 							} else {
 								logger.info({ attrs, key }, 'recv retry for not fromMe message')
@@ -3752,8 +3786,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					// Handle "Missing keys" - standard decryption failure
 					// Return NACK with parsing error to signal the issue
 					if (msg?.messageStubParameters?.[0] === MISSING_KEYS_ERROR_TEXT) {
-						await sendMessageAck(node, NACK_REASONS.ParsingError)
-						acked = true
+						acked = await sendMessageAck(node, NACK_REASONS.ParsingError)
 						return
 					}
 
@@ -3775,8 +3808,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					// mismatch — which deserve the Signal retry path, NOT a silent
 					// ACK. cubic audit thread 13 (PR #521).
 					if (msg?.messageStubParameters?.[0]?.startsWith('decryptMsmsgBotMessage: no messageSecret for ')) {
-						await sendMessageAck(node)
-						acked = true
+						acked = await sendMessageAck(node)
 						return
 					}
 
@@ -3799,8 +3831,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								{ msgId: msg.key?.id, remoteJid: msg.key?.remoteJid, error: stubError },
 								'skmsg sender-key stale: NACK 496 to stop retry loop (waiting for fresh SKDM)'
 							)
-							await sendMessageAck(node, NACK_REASONS.SignalErrorOldCounter)
-							acked = true
+							acked = await sendMessageAck(node, NACK_REASONS.SignalErrorOldCounter)
 							return
 						}
 					}
@@ -3822,8 +3853,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								'CTWA: Skipping placeholder resend for unavailable fanout type'
 							)
 							metrics.ctwaRecoveryFailures.inc({ reason: 'unavailable_fanout' })
-							await sendMessageAck(node)
-							acked = true
+							acked = await sendMessageAck(node)
 							return
 						}
 
@@ -3836,8 +3866,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								'CTWA: Skipping placeholder resend for old message'
 							)
 							metrics.ctwaRecoveryFailures.inc({ reason: 'message_too_old' })
-							await sendMessageAck(node)
-							acked = true
+							acked = await sendMessageAck(node)
 							return
 						}
 
@@ -3920,8 +3949,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							)
 						}
 
-						await sendMessageAck(node)
-						acked = true
+						acked = await sendMessageAck(node)
 						return
 					}
 
@@ -3933,8 +3961,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								{ msgId: msg.key.id, messageAge, remoteJid: msg.key.remoteJid },
 								'skipping retry for expired status message'
 							)
-							await sendMessageAck(node)
-							acked = true
+							acked = await sendMessageAck(node)
 							return
 						}
 					}
@@ -3984,8 +4011,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							}
 						}
 
-						await sendMessageAck(node, NACK_REASONS.UnhandledError)
-						acked = true
+						acked = await sendMessageAck(node, NACK_REASONS.UnhandledError)
 					})
 				} else {
 					if (messageRetryManager && msg.key.id) {
@@ -4040,8 +4066,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							await sendReceipt(jid, undefined, [msg.key.id!], 'hist_sync') // TODO: investigate
 						}
 					} else {
-						await sendMessageAck(node)
-						acked = true
+						if (!(acked = await sendMessageAck(node))) return
 						logger.debug({ key: msg.key }, 'processed newsletter message without receipts')
 					}
 				}
@@ -4087,6 +4112,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 			})
 		} catch (error) {
+			if (isExpectedSocketTeardownError(error)) {
+				logger.debug(
+					{ from: node.attrs?.from, msgId: node.attrs?.id },
+					'message processing cancelled by socket teardown; server redelivery remains eligible'
+				)
+				return
+			}
+
 			// For recoverable Signal Protocol failures (Bad MAC, MessageCounterError,
 			// old counter, missing prekey) the retry+pkmsg flow recovers automatically.
 			// Logging the full stanza here just floods the log with the raw ciphertext
@@ -4482,18 +4515,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		return new Promise(resolve => setImmediate(resolve))
 	}
 
-	let acceptingInboundTasks = true
-	const inboundTasks = new Set<Promise<void>>()
-	const inboundTaskAdmission = new AsyncLocalStorage<boolean>()
+	const inboundTaskAdmission = createInboundTaskAdmission(onUnexpectedError)
 	const trackInboundTask = (identifier: string, factory: () => Promise<void>): void => {
-		const isDerivedFromAdmittedTask = inboundTaskAdmission.getStore() === true
-		if (!acceptingInboundTasks && !isDerivedFromAdmittedTask) return
-
-		const task = inboundTaskAdmission
-			.run(true, factory)
-			.catch(error => onUnexpectedError(error instanceof Error ? error : new Error(String(error)), identifier))
-		inboundTasks.add(task)
-		void task.finally(() => inboundTasks.delete(task))
+		inboundTaskAdmission.track(identifier, factory)
 	}
 
 	const nodeProcessorMap: Map<MessageType, (node: BinaryNode) => Promise<void>> = new Map([
@@ -4516,10 +4540,20 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	)
 
 	registerSocketDrainHandler(async () => {
-		acceptingInboundTasks = false
+		const admittedTasks = inboundTaskAdmission.close()
+		logger.debug({ admittedTasks }, 'socket teardown: inbound admission closed; draining work accepted before shutdown')
 		await offlineNodeProcessor.stopAndDrain()
-		while (inboundTasks.size > 0) {
-			await Promise.allSettled([...inboundTasks])
+		const drainResult = await inboundTaskAdmission.drain()
+		if (drainResult.timedOut) {
+			logger.warn(
+				{ pendingTasks: drainResult.pendingTasks, waitedMs: drainResult.waitedMs },
+				'socket teardown: inbound drain timed out; active admission tokens expired'
+			)
+		} else {
+			logger.debug(
+				{ waitedMs: drainResult.waitedMs },
+				'socket teardown: inbound work drained; auth stores can now close safely'
+			)
 		}
 	})
 
