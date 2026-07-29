@@ -2,7 +2,7 @@ import { proto } from '../../../WAProto/index.js'
 import { DEFAULT_CONNECTION_CONFIG } from '../../Defaults'
 import type { SocketConfig } from '../../Types'
 import { initAuthCreds } from '../../Utils/auth-utils'
-import { getPairCodeCompanionIdentity } from '../../Utils/companion-reg-client-utils'
+import { buildPairingQRData, getPairCodeCompanionIdentity } from '../../Utils/companion-reg-client-utils'
 import { buildCompanionDeviceProps, generateRegistrationNode } from '../../Utils/validate-connection'
 
 const webConfig = (overrides: Partial<SocketConfig> = {}): SocketConfig => ({
@@ -64,6 +64,12 @@ describe('official Web history-sync DeviceProps', () => {
 		// Registration DeviceProps uses the DeviceProps enum.
 		expect(buildCompanionDeviceProps(config).platformType).toBe(proto.DeviceProps.PlatformType.UWP)
 		expect(proto.DeviceProps.PlatformType.UWP).toBe(21)
+	})
+
+	it('includes the UWP Web-client identity in an official Windows hybrid QR', () => {
+		expect(buildPairingQRData('ref', 'noise', 'identity', 'adv', webConfig().browser, 'web', true)).toBe(
+			'https://wa.me/settings/linked_devices#ref,noise,identity,adv,8'
+		)
 	})
 
 	it('preserves the configured browser Pair Code identity outside WIN_HYBRID mode', () => {

@@ -82,7 +82,8 @@ export const buildPairingQRData = (
 	identityKeyB64: string,
 	advB64: string,
 	browser: WABrowserDescription,
-	transportProfile: ConnectionTransportProfile = 'web'
+	transportProfile: ConnectionTransportProfile = 'web',
+	syncFullHistory = false
 ): string => {
 	// InfiniteAPI keeps the legacy 4-field QR payload (`<ref>,<noise>,<identity>,<adv>`)
 	// because:
@@ -92,7 +93,18 @@ export const buildPairingQRData = (
 	//    breaking pair-code companions that must declare Chrome (1).
 	// The browser argument is preserved for API parity with upstream.
 	void browser
-	const payload = [ref, noiseKeyB64, identityKeyB64, advB64].join(',')
+	const payloadFields = [ref, noiseKeyB64, identityKeyB64, advB64]
+
+	// The official Windows companion QR includes the Web-client platform enum
+	// as its fifth field. UWP is 8 in this enum (distinct from UWP=21 in
+	// DeviceProps). Without it the phone accepts the link as a generic legacy
+	// Web companion and may omit the Windows full/recent history-sync flow.
+	if (transportProfile === 'web' && syncFullHistory && browser[0].trim().toLowerCase() === 'windows') {
+		payloadFields.push(getPairCodeCompanionIdentity(browser, true).platformId)
+		return `https://wa.me/settings/linked_devices#${payloadFields.join(',')}`
+	}
+
+	const payload = payloadFields.join(',')
 
 	// The official Android companion scanner presents the linked-devices URL form.
 	// Web keeps its historical bare payload byte-for-byte unchanged.

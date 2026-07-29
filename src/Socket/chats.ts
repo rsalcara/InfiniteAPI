@@ -1833,6 +1833,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			}
 		}
 
+		let appStateSyncCompleted = false
 		const doAppStateSync = async () => {
 			if (syncState === SyncState.Syncing) {
 				// All collections will be synced, so clear any blocked ones
@@ -1841,10 +1842,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				logger.info('Doing app state sync')
 				await resyncAppState(ALL_WA_PATCH_NAMES, true)
 
-				// Sync is complete, go online and flush everything
+				// Mark app-state complete, but do not flush yet. processMessage()
+				// runs concurrently and can still be decoding the history payload
+				// and emitting hundreds of LID mappings. Flushing here disables
+				// buffering too early and turns the remaining mappings into
+				// singleton DB writes while w:sync:app:state is still active.
 				syncState = SyncState.Online
-				logger.info('App state sync complete, transitioning to Online state and flushing buffer')
-				ev.flush()
+				appStateSyncCompleted = true
 
 				const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
 				ev.emit('creds.update', { accountSyncCounter })
@@ -1879,10 +1883,21 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			})
 		])
 
+		if (appStateSyncCompleted) {
+			logger.info(
+				'Initial app-state and history processing complete, transitioning to Online state and flushing buffer'
+			)
+			ev.flush()
+		}
+
 		// If the app state key arrives and we are waiting to sync, trigger the sync now.
 		if (msg.message?.protocolMessage?.appStateSyncKeyShare && syncState === SyncState.Syncing) {
 			logger.info('App state sync key arrived, triggering app state sync')
 			await doAppStateSync()
+			if (appStateSyncCompleted) {
+				logger.info('Initial app-state key processing complete, transitioning to Online state and flushing buffer')
+				ev.flush()
+			}
 		}
 	})
 
