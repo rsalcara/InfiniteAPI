@@ -1950,6 +1950,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				loginTime: Math.floor(Date.now() / 1000),
 				advKeyIndex,
 				fullSyncRequired: props.requireFullSync ?? undefined,
+				fullSyncDaysLimit: hsc.fullSyncDaysLimit ?? undefined,
+				fullSyncSizeMbLimit: hsc.fullSyncSizeMbLimit ?? undefined,
 				storageQuotaMb: hsc.storageQuotaMb ?? undefined,
 				inlineInitialHistSyncPayloadEnabled: hsc.inlineInitialPayloadInE2EeMsg ?? undefined,
 				recentSyncDaysLimit: hsc.recentSyncDaysLimit ?? undefined,
@@ -1963,7 +1965,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				supportAddOnHistorySyncMigration: hsc.supportAddOnHistorySyncMigration ?? undefined,
 				supportMessageAssociation: hsc.supportMessageAssociation ?? undefined,
 				supportGroupHistory: hsc.supportGroupHistory ?? undefined,
-				supportGuestChat: hsc.supportGuestChat ?? undefined
+				supportGuestChat: hsc.supportGuestChat ?? undefined,
+				onDemandReady: hsc.onDemandReady ?? undefined,
+				historySyncConfigProtobuf: proto.DeviceProps.HistorySyncConfig.encode(hsc).finish(),
+				supportManusHistory: hsc.supportManusHistory ?? undefined,
+				supportHatchHistory: hsc.supportHatchHistory ?? undefined,
+				supportedBotChannelFbids: hsc.supportedBotChannelFbids ?? undefined
 			})
 		} catch (err) {
 			logger.debug({ err }, 'companion_devices mirror: own-device upsert failed (ignored)')

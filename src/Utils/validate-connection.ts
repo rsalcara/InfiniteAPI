@@ -307,15 +307,63 @@ const getPlatformType = (platform: string): proto.DeviceProps.PlatformType => {
  * sent (single source of truth — no drift between the wire payload and the
  * mirrored row).
  */
-export const buildCompanionDeviceProps = (config: SocketConfig): proto.IDeviceProps => ({
-	os: config.transportProfile === 'native_android' ? config.nativeAndroid?.device.osVersion : config.browser[0],
-	platformType:
-		config.transportProfile === 'native_android'
+export const buildCompanionDeviceProps = (config: SocketConfig): proto.IDeviceProps => {
+	const isNativeAndroid = config.transportProfile === 'native_android'
+	const isWindowsCompanion =
+		!isNativeAndroid && config.syncFullHistory && config.browser[0].trim().toLowerCase() === 'windows'
+	const webHistorySyncConfig: proto.DeviceProps.IHistorySyncConfig = config.syncFullHistory
+		? {
+				// Captured from the official WhatsApp Windows Beta (UWP) client.
+				// Full-history mode is a two-stage sync: the initial payload makes
+				// chats usable quickly, then on-demand chunks continue in the
+				// background (and can pause/resume while waiting for the phone).
+				fullSyncDaysLimit: 365,
+				inlineInitialPayloadInE2EeMsg: true,
+				supportCallLogHistory: true,
+				supportBotUserAgentChatHistory: true,
+				supportCagReactionsAndPolls: true,
+				supportBizHostedMsg: true,
+				supportRecentSyncChunkMessageCountTuning: true,
+				supportHostedGroupMsg: true,
+				supportFbidBotChatHistory: true,
+				supportMessageAssociation: true,
+				supportGroupHistory: true,
+				onDemandReady: true,
+				completeOnDemandReady: true,
+				thumbnailSyncDaysLimit: 60,
+				supportManusHistory: true,
+				supportHatchHistory: true,
+				supportedBotChannelFbids: []
+			}
+		: {
+				// Preserve the pre-existing reduced-history profile for consumers
+				// that explicitly opt out via syncFullHistory=false.
+				storageQuotaMb: 10240,
+				inlineInitialPayloadInE2EeMsg: true,
+				recentSyncDaysLimit: undefined,
+				supportCallLogHistory: false,
+				supportBotUserAgentChatHistory: true,
+				supportCagReactionsAndPolls: true,
+				supportBizHostedMsg: true,
+				supportRecentSyncChunkMessageCountTuning: true,
+				supportHostedGroupMsg: true,
+				supportFbidBotChatHistory: true,
+				supportAddOnHistorySyncMigration: undefined,
+				supportMessageAssociation: true,
+				supportGroupHistory: false,
+				onDemandReady: undefined,
+				supportGuestChat: undefined
+			}
+
+	return {
+		os: isNativeAndroid ? config.nativeAndroid?.device.osVersion : config.browser[0],
+		platformType: isNativeAndroid
 			? proto.DeviceProps.PlatformType.ANDROID_AMBIGUOUS
-			: getPlatformType(config.browser[1]),
-	requireFullSync: config.syncFullHistory,
-	historySyncConfig:
-		config.transportProfile === 'native_android'
+			: isWindowsCompanion
+				? proto.DeviceProps.PlatformType.UWP
+				: getPlatformType(config.browser[1]),
+		requireFullSync: config.syncFullHistory,
+		historySyncConfig: isNativeAndroid
 			? {
 					fullSyncDaysLimit: config.nativeAndroid!.historySync.fullSyncDaysLimit,
 					fullSyncSizeMbLimit: config.nativeAndroid!.historySync.fullSyncSizeMbLimit,
@@ -339,25 +387,8 @@ export const buildCompanionDeviceProps = (config: SocketConfig): proto.IDevicePr
 					supportedBotChannelFbids: config.nativeAndroid!.historySync.supportedBotChannelFbids,
 					supportNewsletter: true
 				}
-			: {
-					storageQuotaMb: 10240,
-					inlineInitialPayloadInE2EeMsg: true,
-					recentSyncDaysLimit: undefined,
-					supportCallLogHistory: false,
-					supportBotUserAgentChatHistory: true,
-					supportCagReactionsAndPolls: true,
-					supportBizHostedMsg: true,
-					supportRecentSyncChunkMessageCountTuning: true,
-					supportHostedGroupMsg: true,
-					supportFbidBotChatHistory: true,
-					supportAddOnHistorySyncMigration: undefined,
-					supportMessageAssociation: true,
-					supportGroupHistory: false,
-					onDemandReady: undefined,
-					supportGuestChat: undefined
-				},
-	version:
-		config.transportProfile === 'native_android'
+			: webHistorySyncConfig,
+		version: isNativeAndroid
 			? {
 					primary: config.nativeAndroid!.appVersion[0],
 					secondary: config.nativeAndroid!.appVersion[1],
@@ -369,7 +400,8 @@ export const buildCompanionDeviceProps = (config: SocketConfig): proto.IDevicePr
 					secondary: 15,
 					tertiary: 7
 				}
-})
+	}
+}
 
 export const generateRegistrationNode = (
 	{ registrationId, signedPreKey, signedIdentityKey }: SignalCreds,
