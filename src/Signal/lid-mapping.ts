@@ -426,11 +426,21 @@ export class LIDMappingStore {
 			if (deduplicated.length === 0) return result
 
 			const admissionChunkSize = Math.min(this.config.batchSize, this.config.maxPendingMappings)
-			for (const chunk of this.chunkArray(deduplicated, admissionChunkSize)) {
+			const admissionChunks = this.chunkArray(deduplicated, admissionChunkSize)
+			for (let chunkIndex = 0; chunkIndex < admissionChunks.length; chunkIndex++) {
+				const chunk = admissionChunks[chunkIndex]!
 				const chunkResult = await this.enqueueMappingWrite(chunk, true)
 				result.stored += chunkResult.stored
 				result.skipped += chunkResult.skipped
 				result.errors += chunkResult.errors
+
+				// The history caller is intentionally backpressured until every
+				// admitted chunk is durable. Yield between those chunks so the
+				// WebSocket can decode pongs and the next history notifications
+				// while preserving the bounded writer and transactional batches.
+				if (chunkIndex < admissionChunks.length - 1) {
+					await new Promise<void>(resolve => setImmediate(resolve))
+				}
 			}
 
 			return result
@@ -496,7 +506,8 @@ export class LIDMappingStore {
 		if (cacheMissPnUsers.length > 0) {
 			const batches = this.chunkArray(cacheMissPnUsers, this.config.batchSize)
 
-			for (const batch of batches) {
+			for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+				const batch = batches[batchIndex]!
 				try {
 					const stored = await this.retryOperation(() => this.keys.get('lid-mapping', batch), 'batch-get-mappings')
 
@@ -532,6 +543,15 @@ export class LIDMappingStore {
 						pendingValidation.delete(pnUser)
 					}
 				}
+
+				// better-sqlite3 executes synchronously beneath the async key-store
+				// facade. Large history-sync mapping bursts would otherwise keep
+				// the event loop occupied across every sub-batch, preventing WA
+				// frames (including keep-alive pongs and subsequent FULL/RECENT
+				// notifications) from being decoded until the whole burst ended.
+				if (batchIndex < batches.length - 1) {
+					await new Promise<void>(resolve => setImmediate(resolve))
+				}
 			}
 		}
 
@@ -544,7 +564,8 @@ export class LIDMappingStore {
 
 		const storeBatches = this.chunkArray(validPairs, this.config.batchSize)
 
-		for (const batch of storeBatches) {
+		for (let batchIndex = 0; batchIndex < storeBatches.length; batchIndex++) {
+			const batch = storeBatches[batchIndex]!
 			try {
 				await this.retryOperation(async () => {
 					const bucket: Record<string, string> = {}
@@ -576,6 +597,13 @@ export class LIDMappingStore {
 				this.logger.error({ error, batchSize: batch.length }, 'Failed to store mapping batch')
 				result.errors += batch.length
 				this.stats.failedOperations++
+			}
+
+			// Yield between physical SQLite transactions so the socket can
+			// continue consuming frames while a large history-sync mapping set
+			// is persisted. The transaction itself remains atomic per sub-batch.
+			if (batchIndex < storeBatches.length - 1) {
+				await new Promise<void>(resolve => setImmediate(resolve))
 			}
 		}
 

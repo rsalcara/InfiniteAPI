@@ -177,6 +177,30 @@ describe('LIDMappingStore', () => {
 			expect(mockKeys.set).toHaveBeenCalledTimes(3)
 		})
 
+		it('yields to socket I/O between SQLite history batches', async () => {
+			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, {
+				batchSize: 100,
+				maxPendingMappings: 100
+			})
+			mockKeys.get.mockResolvedValue({} as never)
+			const pairs = Array.from({ length: 250 }, (_, index) => ({
+				pn: `${500_000 + index}@s.whatsapp.net`,
+				lid: `${600_000 + index}@lid`
+			}))
+			let socketTurnRan = false
+			setImmediate(() => {
+				socketTurnRan = true
+			})
+
+			await expect(lidMappingStore.storeLIDPNMappings(pairs)).resolves.toEqual({
+				stored: 250,
+				skipped: 0,
+				errors: 0
+			})
+
+			expect(socketTurnRan).toBe(true)
+		})
+
 		it('drains every chunk of an admitted history batch during destroy', async () => {
 			let releaseFirstChunk!: () => void
 			const firstChunkBlocked = new Promise<void>(resolve => {

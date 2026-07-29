@@ -1695,7 +1695,17 @@ export const makeSocket = (config: SocketConfig) => {
 				lastDateRecv = new Date()
 			}
 
-			const diff = Date.now() - lastDateRecv.getTime()
+			const now = Date.now()
+			const lastNetworkActivityAt = lastDateRecv.getTime()
+			// A history/app-state flush is proof that the local pipeline is still
+			// making progress. Account for it while a large synchronous SQLite
+			// workload is being drained so the watchdog does not close a healthy
+			// socket immediately after the event loop becomes available again.
+			// Once local work stops, the normal network inactivity deadline
+			// applies unchanged.
+			const lastBufferFlushAt = ev.getStatistics().lastFlushAt || 0
+			const lastEffectiveActivityAt = Math.max(lastNetworkActivityAt, lastBufferFlushAt)
+			const diff = now - lastEffectiveActivityAt
 			/*
 				check if it's been a suspicious amount of time since the server responded with our last seen
 				it could be that the network is down
