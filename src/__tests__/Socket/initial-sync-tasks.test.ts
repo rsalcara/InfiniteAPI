@@ -69,4 +69,24 @@ describe('initial sync task settlement', () => {
 		expect(reportFailurePreparationError).toHaveBeenCalledWith(preparationFailure)
 		expect(releaseBuffer).toHaveBeenCalledWith(true)
 	})
+
+	it('still releases and preserves the task failure when the diagnostic reporter also throws', async () => {
+		const failure = new Error('sync failed')
+		const releaseBuffer = jest.fn()
+
+		await expect(
+			settleInitialSyncTasks(
+				[Promise.reject(failure)],
+				() => false,
+				releaseBuffer,
+				() => {
+					throw new Error('state preparation failed')
+				},
+				() => {
+					throw new Error('diagnostic sink failed')
+				}
+			)
+		).rejects.toBe(failure)
+		expect(releaseBuffer).toHaveBeenCalledWith(true)
+	})
 })

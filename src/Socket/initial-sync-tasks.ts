@@ -19,7 +19,13 @@ export const settleInitialSyncTasks = async (
 		} catch (error) {
 			// This hook is best-effort state preparation. It must never prevent
 			// the mandatory buffer release or replace the original task failure.
-			reportFailurePreparationError?.(error)
+			try {
+				reportFailurePreparationError?.(error)
+			} catch (reportingError) {
+				// A diagnostic sink is the final best-effort boundary. There is no
+				// safe fallback worth risking the mandatory release invariant for.
+				void reportingError
+			}
 		}
 	}
 
