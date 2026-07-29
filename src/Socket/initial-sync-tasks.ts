@@ -7,7 +7,8 @@ export const settleInitialSyncTasks = async (
 	tasks: readonly Promise<unknown>[],
 	shouldReleaseOnSuccess: () => boolean,
 	releaseBuffer: (failed: boolean) => void,
-	prepareFailureRelease?: () => void
+	prepareFailureRelease?: () => void,
+	reportFailurePreparationError?: (error: unknown) => void
 ): Promise<void> => {
 	const results = await Promise.allSettled(tasks)
 	const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
@@ -15,9 +16,10 @@ export const settleInitialSyncTasks = async (
 	if (failure) {
 		try {
 			prepareFailureRelease?.()
-		} catch {
+		} catch (error) {
 			// This hook is best-effort state preparation. It must never prevent
 			// the mandatory buffer release or replace the original task failure.
+			reportFailurePreparationError?.(error)
 		}
 	}
 

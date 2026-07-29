@@ -51,7 +51,9 @@ describe('initial sync task settlement', () => {
 
 	it('still releases and preserves the task failure when failure preparation throws', async () => {
 		const failure = new Error('sync failed')
+		const preparationFailure = new Error('state preparation failed')
 		const releaseBuffer = jest.fn()
+		const reportFailurePreparationError = jest.fn()
 
 		await expect(
 			settleInitialSyncTasks(
@@ -59,10 +61,12 @@ describe('initial sync task settlement', () => {
 				() => false,
 				releaseBuffer,
 				() => {
-					throw new Error('state preparation failed')
-				}
+					throw preparationFailure
+				},
+				reportFailurePreparationError
 			)
 		).rejects.toBe(failure)
+		expect(reportFailurePreparationError).toHaveBeenCalledWith(preparationFailure)
 		expect(releaseBuffer).toHaveBeenCalledWith(true)
 	})
 })

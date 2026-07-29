@@ -1901,6 +1901,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				if (syncState === SyncState.Syncing) {
 					syncState = SyncState.Online
 				}
+			},
+			error => {
+				logger.warn(
+					{ error },
+					'Initial sync failure-state preparation failed; continuing with mandatory buffer release'
+				)
 			}
 		)
 
