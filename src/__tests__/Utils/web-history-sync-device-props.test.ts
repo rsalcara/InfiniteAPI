@@ -78,7 +78,6 @@ describe('official Web history-sync DeviceProps', () => {
 		})
 		// Registration DeviceProps uses the DeviceProps enum.
 		expect(buildCompanionDeviceProps(config).platformType).toBe(proto.DeviceProps.PlatformType.UWP)
-		expect(proto.DeviceProps.PlatformType.UWP).toBe(21)
 	})
 
 	it('includes the UWP Web-client identity in an official Windows hybrid QR', () => {

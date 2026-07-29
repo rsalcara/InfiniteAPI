@@ -1980,16 +1980,17 @@ export const makeSocket = (config: SocketConfig) => {
 				payloadConfig.syncFullHistory
 			)
 			const qrIdentity = getQrCodeCompanionIdentity(browser, transportSession.profile, payloadConfig.syncFullHistory)
+			const usesOfficialLinkedDevicesUrl = qr.startsWith('https://wa.me/settings/linked_devices#')
 			logger.info(
 				{
 					pairingMode: 'qr',
-					qrFormat: qr.startsWith('https://wa.me/settings/linked_devices#') ? 'official_linked_devices_url' : 'legacy',
+					qrFormat: usesOfficialLinkedDevicesUrl ? 'official_linked_devices_url' : 'legacy',
 					companionPlatformId: qrIdentity.platformId,
 					companionPlatformName: qrIdentity.platformName,
 					companionPlatformDisplay: qrIdentity.platformDisplay,
 					windowsHybrid: qrIdentity.windowsHybrid
 				},
-				`🔳 QR Pairing profile | [format=${qr.startsWith('https://wa.me/settings/linked_devices#') ? 'official🔗' : 'legacy'}] [companionPlatform=${qrIdentity.platformName}${qrIdentity.windowsHybrid ? '🪟' : '🌐'} id=${qrIdentity.platformId}]`
+				`🔳 QR Pairing profile | [format=${usesOfficialLinkedDevicesUrl ? 'official🔗' : 'legacy'}] [companionPlatform=${qrIdentity.platformName}${qrIdentity.windowsHybrid ? '🪟' : '🌐'} id=${qrIdentity.platformId}]`
 			)
 
 			ev.emit('connection.update', { qr })
