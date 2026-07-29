@@ -517,6 +517,26 @@ export const makeEventBuffer = (
 		pendingFunctionTimeouts.clear()
 	}
 
+	const scheduleBufferTimeout = () => {
+		// Use adaptive timeout if enabled
+		const timeout = config.enableAdaptiveTimeout ? adaptiveTimeout.getTimeout() : config.bufferTimeoutMs
+		stats.currentTimeout = timeout
+
+		bufferTimeout = setTimeout(() => {
+			if (isBuffering) {
+				logger.warn({ timeout }, 'Buffer timeout reached, auto-flushing')
+				logEventBuffer('buffer_timeout', { timeout })
+				stats.forcedFlushes++
+				// A safety flush must release the current batch without ending an
+				// active createBufferedFunction scope. Long app-state/history
+				// operations can legitimately exceed the timeout; dropping
+				// isBuffering here turns every later event into an unbuffered
+				// singleton and defeats LID/contact batching under peak load.
+				flush(true, bufferCount > 0)
+			}
+		}, timeout)
+	}
+
 	// Take the generic event and fire it as a baileys event
 	ev.on('event', (map: BaileysEventData) => {
 		for (const event in map) {
@@ -631,26 +651,14 @@ export const makeEventBuffer = (
 			currentEventCount = 0
 
 			clearAllTimers()
-
-			// Use adaptive timeout if enabled
-			const timeout = config.enableAdaptiveTimeout ? adaptiveTimeout.getTimeout() : config.bufferTimeoutMs
-			stats.currentTimeout = timeout
-
-			bufferTimeout = setTimeout(() => {
-				if (isBuffering) {
-					logger.warn({ timeout }, 'Buffer timeout reached, auto-flushing')
-					logEventBuffer('buffer_timeout', { timeout })
-					stats.forcedFlushes++
-					flush(true)
-				}
-			}, timeout)
+			scheduleBufferTimeout()
 		}
 
 		// Always increment count when requested
 		bufferCount++
 	}
 
-	function flush(force = false): boolean {
+	function flush(force = false, continueBuffering = false): boolean {
 		if (destroyed) {
 			logger.warn('Attempted to flush destroyed event buffer')
 			return false
@@ -661,6 +669,7 @@ export const makeEventBuffer = (
 		}
 
 		const eventCount = currentEventCount
+		const activeBufferCount = bufferCount
 		const flushStartTime = Date.now()
 		logger.debug({ bufferCount, eventCount, force }, 'Flushing event buffer')
 
@@ -732,6 +741,14 @@ export const makeEventBuffer = (
 		// happened AFTER the emit, opening a silent lost-event window.
 		data = newData
 
+		// Preserve the active buffering scope before invoking synchronous
+		// listeners. Re-entrant events emitted by those listeners must land in
+		// the new batch, not bypass buffering between safety windows.
+		if (continueBuffering && activeBufferCount > 0) {
+			isBuffering = true
+			bufferCount = activeBufferCount
+		}
+
 		if (Object.keys(consolidatedData).length) {
 			ev.emit('event', consolidatedData)
 		}
@@ -741,6 +758,10 @@ export const makeEventBuffer = (
 		// Reset adaptive timeout calculator on flush
 		if (config.enableAdaptiveTimeout) {
 			adaptiveTimeout.reset()
+		}
+
+		if (isBuffering) {
+			scheduleBufferTimeout()
 		}
 
 		return true
