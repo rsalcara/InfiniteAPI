@@ -6,10 +6,15 @@
 export const settleInitialSyncTasks = async (
 	tasks: readonly Promise<unknown>[],
 	shouldReleaseOnSuccess: () => boolean,
-	releaseBuffer: (failed: boolean) => void
+	releaseBuffer: (failed: boolean) => void,
+	prepareFailureRelease?: () => void
 ): Promise<void> => {
 	const results = await Promise.allSettled(tasks)
 	const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+
+	if (failure) {
+		prepareFailureRelease?.()
+	}
 
 	if (failure || shouldReleaseOnSuccess()) {
 		releaseBuffer(Boolean(failure))

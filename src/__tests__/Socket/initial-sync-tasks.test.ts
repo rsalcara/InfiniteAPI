@@ -9,21 +9,40 @@ describe('initial sync task settlement', () => {
 			finishSecond = resolve
 		})
 		const releaseBuffer = jest.fn()
-		const settled = settleInitialSyncTasks([Promise.reject(failure), secondTask], () => false, releaseBuffer)
+		const order: string[] = []
+		const prepareFailureRelease = jest.fn(() => order.push('state-online'))
+		const settled = settleInitialSyncTasks(
+			[Promise.reject(failure), secondTask],
+			() => false,
+			failed => {
+				order.push(`release-${failed}`)
+				releaseBuffer(failed)
+			},
+			prepareFailureRelease
+		)
 
 		await Promise.resolve()
 		expect(releaseBuffer).not.toHaveBeenCalled()
 
 		finishSecond()
 		await expect(settled).rejects.toBe(failure)
+		expect(prepareFailureRelease).toHaveBeenCalledTimes(1)
 		expect(releaseBuffer).toHaveBeenCalledTimes(1)
 		expect(releaseBuffer).toHaveBeenCalledWith(true)
+		expect(order).toEqual(['state-online', 'release-true'])
 	})
 
 	it('releases after successful app-state sync but not for an ordinary message window', async () => {
 		const releaseAfterSync = jest.fn()
-		await settleInitialSyncTasks([Promise.resolve(), Promise.resolve()], () => true, releaseAfterSync)
+		const prepareFailureRelease = jest.fn()
+		await settleInitialSyncTasks(
+			[Promise.resolve(), Promise.resolve()],
+			() => true,
+			releaseAfterSync,
+			prepareFailureRelease
+		)
 		expect(releaseAfterSync).toHaveBeenCalledWith(false)
+		expect(prepareFailureRelease).not.toHaveBeenCalled()
 
 		const keepBuffered = jest.fn()
 		await settleInitialSyncTasks([Promise.resolve(), Promise.resolve()], () => false, keepBuffered)

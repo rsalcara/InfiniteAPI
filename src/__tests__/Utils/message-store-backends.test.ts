@@ -778,6 +778,52 @@ describe('msgstore.db message-store backends', () => {
 			expect(db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({ n: 0 })
 		})
 
+		it('assigns a local arrival time when an orphan receipt has no server timestamp', () => {
+			const db = store.handle('msgstore.db')
+			const messageStore = new MessageStoreBackend(db, jidMap)
+			const receipts = new ReceiptBackend(db, jidMap, messageStore)
+			const before = Math.floor(Date.now() / 1000)
+
+			receipts.recordUserReceipt({
+				chatJid: 'missing-time@s.whatsapp.net',
+				fromMe: true,
+				keyId: 'MISSING-TIME',
+				receiptUserJid: 'missing-time@s.whatsapp.net',
+				kind: 'read',
+				timestamp: 0
+			})
+
+			const row = db.prepare('SELECT timestamp FROM receipt_orphaned WHERE key_id = ?').get('MISSING-TIME') as {
+				timestamp: number
+			}
+			expect(row.timestamp).toBeGreaterThanOrEqual(before)
+			expect(row.timestamp).toBeLessThanOrEqual(Math.floor(Date.now() / 1000))
+		})
+
+		it('throttles automatic orphan retention scans across message replays', () => {
+			const db = store.handle('msgstore.db')
+			const messageStore = new MessageStoreBackend(db, jidMap)
+			const receipts = new ReceiptBackend(db, jidMap, messageStore)
+			const expiredTimestamp = Math.floor(Date.now() / 1000) - RECEIPT_ORPHAN_TTL_SECONDS - 1
+			const addExpired = (keyId: string) =>
+				receipts.recordUserReceipt({
+					chatJid: 'expired-throttle@s.whatsapp.net',
+					fromMe: true,
+					keyId,
+					receiptUserJid: 'expired-throttle@s.whatsapp.net',
+					kind: 'read',
+					timestamp: expiredTimestamp
+				})
+
+			addExpired('FIRST-EXPIRED')
+			receipts.replayOrphaned('missing@s.whatsapp.net', true, 'NO-MESSAGE-1')
+			expect(db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({ n: 0 })
+
+			addExpired('SECOND-EXPIRED')
+			receipts.replayOrphaned('missing@s.whatsapp.net', true, 'NO-MESSAGE-2')
+			expect(db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({ n: 1 })
+		})
+
 		it('routes a device receipt for an add-on (reaction) to message_add_on_receipt_device', () => {
 			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
 			const addOns = new MessageAddOnBackend(store.handle('msgstore.db'), jidMap, messageStore)

@@ -12,4 +12,8 @@ describe('canonicalizeReceiptChatJid', () => {
 	it('canonicalizes an unresolved LID device instead of creating a device-scoped chat', () => {
 		expect(canonicalizeReceiptChatJid('238315571802285:12@lid')).toBe('238315571802285@lid')
 	})
+
+	it('preserves malformed input instead of erasing the receipt chat key', () => {
+		expect(canonicalizeReceiptChatJid('notajid')).toBe('notajid')
+	})
 })

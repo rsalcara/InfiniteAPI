@@ -2033,7 +2033,18 @@ export const getContentType = (content: proto.IMessage | undefined) => {
  */
 export const getMessageTypeLabel = (content: WAMessageContent | null | undefined): string => {
 	const normalized = normalizeMessageContent(content)
-	const contentType = getContentType(normalized)
+	// Protobuf objects can retain optional fields as explicit nulls. Operational
+	// logs and metrics must classify the first value that is actually present,
+	// rather than a null media key that happens to precede the real text field.
+	const contentType = normalized
+		? (Object.keys(normalized).find(
+				key =>
+					(key === 'conversation' || key.includes('Message')) &&
+					key !== 'senderKeyDistributionMessage' &&
+					normalized[key as keyof typeof normalized] !== null &&
+					normalized[key as keyof typeof normalized] !== undefined
+			) as keyof typeof normalized | undefined)
+		: undefined
 	if (!contentType) return 'unknown'
 
 	const type = String(contentType)

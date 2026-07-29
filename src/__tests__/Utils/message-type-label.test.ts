@@ -43,4 +43,8 @@ describe('getMessageTypeLabel', () => {
 	it('uses a deterministic label for future protobuf message types', () => {
 		expect(getMessageTypeLabel({ scheduledCallCreationMessage: {} } as any)).toBe('scheduled_call_creation')
 	})
+
+	it('ignores explicit null protobuf fields before the real content', () => {
+		expect(getMessageTypeLabel({ imageMessage: null, conversation: 'hello' } as any)).toBe('text')
+	})
 })

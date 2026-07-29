@@ -35,6 +35,7 @@ const ORPHAN_DEVICE_STATUS = 0
 const ORPHAN_USER_STATUS: Record<ReceiptKind, number> = { delivery: 1, read: 2, played: 3 }
 export const RECEIPT_ORPHAN_REPLAY_LIMIT = 300
 export const RECEIPT_ORPHAN_TTL_SECONDS = 60 * 24 * 60 * 60
+export const RECEIPT_ORPHAN_PRUNE_INTERVAL_SECONDS = 60 * 60
 
 const ANDROID_STATUS_BY_ORPHAN_STATUS: Partial<Record<number, number>> = {
 	[ORPHAN_USER_STATUS.delivery]: ANDROID_MESSAGE_STATUS.DELIVERY_ACK,
@@ -81,6 +82,7 @@ export class ReceiptBackend {
 	private readonly db: SqliteDbLike
 	private readonly jidMap: JidResolver
 	private readonly chatResolver: ChatRowResolver
+	private lastOrphanPruneAtSeconds = 0
 
 	constructor(db: SqliteDbLike, jidMap: JidResolver, chatResolver: ChatRowResolver) {
 		this.db = db
@@ -143,9 +145,7 @@ export class ReceiptBackend {
 					`ORDER BY _id ASC LIMIT ${RECEIPT_ORPHAN_REPLAY_LIMIT}`
 			),
 			deleteOrphaned: this.db.prepare('DELETE FROM receipt_orphaned WHERE _id = ?'),
-			deleteExpiredOrphaned: this.db.prepare(
-				'DELETE FROM receipt_orphaned WHERE timestamp IS NOT NULL AND timestamp > 0 AND timestamp < ?'
-			),
+			deleteExpiredOrphaned: this.db.prepare('DELETE FROM receipt_orphaned WHERE timestamp IS NULL OR timestamp < ?'),
 			getMessageStatus: this.db.prepare('SELECT status FROM message WHERE _id = ?'),
 			updateMessageStatus: this.db.prepare('UPDATE message SET status = ? WHERE _id = ?'),
 			listUserReceipts: this.db.prepare(
@@ -181,6 +181,16 @@ export class ReceiptBackend {
 		return row?._id ?? null
 	}
 
+	/**
+	 * The protocol may omit the receipt timestamp. Orphans still need an
+	 * arrival time so retention can eventually remove an unreplayable row;
+	 * using the local receive time is conservative and never makes it expire
+	 * earlier than a real server timestamp would have.
+	 */
+	private orphanTimestamp(timestamp: number): number {
+		return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : Math.floor(Date.now() / 1000)
+	}
+
 	/** Records a delivery/read/played receipt for a recipient (user-level, no device suffix). */
 	recordUserReceipt(input: RecordUserReceiptInput): void {
 		this.db.transaction(() => {
@@ -200,7 +210,7 @@ export class ReceiptBackend {
 					receiptUserRowId,
 					receiptUserRowId,
 					ORPHAN_USER_STATUS[input.kind],
-					input.timestamp
+					this.orphanTimestamp(input.timestamp)
 				)
 				return
 			}
@@ -238,7 +248,7 @@ export class ReceiptBackend {
 					receiptDeviceRowId,
 					null,
 					ORPHAN_DEVICE_STATUS,
-					input.timestamp
+					this.orphanTimestamp(input.timestamp)
 				)
 				return
 			}
@@ -250,7 +260,7 @@ export class ReceiptBackend {
 	/** Replays receipts that arrived before their message row, then removes only rows successfully materialized. */
 	replayOrphaned(chatJid: string, fromMe: boolean, keyId: string): number {
 		return this.db.transaction(() => {
-			this.pruneExpiredOrphaned(Math.floor(Date.now() / 1000))
+			this.maybePruneExpiredOrphaned(Math.floor(Date.now() / 1000))
 			const chatRowId = this.chatResolver.resolveChatRowId(chatJid)
 			const messageRowId = this.resolveMessageRowId(chatJid, fromMe, keyId)
 			if (messageRowId === null) return 0
@@ -311,6 +321,13 @@ export class ReceiptBackend {
 
 			return replayed
 		})()
+	}
+
+	/** Avoid a table-wide retention DELETE on every persisted message. */
+	private maybePruneExpiredOrphaned(nowSeconds: number): void {
+		if (nowSeconds - this.lastOrphanPruneAtSeconds < RECEIPT_ORPHAN_PRUNE_INTERVAL_SECONDS) return
+		this.pruneExpiredOrphaned(nowSeconds)
+		this.lastOrphanPruneAtSeconds = nowSeconds
 	}
 
 	/** Deletes orphan receipts older than Android's 60-day retention window. */

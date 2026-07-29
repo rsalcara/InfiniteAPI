@@ -1892,6 +1892,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 						: 'Initial app-state and history processing complete, transitioning to Online state and flushing buffer'
 				)
 				ev.flush()
+			},
+			() => {
+				// onUnexpectedError logs the propagated task failure without closing
+				// the socket. Once the buffer is released this connection must no
+				// longer advertise itself as Syncing, otherwise every later history
+				// chunk retries the complete app-state sync on the same open socket.
+				if (syncState === SyncState.Syncing) {
+					syncState = SyncState.Online
+				}
 			}
 		)
 
