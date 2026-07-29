@@ -54,10 +54,10 @@ export interface PairCodeCompanionIdentity {
 /**
  * Resolves the identity sent in link_code_companion_reg.
  *
- * The Pair Code Web-client enum is different from DeviceProps.PlatformType:
- * official Windows hybrid sessions send UWP=8 here and UWP=21 in DeviceProps.
- * Browser labels such as Edge are legacy API configuration and must not make a
- * WIN_HYBRID registration advertise itself as a browser companion.
+ * Pair Code registration stays on the configured Web-client identity even
+ * when DeviceProps advertises WIN_HYBRID/UWP for full history. The WhatsApp
+ * server rejects UWP=8 in companion_hello with IQ 400; a Windows Edge client
+ * must send EDGE=2 here while DeviceProps independently uses UWP=21.
  */
 export const getPairCodeCompanionIdentity = (
 	browser: WABrowserDescription,
@@ -65,13 +65,12 @@ export const getPairCodeCompanionIdentity = (
 ): PairCodeCompanionIdentity => {
 	const windowsHybrid = syncFullHistory && browser[0].trim().toLowerCase() === 'windows'
 	const androidBrowser = browser[1]?.trim().toLowerCase() === 'android'
-	const effectiveBrowser: WABrowserDescription = windowsHybrid ? [browser[0], 'Desktop', browser[2]] : browser
-	const platformType = getCompanionWebClientType(effectiveBrowser)
+	const platformType = getCompanionWebClientType(browser)
 
 	return {
 		platformId: platformType.toString(),
 		platformName: CompanionWebClientType[platformType],
-		platformDisplay: androidBrowser ? 'Chrome (Mac OS)' : `${effectiveBrowser[1]} (${effectiveBrowser[0]})`,
+		platformDisplay: androidBrowser ? 'Chrome (Mac OS)' : `${browser[1]} (${browser[0]})`,
 		windowsHybrid
 	}
 }
@@ -91,8 +90,6 @@ export const buildPairingQRData = (
 	// 2. The upstream `URL#<...>,<platformId>` format produced `linked_devices#,<ref>` (extra
 	//    leading comma after the fragment) and emitted platform 9 for `Browsers.android()`,
 	//    breaking pair-code companions that must declare Chrome (1).
-	// The browser argument is preserved for API parity with upstream.
-	void browser
 	const payloadFields = [ref, noiseKeyB64, identityKeyB64, advB64]
 
 	// The official Windows companion QR includes the Web-client platform enum
@@ -100,7 +97,7 @@ export const buildPairingQRData = (
 	// DeviceProps). Without it the phone accepts the link as a generic legacy
 	// Web companion and may omit the Windows full/recent history-sync flow.
 	if (transportProfile === 'web' && syncFullHistory && browser[0].trim().toLowerCase() === 'windows') {
-		payloadFields.push(getPairCodeCompanionIdentity(browser, true).platformId)
+		payloadFields.push(getCompanionWebClientType([browser[0], 'Desktop', browser[2]]).toString())
 		return `https://wa.me/settings/linked_devices#${payloadFields.join(',')}`
 	}
 

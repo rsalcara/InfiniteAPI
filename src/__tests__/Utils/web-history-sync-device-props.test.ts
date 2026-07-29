@@ -51,14 +51,15 @@ describe('official Web history-sync DeviceProps', () => {
 		expect(payload.webInfo?.webSubPlatform).toBe(proto.ClientPayload.WebInfo.WebSubPlatform.WIN_HYBRID)
 	})
 
-	it('uses the distinct official UWP values for Pair Code and DeviceProps', () => {
+	it('keeps Pair Code on Edge while DeviceProps uses UWP for full history', () => {
 		const config = webConfig()
 
-		// Pair Code companion_platform_id uses the Web-client enum.
+		// Pair Code companion_platform_id keeps the configured Web client;
+		// UWP=8 is reserved for the Windows hybrid QR field.
 		expect(getPairCodeCompanionIdentity(config.browser, config.syncFullHistory)).toMatchObject({
-			platformId: '8',
-			platformName: 'UWP',
-			platformDisplay: 'Desktop (Windows)',
+			platformId: '2',
+			platformName: 'EDGE',
+			platformDisplay: 'Edge (Windows)',
 			windowsHybrid: true
 		})
 		// Registration DeviceProps uses the DeviceProps enum.

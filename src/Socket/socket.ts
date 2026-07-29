@@ -1795,10 +1795,11 @@ export const makeSocket = (config: SocketConfig) => {
 			name: '~'
 		}
 
-		// companion_platform_id and DeviceProps.platformType use different enums:
-		// Windows Desktop is UWP=8 in the pair-code Web enum and UWP=21 in
-		// DeviceProps. Android browser presets intentionally map to Chrome=1 for
-		// pair code, while their DeviceProps identity remains Android.
+		// Pair Code and DeviceProps use independent identities. A Windows
+		// WIN_HYBRID registration keeps the configured Web client here
+		// (Edge=2) because companion_hello with UWP=8 is rejected with IQ 400,
+		// while DeviceProps still uses UWP=21 for full history. Android browser
+		// presets intentionally map to Chrome=1 in the Pair Code Web enum.
 		const isAndroid = isAndroidBrowser(browser)
 		const pairIdentity = getPairCodeCompanionIdentity(browser, payloadConfig.syncFullHistory)
 		const pairPlatformId = pairIdentity.platformId
@@ -1830,53 +1831,63 @@ export const makeSocket = (config: SocketConfig) => {
 		)
 
 		ev.emit('creds.update', authState.creds)
-		await sendNode({
-			tag: 'iq',
-			attrs: {
-				to: S_WHATSAPP_NET,
-				type: 'set',
-				id: generateMessageTag(),
-				xmlns: 'md'
-			},
-			content: [
-				{
-					tag: 'link_code_companion_reg',
-					attrs: {
-						jid: authState.creds.me.id,
-						stage: 'companion_hello',
+		const pairingResponse = await query(
+			{
+				tag: 'iq',
+				attrs: {
+					to: S_WHATSAPP_NET,
+					type: 'set',
+					id: generateMessageTag(),
+					xmlns: 'md'
+				},
+				content: [
+					{
+						tag: 'link_code_companion_reg',
+						attrs: {
+							jid: authState.creds.me.id,
+							stage: 'companion_hello',
 
-						should_show_push_notification: 'true'
-					},
-					content: [
-						{
-							tag: 'link_code_pairing_wrapped_companion_ephemeral_pub',
-							attrs: {},
-							content: await generatePairingKey()
+							should_show_push_notification: 'true'
 						},
-						{
-							tag: 'companion_server_auth_key_pub',
-							attrs: {},
-							content: authState.creds.noiseKey.public
-						},
-						{
-							tag: 'companion_platform_id',
-							attrs: {},
-							content: pairPlatformId
-						},
-						{
-							tag: 'companion_platform_display',
-							attrs: {},
-							content: pairPlatformDisplay
-						},
-						{
-							tag: 'link_code_pairing_nonce',
-							attrs: {},
-							content: '0'
-						}
-					]
-				}
-			]
-		})
+						content: [
+							{
+								tag: 'link_code_pairing_wrapped_companion_ephemeral_pub',
+								attrs: {},
+								content: await generatePairingKey()
+							},
+							{
+								tag: 'companion_server_auth_key_pub',
+								attrs: {},
+								content: authState.creds.noiseKey.public
+							},
+							{
+								tag: 'companion_platform_id',
+								attrs: {},
+								content: pairPlatformId
+							},
+							{
+								tag: 'companion_platform_display',
+								attrs: {},
+								content: pairPlatformDisplay
+							},
+							{
+								tag: 'link_code_pairing_nonce',
+								attrs: {},
+								content: '0'
+							}
+						]
+					}
+				]
+			},
+			15_000
+		)
+		logger.info(
+			{
+				pairCodeNotificationAck: pairingResponse?.attrs?.type ?? 'unknown',
+				pairCodeNotificationFrom: pairingResponse?.attrs?.from
+			},
+			'📲 Pair Code notification accepted by WhatsApp server'
+		)
 		return authState.creds.pairingCode
 	}
 
