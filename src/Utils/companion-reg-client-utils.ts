@@ -44,6 +44,38 @@ export const getCompanionPlatformId = (browser: WABrowserDescription): string =>
 	return getCompanionWebClientType(browser).toString()
 }
 
+export interface PairCodeCompanionIdentity {
+	platformId: string
+	platformName: string
+	platformDisplay: string
+	windowsHybrid: boolean
+}
+
+/**
+ * Resolves the identity sent in link_code_companion_reg.
+ *
+ * The Pair Code Web-client enum is different from DeviceProps.PlatformType:
+ * official Windows hybrid sessions send UWP=8 here and UWP=21 in DeviceProps.
+ * Browser labels such as Edge are legacy API configuration and must not make a
+ * WIN_HYBRID registration advertise itself as a browser companion.
+ */
+export const getPairCodeCompanionIdentity = (
+	browser: WABrowserDescription,
+	syncFullHistory: boolean
+): PairCodeCompanionIdentity => {
+	const windowsHybrid = syncFullHistory && browser[0].trim().toLowerCase() === 'windows'
+	const androidBrowser = browser[1]?.trim().toLowerCase() === 'android'
+	const effectiveBrowser: WABrowserDescription = windowsHybrid ? [browser[0], 'Desktop', browser[2]] : browser
+	const platformType = getCompanionWebClientType(effectiveBrowser)
+
+	return {
+		platformId: platformType.toString(),
+		platformName: CompanionWebClientType[platformType],
+		platformDisplay: androidBrowser ? 'Chrome (Mac OS)' : `${effectiveBrowser[1]} (${effectiveBrowser[0]})`,
+		windowsHybrid
+	}
+}
+
 export const buildPairingQRData = (
 	ref: string,
 	noiseKeyB64: string,

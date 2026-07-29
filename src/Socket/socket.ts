@@ -22,6 +22,8 @@ import {
 	aesEncryptCTR,
 	appendNativeAndroidPairingAttestation,
 	bindWaitForConnectionUpdate,
+	buildCompanionDeviceProps,
+	buildWebInfo,
 	buildPairingQRData,
 	bytesToCrockford,
 	configureSuccessfulPairing,
@@ -35,6 +37,7 @@ import {
 	getCodeFromWSError,
 	getErrorCodeFromStreamError,
 	getNextPreKeysNode,
+	getPairCodeCompanionIdentity,
 	incrementNativeAndroidConnectionLc,
 	makeEventBuffer,
 	makeNoiseHandler,
@@ -46,7 +49,7 @@ import {
 	signedKeyPair,
 	xmppSignedPreKey
 } from '../Utils'
-import { getPlatformId, isAndroidBrowser } from '../Utils/browser-utils'
+import { isAndroidBrowser } from '../Utils/browser-utils'
 import { applyReconciledPrekeyCursors } from '../Utils/prekey-upload-cursors'
 import { resolvePrekeyUploadQueryTimeout } from '../Utils/prekey-upload-timeout'
 import {
@@ -772,14 +775,29 @@ export const makeSocket = (config: SocketConfig) => {
 		let node: proto.IClientPayload
 		if (!creds.me) {
 			node = generateRegistrationNode(creds, payloadConfig, nativeClientPayloadContext)
+			const registrationProps = buildCompanionDeviceProps(payloadConfig)
+			const registrationPlatform =
+				proto.ClientPayload.UserAgent.Platform[node.userAgent?.platform ?? proto.ClientPayload.UserAgent.Platform.WEB]
+			const registrationWebSubPlatform = isNativeAndroid
+				? undefined
+				: proto.ClientPayload.WebInfo.WebSubPlatform[
+						node.webInfo?.webSubPlatform ?? proto.ClientPayload.WebInfo.WebSubPlatform.WEB_BROWSER
+					]
+			const registrationPlatformType =
+				proto.DeviceProps.PlatformType[registrationProps.platformType ?? proto.DeviceProps.PlatformType.UNKNOWN]
 			logger.info(
 				{
 					transportProfile: transportSession.profile,
-					platform: node.userAgent?.platform,
+					platform: registrationPlatform,
+					webSubPlatform: registrationWebSubPlatform,
+					device: node.userAgent?.device,
+					platformType: registrationPlatformType,
+					devicePropsOs: registrationProps.os,
+					devicePropsVersion: registrationProps.version,
 					appVersion: node.userAgent?.appVersion,
 					selectedProfileId: transportSession.nativeAndroid?.device.profileId
 				},
-				'not logged in, attempting registration...'
+				`🔐 Registration profile | [platform=${registrationPlatform}${isNativeAndroid ? '📱' : '🌐'}]${registrationWebSubPlatform ? ` [webSubPlatform=${registrationWebSubPlatform}${registrationWebSubPlatform === 'WIN_HYBRID' ? '🪟' : '🌐'}]` : ''} [device=${node.userAgent?.device || 'unknown'}${isNativeAndroid ? '📱' : '🖥️'}] [platformType=${registrationPlatformType}${isNativeAndroid ? '📱' : '🪟'}] [DeviceProps.os=${registrationProps.os || 'unknown'}${isNativeAndroid ? '📱' : '🪟'}] [DeviceProps.version=${registrationProps.version?.primary ?? 'unknown'}🔢]`
 			)
 		} else {
 			node = generateLoginNode(creds.me.id, payloadConfig, nativeClientPayloadContext)
@@ -1767,25 +1785,38 @@ export const makeSocket = (config: SocketConfig) => {
 			name: '~'
 		}
 
-		// Pair code companion_platform_id must be Chrome (1) when using Android
-		// browser preset. ANDROID_PHONE (16) causes silent timeout (server ignores),
-		// UWP (21) causes "cannot connect device" rejection. Only Chrome (1) works
-		// for pair code via web protocol (WA\x06\x03). The device still appears as
-		// "Android" in linked devices because DeviceProps.platformType=ANDROID_PHONE
-		// is set separately in the registration node.
+		// companion_platform_id and DeviceProps.platformType use different enums:
+		// Windows Desktop is UWP=8 in the pair-code Web enum and UWP=21 in
+		// DeviceProps. Android browser presets intentionally map to Chrome=1 for
+		// pair code, while their DeviceProps identity remains Android.
 		const isAndroid = isAndroidBrowser(browser)
-		const pairPlatformId = isAndroid ? getPlatformId('Chrome') : getPlatformId(browser[1])
-		const pairPlatformDisplay = isAndroid ? 'Chrome (Mac OS)' : `${browser[1]} (${browser[0]})`
+		const pairIdentity = getPairCodeCompanionIdentity(browser, payloadConfig.syncFullHistory)
+		const pairPlatformId = pairIdentity.platformId
+		const pairPlatformDisplay = pairIdentity.platformDisplay
+		const pairPlatformName = pairIdentity.platformName
+		const companionProps = buildCompanionDeviceProps(payloadConfig)
+		const devicePlatformType =
+			proto.DeviceProps.PlatformType[companionProps.platformType ?? proto.DeviceProps.PlatformType.UNKNOWN]
+		const webSubPlatform =
+			proto.ClientPayload.WebInfo.WebSubPlatform[
+				buildWebInfo(payloadConfig).webSubPlatform ?? proto.ClientPayload.WebInfo.WebSubPlatform.WEB_BROWSER
+			]
 
 		logger.info(
 			{
 				pairCode: pairingCode,
 				jid: authState.creds.me.id,
 				companionPlatformId: pairPlatformId,
+				companionPlatformName: pairPlatformName,
 				companionPlatformDisplay: pairPlatformDisplay,
+				windowsHybrid: pairIdentity.windowsHybrid,
+				webSubPlatform,
+				devicePlatformType,
+				devicePropsOs: companionProps.os,
+				devicePropsVersion: companionProps.version,
 				isAndroid
 			},
-			`pair code requested | companion: ${pairPlatformDisplay} | ${isAndroid ? 'android override -> Chrome' : 'native platform'}`
+			`🔢 Pair Code requested | [companionPlatform=${pairPlatformName}${pairIdentity.windowsHybrid ? '🪟' : '🌐'} id=${pairPlatformId}] [webSubPlatform=${webSubPlatform}${pairIdentity.windowsHybrid ? '🪟' : '🌐'}] [platformType=${devicePlatformType}${pairIdentity.windowsHybrid ? '🪟' : '🌐'}] [DeviceProps.os=${companionProps.os || 'unknown'}${pairIdentity.windowsHybrid ? '🪟' : '💻'}] [DeviceProps.version=${companionProps.version?.primary ?? 'unknown'}🔢]`
 		)
 
 		ev.emit('creds.update', authState.creds)
@@ -2007,8 +2038,25 @@ export const makeSocket = (config: SocketConfig) => {
 		const isAndroid = isNativeAndroid || isAndroidBrowser(browser)
 		const phoneId = authState.creds.me?.id?.split(':')[0]?.split('@')[0] || 'new session'
 		const nativeAppPlatform = transportSession.nativeAndroid?.appVariant === 'consumer' ? 'ANDROID' : 'SMB_ANDROID'
+		const companionProps = buildCompanionDeviceProps(payloadConfig)
+		const platformType =
+			proto.DeviceProps.PlatformType[companionProps.platformType ?? proto.DeviceProps.PlatformType.UNKNOWN]
+		const webSubPlatform = isNativeAndroid
+			? undefined
+			: proto.ClientPayload.WebInfo.WebSubPlatform[
+					buildWebInfo(payloadConfig).webSubPlatform ?? proto.ClientPayload.WebInfo.WebSubPlatform.WEB_BROWSER
+				]
 		logger.info(
-			`${isAndroid ? '\uD83D\uDCF1' : '\uD83D\uDDA5\uFE0F'} Connected to WA | ${phoneId} | platform: ${isAndroid ? nativeAppPlatform : 'MACOS'} | device: ${isAndroid ? 'Android' : 'Desktop'} | platformType: ${isAndroid ? 'ANDROID_PHONE' : 'CHROME'}`
+			{
+				transportProfile: transportSession.profile,
+				platform: isAndroid ? nativeAppPlatform : 'WEB',
+				webSubPlatform,
+				device: isAndroid ? 'Android' : 'Desktop',
+				platformType,
+				devicePropsOs: companionProps.os,
+				devicePropsVersion: companionProps.version
+			},
+			`${isAndroid ? '📱' : '🖥️'} Connected to WA | ${phoneId} | [platform=${isAndroid ? nativeAppPlatform : 'WEB'}${isAndroid ? '📱' : '🌐'}]${webSubPlatform ? ` [webSubPlatform=${webSubPlatform}🪟]` : ''} [device=${isAndroid ? 'Android📱' : 'Desktop🖥️'}] [platformType=${platformType}${isAndroid ? '📱' : '🪟'}] [DeviceProps.os=${companionProps.os || 'unknown'}${isAndroid ? '📱' : '🪟'}] [DeviceProps.version=${companionProps.version?.primary ?? 'unknown'}🔢]`
 		)
 		clearTimeout(qrTimer) // will never happen in all likelyhood -- but just in case WA sends success on first try
 

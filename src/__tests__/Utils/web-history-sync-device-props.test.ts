@@ -1,7 +1,9 @@
 import { proto } from '../../../WAProto/index.js'
 import { DEFAULT_CONNECTION_CONFIG } from '../../Defaults'
 import type { SocketConfig } from '../../Types'
-import { buildCompanionDeviceProps } from '../../Utils/validate-connection'
+import { initAuthCreds } from '../../Utils/auth-utils'
+import { getPairCodeCompanionIdentity } from '../../Utils/companion-reg-client-utils'
+import { buildCompanionDeviceProps, generateRegistrationNode } from '../../Utils/validate-connection'
 
 const webConfig = (overrides: Partial<SocketConfig> = {}): SocketConfig => ({
 	...DEFAULT_CONNECTION_CONFIG,
@@ -17,6 +19,7 @@ describe('official Web history-sync DeviceProps', () => {
 
 		expect(props.platformType).toBe(proto.DeviceProps.PlatformType.UWP)
 		expect(props.requireFullSync).toBe(true)
+		expect(props.version).toEqual({ primary: 10 })
 		expect(props.historySyncConfig).toEqual({
 			fullSyncDaysLimit: 365,
 			inlineInitialPayloadInE2EeMsg: true,
@@ -39,6 +42,37 @@ describe('official Web history-sync DeviceProps', () => {
 		expect(props.historySyncConfig).not.toHaveProperty('storageQuotaMb')
 		expect(props.historySyncConfig).not.toHaveProperty('recentSyncDaysLimit')
 		expect(props.historySyncConfig).not.toHaveProperty('fullSyncSizeMbLimit')
+	})
+
+	it('uses the Windows hybrid Web sub-platform in the registration payload', () => {
+		const payload = generateRegistrationNode(initAuthCreds(), webConfig())
+
+		expect(payload.userAgent?.platform).toBe(proto.ClientPayload.UserAgent.Platform.WEB)
+		expect(payload.webInfo?.webSubPlatform).toBe(proto.ClientPayload.WebInfo.WebSubPlatform.WIN_HYBRID)
+	})
+
+	it('uses the distinct official UWP values for Pair Code and DeviceProps', () => {
+		const config = webConfig()
+
+		// Pair Code companion_platform_id uses the Web-client enum.
+		expect(getPairCodeCompanionIdentity(config.browser, config.syncFullHistory)).toMatchObject({
+			platformId: '8',
+			platformName: 'UWP',
+			platformDisplay: 'Desktop (Windows)',
+			windowsHybrid: true
+		})
+		// Registration DeviceProps uses the DeviceProps enum.
+		expect(buildCompanionDeviceProps(config).platformType).toBe(proto.DeviceProps.PlatformType.UWP)
+		expect(proto.DeviceProps.PlatformType.UWP).toBe(21)
+	})
+
+	it('preserves the configured browser Pair Code identity outside WIN_HYBRID mode', () => {
+		expect(getPairCodeCompanionIdentity(webConfig().browser, false)).toMatchObject({
+			platformId: '2',
+			platformName: 'EDGE',
+			platformDisplay: 'Edge (Windows)',
+			windowsHybrid: false
+		})
 	})
 
 	it('preserves the reduced-history profile when syncFullHistory is explicitly disabled', () => {

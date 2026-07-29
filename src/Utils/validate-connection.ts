@@ -209,14 +209,12 @@ const PLATFORM_MAP = {
 	Windows: proto.ClientPayload.WebInfo.WebSubPlatform.WIN32
 }
 
-const getWebInfo = (config: SocketConfig): proto.ClientPayload.IWebInfo => {
+export const buildWebInfo = (config: SocketConfig): proto.ClientPayload.IWebInfo => {
 	let webSubPlatform = proto.ClientPayload.WebInfo.WebSubPlatform.WEB_BROWSER
-	if (
-		config.syncFullHistory &&
-		PLATFORM_MAP[config.browser[0] as keyof typeof PLATFORM_MAP] &&
-		config.browser[1] === 'Desktop'
-	) {
-		webSubPlatform = PLATFORM_MAP[config.browser[0] as keyof typeof PLATFORM_MAP]
+	if (config.syncFullHistory && config.browser[0].trim().toLowerCase() === 'windows') {
+		webSubPlatform = proto.ClientPayload.WebInfo.WebSubPlatform.WIN_HYBRID
+	} else if (config.syncFullHistory && config.browser[1] === 'Desktop') {
+		webSubPlatform = PLATFORM_MAP[config.browser[0] as keyof typeof PLATFORM_MAP] || webSubPlatform
 	}
 
 	return { webSubPlatform }
@@ -230,7 +228,7 @@ const getClientPayload = (config: SocketConfig, nativeContext?: NativeAndroidCli
 	}
 
 	if (config.transportProfile !== 'native_android') {
-		payload.webInfo = getWebInfo(config)
+		payload.webInfo = buildWebInfo(config)
 	} else {
 		if (!nativeContext) {
 			throw new Boom('native_android: connection payload context is required', { statusCode: 500 })
@@ -395,11 +393,18 @@ export const buildCompanionDeviceProps = (config: SocketConfig): proto.IDevicePr
 					tertiary: config.nativeAndroid!.appVersion[2],
 					quaternary: config.nativeAndroid!.appVersion[3]
 				}
-			: {
-					primary: 10,
-					secondary: 15,
-					tertiary: 7
-				}
+			: isWindowsCompanion
+				? {
+						// Captured from WhatsApp Windows Beta 2.2629.100.0:
+						// DeviceProps advertises the Windows platform version,
+						// independently from the Web bundle version in UserAgent.
+						primary: 10
+					}
+				: {
+						primary: 10,
+						secondary: 15,
+						tertiary: 7
+					}
 	}
 }
 
