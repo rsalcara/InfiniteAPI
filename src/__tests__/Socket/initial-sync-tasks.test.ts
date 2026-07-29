@@ -48,4 +48,21 @@ describe('initial sync task settlement', () => {
 		await settleInitialSyncTasks([Promise.resolve(), Promise.resolve()], () => false, keepBuffered)
 		expect(keepBuffered).not.toHaveBeenCalled()
 	})
+
+	it('still releases and preserves the task failure when failure preparation throws', async () => {
+		const failure = new Error('sync failed')
+		const releaseBuffer = jest.fn()
+
+		await expect(
+			settleInitialSyncTasks(
+				[Promise.reject(failure)],
+				() => false,
+				releaseBuffer,
+				() => {
+					throw new Error('state preparation failed')
+				}
+			)
+		).rejects.toBe(failure)
+		expect(releaseBuffer).toHaveBeenCalledWith(true)
+	})
 })

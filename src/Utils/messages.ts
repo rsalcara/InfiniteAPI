@@ -2016,14 +2016,22 @@ export const generateWAMessage = async (jid: string, content: AnyMessageContent,
 	return generateWAMessageFromContent(jid, await generateWAMessageContent(content, { ...options, jid }), options)
 }
 
-/** Get the key to access the true type of content */
-export const getContentType = (content: proto.IMessage | undefined) => {
+const findContentType = (content: proto.IMessage | undefined, requirePresentValue: boolean) => {
 	if (content) {
 		const keys = Object.keys(content)
-		const key = keys.find(k => (k === 'conversation' || k.includes('Message')) && k !== 'senderKeyDistributionMessage')
+		const key = keys.find(
+			k =>
+				(k === 'conversation' || k.includes('Message')) &&
+				k !== 'senderKeyDistributionMessage' &&
+				(!requirePresentValue ||
+					(content[k as keyof typeof content] !== null && content[k as keyof typeof content] !== undefined))
+		)
 		return key as keyof typeof content
 	}
 }
+
+/** Get the key to access the true type of content. */
+export const getContentType = (content: proto.IMessage | undefined) => findContentType(content, false)
 
 /**
  * Returns a stable, human-readable label for operational logs and metrics.
@@ -2036,15 +2044,7 @@ export const getMessageTypeLabel = (content: WAMessageContent | null | undefined
 	// Protobuf objects can retain optional fields as explicit nulls. Operational
 	// logs and metrics must classify the first value that is actually present,
 	// rather than a null media key that happens to precede the real text field.
-	const contentType = normalized
-		? (Object.keys(normalized).find(
-				key =>
-					(key === 'conversation' || key.includes('Message')) &&
-					key !== 'senderKeyDistributionMessage' &&
-					normalized[key as keyof typeof normalized] !== null &&
-					normalized[key as keyof typeof normalized] !== undefined
-			) as keyof typeof normalized | undefined)
-		: undefined
+	const contentType = findContentType(normalized, true)
 	if (!contentType) return 'unknown'
 
 	const type = String(contentType)

@@ -13,7 +13,12 @@ export const settleInitialSyncTasks = async (
 	const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
 
 	if (failure) {
-		prepareFailureRelease?.()
+		try {
+			prepareFailureRelease?.()
+		} catch {
+			// This hook is best-effort state preparation. It must never prevent
+			// the mandatory buffer release or replace the original task failure.
+		}
 	}
 
 	if (failure || shouldReleaseOnSuccess()) {
