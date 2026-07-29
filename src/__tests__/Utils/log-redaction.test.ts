@@ -112,12 +112,13 @@ describe('central log redaction', () => {
 	})
 
 	it('bounds very large strings before applying JID and phone redaction', () => {
-		const input = `${'9'.repeat(100_000)} 5515991426667@s.whatsapp.net`
+		const input = `5515991426667@s.whatsapp.net ${'9'.repeat(100_000)}`
 		const sanitized = sanitizeLogString(input)
 
 		expect(sanitized).toContain('[truncated ')
 		expect(sanitized.length).toBeLessThan(8_300)
 		expect(sanitized).not.toContain('5515991426667@s.whatsapp.net')
+		expect(sanitized).toContain('6667@s.whatsapp.net')
 	})
 
 	it('stops recursive sanitization at the configured maximum depth', () => {

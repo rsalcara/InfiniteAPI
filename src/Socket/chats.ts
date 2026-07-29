@@ -104,6 +104,7 @@ import {
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
+import { settleInitialSyncTasks } from './initial-sync-tasks'
 import { executeWMexQuery as genericExecuteWMexQuery } from './mex'
 import { makeSocket } from './socket.js'
 
@@ -1855,40 +1856,44 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			}
 		}
 
-		await Promise.all([
-			(async () => {
-				if (shouldProcessHistoryMsg) {
-					await doAppStateSync()
-				}
-			})(),
-			processMessage(msg, {
-				signalRepository,
-				shouldProcessHistoryMsg,
-				placeholderResendCache,
-				ev,
-				creds: authState.creds,
-				keyStore: authState.keys,
-				logger,
-				options: config.options,
-				getMessage,
-				orphanQueue,
-				appStateBackend,
-				locationBackend,
-				statusBackend,
-				messageStoreBackend,
-				mediaBackend,
-				addOnBackend,
-				historySyncCompanionBackend,
-				receiptBackend: receiptReplayBackend
-			})
-		])
-
-		if (appStateSyncCompleted) {
-			logger.info(
-				'Initial app-state and history processing complete, transitioning to Online state and flushing buffer'
-			)
-			ev.flush()
-		}
+		await settleInitialSyncTasks(
+			[
+				(async () => {
+					if (shouldProcessHistoryMsg) {
+						await doAppStateSync()
+					}
+				})(),
+				processMessage(msg, {
+					signalRepository,
+					shouldProcessHistoryMsg,
+					placeholderResendCache,
+					ev,
+					creds: authState.creds,
+					keyStore: authState.keys,
+					logger,
+					options: config.options,
+					getMessage,
+					orphanQueue,
+					appStateBackend,
+					locationBackend,
+					statusBackend,
+					messageStoreBackend,
+					mediaBackend,
+					addOnBackend,
+					historySyncCompanionBackend,
+					receiptBackend: receiptReplayBackend
+				})
+			],
+			() => appStateSyncCompleted,
+			failed => {
+				logger.info(
+					failed
+						? 'Initial app-state or history processing failed, releasing buffered events before propagating the error'
+						: 'Initial app-state and history processing complete, transitioning to Online state and flushing buffer'
+				)
+				ev.flush()
+			}
+		)
 
 		// If the app state key arrives and we are waiting to sync, trigger the sync now.
 		if (msg.message?.protocolMessage?.appStateSyncKeyShare && syncState === SyncState.Syncing) {

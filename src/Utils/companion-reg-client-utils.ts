@@ -32,12 +32,13 @@ const BROWSER_TO_COMPANION_WEB_CLIENT = new Map<string, CompanionWebClientType>(
 ])
 
 export const getCompanionWebClientType = ([os, browserName]: WABrowserDescription): CompanionWebClientType => {
-	if (browserName === 'Desktop') {
-		return os === 'Windows' ? CompanionWebClientType.UWP : CompanionWebClientType.ELECTRON
+	const normalizedOs = typeof os === 'string' ? os.trim().toLowerCase() : ''
+	const normalizedBrowser = typeof browserName === 'string' ? browserName.trim().toLowerCase() : ''
+	if (normalizedBrowser === 'desktop') {
+		return normalizedOs === 'windows' ? CompanionWebClientType.UWP : CompanionWebClientType.ELECTRON
 	}
 
-	const key = typeof browserName === 'string' ? browserName.trim().toLowerCase() : ''
-	return BROWSER_TO_COMPANION_WEB_CLIENT.get(key) ?? CompanionWebClientType.OTHER_WEB_CLIENT
+	return BROWSER_TO_COMPANION_WEB_CLIENT.get(normalizedBrowser) ?? CompanionWebClientType.OTHER_WEB_CLIENT
 }
 
 export const getCompanionPlatformId = (browser: WABrowserDescription): string => {
@@ -50,6 +51,18 @@ export interface PairCodeCompanionIdentity {
 	platformDisplay: string
 	windowsHybrid: boolean
 }
+
+const makeCompanionIdentity = (
+	platformType: CompanionWebClientType,
+	browser: WABrowserDescription,
+	windowsHybrid: boolean,
+	displayBrowser: string = browser[1]
+): PairCodeCompanionIdentity => ({
+	platformId: platformType.toString(),
+	platformName: CompanionWebClientType[platformType],
+	platformDisplay: `${displayBrowser} (${browser[0]})`,
+	windowsHybrid
+})
 
 /**
  * Resolves the identity sent in link_code_companion_reg.
@@ -65,14 +78,35 @@ export const getPairCodeCompanionIdentity = (
 ): PairCodeCompanionIdentity => {
 	const windowsHybrid = syncFullHistory && browser[0].trim().toLowerCase() === 'windows'
 	const androidBrowser = browser[1]?.trim().toLowerCase() === 'android'
-	const platformType = getCompanionWebClientType(browser)
+	const configuredPlatformType = getCompanionWebClientType(browser)
+	// UWP=8 is valid in the fifth field of the Windows QR payload, but the
+	// server rejects it in link_code_companion_reg/companion_hello. Preserve
+	// every other configured Web-client identity and use the validated Edge=2
+	// identity only for Windows Desktop/UWP Pair Code requests.
+	const platformType =
+		configuredPlatformType === CompanionWebClientType.UWP ? CompanionWebClientType.EDGE : configuredPlatformType
+	const displayBrowser = androidBrowser
+		? 'Chrome'
+		: configuredPlatformType === CompanionWebClientType.UWP
+			? 'Edge'
+			: browser[1]
+	const identity = makeCompanionIdentity(platformType, browser, windowsHybrid, displayBrowser)
+	return androidBrowser ? { ...identity, platformDisplay: 'Chrome (Mac OS)' } : identity
+}
 
-	return {
-		platformId: platformType.toString(),
-		platformName: CompanionWebClientType[platformType],
-		platformDisplay: androidBrowser ? 'Chrome (Mac OS)' : `${browser[1]} (${browser[0]})`,
-		windowsHybrid
+/** Resolves the identity actually encoded in a QR payload and reported in logs. */
+export const getQrCodeCompanionIdentity = (
+	browser: WABrowserDescription,
+	transportProfile: ConnectionTransportProfile = 'web',
+	syncFullHistory = false
+): PairCodeCompanionIdentity => {
+	const windowsHybrid = transportProfile === 'web' && syncFullHistory && browser[0].trim().toLowerCase() === 'windows'
+	if (windowsHybrid) {
+		const normalizedBrowser: WABrowserDescription = ['Windows', 'Desktop', browser[2]]
+		return makeCompanionIdentity(CompanionWebClientType.UWP, normalizedBrowser, true)
 	}
+
+	return makeCompanionIdentity(getCompanionWebClientType(browser), browser, false)
 }
 
 export const buildPairingQRData = (
@@ -97,7 +131,7 @@ export const buildPairingQRData = (
 	// DeviceProps). Without it the phone accepts the link as a generic legacy
 	// Web companion and may omit the Windows full/recent history-sync flow.
 	if (transportProfile === 'web' && syncFullHistory && browser[0].trim().toLowerCase() === 'windows') {
-		payloadFields.push(getCompanionWebClientType([browser[0], 'Desktop', browser[2]]).toString())
+		payloadFields.push(getQrCodeCompanionIdentity(browser, transportProfile, syncFullHistory).platformId)
 		return `https://wa.me/settings/linked_devices#${payloadFields.join(',')}`
 	}
 

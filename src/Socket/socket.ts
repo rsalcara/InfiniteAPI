@@ -38,6 +38,7 @@ import {
 	getErrorCodeFromStreamError,
 	getNextPreKeysNode,
 	getPairCodeCompanionIdentity,
+	getQrCodeCompanionIdentity,
 	incrementNativeAndroidConnectionLc,
 	makeEventBuffer,
 	makeNoiseHandler,
@@ -1815,7 +1816,7 @@ export const makeSocket = (config: SocketConfig) => {
 
 		logger.info(
 			{
-				pairCode: pairingCode,
+				pairCodeLength: pairingCode.length,
 				jid: authState.creds.me.id,
 				companionPlatformId: pairPlatformId,
 				companionPlatformName: pairPlatformName,
@@ -1978,7 +1979,7 @@ export const makeSocket = (config: SocketConfig) => {
 				transportSession.profile,
 				payloadConfig.syncFullHistory
 			)
-			const qrIdentity = getPairCodeCompanionIdentity(browser, payloadConfig.syncFullHistory)
+			const qrIdentity = getQrCodeCompanionIdentity(browser, transportSession.profile, payloadConfig.syncFullHistory)
 			logger.info(
 				{
 					pairingMode: 'qr',

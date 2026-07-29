@@ -2,8 +2,13 @@ import { proto } from '../../../WAProto/index.js'
 import { DEFAULT_CONNECTION_CONFIG } from '../../Defaults'
 import type { SocketConfig } from '../../Types'
 import { initAuthCreds } from '../../Utils/auth-utils'
-import { buildPairingQRData, getPairCodeCompanionIdentity } from '../../Utils/companion-reg-client-utils'
-import { buildCompanionDeviceProps, generateRegistrationNode } from '../../Utils/validate-connection'
+import {
+	buildPairingQRData,
+	getCompanionWebClientType,
+	getPairCodeCompanionIdentity,
+	getQrCodeCompanionIdentity
+} from '../../Utils/companion-reg-client-utils'
+import { buildCompanionDeviceProps, generateLoginNode, generateRegistrationNode } from '../../Utils/validate-connection'
 
 const webConfig = (overrides: Partial<SocketConfig> = {}): SocketConfig => ({
 	...DEFAULT_CONNECTION_CONFIG,
@@ -51,6 +56,15 @@ describe('official Web history-sync DeviceProps', () => {
 		expect(payload.webInfo?.webSubPlatform).toBe(proto.ClientPayload.WebInfo.WebSubPlatform.WIN_HYBRID)
 	})
 
+	it('keeps WIN_HYBRID in the authenticated reconnect login payload', () => {
+		const payload = generateLoginNode('5515981907008:1@s.whatsapp.net', webConfig())
+
+		expect(payload.userAgent?.platform).toBe(proto.ClientPayload.UserAgent.Platform.WEB)
+		expect(payload.webInfo?.webSubPlatform).toBe(proto.ClientPayload.WebInfo.WebSubPlatform.WIN_HYBRID)
+		expect(payload.passive).toBe(true)
+		expect(payload.pull).toBe(true)
+	})
+
 	it('keeps Pair Code on Edge while DeviceProps uses UWP for full history', () => {
 		const config = webConfig()
 
@@ -71,6 +85,44 @@ describe('official Web history-sync DeviceProps', () => {
 		expect(buildPairingQRData('ref', 'noise', 'identity', 'adv', webConfig().browser, 'web', true)).toBe(
 			'https://wa.me/settings/linked_devices#ref,noise,identity,adv,8'
 		)
+	})
+
+	it.each(['windows', 'WINDOWS', ' Windows '])(
+		'normalizes Windows casing when building the official hybrid QR (%s)',
+		os => {
+			expect(buildPairingQRData('ref', 'noise', 'identity', 'adv', [os, 'desktop', '10'], 'web', true)).toBe(
+				'https://wa.me/settings/linked_devices#ref,noise,identity,adv,8'
+			)
+		}
+	)
+
+	it('reports the same UWP identity that is encoded in the Windows QR', () => {
+		expect(getQrCodeCompanionIdentity(['windows', 'edge', '10'], 'web', true)).toMatchObject({
+			platformId: '8',
+			platformName: 'UWP',
+			platformDisplay: 'Desktop (Windows)',
+			windowsHybrid: true
+		})
+	})
+
+	it('falls back from Windows Desktop UWP to Edge only for Pair Code', () => {
+		expect(getPairCodeCompanionIdentity(['Windows', 'Desktop', '10'], true)).toMatchObject({
+			platformId: '2',
+			platformName: 'EDGE',
+			platformDisplay: 'Edge (Windows)',
+			windowsHybrid: true
+		})
+	})
+
+	it.each([
+		[['Windows', 'Chrome', '10'], 1],
+		[['Windows', 'Edge', '10'], 2],
+		[['Linux', 'Firefox', '1'], 3],
+		[['Mac OS', 'Safari', '15'], 6],
+		[['Linux', 'Desktop', '1'], 7],
+		[['Windows', 'Desktop', '10'], 8]
+	] as const)('maps the %s browser profile to Web companion platform %s', (browser, expectedPlatform) => {
+		expect(getCompanionWebClientType([...browser])).toBe(expectedPlatform)
 	})
 
 	it('preserves the configured browser Pair Code identity outside WIN_HYBRID mode', () => {
