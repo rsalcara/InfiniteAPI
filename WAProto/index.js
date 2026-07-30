@@ -64777,6 +64777,7 @@ export const proto = $root.proto = (() => {
                 PeerDataOperationResult.prototype.historySyncChunkRetryResponse = null;
                 PeerDataOperationResult.prototype.flowResponsesCsvBundle = null;
                 PeerDataOperationResult.prototype.bizBroadcastInsightsContactListResponse = null;
+                PeerDataOperationResult.prototype.contactRefreshResponse = null;
 
                 let $oneOfFields;
 
@@ -64852,6 +64853,12 @@ export const proto = $root.proto = (() => {
                     set: $util.oneOfSetter($oneOfFields)
                 });
 
+                // Virtual OneOf for proto3 optional field
+                Object.defineProperty(PeerDataOperationResult.prototype, "_contactRefreshResponse", {
+                    get: $util.oneOfGetter($oneOfFields = ["contactRefreshResponse"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+
                 PeerDataOperationResult.create = function create(properties) {
                     return new PeerDataOperationResult(properties);
                 };
@@ -64883,6 +64890,8 @@ export const proto = $root.proto = (() => {
                         $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.FlowResponsesCsvBundle.encode(m.flowResponsesCsvBundle, w.uint32(90).fork()).ldelim();
                     if (m.bizBroadcastInsightsContactListResponse != null && Object.hasOwnProperty.call(m, "bizBroadcastInsightsContactListResponse"))
                         $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactListResponse.encode(m.bizBroadcastInsightsContactListResponse, w.uint32(98).fork()).ldelim();
+                    if (m.contactRefreshResponse != null && Object.hasOwnProperty.call(m, "contactRefreshResponse"))
+                        $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.ContactRefreshResponse.encode(m.contactRefreshResponse, w.uint32(106).fork()).ldelim();
                     return w;
                 };
 
@@ -64941,6 +64950,10 @@ export const proto = $root.proto = (() => {
                             }
                         case 12: {
                                 m.bizBroadcastInsightsContactListResponse = $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactListResponse.decode(r, r.uint32());
+                                break;
+                            }
+                        case 13: {
+                                m.contactRefreshResponse = $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.ContactRefreshResponse.decode(r, r.uint32());
                                 break;
                             }
                         default:
@@ -65034,6 +65047,11 @@ export const proto = $root.proto = (() => {
                             throw TypeError(".proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.bizBroadcastInsightsContactListResponse: object expected");
                         m.bizBroadcastInsightsContactListResponse = $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactListResponse.fromObject(d.bizBroadcastInsightsContactListResponse);
                     }
+                    if (d.contactRefreshResponse != null) {
+                        if (typeof d.contactRefreshResponse !== "object")
+                            throw TypeError(".proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.contactRefreshResponse: object expected");
+                        m.contactRefreshResponse = $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.ContactRefreshResponse.fromObject(d.contactRefreshResponse);
+                    }
                     return m;
                 };
 
@@ -65100,6 +65118,11 @@ export const proto = $root.proto = (() => {
                         d.bizBroadcastInsightsContactListResponse = $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.BizBroadcastInsightsContactListResponse.toObject(m.bizBroadcastInsightsContactListResponse, o);
                         if (o.oneofs)
                             d._bizBroadcastInsightsContactListResponse = "bizBroadcastInsightsContactListResponse";
+                    }
+                    if (m.contactRefreshResponse != null && m.hasOwnProperty("contactRefreshResponse")) {
+                        d.contactRefreshResponse = $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.ContactRefreshResponse.toObject(m.contactRefreshResponse, o);
+                        if (o.oneofs)
+                            d._contactRefreshResponse = "contactRefreshResponse";
                     }
                     return d;
                 };
@@ -65615,6 +65638,216 @@ export const proto = $root.proto = (() => {
                     };
 
                     return CompanionMetaNonceFetchResponse;
+                })();
+
+                PeerDataOperationResult.ContactRefreshResponse = (function() {
+
+                    function ContactRefreshResponse(p) {
+                        this.coveredRequestIds = [];
+                        if (p)
+                            for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                                if (p[ks[i]] != null)
+                                    this[ks[i]] = p[ks[i]];
+                    }
+
+                    ContactRefreshResponse.prototype.coveredRequestIds = $util.emptyArray;
+                    ContactRefreshResponse.prototype.collectionVersion = null;
+                    ContactRefreshResponse.prototype.primaryProcessStartTimestampMs = null;
+                    ContactRefreshResponse.prototype.primaryProcessEndTimestampMs = null;
+                    ContactRefreshResponse.prototype.uploadedContactCount = null;
+
+                    let $oneOfFields;
+
+                    // Virtual OneOf for proto3 optional field
+                    Object.defineProperty(ContactRefreshResponse.prototype, "_collectionVersion", {
+                        get: $util.oneOfGetter($oneOfFields = ["collectionVersion"]),
+                        set: $util.oneOfSetter($oneOfFields)
+                    });
+
+                    // Virtual OneOf for proto3 optional field
+                    Object.defineProperty(ContactRefreshResponse.prototype, "_primaryProcessStartTimestampMs", {
+                        get: $util.oneOfGetter($oneOfFields = ["primaryProcessStartTimestampMs"]),
+                        set: $util.oneOfSetter($oneOfFields)
+                    });
+
+                    // Virtual OneOf for proto3 optional field
+                    Object.defineProperty(ContactRefreshResponse.prototype, "_primaryProcessEndTimestampMs", {
+                        get: $util.oneOfGetter($oneOfFields = ["primaryProcessEndTimestampMs"]),
+                        set: $util.oneOfSetter($oneOfFields)
+                    });
+
+                    // Virtual OneOf for proto3 optional field
+                    Object.defineProperty(ContactRefreshResponse.prototype, "_uploadedContactCount", {
+                        get: $util.oneOfGetter($oneOfFields = ["uploadedContactCount"]),
+                        set: $util.oneOfSetter($oneOfFields)
+                    });
+
+                    ContactRefreshResponse.create = function create(properties) {
+                        return new ContactRefreshResponse(properties);
+                    };
+
+                    ContactRefreshResponse.encode = function encode(m, w) {
+                        if (!w)
+                            w = $Writer.create();
+                        if (m.coveredRequestIds != null && m.coveredRequestIds.length) {
+                            for (var i = 0; i < m.coveredRequestIds.length; ++i)
+                                w.uint32(10).string(m.coveredRequestIds[i]);
+                        }
+                        if (m.collectionVersion != null && Object.hasOwnProperty.call(m, "collectionVersion"))
+                            w.uint32(16).uint64(m.collectionVersion);
+                        if (m.primaryProcessStartTimestampMs != null && Object.hasOwnProperty.call(m, "primaryProcessStartTimestampMs"))
+                            w.uint32(24).int64(m.primaryProcessStartTimestampMs);
+                        if (m.primaryProcessEndTimestampMs != null && Object.hasOwnProperty.call(m, "primaryProcessEndTimestampMs"))
+                            w.uint32(32).int64(m.primaryProcessEndTimestampMs);
+                        if (m.uploadedContactCount != null && Object.hasOwnProperty.call(m, "uploadedContactCount"))
+                            w.uint32(40).uint32(m.uploadedContactCount);
+                        return w;
+                    };
+
+                    ContactRefreshResponse.decode = function decode(r, l, e) {
+                        if (!(r instanceof $Reader))
+                            r = $Reader.create(r);
+                        var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.ContactRefreshResponse();
+                        while (r.pos < c) {
+                            var t = r.uint32();
+                            if (t === e)
+                                break;
+                            switch (t >>> 3) {
+                            case 1: {
+                                    if (!(m.coveredRequestIds && m.coveredRequestIds.length))
+                                        m.coveredRequestIds = [];
+                                    m.coveredRequestIds.push(r.string());
+                                    break;
+                                }
+                            case 2: {
+                                    m.collectionVersion = r.uint64();
+                                    break;
+                                }
+                            case 3: {
+                                    m.primaryProcessStartTimestampMs = r.int64();
+                                    break;
+                                }
+                            case 4: {
+                                    m.primaryProcessEndTimestampMs = r.int64();
+                                    break;
+                                }
+                            case 5: {
+                                    m.uploadedContactCount = r.uint32();
+                                    break;
+                                }
+                            default:
+                                r.skipType(t & 7);
+                                break;
+                            }
+                        }
+                        return m;
+                    };
+
+                    ContactRefreshResponse.fromObject = function fromObject(d) {
+                        if (d instanceof $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.ContactRefreshResponse)
+                            return d;
+                        var m = new $root.proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.ContactRefreshResponse();
+                        if (d.coveredRequestIds) {
+                            if (!Array.isArray(d.coveredRequestIds))
+                                throw TypeError(".proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.ContactRefreshResponse.coveredRequestIds: array expected");
+                            m.coveredRequestIds = [];
+                            for (var i = 0; i < d.coveredRequestIds.length; ++i) {
+                                m.coveredRequestIds[i] = String(d.coveredRequestIds[i]);
+                            }
+                        }
+                        if (d.collectionVersion != null) {
+                            if ($util.Long)
+                                (m.collectionVersion = $util.Long.fromValue(d.collectionVersion)).unsigned = true;
+                            else if (typeof d.collectionVersion === "string")
+                                m.collectionVersion = parseInt(d.collectionVersion, 10);
+                            else if (typeof d.collectionVersion === "number")
+                                m.collectionVersion = d.collectionVersion;
+                            else if (typeof d.collectionVersion === "object")
+                                m.collectionVersion = new $util.LongBits(d.collectionVersion.low >>> 0, d.collectionVersion.high >>> 0).toNumber(true);
+                        }
+                        if (d.primaryProcessStartTimestampMs != null) {
+                            if ($util.Long)
+                                (m.primaryProcessStartTimestampMs = $util.Long.fromValue(d.primaryProcessStartTimestampMs)).unsigned = false;
+                            else if (typeof d.primaryProcessStartTimestampMs === "string")
+                                m.primaryProcessStartTimestampMs = parseInt(d.primaryProcessStartTimestampMs, 10);
+                            else if (typeof d.primaryProcessStartTimestampMs === "number")
+                                m.primaryProcessStartTimestampMs = d.primaryProcessStartTimestampMs;
+                            else if (typeof d.primaryProcessStartTimestampMs === "object")
+                                m.primaryProcessStartTimestampMs = new $util.LongBits(d.primaryProcessStartTimestampMs.low >>> 0, d.primaryProcessStartTimestampMs.high >>> 0).toNumber();
+                        }
+                        if (d.primaryProcessEndTimestampMs != null) {
+                            if ($util.Long)
+                                (m.primaryProcessEndTimestampMs = $util.Long.fromValue(d.primaryProcessEndTimestampMs)).unsigned = false;
+                            else if (typeof d.primaryProcessEndTimestampMs === "string")
+                                m.primaryProcessEndTimestampMs = parseInt(d.primaryProcessEndTimestampMs, 10);
+                            else if (typeof d.primaryProcessEndTimestampMs === "number")
+                                m.primaryProcessEndTimestampMs = d.primaryProcessEndTimestampMs;
+                            else if (typeof d.primaryProcessEndTimestampMs === "object")
+                                m.primaryProcessEndTimestampMs = new $util.LongBits(d.primaryProcessEndTimestampMs.low >>> 0, d.primaryProcessEndTimestampMs.high >>> 0).toNumber();
+                        }
+                        if (d.uploadedContactCount != null) {
+                            m.uploadedContactCount = d.uploadedContactCount >>> 0;
+                        }
+                        return m;
+                    };
+
+                    ContactRefreshResponse.toObject = function toObject(m, o) {
+                        if (!o)
+                            o = {};
+                        var d = {};
+                        if (o.arrays || o.defaults) {
+                            d.coveredRequestIds = [];
+                        }
+                        if (m.coveredRequestIds && m.coveredRequestIds.length) {
+                            d.coveredRequestIds = [];
+                            for (var j = 0; j < m.coveredRequestIds.length; ++j) {
+                                d.coveredRequestIds[j] = m.coveredRequestIds[j];
+                            }
+                        }
+                        if (m.collectionVersion != null && m.hasOwnProperty("collectionVersion")) {
+                            if (typeof m.collectionVersion === "number")
+                                d.collectionVersion = o.longs === String ? String(m.collectionVersion) : m.collectionVersion;
+                            else
+                                d.collectionVersion = o.longs === String ? longToString(m.collectionVersion, true) : o.longs === Number ? longToNumber(m.collectionVersion, true) : m.collectionVersion;
+                            if (o.oneofs)
+                                d._collectionVersion = "collectionVersion";
+                        }
+                        if (m.primaryProcessStartTimestampMs != null && m.hasOwnProperty("primaryProcessStartTimestampMs")) {
+                            if (typeof m.primaryProcessStartTimestampMs === "number")
+                                d.primaryProcessStartTimestampMs = o.longs === String ? String(m.primaryProcessStartTimestampMs) : m.primaryProcessStartTimestampMs;
+                            else
+                                d.primaryProcessStartTimestampMs = o.longs === String ? longToString(m.primaryProcessStartTimestampMs) : o.longs === Number ? longToNumber(m.primaryProcessStartTimestampMs) : m.primaryProcessStartTimestampMs;
+                            if (o.oneofs)
+                                d._primaryProcessStartTimestampMs = "primaryProcessStartTimestampMs";
+                        }
+                        if (m.primaryProcessEndTimestampMs != null && m.hasOwnProperty("primaryProcessEndTimestampMs")) {
+                            if (typeof m.primaryProcessEndTimestampMs === "number")
+                                d.primaryProcessEndTimestampMs = o.longs === String ? String(m.primaryProcessEndTimestampMs) : m.primaryProcessEndTimestampMs;
+                            else
+                                d.primaryProcessEndTimestampMs = o.longs === String ? longToString(m.primaryProcessEndTimestampMs) : o.longs === Number ? longToNumber(m.primaryProcessEndTimestampMs) : m.primaryProcessEndTimestampMs;
+                            if (o.oneofs)
+                                d._primaryProcessEndTimestampMs = "primaryProcessEndTimestampMs";
+                        }
+                        if (m.uploadedContactCount != null && m.hasOwnProperty("uploadedContactCount")) {
+                            d.uploadedContactCount = m.uploadedContactCount;
+                            if (o.oneofs)
+                                d._uploadedContactCount = "uploadedContactCount";
+                        }
+                        return d;
+                    };
+
+                    ContactRefreshResponse.prototype.toJSON = function toJSON() {
+                        return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+                    };
+
+                    ContactRefreshResponse.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                        if (typeUrlPrefix === undefined) {
+                            typeUrlPrefix = "type.googleapis.com";
+                        }
+                        return typeUrlPrefix + "/proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.ContactRefreshResponse";
+                    };
+
+                    return ContactRefreshResponse;
                 })();
 
                 PeerDataOperationResult.FlowResponsesCsvBundle = (function() {
@@ -89651,6 +89884,10 @@ export const proto = $root.proto = (() => {
             case 11:
                 m.type = 11;
                 break;
+            case "USERNAME_STATUS":
+            case 12:
+                m.type = 12;
+                break;
             }
             if (d.actionUrl != null) {
                 m.actionUrl = String(d.actionUrl);
@@ -90795,6 +91032,7 @@ export const proto = $root.proto = (() => {
             values[valuesById[9] = "NEWSLETTER_STATUS"] = 9;
             values[valuesById[10] = "STATUS_CLOSE_SHARING"] = 10;
             values[valuesById[11] = "PAID_PARTNERSHIP"] = 11;
+            values[valuesById[12] = "USERNAME_STATUS"] = 12;
             return values;
         })();
 
