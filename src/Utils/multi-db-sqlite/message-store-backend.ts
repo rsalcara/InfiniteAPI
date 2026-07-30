@@ -110,13 +110,21 @@ export const mapWebMessageStatusToAndroid = (status: number | null | undefined):
 	}
 }
 
-const ANDROID_MESSAGE_STATUS_ORDER = [
-	ANDROID_MESSAGE_STATUS.PENDING,
-	ANDROID_MESSAGE_STATUS.SERVER_ACK,
-	ANDROID_MESSAGE_STATUS.DELIVERY_ACK,
-	ANDROID_MESSAGE_STATUS.READ,
-	ANDROID_MESSAGE_STATUS.PLAYED
+/**
+ * Complete ordering used by WhatsApp Android 2.26.27.83. Numeric comparison is
+ * invalid (READ=13 precedes PLAYED=8), so every status promotion must use this
+ * sequence. Keeping the full order also prevents ordinary receipts from
+ * overwriting a later retry/error/system state that the mirror did not create.
+ */
+export const ANDROID_MESSAGE_STATUS_ORDER = [
+	14, 0, 1, 2, 20, 21, 3, 4, 15, 5, 11, 12, 13, 8, 18, 17, 16, 9, 10, 7, 6, 22
 ] as const
+
+export const shouldAdvanceAndroidMessageStatus = (currentStatus: number | null, nextStatus: number): boolean => {
+	const currentOrder = currentStatus === null ? -1 : ANDROID_MESSAGE_STATUS_ORDER.indexOf(currentStatus as never)
+	const nextOrder = ANDROID_MESSAGE_STATUS_ORDER.indexOf(nextStatus as never)
+	return nextOrder >= 0 && (currentStatus === null || currentOrder >= 0) && currentOrder < nextOrder
+}
 
 /**
  * Maps Baileys' own content-type key (from `getContentType`) to the
@@ -657,12 +665,10 @@ export class MessageStoreBackend implements ChatRowResolver {
 		const row = this.stmts.getMessageByKeyId.get(chatRowId, fromMe ? 1 : 0, keyId) as MessageRow | undefined
 		if (!row) return false
 
-		const currentOrder = row.status === null ? -1 : ANDROID_MESSAGE_STATUS_ORDER.indexOf(row.status as never)
-		const nextOrder = ANDROID_MESSAGE_STATUS_ORDER.indexOf(status as never)
 		// The official app has additional status values for special/system
 		// messages. Do not reinterpret or overwrite an unknown Android state
 		// with the ordinary delivery lifecycle.
-		if (nextOrder < 0 || (row.status !== null && currentOrder < 0) || currentOrder >= nextOrder) return false
+		if (!shouldAdvanceAndroidMessageStatus(row.status, status)) return false
 
 		this.stmts.updateMessageStatusByKey.run(status, chatRowId, fromMe ? 1 : 0, keyId)
 		return true

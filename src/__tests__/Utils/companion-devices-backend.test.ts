@@ -8,6 +8,7 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { proto } from '../../../WAProto/index.js'
 import { CompanionDevicesBackend, MultiDbSqliteStore } from '../../Utils/multi-db-sqlite'
 
 const DEVICE_ID = '5515991426667.0:12@s.whatsapp.net'
@@ -33,33 +34,63 @@ describe('CompanionDevicesBackend', () => {
 	})
 
 	it('upserts the own-device row with booleans stored as 0/1 and metadata', () => {
+		const historySyncConfig = proto.DeviceProps.HistorySyncConfig.fromObject({
+			fullSyncDaysLimit: 365,
+			onDemandReady: true,
+			completeOnDemandReady: true,
+			thumbnailSyncDaysLimit: 60,
+			supportManusHistory: true,
+			supportHatchHistory: true,
+			supportedBotChannelFbids: []
+		})
 		backend.upsertOwnDevice({
 			deviceId: DEVICE_ID,
-			deviceOs: 'Chrome',
-			platformType: 1,
+			deviceOs: 'Windows',
+			platformType: proto.DeviceProps.PlatformType.UWP,
 			loginTime: 1_700_000_000,
 			advKeyIndex: 46,
 			fullSyncRequired: true,
-			storageQuotaMb: 10240,
-			supportCallLogHistory: false,
+			fullSyncDaysLimit: 365,
+			supportCallLogHistory: true,
 			supportBotUserAgentChatHistory: true,
-			supportGroupHistory: false,
-			supportMessageAssociation: true
+			supportGroupHistory: true,
+			supportMessageAssociation: true,
+			onDemandReady: true,
+			historySyncConfigProtobuf: proto.DeviceProps.HistorySyncConfig.encode(historySyncConfig).finish(),
+			supportManusHistory: true,
+			supportHatchHistory: true,
+			supportedBotChannelFbids: []
 		})
 
 		const row = backend.getByDeviceId(DEVICE_ID)
 		expect(row).not.toBeNull()
-		expect(row!.device_os).toBe('Chrome')
-		expect(row!.platform_type).toBe(1)
+		expect(row!.device_os).toBe('Windows')
+		expect(row!.platform_type).toBe(proto.DeviceProps.PlatformType.UWP)
 		expect(row!.login_time).toBe(1_700_000_000)
 		expect(row!.logout_time).toBe(0)
 		expect(row!.adv_key_index).toBe(46)
 		expect(row!.full_sync_required).toBe(1)
-		expect(row!.storage_quota_mb).toBe(10240)
-		expect(row!.support_call_log_history).toBe(0)
+		expect(row!.full_sync_days_limit).toBe(365)
+		expect(row!.storage_quota_mb).toBeNull()
+		expect(row!.support_call_log_history).toBe(1)
 		expect(row!.support_bot_user_agent_chat_history).toBe(1)
-		expect(row!.support_group_history).toBe(0)
+		expect(row!.support_group_history).toBe(1)
 		expect(row!.support_message_association).toBe(1)
+		expect(row!.on_demand_ready).toBe(1)
+		expect(row!.support_manus_history).toBe(1)
+		expect(row!.support_hatch_history).toBe(1)
+		expect(row!.supported_bot_channel_fbids).toBe('[]')
+
+		const mirroredConfig = proto.DeviceProps.HistorySyncConfig.decode(row!.history_sync_config_protobuf as Uint8Array)
+		expect(mirroredConfig).toMatchObject({
+			fullSyncDaysLimit: 365,
+			onDemandReady: true,
+			completeOnDemandReady: true,
+			thumbnailSyncDaysLimit: 60,
+			supportManusHistory: true,
+			supportHatchHistory: true,
+			supportedBotChannelFbids: []
+		})
 
 		expect(backend.getByDeviceId('other@s.whatsapp.net')).toBeNull()
 	})

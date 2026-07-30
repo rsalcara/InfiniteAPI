@@ -1,4 +1,4 @@
-/* eslint-disable max-depth, @typescript-eslint/no-unused-vars */
+/* eslint-disable @typescript-eslint/no-unused-vars */
 /**
  * Custom Logger for Baileys/WhatsApp
  *
@@ -12,6 +12,7 @@
  * @module Utils/baileys-logger
  */
 
+import { obfuscateJid, sanitizeLogRecord, sanitizeLogString, sanitizeLogValue } from './log-redaction.js'
 import type { ILogger } from './logger.js'
 import { createStructuredLogger, type LogEntry, type LogLevel, StructuredLogger } from './structured-logger.js'
 
@@ -43,7 +44,10 @@ export interface BaileysLoggerConfig {
 	ignoredCategories?: BaileysLogCategory[]
 	/** Categories with elevated log level (always debug) */
 	verboseCategories?: BaileysLogCategory[]
-	/** Whether to log message payloads (may be sensitive) */
+	/**
+	 * @deprecated Payload contents are always redacted. Kept only for source
+	 * compatibility with existing consumers.
+	 */
 	logMessagePayloads?: boolean
 	/** Whether to log binary data in hex */
 	logBinaryData?: boolean
@@ -89,6 +93,35 @@ const CATEGORY_PATTERNS: Array<{ pattern: RegExp; category: BaileysLogCategory }
 	{ pattern: /retry|attempt|backoff|reconnect/i, category: 'retry' },
 	{ pattern: /binary|encode|decode|proto|buffer/i, category: 'binary' }
 ]
+
+const MESSAGE_TYPE_ICONS = new Map<string, string>([
+	['text', '📝'],
+	['image', '🖼️'],
+	['video', '🎬'],
+	['gif', '🎞️'],
+	['audio', '🎵'],
+	['voice', '🎙️'],
+	['document', '📄'],
+	['sticker', '🏷️'],
+	['sticker_pack', '📦'],
+	['reaction', '❤️'],
+	['location', '📍'],
+	['live_location', '🛰️'],
+	['contact', '👤'],
+	['contacts', '👥'],
+	['poll', '📊'],
+	['poll_vote', '🗳️'],
+	['interactive', '🧩'],
+	['interactive_response', '✅']
+])
+
+const formatMessageTypeTag = (messageType?: string): string => {
+	if (!messageType) return ''
+
+	const sanitizedType = sanitizeLogString(messageType)
+	const icon = MESSAGE_TYPE_ICONS.get(sanitizedType) ?? ''
+	return ` [type=${sanitizedType}${icon}]`
+}
 
 /**
  * Custom logger for Baileys
@@ -190,7 +223,7 @@ export class BaileysLogger implements ILogger {
 		const searchText = [
 			msg || '',
 			typeof obj === 'string' ? obj : '',
-			typeof obj === 'object' && obj !== null ? JSON.stringify(obj) : ''
+			typeof obj === 'object' && obj !== null ? this.safeStringify(obj) : ''
 		].join(' ')
 
 		for (const { pattern, category } of CATEGORY_PATTERNS) {
@@ -222,47 +255,30 @@ export class BaileysLogger implements ILogger {
 	 * Sanitize message payload
 	 */
 	private sanitizePayload(obj: unknown): unknown {
-		if (!this.config.logMessagePayloads) {
-			if (typeof obj === 'object' && obj !== null) {
-				const sanitized = { ...(obj as Record<string, unknown>) }
+		return sanitizeLogValue(obj)
+	}
 
-				// Remove sensitive message fields
-				const sensitiveFields = ['body', 'text', 'content', 'caption', 'payload', 'data']
-				for (const field of sensitiveFields) {
-					if (field in sanitized) {
-						const value = sanitized[field]
-						if (typeof value === 'string' && value.length > 0) {
-							sanitized[field] = `[${value.length} chars]`
-						} else if (Buffer.isBuffer(value)) {
-							sanitized[field] = `[Buffer: ${value.length} bytes]`
-						}
-					}
-				}
+	private truncatePayload(sanitized: unknown): unknown {
+		if (typeof sanitized !== 'object' || sanitized === null) return sanitized
 
-				return sanitized
-			}
+		const serialized = this.safeStringify(sanitized)
+		if (serialized.length <= this.config.maxPayloadSize) return sanitized
+		return { _truncated: true, _originalSize: serialized.length }
+	}
+
+	private safeStringify(value: unknown): string {
+		try {
+			return JSON.stringify(value)
+		} catch {
+			return '[unserializable log value]'
 		}
-
-		// Limit payload size
-		if (typeof obj === 'object' && obj !== null) {
-			const str = JSON.stringify(obj)
-			if (str.length > this.config.maxPayloadSize) {
-				return {
-					_truncated: true,
-					_originalSize: str.length,
-					_preview: str.substring(0, 200) + '...'
-				}
-			}
-		}
-
-		return obj
 	}
 
 	/**
 	 * Update metrics based on log
 	 */
 	private updateMetrics(category: BaileysLogCategory, level: LogLevel, obj: unknown): void {
-		const objStr = typeof obj === 'object' ? JSON.stringify(obj) : String(obj)
+		const objStr = typeof obj === 'object' ? this.safeStringify(obj) : String(obj)
 
 		switch (category) {
 			case 'connection':
@@ -315,17 +331,27 @@ export class BaileysLogger implements ILogger {
 	 * Main log method
 	 */
 	private log(level: LogLevel, obj: unknown, msg?: string): void {
-		const category = this.detectCategory(obj, msg)
+		// Sanitize before classification/metrics so no raw payload is serialized
+		// even on internal diagnostic paths.
+		let sanitizedForDiagnostics: unknown
+		try {
+			sanitizedForDiagnostics = this.sanitizePayload(obj)
+		} catch {
+			// Never let a hostile/deep diagnostic object abort the WhatsApp
+			// handler that attempted to log it.
+			sanitizedForDiagnostics = { sanitizationError: '[unavailable]' }
+		}
+
+		const category = this.detectCategory(sanitizedForDiagnostics, msg)
 
 		if (!this.shouldLogCategory(category, level)) {
 			return
 		}
 
 		// Update metrics
-		this.updateMetrics(category, level, obj)
+		this.updateMetrics(category, level, sanitizedForDiagnostics)
 
-		// Sanitize payload
-		const sanitizedObj = this.sanitizePayload(obj)
+		const sanitizedObj = this.truncatePayload(sanitizedForDiagnostics)
 
 		// Add Baileys context
 		const enrichedObj = {
@@ -427,17 +453,7 @@ export class BaileysLogger implements ILogger {
 	 * Sanitize JID for logging (mask part of number)
 	 */
 	private sanitizeJid(jid: string): string {
-		if (process.env.NODE_ENV === 'production') {
-			// In production, mask part of the number
-			const parts = jid.split('@')
-			const localPart = parts[0]
-			const domainPart = parts[1]
-			if (parts.length === 2 && localPart && domainPart && localPart.length > 4) {
-				return `${localPart.substring(0, 4)}****@${domainPart}`
-			}
-		}
-
-		return jid
+		return obfuscateJid(jid)
 	}
 
 	/**
@@ -586,6 +602,7 @@ function safeStringify(value: unknown, seen: WeakSet<object> = new WeakSet()): s
  */
 function formatLogData(data: Record<string, unknown>, singleLine = true): string {
 	if (!data || Object.keys(data).length === 0) return ''
+	data = sanitizeLogRecord(data)
 
 	const seen = new WeakSet<object>()
 
@@ -724,11 +741,20 @@ export function logBufferMetrics(
  * logMessageSent('3EB02FA562D6CCC0876CDE', '5511999999999@s.whatsapp.net')
  * // Output: [BAILEYS] 📤 Message sent: 3EB02FA562D6CCC0876CDE → 5511999999999@s.whatsapp.net
  */
-export function logMessageSent(messageId: string, recipientJid: string, sessionName?: string): void {
+export function logMessageSent(
+	messageId: string,
+	recipientJid: string,
+	sessionName?: string,
+	messageType?: string
+): void {
 	if (!isBaileysLogEnabled()) return
 
 	const prefix = sessionName ? `[BAILEYS] [${sessionName}]` : '[BAILEYS]'
-	console.log(`${prefix} 📤 Message sent: ${messageId} → ${recipientJid}`)
+	const type = formatMessageTypeTag(messageType)
+	// Full message correlation metadata is intentionally preserved by operator
+	// decision. Message content, payloads, credentials and tokens remain
+	// subject to the central redaction policy.
+	console.log(`${prefix} 📤 Message sent${type}: ${messageId} → ${recipientJid}`)
 }
 
 /**
@@ -738,11 +764,17 @@ export function logMessageSent(messageId: string, recipientJid: string, sessionN
  * logMessageReceived('A5E0349897A3F16F3F2778EEF94A065F', '238315571802285@lid')
  * // Output: [BAILEYS] 📥 Message received: A5E0349897A3F16F3F2778EEF94A065F ← 238315571802285@lid
  */
-export function logMessageReceived(messageId: string, senderJid: string, sessionName?: string): void {
+export function logMessageReceived(
+	messageId: string,
+	senderJid: string,
+	sessionName?: string,
+	messageType?: string
+): void {
 	if (!isBaileysLogEnabled()) return
 
 	const prefix = sessionName ? `[BAILEYS] [${sessionName}]` : '[BAILEYS]'
-	console.log(`${prefix} 📥 Message received: ${messageId} ← ${senderJid}`)
+	const type = formatMessageTypeTag(messageType)
+	console.log(`${prefix} 📥 Message received${type}: ${messageId} ← ${senderJid}`)
 }
 
 /**
@@ -947,7 +979,7 @@ export function logTcToken(
 	if (!isBaileysLogEnabled()) return
 
 	const prefix = sessionName ? `[BAILEYS] [${sessionName}]` : '[BAILEYS]'
-	const jid = data?.jid ? ` → ${data.jid}` : ''
+	const jid = typeof data?.jid === 'string' ? ` → ${obfuscateJid(data.jid)}` : ''
 	const rest = data ? { ...data } : undefined
 	if (rest) delete rest.jid
 	const extraStr = rest && Object.keys(rest).length > 0 ? ' ' + formatLogData(rest) : ''

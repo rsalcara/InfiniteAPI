@@ -13,6 +13,7 @@ import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
+	ANDROID_MESSAGE_STATUS,
 	JidMapBackend,
 	LidChatStateBackend,
 	mapMessageToAndroidType,
@@ -21,6 +22,7 @@ import {
 	MessageMediaBackend,
 	MessageStoreBackend,
 	MultiDbSqliteStore,
+	RECEIPT_ORPHAN_TTL_SECONDS,
 	ReceiptBackend,
 	UI_ELEMENT_TYPE
 } from '../../Utils/multi-db-sqlite'
@@ -556,33 +558,36 @@ describe('msgstore.db message-store backends', () => {
 			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
 			const receipts = new ReceiptBackend(store.handle('msgstore.db'), jidMap, messageStore)
 			const chatJid = '5515991426667@s.whatsapp.net'
+			const now = Math.floor(Date.now() / 1000)
 			receipts.recordUserReceipt({
 				chatJid,
 				fromMe: true,
 				keyId: 'LATE-MESSAGE',
 				receiptUserJid: chatJid,
 				kind: 'read',
-				timestamp: 1_200
+				timestamp: now
 			})
 			const messageRowId = messageStore.recordMessage({
 				chatJid,
 				fromMe: true,
 				keyId: 'LATE-MESSAGE',
-				timestamp: 1_000
+				timestamp: now - 1
 			})
 
 			expect(receipts.replayOrphaned(chatJid, true, 'LATE-MESSAGE')).toBe(1)
-			expect(receipts.listUserReceipts(messageRowId)[0]).toMatchObject({ read_timestamp: 1_200 })
+			expect(receipts.listUserReceipts(messageRowId)[0]).toMatchObject({ read_timestamp: now })
 			expect(store.handle('msgstore.db').prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({
 				n: 0
 			})
+			expect(messageStore.getMessageByKeyId(chatJid, true, 'LATE-MESSAGE')?.status).toBe(ANDROID_MESSAGE_STATUS.READ)
 		})
 
 		it('keeps the newest timestamp when orphan receipts replay out of order', () => {
 			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
 			const receipts = new ReceiptBackend(store.handle('msgstore.db'), jidMap, messageStore)
 			const chatJid = '5515991426667@s.whatsapp.net'
-			for (const timestamp of [1_500, 1_200]) {
+			const now = Math.floor(Date.now() / 1000)
+			for (const timestamp of [now, now - 100]) {
 				receipts.recordUserReceipt({
 					chatJid,
 					fromMe: true,
@@ -597,11 +602,226 @@ describe('msgstore.db message-store backends', () => {
 				chatJid,
 				fromMe: true,
 				keyId: 'LATE-ORDERED',
-				timestamp: 1_000
+				timestamp: now - 200
 			})
 
 			expect(receipts.replayOrphaned(chatJid, true, 'LATE-ORDERED')).toBe(2)
-			expect(receipts.listUserReceipts(messageRowId)[0]).toMatchObject({ read_timestamp: 1_500 })
+			expect(receipts.listUserReceipts(messageRowId)[0]).toMatchObject({ read_timestamp: now })
+		})
+
+		it('does not downgrade READ when a late DELIVERY orphan replays', () => {
+			const db = store.handle('msgstore.db')
+			const messageStore = new MessageStoreBackend(db, jidMap)
+			const receipts = new ReceiptBackend(db, jidMap, messageStore)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const now = Math.floor(Date.now() / 1000)
+			receipts.recordUserReceipt({
+				chatJid,
+				fromMe: true,
+				keyId: 'MONOTONIC',
+				receiptUserJid: chatJid,
+				kind: 'delivery',
+				timestamp: now
+			})
+			const messageRowId = messageStore.recordMessage({
+				chatJid,
+				fromMe: true,
+				keyId: 'MONOTONIC',
+				timestamp: now - 1
+			})
+			db.prepare('UPDATE message SET status = ? WHERE _id = ?').run(ANDROID_MESSAGE_STATUS.READ, messageRowId)
+
+			expect(receipts.replayOrphaned(chatJid, true, 'MONOTONIC')).toBe(1)
+			expect(messageStore.getMessageByKeyId(chatJid, true, 'MONOTONIC')?.status).toBe(ANDROID_MESSAGE_STATUS.READ)
+		})
+
+		it('rolls back receipt materialization, status promotion and orphan deletion together', () => {
+			const db = store.handle('msgstore.db')
+			const messageStore = new MessageStoreBackend(db, jidMap)
+			const receipts = new ReceiptBackend(db, jidMap, messageStore)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const now = Math.floor(Date.now() / 1000)
+			receipts.recordUserReceipt({
+				chatJid,
+				fromMe: true,
+				keyId: 'ROLLBACK',
+				receiptUserJid: chatJid,
+				kind: 'read',
+				timestamp: now
+			})
+			const messageRowId = messageStore.recordMessage({
+				chatJid,
+				fromMe: true,
+				keyId: 'ROLLBACK',
+				timestamp: now - 1
+			})
+			db.exec(
+				"CREATE TRIGGER fail_receipt_status BEFORE UPDATE OF status ON message BEGIN SELECT RAISE(ABORT, 'forced'); END"
+			)
+
+			expect(() => receipts.replayOrphaned(chatJid, true, 'ROLLBACK')).toThrow('forced')
+			expect(receipts.listUserReceipts(messageRowId)).toHaveLength(0)
+			expect(db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({ n: 1 })
+			expect(messageStore.getMessageByKeyId(chatJid, true, 'ROLLBACK')?.status).toBeNull()
+		})
+
+		it('is idempotent after a successful replay', () => {
+			const db = store.handle('msgstore.db')
+			const messageStore = new MessageStoreBackend(db, jidMap)
+			const receipts = new ReceiptBackend(db, jidMap, messageStore)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const now = Math.floor(Date.now() / 1000)
+			receipts.recordUserReceipt({
+				chatJid,
+				fromMe: true,
+				keyId: 'IDEMPOTENT',
+				receiptUserJid: chatJid,
+				kind: 'read',
+				timestamp: now
+			})
+			const messageRowId = messageStore.recordMessage({
+				chatJid,
+				fromMe: true,
+				keyId: 'IDEMPOTENT',
+				timestamp: now - 1
+			})
+
+			expect(receipts.replayOrphaned(chatJid, true, 'IDEMPOTENT')).toBe(1)
+			expect(receipts.replayOrphaned(chatJid, true, 'IDEMPOTENT')).toBe(0)
+			expect(receipts.listUserReceipts(messageRowId)).toHaveLength(1)
+		})
+
+		it('replays successive bounded batches in one transaction', () => {
+			const db = store.handle('msgstore.db')
+			const messageStore = new MessageStoreBackend(db, jidMap)
+			const receipts = new ReceiptBackend(db, jidMap, messageStore)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const now = Math.floor(Date.now() / 1000)
+			const receiptCount = 301
+
+			for (let index = 0; index < receiptCount; index++) {
+				receipts.recordUserReceipt({
+					chatJid,
+					fromMe: true,
+					keyId: 'MULTI-BATCH',
+					receiptUserJid: `${5515000000000 + index}@s.whatsapp.net`,
+					kind: index === receiptCount - 1 ? 'read' : 'delivery',
+					timestamp: now + index
+				})
+			}
+
+			const messageRowId = messageStore.recordMessage({
+				chatJid,
+				fromMe: true,
+				keyId: 'MULTI-BATCH',
+				timestamp: now - 1
+			})
+
+			expect(receipts.replayOrphaned(chatJid, true, 'MULTI-BATCH')).toBe(receiptCount)
+			expect(receipts.listUserReceipts(messageRowId)).toHaveLength(receiptCount)
+			expect(db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({ n: 0 })
+			expect(messageStore.getMessageByKeyId(chatJid, true, 'MULTI-BATCH')?.status).toBe(ANDROID_MESSAGE_STATUS.READ)
+		})
+
+		it('does not let retained unknown statuses block a later valid orphan', () => {
+			const db = store.handle('msgstore.db')
+			const messageStore = new MessageStoreBackend(db, jidMap)
+			const receipts = new ReceiptBackend(db, jidMap, messageStore)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const now = Math.floor(Date.now() / 1000)
+
+			for (let index = 0; index < 301; index++) {
+				receipts.recordUserReceipt({
+					chatJid,
+					fromMe: true,
+					keyId: 'UNKNOWN-PREFIX',
+					receiptUserJid: `${5514000000000 + index}@s.whatsapp.net`,
+					kind: index === 300 ? 'read' : 'delivery',
+					timestamp: now + index
+				})
+			}
+
+			db.prepare(
+				'UPDATE receipt_orphaned SET status = 99 WHERE _id IN ' +
+					'(SELECT _id FROM receipt_orphaned WHERE key_id = ? ORDER BY _id ASC LIMIT 300)'
+			).run('UNKNOWN-PREFIX')
+			const messageRowId = messageStore.recordMessage({
+				chatJid,
+				fromMe: true,
+				keyId: 'UNKNOWN-PREFIX',
+				timestamp: now - 1
+			})
+
+			expect(receipts.replayOrphaned(chatJid, true, 'UNKNOWN-PREFIX')).toBe(1)
+			expect(receipts.listUserReceipts(messageRowId)).toHaveLength(1)
+			expect(
+				db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned WHERE key_id = ?').get('UNKNOWN-PREFIX')
+			).toMatchObject({ n: 300 })
+			expect(messageStore.getMessageByKeyId(chatJid, true, 'UNKNOWN-PREFIX')?.status).toBe(ANDROID_MESSAGE_STATUS.READ)
+		})
+
+		it('prunes orphan receipts after Androids 60-day retention window', () => {
+			const db = store.handle('msgstore.db')
+			const messageStore = new MessageStoreBackend(db, jidMap)
+			const receipts = new ReceiptBackend(db, jidMap, messageStore)
+			const now = Math.floor(Date.now() / 1000)
+			receipts.recordUserReceipt({
+				chatJid: 'expired@s.whatsapp.net',
+				fromMe: true,
+				keyId: 'EXPIRED',
+				receiptUserJid: 'expired@s.whatsapp.net',
+				kind: 'read',
+				timestamp: now - RECEIPT_ORPHAN_TTL_SECONDS - 1
+			})
+
+			expect(receipts.pruneExpiredOrphaned(now)).toBe(1)
+			expect(db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({ n: 0 })
+		})
+
+		it('assigns a local arrival time when an orphan receipt has no server timestamp', () => {
+			const db = store.handle('msgstore.db')
+			const messageStore = new MessageStoreBackend(db, jidMap)
+			const receipts = new ReceiptBackend(db, jidMap, messageStore)
+			const before = Math.floor(Date.now() / 1000)
+
+			receipts.recordUserReceipt({
+				chatJid: 'missing-time@s.whatsapp.net',
+				fromMe: true,
+				keyId: 'MISSING-TIME',
+				receiptUserJid: 'missing-time@s.whatsapp.net',
+				kind: 'read',
+				timestamp: 0
+			})
+
+			const row = db.prepare('SELECT timestamp FROM receipt_orphaned WHERE key_id = ?').get('MISSING-TIME') as {
+				timestamp: number
+			}
+			expect(row.timestamp).toBeGreaterThanOrEqual(before)
+			expect(row.timestamp).toBeLessThanOrEqual(Math.floor(Date.now() / 1000))
+		})
+
+		it('throttles automatic orphan retention scans across message replays', () => {
+			const db = store.handle('msgstore.db')
+			const messageStore = new MessageStoreBackend(db, jidMap)
+			const receipts = new ReceiptBackend(db, jidMap, messageStore)
+			const expiredTimestamp = Math.floor(Date.now() / 1000) - RECEIPT_ORPHAN_TTL_SECONDS - 1
+			const addExpired = (keyId: string) =>
+				receipts.recordUserReceipt({
+					chatJid: 'expired-throttle@s.whatsapp.net',
+					fromMe: true,
+					keyId,
+					receiptUserJid: 'expired-throttle@s.whatsapp.net',
+					kind: 'read',
+					timestamp: expiredTimestamp
+				})
+
+			addExpired('FIRST-EXPIRED')
+			receipts.replayOrphaned('missing@s.whatsapp.net', true, 'NO-MESSAGE-1')
+			expect(db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({ n: 0 })
+
+			addExpired('SECOND-EXPIRED')
+			receipts.replayOrphaned('missing@s.whatsapp.net', true, 'NO-MESSAGE-2')
+			expect(db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({ n: 1 })
 		})
 
 		it('routes a device receipt for an add-on (reaction) to message_add_on_receipt_device', () => {

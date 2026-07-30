@@ -2016,13 +2016,84 @@ export const generateWAMessage = async (jid: string, content: AnyMessageContent,
 	return generateWAMessageFromContent(jid, await generateWAMessageContent(content, { ...options, jid }), options)
 }
 
-/** Get the key to access the true type of content */
-export const getContentType = (content: proto.IMessage | undefined) => {
+const findContentType = (content: proto.IMessage | undefined, requirePresentValue: boolean) => {
 	if (content) {
 		const keys = Object.keys(content)
-		const key = keys.find(k => (k === 'conversation' || k.includes('Message')) && k !== 'senderKeyDistributionMessage')
+		const key = keys.find(
+			k =>
+				(k === 'conversation' || k.includes('Message')) &&
+				k !== 'senderKeyDistributionMessage' &&
+				(!requirePresentValue ||
+					(content[k as keyof typeof content] !== null && content[k as keyof typeof content] !== undefined))
+		)
 		return key as keyof typeof content
 	}
+}
+
+/** Get the key to access the true type of content. */
+export const getContentType = (content: proto.IMessage | undefined) => findContentType(content, false)
+
+/**
+ * Returns a stable, human-readable label for operational logs and metrics.
+ * Future-proof wrappers (ephemeral, view-once, edited, etc.) are unwrapped
+ * before classification, while unknown protobuf message types still receive
+ * a deterministic snake_case label instead of being collapsed into "other".
+ */
+export const getMessageTypeLabel = (content: WAMessageContent | null | undefined): string => {
+	const normalized = normalizeMessageContent(content)
+	// Protobuf objects can retain optional fields as explicit nulls. Operational
+	// logs and metrics must classify the first value that is actually present,
+	// rather than a null media key that happens to precede the real text field.
+	const contentType = findContentType(normalized, true)
+	if (!contentType) return 'unknown'
+
+	const type = String(contentType)
+	switch (type) {
+		case 'conversation':
+		case 'extendedTextMessage':
+			return 'text'
+		case 'imageMessage':
+			return 'image'
+		case 'videoMessage':
+			return normalized?.videoMessage?.gifPlayback ? 'gif' : 'video'
+		case 'audioMessage':
+			return normalized?.audioMessage?.ptt ? 'voice' : 'audio'
+		case 'documentMessage':
+			return 'document'
+		case 'stickerMessage':
+			return 'sticker'
+		case 'stickerPackMessage':
+			return 'sticker_pack'
+		case 'reactionMessage':
+			return 'reaction'
+		case 'locationMessage':
+			return 'location'
+		case 'liveLocationMessage':
+			return 'live_location'
+		case 'contactMessage':
+			return 'contact'
+		case 'contactsArrayMessage':
+			return 'contacts'
+		case 'pollUpdateMessage':
+			return 'poll_vote'
+		case 'buttonsResponseMessage':
+		case 'listResponseMessage':
+		case 'templateButtonReplyMessage':
+		case 'interactiveResponseMessage':
+			return 'interactive_response'
+		case 'buttonsMessage':
+		case 'listMessage':
+		case 'templateMessage':
+		case 'interactiveMessage':
+			return 'interactive'
+	}
+
+	if (type.startsWith('pollCreationMessage')) return 'poll'
+
+	return type
+		.replace(/Message$/, '')
+		.replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+		.toLowerCase()
 }
 
 /**

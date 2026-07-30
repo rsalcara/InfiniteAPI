@@ -265,6 +265,17 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 				addColumnIfMissing(db, 'message_location', 'live_location_final_timestamp', 'INTEGER')
 				addColumnIfMissing(db, 'message_location', 'map_download_status', 'INTEGER')
 			}
+		},
+		{
+			version: 8,
+			name: 'index orphan receipt retention and backfill missing arrival timestamps',
+			run: db => {
+				const nowSeconds = Math.floor(Date.now() / 1000)
+				db.prepare('UPDATE receipt_orphaned SET timestamp = ? WHERE timestamp IS NULL OR timestamp <= 0').run(
+					nowSeconds
+				)
+				db.exec('CREATE INDEX IF NOT EXISTS receipt_orphaned_timestamp_idx ON receipt_orphaned (timestamp)')
+			}
 		}
 	],
 	'status.db': [

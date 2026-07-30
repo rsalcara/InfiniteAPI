@@ -26,7 +26,7 @@ import { AudioFeeder } from './audio-feeder.js'
 import { type RelayListUpdatePayload, RelayRtcTransport } from './relay-transport.js'
 import { CallState, type VoipSdkConfig } from './types.js'
 
-export type { VoipSdkConfig, CallOptions, CallEvents, AudioConfig } from './types.js'
+export type { VoipSdkConfig, CallOptions, CallEvents, AudioConfig, VoipConnectionUpdate } from './types.js'
 export { CallState } from './types.js'
 
 // Direct imports from our own InfiniteAPI codebase — the third-party
@@ -296,7 +296,7 @@ export class VoipClient extends EventEmitter {
 	 *  - **Embedded** (`config.socket` provided): skips auth/QR; reuses the
 	 *    caller's socket. Returns once the WASM engine is up.
 	 *  - **Standalone** (`config.authDir` provided): creates its own Baileys
-	 *    socket, prints QR on first run, waits for connection.
+	 *    socket, emits `connection.update` with the QR, and waits for connection.
 	 */
 	connect = async (): Promise<void> => {
 		// Embedded mode: socket already provided by the caller. Skip the
@@ -372,13 +372,9 @@ export class VoipClient extends EventEmitter {
 				process.on('uncaughtException', installedHandler)
 
 				this.#sock.ev.on('connection.update', (update: any) => {
+					this.emit('connection.update', update)
 					if (update.qr) {
-						void import('qrcode-terminal')
-							.then(qrt => (qrt.default ?? qrt).generate(update.qr, { small: true }))
-							.catch(() => {
-								console.log('Scan this QR code in WhatsApp > Linked Devices:')
-								console.log(update.qr)
-							})
+						console.log('[BAILEYS] QR generated; consume VoipClient connection.update in the application UI')
 					}
 
 					if (update.connection === 'open') {
