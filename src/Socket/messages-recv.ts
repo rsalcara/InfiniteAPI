@@ -4145,7 +4145,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 				await upsertMessage(msg, node.attrs.offline ? 'append' : 'notify')
 
-				const msgType = getMessageTypeLabel(msg.message)
+				const msgType = getMessageTypeLabel(msg.message, { isViewOnce: !!msg.key.isViewOnce })
 
 				// Log with [BAILEYS] prefix and the actual normalized content
 				// type, including media wrapped as view-once or ephemeral.

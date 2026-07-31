@@ -167,7 +167,11 @@ describe('Baileys Console Logging Functions', () => {
 			['poll', '📊'],
 			['poll_vote', '🗳️'],
 			['interactive', '🧩'],
-			['interactive_response', '✅']
+			['interactive_response', '✅'],
+			['view_once', '👁️'],
+			['view_once_image', '👁️🖼️'],
+			['view_once_video', '👁️🎬'],
+			['view_once_audio', '👁️🎙️']
 		])('should append the %s message icon inside the type tag', (messageType, icon) => {
 			logMessageReceived('MSG-TYPE', '5511888888888@s.whatsapp.net', undefined, messageType)
 			expect(consoleSpy).toHaveBeenCalledWith(

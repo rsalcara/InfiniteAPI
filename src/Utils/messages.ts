@@ -2039,13 +2039,52 @@ export const getContentType = (content: proto.IMessage | undefined) => findConte
  * before classification, while unknown protobuf message types still receive
  * a deterministic snake_case label instead of being collapsed into "other".
  */
-export const getMessageTypeLabel = (content: WAMessageContent | null | undefined): string => {
+export type MessageTypeLabelOptions = {
+	isViewOnce?: boolean
+}
+
+const getFutureProofMessage = (message: WAMessageContent | null | undefined) =>
+	message?.ephemeralMessage ||
+	message?.viewOnceMessage ||
+	message?.documentWithCaptionMessage ||
+	message?.viewOnceMessageV2 ||
+	message?.viewOnceMessageV2Extension ||
+	message?.editedMessage ||
+	message?.associatedChildMessage ||
+	message?.groupStatusMessage ||
+	message?.groupStatusMessageV2 ||
+	// Lottie animated stickers arrive wrapped in lottieStickerMessage;
+	// keeping it in this shared helper preserves the existing unwrap behavior.
+	message?.lottieStickerMessage
+
+const containsViewOnceContent = (content: WAMessageContent | null | undefined): boolean => {
+	let current = content
+	for (let depth = 0; current && depth < 5; depth++) {
+		if (current.viewOnceMessage || current.viewOnceMessageV2 || current.viewOnceMessageV2Extension) return true
+		const inner = getFutureProofMessage(current)
+		if (!inner) break
+		current = inner.message
+	}
+
+	const normalized = normalizeMessageContent(content)
+	return !!(
+		normalized?.imageMessage?.viewOnce ||
+		normalized?.videoMessage?.viewOnce ||
+		normalized?.audioMessage?.viewOnce
+	)
+}
+
+export const getMessageTypeLabel = (
+	content: WAMessageContent | null | undefined,
+	options: MessageTypeLabelOptions = {}
+): string => {
+	const isViewOnce = !!options.isViewOnce || containsViewOnceContent(content)
 	const normalized = normalizeMessageContent(content)
 	// Protobuf objects can retain optional fields as explicit nulls. Operational
 	// logs and metrics must classify the first value that is actually present,
 	// rather than a null media key that happens to precede the real text field.
 	const contentType = findContentType(normalized, true)
-	if (!contentType) return 'unknown'
+	if (!contentType) return isViewOnce ? 'view_once' : 'unknown'
 
 	const type = String(contentType)
 	switch (type) {
@@ -2053,11 +2092,11 @@ export const getMessageTypeLabel = (content: WAMessageContent | null | undefined
 		case 'extendedTextMessage':
 			return 'text'
 		case 'imageMessage':
-			return 'image'
+			return isViewOnce ? 'view_once_image' : 'image'
 		case 'videoMessage':
-			return normalized?.videoMessage?.gifPlayback ? 'gif' : 'video'
+			return isViewOnce ? 'view_once_video' : normalized?.videoMessage?.gifPlayback ? 'gif' : 'video'
 		case 'audioMessage':
-			return normalized?.audioMessage?.ptt ? 'voice' : 'audio'
+			return isViewOnce ? 'view_once_audio' : normalized?.audioMessage?.ptt ? 'voice' : 'audio'
 		case 'documentMessage':
 			return 'document'
 		case 'stickerMessage':
@@ -2118,30 +2157,6 @@ export const normalizeMessageContent = (content: WAMessageContent | null | undef
 	}
 
 	return content!
-
-	function getFutureProofMessage(message: typeof content) {
-		return (
-			message?.ephemeralMessage ||
-			message?.viewOnceMessage ||
-			message?.documentWithCaptionMessage ||
-			message?.viewOnceMessageV2 ||
-			message?.viewOnceMessageV2Extension ||
-			message?.editedMessage ||
-			message?.associatedChildMessage ||
-			message?.groupStatusMessage ||
-			message?.groupStatusMessageV2 ||
-			// Lottie animated stickers (`.was`) arrive wrapped in
-			// `lottieStickerMessage` (FutureProofMessage at proto field 74).
-			// Unwrapping here lets the rest of the pipeline (downloadMediaMessage,
-			// extractMessageContent, assertMediaContent, etc.) treat it as a
-			// normal `stickerMessage` with `isLottie:true`. Mirrors WA Web's
-			// `WAWebStickersParseStickerMessageProto`:
-			//   const lottieWrap = msg.lottieStickerMessage
-			//   const inner = lottieWrap?.message?.stickerMessage
-			//   const d = inner ?? msg.stickerMessage
-			message?.lottieStickerMessage
-		)
-	}
 }
 
 /**

@@ -276,6 +276,25 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 				)
 				db.exec('CREATE INDEX IF NOT EXISTS receipt_orphaned_timestamp_idx ON receipt_orphaned (timestamp)')
 			}
+		},
+		{
+			version: 9,
+			name: 'add Android view-once media state satellite',
+			// Exact WhatsApp Business 2.26.27.83 table, index and delete
+			// trigger. Live/history processing populates existing databases.
+			sql: `
+				CREATE TABLE IF NOT EXISTS message_view_once_media (
+					message_row_id INTEGER PRIMARY KEY,
+					state INTEGER NOT NULL
+				);
+				CREATE INDEX IF NOT EXISTS message_view_once_media_state_index
+					ON message_view_once_media (state);
+				CREATE TRIGGER IF NOT EXISTS message_bd_for_message_view_once_media_trigger
+					BEFORE DELETE ON message
+					BEGIN
+						DELETE FROM message_view_once_media WHERE message_row_id = old._id;
+					END;
+			`
 		}
 	],
 	'status.db': [

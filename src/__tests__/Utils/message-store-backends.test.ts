@@ -14,6 +14,8 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import {
 	ANDROID_MESSAGE_STATUS,
+	ANDROID_MESSAGE_TYPE,
+	ANDROID_VIEW_ONCE_STATE,
 	JidMapBackend,
 	LidChatStateBackend,
 	mapMessageToAndroidType,
@@ -141,6 +143,66 @@ describe('msgstore.db message-store backends', () => {
 			expect(mapMessageToAndroidType({ reactionMessage: { text: '👍' } })).toBeNull()
 			expect(mapMessageToAndroidType({ pollUpdateMessage: {} })).toBeNull()
 			expect(mapMessageToAndroidType({ keepInChatMessage: {} })).toBeNull()
+		})
+
+		it.each([42, 43, 82])('persists Android view-once type %i and its unopened state atomically', messageType => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const rowId = backend.recordMessage({
+				chatJid,
+				fromMe: false,
+				keyId: `VIEW-ONCE-${messageType}`,
+				senderJid: chatJid,
+				timestamp: 1_000,
+				messageType,
+				viewMode: 0,
+				viewOnceState: ANDROID_VIEW_ONCE_STATE.UNOPENED
+			})
+
+			expect(backend.getMessageByKeyId(chatJid, false, `VIEW-ONCE-${messageType}`)).toMatchObject({
+				message_type: messageType,
+				view_mode: 0
+			})
+			expect(backend.getViewOnceState(rowId)).toBe(0)
+		})
+
+		it('does not downgrade a consumed view-once state during replay and deletes it with the parent', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const db = store.handle('msgstore.db')
+			const rowId = backend.recordMessage({
+				chatJid: '5515991426667@s.whatsapp.net',
+				fromMe: false,
+				keyId: 'VIEW-ONCE-REPLAY',
+				messageType: 42,
+				viewMode: 0,
+				viewOnceState: 0
+			})
+
+			backend.updateViewOnceState(rowId, 2)
+			backend.recordMessage({
+				chatJid: '5515991426667@s.whatsapp.net',
+				fromMe: false,
+				keyId: 'VIEW-ONCE-REPLAY',
+				messageType: 42,
+				viewMode: 0,
+				viewOnceState: 0
+			})
+			expect(backend.getViewOnceState(rowId)).toBe(2)
+
+			db.prepare('DELETE FROM message WHERE _id = ?').run(rowId)
+			expect(backend.getViewOnceState(rowId)).toBeNull()
+		})
+
+		it('does not create view-once state for an ordinary message', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const rowId = backend.recordMessage({
+				chatJid: '5515991426667@s.whatsapp.net',
+				fromMe: false,
+				keyId: 'ORDINARY-IMAGE',
+				messageType: 1
+			})
+
+			expect(backend.getViewOnceState(rowId)).toBeNull()
 		})
 
 		it('records an Android album root and its expected media counters atomically', () => {
@@ -459,6 +521,63 @@ describe('msgstore.db message-store backends', () => {
 				.prepare('SELECT * FROM message_revoked WHERE message_row_id = ?')
 				.get(row!._id) as any
 			expect(revoked).toMatchObject({ revoked_key_id: 'MSG-REVOKE', revoke_timestamp: 2_000 })
+		})
+
+		it('recordRevoke removes view-once state while preserving the tombstone row', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const rowId = backend.recordMessage({
+				chatJid,
+				fromMe: false,
+				keyId: 'VIEW-ONCE-REVOKE',
+				messageType: ANDROID_MESSAGE_TYPE.VIEW_ONCE_IMAGE,
+				viewMode: 0,
+				viewOnceState: ANDROID_VIEW_ONCE_STATE.UNOPENED
+			})
+
+			backend.recordRevoke({ chatJid, fromMe: false, revokedKeyId: 'VIEW-ONCE-REVOKE', revokeTimestamp: 2_000 })
+
+			expect(backend.getMessageByKeyId(chatJid, false, 'VIEW-ONCE-REVOKE')).toMatchObject({
+				_id: rowId,
+				message_type: ANDROID_MESSAGE_TYPE.REVOKED,
+				view_mode: 0
+			})
+			expect(backend.getViewOnceState(rowId)).toBeNull()
+		})
+
+		it('rolls back view-once cleanup when the revoke tombstone fails', () => {
+			const backend = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
+			const db = store.handle('msgstore.db')
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const rowId = backend.recordMessage({
+				chatJid,
+				fromMe: false,
+				keyId: 'VIEW-ONCE-REVOKE-ROLLBACK',
+				messageType: ANDROID_MESSAGE_TYPE.VIEW_ONCE_IMAGE,
+				viewMode: 0,
+				viewOnceState: ANDROID_VIEW_ONCE_STATE.UNOPENED
+			})
+			db.exec(`
+				CREATE TRIGGER fail_view_once_revoke
+				BEFORE INSERT ON message_revoked
+				BEGIN
+					SELECT RAISE(ABORT, 'forced view-once revoke failure');
+				END;
+			`)
+
+			expect(() =>
+				backend.recordRevoke({
+					chatJid,
+					fromMe: false,
+					revokedKeyId: 'VIEW-ONCE-REVOKE-ROLLBACK',
+					revokeTimestamp: 2_000
+				})
+			).toThrow('forced view-once revoke failure')
+
+			expect(backend.getMessageByKeyId(chatJid, false, 'VIEW-ONCE-REVOKE-ROLLBACK')?.message_type).toBe(
+				ANDROID_MESSAGE_TYPE.VIEW_ONCE_IMAGE
+			)
+			expect(backend.getViewOnceState(rowId)).toBe(ANDROID_VIEW_ONCE_STATE.UNOPENED)
 		})
 
 		it('recordRevoke is a no-op (does not throw) when the target message is unknown', () => {

@@ -26,7 +26,7 @@ describe('getMessageTypeLabel', () => {
 		expect(getMessageTypeLabel(content as any)).toBe(expected)
 	})
 
-	it('unwraps view-once and ephemeral media before classification', () => {
+	it('classifies view-once media after unwrapping nested containers', () => {
 		expect(
 			getMessageTypeLabel({
 				ephemeralMessage: {
@@ -37,7 +37,15 @@ describe('getMessageTypeLabel', () => {
 					}
 				}
 			} as any)
-		).toBe('image')
+		).toBe('view_once_image')
+		expect(getMessageTypeLabel({ viewOnceMessage: { message: { videoMessage: {} } } } as any)).toBe('view_once_video')
+		expect(
+			getMessageTypeLabel({ viewOnceMessageV2Extension: { message: { audioMessage: { ptt: true } } } } as any)
+		).toBe('view_once_audio')
+	})
+
+	it('classifies an unavailable placeholder without inventing its media kind', () => {
+		expect(getMessageTypeLabel(undefined, { isViewOnce: true })).toBe('view_once')
 	})
 
 	it('uses a deterministic label for future protobuf message types', () => {
