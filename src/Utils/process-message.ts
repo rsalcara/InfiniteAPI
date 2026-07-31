@@ -103,8 +103,13 @@ const HISTORY_MIRROR_BATCH_SIZE = 128
 
 const yieldHistoryMirror = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 
-export const isUnavailableViewOnceMessage = (message: WAMessage): boolean =>
-	!!message.key?.isViewOnce && !getContentType(normalizeMessageContent(message.message))
+export const isUnavailableViewOnceMessage = (message: WAMessage): boolean => {
+	if (getContentType(normalizeMessageContent(message.message))) return false
+
+	const hasSerializedPlaceholder =
+		Array.isArray(message.messageStubParameters) && message.messageStubParameters.includes('view_once_unavailable')
+	return !!message.key?.isViewOnce || hasSerializedPlaceholder
+}
 
 const mapStickerPackToMirror = (
 	pack: proto.Message.IStickerPackMessage | null | undefined

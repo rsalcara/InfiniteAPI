@@ -387,6 +387,7 @@ export class MessageStoreBackend implements ChatRowResolver {
 		upsertMessageSecret: SqliteStatementLike
 		upsertMessageViewOnceState: SqliteStatementLike
 		getMessageViewOnceState: SqliteStatementLike
+		deleteMessageViewOnceState: SqliteStatementLike
 		upsertMessageAlbum: SqliteStatementLike
 		upsertMessageStickerPack: SqliteStatementLike
 		deleteMessageStickerPackStickers: SqliteStatementLike
@@ -461,6 +462,7 @@ export class MessageStoreBackend implements ChatRowResolver {
 					'ELSE message_view_once_media.state END'
 			),
 			getMessageViewOnceState: this.db.prepare('SELECT state FROM message_view_once_media WHERE message_row_id = ?'),
+			deleteMessageViewOnceState: this.db.prepare('DELETE FROM message_view_once_media WHERE message_row_id = ?'),
 			upsertMessageAlbum: this.db.prepare(
 				'INSERT INTO message_album ' +
 					'(message_row_id, image_count, video_count, expected_image_count, expected_video_count) ' +
@@ -731,6 +733,10 @@ export class MessageStoreBackend implements ChatRowResolver {
 
 		this.db.transaction(() => {
 			this.stmts.updateMessageForRevoke.run(ANDROID_MESSAGE_TYPE.REVOKED, target._id)
+			// The official Android flow DELETEs the original row before reusing
+			// its _id for the tombstone, which fires the view-once cleanup trigger.
+			// This backend updates in place, so reproduce that trigger explicitly.
+			this.stmts.deleteMessageViewOnceState.run(target._id)
 			const adminRowId = input.adminJid ? this.jidMap.resolveJidRowId(input.adminJid) : null
 			this.stmts.upsertMessageRevoked.run(target._id, input.revokedKeyId, adminRowId, input.revokeTimestamp)
 		})()
