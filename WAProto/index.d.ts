@@ -9359,18 +9359,16 @@ export namespace proto {
                 interface IContactRefreshResponse {
                     coveredRequestIds?: (string[]|null);
                     collectionVersion?: (number|Long|null);
-                    primaryProcessStartTimestampMs?: (number|Long|null);
-                    primaryProcessEndTimestampMs?: (number|Long|null);
-                    uploadedContactCount?: (number|null);
+                    primaryDurationMs?: (number|Long|null);
+                    uniqueContactCount?: (number|null);
                 }
 
                 class ContactRefreshResponse implements IContactRefreshResponse {
                     constructor(p?: proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.IContactRefreshResponse);
                     public coveredRequestIds: string[];
                     public collectionVersion?: (number|Long|null);
-                    public primaryProcessStartTimestampMs?: (number|Long|null);
-                    public primaryProcessEndTimestampMs?: (number|Long|null);
-                    public uploadedContactCount?: (number|null);
+                    public primaryDurationMs?: (number|Long|null);
+                    public uniqueContactCount?: (number|null);
                     public static create(properties?: proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.IContactRefreshResponse): proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.ContactRefreshResponse;
                     public static encode(m: proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.IContactRefreshResponse, w?: $protobuf.Writer): $protobuf.Writer;
                     public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.Message.PeerDataOperationRequestResponseMessage.PeerDataOperationResult.ContactRefreshResponse;

@@ -65652,9 +65652,8 @@ export const proto = $root.proto = (() => {
 
                     ContactRefreshResponse.prototype.coveredRequestIds = $util.emptyArray;
                     ContactRefreshResponse.prototype.collectionVersion = null;
-                    ContactRefreshResponse.prototype.primaryProcessStartTimestampMs = null;
-                    ContactRefreshResponse.prototype.primaryProcessEndTimestampMs = null;
-                    ContactRefreshResponse.prototype.uploadedContactCount = null;
+                    ContactRefreshResponse.prototype.primaryDurationMs = null;
+                    ContactRefreshResponse.prototype.uniqueContactCount = null;
 
                     let $oneOfFields;
 
@@ -65665,20 +65664,14 @@ export const proto = $root.proto = (() => {
                     });
 
                     // Virtual OneOf for proto3 optional field
-                    Object.defineProperty(ContactRefreshResponse.prototype, "_primaryProcessStartTimestampMs", {
-                        get: $util.oneOfGetter($oneOfFields = ["primaryProcessStartTimestampMs"]),
+                    Object.defineProperty(ContactRefreshResponse.prototype, "_primaryDurationMs", {
+                        get: $util.oneOfGetter($oneOfFields = ["primaryDurationMs"]),
                         set: $util.oneOfSetter($oneOfFields)
                     });
 
                     // Virtual OneOf for proto3 optional field
-                    Object.defineProperty(ContactRefreshResponse.prototype, "_primaryProcessEndTimestampMs", {
-                        get: $util.oneOfGetter($oneOfFields = ["primaryProcessEndTimestampMs"]),
-                        set: $util.oneOfSetter($oneOfFields)
-                    });
-
-                    // Virtual OneOf for proto3 optional field
-                    Object.defineProperty(ContactRefreshResponse.prototype, "_uploadedContactCount", {
-                        get: $util.oneOfGetter($oneOfFields = ["uploadedContactCount"]),
+                    Object.defineProperty(ContactRefreshResponse.prototype, "_uniqueContactCount", {
+                        get: $util.oneOfGetter($oneOfFields = ["uniqueContactCount"]),
                         set: $util.oneOfSetter($oneOfFields)
                     });
 
@@ -65695,12 +65688,10 @@ export const proto = $root.proto = (() => {
                         }
                         if (m.collectionVersion != null && Object.hasOwnProperty.call(m, "collectionVersion"))
                             w.uint32(16).uint64(m.collectionVersion);
-                        if (m.primaryProcessStartTimestampMs != null && Object.hasOwnProperty.call(m, "primaryProcessStartTimestampMs"))
-                            w.uint32(24).int64(m.primaryProcessStartTimestampMs);
-                        if (m.primaryProcessEndTimestampMs != null && Object.hasOwnProperty.call(m, "primaryProcessEndTimestampMs"))
-                            w.uint32(32).int64(m.primaryProcessEndTimestampMs);
-                        if (m.uploadedContactCount != null && Object.hasOwnProperty.call(m, "uploadedContactCount"))
-                            w.uint32(40).uint32(m.uploadedContactCount);
+                        if (m.primaryDurationMs != null && Object.hasOwnProperty.call(m, "primaryDurationMs"))
+                            w.uint32(24).int64(m.primaryDurationMs);
+                        if (m.uniqueContactCount != null && Object.hasOwnProperty.call(m, "uniqueContactCount"))
+                            w.uint32(32).uint32(m.uniqueContactCount);
                         return w;
                     };
 
@@ -65724,15 +65715,11 @@ export const proto = $root.proto = (() => {
                                     break;
                                 }
                             case 3: {
-                                    m.primaryProcessStartTimestampMs = r.int64();
+                                    m.primaryDurationMs = r.int64();
                                     break;
                                 }
                             case 4: {
-                                    m.primaryProcessEndTimestampMs = r.int64();
-                                    break;
-                                }
-                            case 5: {
-                                    m.uploadedContactCount = r.uint32();
+                                    m.uniqueContactCount = r.uint32();
                                     break;
                                 }
                             default:
@@ -65765,28 +65752,18 @@ export const proto = $root.proto = (() => {
                             else if (typeof d.collectionVersion === "object")
                                 m.collectionVersion = new $util.LongBits(d.collectionVersion.low >>> 0, d.collectionVersion.high >>> 0).toNumber(true);
                         }
-                        if (d.primaryProcessStartTimestampMs != null) {
+                        if (d.primaryDurationMs != null) {
                             if ($util.Long)
-                                (m.primaryProcessStartTimestampMs = $util.Long.fromValue(d.primaryProcessStartTimestampMs)).unsigned = false;
-                            else if (typeof d.primaryProcessStartTimestampMs === "string")
-                                m.primaryProcessStartTimestampMs = parseInt(d.primaryProcessStartTimestampMs, 10);
-                            else if (typeof d.primaryProcessStartTimestampMs === "number")
-                                m.primaryProcessStartTimestampMs = d.primaryProcessStartTimestampMs;
-                            else if (typeof d.primaryProcessStartTimestampMs === "object")
-                                m.primaryProcessStartTimestampMs = new $util.LongBits(d.primaryProcessStartTimestampMs.low >>> 0, d.primaryProcessStartTimestampMs.high >>> 0).toNumber();
+                                (m.primaryDurationMs = $util.Long.fromValue(d.primaryDurationMs)).unsigned = false;
+                            else if (typeof d.primaryDurationMs === "string")
+                                m.primaryDurationMs = parseInt(d.primaryDurationMs, 10);
+                            else if (typeof d.primaryDurationMs === "number")
+                                m.primaryDurationMs = d.primaryDurationMs;
+                            else if (typeof d.primaryDurationMs === "object")
+                                m.primaryDurationMs = new $util.LongBits(d.primaryDurationMs.low >>> 0, d.primaryDurationMs.high >>> 0).toNumber();
                         }
-                        if (d.primaryProcessEndTimestampMs != null) {
-                            if ($util.Long)
-                                (m.primaryProcessEndTimestampMs = $util.Long.fromValue(d.primaryProcessEndTimestampMs)).unsigned = false;
-                            else if (typeof d.primaryProcessEndTimestampMs === "string")
-                                m.primaryProcessEndTimestampMs = parseInt(d.primaryProcessEndTimestampMs, 10);
-                            else if (typeof d.primaryProcessEndTimestampMs === "number")
-                                m.primaryProcessEndTimestampMs = d.primaryProcessEndTimestampMs;
-                            else if (typeof d.primaryProcessEndTimestampMs === "object")
-                                m.primaryProcessEndTimestampMs = new $util.LongBits(d.primaryProcessEndTimestampMs.low >>> 0, d.primaryProcessEndTimestampMs.high >>> 0).toNumber();
-                        }
-                        if (d.uploadedContactCount != null) {
-                            m.uploadedContactCount = d.uploadedContactCount >>> 0;
+                        if (d.uniqueContactCount != null) {
+                            m.uniqueContactCount = d.uniqueContactCount >>> 0;
                         }
                         return m;
                     };
@@ -65812,26 +65789,18 @@ export const proto = $root.proto = (() => {
                             if (o.oneofs)
                                 d._collectionVersion = "collectionVersion";
                         }
-                        if (m.primaryProcessStartTimestampMs != null && m.hasOwnProperty("primaryProcessStartTimestampMs")) {
-                            if (typeof m.primaryProcessStartTimestampMs === "number")
-                                d.primaryProcessStartTimestampMs = o.longs === String ? String(m.primaryProcessStartTimestampMs) : m.primaryProcessStartTimestampMs;
+                        if (m.primaryDurationMs != null && m.hasOwnProperty("primaryDurationMs")) {
+                            if (typeof m.primaryDurationMs === "number")
+                                d.primaryDurationMs = o.longs === String ? String(m.primaryDurationMs) : m.primaryDurationMs;
                             else
-                                d.primaryProcessStartTimestampMs = o.longs === String ? longToString(m.primaryProcessStartTimestampMs) : o.longs === Number ? longToNumber(m.primaryProcessStartTimestampMs) : m.primaryProcessStartTimestampMs;
+                                d.primaryDurationMs = o.longs === String ? longToString(m.primaryDurationMs) : o.longs === Number ? longToNumber(m.primaryDurationMs) : m.primaryDurationMs;
                             if (o.oneofs)
-                                d._primaryProcessStartTimestampMs = "primaryProcessStartTimestampMs";
+                                d._primaryDurationMs = "primaryDurationMs";
                         }
-                        if (m.primaryProcessEndTimestampMs != null && m.hasOwnProperty("primaryProcessEndTimestampMs")) {
-                            if (typeof m.primaryProcessEndTimestampMs === "number")
-                                d.primaryProcessEndTimestampMs = o.longs === String ? String(m.primaryProcessEndTimestampMs) : m.primaryProcessEndTimestampMs;
-                            else
-                                d.primaryProcessEndTimestampMs = o.longs === String ? longToString(m.primaryProcessEndTimestampMs) : o.longs === Number ? longToNumber(m.primaryProcessEndTimestampMs) : m.primaryProcessEndTimestampMs;
+                        if (m.uniqueContactCount != null && m.hasOwnProperty("uniqueContactCount")) {
+                            d.uniqueContactCount = m.uniqueContactCount;
                             if (o.oneofs)
-                                d._primaryProcessEndTimestampMs = "primaryProcessEndTimestampMs";
-                        }
-                        if (m.uploadedContactCount != null && m.hasOwnProperty("uploadedContactCount")) {
-                            d.uploadedContactCount = m.uploadedContactCount;
-                            if (o.oneofs)
-                                d._uploadedContactCount = "uploadedContactCount";
+                                d._uniqueContactCount = "uniqueContactCount";
                         }
                         return d;
                     };
