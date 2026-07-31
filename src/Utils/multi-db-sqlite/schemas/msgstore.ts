@@ -462,6 +462,20 @@ CREATE TABLE IF NOT EXISTS message_media (
   media_transcode_quality INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS message_view_once_media (
+  message_row_id INTEGER PRIMARY KEY,
+  state INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS message_view_once_media_state_index
+  ON message_view_once_media (state);
+
+CREATE TRIGGER IF NOT EXISTS message_bd_for_message_view_once_media_trigger
+  BEFORE DELETE ON message
+  BEGIN
+    DELETE FROM message_view_once_media WHERE message_row_id = old._id;
+  END;
+
 CREATE TABLE IF NOT EXISTS message_thumbnail (
   message_row_id INTEGER PRIMARY KEY,
   thumbnail BLOB

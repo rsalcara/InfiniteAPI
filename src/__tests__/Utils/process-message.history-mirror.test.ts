@@ -1,4 +1,5 @@
 import { jest } from '@jest/globals'
+import { proto } from '../../../WAProto/index.js'
 import type { WAMessage } from '../../Types'
 import { mirrorHistoryMessagesToStore } from '../../Utils/process-message'
 
@@ -56,6 +57,57 @@ describe('history-sync message mirror', () => {
 				status: null
 			})
 		])
+	})
+
+	it.each([
+		['image', 'viewOnceMessage', 'imageMessage', 42],
+		['video', 'viewOnceMessageV2', 'videoMessage', 43],
+		['audio', 'viewOnceMessageV2Extension', 'audioMessage', 82]
+	])('persists historical view-once %s metadata', async (_kind, wrapper, media, messageType) => {
+		const recordMessages = jest.fn(() => [1])
+		const backend = { recordMessages } as any
+		const message: WAMessage = {
+			key: { remoteJid: '5511999999999@s.whatsapp.net', fromMe: false, id: `HISTORY-${messageType}` },
+			messageTimestamp: 1_700_000_000,
+			message: { [wrapper]: { message: { [media]: {} } } } as any
+		}
+
+		await mirrorHistoryMessagesToStore([message], backend)
+
+		expect(recordMessages).toHaveBeenCalledWith([
+			expect.objectContaining({
+				messageType,
+				viewMode: 0,
+				viewOnceState: 0
+			})
+		])
+	})
+
+	it('persists an unavailable historical view-once placeholder without inventing a media type', async () => {
+		const recordMessages = jest.fn(() => [1])
+		const backend = { recordMessages } as any
+		const encoded = proto.WebMessageInfo.encode({
+			key: {
+				remoteJid: '5511999999999@s.whatsapp.net',
+				fromMe: false,
+				id: 'HISTORY-VIEW-ONCE-UNAVAILABLE'
+			},
+			messageTimestamp: 1_700_000_000,
+			messageStubParameters: ['view_once_unavailable']
+		}).finish()
+		const decoded = proto.WebMessageInfo.decode(encoded)
+		const message = { ...decoded, key: decoded.key! } as WAMessage
+
+		await mirrorHistoryMessagesToStore([message], backend)
+
+		expect(recordMessages).toHaveBeenCalledWith([
+			expect.objectContaining({
+				messageType: null,
+				viewMode: 0,
+				viewOnceState: 0
+			})
+		])
+		expect(message.key.isViewOnce).toBeUndefined()
 	})
 
 	it('stores an incoming broadcast history row under its participant chat', async () => {

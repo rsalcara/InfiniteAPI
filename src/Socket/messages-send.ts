@@ -34,6 +34,7 @@ import {
 	generateParticipantHashV2,
 	generateWAMessage,
 	generateWAMessageFromContent,
+	getMessageTypeLabel,
 	getStatusCodeForMediaRetry,
 	getUrlFromDirectPath,
 	getWAUploadToServer,
@@ -2342,27 +2343,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				deferredTcTokenReissue = { jid: destinationJid, issueTimestamp }
 			}
 
-			// Log with [BAILEYS] prefix
-			logMessageSent(msgId, destinationJid)
+			const msgType = getMessageTypeLabel(message)
+
+			// Log with [BAILEYS] prefix and normalized content type.
+			logMessageSent(msgId, destinationJid, undefined, msgType)
 
 			// Record message sent metric
-			const msgType = message.conversation
-				? 'text'
-				: message.imageMessage
-					? 'image'
-					: message.videoMessage
-						? 'video'
-						: message.audioMessage
-							? 'audio'
-							: message.documentMessage
-								? 'document'
-								: message.stickerMessage
-									? 'sticker'
-									: message.stickerPackMessage
-										? 'sticker_pack'
-										: message.reactionMessage
-											? 'reaction'
-											: 'other'
 			recordMessageSent(msgType)
 
 			// Add message to retry cache if enabled

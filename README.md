@@ -684,6 +684,13 @@ await sock.sendMessage(
 
 - You can send all messages above as `viewOnce`, you only need to pass `viewOnce: true` in content object
 
+> [!IMPORTANT]
+> Receiving decryptable view-once content on a linked device requires a fresh
+> QR-paired session with `native_android` transport. Web sessions must handle
+> `view_once_unavailable`. See the full setup, send, receive, download, and
+> persistence guide at
+> [`docs/VIEW_ONCE_MESSAGES.md`](docs/VIEW_ONCE_MESSAGES.md).
+
 ```ts
 await sock.sendMessage(
     id,

@@ -104,6 +104,7 @@ import {
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
+import { settleInitialSyncTasks } from './initial-sync-tasks'
 import { executeWMexQuery as genericExecuteWMexQuery } from './mex'
 import { makeSocket } from './socket.js'
 
@@ -1833,6 +1834,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			}
 		}
 
+		let appStateSyncCompleted = false
 		const doAppStateSync = async () => {
 			if (syncState === SyncState.Syncing) {
 				// All collections will be synced, so clear any blocked ones
@@ -1841,48 +1843,81 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				logger.info('Doing app state sync')
 				await resyncAppState(ALL_WA_PATCH_NAMES, true)
 
-				// Sync is complete, go online and flush everything
+				// Mark app-state complete, but do not flush yet. processMessage()
+				// runs concurrently and can still be decoding the history payload
+				// and emitting hundreds of LID mappings. Flushing here disables
+				// buffering too early and turns the remaining mappings into
+				// singleton DB writes while w:sync:app:state is still active.
 				syncState = SyncState.Online
-				logger.info('App state sync complete, transitioning to Online state and flushing buffer')
-				ev.flush()
+				appStateSyncCompleted = true
 
 				const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
 				ev.emit('creds.update', { accountSyncCounter })
 			}
 		}
 
-		await Promise.all([
-			(async () => {
-				if (shouldProcessHistoryMsg) {
-					await doAppStateSync()
+		await settleInitialSyncTasks(
+			[
+				(async () => {
+					if (shouldProcessHistoryMsg) {
+						await doAppStateSync()
+					}
+				})(),
+				processMessage(msg, {
+					signalRepository,
+					shouldProcessHistoryMsg,
+					placeholderResendCache,
+					ev,
+					creds: authState.creds,
+					keyStore: authState.keys,
+					logger,
+					options: config.options,
+					getMessage,
+					orphanQueue,
+					appStateBackend,
+					locationBackend,
+					statusBackend,
+					messageStoreBackend,
+					mediaBackend,
+					addOnBackend,
+					historySyncCompanionBackend,
+					receiptBackend: receiptReplayBackend
+				})
+			],
+			() => appStateSyncCompleted,
+			failed => {
+				logger.info(
+					failed
+						? 'Initial app-state or history processing failed, releasing buffered events before propagating the error'
+						: 'Initial app-state and history processing complete, transitioning to Online state and flushing buffer'
+				)
+				ev.flush()
+			},
+			() => {
+				// onUnexpectedError logs the propagated task failure without closing
+				// the socket. Once the buffer is released this connection must no
+				// longer advertise itself as Syncing, otherwise every later history
+				// chunk retries the complete app-state sync on the same open socket.
+				if (syncState === SyncState.Syncing) {
+					syncState = SyncState.Online
 				}
-			})(),
-			processMessage(msg, {
-				signalRepository,
-				shouldProcessHistoryMsg,
-				placeholderResendCache,
-				ev,
-				creds: authState.creds,
-				keyStore: authState.keys,
-				logger,
-				options: config.options,
-				getMessage,
-				orphanQueue,
-				appStateBackend,
-				locationBackend,
-				statusBackend,
-				messageStoreBackend,
-				mediaBackend,
-				addOnBackend,
-				historySyncCompanionBackend,
-				receiptBackend: receiptReplayBackend
-			})
-		])
+			},
+			error => {
+				logger.warn(
+					{ error },
+					'Initial sync failure-state preparation failed; continuing with mandatory buffer release'
+				)
+			}
+		)
 
 		// If the app state key arrives and we are waiting to sync, trigger the sync now.
 		if (msg.message?.protocolMessage?.appStateSyncKeyShare && syncState === SyncState.Syncing) {
 			logger.info('App state sync key arrived, triggering app state sync')
 			await doAppStateSync()
+			if (appStateSyncCompleted) {
+				logger.info('Initial app-state key processing complete, transitioning to Online state and flushing buffer')
+				ev.flush()
+			}
 		}
 	})
 
@@ -1950,6 +1985,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				loginTime: Math.floor(Date.now() / 1000),
 				advKeyIndex,
 				fullSyncRequired: props.requireFullSync ?? undefined,
+				fullSyncDaysLimit: hsc.fullSyncDaysLimit ?? undefined,
+				fullSyncSizeMbLimit: hsc.fullSyncSizeMbLimit ?? undefined,
 				storageQuotaMb: hsc.storageQuotaMb ?? undefined,
 				inlineInitialHistSyncPayloadEnabled: hsc.inlineInitialPayloadInE2EeMsg ?? undefined,
 				recentSyncDaysLimit: hsc.recentSyncDaysLimit ?? undefined,
@@ -1963,7 +2000,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				supportAddOnHistorySyncMigration: hsc.supportAddOnHistorySyncMigration ?? undefined,
 				supportMessageAssociation: hsc.supportMessageAssociation ?? undefined,
 				supportGroupHistory: hsc.supportGroupHistory ?? undefined,
-				supportGuestChat: hsc.supportGuestChat ?? undefined
+				supportGuestChat: hsc.supportGuestChat ?? undefined,
+				onDemandReady: hsc.onDemandReady ?? undefined,
+				historySyncConfigProtobuf: proto.DeviceProps.HistorySyncConfig.encode(hsc).finish(),
+				supportManusHistory: hsc.supportManusHistory ?? undefined,
+				supportHatchHistory: hsc.supportHatchHistory ?? undefined,
+				supportedBotChannelFbids: hsc.supportedBotChannelFbids ?? undefined
 			})
 		} catch (err) {
 			logger.debug({ err }, 'companion_devices mirror: own-device upsert failed (ignored)')

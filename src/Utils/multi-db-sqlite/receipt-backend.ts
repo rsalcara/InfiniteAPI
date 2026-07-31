@@ -21,13 +21,27 @@
  * cross-referencing sender isn't needed and isn't always known at receipt
  * time.
  */
-import type { ChatRowResolver, JidResolver } from './message-store-backend'
+import {
+	ANDROID_MESSAGE_STATUS,
+	type ChatRowResolver,
+	type JidResolver,
+	shouldAdvanceAndroidMessageStatus
+} from './message-store-backend'
 import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 export type ReceiptKind = 'delivery' | 'read' | 'played'
 
 const ORPHAN_DEVICE_STATUS = 0
 const ORPHAN_USER_STATUS: Record<ReceiptKind, number> = { delivery: 1, read: 2, played: 3 }
+export const RECEIPT_ORPHAN_REPLAY_LIMIT = 300
+export const RECEIPT_ORPHAN_TTL_SECONDS = 60 * 24 * 60 * 60
+export const RECEIPT_ORPHAN_PRUNE_INTERVAL_SECONDS = 60 * 60
+
+const ANDROID_STATUS_BY_ORPHAN_STATUS: Partial<Record<number, number>> = {
+	[ORPHAN_USER_STATUS.delivery]: ANDROID_MESSAGE_STATUS.DELIVERY_ACK,
+	[ORPHAN_USER_STATUS.read]: ANDROID_MESSAGE_STATUS.READ,
+	[ORPHAN_USER_STATUS.played]: ANDROID_MESSAGE_STATUS.PLAYED
+}
 
 export type RecordUserReceiptInput = {
 	chatJid: string
@@ -58,6 +72,9 @@ export class ReceiptBackend {
 		insertOrphaned: SqliteStatementLike
 		listOrphaned: SqliteStatementLike
 		deleteOrphaned: SqliteStatementLike
+		deleteExpiredOrphaned: SqliteStatementLike
+		getMessageStatus: SqliteStatementLike
+		updateMessageStatus: SqliteStatementLike
 		listUserReceipts: SqliteStatementLike
 		listDeviceReceipts: SqliteStatementLike
 	}
@@ -65,6 +82,7 @@ export class ReceiptBackend {
 	private readonly db: SqliteDbLike
 	private readonly jidMap: JidResolver
 	private readonly chatResolver: ChatRowResolver
+	private lastOrphanPruneAtSeconds = 0
 
 	constructor(db: SqliteDbLike, jidMap: JidResolver, chatResolver: ChatRowResolver) {
 		this.db = db
@@ -122,9 +140,14 @@ export class ReceiptBackend {
 			),
 			listOrphaned: this.db.prepare(
 				'SELECT _id, receipt_device_jid_row_id, receipt_recipient_jid_row_id, status, timestamp ' +
-					'FROM receipt_orphaned WHERE chat_row_id = ? AND from_me = ? AND key_id = ? ORDER BY _id ASC'
+					'FROM receipt_orphaned WHERE chat_row_id = ? AND from_me = ? AND key_id = ? ' +
+					'AND (status IS NULL OR status IN (0, 1, 2, 3)) ' +
+					`ORDER BY _id ASC LIMIT ${RECEIPT_ORPHAN_REPLAY_LIMIT}`
 			),
 			deleteOrphaned: this.db.prepare('DELETE FROM receipt_orphaned WHERE _id = ?'),
+			deleteExpiredOrphaned: this.db.prepare('DELETE FROM receipt_orphaned WHERE timestamp IS NULL OR timestamp < ?'),
+			getMessageStatus: this.db.prepare('SELECT status FROM message WHERE _id = ?'),
+			updateMessageStatus: this.db.prepare('UPDATE message SET status = ? WHERE _id = ?'),
 			listUserReceipts: this.db.prepare(
 				'SELECT _id, message_row_id, receipt_user_jid_row_id, receipt_timestamp, read_timestamp, played_timestamp ' +
 					'FROM receipt_user WHERE message_row_id = ?'
@@ -158,6 +181,16 @@ export class ReceiptBackend {
 		return row?._id ?? null
 	}
 
+	/**
+	 * The protocol may omit the receipt timestamp. Orphans still need an
+	 * arrival time so retention can eventually remove an unreplayable row;
+	 * using the local receive time is conservative and never makes it expire
+	 * earlier than a real server timestamp would have.
+	 */
+	private orphanTimestamp(timestamp: number): number {
+		return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : Math.floor(Date.now() / 1000)
+	}
+
 	/** Records a delivery/read/played receipt for a recipient (user-level, no device suffix). */
 	recordUserReceipt(input: RecordUserReceiptInput): void {
 		this.db.transaction(() => {
@@ -177,7 +210,7 @@ export class ReceiptBackend {
 					receiptUserRowId,
 					receiptUserRowId,
 					ORPHAN_USER_STATUS[input.kind],
-					input.timestamp
+					this.orphanTimestamp(input.timestamp)
 				)
 				return
 			}
@@ -215,7 +248,7 @@ export class ReceiptBackend {
 					receiptDeviceRowId,
 					null,
 					ORPHAN_DEVICE_STATUS,
-					input.timestamp
+					this.orphanTimestamp(input.timestamp)
 				)
 				return
 			}
@@ -227,45 +260,80 @@ export class ReceiptBackend {
 	/** Replays receipts that arrived before their message row, then removes only rows successfully materialized. */
 	replayOrphaned(chatJid: string, fromMe: boolean, keyId: string): number {
 		return this.db.transaction(() => {
+			this.maybePruneExpiredOrphaned(Math.floor(Date.now() / 1000))
 			const chatRowId = this.chatResolver.resolveChatRowId(chatJid)
 			const messageRowId = this.resolveMessageRowId(chatJid, fromMe, keyId)
 			if (messageRowId === null) return 0
-			const rows = this.stmts.listOrphaned.all(chatRowId, fromMe ? 1 : 0, keyId) as Array<{
-				_id: number
-				receipt_device_jid_row_id: number
-				receipt_recipient_jid_row_id: number | null
-				status: number | null
-				timestamp: number | null
-			}>
 			let replayed = 0
-			for (const row of rows) {
-				// Pre-hardening rows stored NULL for both receipt forms. They cannot
-				// recover the user-level progression kind, but they did preserve the
-				// target jid and timestamp; materialize that legacy shape as the
-				// schema's generic per-device acknowledgement instead of leaking an
-				// unreplayable orphan forever.
-				if (row.status === null || row.status === ORPHAN_DEVICE_STATUS) {
-					this.stmts.upsertDeviceReceipt.run(messageRowId, row.receipt_device_jid_row_id, row.timestamp)
-				} else {
-					const recipientRowId = row.receipt_recipient_jid_row_id ?? row.receipt_device_jid_row_id
-					const stmt =
-						row.status === ORPHAN_USER_STATUS.delivery
-							? this.stmts.upsertUserReceiptDelivery
-							: row.status === ORPHAN_USER_STATUS.read
-								? this.stmts.upsertUserReceiptRead
-								: row.status === ORPHAN_USER_STATUS.played
-									? this.stmts.upsertUserReceiptPlayed
-									: null
-					if (!stmt) continue
-					stmt.run(messageRowId, recipientRowId, row.timestamp)
+			const messageStatusRow = this.stmts.getMessageStatus.get(messageRowId) as { status: number | null } | undefined
+			let promotedStatus = messageStatusRow?.status ?? null
+
+			for (;;) {
+				const rows = this.stmts.listOrphaned.all(chatRowId, fromMe ? 1 : 0, keyId) as Array<{
+					_id: number
+					receipt_device_jid_row_id: number
+					receipt_recipient_jid_row_id: number | null
+					status: number | null
+					timestamp: number | null
+				}>
+				if (rows.length === 0) break
+
+				let replayedInBatch = 0
+				for (const row of rows) {
+					// Pre-hardening rows stored NULL for both receipt forms. They cannot
+					// recover the user-level progression kind, but they did preserve the
+					// target jid and timestamp; materialize that legacy shape as the
+					// schema's generic per-device acknowledgement instead of leaking an
+					// unreplayable orphan forever.
+					if (row.status === null || row.status === ORPHAN_DEVICE_STATUS) {
+						this.stmts.upsertDeviceReceipt.run(messageRowId, row.receipt_device_jid_row_id, row.timestamp)
+					} else {
+						const recipientRowId = row.receipt_recipient_jid_row_id ?? row.receipt_device_jid_row_id
+						const stmt =
+							row.status === ORPHAN_USER_STATUS.delivery
+								? this.stmts.upsertUserReceiptDelivery
+								: row.status === ORPHAN_USER_STATUS.read
+									? this.stmts.upsertUserReceiptRead
+									: row.status === ORPHAN_USER_STATUS.played
+										? this.stmts.upsertUserReceiptPlayed
+										: null
+						if (!stmt) continue
+						stmt.run(messageRowId, recipientRowId, row.timestamp)
+						const receiptStatus = ANDROID_STATUS_BY_ORPHAN_STATUS[row.status]
+						if (receiptStatus !== undefined && shouldAdvanceAndroidMessageStatus(promotedStatus, receiptStatus)) {
+							promotedStatus = receiptStatus
+						}
+					}
+
+					this.stmts.deleteOrphaned.run(row._id)
+					replayed += 1
+					replayedInBatch += 1
 				}
 
-				this.stmts.deleteOrphaned.run(row._id)
-				replayed += 1
+				// Unsupported future status values are excluded by the query and
+				// remain available for diagnosis without blocking valid receipts.
+				if (rows.length < RECEIPT_ORPHAN_REPLAY_LIMIT || replayedInBatch === 0) break
+			}
+
+			if (messageStatusRow && promotedStatus !== messageStatusRow.status) {
+				this.stmts.updateMessageStatus.run(promotedStatus, messageRowId)
 			}
 
 			return replayed
 		})()
+	}
+
+	/** Avoid a table-wide retention DELETE on every persisted message. */
+	private maybePruneExpiredOrphaned(nowSeconds: number): void {
+		if (nowSeconds - this.lastOrphanPruneAtSeconds < RECEIPT_ORPHAN_PRUNE_INTERVAL_SECONDS) return
+		this.pruneExpiredOrphaned(nowSeconds)
+		this.lastOrphanPruneAtSeconds = nowSeconds
+	}
+
+	/** Deletes orphan receipts older than Android's 60-day retention window. */
+	pruneExpiredOrphaned(nowSeconds: number = Math.floor(Date.now() / 1000)): number {
+		const cutoff = nowSeconds - RECEIPT_ORPHAN_TTL_SECONDS
+		return this.stmts.deleteExpiredOrphaned.run(cutoff).changes
 	}
 
 	listUserReceipts(messageRowId: number) {
