@@ -112,7 +112,11 @@ const MESSAGE_TYPE_ICONS = new Map<string, string>([
 	['poll', '📊'],
 	['poll_vote', '🗳️'],
 	['interactive', '🧩'],
-	['interactive_response', '✅']
+	['interactive_response', '✅'],
+	['view_once', '👁️'],
+	['view_once_image', '👁️🖼️'],
+	['view_once_video', '👁️🎬'],
+	['view_once_audio', '👁️🎙️']
 ])
 
 const formatMessageTypeTag = (messageType?: string): string => {

@@ -76,6 +76,22 @@ export const ANDROID_MESSAGE_TYPE = {
 	NEWSLETTER_FOLLOWER_INVITE: 124
 } as const
 
+/** State 0 is selected by the official Android client as an unopened
+ * view-once message. Later values remain opaque until their semantics are
+ * proven, but duplicate delivery must never reset them to 0. */
+export const ANDROID_VIEW_ONCE_STATE = {
+	UNOPENED: 0
+} as const
+
+const VIEW_ONCE_MESSAGE_TYPES = new Set<number>([
+	ANDROID_MESSAGE_TYPE.VIEW_ONCE_IMAGE,
+	ANDROID_MESSAGE_TYPE.VIEW_ONCE_VIDEO,
+	ANDROID_MESSAGE_TYPE.VIEW_ONCE_AUDIO
+])
+
+export const isAndroidViewOnceMessageType = (messageType: number | null | undefined): boolean =>
+	messageType !== null && messageType !== undefined && VIEW_ONCE_MESSAGE_TYPES.has(messageType)
+
 /**
  * Android msgstore status values confirmed against the official app:
  *   0 pending/new, 4 server ack, 5 delivered, 13 read, 8 played.
@@ -269,6 +285,8 @@ export type RecordMessageInput = {
 	receivedTimestamp?: number | null
 	messageType?: number | null
 	textData?: string | null
+	viewMode?: number | null
+	viewOnceState?: number | null
 	authorDeviceJid?: string | null
 	messageSecret?: Buffer | null
 	album?: {
@@ -317,6 +335,7 @@ export type MessageRow = {
 	received_timestamp: number | null
 	message_type: number | null
 	text_data: string | null
+	view_mode: number | null
 	sort_id: number
 }
 
@@ -366,6 +385,8 @@ export class MessageStoreBackend implements ChatRowResolver {
 		updateMessageStatusByKey: SqliteStatementLike
 		upsertMessageDetails: SqliteStatementLike
 		upsertMessageSecret: SqliteStatementLike
+		upsertMessageViewOnceState: SqliteStatementLike
+		getMessageViewOnceState: SqliteStatementLike
 		upsertMessageAlbum: SqliteStatementLike
 		upsertMessageStickerPack: SqliteStatementLike
 		deleteMessageStickerPackStickers: SqliteStatementLike
@@ -404,8 +425,8 @@ export class MessageStoreBackend implements ChatRowResolver {
 			),
 			upsertMessage: this.db.prepare(
 				'INSERT INTO message (chat_row_id, from_me, key_id, sender_jid_row_id, status, timestamp, ' +
-					'received_timestamp, message_type, text_data, sort_id) ' +
-					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+					'received_timestamp, message_type, text_data, view_mode, sort_id) ' +
+					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
 					'ON CONFLICT(chat_row_id, from_me, key_id, sender_jid_row_id) DO UPDATE SET ' +
 					'status = CASE ' +
 					'WHEN excluded.status IS NULL THEN message.status ' +
@@ -415,7 +436,8 @@ export class MessageStoreBackend implements ChatRowResolver {
 					'THEN excluded.status ELSE message.status END, ' +
 					'received_timestamp = COALESCE(excluded.received_timestamp, message.received_timestamp), ' +
 					'message_type = COALESCE(excluded.message_type, message.message_type), ' +
-					'text_data = COALESCE(excluded.text_data, message.text_data)'
+					'text_data = COALESCE(excluded.text_data, message.text_data), ' +
+					'view_mode = COALESCE(excluded.view_mode, message.view_mode)'
 			),
 			getMessageByNaturalKey: this.db.prepare(
 				'SELECT * FROM message WHERE chat_row_id = ? AND from_me = ? AND key_id = ? AND sender_jid_row_id IS ?'
@@ -432,6 +454,13 @@ export class MessageStoreBackend implements ChatRowResolver {
 				'INSERT INTO message_secret (message_row_id, message_secret) VALUES (?, ?) ' +
 					'ON CONFLICT(message_row_id) DO UPDATE SET message_secret = excluded.message_secret'
 			),
+			upsertMessageViewOnceState: this.db.prepare(
+				'INSERT INTO message_view_once_media (message_row_id, state) VALUES (?, ?) ' +
+					'ON CONFLICT(message_row_id) DO UPDATE SET state = CASE ' +
+					'WHEN excluded.state > message_view_once_media.state THEN excluded.state ' +
+					'ELSE message_view_once_media.state END'
+			),
+			getMessageViewOnceState: this.db.prepare('SELECT state FROM message_view_once_media WHERE message_row_id = ?'),
 			upsertMessageAlbum: this.db.prepare(
 				'INSERT INTO message_album ' +
 					'(message_row_id, image_count, video_count, expected_image_count, expected_video_count) ' +
@@ -490,6 +519,16 @@ export class MessageStoreBackend implements ChatRowResolver {
 	getMessageSecret(messageRowId: number): Buffer | null {
 		const row = this.stmts.getMessageSecret.get(messageRowId) as { message_secret: Buffer | null } | undefined
 		return row?.message_secret ?? null
+	}
+
+	getViewOnceState(messageRowId: number): number | null {
+		const row = this.stmts.getMessageViewOnceState.get(messageRowId) as { state: number } | undefined
+		return row?.state ?? null
+	}
+
+	updateViewOnceState(messageRowId: number, state: number): void {
+		if (!Number.isSafeInteger(state) || state < 0) throw new Error(`Invalid Android view-once state: ${state}`)
+		this.stmts.upsertMessageViewOnceState.run(messageRowId, state)
 	}
 
 	/** Resolves (creating if needed) the `chat._id` for a jid. */
@@ -576,6 +615,7 @@ export class MessageStoreBackend implements ChatRowResolver {
 			input.receivedTimestamp ?? null,
 			input.messageType ?? null,
 			input.textData ?? null,
+			input.viewMode ?? null,
 			input.timestamp ?? 0
 		)
 
@@ -591,6 +631,10 @@ export class MessageStoreBackend implements ChatRowResolver {
 
 		if (input.messageSecret) {
 			this.stmts.upsertMessageSecret.run(row._id, input.messageSecret)
+		}
+
+		if (input.viewOnceState !== null && input.viewOnceState !== undefined) {
+			this.updateViewOnceState(row._id, input.viewOnceState)
 		}
 
 		if (input.album) {

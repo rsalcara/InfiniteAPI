@@ -42,9 +42,11 @@ import { getKeyAuthor, toNumber } from './generics'
 import { downloadAndProcessHistorySyncNotification } from './history'
 import type { ILogger } from './logger'
 import {
+	ANDROID_VIEW_ONCE_STATE,
 	type AppStateBackend,
 	type HistorySyncCompanionBackend,
 	LOCATION_OPEN_ENDED_EXPIRES_MS,
+	isAndroidViewOnceMessageType,
 	type LocationBackend,
 	mapMessageToAndroidType,
 	mapWebMessageStatusToAndroid,
@@ -101,6 +103,9 @@ const HISTORY_MIRROR_BATCH_SIZE = 128
 
 const yieldHistoryMirror = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 
+export const isUnavailableViewOnceMessage = (message: WAMessage): boolean =>
+	!!message.key?.isViewOnce && !getContentType(normalizeMessageContent(message.message))
+
 const mapStickerPackToMirror = (
 	pack: proto.Message.IStickerPackMessage | null | undefined
 ): NonNullable<RecordMessageInput['stickerPack']> | null => {
@@ -155,13 +160,16 @@ export const mirrorHistoryMessagesToStore = async (
 		const remoteJid = message.key?.remoteJid
 		const keyId = message.key?.id
 		const content = normalizeMessageContent(message.message)
-		if (!remoteJid || !keyId || !content) continue
+		const isUnavailableViewOnce = isUnavailableViewOnceMessage(message)
+		if (!remoteJid || !keyId || (!content && !isUnavailableViewOnce)) continue
 
 		try {
 			const timestamp = toNumber(message.messageTimestamp ?? 0)
 			const senderJid = message.key.fromMe
 				? null
 				: jidNormalizedUser(message.key.participant || message.key.remoteJid || '')
+			const androidMessageType = mapMessageToAndroidType(message.message)
+			const isViewOnce = isUnavailableViewOnce || isAndroidViewOnceMessageType(androidMessageType)
 			inputs.push({
 				chatJid: jidNormalizedUser(getChatId(message.key)),
 				fromMe: !!message.key.fromMe,
@@ -175,19 +183,21 @@ export const mirrorHistoryMessagesToStore = async (
 						: (mapWebMessageStatusToAndroid(message.status) ?? (message.key.fromMe ? 4 : 0)),
 				timestamp,
 				receivedTimestamp: timestamp > 0 ? timestamp * 1000 : null,
-				messageType: mapMessageToAndroidType(message.message),
-				textData: content.extendedTextMessage?.text ?? content.conversation ?? null,
+				messageType: androidMessageType,
+				textData: content?.extendedTextMessage?.text ?? content?.conversation ?? null,
+				viewMode: isViewOnce ? 0 : null,
+				viewOnceState: isViewOnce ? ANDROID_VIEW_ONCE_STATE.UNOPENED : null,
 				authorDeviceJid: senderJid,
-				messageSecret: content.messageContextInfo?.messageSecret
+				messageSecret: content?.messageContextInfo?.messageSecret
 					? Buffer.from(content.messageContextInfo.messageSecret)
 					: null,
-				album: content.albumMessage
+				album: content?.albumMessage
 					? {
 							expectedImageCount: content.albumMessage.expectedImageCount ?? 0,
 							expectedVideoCount: content.albumMessage.expectedVideoCount ?? 0
 						}
 					: null,
-				stickerPack: mapStickerPackToMirror(content.stickerPackMessage),
+				stickerPack: mapStickerPackToMirror(content?.stickerPackMessage),
 				incrementUnread: false
 			})
 		} catch (err) {
@@ -411,6 +421,7 @@ export const normalizeMessageJids = async (
 
 // TODO: target:audit AUDIT THIS FUNCTION AGAIN
 export const isRealMessage = (message: WAMessage) => {
+	if (isUnavailableViewOnceMessage(message)) return true
 	const normalizedContent = normalizeMessageContent(message.message)
 	const hasSomeContent = !!getContentType(normalizedContent)
 	const stubType = message.messageStubType ?? 0
@@ -808,6 +819,7 @@ const processMessage = async (
 	const { accountSettings } = creds
 
 	const chat: Partial<Chat> = { id: jidNormalizedUser(getChatId(message.key)) }
+	const isUnavailableViewOnce = isUnavailableViewOnceMessage(message)
 	const isRealMsg = isRealMessage(message)
 
 	if (isRealMsg) {
@@ -937,7 +949,8 @@ const processMessage = async (
 		try {
 			const senderJid = getKeyAuthor(message.key, meId)
 			const androidMessageType = mapMessageToAndroidType(message.message)
-			if (androidMessageType === null) {
+			const isViewOnce = isUnavailableViewOnce || isAndroidViewOnceMessageType(androidMessageType)
+			if (androidMessageType === null && !isUnavailableViewOnce) {
 				logger?.warn(
 					{
 						messageId: message.key.id,
@@ -965,6 +978,8 @@ const processMessage = async (
 				receivedTimestamp: Date.now(),
 				messageType: androidMessageType,
 				textData: content?.extendedTextMessage?.text ?? content?.conversation ?? null,
+				viewMode: isViewOnce ? 0 : null,
+				viewOnceState: isViewOnce ? ANDROID_VIEW_ONCE_STATE.UNOPENED : null,
 				authorDeviceJid: jidNormalizedUser(senderJid),
 				messageSecret: content?.messageContextInfo?.messageSecret
 					? Buffer.from(content.messageContextInfo.messageSecret)
