@@ -684,6 +684,13 @@ await sock.sendMessage(
 
 - You can send all messages above as `viewOnce`, you only need to pass `viewOnce: true` in content object
 
+> [!IMPORTANT]
+> O recebimento do conteudo descriptografavel em linked device exige uma
+> sessao nova pareada por QR com transporte `native_android`. Sessoes Web devem
+> tratar `view_once_unavailable`. Veja o guia completo de configuracao, envio,
+> recebimento, download e persistencia em
+> [`docs/VIEW_ONCE_MESSAGES.md`](docs/VIEW_ONCE_MESSAGES.md).
+
 ```ts
 await sock.sendMessage(
     id,
