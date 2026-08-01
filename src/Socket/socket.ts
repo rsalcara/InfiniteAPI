@@ -43,6 +43,7 @@ import {
 	incrementNativeAndroidConnectionLc,
 	makeEventBuffer,
 	makeNoiseHandler,
+	obfuscateJid,
 	promiseTimeout,
 	resolveNativeAndroidClientPayloadPhase,
 	resolveNativeAndroidPairingAppVariant,
@@ -1835,7 +1836,7 @@ export const makeSocket = (config: SocketConfig) => {
 			logger.info(
 				{
 					pairCodeLength: pairingCode.length,
-					jid: authState.creds.me.id,
+					jid: obfuscateJid(authState.creds.me.id),
 					companionPlatformId: pairPlatformId,
 					companionPlatformName: pairPlatformName,
 					companionPlatformDisplay: pairPlatformDisplay,

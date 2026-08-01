@@ -2170,6 +2170,7 @@ export const getRelayMediaType = (message: proto.IMessage): string => {
 	if (normalizedMessage.contactMessage) return 'vcard'
 	if (normalizedMessage.documentMessage) return 'document'
 	if (normalizedMessage.contactsArrayMessage) return 'contact_array'
+	if (normalizedMessage.locationMessage) return 'location'
 	if (normalizedMessage.liveLocationMessage) return 'livelocation'
 	if (normalizedMessage.stickerMessage || normalizedMessage.lottieStickerMessage) return 'sticker'
 	if (normalizedMessage.listMessage) return 'list'
