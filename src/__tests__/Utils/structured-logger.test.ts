@@ -101,10 +101,119 @@ describe('StructuredLogger', () => {
 			jsonLogger.info({
 				user: 'test',
 				password: 'secret123',
-				token: 'abc123'
+				token: 'abc123',
+				text: 'private message',
+				contentType: 'image'
 			})
 
-			expect(consoleSpy).toHaveBeenCalled()
+			const output = String(consoleSpy.mock.calls.at(-1)?.[0])
+			expect(output).toContain('[REDACTED]')
+			expect(output).not.toContain('secret123')
+			expect(output).not.toContain('abc123')
+			expect(output).not.toContain('private message')
+			expect(output).toContain('image')
+		})
+
+		it('should sanitize arrays, nested errors, context, JIDs and long stacks', () => {
+			const jsonLogger = createStructuredLogger({
+				level: 'info',
+				jsonFormat: true,
+				context: { owner: '5511991426667@s.whatsapp.net' }
+			})
+			const error = new Error(`failed for 5511991426667@s.whatsapp.net ${'x'.repeat(30_000)}`)
+
+			jsonLogger.info({
+				items: [{ token: 'nested-secret', jid: '5511991426667:46@s.whatsapp.net' }],
+				error
+			})
+
+			const output = String(consoleSpy.mock.calls.at(-1)?.[0])
+			expect(output).not.toContain('nested-secret')
+			expect(output).not.toContain('5511991426667')
+			expect(output).toContain('6667:46@s.whatsapp.net')
+			expect(output.length).toBeLessThan(35_000)
+		})
+
+		it('should preserve complete messageKey correlation metadata while redacting unrelated secrets', () => {
+			const jsonLogger = createStructuredLogger({
+				level: 'info',
+				jsonFormat: true
+			})
+
+			jsonLogger.warn({
+				messageKey: {
+					remoteJid: '5515991426667@s.whatsapp.net',
+					remoteJidAlt: '5515991426667@s.whatsapp.net',
+					fromMe: true,
+					id: '3EB0B9832A0DD4DE4E54D3',
+					participant: '',
+					addressingMode: 'lid',
+					payload: 'must-not-leak'
+				},
+				token: 'must-not-leak-either'
+			})
+
+			const output = String(jest.mocked(console.warn).mock.calls.at(-1)?.[0])
+			expect(output).toContain('5515991426667@s.whatsapp.net')
+			expect(output).toContain('3EB0B9832A0DD4DE4E54D3')
+			expect(output).not.toContain('must-not-leak')
+			expect(output).toContain('[REDACTED]')
+		})
+
+		it('should omit top-level and nested error stacks when stack traces are disabled', () => {
+			const jsonLogger = createStructuredLogger({
+				level: 'info',
+				jsonFormat: true,
+				includeStackTrace: false
+			})
+
+			jsonLogger.error({
+				error: new Error('private nested error'),
+				token: 'must-not-leak'
+			})
+
+			const output = String(jest.mocked(console.error).mock.calls.at(-1)?.[0])
+			const entry = JSON.parse(output) as { data?: { error?: { stack?: unknown; message?: unknown } } }
+			expect(entry.data?.error?.stack).toBeUndefined()
+			expect(entry.data?.error?.message).toBe('[REDACTED]')
+			expect(output).not.toContain('private nested error')
+			expect(output).not.toContain('must-not-leak')
+		})
+
+		it('emits a direct Error stack only at the top level', () => {
+			const jsonLogger = createStructuredLogger({
+				level: 'info',
+				jsonFormat: true,
+				includeStackTrace: true
+			})
+
+			jsonLogger.error(new Error('private direct error'))
+
+			const output = String(jest.mocked(console.error).mock.calls.at(-1)?.[0])
+			const entry = JSON.parse(output) as { data?: { stack?: unknown }; stack?: unknown }
+			expect(entry.stack).toEqual(expect.any(String))
+			expect(entry.data?.stack).toBeUndefined()
+			expect(output).not.toContain('private direct error')
+		})
+
+		it('does not let a hostile value abort its caller', () => {
+			const jsonLogger = createStructuredLogger({
+				level: 'info',
+				jsonFormat: true
+			})
+			const hostile = new Proxy(
+				{},
+				{
+					getPrototypeOf() {
+						throw new Error('must-not-leak')
+					}
+				}
+			)
+
+			expect(() => jsonLogger.info(hostile)).not.toThrow()
+			const output = String(consoleSpy.mock.calls.at(-1)?.[0])
+			expect(output).toContain('[log sanitization failed]')
+			expect(output).not.toContain('must-not-leak')
 		})
 	})
 

@@ -6,7 +6,7 @@
  * progressively on hot paths.
  *
  * The cache keys on the number of placeholders. In practice we always
- * chunk to a fixed size (default 500) and the cache holds at most two
+ * chunk to a fixed size (default 975, matching Android) and the cache holds at most two
  * entries: the "full chunk" statement (used 99% of the time) and one
  * "tail chunk" statement of the remainder size.
  *
@@ -15,19 +15,21 @@
  *     db,
  *     'SELECT id, value FROM signal_kv WHERE type = ? AND id IN (',
  *     ') ORDER BY id',
- *     500
+ *     975
  *   )
  *   const rows = inQuery.run(['session'], [id1, id2, …]) // first arg = leading params before IN
  */
 import type { SqliteDbLike, SqliteStatementLike } from './types'
 
-/** SQLite default `SQLITE_LIMIT_VARIABLE_NUMBER` is 999. We chunk well below it. */
-export const DEFAULT_IN_CHUNK = 500
+/** Android reserves headroom below SQLite's 999-variable limit and chunks at 975. */
+export const DEFAULT_IN_CHUNK = 975
+/** SQLite's portable host-parameter limit used by the Android-compatible stores. */
+export const SQLITE_MAX_VARIABLES = 999
 
 export interface InClauseQuery {
 	/**
 	 * Executes the query over `inValues`, chunking at `chunkSize` (default
-	 * 500). `leadingParams` are bound BEFORE the IN-list placeholders for
+	 * 975). `leadingParams` are bound BEFORE the IN-list placeholders for
 	 * every chunk. The returned rows are concatenated in chunk order.
 	 */
 	all(leadingParams: ReadonlyArray<unknown>, inValues: ReadonlyArray<unknown>): unknown[]
@@ -47,6 +49,22 @@ export function prepareInClause(
 	sqlAfterIn: string,
 	chunkSize: number = DEFAULT_IN_CHUNK
 ): InClauseQuery {
+	const normalizedChunkSize = chunkSize
+	if (!Number.isInteger(normalizedChunkSize) || normalizedChunkSize < 1) {
+		throw new RangeError(`chunkSize must be a positive integer, got ${chunkSize}`)
+	}
+
+	function getEffectiveChunkSize(leadingParams: ReadonlyArray<unknown>): number {
+		const remainingVariables = SQLITE_MAX_VARIABLES - leadingParams.length
+		if (remainingVariables < 1) {
+			throw new RangeError(
+				`leadingParams consume the SQLite variable budget (${leadingParams.length}/${SQLITE_MAX_VARIABLES})`
+			)
+		}
+
+		return Math.min(normalizedChunkSize, remainingVariables)
+	}
+
 	// Cache of prepared statements keyed by exact placeholder count. Holding
 	// `Map<number, SqliteStatementLike>` lets us reuse the chunk-sized
 	// statement across calls and only prepare a second one for the (at most
@@ -67,9 +85,10 @@ export function prepareInClause(
 	return {
 		all(leadingParams, inValues) {
 			if (inValues.length === 0) return []
+			const effectiveChunkSize = getEffectiveChunkSize(leadingParams)
 			const out: unknown[] = []
-			for (let i = 0; i < inValues.length; i += chunkSize) {
-				const chunk = inValues.slice(i, i + chunkSize)
+			for (let i = 0; i < inValues.length; i += effectiveChunkSize) {
+				const chunk = inValues.slice(i, i + effectiveChunkSize)
 				const stmt = getStmt(chunk.length)
 				const rows = stmt.all(...leadingParams, ...chunk)
 				if (rows.length > 0) out.push(...rows)
@@ -79,9 +98,10 @@ export function prepareInClause(
 		},
 		run(leadingParams, inValues) {
 			if (inValues.length === 0) return 0
+			const effectiveChunkSize = getEffectiveChunkSize(leadingParams)
 			let total = 0
-			for (let i = 0; i < inValues.length; i += chunkSize) {
-				const chunk = inValues.slice(i, i + chunkSize)
+			for (let i = 0; i < inValues.length; i += effectiveChunkSize) {
+				const chunk = inValues.slice(i, i + effectiveChunkSize)
 				const stmt = getStmt(chunk.length)
 				const result = stmt.run(...leadingParams, ...chunk)
 				total += result.changes

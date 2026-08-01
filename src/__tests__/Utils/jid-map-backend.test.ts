@@ -72,6 +72,30 @@ describe('JidMapBackend + wrapKeysWithJidMap', () => {
 		expect(got).toEqual({ '111@s.whatsapp.net': '11000@lid', '222@s.whatsapp.net': '22000@lid' })
 	})
 
+	it('reserves a strictly monotonic sort_id range for a batch', () => {
+		const backend = new JidMapBackend(store.handle('msgstore.db'))
+		backend.storeMappingsBatch([
+			{ pnUser: '111@s.whatsapp.net', lidUser: '11000@lid' },
+			{ pnUser: '111@s.whatsapp.net', lidUser: '11001@lid' },
+			{ pnUser: '111@s.whatsapp.net', lidUser: '11002@lid' }
+		])
+
+		const rows = store
+			.handle('msgstore.db')
+			.prepare('SELECT sort_id FROM jid_map ORDER BY sort_id ASC')
+			.all() as Array<{ sort_id: number }>
+		const sortIds = rows.map(row => row.sort_id)
+		expect(sortIds).toHaveLength(3)
+		expect(sortIds[1]).toBe(sortIds[0]! + 1)
+		expect(sortIds[2]).toBe(sortIds[1]! + 1)
+		expect(backend.getLidForPn('111@s.whatsapp.net')).toBe('11002@lid')
+	})
+
+	it('creates the sort_id index used by monotonic allocation on every database open', () => {
+		const indexes = store.handle('msgstore.db').prepare("PRAGMA index_list('jid_map')").all() as Array<{ name: string }>
+		expect(indexes.map(index => index.name)).toContain('jid_map_sort_id_idx')
+	})
+
 	it('wrapKeysWithJidMap intercepts lid-mapping get + set, delegates rest', async () => {
 		const inner = makeInnerStub()
 		const backend = new JidMapBackend(store.handle('msgstore.db'))

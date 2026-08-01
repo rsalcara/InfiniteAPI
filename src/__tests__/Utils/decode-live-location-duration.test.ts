@@ -84,3 +84,31 @@ describe('live-location transport metadata', () => {
 		expect(decoded.fullMessage.duration).toBeUndefined()
 	})
 })
+
+describe('unavailable view-once placeholder', () => {
+	it('preserves <unavailable type="view_once"> without fabricating a ciphertext failure', async () => {
+		const stanza: BinaryNode = {
+			tag: 'message',
+			attrs: {
+				id: 'VIEW-ONCE-UNAVAILABLE',
+				from: '5511999999999@s.whatsapp.net',
+				t: '1770000000'
+			},
+			content: [{ tag: 'unavailable', attrs: { type: 'view_once' } }]
+		}
+		const decoded = decryptMessageNode(
+			stanza,
+			'5511888888888@s.whatsapp.net',
+			'123456789@lid',
+			{ lidMapping: { getLIDForPN: async () => undefined } } as any,
+			P({ level: 'silent' }) as any
+		)
+
+		await decoded.decrypt()
+
+		expect(decoded.fullMessage.key.isViewOnce).toBe(true)
+		expect(decoded.fullMessage.message).toBeUndefined()
+		expect(decoded.fullMessage.messageStubType).toBeUndefined()
+		expect(decoded.fullMessage.messageStubParameters).toEqual(['view_once_unavailable'])
+	})
+})

@@ -2016,13 +2016,123 @@ export const generateWAMessage = async (jid: string, content: AnyMessageContent,
 	return generateWAMessageFromContent(jid, await generateWAMessageContent(content, { ...options, jid }), options)
 }
 
-/** Get the key to access the true type of content */
-export const getContentType = (content: proto.IMessage | undefined) => {
+const findContentType = (content: proto.IMessage | undefined, requirePresentValue: boolean) => {
 	if (content) {
 		const keys = Object.keys(content)
-		const key = keys.find(k => (k === 'conversation' || k.includes('Message')) && k !== 'senderKeyDistributionMessage')
+		const key = keys.find(
+			k =>
+				(k === 'conversation' || k.includes('Message')) &&
+				k !== 'senderKeyDistributionMessage' &&
+				(!requirePresentValue ||
+					(content[k as keyof typeof content] !== null && content[k as keyof typeof content] !== undefined))
+		)
 		return key as keyof typeof content
 	}
+}
+
+/** Get the key to access the true type of content. */
+export const getContentType = (content: proto.IMessage | undefined) => findContentType(content, false)
+
+/**
+ * Returns a stable, human-readable label for operational logs and metrics.
+ * Future-proof wrappers (ephemeral, view-once, edited, etc.) are unwrapped
+ * before classification, while unknown protobuf message types still receive
+ * a deterministic snake_case label instead of being collapsed into "other".
+ */
+export type MessageTypeLabelOptions = {
+	isViewOnce?: boolean
+}
+
+const getFutureProofMessage = (message: WAMessageContent | null | undefined) =>
+	message?.ephemeralMessage ||
+	message?.viewOnceMessage ||
+	message?.documentWithCaptionMessage ||
+	message?.viewOnceMessageV2 ||
+	message?.viewOnceMessageV2Extension ||
+	message?.editedMessage ||
+	message?.associatedChildMessage ||
+	message?.groupStatusMessage ||
+	message?.groupStatusMessageV2 ||
+	// Lottie animated stickers arrive wrapped in lottieStickerMessage;
+	// keeping it in this shared helper preserves the existing unwrap behavior.
+	message?.lottieStickerMessage
+
+const containsViewOnceContent = (content: WAMessageContent | null | undefined): boolean => {
+	let current = content
+	for (let depth = 0; current && depth < 5; depth++) {
+		if (current.viewOnceMessage || current.viewOnceMessageV2 || current.viewOnceMessageV2Extension) return true
+		const inner = getFutureProofMessage(current)
+		if (!inner) break
+		current = inner.message
+	}
+
+	const normalized = normalizeMessageContent(content)
+	return !!(
+		normalized?.imageMessage?.viewOnce ||
+		normalized?.videoMessage?.viewOnce ||
+		normalized?.audioMessage?.viewOnce
+	)
+}
+
+export const getMessageTypeLabel = (
+	content: WAMessageContent | null | undefined,
+	options: MessageTypeLabelOptions = {}
+): string => {
+	const isViewOnce = !!options.isViewOnce || containsViewOnceContent(content)
+	const normalized = normalizeMessageContent(content)
+	// Protobuf objects can retain optional fields as explicit nulls. Operational
+	// logs and metrics must classify the first value that is actually present,
+	// rather than a null media key that happens to precede the real text field.
+	const contentType = findContentType(normalized, true)
+	if (!contentType) return isViewOnce ? 'view_once' : 'unknown'
+
+	const type = String(contentType)
+	switch (type) {
+		case 'conversation':
+		case 'extendedTextMessage':
+			return 'text'
+		case 'imageMessage':
+			return isViewOnce ? 'view_once_image' : 'image'
+		case 'videoMessage':
+			return isViewOnce ? 'view_once_video' : normalized?.videoMessage?.gifPlayback ? 'gif' : 'video'
+		case 'audioMessage':
+			return isViewOnce ? 'view_once_audio' : normalized?.audioMessage?.ptt ? 'voice' : 'audio'
+		case 'documentMessage':
+			return 'document'
+		case 'stickerMessage':
+			return 'sticker'
+		case 'stickerPackMessage':
+			return 'sticker_pack'
+		case 'reactionMessage':
+			return 'reaction'
+		case 'locationMessage':
+			return 'location'
+		case 'liveLocationMessage':
+			return 'live_location'
+		case 'contactMessage':
+			return 'contact'
+		case 'contactsArrayMessage':
+			return 'contacts'
+		case 'pollUpdateMessage':
+			return 'poll_vote'
+		case 'buttonsResponseMessage':
+		case 'listResponseMessage':
+		case 'templateButtonReplyMessage':
+		case 'interactiveResponseMessage':
+			return 'interactive_response'
+		case 'buttonsMessage':
+		case 'listMessage':
+		case 'templateMessage':
+		case 'interactiveMessage':
+			return 'interactive'
+	}
+
+	if (type.startsWith('pollCreationMessage')) return 'poll'
+
+	return type
+		.replace(/Message$/, '')
+		.replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+		.toLowerCase()
 }
 
 /**
@@ -2047,30 +2157,31 @@ export const normalizeMessageContent = (content: WAMessageContent | null | undef
 	}
 
 	return content!
+}
 
-	function getFutureProofMessage(message: typeof content) {
-		return (
-			message?.ephemeralMessage ||
-			message?.viewOnceMessage ||
-			message?.documentWithCaptionMessage ||
-			message?.viewOnceMessageV2 ||
-			message?.viewOnceMessageV2Extension ||
-			message?.editedMessage ||
-			message?.associatedChildMessage ||
-			message?.groupStatusMessage ||
-			message?.groupStatusMessageV2 ||
-			// Lottie animated stickers (`.was`) arrive wrapped in
-			// `lottieStickerMessage` (FutureProofMessage at proto field 74).
-			// Unwrapping here lets the rest of the pipeline (downloadMediaMessage,
-			// extractMessageContent, assertMediaContent, etc.) treat it as a
-			// normal `stickerMessage` with `isLottie:true`. Mirrors WA Web's
-			// `WAWebStickersParseStickerMessageProto`:
-			//   const lottieWrap = msg.lottieStickerMessage
-			//   const inner = lottieWrap?.message?.stickerMessage
-			//   const d = inner ?? msg.stickerMessage
-			message?.lottieStickerMessage
-		)
-	}
+/** Returns the media bucket required by WhatsApp's encrypted stanza. */
+export const getRelayMediaType = (message: proto.IMessage): string => {
+	const normalizedMessage = normalizeMessageContent(message) || message
+
+	if (normalizedMessage.imageMessage) return 'image'
+	if (normalizedMessage.videoMessage) return normalizedMessage.videoMessage.gifPlayback ? 'gif' : 'video'
+	if (normalizedMessage.audioMessage) return normalizedMessage.audioMessage.ptt ? 'ptt' : 'audio'
+	if (normalizedMessage.ptvMessage) return 'ptv'
+	if (normalizedMessage.contactMessage) return 'vcard'
+	if (normalizedMessage.documentMessage) return 'document'
+	if (normalizedMessage.contactsArrayMessage) return 'contact_array'
+	if (normalizedMessage.locationMessage) return 'location'
+	if (normalizedMessage.liveLocationMessage) return 'livelocation'
+	if (normalizedMessage.stickerMessage || normalizedMessage.lottieStickerMessage) return 'sticker'
+	if (normalizedMessage.listMessage) return 'list'
+	if (normalizedMessage.listResponseMessage) return 'list_response'
+	if (normalizedMessage.buttonsResponseMessage) return 'buttons_response'
+	if (normalizedMessage.orderMessage) return 'order'
+	if (normalizedMessage.productMessage) return 'product'
+	if (normalizedMessage.interactiveResponseMessage) return 'native_flow_response'
+	if (normalizedMessage.groupInviteMessage) return 'url'
+
+	return ''
 }
 
 /**

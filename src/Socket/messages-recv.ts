@@ -34,6 +34,7 @@ import {
 	ACCOUNT_RESTRICTED_TEXT,
 	aesDecryptCTR,
 	aesEncryptGCM,
+	canonicalizeReceiptChatJid,
 	cleanMessage,
 	cleanupCorruptedSession,
 	compactError,
@@ -50,6 +51,7 @@ import {
 	getCallStatusFromNode,
 	getDecryptionJid,
 	getHistoryMsg,
+	getMessageTypeLabel,
 	getNextPreKeys,
 	getStatusFromReceiptType,
 	handleIdentityChange,
@@ -82,7 +84,13 @@ import { applyDeviceListDelta } from '../Utils/device-list-delta'
 import { makeLockManager } from '../Utils/lock-manager'
 import { makeMutex } from '../Utils/make-mutex'
 import { getMessageAckErrorPolicy } from '../Utils/message-ack-error'
-import { parseTextStatusSideSubNotification, parseTextStatusUpdateNotification } from '../Utils/mex-notifications'
+import {
+	buildMexDiagnostic,
+	type MexDiagnosticReason,
+	normalizeMexOperation,
+	parseTextStatusSideSubNotification,
+	parseTextStatusUpdateNotification
+} from '../Utils/mex-notifications'
 import {
 	JidMapBackend,
 	mapWebMessageStatusToAndroid,
@@ -800,11 +808,47 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const handleUsernameSideSubNotification = (data: Record<string, unknown>) =>
 		handleUsernameSideSubNotificationImpl(data, logger)
 
+	const mexDiagnosticCounters = new Map<string, { total: number; windowStart: number; emitted: number }>()
+	const logMexDiagnostic = (node: BinaryNode, reason: MexDiagnosticReason, opName: string | null, content: unknown) => {
+		const key = `${reason}:${(opName ?? '<missing>').slice(0, 128)}`
+		const now = Date.now()
+		if (!mexDiagnosticCounters.has(key) && mexDiagnosticCounters.size >= 256) {
+			const oldestKey = mexDiagnosticCounters.keys().next().value
+			if (oldestKey) mexDiagnosticCounters.delete(oldestKey)
+		}
+
+		const state = mexDiagnosticCounters.get(key) ?? { total: 0, windowStart: now, emitted: 0 }
+		state.total++
+		if (now - state.windowStart >= 60_000) {
+			state.windowStart = now
+			state.emitted = 0
+		}
+
+		mexDiagnosticCounters.set(key, state)
+		if (state.emitted >= 5) return
+		state.emitted++
+
+		logger.warn(
+			{
+				...buildMexDiagnostic({
+					reason,
+					opName,
+					from: node.attrs.from,
+					stanzaId: node.attrs.id,
+					timestamp: node.attrs.t,
+					content
+				}),
+				occurrences: state.total
+			},
+			'MEX notification rejected'
+		)
+	}
+
 	// Handles mex newsletter notifications
 	const handleMexNewsletterNotification = async (node: BinaryNode) => {
 		const mexNode = getBinaryNodeChild(node, 'mex')
 		if (!mexNode?.content) {
-			logger.warn({ node: summarizeInboundNode(node) }, 'Invalid mex newsletter notification')
+			logMexDiagnostic(node, 'invalid_payload_shape', null, mexNode?.content)
 			return
 		}
 
@@ -819,7 +863,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// non-ASCII payload (newsletter names with accents/emojis, etc.).
 			const payloadContent = mexNode.content
 			if (Array.isArray(payloadContent)) {
-				logger.warn({ mexNode }, 'Invalid mex newsletter notification payload format')
+				logMexDiagnostic(node, 'invalid_payload_shape', mexNode.attrs?.op_name ?? null, payloadContent)
 				return
 			}
 
@@ -827,14 +871,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				typeof payloadContent === 'string' ? payloadContent : Buffer.from(payloadContent).toString('utf8')
 			data = JSON.parse(jsonText)
 		} catch (error) {
-			logger.error({ err: error, node: summarizeInboundNode(node) }, 'Failed to parse mex newsletter notification')
+			logMexDiagnostic(node, 'invalid_json', mexNode.attrs?.op_name ?? null, mexNode.content)
 			return
 		}
 
 		// Some mex payloads (e.g. xwa2_notify_linked_profiles) declare the operation
 		// in the node `op_name` attribute rather than inside the JSON body. Without
 		// this fallback the `!operation` guard below would silently drop them.
-		const operation = data?.operation ?? mexNode.attrs?.op_name
+		const rawOperation = data?.operation ?? mexNode.attrs?.op_name
+		const operation = normalizeMexOperation(rawOperation)
 		let updates = data?.updates
 		// xwa2_notify_linked_profiles payloads arrive with a different shape; normalize
 		// into the same `updates` array consumed by the switch below.
@@ -845,15 +890,20 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 		}
 
-		if (!updates || !operation) {
-			logger.warn({ data }, 'Invalid mex newsletter notification content')
+		if (!Array.isArray(updates) || !operation) {
+			logMexDiagnostic(
+				node,
+				operation ? 'invalid_payload_shape' : 'missing_op_name',
+				typeof rawOperation === 'string' ? rawOperation : null,
+				mexNode.content
+			)
 			return
 		}
 
-		logger.info({ operation, updates }, 'got mex newsletter notification')
+		logger.debug({ operation, updateCount: Array.isArray(updates) ? updates.length : 0 }, 'got mex notification')
 
 		switch (operation) {
-			case 'NotificationNewsletterUpdate':
+			case 'notificationnewsletterupdate':
 				for (const update of updates) {
 					if (update.jid && update.settings && Object.keys(update.settings).length > 0) {
 						ev.emit('newsletter-settings.update', {
@@ -865,7 +915,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 				break
 
-			case 'NotificationNewsletterAdminPromote':
+			case 'notificationnewsletteradminpromote':
 				for (const update of updates) {
 					if (update.jid && update.user) {
 						const [resolvedAuthor, resolvedUser] = await Promise.all([
@@ -884,7 +934,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 				break
 
-			case 'NotificationLinkedProfilesUpdates': {
+			case 'notificationlinkedprofilesupdates': {
 				// Collect LID→PN mappings from added_profiles into a single batched emit —
 				// matches InfiniteAPI's centralized pattern (process-message.ts:441) so the
 				// chats.ts:1560 listener performs one storeLIDPNMappings call per notification.
@@ -908,7 +958,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 
 			default:
-				logger.info({ operation, data }, 'Unhandled mex newsletter notification')
+				logMexDiagnostic(node, 'unknown_op_name', String(rawOperation), mexNode.content)
 				break
 		}
 	}
@@ -924,9 +974,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	 */
 	const handleMexNotification = async (node: BinaryNode) => {
 		const updateNode = getBinaryNodeChild(node, 'update')
-		const opName = updateNode?.attrs?.op_name
+		const rawOpName = updateNode?.attrs?.op_name
+		const opName = normalizeMexOperation(rawOpName)
 
-		if (updateNode && opName === 'TextStatusUpdateNotificationSideSub') {
+		if (updateNode && !opName) {
+			logMexDiagnostic(node, 'missing_op_name', null, updateNode.content)
+			return
+		}
+
+		if (updateNode && opName === 'textstatusupdatenotificationsidesub') {
 			if (!updateNode.content || Array.isArray(updateNode.content)) {
 				logger.warn({ opName }, 'text-status side-sub notification has no valid content')
 				return
@@ -948,7 +1004,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		if (updateNode && opName === 'TextStatusUpdateNotification') {
+		if (updateNode && opName === 'textstatusupdatenotification') {
 			if (!updateNode.content || Array.isArray(updateNode.content)) {
 				logger.warn({ opName }, 'text-status notification has no valid content')
 				return
@@ -970,16 +1026,20 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		if (updateNode && opName === 'NotificationUserReachoutTimelockUpdate') {
+		if (updateNode && opName === 'notificationuserreachouttimelockupdate') {
 			// NULL-001 fix (PR #487 review): guard explicit `null/undefined content`
 			// up-front instead of relying on the non-null assertion and the outer
 			// catch. The try/catch already mitigated the TypeError, but skipping
 			// the parse for a bodyless <update> avoids the noise log entry.
 			if (!updateNode.content) {
 				logger.debug({ opName }, 'reachout timelock notification has no content, skipping')
+			} else if (Array.isArray(updateNode.content)) {
+				logger.warn({ opName }, 'reachout timelock notification content is a node array, expected string/binary')
 			} else {
 				try {
-					const parsed = JSON.parse(updateNode.content.toString()) as { data?: Record<string, unknown> }
+					const raw = updateNode.content
+					const text = typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf8')
+					const parsed = JSON.parse(text) as { data?: Record<string, unknown> }
 					if (parsed?.data) handleReachoutTimelockNotification(parsed.data)
 				} catch (err) {
 					logger.error({ err, opName }, 'failed to parse reachout timelock notification')
@@ -992,9 +1052,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// Username @-handle notifications (2026 rollout). Same envelope
 		// as reachout/capping above; just different op_name + xwa2_ key.
 		const usernameOpHandlers: Record<string, (data: Record<string, unknown>) => void> = {
-			UsernameSetNotification: handleUsernameSetNotification,
-			UsernameDeleteNotification: handleUsernameDeleteNotification,
-			UsernameUpdateNotification: handleUsernameSideSubNotification
+			usernamesetnotification: handleUsernameSetNotification,
+			usernamedeletenotification: handleUsernameDeleteNotification,
+			usernameupdatenotification: handleUsernameSideSubNotification
 		}
 
 		// `hasOwnProperty.call` (not `in`) — the latter would match
@@ -1036,15 +1096,19 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		if (updateNode && opName === 'MessageCappingInfoNotification') {
+		if (updateNode && opName === 'messagecappinginfonotification') {
 			// NULL-001 fix (PR #487 review): same guard as the reachout-timelock
 			// branch above — explicit null/undefined check on content avoids the
 			// non-null assertion and the TypeError-as-log noise.
 			if (!updateNode.content) {
 				logger.debug({ opName }, 'message capping notification has no content, skipping')
+			} else if (Array.isArray(updateNode.content)) {
+				logger.warn({ opName }, 'message capping notification content is a node array, expected string/binary')
 			} else {
 				try {
-					const parsed = JSON.parse(updateNode.content.toString()) as { data?: Record<string, unknown> }
+					const raw = updateNode.content
+					const text = typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf8')
+					const parsed = JSON.parse(text) as { data?: Record<string, unknown> }
 					if (parsed?.data) handleMessageCappingNotification(parsed.data)
 				} catch (err) {
 					logger.error({ err, opName }, 'failed to parse message capping notification')
@@ -1054,9 +1118,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		// Demais ops (newsletter) seguem pelo handler legado que já está consolidado
-		// neste fork com normalização do `xwa2_notify_linked_profiles` e do batched
-		// `lid-mapping.update`.
+		if (updateNode) {
+			logMexDiagnostic(node, 'unknown_op_name', rawOpName ?? null, updateNode.content)
+			return
+		}
+
+		// Legacy newsletter envelopes use a <mex> child instead of <update>.
 		await handleMexNewsletterNotification(node)
 	}
 
@@ -3394,13 +3461,18 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			participant: attrs.participant
 		}
 
-		// Normalize LID→PN in receipt key so events always emit PN JIDs
+		// Normalize LID→PN in the receipt key when the mapping is known. If
+		// WhatsApp has not supplied the mapping yet, retain a bare LID rather
+		// than inventing a PN; a device suffix never belongs in the chat key.
 		const lidMapping = signalRepository.lidMapping
 		const [resolvedRemoteJid, resolvedParticipant] = await Promise.all([
 			resolveLidToPn(key.remoteJid, lidMapping, logger),
 			resolveLidToPn(key.participant, lidMapping, logger)
 		])
-		if (resolvedRemoteJid) key.remoteJid = resolvedRemoteJid
+		if (resolvedRemoteJid || key.remoteJid) {
+			key.remoteJid = canonicalizeReceiptChatJid(resolvedRemoteJid ?? key.remoteJid!)
+		}
+
 		if (resolvedParticipant) key.participant = resolvedParticipant
 		remoteJid = key.remoteJid ?? remoteJid
 
@@ -4077,28 +4149,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 				await upsertMessage(msg, node.attrs.offline ? 'append' : 'notify')
 
-				// Log with [BAILEYS] prefix
+				const msgType = getMessageTypeLabel(msg.message, { isViewOnce: !!msg.key.isViewOnce })
+
+				// Log with [BAILEYS] prefix and the actual normalized content
+				// type, including media wrapped as view-once or ephemeral.
 				if (msg.key.id && msg.key.remoteJid) {
-					logMessageReceived(msg.key.id, msg.key.remoteJid)
+					logMessageReceived(msg.key.id, msg.key.remoteJid, undefined, msgType)
 				}
 
 				// Record message received metric
-				const msgContent = msg.message
-				const msgType = msgContent?.conversation
-					? 'text'
-					: msgContent?.imageMessage
-						? 'image'
-						: msgContent?.videoMessage
-							? 'video'
-							: msgContent?.audioMessage
-								? 'audio'
-								: msgContent?.documentMessage
-									? 'document'
-									: msgContent?.stickerMessage
-										? 'sticker'
-										: msgContent?.reactionMessage
-											? 'reaction'
-											: 'other'
 				recordMessageReceived(msgType)
 
 				// Track session activity for cleanup

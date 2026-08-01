@@ -790,10 +790,17 @@ export const decryptMessageNode = (
 				}
 			}
 
-			// if nothing was found to decrypt
-			if (!decryptables && !fullMessage.key?.isViewOnce) {
-				fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
-				fullMessage.messageStubParameters = [NO_MESSAGE_FOUND_ERROR_TEXT]
+			// If nothing was found to decrypt, preserve unavailable view-once as
+			// an explicit non-ciphertext placeholder. CIPHERTEXT would incorrectly
+			// route it through PDO/retry even though linked devices cannot retrieve
+			// media that was already consumed.
+			if (!decryptables) {
+				if (fullMessage.key?.isViewOnce) {
+					fullMessage.messageStubParameters = ['view_once_unavailable']
+				} else {
+					fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
+					fullMessage.messageStubParameters = [NO_MESSAGE_FOUND_ERROR_TEXT]
+				}
 			}
 		}
 	}

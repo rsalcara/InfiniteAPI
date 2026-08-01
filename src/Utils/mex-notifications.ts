@@ -1,3 +1,6 @@
+import { createHash } from 'crypto'
+import { obfuscateJid } from './log-redaction.js'
+
 export type TextStatusSideSubNotification = {
 	hash: string
 }
@@ -13,6 +16,76 @@ export type TextStatusUpdateNotification = {
 const decodeMexJson = (content: string | Uint8Array): unknown => {
 	const text = typeof content === 'string' ? content : Buffer.from(content).toString('utf8')
 	return JSON.parse(text)
+}
+
+export type MexDiagnosticReason = 'missing_op_name' | 'unknown_op_name' | 'invalid_json' | 'invalid_payload_shape'
+
+export type MexDiagnostic = {
+	event: 'mex_unknown_operation'
+	reason: MexDiagnosticReason
+	opName: string | null
+	from: string | null
+	stanzaId: string | null
+	timestamp: string | null
+	contentType: 'none' | 'string' | 'binary' | 'node-array' | 'unknown'
+	payloadLength: number
+	payloadHash: string | null
+	topLevelKeys: string[]
+}
+
+export const normalizeMexOperation = (operation: unknown): string | null => {
+	if (typeof operation !== 'string') return null
+	const normalized = operation.trim().toLowerCase()
+	return normalized ? normalized : null
+}
+
+export const buildMexDiagnostic = (input: {
+	reason: MexDiagnosticReason
+	opName?: string | null
+	from?: string | null
+	stanzaId?: string | null
+	timestamp?: string | null
+	content?: unknown
+}): MexDiagnostic => {
+	let contentType: MexDiagnostic['contentType'] = 'none'
+	let bytes = Buffer.alloc(0)
+	let topLevelKeys: string[] = []
+
+	if (typeof input.content === 'string') {
+		contentType = 'string'
+		bytes = Buffer.from(input.content, 'utf8')
+	} else if (input.content instanceof Uint8Array) {
+		contentType = 'binary'
+		bytes = Buffer.from(input.content)
+	} else if (Array.isArray(input.content)) {
+		contentType = 'node-array'
+	} else if (input.content !== null && input.content !== undefined) {
+		contentType = 'unknown'
+	}
+
+	if (bytes.length > 0) {
+		try {
+			const parsed = JSON.parse(bytes.toString('utf8'))
+			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+				topLevelKeys = Object.keys(parsed as Record<string, unknown>).sort()
+			}
+		} catch {
+			// invalid JSON is represented by reason + hash/length, never raw content
+		}
+	}
+
+	return {
+		event: 'mex_unknown_operation',
+		reason: input.reason,
+		opName: input.opName ?? null,
+		from: input.from ? obfuscateJid(input.from) : null,
+		stanzaId: input.stanzaId ?? null,
+		timestamp: input.timestamp ?? null,
+		contentType,
+		payloadLength: bytes.length,
+		payloadHash: bytes.length > 0 ? createHash('sha256').update(bytes).digest('hex').slice(0, 16) : null,
+		topLevelKeys
+	}
 }
 
 /**

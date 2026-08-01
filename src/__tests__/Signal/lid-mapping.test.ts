@@ -1,6 +1,6 @@
-import { jest } from '@jest/globals'
+import { afterEach, jest } from '@jest/globals'
 import P from 'pino'
-import { LIDMappingStore } from '../../Signal/lid-mapping'
+import { LID_MAPPING_DESTROY_TIMEOUT_MS, LIDMappingErrorCode, LIDMappingStore } from '../../Signal/lid-mapping'
 import type { LIDMapping, SignalDataTypeMap, SignalKeyStoreWithTransaction } from '../../Types'
 
 const HOSTED_DEVICE_ID = 99
@@ -20,6 +20,10 @@ describe('LIDMappingStore', () => {
 	beforeEach(() => {
 		jest.clearAllMocks()
 		lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc)
+	})
+
+	afterEach(() => {
+		jest.useRealTimers()
 	})
 
 	describe('getPNForLID', () => {
@@ -83,6 +87,279 @@ describe('LIDMappingStore', () => {
 					{ lid: lidTwo, pn: '88888:99@hosted' }
 				])
 			)
+		})
+	})
+
+	describe('bounded mapping writer', () => {
+		it('persists one lid-mapping bucket per batch and updates cache only after commit', async () => {
+			mockKeys.get.mockResolvedValue({} as never)
+			const result = await lidMappingStore.storeLIDPNMappings([
+				{ pn: '11111@s.whatsapp.net', lid: 'aaaaa@lid' },
+				{ pn: '22222@s.whatsapp.net', lid: 'bbbbb@lid' }
+			])
+
+			expect(result).toEqual({ stored: 2, skipped: 0, errors: 0 })
+			expect(mockKeys.set).toHaveBeenCalledTimes(1)
+			expect(mockKeys.set).toHaveBeenCalledWith({
+				'lid-mapping': {
+					'11111': 'aaaaa',
+					aaaaa_reverse: '11111',
+					'22222': 'bbbbb',
+					bbbbb_reverse: '22222'
+				}
+			})
+			await expect(lidMappingStore.getKnownLIDForPN('11111@s.whatsapp.net')).resolves.toBe('aaaaa@lid')
+		})
+
+		it('does not publish a failed batch into cache', async () => {
+			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, { retryAttempts: 1 })
+			mockKeys.get.mockResolvedValue({} as never)
+			;(mockKeys.set as any).mockRejectedValueOnce(new Error('disk full'))
+
+			await expect(
+				lidMappingStore.storeLIDPNMappings([{ pn: '11111@s.whatsapp.net', lid: 'aaaaa@lid' }])
+			).resolves.toEqual({ stored: 0, skipped: 0, errors: 1 })
+
+			mockKeys.get.mockResolvedValue({} as never)
+			await expect(lidMappingStore.getKnownLIDForPN('11111@s.whatsapp.net')).resolves.toBeNull()
+		})
+
+		it('applies backpressure and resumes a burst when writer capacity returns', async () => {
+			let release!: () => void
+			const blocked = new Promise<void>(resolve => {
+				release = resolve
+			})
+			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, {
+				batchSize: 100,
+				maxPendingMappings: 100,
+				retryAttempts: 1
+			})
+			mockKeys.get.mockResolvedValue({} as never)
+			mockKeys.transaction.mockImplementationOnce(async <T>(work: () => Promise<T>): Promise<T> => {
+				await blocked
+				return work()
+			})
+
+			const admittedPairs = Array.from({ length: 100 }, (_, index) => ({
+				pn: `${10_000 + index}@s.whatsapp.net`,
+				lid: `${20_000 + index}@lid`
+			}))
+			const admitted = lidMappingStore.storeLIDPNMappings(admittedPairs)
+			await Promise.resolve()
+
+			let waitingSettled = false
+			const waiting = lidMappingStore.storeLIDPNMappings([{ pn: '99999@s.whatsapp.net', lid: '88888@lid' }])
+			void waiting.then(() => {
+				waitingSettled = true
+			})
+			await new Promise(resolve => setImmediate(resolve))
+
+			expect(waitingSettled).toBe(false)
+			expect(lidMappingStore.getStatistics().backpressureWaits).toBe(1)
+			expect(lidMappingStore.getStatistics().rejectedWrites).toBe(0)
+
+			release()
+			await admitted
+			await expect(waiting).resolves.toEqual({ stored: 1, skipped: 0, errors: 0 })
+		})
+
+		it('admits blocked writes in FIFO order without letting smaller chunks bypass the head', async () => {
+			let release!: () => void
+			const blocked = new Promise<void>(resolve => {
+				release = resolve
+			})
+			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, {
+				batchSize: 100,
+				maxPendingMappings: 100,
+				retryAttempts: 1
+			})
+			mockKeys.get.mockResolvedValue({} as never)
+			mockKeys.transaction.mockImplementationOnce(async <T>(work: () => Promise<T>): Promise<T> => {
+				await blocked
+				return work()
+			})
+
+			const active = lidMappingStore.storeLIDPNMappings(
+				Array.from({ length: 100 }, (_, index) => ({
+					pn: `${10_000 + index}@s.whatsapp.net`,
+					lid: `${20_000 + index}@lid`
+				}))
+			)
+			await Promise.resolve()
+			const large = lidMappingStore.storeLIDPNMappings(
+				Array.from({ length: 90 }, (_, index) => ({
+					pn: `${30_000 + index}@s.whatsapp.net`,
+					lid: `${40_000 + index}@lid`
+				}))
+			)
+			const small = lidMappingStore.storeLIDPNMappings([{ pn: '99999@s.whatsapp.net', lid: '88888@lid' }])
+			await new Promise(resolve => setImmediate(resolve))
+
+			release()
+			await Promise.all([active, large, small])
+			const mappingBuckets = mockKeys.set.mock.calls.map(call => (call[0] as any)['lid-mapping'])
+			expect(mappingBuckets[1]).toHaveProperty('30000', '40000')
+			expect(mappingBuckets[2]).toHaveProperty('99999', '88888')
+		})
+
+		it('rejects a private write chunk that can never fit the admission budget', async () => {
+			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, {
+				batchSize: 100,
+				maxPendingMappings: 100
+			})
+			const oversized = Array.from({ length: 101 }, (_, index) => ({
+				pn: `${50_000 + index}@s.whatsapp.net`,
+				lid: `${60_000 + index}@lid`
+			}))
+
+			await expect((lidMappingStore as any).enqueueMappingWrite(oversized)).rejects.toMatchObject({
+				code: LIDMappingErrorCode.BACKPRESSURE
+			})
+		})
+
+		it('chunks an oversized history batch instead of dropping all mappings', async () => {
+			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, {
+				batchSize: 100,
+				maxPendingMappings: 100
+			})
+			mockKeys.get.mockResolvedValue({} as never)
+			const pairs = Array.from({ length: 250 }, (_, index) => ({
+				pn: `${100_000 + index}@s.whatsapp.net`,
+				lid: `${200_000 + index}@lid`
+			}))
+
+			await expect(lidMappingStore.storeLIDPNMappings(pairs)).resolves.toEqual({
+				stored: 250,
+				skipped: 0,
+				errors: 0
+			})
+			expect(mockKeys.set).toHaveBeenCalledTimes(3)
+		})
+
+		it('yields to socket I/O between SQLite history batches', async () => {
+			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, {
+				batchSize: 100,
+				maxPendingMappings: 100
+			})
+			mockKeys.get.mockResolvedValue({} as never)
+			const pairs = Array.from({ length: 250 }, (_, index) => ({
+				pn: `${500_000 + index}@s.whatsapp.net`,
+				lid: `${600_000 + index}@lid`
+			}))
+			let socketTurnRan = false
+			setImmediate(() => {
+				socketTurnRan = true
+			})
+
+			await expect(lidMappingStore.storeLIDPNMappings(pairs)).resolves.toEqual({
+				stored: 250,
+				skipped: 0,
+				errors: 0
+			})
+
+			expect(socketTurnRan).toBe(true)
+		})
+
+		it('drains every chunk of an admitted history batch during destroy', async () => {
+			let releaseFirstChunk!: () => void
+			const firstChunkBlocked = new Promise<void>(resolve => {
+				releaseFirstChunk = resolve
+			})
+			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, {
+				batchSize: 100,
+				maxPendingMappings: 100,
+				retryAttempts: 1
+			})
+			mockKeys.get.mockResolvedValue({} as never)
+			mockKeys.transaction.mockImplementationOnce(async <T>(work: () => Promise<T>): Promise<T> => {
+				await firstChunkBlocked
+				return work()
+			})
+
+			const pairs = Array.from({ length: 250 }, (_, index) => ({
+				pn: `${300_000 + index}@s.whatsapp.net`,
+				lid: `${400_000 + index}@lid`
+			}))
+			const storePromise = lidMappingStore.storeLIDPNMappings(pairs)
+			await Promise.resolve()
+
+			let destroySettled = false
+			const destroyPromise = lidMappingStore.destroy().then(result => {
+				destroySettled = true
+				return result
+			})
+			await Promise.resolve()
+			expect(destroySettled).toBe(false)
+
+			releaseFirstChunk()
+			await expect(storePromise).resolves.toEqual({ stored: 250, skipped: 0, errors: 0 })
+			await expect(destroyPromise).resolves.toBe(true)
+			expect(mockKeys.set).toHaveBeenCalledTimes(3)
+		})
+
+		it('normalizes non-finite pending-writer overrides', () => {
+			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, {
+				maxPendingMappings: Number.POSITIVE_INFINITY
+			})
+
+			expect(lidMappingStore.getConfig().maxPendingMappings).toBe(5_000)
+		})
+
+		it('normalizes fractional count overrides before cache and chunk construction', () => {
+			expect(
+				() =>
+					(lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, {
+						maxCacheSize: 100.9,
+						batchSize: 10.8,
+						maxPendingMappings: 100.7
+					}))
+			).not.toThrow()
+			expect(lidMappingStore.getConfig()).toMatchObject({
+				maxCacheSize: 100,
+				batchSize: 10,
+				maxPendingMappings: 100
+			})
+		})
+
+		it('clamps finite pending-writer overrides at the configured ceiling', () => {
+			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, {
+				maxPendingMappings: 100_001
+			})
+
+			expect(lidMappingStore.getConfig().maxPendingMappings).toBe(100_000)
+		})
+
+		it('deduplicates conflicting mappings with the last pair winning', async () => {
+			mockKeys.get.mockResolvedValue({} as never)
+			const result = await lidMappingStore.storeLIDPNMappings([
+				{ pn: '11111@s.whatsapp.net', lid: 'aaaaa@lid' },
+				{ pn: '11111@s.whatsapp.net', lid: 'bbbbb@lid' },
+				{ pn: '22222@s.whatsapp.net', lid: 'bbbbb@lid' }
+			])
+
+			expect(result.skipped).toBe(2)
+			expect(mockKeys.set).toHaveBeenCalledWith({
+				'lid-mapping': {
+					'22222': 'bbbbb',
+					bbbbb_reverse: '22222'
+				}
+			})
+		})
+
+		it('filters malformed mappings before deduplication', async () => {
+			mockKeys.get.mockResolvedValue({} as never)
+			const result = await lidMappingStore.storeLIDPNMappings([
+				{ pn: '11111@s.whatsapp.net', lid: 'aaaaa@lid' },
+				{ pn: '11111@s.whatsapp.net', lid: 'not-a-lid@s.whatsapp.net' }
+			])
+
+			expect(result).toEqual({ stored: 1, skipped: 1, errors: 0 })
+			expect(mockKeys.set).toHaveBeenCalledWith({
+				'lid-mapping': {
+					'11111': 'aaaaa',
+					aaaaa_reverse: '11111'
+				}
+			})
 		})
 	})
 
@@ -242,13 +519,70 @@ describe('LIDMappingStore', () => {
 			await Promise.resolve()
 
 			const destroyPromise = lidMappingStore.destroy()
-			await jest.advanceTimersByTimeAsync(5_000)
+			await jest.advanceTimersByTimeAsync(LID_MAPPING_DESTROY_TIMEOUT_MS)
 			await expect(destroyPromise).resolves.toBe(false)
+
+			let fullyDrained = false
+			const waitForDestroy = lidMappingStore.waitForDestroy().then(() => {
+				fullyDrained = true
+			})
+			await Promise.resolve()
+			expect(fullyDrained).toBe(false)
 
 			releaseOperation()
 			await operationPromise
-			await expect(lidMappingStore.waitForDestroy()).resolves.toBeUndefined()
-			jest.useRealTimers()
+			await expect(waitForDestroy).resolves.toBeUndefined()
+			expect(fullyDrained).toBe(true)
+		})
+
+		it('hard-stops queued writes only after the global destroy timeout', async () => {
+			jest.useFakeTimers()
+			let releaseActiveWrite!: () => void
+			const activeWriteBlocked = new Promise<void>(resolve => {
+				releaseActiveWrite = resolve
+			})
+			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, { retryAttempts: 1 })
+			mockKeys.get.mockResolvedValue({} as never)
+			mockKeys.transaction.mockImplementationOnce(async <T>(work: () => Promise<T>): Promise<T> => {
+				await activeWriteBlocked
+				return work()
+			})
+
+			const active = lidMappingStore.storeLIDPNMappings([{ pn: '11111@s.whatsapp.net', lid: 'aaaaa@lid' }])
+			await Promise.resolve()
+			const queued = [
+				lidMappingStore.storeLIDPNMappings([{ pn: '22222@s.whatsapp.net', lid: 'bbbbb@lid' }]),
+				lidMappingStore.storeLIDPNMappings([{ pn: '33333@s.whatsapp.net', lid: 'ccccc@lid' }])
+			]
+			const queuedOutcomes = Promise.all(
+				queued.map(promise =>
+					promise.then(
+						() => 'resolved' as const,
+						error => error as Error
+					)
+				)
+			)
+
+			const destroyPromise = lidMappingStore.destroy()
+			await jest.advanceTimersByTimeAsync(LID_MAPPING_DESTROY_TIMEOUT_MS)
+			await expect(destroyPromise).resolves.toBe(false)
+			const outcomes = await queuedOutcomes
+			expect(outcomes).toHaveLength(2)
+			expect(outcomes.every(outcome => outcome instanceof Error && /timed out|destroyed/.test(outcome.message))).toBe(
+				true
+			)
+
+			let fullyDrained = false
+			const waitForDestroy = lidMappingStore.waitForDestroy().then(() => {
+				fullyDrained = true
+			})
+			await Promise.resolve()
+			expect(fullyDrained).toBe(false)
+
+			releaseActiveWrite()
+			await expect(active).resolves.toEqual({ stored: 1, skipped: 0, errors: 0 })
+			await expect(waitForDestroy).resolves.toBeUndefined()
+			expect(mockKeys.set).toHaveBeenCalledTimes(1)
 		})
 	})
 

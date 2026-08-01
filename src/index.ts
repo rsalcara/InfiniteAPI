@@ -43,6 +43,7 @@ export type {
 	VideoFrame,
 	VideoFrameFormat,
 	VoipClientEvents,
+	VoipConnectionUpdate,
 	VoipIncomingCallEvent,
 	VoipSdkConfig,
 	VoipSocketLike

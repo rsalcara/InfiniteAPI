@@ -22,22 +22,28 @@ import {
 	aesEncryptCTR,
 	appendNativeAndroidPairingAttestation,
 	bindWaitForConnectionUpdate,
+	buildCompanionDeviceProps,
 	buildPairingQRData,
+	buildWebInfo,
 	bytesToCrockford,
 	configureSuccessfulPairing,
 	createNativeAndroidClientPayloadContext,
 	createNativeAndroidFallbackDeviceProfile,
 	Curve,
 	derivePairingCodeKey,
+	evaluateKeepAliveWatchdog,
 	generateLoginNode,
 	generateMdTagPrefix,
 	generateRegistrationNode,
 	getCodeFromWSError,
 	getErrorCodeFromStreamError,
 	getNextPreKeysNode,
+	getPairCodeCompanionIdentity,
+	getQrCodeCompanionIdentity,
 	incrementNativeAndroidConnectionLc,
 	makeEventBuffer,
 	makeNoiseHandler,
+	obfuscateJid,
 	promiseTimeout,
 	resolveNativeAndroidClientPayloadPhase,
 	resolveNativeAndroidPairingAppVariant,
@@ -46,7 +52,8 @@ import {
 	signedKeyPair,
 	xmppSignedPreKey
 } from '../Utils'
-import { getPlatformId, isAndroidBrowser } from '../Utils/browser-utils'
+import { isAndroidBrowser } from '../Utils/browser-utils'
+import { makeMutex } from '../Utils/make-mutex'
 import { applyReconciledPrekeyCursors } from '../Utils/prekey-upload-cursors'
 import { resolvePrekeyUploadQueryTimeout } from '../Utils/prekey-upload-timeout'
 import {
@@ -113,6 +120,7 @@ export const makeSocket = (config: SocketConfig) => {
 	const transportSession = resolveTransportSession(config, authState.creds)
 	const isNativeAndroid = transportSession.profile === 'native_android'
 	let closed = false
+	const pairingCodeMutex = makeMutex()
 	// ClientPayload must use the resolved, persisted native identity rather than
 	// the caller's current environment values. This keeps reconnects immutable.
 	const payloadConfig: SocketConfig = isNativeAndroid
@@ -772,14 +780,29 @@ export const makeSocket = (config: SocketConfig) => {
 		let node: proto.IClientPayload
 		if (!creds.me) {
 			node = generateRegistrationNode(creds, payloadConfig, nativeClientPayloadContext)
+			const registrationProps = buildCompanionDeviceProps(payloadConfig)
+			const registrationPlatform =
+				proto.ClientPayload.UserAgent.Platform[node.userAgent?.platform ?? proto.ClientPayload.UserAgent.Platform.WEB]
+			const registrationWebSubPlatform = isNativeAndroid
+				? undefined
+				: proto.ClientPayload.WebInfo.WebSubPlatform[
+						node.webInfo?.webSubPlatform ?? proto.ClientPayload.WebInfo.WebSubPlatform.WEB_BROWSER
+					]
+			const registrationPlatformType =
+				proto.DeviceProps.PlatformType[registrationProps.platformType ?? proto.DeviceProps.PlatformType.UNKNOWN]
 			logger.info(
 				{
 					transportProfile: transportSession.profile,
-					platform: node.userAgent?.platform,
+					platform: registrationPlatform,
+					webSubPlatform: registrationWebSubPlatform,
+					device: node.userAgent?.device,
+					platformType: registrationPlatformType,
+					devicePropsOs: registrationProps.os,
+					devicePropsVersion: registrationProps.version,
 					appVersion: node.userAgent?.appVersion,
 					selectedProfileId: transportSession.nativeAndroid?.device.profileId
 				},
-				'not logged in, attempting registration...'
+				`🔐 Registration profile | [platform=${registrationPlatform}${isNativeAndroid ? '📱' : '🌐'}]${registrationWebSubPlatform ? ` [webSubPlatform=${registrationWebSubPlatform}${registrationWebSubPlatform === 'WIN_HYBRID' ? '🪟' : '🌐'}]` : ''} [device=${node.userAgent?.device || 'unknown'}${isNativeAndroid ? '📱' : '🖥️'}] [platformType=${registrationPlatformType}${isNativeAndroid ? '📱' : '🪟'}] [DeviceProps.os=${registrationProps.os || 'unknown'}${isNativeAndroid ? '📱' : '🪟'}] [DeviceProps.version=${registrationProps.version?.primary ?? 'unknown'}🔢]`
 			)
 		} else {
 			node = generateLoginNode(creds.me.id, payloadConfig, nativeClientPayloadContext)
@@ -1671,20 +1694,40 @@ export const makeSocket = (config: SocketConfig) => {
 		})
 	}
 
-	const startKeepAliveRequest = () =>
-		(keepAliveReq = setInterval(() => {
+	let lastKeepAliveCheckAt = 0
+	const startKeepAliveRequest = () => {
+		lastKeepAliveCheckAt = Date.now()
+		keepAliveReq = setInterval(() => {
 			if (!lastDateRecv) {
 				lastDateRecv = new Date()
 			}
 
-			const diff = Date.now() - lastDateRecv.getTime()
+			const now = Date.now()
+			const lastNetworkActivityAt = lastDateRecv.getTime()
+			const watchdogDecision = evaluateKeepAliveWatchdog(
+				now,
+				lastNetworkActivityAt,
+				lastKeepAliveCheckAt,
+				keepAliveIntervalMs
+			)
+			lastKeepAliveCheckAt = now
 			/*
 				check if it's been a suspicious amount of time since the server responded with our last seen
 				it could be that the network is down
 			*/
-			if (diff > keepAliveIntervalMs + 5000) {
+			if (watchdogDecision.shouldDisconnect) {
 				void end(new Boom('Connection was lost', { statusCode: DisconnectReason.connectionLost }))
 			} else if (ws.isOpen) {
+				if (watchdogDecision.watchdogWasDelayed && watchdogDecision.networkIdleMs > keepAliveIntervalMs + 5000) {
+					logger.warn(
+						{
+							networkIdleMs: watchdogDecision.networkIdleMs,
+							watchdogDelayMs: watchdogDecision.watchdogDelayMs
+						},
+						'keep alive disconnect deferred after event-loop stall'
+					)
+				}
+
 				// Send keep-alive ping via sendNode() (fire-and-forget) instead of query();
 				// WA's ping response arrives as an incoming frame and updates lastDateRecv.
 				sendNode({
@@ -1706,7 +1749,9 @@ export const makeSocket = (config: SocketConfig) => {
 			} else {
 				logger.warn('keep alive called when WS not open')
 			}
-		}, keepAliveIntervalMs))
+		}, keepAliveIntervalMs)
+	}
+
 	/** i have no idea why this exists. pls enlighten me */
 	const sendPassiveIq = (tag: 'passive' | 'active') =>
 		query({
@@ -1746,98 +1791,134 @@ export const makeSocket = (config: SocketConfig) => {
 		void end(new Boom(msg || 'Intentional Logout', { statusCode: DisconnectReason.loggedOut }))
 	}
 
-	const requestPairingCode = async (phoneNumber: string, customPairingCode?: string): Promise<string> => {
-		if (isNativeAndroid) {
-			throw new Boom(
-				'native_android uses the official QR companion flow; phone-number pair code remains available only on the Web transport',
-				{ statusCode: 400 }
-			)
-		}
+	const requestPairingCode = (phoneNumber: string, customPairingCode?: string): Promise<string> =>
+		pairingCodeMutex.mutex(async () => {
+			if (isNativeAndroid) {
+				throw new Boom(
+					'native_android uses the official QR companion flow; phone-number pair code remains available only on the Web transport',
+					{ statusCode: 400 }
+				)
+			}
 
-		const pairingCode = customPairingCode ?? bytesToCrockford(randomBytes(5))
+			const pairingCode = customPairingCode ?? bytesToCrockford(randomBytes(5))
 
-		if (customPairingCode && customPairingCode?.length !== 8) {
-			throw new Error('Custom pairing code must be exactly 8 chars')
-		}
+			if (customPairingCode && customPairingCode?.length !== 8) {
+				throw new Error('Custom pairing code must be exactly 8 chars')
+			}
 
-		authState.creds.pairingCode = pairingCode
+			const previousPairingCode = authState.creds.pairingCode
+			const previousMe = authState.creds.me
+			authState.creds.pairingCode = pairingCode
 
-		authState.creds.me = {
-			id: jidEncode(phoneNumber, 's.whatsapp.net'),
-			name: '~'
-		}
+			authState.creds.me = {
+				id: jidEncode(phoneNumber, 's.whatsapp.net'),
+				name: '~'
+			}
 
-		// Pair code companion_platform_id must be Chrome (1) when using Android
-		// browser preset. ANDROID_PHONE (16) causes silent timeout (server ignores),
-		// UWP (21) causes "cannot connect device" rejection. Only Chrome (1) works
-		// for pair code via web protocol (WA\x06\x03). The device still appears as
-		// "Android" in linked devices because DeviceProps.platformType=ANDROID_PHONE
-		// is set separately in the registration node.
-		const isAndroid = isAndroidBrowser(browser)
-		const pairPlatformId = isAndroid ? getPlatformId('Chrome') : getPlatformId(browser[1])
-		const pairPlatformDisplay = isAndroid ? 'Chrome (Mac OS)' : `${browser[1]} (${browser[0]})`
+			// Pair Code and DeviceProps use independent identities. A Windows
+			// WIN_HYBRID registration keeps the configured Web client here
+			// (Edge=2) because companion_hello with UWP=8 is rejected with IQ 400,
+			// while DeviceProps still uses UWP=21 for full history. Android browser
+			// presets intentionally map to Chrome=1 in the Pair Code Web enum.
+			const isAndroid = isAndroidBrowser(browser)
+			const pairIdentity = getPairCodeCompanionIdentity(browser, payloadConfig.syncFullHistory)
+			const pairPlatformId = pairIdentity.platformId
+			const pairPlatformDisplay = pairIdentity.platformDisplay
+			const pairPlatformName = pairIdentity.platformName
+			const companionProps = buildCompanionDeviceProps(payloadConfig)
+			const devicePlatformType =
+				proto.DeviceProps.PlatformType[companionProps.platformType ?? proto.DeviceProps.PlatformType.UNKNOWN]
+			const webSubPlatform =
+				proto.ClientPayload.WebInfo.WebSubPlatform[
+					buildWebInfo(payloadConfig).webSubPlatform ?? proto.ClientPayload.WebInfo.WebSubPlatform.WEB_BROWSER
+				]
 
-		logger.info(
-			{
-				pairCode: pairingCode,
-				jid: authState.creds.me.id,
-				companionPlatformId: pairPlatformId,
-				companionPlatformDisplay: pairPlatformDisplay,
-				isAndroid
-			},
-			`pair code requested | companion: ${pairPlatformDisplay} | ${isAndroid ? 'android override -> Chrome' : 'native platform'}`
-		)
-
-		ev.emit('creds.update', authState.creds)
-		await sendNode({
-			tag: 'iq',
-			attrs: {
-				to: S_WHATSAPP_NET,
-				type: 'set',
-				id: generateMessageTag(),
-				xmlns: 'md'
-			},
-			content: [
+			logger.info(
 				{
-					tag: 'link_code_companion_reg',
-					attrs: {
-						jid: authState.creds.me.id,
-						stage: 'companion_hello',
+					pairCodeLength: pairingCode.length,
+					jid: obfuscateJid(authState.creds.me.id),
+					companionPlatformId: pairPlatformId,
+					companionPlatformName: pairPlatformName,
+					companionPlatformDisplay: pairPlatformDisplay,
+					windowsHybrid: pairIdentity.windowsHybrid,
+					webSubPlatform,
+					devicePlatformType,
+					devicePropsOs: companionProps.os,
+					devicePropsVersion: companionProps.version,
+					isAndroid
+				},
+				`🔢 Pair Code requested | [companionPlatform=${pairPlatformName}${pairIdentity.windowsHybrid ? '🪟' : '🌐'} id=${pairPlatformId}] [webSubPlatform=${webSubPlatform}${pairIdentity.windowsHybrid ? '🪟' : '🌐'}] [platformType=${devicePlatformType}${pairIdentity.windowsHybrid ? '🪟' : '🌐'}] [DeviceProps.os=${companionProps.os || 'unknown'}${pairIdentity.windowsHybrid ? '🪟' : '💻'}] [DeviceProps.version=${companionProps.version?.primary ?? 'unknown'}🔢]`
+			)
 
-						should_show_push_notification: 'true'
+			ev.emit('creds.update', authState.creds)
+			let pairingResponse: BinaryNode
+			try {
+				pairingResponse = await query(
+					{
+						tag: 'iq',
+						attrs: {
+							to: S_WHATSAPP_NET,
+							type: 'set',
+							id: generateMessageTag(),
+							xmlns: 'md'
+						},
+						content: [
+							{
+								tag: 'link_code_companion_reg',
+								attrs: {
+									jid: authState.creds.me.id,
+									stage: 'companion_hello',
+
+									should_show_push_notification: 'true'
+								},
+								content: [
+									{
+										tag: 'link_code_pairing_wrapped_companion_ephemeral_pub',
+										attrs: {},
+										content: await generatePairingKey()
+									},
+									{
+										tag: 'companion_server_auth_key_pub',
+										attrs: {},
+										content: authState.creds.noiseKey.public
+									},
+									{
+										tag: 'companion_platform_id',
+										attrs: {},
+										content: pairPlatformId
+									},
+									{
+										tag: 'companion_platform_display',
+										attrs: {},
+										content: pairPlatformDisplay
+									},
+									{
+										tag: 'link_code_pairing_nonce',
+										attrs: {},
+										content: '0'
+									}
+								]
+							}
+						]
 					},
-					content: [
-						{
-							tag: 'link_code_pairing_wrapped_companion_ephemeral_pub',
-							attrs: {},
-							content: await generatePairingKey()
-						},
-						{
-							tag: 'companion_server_auth_key_pub',
-							attrs: {},
-							content: authState.creds.noiseKey.public
-						},
-						{
-							tag: 'companion_platform_id',
-							attrs: {},
-							content: pairPlatformId
-						},
-						{
-							tag: 'companion_platform_display',
-							attrs: {},
-							content: pairPlatformDisplay
-						},
-						{
-							tag: 'link_code_pairing_nonce',
-							attrs: {},
-							content: '0'
-						}
-					]
-				}
-			]
+					15_000
+				)
+			} catch (error) {
+				authState.creds.pairingCode = previousPairingCode
+				authState.creds.me = previousMe
+				ev.emit('creds.update', authState.creds)
+				throw error
+			}
+
+			logger.info(
+				{
+					pairCodeNotificationAck: pairingResponse?.attrs?.type ?? 'unknown',
+					pairCodeNotificationFrom: pairingResponse?.attrs?.from
+				},
+				'📲 Pair Code notification accepted by WhatsApp server'
+			)
+			return authState.creds.pairingCode
 		})
-		return authState.creds.pairingCode
-	}
 
 	async function generatePairingKey() {
 		const salt = randomBytes(32)
@@ -1917,7 +1998,28 @@ export const makeSocket = (config: SocketConfig) => {
 			}
 
 			const ref = (refNode.content as Buffer).toString('utf-8')
-			const qr = buildPairingQRData(ref, noiseKeyB64, identityKeyB64, advB64, browser, transportSession.profile)
+			const qr = buildPairingQRData(
+				ref,
+				noiseKeyB64,
+				identityKeyB64,
+				advB64,
+				browser,
+				transportSession.profile,
+				payloadConfig.syncFullHistory
+			)
+			const qrIdentity = getQrCodeCompanionIdentity(browser, transportSession.profile, payloadConfig.syncFullHistory)
+			const usesOfficialLinkedDevicesUrl = qr.startsWith('https://wa.me/settings/linked_devices#')
+			logger.info(
+				{
+					pairingMode: 'qr',
+					qrFormat: usesOfficialLinkedDevicesUrl ? 'official_linked_devices_url' : 'legacy',
+					companionPlatformId: qrIdentity.platformId,
+					companionPlatformName: qrIdentity.platformName,
+					companionPlatformDisplay: qrIdentity.platformDisplay,
+					windowsHybrid: qrIdentity.windowsHybrid
+				},
+				`🔳 QR Pairing profile | [format=${usesOfficialLinkedDevicesUrl ? 'official🔗' : 'legacy'}] [companionPlatform=${qrIdentity.platformName}${qrIdentity.windowsHybrid ? '🪟' : '🌐'} id=${qrIdentity.platformId}]`
+			)
 
 			ev.emit('connection.update', { qr })
 
@@ -2007,8 +2109,25 @@ export const makeSocket = (config: SocketConfig) => {
 		const isAndroid = isNativeAndroid || isAndroidBrowser(browser)
 		const phoneId = authState.creds.me?.id?.split(':')[0]?.split('@')[0] || 'new session'
 		const nativeAppPlatform = transportSession.nativeAndroid?.appVariant === 'consumer' ? 'ANDROID' : 'SMB_ANDROID'
+		const companionProps = buildCompanionDeviceProps(payloadConfig)
+		const platformType =
+			proto.DeviceProps.PlatformType[companionProps.platformType ?? proto.DeviceProps.PlatformType.UNKNOWN]
+		const webSubPlatform = isNativeAndroid
+			? undefined
+			: proto.ClientPayload.WebInfo.WebSubPlatform[
+					buildWebInfo(payloadConfig).webSubPlatform ?? proto.ClientPayload.WebInfo.WebSubPlatform.WEB_BROWSER
+				]
 		logger.info(
-			`${isAndroid ? '\uD83D\uDCF1' : '\uD83D\uDDA5\uFE0F'} Connected to WA | ${phoneId} | platform: ${isAndroid ? nativeAppPlatform : 'MACOS'} | device: ${isAndroid ? 'Android' : 'Desktop'} | platformType: ${isAndroid ? 'ANDROID_PHONE' : 'CHROME'}`
+			{
+				transportProfile: transportSession.profile,
+				platform: isAndroid ? nativeAppPlatform : 'WEB',
+				webSubPlatform,
+				device: isAndroid ? 'Android' : 'Desktop',
+				platformType,
+				devicePropsOs: companionProps.os,
+				devicePropsVersion: companionProps.version
+			},
+			`${isAndroid ? '📱' : '🖥️'} Connected to WA | ${phoneId} | [platform=${isAndroid ? nativeAppPlatform : 'WEB'}${isAndroid ? '📱' : '🌐'}]${webSubPlatform ? ` [webSubPlatform=${webSubPlatform}🪟]` : ''} [device=${isAndroid ? 'Android📱' : 'Desktop🖥️'}] [platformType=${platformType}${isAndroid ? '📱' : '🪟'}] [DeviceProps.os=${companionProps.os || 'unknown'}${isAndroid ? '📱' : '🪟'}] [DeviceProps.version=${companionProps.version?.primary ?? 'unknown'}🔢]`
 		)
 		clearTimeout(qrTimer) // will never happen in all likelyhood -- but just in case WA sends success on first try
 

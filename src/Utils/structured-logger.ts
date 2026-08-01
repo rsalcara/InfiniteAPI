@@ -17,6 +17,7 @@
  * @module Utils/structured-logger
  */
 
+import { MAX_STACK_LENGTH, sanitizeLogRecord, sanitizeLogString, sanitizeLogValue } from './log-redaction.js'
 import type { ILogger } from './logger.js'
 
 // ============================================================================
@@ -510,7 +511,21 @@ export class StructuredLogger implements ILogger {
 			return
 		}
 
-		const entry = this.createLogEntry(level, obj, msg)
+		let entry: LogEntry
+		try {
+			entry = this.createLogEntry(level, obj, msg)
+		} catch {
+			// Logging must never abort the operation that emitted it. Keep the
+			// fallback independent from the hostile value that failed cleanup.
+			entry = {
+				timestamp: new Date().toISOString(),
+				level,
+				levelValue: LOG_LEVEL_VALUES[level],
+				message: '[log sanitization failed]',
+				name: this.config.name,
+				data: { sanitizationError: '[unavailable]' }
+			}
+		}
 
 		// Update metrics
 		this.updateMetrics(level)
@@ -571,29 +586,29 @@ export class StructuredLogger implements ILogger {
 	 */
 	private createLogEntry(level: LogLevel, obj: unknown, msg?: string): LogEntry {
 		const timestamp = new Date().toISOString()
-		let message = msg || ''
+		let message = sanitizeLogString(msg || '')
 		let data: Record<string, unknown> | undefined
 		let stack: string | undefined
 
 		// Process object
 		if (obj instanceof Error) {
-			message = message || obj.message
-			if (this.config.includeStackTrace && obj.stack) {
-				stack = obj.stack
-			}
-
-			data = {
-				errorName: obj.name,
-				errorMessage: obj.message,
-				...(obj as unknown as Record<string, unknown>)
+			const sanitizedError = sanitizeLogValue(obj, {
+				extraFields: this.config.redactFields,
+				includeErrorStack: this.config.includeStackTrace
+			}) as Record<string, unknown>
+			const { stack: sanitizedStack, ...errorData } = sanitizedError
+			data = errorData
+			message = message || sanitizeLogString(String(data.name || 'Error'))
+			if (this.config.includeStackTrace && typeof sanitizedStack === 'string') {
+				stack = sanitizeLogString(sanitizedStack, MAX_STACK_LENGTH)
 			}
 		} else if (typeof obj === 'object' && obj !== null) {
 			data = this.sanitize(obj as Record<string, unknown>)
-			if (!message && 'msg' in (obj as Record<string, unknown>)) {
-				message = String((obj as Record<string, unknown>).msg)
+			if (!message && data.msg !== undefined) {
+				message = sanitizeLogString(String(data.msg))
 			}
 		} else if (typeof obj === 'string') {
-			message = message || obj
+			message = message || sanitizeLogString(obj)
 		}
 
 		// Extract correlationId and durationMs if present
@@ -606,7 +621,12 @@ export class StructuredLogger implements ILogger {
 			levelValue: LOG_LEVEL_VALUES[level],
 			message,
 			name: this.config.name,
-			context: Object.keys(this.config.context).length > 0 ? this.config.context : undefined,
+			context:
+				Object.keys(this.config.context).length > 0
+					? sanitizeLogRecord(this.config.context, this.config.redactFields, {
+							includeErrorStack: this.config.includeStackTrace
+						})
+					: undefined,
 			data,
 			stack,
 			correlationId,
@@ -618,21 +638,9 @@ export class StructuredLogger implements ILogger {
 	 * Sanitize sensitive data
 	 */
 	private sanitize(obj: Record<string, unknown>): Record<string, unknown> {
-		const sanitized: Record<string, unknown> = {}
-
-		for (const [key, value] of Object.entries(obj)) {
-			const lowerKey = key.toLowerCase()
-
-			if (this.config.redactFields.some(field => lowerKey.includes(field.toLowerCase()))) {
-				sanitized[key] = '[REDACTED]'
-			} else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-				sanitized[key] = this.sanitize(value as Record<string, unknown>)
-			} else {
-				sanitized[key] = value
-			}
-		}
-
-		return sanitized
+		return sanitizeLogRecord(obj, this.config.redactFields, {
+			includeErrorStack: this.config.includeStackTrace
+		})
 	}
 
 	/**

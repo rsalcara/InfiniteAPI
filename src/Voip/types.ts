@@ -77,6 +77,18 @@ export type CallEvents = {
 export type VoipClientEvents = {
 	/** Fired when an inbound call offer arrives. Call `incoming.accept()` or `incoming.reject(reason)`. */
 	incoming: (incoming: IncomingCallHandle) => void
+	/**
+	 * Forwarded from the internally owned socket in standalone mode. Subscribe
+	 * before calling `connect()` to render `update.qr` in the application UI.
+	 */
+	'connection.update': (update: VoipConnectionUpdate) => void
+}
+
+export type VoipConnectionUpdate = {
+	connection?: string
+	qr?: string
+	lastDisconnect?: { error?: unknown }
+	[key: string]: unknown
 }
 
 /**
@@ -133,7 +145,7 @@ export interface ActiveCallHandle {
  *
  * Two modes:
  *   1. **Standalone**: pass `authDir`; the client creates its own Baileys
- *      socket internally (prints QR on first run).
+ *      socket internally and emits `connection.update` with `qr` on first run.
  *   2. **Embedded**: pass `socket` (an existing Baileys-compatible socket).
  *      The client wires into its `ev` emitter for `'call'` events and uses
  *      its `offerCall` / `acceptCall` / etc. for signaling. Use this mode

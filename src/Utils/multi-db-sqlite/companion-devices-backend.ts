@@ -25,6 +25,8 @@ export type OwnDeviceRow = {
 	loginTime?: number | null
 	advKeyIndex?: number
 	fullSyncRequired?: boolean
+	fullSyncDaysLimit?: number | null
+	fullSyncSizeMbLimit?: number | null
 	storageQuotaMb?: number | null
 	inlineInitialHistSyncPayloadEnabled?: boolean | null
 	recentSyncDaysLimit?: number | null
@@ -39,6 +41,11 @@ export type OwnDeviceRow = {
 	supportMessageAssociation?: boolean
 	supportGroupHistory?: boolean
 	supportGuestChat?: boolean | null
+	onDemandReady?: boolean
+	historySyncConfigProtobuf?: Uint8Array | null
+	supportManusHistory?: boolean
+	supportHatchHistory?: boolean
+	supportedBotChannelFbids?: string[] | null
 }
 
 export type StoredCompanionDeviceRow = Record<string, unknown> & { device_id: string }
@@ -61,16 +68,21 @@ export class CompanionDevicesBackend {
 			// logout_time is forced to 0 on our own live registration.
 			upsert: this.db.prepare(
 				'INSERT INTO devices (device_id, device_os, platform_type, login_time, logout_time, adv_key_index, ' +
-					'full_sync_required, storage_quota_mb, inline_initial_hist_sync_payload_enabled, recent_sync_days_limit, ' +
+					'full_sync_required, full_sync_days_limit, full_sync_size_mb_limit, storage_quota_mb, ' +
+					'inline_initial_hist_sync_payload_enabled, recent_sync_days_limit, ' +
 					'support_call_log_history, support_bot_user_agent_chat_history, support_cag_reactions_and_polls_history, ' +
 					'support_recent_sync_chunk_message_tuning, support_hosted_group_msg, support_fbid_bot_chat_history, ' +
 					'support_biz_hosted_msg, support_add_on_history_sync_migration, support_message_association, ' +
-					'support_group_history, support_guest_chat) ' +
-					'VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+					'support_group_history, support_guest_chat, on_demand_ready, history_sync_config_protobuf, ' +
+					'support_manus_history, support_hatch_history, supported_bot_channel_fbids) ' +
+					'VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
 					'ON CONFLICT(device_id) DO UPDATE SET ' +
 					'  device_os = excluded.device_os, platform_type = excluded.platform_type, ' +
 					'  login_time = excluded.login_time, logout_time = 0, adv_key_index = excluded.adv_key_index, ' +
-					'  full_sync_required = excluded.full_sync_required, storage_quota_mb = excluded.storage_quota_mb, ' +
+					'  full_sync_required = excluded.full_sync_required, ' +
+					'  full_sync_days_limit = excluded.full_sync_days_limit, ' +
+					'  full_sync_size_mb_limit = excluded.full_sync_size_mb_limit, ' +
+					'  storage_quota_mb = excluded.storage_quota_mb, ' +
 					'  inline_initial_hist_sync_payload_enabled = excluded.inline_initial_hist_sync_payload_enabled, ' +
 					'  recent_sync_days_limit = excluded.recent_sync_days_limit, ' +
 					'  support_call_log_history = excluded.support_call_log_history, ' +
@@ -83,7 +95,12 @@ export class CompanionDevicesBackend {
 					'  support_add_on_history_sync_migration = excluded.support_add_on_history_sync_migration, ' +
 					'  support_message_association = excluded.support_message_association, ' +
 					'  support_group_history = excluded.support_group_history, ' +
-					'  support_guest_chat = excluded.support_guest_chat'
+					'  support_guest_chat = excluded.support_guest_chat, ' +
+					'  on_demand_ready = excluded.on_demand_ready, ' +
+					'  history_sync_config_protobuf = excluded.history_sync_config_protobuf, ' +
+					'  support_manus_history = excluded.support_manus_history, ' +
+					'  support_hatch_history = excluded.support_hatch_history, ' +
+					'  supported_bot_channel_fbids = excluded.supported_bot_channel_fbids'
 			),
 			select: this.db.prepare('SELECT * FROM devices WHERE device_id = ?'),
 			clear: this.db.prepare('DELETE FROM devices')
@@ -99,6 +116,8 @@ export class CompanionDevicesBackend {
 			row.loginTime ?? null,
 			row.advKeyIndex ?? 0,
 			b(row.fullSyncRequired) ?? 0,
+			row.fullSyncDaysLimit ?? null,
+			row.fullSyncSizeMbLimit ?? null,
 			row.storageQuotaMb ?? null,
 			b(row.inlineInitialHistSyncPayloadEnabled),
 			row.recentSyncDaysLimit ?? null,
@@ -112,7 +131,14 @@ export class CompanionDevicesBackend {
 			b(row.supportAddOnHistorySyncMigration) ?? 0,
 			b(row.supportMessageAssociation) ?? 0,
 			b(row.supportGroupHistory) ?? 0,
-			b(row.supportGuestChat) ?? 0
+			b(row.supportGuestChat) ?? 0,
+			b(row.onDemandReady) ?? 0,
+			row.historySyncConfigProtobuf ?? null,
+			b(row.supportManusHistory) ?? 0,
+			b(row.supportHatchHistory) ?? 0,
+			row.supportedBotChannelFbids === null || row.supportedBotChannelFbids === undefined
+				? null
+				: JSON.stringify(row.supportedBotChannelFbids)
 		)
 	}
 

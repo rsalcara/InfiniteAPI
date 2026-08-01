@@ -34,6 +34,8 @@ import {
 	generateParticipantHashV2,
 	generateWAMessage,
 	generateWAMessageFromContent,
+	getMessageTypeLabel,
+	getRelayMediaType,
 	getStatusCodeForMediaRetry,
 	getUrlFromDirectPath,
 	getWAUploadToServer,
@@ -2342,27 +2344,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				deferredTcTokenReissue = { jid: destinationJid, issueTimestamp }
 			}
 
-			// Log with [BAILEYS] prefix
-			logMessageSent(msgId, destinationJid)
+			const msgType = getMessageTypeLabel(message)
+
+			// Log with [BAILEYS] prefix and normalized content type.
+			logMessageSent(msgId, destinationJid, undefined, msgType)
 
 			// Record message sent metric
-			const msgType = message.conversation
-				? 'text'
-				: message.imageMessage
-					? 'image'
-					: message.videoMessage
-						? 'video'
-						: message.audioMessage
-							? 'audio'
-							: message.documentMessage
-								? 'document'
-								: message.stickerMessage
-									? 'sticker'
-									: message.stickerPackMessage
-										? 'sticker_pack'
-										: message.reactionMessage
-											? 'reaction'
-											: 'other'
 			recordMessageSent(msgType)
 
 			// Add message to retry cache if enabled
@@ -2445,50 +2432,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	const getMediaType = (message: proto.IMessage) => {
-		if (message.imageMessage) {
-			return 'image'
-		} else if (message.videoMessage) {
-			return message.videoMessage.gifPlayback ? 'gif' : 'video'
-		} else if (message.audioMessage) {
-			return message.audioMessage.ptt ? 'ptt' : 'audio'
-		} else if (message.contactMessage) {
-			return 'vcard'
-		} else if (message.documentMessage) {
-			return 'document'
-		} else if (message.contactsArrayMessage) {
-			return 'contact_array'
-		} else if (message.liveLocationMessage) {
-			return 'livelocation'
-		} else if (message.stickerMessage) {
-			return 'sticker'
-		} else if (message.lottieStickerMessage) {
-			// Lottie animated stickers (`.was`) ship wrapped in
-			// `lottieStickerMessage` (FutureProofMessage at proto field 74).
-			// `runSendBody` calls `getMediaType(message)` directly without
-			// normalizing the wrapper first, so without this branch the
-			// `mediatype="sticker"` enc attribute is missing — newsletter
-			// channel sends would ACK 479 and silently drop, and 1-on-1 push
-			// notifications would lose their "sent a sticker" label. Match
-			// the same return as the plain `stickerMessage` arm: WA's CDN
-			// routes both formats through the same `sticker` media bucket.
-			return 'sticker'
-		} else if (message.listMessage) {
-			return 'list'
-		} else if (message.listResponseMessage) {
-			return 'list_response'
-		} else if (message.buttonsResponseMessage) {
-			return 'buttons_response'
-		} else if (message.orderMessage) {
-			return 'order'
-		} else if (message.productMessage) {
-			return 'product'
-		} else if (message.interactiveResponseMessage) {
-			return 'native_flow_response'
-		} else if (message.groupInviteMessage) {
-			return 'url'
-		}
-
-		return ''
+		return getRelayMediaType(message)
 	}
 
 	const updatePrivacyTokenIssueState = async (

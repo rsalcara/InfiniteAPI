@@ -4,6 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals'
 import {
+	BaileysLogger,
 	logAuth,
 	logBufferMetrics,
 	logConnection,
@@ -134,6 +135,50 @@ describe('Baileys Console Logging Functions', () => {
 			expect(consoleSpy).toHaveBeenCalledWith('[BAILEYS] 📥 Message received: MSG456 ← 5511888888888@s.whatsapp.net')
 		})
 
+		it('should include the normalized content type when provided', () => {
+			logMessageReceived('MSG-IMAGE', '5511888888888@s.whatsapp.net', undefined, 'image')
+			expect(consoleSpy).toHaveBeenCalledWith(
+				'[BAILEYS] 📥 Message received [type=image🖼️]: MSG-IMAGE ← 5511888888888@s.whatsapp.net'
+			)
+		})
+
+		it('should include the normalized content type for sent messages', () => {
+			logMessageSent('MSG-VOICE', '5511999999999@s.whatsapp.net', undefined, 'voice')
+			expect(consoleSpy).toHaveBeenCalledWith(
+				'[BAILEYS] 📤 Message sent [type=voice🎙️]: MSG-VOICE → 5511999999999@s.whatsapp.net'
+			)
+		})
+
+		it.each([
+			['text', '📝'],
+			['image', '🖼️'],
+			['video', '🎬'],
+			['gif', '🎞️'],
+			['audio', '🎵'],
+			['voice', '🎙️'],
+			['document', '📄'],
+			['sticker', '🏷️'],
+			['sticker_pack', '📦'],
+			['reaction', '❤️'],
+			['location', '📍'],
+			['live_location', '🛰️'],
+			['contact', '👤'],
+			['contacts', '👥'],
+			['poll', '📊'],
+			['poll_vote', '🗳️'],
+			['interactive', '🧩'],
+			['interactive_response', '✅'],
+			['view_once', '👁️'],
+			['view_once_image', '👁️🖼️'],
+			['view_once_video', '👁️🎬'],
+			['view_once_audio', '👁️🎙️']
+		])('should append the %s message icon inside the type tag', (messageType, icon) => {
+			logMessageReceived('MSG-TYPE', '5511888888888@s.whatsapp.net', undefined, messageType)
+			expect(consoleSpy).toHaveBeenCalledWith(
+				`[BAILEYS] 📥 Message received [type=${messageType}${icon}]: MSG-TYPE ← 5511888888888@s.whatsapp.net`
+			)
+		})
+
 		it('should include session name for messages', () => {
 			logMessageSent('MSG789', 'user@lid', 'session-abc')
 			expect(consoleSpy).toHaveBeenCalledWith('[BAILEYS] [session-abc] 📤 Message sent: MSG789 → user@lid')
@@ -206,6 +251,55 @@ describe('Baileys Console Logging Functions', () => {
 			logError('Failed to send', { error: 'timeout' })
 			expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('[BAILEYS] ❌ Failed to send'))
 		})
+
+		it('keeps the legacy payload option source-compatible without exposing message content', () => {
+			const entries: unknown[] = []
+			const logger = new BaileysLogger({
+				level: 'info',
+				logMessagePayloads: true,
+				eventHandler: (_category, entry) => entries.push(entry)
+			})
+
+			logger.info({ text: 'must-not-leak', contentType: 'image' }, 'message received')
+
+			expect(JSON.stringify(entries)).not.toContain('must-not-leak')
+			expect(JSON.stringify(entries)).toContain('[REDACTED]')
+			expect(JSON.stringify(entries)).toContain('image')
+		})
+
+		it('classifies and counts oversized object-only events before truncating their output', () => {
+			const categories: string[] = []
+			const logger = new BaileysLogger({
+				level: 'info',
+				maxPayloadSize: 32,
+				eventHandler: category => categories.push(category)
+			})
+
+			logger.info({ event: 'message received', padding: 'x'.repeat(256) })
+
+			expect(categories).toContain('message')
+			expect(logger.getMetrics().messagesReceived).toBe(1)
+		})
+
+		it('does not let a hostile diagnostic payload abort its caller', () => {
+			const entries: unknown[] = []
+			const logger = new BaileysLogger({
+				level: 'info',
+				eventHandler: (_category, entry) => entries.push(entry)
+			})
+			const hostile = new Proxy(
+				{},
+				{
+					getPrototypeOf() {
+						throw new Error('must-not-leak')
+					}
+				}
+			)
+
+			expect(() => logger.info(hostile, 'diagnostic event')).not.toThrow()
+			expect(JSON.stringify(entries)).toContain('sanitizationError')
+			expect(JSON.stringify(entries)).not.toContain('must-not-leak')
+		})
 	})
 
 	describe('logLidMapping', () => {
@@ -238,7 +332,8 @@ describe('Baileys Console Logging Functions', () => {
 		it('should handle Error objects in data', () => {
 			const error = new Error('Test error')
 			logInfo('Test', { error })
-			expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Error: Test error'))
+			expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('[REDACTED]'))
+			expect(consoleSpy).not.toHaveBeenCalledWith(expect.stringContaining('Test error'))
 		})
 
 		it('should handle arrays in data', () => {

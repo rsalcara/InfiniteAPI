@@ -35,6 +35,7 @@ export * from './identity-change-handler'
 export * from './structured-logger'
 export * from './logger-adapter'
 export * from './baileys-logger'
+export * from './log-redaction'
 
 // Observability and tracing
 export * from './trace-context'
@@ -44,6 +45,7 @@ export * from './prometheus-metrics'
 export * from './cache-utils'
 export * from './retry-utils'
 export * from './retry-receipt'
+export * from './receipt-jid'
 
 // Telemetry and detection mitigation
 export * from './unified-session'
@@ -57,6 +59,7 @@ export * from './runtime-profile'
 
 // Health monitoring
 export * from './health-status'
+export * from './keepalive-watchdog'
 
 // Event streaming
 export * from './baileys-event-stream'

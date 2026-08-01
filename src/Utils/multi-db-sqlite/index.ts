@@ -73,10 +73,14 @@ export {
 export {
 	ANDROID_MESSAGE_TYPE,
 	ANDROID_MESSAGE_STATUS,
+	ANDROID_MESSAGE_STATUS_ORDER,
+	ANDROID_VIEW_ONCE_STATE,
+	isAndroidViewOnceMessageType,
 	mapWebMessageStatusToAndroid,
 	mapContentTypeToMessageType,
 	mapMessageToAndroidType,
 	MessageStoreBackend,
+	shouldAdvanceAndroidMessageStatus,
 	type ChatRowResolver,
 	type JidResolver,
 	type MessageRow,
@@ -84,6 +88,8 @@ export {
 	type RecordRevokeInput
 } from './message-store-backend'
 export {
+	RECEIPT_ORPHAN_REPLAY_LIMIT,
+	RECEIPT_ORPHAN_TTL_SECONDS,
 	ReceiptBackend,
 	type ReceiptKind,
 	type RecordDeviceReceiptInput,
