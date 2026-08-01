@@ -94,6 +94,33 @@ import {
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeNewsletterSocket } from './newsletter'
 
+/**
+ * Returns the media bucket required by WhatsApp's encrypted stanza.
+ * Generated view-once and ephemeral messages may wrap the actual media;
+ * normalize before inspecting fields so `mediatype` is never omitted.
+ */
+export const getRelayMediaType = (message: proto.IMessage) => {
+	const normalizedMessage = normalizeMessageContent(message) || message
+
+	if (normalizedMessage.imageMessage) return 'image'
+	if (normalizedMessage.videoMessage) return normalizedMessage.videoMessage.gifPlayback ? 'gif' : 'video'
+	if (normalizedMessage.audioMessage) return normalizedMessage.audioMessage.ptt ? 'ptt' : 'audio'
+	if (normalizedMessage.contactMessage) return 'vcard'
+	if (normalizedMessage.documentMessage) return 'document'
+	if (normalizedMessage.contactsArrayMessage) return 'contact_array'
+	if (normalizedMessage.liveLocationMessage) return 'livelocation'
+	if (normalizedMessage.stickerMessage || normalizedMessage.lottieStickerMessage) return 'sticker'
+	if (normalizedMessage.listMessage) return 'list'
+	if (normalizedMessage.listResponseMessage) return 'list_response'
+	if (normalizedMessage.buttonsResponseMessage) return 'buttons_response'
+	if (normalizedMessage.orderMessage) return 'order'
+	if (normalizedMessage.productMessage) return 'product'
+	if (normalizedMessage.interactiveResponseMessage) return 'native_flow_response'
+	if (normalizedMessage.groupInviteMessage) return 'url'
+
+	return ''
+}
+
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
 		logger,
@@ -2431,50 +2458,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	const getMediaType = (message: proto.IMessage) => {
-		if (message.imageMessage) {
-			return 'image'
-		} else if (message.videoMessage) {
-			return message.videoMessage.gifPlayback ? 'gif' : 'video'
-		} else if (message.audioMessage) {
-			return message.audioMessage.ptt ? 'ptt' : 'audio'
-		} else if (message.contactMessage) {
-			return 'vcard'
-		} else if (message.documentMessage) {
-			return 'document'
-		} else if (message.contactsArrayMessage) {
-			return 'contact_array'
-		} else if (message.liveLocationMessage) {
-			return 'livelocation'
-		} else if (message.stickerMessage) {
-			return 'sticker'
-		} else if (message.lottieStickerMessage) {
-			// Lottie animated stickers (`.was`) ship wrapped in
-			// `lottieStickerMessage` (FutureProofMessage at proto field 74).
-			// `runSendBody` calls `getMediaType(message)` directly without
-			// normalizing the wrapper first, so without this branch the
-			// `mediatype="sticker"` enc attribute is missing — newsletter
-			// channel sends would ACK 479 and silently drop, and 1-on-1 push
-			// notifications would lose their "sent a sticker" label. Match
-			// the same return as the plain `stickerMessage` arm: WA's CDN
-			// routes both formats through the same `sticker` media bucket.
-			return 'sticker'
-		} else if (message.listMessage) {
-			return 'list'
-		} else if (message.listResponseMessage) {
-			return 'list_response'
-		} else if (message.buttonsResponseMessage) {
-			return 'buttons_response'
-		} else if (message.orderMessage) {
-			return 'order'
-		} else if (message.productMessage) {
-			return 'product'
-		} else if (message.interactiveResponseMessage) {
-			return 'native_flow_response'
-		} else if (message.groupInviteMessage) {
-			return 'url'
-		}
-
-		return ''
+		return getRelayMediaType(message)
 	}
 
 	const updatePrivacyTokenIssueState = async (

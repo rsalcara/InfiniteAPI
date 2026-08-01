@@ -110,6 +110,19 @@ O InfiniteAPI e uma biblioteca. Seu contrato nativo de envio e
 `sock.sendMessage(jid, content)`. O campo `viewOnce: true` fica no objeto de
 conteudo, ao lado de `image`, `video` ou `audio`.
 
+O consumidor deve enviar somente esse formato de alto nivel. Nao construa
+`viewOnceMessage`, `viewOnceMessageV2` ou o atributo interno `mediatype` por
+conta propria: a biblioteca encapsula a mensagem, marca a midia e inclui o
+bucket correto (`image`, `video`, `audio` ou `ptt`) em cada stanza criptografada.
+Montar o wrapper manualmente pode produzir uma mensagem que a chamada local
+aceita, mas que o servidor nao entrega.
+
+Quando `url` for usado, ele pode ser uma URL HTTP(S) alcancavel pelo processo
+ou um caminho de arquivo local acessivel no mesmo ambiente da InfiniteAPI. Uma
+URL remota que exige autenticacao, expira antes do upload ou nao pode ser
+resolvida pelo container fara o envio falhar antes da entrega; para adaptadores
+HTTP, prefira `Buffer`/Base64 quando o arquivo ja estiver sob seu controle.
+
 ### 2.1 Imagem de visualizacao unica
 
 ```ts
