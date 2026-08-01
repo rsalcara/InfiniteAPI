@@ -21,7 +21,7 @@
  * cross-referencing sender isn't needed and isn't always known at receipt
  * time.
  */
-import { isAnyLidUser, isAnyPnUser } from '../../WABinary'
+import { isJidGroup, isJidStatusBroadcast } from '../../WABinary'
 import {
 	ANDROID_MESSAGE_STATUS,
 	type ChatRowResolver,
@@ -266,11 +266,10 @@ export class ReceiptBackend {
 			const messageRowId = this.resolveMessageRowId(chatJid, fromMe, keyId)
 			if (messageRowId === null) return 0
 			let replayed = 0
-			// A group receipt is materialized per recipient/device, but it cannot
-			// establish the aggregate message status until every relevant member
-			// has advanced. Live group handling deliberately does not promote the
-			// parent row from one participant, so orphan replay must match it.
-			const canPromoteMessageStatus = isAnyPnUser(chatJid) || isAnyLidUser(chatJid)
+			// Group receipts are materialized per recipient/device but cannot
+			// establish aggregate message status from one member. Status-broadcast
+			// receipts use status.db instead. Match the live handler's exact split.
+			const canPromoteMessageStatus = !isJidGroup(chatJid) && !isJidStatusBroadcast(chatJid)
 			const messageStatusRow = canPromoteMessageStatus
 				? (this.stmts.getMessageStatus.get(messageRowId) as { status: number | null } | undefined)
 				: undefined

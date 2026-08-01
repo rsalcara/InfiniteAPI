@@ -26,7 +26,8 @@ const makeDb = () => {
 describe('prepareInClause SQLite variable budget', () => {
 	it('subtracts leading parameters before chunking a 976-value query', () => {
 		const { db, preparedSql, boundCounts } = makeDb()
-		const query = prepareInClause(db, 'SELECT * FROM t WHERE tenant = ? AND id IN (', ')', DEFAULT_IN_CHUNK)
+		const leadingPredicates = Array.from({ length: 25 }, (_, index) => `tenant_${index} = ?`).join(' AND ')
+		const query = prepareInClause(db, `SELECT * FROM t WHERE ${leadingPredicates} AND id IN (`, ')', DEFAULT_IN_CHUNK)
 
 		query.all(Array.from({ length: 25 }), Array.from({ length: 976 }))
 
@@ -36,7 +37,8 @@ describe('prepareInClause SQLite variable budget', () => {
 
 	it('keeps the full 975-value chunk when 24 leading parameters fit exactly', () => {
 		const { db, boundCounts } = makeDb()
-		const query = prepareInClause(db, 'SELECT * FROM t WHERE id IN (', ')')
+		const leadingPredicates = Array.from({ length: 24 }, (_, index) => `tenant_${index} = ?`).join(' AND ')
+		const query = prepareInClause(db, `SELECT * FROM t WHERE ${leadingPredicates} AND id IN (`, ')')
 
 		query.all(Array.from({ length: 24 }), Array.from({ length: 975 }))
 
@@ -54,5 +56,11 @@ describe('prepareInClause SQLite variable budget', () => {
 		const { db } = makeDb()
 
 		expect(() => prepareInClause(db, 'SELECT * FROM t WHERE id IN (', ')', Number.NaN)).toThrow(RangeError)
+	})
+
+	it('rejects a fractional chunk size instead of truncating it', () => {
+		const { db } = makeDb()
+
+		expect(() => prepareInClause(db, 'SELECT * FROM t WHERE id IN (', ')', 1.5)).toThrow(RangeError)
 	})
 })

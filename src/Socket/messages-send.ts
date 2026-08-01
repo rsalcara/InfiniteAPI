@@ -35,6 +35,7 @@ import {
 	generateWAMessage,
 	generateWAMessageFromContent,
 	getMessageTypeLabel,
+	getRelayMediaType,
 	getStatusCodeForMediaRetry,
 	getUrlFromDirectPath,
 	getWAUploadToServer,
@@ -93,33 +94,6 @@ import {
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeNewsletterSocket } from './newsletter'
-
-/**
- * Returns the media bucket required by WhatsApp's encrypted stanza.
- * Generated view-once and ephemeral messages may wrap the actual media;
- * normalize before inspecting fields so `mediatype` is never omitted.
- */
-export const getRelayMediaType = (message: proto.IMessage) => {
-	const normalizedMessage = normalizeMessageContent(message) || message
-
-	if (normalizedMessage.imageMessage) return 'image'
-	if (normalizedMessage.videoMessage) return normalizedMessage.videoMessage.gifPlayback ? 'gif' : 'video'
-	if (normalizedMessage.audioMessage) return normalizedMessage.audioMessage.ptt ? 'ptt' : 'audio'
-	if (normalizedMessage.contactMessage) return 'vcard'
-	if (normalizedMessage.documentMessage) return 'document'
-	if (normalizedMessage.contactsArrayMessage) return 'contact_array'
-	if (normalizedMessage.liveLocationMessage) return 'livelocation'
-	if (normalizedMessage.stickerMessage || normalizedMessage.lottieStickerMessage) return 'sticker'
-	if (normalizedMessage.listMessage) return 'list'
-	if (normalizedMessage.listResponseMessage) return 'list_response'
-	if (normalizedMessage.buttonsResponseMessage) return 'buttons_response'
-	if (normalizedMessage.orderMessage) return 'order'
-	if (normalizedMessage.productMessage) return 'product'
-	if (normalizedMessage.interactiveResponseMessage) return 'native_flow_response'
-	if (normalizedMessage.groupInviteMessage) return 'url'
-
-	return ''
-}
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {

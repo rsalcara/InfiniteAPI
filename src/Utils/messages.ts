@@ -2159,6 +2159,30 @@ export const normalizeMessageContent = (content: WAMessageContent | null | undef
 	return content!
 }
 
+/** Returns the media bucket required by WhatsApp's encrypted stanza. */
+export const getRelayMediaType = (message: proto.IMessage): string => {
+	const normalizedMessage = normalizeMessageContent(message) || message
+
+	if (normalizedMessage.imageMessage) return 'image'
+	if (normalizedMessage.videoMessage) return normalizedMessage.videoMessage.gifPlayback ? 'gif' : 'video'
+	if (normalizedMessage.audioMessage) return normalizedMessage.audioMessage.ptt ? 'ptt' : 'audio'
+	if (normalizedMessage.ptvMessage) return 'ptv'
+	if (normalizedMessage.contactMessage) return 'vcard'
+	if (normalizedMessage.documentMessage) return 'document'
+	if (normalizedMessage.contactsArrayMessage) return 'contact_array'
+	if (normalizedMessage.liveLocationMessage) return 'livelocation'
+	if (normalizedMessage.stickerMessage || normalizedMessage.lottieStickerMessage) return 'sticker'
+	if (normalizedMessage.listMessage) return 'list'
+	if (normalizedMessage.listResponseMessage) return 'list_response'
+	if (normalizedMessage.buttonsResponseMessage) return 'buttons_response'
+	if (normalizedMessage.orderMessage) return 'order'
+	if (normalizedMessage.productMessage) return 'product'
+	if (normalizedMessage.interactiveResponseMessage) return 'native_flow_response'
+	if (normalizedMessage.groupInviteMessage) return 'url'
+
+	return ''
+}
+
 /**
  * Extract the true message content from a message
  * Eg. extracts the inner message from a disappearing message/view once message

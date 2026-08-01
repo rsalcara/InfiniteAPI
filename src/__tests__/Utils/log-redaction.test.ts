@@ -172,4 +172,23 @@ describe('central log redaction', () => {
 		expect(serializedObject).toContain(LOG_ENTRIES_TRUNCATED)
 		expect(Object.keys(sanitizeLogValue(hugeObject) as Record<string, unknown>).length).toBe(MAX_LOG_ENTRIES + 1)
 	})
+
+	it('does not invoke an instance-supplied array iterator', () => {
+		const hostile = ['safe']
+		Object.defineProperty(hostile, Symbol.iterator, {
+			value: () => {
+				throw new Error('hostile iterator')
+			}
+		})
+
+		expect(() => sanitizeLogValue(hostile)).not.toThrow()
+		expect(sanitizeLogValue(hostile)).toEqual(['safe'])
+	})
+
+	it('ignores inherited enumerable diagnostic fields', () => {
+		const inherited = { inheritedSecret: 'must-not-leak' }
+		const value = Object.assign(Object.create(inherited), { safe: true })
+
+		expect(sanitizeLogValue(value)).toEqual({ safe: true })
+	})
 })

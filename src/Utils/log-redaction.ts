@@ -134,19 +134,20 @@ export type SanitizeLogOptions = {
 }
 
 function* safeObjectEntries(value: object): IterableIterator<[string, unknown]> {
-	let keys: string[]
+	// `for...in` avoids materializing a complete Object.keys() array before
+	// the shared entry budget can stop traversal. Filter inherited properties
+	// explicitly because diagnostics may contain enumerable prototype fields.
 	try {
-		keys = Object.keys(value)
+		for (const key in value) {
+			try {
+				if (!Object.prototype.propertyIsEnumerable.call(value, key)) continue
+				yield [key, (value as Record<string, unknown>)[key]]
+			} catch {
+				yield [key, '[unavailable]']
+			}
+		}
 	} catch {
 		return
-	}
-
-	for (const key of keys) {
-		try {
-			yield [key, (value as Record<string, unknown>)[key]]
-		} catch {
-			yield [key, '[unavailable]']
-		}
 	}
 }
 
@@ -295,10 +296,24 @@ export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {
 
 	if (Array.isArray(value)) {
 		const sanitizedArray: unknown[] = []
-		for (const item of value) {
+		let length = 0
+		try {
+			length = value.length
+		} catch {
+			return ['[unavailable]']
+		}
+
+		for (let index = 0; index < length; index++) {
 			if (!consumeEntry()) {
 				sanitizedArray.push(LOG_ENTRIES_TRUNCATED)
 				break
+			}
+
+			let item: unknown
+			try {
+				item = value[index]
+			} catch {
+				item = '[unavailable]'
 			}
 
 			sanitizedArray.push(

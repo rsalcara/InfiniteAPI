@@ -59,6 +59,7 @@ export * from './runtime-profile'
 
 // Health monitoring
 export * from './health-status'
+export * from './keepalive-watchdog'
 
 // Event streaming
 export * from './baileys-event-stream'

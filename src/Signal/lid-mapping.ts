@@ -129,8 +129,10 @@ export interface LIDMappingStatistics {
 	failedOperations: number
 	/** Mapping items currently admitted but not completed */
 	pendingMappings: number
-	/** Writes that encountered bounded-admission backpressure (legacy field name) */
+	/** Writes rejected because the bounded admission queue could not accept them */
 	rejectedWrites: number
+	/** Number of writes that had to wait for bounded admission capacity */
+	backpressureWaits: number
 	/** Highest observed number of queued mapping items */
 	maxPendingMappingsObserved: number
 	/** Store creation timestamp */
@@ -249,6 +251,7 @@ export class LIDMappingStore {
 		failedOperations: 0,
 		pendingMappings: 0,
 		rejectedWrites: 0,
+		backpressureWaits: 0,
 		maxPendingMappingsObserved: 0,
 		createdAt: Date.now(),
 		lastOperationAt: null
@@ -1246,7 +1249,7 @@ export class LIDMappingStore {
 				this.queueProgressWaiters.length > 0 ||
 				this.pendingWriteItems + pairs.length > this.config.maxPendingMappings
 			) {
-				this.stats.rejectedWrites++
+				this.stats.backpressureWaits++
 				await this.waitForQueueProgress(pairs.length, admittedBeforeDestroy)
 				reserved = true
 			} else {

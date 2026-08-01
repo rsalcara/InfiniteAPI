@@ -62,6 +62,30 @@ describe('event-buffer', () => {
 
 			ev.destroy()
 		})
+
+		it('ends a stalled manual buffer scope after the safety timeout', async () => {
+			jest.useFakeTimers()
+			const ev = makeEventBuffer(makeTestLogger(), {
+				bufferTimeoutMs: 10,
+				minBufferTimeoutMs: 10,
+				maxBufferTimeoutMs: 10,
+				enableAdaptiveTimeout: false
+			})
+			const received: BaileysEventMap['lid-mapping.update'][] = []
+
+			ev.on('lid-mapping.update', mappings => received.push(mappings))
+			ev.buffer()
+			ev.emit('lid-mapping.update', [{ lid: '111@lid', pn: '55111@s.whatsapp.net' }])
+
+			await jest.advanceTimersByTimeAsync(10)
+
+			expect(received).toEqual([[{ lid: '111@lid', pn: '55111@s.whatsapp.net' }]])
+			expect(ev.isBuffering()).toBe(false)
+
+			ev.emit('lid-mapping.update', [{ lid: '222@lid', pn: '55222@s.whatsapp.net' }])
+			expect(received).toHaveLength(2)
+			ev.destroy()
+		})
 	})
 
 	describe('messaging-history.set pastParticipants buffering', () => {

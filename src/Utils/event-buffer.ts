@@ -432,6 +432,7 @@ export const makeEventBuffer = (
 	 */
 	const pendingFunctionTimeouts = new Set<NodeJS.Timeout>()
 	let bufferCount = 0
+	let activeBufferedFunctions = 0
 	let currentEventCount = 0
 
 	// Statistics tracking
@@ -532,7 +533,7 @@ export const makeEventBuffer = (
 				// operations can legitimately exceed the timeout; dropping
 				// isBuffering here turns every later event into an unbuffered
 				// singleton and defeats LID/contact batching under peak load.
-				flush(true, bufferCount > 0)
+				flush(true, activeBufferedFunctions > 0)
 			}
 		}, timeout)
 	}
@@ -669,7 +670,7 @@ export const makeEventBuffer = (
 		}
 
 		const eventCount = currentEventCount
-		const activeBufferCount = bufferCount
+		const activeFunctionCount = activeBufferedFunctions
 		const flushStartTime = Date.now()
 		logger.debug({ bufferCount, eventCount, force }, 'Flushing event buffer')
 
@@ -744,9 +745,9 @@ export const makeEventBuffer = (
 		// Preserve the active buffering scope before invoking synchronous
 		// listeners. Re-entrant events emitted by those listeners must land in
 		// the new batch, not bypass buffering between safety windows.
-		if (continueBuffering && activeBufferCount > 0) {
+		if (continueBuffering && activeFunctionCount > 0) {
 			isBuffering = true
-			bufferCount = activeBufferCount
+			bufferCount = activeFunctionCount
 		}
 
 		if (Object.keys(consolidatedData).length) {
@@ -909,6 +910,7 @@ export const makeEventBuffer = (
 					throw new Error('Cannot execute buffered function on destroyed event buffer')
 				}
 
+				activeBufferedFunctions++
 				buffer()
 				try {
 					const result = await work(...args)
@@ -945,6 +947,7 @@ export const makeEventBuffer = (
 
 					throw error
 				} finally {
+					activeBufferedFunctions = Math.max(0, activeBufferedFunctions - 1)
 					bufferCount = Math.max(0, bufferCount - 1)
 					if (bufferCount === 0 && !destroyed) {
 						// Only schedule ONE timeout, not multiple

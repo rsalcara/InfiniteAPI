@@ -760,6 +760,65 @@ describe('msgstore.db message-store backends', () => {
 			)
 		})
 
+		it.each(['5515991426667@c.us', '120363000000000000@newsletter', 'updates@broadcast'])(
+			'promotes orphan receipt status for non-group chat %s like the live path',
+			chatJid => {
+				const db = store.handle('msgstore.db')
+				const messageStore = new MessageStoreBackend(db, jidMap)
+				const receipts = new ReceiptBackend(db, jidMap, messageStore)
+				const keyId = `NON-GROUP-${chatJid}`
+				const now = Math.floor(Date.now() / 1000)
+
+				receipts.recordUserReceipt({
+					chatJid,
+					fromMe: true,
+					keyId,
+					receiptUserJid: chatJid,
+					kind: 'read',
+					timestamp: now
+				})
+				messageStore.recordMessage({
+					chatJid,
+					fromMe: true,
+					keyId,
+					status: ANDROID_MESSAGE_STATUS.SERVER_ACK,
+					timestamp: now - 1
+				})
+
+				expect(receipts.replayOrphaned(chatJid, true, keyId)).toBe(1)
+				expect(messageStore.getMessageByKeyId(chatJid, true, keyId)?.status).toBe(ANDROID_MESSAGE_STATUS.READ)
+			}
+		)
+
+		it('does not promote orphan receipt status for status broadcasts', () => {
+			const db = store.handle('msgstore.db')
+			const messageStore = new MessageStoreBackend(db, jidMap)
+			const receipts = new ReceiptBackend(db, jidMap, messageStore)
+			const chatJid = 'status@broadcast'
+			const now = Math.floor(Date.now() / 1000)
+
+			receipts.recordUserReceipt({
+				chatJid,
+				fromMe: true,
+				keyId: 'STATUS-ORPHAN',
+				receiptUserJid: '5515991426667@s.whatsapp.net',
+				kind: 'read',
+				timestamp: now
+			})
+			messageStore.recordMessage({
+				chatJid,
+				fromMe: true,
+				keyId: 'STATUS-ORPHAN',
+				status: ANDROID_MESSAGE_STATUS.SERVER_ACK,
+				timestamp: now - 1
+			})
+
+			expect(receipts.replayOrphaned(chatJid, true, 'STATUS-ORPHAN')).toBe(1)
+			expect(messageStore.getMessageByKeyId(chatJid, true, 'STATUS-ORPHAN')?.status).toBe(
+				ANDROID_MESSAGE_STATUS.SERVER_ACK
+			)
+		})
+
 		it('does not downgrade READ when a late DELIVERY orphan replays', () => {
 			const db = store.handle('msgstore.db')
 			const messageStore = new MessageStoreBackend(db, jidMap)

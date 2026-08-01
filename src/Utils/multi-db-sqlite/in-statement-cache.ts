@@ -49,8 +49,8 @@ export function prepareInClause(
 	sqlAfterIn: string,
 	chunkSize: number = DEFAULT_IN_CHUNK
 ): InClauseQuery {
-	const normalizedChunkSize = Math.trunc(chunkSize)
-	if (!Number.isFinite(normalizedChunkSize) || normalizedChunkSize < 1) {
+	const normalizedChunkSize = chunkSize
+	if (!Number.isInteger(normalizedChunkSize) || normalizedChunkSize < 1) {
 		throw new RangeError(`chunkSize must be a positive integer, got ${chunkSize}`)
 	}
 

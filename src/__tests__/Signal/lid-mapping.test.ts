@@ -155,7 +155,8 @@ describe('LIDMappingStore', () => {
 			await new Promise(resolve => setImmediate(resolve))
 
 			expect(waitingSettled).toBe(false)
-			expect(lidMappingStore.getStatistics().rejectedWrites).toBe(1)
+			expect(lidMappingStore.getStatistics().backpressureWaits).toBe(1)
+			expect(lidMappingStore.getStatistics().rejectedWrites).toBe(0)
 
 			release()
 			await admitted
