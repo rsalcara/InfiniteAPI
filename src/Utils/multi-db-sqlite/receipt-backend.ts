@@ -21,13 +21,13 @@
  * cross-referencing sender isn't needed and isn't always known at receipt
  * time.
  */
+import { isAnyLidUser, isAnyPnUser } from '../../WABinary'
 import {
 	ANDROID_MESSAGE_STATUS,
 	type ChatRowResolver,
 	type JidResolver,
 	shouldAdvanceAndroidMessageStatus
 } from './message-store-backend'
-import { isAnyLidUser, isAnyPnUser } from '../../WABinary'
 import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 export type ReceiptKind = 'delivery' | 'read' | 'played'

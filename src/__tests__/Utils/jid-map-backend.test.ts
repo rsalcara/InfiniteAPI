@@ -152,7 +152,8 @@ describe('JidMapBackend + wrapKeysWithJidMap', () => {
 		// jid row storeMapping resolved, so a single set() covers it end-to-end.
 		const jidRowId = backend.resolveJidRowId(lid)
 		const row = db.prepare('SELECT is_pn_shared FROM lid_chat_state WHERE jid_row_id = ?').get(jidRowId) as
-			{ is_pn_shared: number } | undefined
+			| { is_pn_shared: number }
+			| undefined
 		expect(row?.is_pn_shared).toBe(1)
 	})
 })

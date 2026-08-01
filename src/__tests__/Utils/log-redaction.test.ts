@@ -1,9 +1,9 @@
 import { describe, expect, it } from '@jest/globals'
 import {
+	LOG_ENTRIES_TRUNCATED,
 	MAX_DEPTH_REACHED,
 	MAX_LOG_DEPTH,
 	MAX_LOG_ENTRIES,
-	LOG_ENTRIES_TRUNCATED,
 	REDACTED,
 	sanitizeLogString,
 	sanitizeLogValue
@@ -148,9 +148,10 @@ describe('central log redaction', () => {
 	})
 
 	it('never serializes function source or symbol descriptions', () => {
-		const secretFunction = function hardCodedToken() {
+		function secretFunction() {
 			return 'must-not-leak'
 		}
+
 		const serialized = JSON.stringify(sanitizeLogValue({ fn: secretFunction, symbol: Symbol('must-not-leak') }))
 
 		expect(serialized).toContain('[Function]')

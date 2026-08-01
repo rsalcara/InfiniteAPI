@@ -743,7 +743,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const handleReachoutTimelockNotification = (data: Record<string, unknown>) => {
 		const payload = data.xwa2_notify_account_reachout_timelock as
-			{ is_active?: boolean; enforcement_type?: string; time_enforcement_ends?: string } | undefined
+			| { is_active?: boolean; enforcement_type?: string; time_enforcement_ends?: string }
+			| undefined
 
 		if (!payload) {
 			logger.warn('reachout timelock notification missing payload')
@@ -1037,7 +1038,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			} else {
 				try {
 					const raw = updateNode.content
-					const text = typeof raw === 'string' ? raw : Buffer.from(raw as Uint8Array).toString('utf8')
+					const text = typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf8')
 					const parsed = JSON.parse(text) as { data?: Record<string, unknown> }
 					if (parsed?.data) handleReachoutTimelockNotification(parsed.data)
 				} catch (err) {
@@ -1106,7 +1107,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			} else {
 				try {
 					const raw = updateNode.content
-					const text = typeof raw === 'string' ? raw : Buffer.from(raw as Uint8Array).toString('utf8')
+					const text = typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf8')
 					const parsed = JSON.parse(text) as { data?: Record<string, unknown> }
 					if (parsed?.data) handleMessageCappingNotification(parsed.data)
 				} catch (err) {

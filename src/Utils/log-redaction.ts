@@ -250,6 +250,7 @@ export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {
 				own[LOG_ENTRIES_TRUNCATED] = LOG_ENTRIES_TRUNCATED
 				break
 			}
+
 			own[key] = sanitizeLogValue(child, {
 				fieldName: key,
 				extraFields,
@@ -299,10 +300,12 @@ export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {
 				sanitizedArray.push(LOG_ENTRIES_TRUNCATED)
 				break
 			}
+
 			sanitizedArray.push(
 				sanitizeLogValue(item, { extraFields, seen, includeErrorStack, depth: depth + 1, maxDepth, entryBudget })
 			)
 		}
+
 		return sanitizedArray
 	}
 
