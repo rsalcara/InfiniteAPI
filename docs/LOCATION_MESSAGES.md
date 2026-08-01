@@ -1,8 +1,9 @@
 # Guia de Localização
 
-O InfiniteAPI suporta localização estática e implementa o ciclo de localização
-ao vivo: geração do payload, sequência, distribuição da chave
-`location@broadcast`, recepção, atualizações e persistência.
+O InfiniteAPI suporta envio e recepção de localização estática. Para localização
+ao vivo, suporta recepção, sincronização, encerramento e persistência. Uma
+sessão criada por QR code ou pair code é um dispositivo vinculado e não pode
+iniciar o compartilhamento oficial.
 
 Os exemplos usam a interface REST genérica em `POST /v1/messages/*`. Troque
 `SUA_API_KEY`, `instance`, endereço do servidor e `to` conforme o ambiente. O
@@ -18,7 +19,7 @@ número deve estar em E.164, sem `+`.
 | Receber localização estática | Sim | Sim | Sim |
 | Receber/sincronizar localização ao vivo | Sim | Sim | Sim |
 | Persistir localização ao vivo | Sim | Sim | Sim |
-| Iniciar localização ao vivo como dispositivo vinculado | Limitado pelo WhatsApp | Limitado pelo WhatsApp | Limitado pelo WhatsApp |
+| Iniciar localização ao vivo como dispositivo vinculado | Não | Não | Não |
 
 O transporte e o armazenamento são independentes. As mensagens funcionam com:
 
@@ -85,14 +86,12 @@ console.log(sent.key.id)
 
 ### Estado da implementação
 
-O código está implementado e preservado:
+O caminho de recepção está implementado e preservado:
 
-- `LiveLocationMessage` com sequência monotônica em microssegundos;
-- períodos oficiais de 15 minutos, 1 hora e 8 horas;
-- comentário e miniatura;
-- estado fast-ratchet persistente;
-- distribuição de chave para `location@broadcast`;
-- recepção, atualizações, encerramento e histórico;
+- decodificação de `LiveLocationMessage` e do atributo de duração;
+- recepção de atualizações e encerramento;
+- estado fast-ratchet persistente para decodificação;
+- histórico e replay;
 - espelhos `from_me=0` e `from_me=1` no multi-banco.
 
 Entretanto, o WhatsApp oficial restringe o início do compartilhamento ao
@@ -101,18 +100,24 @@ dispositivo vinculado, informa que o recurso não está disponível naquele
 aparelho e orienta o usuário a iniciá-lo no telefone principal.
 
 Isso continua verdadeiro quando o InfiniteAPI usa `native_android`: o perfil de
-transporte não transforma o processo em telefone principal. Uma resposta local
-com `messageId` prova que o payload foi montado/enfileirado; não prova que o
-servidor o entregou ao destinatário.
+transporte não transforma o processo em telefone principal. O critério oficial
+é o device ID da identidade autenticada: `0` no telefone principal e maior que
+zero em companions. A validação ocorre antes do relay para não devolver um
+`messageId` de uma mensagem que o servidor descartará silenciosamente.
+
+Além dessa restrição, a biblioteca não coleta GPS nem executa o ciclo contínuo
+de saída do telefone principal (`IQ start` -> atualizações criptografadas em
+`<ib><location>` -> notificação final). Gerar apenas o payload inicial e
+distribuir a chave `location@broadcast` não equivale a esse ciclo.
 
 Portanto:
 
 - receber, sincronizar, atualizar e armazenar localização ao vivo é suportado;
-- iniciar pelo socket vinculado está sujeito à capacidade concedida pelo servidor;
-- para produção, use localização estática enquanto essa regra existir no
-  servidor.
+- iniciar pelo socket vinculado é rejeitado com
+  `LIVE_LOCATION_LINKED_DEVICE_UNSUPPORTED`;
+- para produção, use localização estática enquanto essa regra existir no servidor.
 
-### Exemplo REST
+### REST
 
 Endpoint: `POST /v1/messages/send_live_location`
 
@@ -139,6 +144,12 @@ curl -X POST http://localhost:8787/v1/messages/send_live_location \
 - `3600` — 1 hora;
 - `28800` — 8 horas.
 
+Em uma sessão normal do InfiniteAPI, criada por QR code ou pair code, a chamada
+retorna HTTP `501` com o código
+`LIVE_LOCATION_LINKED_DEVICE_UNSUPPORTED` e nenhum payload é enviado ao
+WhatsApp. O exemplo documenta o contrato para integrações que venham a operar
+com uma identidade primária suportada.
+
 ### Biblioteca TypeScript
 
 ```ts
@@ -153,9 +164,9 @@ const sent = await sock.sendLiveLocation('5515999999999@s.whatsapp.net', {
 })
 ```
 
-Esse método permanece exposto para compatibilidade, investigação e eventual
-liberação futura do servidor. Não use apenas o retorno dessa chamada como
-confirmação de entrega.
+O método permanece exposto para compatibilidade com uma identidade primária e
+para eventual suporte futuro. Ele falha antes do relay quando o JID autenticado
+possui device ID maior que zero.
 
 ---
 
@@ -226,7 +237,8 @@ Os bancos são espelhos internos. Para integrações em tempo real, prefira
 
 1. Valide latitude e longitude antes do envio.
 2. Use localização estática quando precisar de entrega suportada.
-3. Não interprete `ok: true` da rota ao vivo como recibo do destinatário.
+3. Trate `LIVE_LOCATION_LINKED_DEVICE_UNSUPPORTED` como indisponibilidade do
+   recurso, não como falha transitória.
 4. Monitore `messages.update`/recibos para confirmar entrega.
 5. Não troque o backend ou o transporte silenciosamente numa sessão existente.
 6. Feche corretamente o auth state para garantir o flush dos espelhos.
