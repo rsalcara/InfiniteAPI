@@ -1698,14 +1698,17 @@ export const makeSocket = (config: SocketConfig) => {
 
 			const now = Date.now()
 			const lastNetworkActivityAt = lastDateRecv.getTime()
-			// A history/app-state flush is proof that the local pipeline is still
-			// making progress. Account for it while a large synchronous SQLite
-			// workload is being drained so the watchdog does not close a healthy
-			// socket immediately after the event loop becomes available again.
-			// Once local work stops, the normal network inactivity deadline
-			// applies unchanged.
+			// A local flush can cover the short interval in which synchronous
+			// history/app-state work temporarily blocks the event loop, but it must
+			// never become an alternate liveness source after the network has gone
+			// quiet. The bounded window also avoids trusting lastFlushAt when a
+			// synchronous listener kept the flush open past the watchdog deadline.
 			const lastBufferFlushAt = ev.getStatistics().lastFlushAt || 0
-			const lastEffectiveActivityAt = Math.max(lastNetworkActivityAt, lastBufferFlushAt)
+			const flushIsWithinGraceWindow =
+				lastBufferFlushAt > lastNetworkActivityAt && lastBufferFlushAt - lastNetworkActivityAt <= keepAliveIntervalMs
+			const lastEffectiveActivityAt = flushIsWithinGraceWindow
+				? Math.max(lastNetworkActivityAt, lastBufferFlushAt)
+				: lastNetworkActivityAt
 			const diff = now - lastEffectiveActivityAt
 			/*
 				check if it's been a suspicious amount of time since the server responded with our last seen
@@ -1789,6 +1792,8 @@ export const makeSocket = (config: SocketConfig) => {
 			throw new Error('Custom pairing code must be exactly 8 chars')
 		}
 
+		const previousPairingCode = authState.creds.pairingCode
+		const previousMe = authState.creds.me
 		authState.creds.pairingCode = pairingCode
 
 		authState.creds.me = {
@@ -1832,56 +1837,65 @@ export const makeSocket = (config: SocketConfig) => {
 		)
 
 		ev.emit('creds.update', authState.creds)
-		const pairingResponse = await query(
-			{
-				tag: 'iq',
-				attrs: {
-					to: S_WHATSAPP_NET,
-					type: 'set',
-					id: generateMessageTag(),
-					xmlns: 'md'
-				},
-				content: [
-					{
-						tag: 'link_code_companion_reg',
-						attrs: {
-							jid: authState.creds.me.id,
-							stage: 'companion_hello',
+		let pairingResponse: BinaryNode
+		try {
+			pairingResponse = await query(
+				{
+					tag: 'iq',
+					attrs: {
+						to: S_WHATSAPP_NET,
+						type: 'set',
+						id: generateMessageTag(),
+						xmlns: 'md'
+					},
+					content: [
+						{
+							tag: 'link_code_companion_reg',
+							attrs: {
+								jid: authState.creds.me.id,
+								stage: 'companion_hello',
 
-							should_show_push_notification: 'true'
-						},
-						content: [
-							{
-								tag: 'link_code_pairing_wrapped_companion_ephemeral_pub',
-								attrs: {},
-								content: await generatePairingKey()
+								should_show_push_notification: 'true'
 							},
-							{
-								tag: 'companion_server_auth_key_pub',
-								attrs: {},
-								content: authState.creds.noiseKey.public
-							},
-							{
-								tag: 'companion_platform_id',
-								attrs: {},
-								content: pairPlatformId
-							},
-							{
-								tag: 'companion_platform_display',
-								attrs: {},
-								content: pairPlatformDisplay
-							},
-							{
-								tag: 'link_code_pairing_nonce',
-								attrs: {},
-								content: '0'
-							}
-						]
-					}
-				]
-			},
-			15_000
-		)
+							content: [
+								{
+									tag: 'link_code_pairing_wrapped_companion_ephemeral_pub',
+									attrs: {},
+									content: await generatePairingKey()
+								},
+								{
+									tag: 'companion_server_auth_key_pub',
+									attrs: {},
+									content: authState.creds.noiseKey.public
+								},
+								{
+									tag: 'companion_platform_id',
+									attrs: {},
+									content: pairPlatformId
+								},
+								{
+									tag: 'companion_platform_display',
+									attrs: {},
+									content: pairPlatformDisplay
+								},
+								{
+									tag: 'link_code_pairing_nonce',
+									attrs: {},
+									content: '0'
+								}
+							]
+						}
+					]
+				},
+				15_000
+			)
+		} catch (error) {
+			authState.creds.pairingCode = previousPairingCode
+			authState.creds.me = previousMe
+			ev.emit('creds.update', authState.creds)
+			throw error
+		}
+
 		logger.info(
 			{
 				pairCodeNotificationAck: pairingResponse?.attrs?.type ?? 'unknown',

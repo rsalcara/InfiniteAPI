@@ -84,9 +84,16 @@ describe('JidMapBackend + wrapKeysWithJidMap', () => {
 			.handle('msgstore.db')
 			.prepare('SELECT sort_id FROM jid_map ORDER BY sort_id ASC')
 			.all() as Array<{ sort_id: number }>
-		expect(rows.map(row => row.sort_id)).toHaveLength(3)
-		expect(new Set(rows.map(row => row.sort_id)).size).toBe(3)
+		const sortIds = rows.map(row => row.sort_id)
+		expect(sortIds).toHaveLength(3)
+		expect(sortIds[1]).toBe(sortIds[0]! + 1)
+		expect(sortIds[2]).toBe(sortIds[1]! + 1)
 		expect(backend.getLidForPn('111@s.whatsapp.net')).toBe('11002@lid')
+	})
+
+	it('creates the sort_id index used by monotonic allocation on every database open', () => {
+		const indexes = store.handle('msgstore.db').prepare("PRAGMA index_list('jid_map')").all() as Array<{ name: string }>
+		expect(indexes.map(index => index.name)).toContain('jid_map_sort_id_idx')
 	})
 
 	it('wrapKeysWithJidMap intercepts lid-mapping get + set, delegates rest', async () => {
@@ -145,8 +152,7 @@ describe('JidMapBackend + wrapKeysWithJidMap', () => {
 		// jid row storeMapping resolved, so a single set() covers it end-to-end.
 		const jidRowId = backend.resolveJidRowId(lid)
 		const row = db.prepare('SELECT is_pn_shared FROM lid_chat_state WHERE jid_row_id = ?').get(jidRowId) as
-			| { is_pn_shared: number }
-			| undefined
+			{ is_pn_shared: number } | undefined
 		expect(row?.is_pn_shared).toBe(1)
 	})
 })

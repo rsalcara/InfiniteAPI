@@ -218,8 +218,8 @@ export class JidMapBackend {
 	 * `upsertMap.run()` would leave a freshly-inserted `jid` row with no
 	 * matching `jid_map` entry — silently orphaned and never garbage-
 	 * collected (nothing in the code path deletes orphan jid rows). When
-	 * called from `storeMappingsBatch` the outer wrapper is nested with
-	 * this one, which better-sqlite3 promotes to a SAVEPOINT — still safe.
+	 * Batch writes use their own single outer transaction and resolve rows
+	 * directly; they do not call this method.
 	 */
 	storeMapping(pnUser: string, lidUser: string): void {
 		this.db

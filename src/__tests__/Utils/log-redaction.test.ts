@@ -2,6 +2,8 @@ import { describe, expect, it } from '@jest/globals'
 import {
 	MAX_DEPTH_REACHED,
 	MAX_LOG_DEPTH,
+	MAX_LOG_ENTRIES,
+	LOG_ENTRIES_TRUNCATED,
 	REDACTED,
 	sanitizeLogString,
 	sanitizeLogValue
@@ -132,5 +134,41 @@ describe('central log redaction', () => {
 
 		expect(() => sanitizeLogValue(root)).not.toThrow()
 		expect(JSON.stringify(sanitizeLogValue(root))).toContain(MAX_DEPTH_REACHED)
+	})
+
+	it('sanitizes cyclic compound values inside approved messageKey fields', () => {
+		const cyclic: Record<string, unknown> = { token: 'must-not-leak' }
+		cyclic.self = cyclic
+		const sanitized = sanitizeLogValue({ messageKey: { remoteJid: cyclic } })
+		const serialized = JSON.stringify(sanitized)
+
+		expect(serialized).toContain('[Circular]')
+		expect(serialized).toContain(REDACTED)
+		expect(serialized).not.toContain('must-not-leak')
+	})
+
+	it('never serializes function source or symbol descriptions', () => {
+		const secretFunction = function hardCodedToken() {
+			return 'must-not-leak'
+		}
+		const serialized = JSON.stringify(sanitizeLogValue({ fn: secretFunction, symbol: Symbol('must-not-leak') }))
+
+		expect(serialized).toContain('[Function]')
+		expect(serialized).toContain('[Symbol]')
+		expect(serialized).not.toContain('must-not-leak')
+	})
+
+	it('bounds very large arrays and objects with a truncation marker', () => {
+		const hugeArray = Array.from({ length: MAX_LOG_ENTRIES + 100 }, (_, index) => index)
+		const sanitizedArray = sanitizeLogValue(hugeArray) as unknown[]
+		expect(sanitizedArray).toHaveLength(MAX_LOG_ENTRIES + 1)
+		expect(sanitizedArray.at(-1)).toBe(LOG_ENTRIES_TRUNCATED)
+
+		const hugeObject = Object.fromEntries(
+			Array.from({ length: MAX_LOG_ENTRIES + 100 }, (_, index) => [`field${index}`, index])
+		)
+		const serializedObject = JSON.stringify(sanitizeLogValue(hugeObject))
+		expect(serializedObject).toContain(LOG_ENTRIES_TRUNCATED)
+		expect(Object.keys(sanitizeLogValue(hugeObject) as Record<string, unknown>).length).toBe(MAX_LOG_ENTRIES + 1)
 	})
 })

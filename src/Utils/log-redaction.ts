@@ -3,6 +3,8 @@ const MAX_DEPTH_REACHED = '[max depth]'
 const MAX_STACK_LENGTH = 24_000
 const MAX_STRING_LENGTH = 8_192
 const MAX_LOG_DEPTH = 32
+const MAX_LOG_ENTRIES = 4_096
+const LOG_ENTRIES_TRUNCATED = '[max entries]'
 
 const DEFAULT_SENSITIVE_FIELDS = [
 	'password',
@@ -55,6 +57,10 @@ const EXACT_SENSITIVE_FIELDS = new Set([
 	'displayname'
 ])
 
+const normalizeFieldName = (field: string): string => field.toLowerCase().replace(/[-\s]/g, '')
+const NORMALIZED_DEFAULT_SENSITIVE_FIELDS = DEFAULT_SENSITIVE_FIELDS.map(normalizeFieldName)
+const NORMALIZED_EXACT_SENSITIVE_FIELDS = new Set([...EXACT_SENSITIVE_FIELDS].map(normalizeFieldName))
+
 const JID_PATTERN = /(?<![0-9A-Za-z._-])([0-9A-Za-z._-]+(?::\d+)?)@([0-9A-Za-z.-]+)(?![0-9A-Za-z.-])/g
 const PHONE_PATTERN = /(?<![0-9A-Za-z])\+?\d{8,16}(?![0-9A-Za-z])/g
 const MESSAGE_KEY_CORRELATION_FIELDS = new Set([
@@ -100,13 +106,20 @@ export const sanitizeLogString = (value: string, limit: number = MAX_STRING_LENG
 }
 
 const isSensitiveField = (key: string, extraFields: ReadonlyArray<string>): boolean => {
-	const normalized = key.toLowerCase().replace(/[-\s]/g, '')
-	return [...DEFAULT_SENSITIVE_FIELDS, ...extraFields].some(field => {
-		const normalizedField = field.toLowerCase().replace(/[-\s]/g, '')
-		return EXACT_SENSITIVE_FIELDS.has(normalizedField)
-			? normalized === normalizedField
-			: normalized.includes(normalizedField)
-	})
+	const normalized = normalizeFieldName(key)
+	return (
+		NORMALIZED_DEFAULT_SENSITIVE_FIELDS.some(normalizedField =>
+			NORMALIZED_EXACT_SENSITIVE_FIELDS.has(normalizedField)
+				? normalized === normalizedField
+				: normalized.includes(normalizedField)
+		) ||
+		extraFields.some(field => {
+			const normalizedField = normalizeFieldName(field)
+			return NORMALIZED_EXACT_SENSITIVE_FIELDS.has(normalizedField)
+				? normalized === normalizedField
+				: normalized.includes(normalizedField)
+		})
+	)
 }
 
 export type SanitizeLogOptions = {
@@ -116,19 +129,24 @@ export type SanitizeLogOptions = {
 	includeErrorStack?: boolean
 	depth?: number
 	maxDepth?: number
+	/** Shared recursion budget; internal callers use this to cap collection size. */
+	entryBudget?: { remaining: number }
 }
 
-const safeObjectEntries = (value: object): Array<[string, unknown]> => {
+function* safeObjectEntries(value: object): IterableIterator<[string, unknown]> {
+	let keys: string[]
 	try {
-		return Object.keys(value).map(key => {
-			try {
-				return [key, (value as Record<string, unknown>)[key]]
-			} catch {
-				return [key, '[unavailable]']
-			}
-		})
+		keys = Object.keys(value)
 	} catch {
-		return []
+		return
+	}
+
+	for (const key of keys) {
+		try {
+			yield [key, (value as Record<string, unknown>)[key]]
+		} catch {
+			yield [key, '[unavailable]']
+		}
 	}
 }
 
@@ -146,6 +164,12 @@ export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {
 	const includeErrorStack = options.includeErrorStack ?? true
 	const depth = options.depth ?? 0
 	const maxDepth = options.maxDepth ?? MAX_LOG_DEPTH
+	const entryBudget = options.entryBudget ?? { remaining: MAX_LOG_ENTRIES }
+	const consumeEntry = (): boolean => {
+		if (entryBudget.remaining <= 0) return false
+		entryBudget.remaining--
+		return true
+	}
 
 	// messageKey is an explicitly approved operational-correlation exception.
 	// It must be handled before generic "*key*" redaction, but only the six
@@ -165,7 +189,19 @@ export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {
 
 		const messageKey: Record<string, unknown> = {}
 		for (const [key, child] of safeObjectEntries(value)) {
-			messageKey[key] = MESSAGE_KEY_CORRELATION_FIELDS.has(key)
+			if (!consumeEntry()) {
+				messageKey[LOG_ENTRIES_TRUNCATED] = LOG_ENTRIES_TRUNCATED
+				break
+			}
+
+			const isRawCorrelationField =
+				MESSAGE_KEY_CORRELATION_FIELDS.has(key) &&
+				(child === null ||
+					child === undefined ||
+					typeof child === 'string' ||
+					typeof child === 'number' ||
+					typeof child === 'boolean')
+			messageKey[key] = isRawCorrelationField
 				? child
 				: sanitizeLogValue(child, {
 						fieldName: key,
@@ -173,7 +209,8 @@ export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {
 						seen,
 						includeErrorStack,
 						depth: depth + 1,
-						maxDepth
+						maxDepth,
+						entryBudget
 					})
 		}
 
@@ -183,13 +220,11 @@ export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {
 	if (value === null || value === undefined) return value
 	if (options.fieldName && isSensitiveField(options.fieldName, extraFields)) return REDACTED
 	if (typeof value === 'string') return sanitizeLogString(value)
-	if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return value
+	if (typeof value === 'number' || typeof value === 'boolean') return value
+	if (typeof value === 'bigint') return value.toString()
 	if (typeof value === 'symbol' || typeof value === 'function') {
-		try {
-			return String(value)
-		} catch {
-			return '[unserializable log value]'
-		}
+		if (typeof value === 'function') return '[Function]'
+		return '[Symbol]'
 	}
 
 	if (Buffer.isBuffer(value) || value instanceof Uint8Array) return `[binary:${value.byteLength} bytes]`
@@ -211,13 +246,18 @@ export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {
 		const own: Record<string, unknown> = {}
 		for (const [key, child] of safeObjectEntries(value)) {
 			if (key === 'message' || key === 'stack') continue
+			if (!consumeEntry()) {
+				own[LOG_ENTRIES_TRUNCATED] = LOG_ENTRIES_TRUNCATED
+				break
+			}
 			own[key] = sanitizeLogValue(child, {
 				fieldName: key,
 				extraFields,
 				seen,
 				includeErrorStack,
 				depth: depth + 1,
-				maxDepth
+				maxDepth,
+				entryBudget
 			})
 		}
 
@@ -253,20 +293,34 @@ export const sanitizeLogValue = (value: unknown, options: SanitizeLogOptions = {
 	}
 
 	if (Array.isArray(value)) {
-		return value.map(item =>
-			sanitizeLogValue(item, { extraFields, seen, includeErrorStack, depth: depth + 1, maxDepth })
-		)
+		const sanitizedArray: unknown[] = []
+		for (const item of value) {
+			if (!consumeEntry()) {
+				sanitizedArray.push(LOG_ENTRIES_TRUNCATED)
+				break
+			}
+			sanitizedArray.push(
+				sanitizeLogValue(item, { extraFields, seen, includeErrorStack, depth: depth + 1, maxDepth, entryBudget })
+			)
+		}
+		return sanitizedArray
 	}
 
 	const sanitized: Record<string, unknown> = {}
 	for (const [key, child] of safeObjectEntries(value)) {
+		if (!consumeEntry()) {
+			sanitized[LOG_ENTRIES_TRUNCATED] = LOG_ENTRIES_TRUNCATED
+			break
+		}
+
 		sanitized[key] = sanitizeLogValue(child, {
 			fieldName: key,
 			extraFields,
 			seen,
 			includeErrorStack,
 			depth: depth + 1,
-			maxDepth
+			maxDepth,
+			entryBudget
 		})
 	}
 
@@ -279,4 +333,4 @@ export const sanitizeLogRecord = (
 	options: Pick<SanitizeLogOptions, 'includeErrorStack' | 'maxDepth'> = {}
 ): Record<string, unknown> => sanitizeLogValue(value, { extraFields, ...options }) as Record<string, unknown>
 
-export { MAX_DEPTH_REACHED, MAX_LOG_DEPTH, MAX_STACK_LENGTH, REDACTED }
+export { LOG_ENTRIES_TRUNCATED, MAX_DEPTH_REACHED, MAX_LOG_DEPTH, MAX_LOG_ENTRIES, MAX_STACK_LENGTH, REDACTED }

@@ -592,13 +592,15 @@ export class StructuredLogger implements ILogger {
 
 		// Process object
 		if (obj instanceof Error) {
-			data = sanitizeLogValue(obj, {
+			const sanitizedError = sanitizeLogValue(obj, {
 				extraFields: this.config.redactFields,
 				includeErrorStack: this.config.includeStackTrace
 			}) as Record<string, unknown>
+			const { stack: sanitizedStack, ...errorData } = sanitizedError
+			data = errorData
 			message = message || sanitizeLogString(String(data.name || 'Error'))
-			if (this.config.includeStackTrace && typeof data.stack === 'string') {
-				stack = sanitizeLogString(data.stack, MAX_STACK_LENGTH)
+			if (this.config.includeStackTrace && typeof sanitizedStack === 'string') {
+				stack = sanitizeLogString(sanitizedStack, MAX_STACK_LENGTH)
 			}
 		} else if (typeof obj === 'object' && obj !== null) {
 			data = this.sanitize(obj as Record<string, unknown>)

@@ -180,6 +180,22 @@ describe('StructuredLogger', () => {
 			expect(output).not.toContain('must-not-leak')
 		})
 
+		it('emits a direct Error stack only at the top level', () => {
+			const jsonLogger = createStructuredLogger({
+				level: 'info',
+				jsonFormat: true,
+				includeStackTrace: true
+			})
+
+			jsonLogger.error(new Error('private direct error'))
+
+			const output = String(jest.mocked(console.error).mock.calls.at(-1)?.[0])
+			const entry = JSON.parse(output) as { data?: { stack?: unknown }; stack?: unknown }
+			expect(entry.stack).toEqual(expect.any(String))
+			expect(entry.data?.stack).toBeUndefined()
+			expect(output).not.toContain('private direct error')
+		})
+
 		it('does not let a hostile value abort its caller', () => {
 			const jsonLogger = createStructuredLogger({
 				level: 'info',

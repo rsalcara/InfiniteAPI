@@ -85,11 +85,7 @@ export const getPairCodeCompanionIdentity = (
 	// identity only for Windows Desktop/UWP Pair Code requests.
 	const platformType =
 		configuredPlatformType === CompanionWebClientType.UWP ? CompanionWebClientType.EDGE : configuredPlatformType
-	const displayBrowser = androidBrowser
-		? 'Chrome'
-		: configuredPlatformType === CompanionWebClientType.UWP
-			? 'Edge'
-			: browser[1]
+	const displayBrowser = configuredPlatformType === CompanionWebClientType.UWP ? 'Edge' : browser[1]
 	const identity = makeCompanionIdentity(platformType, browser, windowsHybrid, displayBrowser)
 	return androidBrowser ? { ...identity, platformDisplay: 'Chrome (Mac OS)' } : identity
 }
@@ -130,8 +126,9 @@ export const buildPairingQRData = (
 	// as its fifth field. UWP is 8 in this enum (distinct from UWP=21 in
 	// DeviceProps). Without it the phone accepts the link as a generic legacy
 	// Web companion and may omit the Windows full/recent history-sync flow.
-	if (transportProfile === 'web' && syncFullHistory && browser[0].trim().toLowerCase() === 'windows') {
-		payloadFields.push(getQrCodeCompanionIdentity(browser, transportProfile, syncFullHistory).platformId)
+	const qrIdentity = getQrCodeCompanionIdentity(browser, transportProfile, syncFullHistory)
+	if (qrIdentity.windowsHybrid) {
+		payloadFields.push(qrIdentity.platformId)
 		return `https://wa.me/settings/linked_devices#${payloadFields.join(',')}`
 	}
 

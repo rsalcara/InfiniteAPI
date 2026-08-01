@@ -92,6 +92,47 @@ describe('CompanionDevicesBackend', () => {
 			supportedBotChannelFbids: []
 		})
 
+		const replacementConfig = proto.DeviceProps.HistorySyncConfig.fromObject({
+			fullSyncDaysLimit: 30,
+			onDemandReady: false,
+			supportManusHistory: false,
+			supportHatchHistory: false,
+			supportedBotChannelFbids: ['updated']
+		})
+		backend.upsertOwnDevice({
+			deviceId: DEVICE_ID,
+			loginTime: 1_700_000_100,
+			advKeyIndex: 47,
+			fullSyncRequired: false,
+			fullSyncDaysLimit: 30,
+			fullSyncSizeMbLimit: 512,
+			onDemandReady: false,
+			historySyncConfigProtobuf: proto.DeviceProps.HistorySyncConfig.encode(replacementConfig).finish(),
+			supportManusHistory: false,
+			supportHatchHistory: false,
+			supportedBotChannelFbids: ['updated']
+		})
+		const refreshed = backend.getByDeviceId(DEVICE_ID)!
+		expect(countRows()).toBe(1)
+		expect(refreshed.login_time).toBe(1_700_000_100)
+		expect(refreshed.adv_key_index).toBe(47)
+		expect(refreshed.full_sync_required).toBe(0)
+		expect(refreshed.full_sync_days_limit).toBe(30)
+		expect(refreshed.full_sync_size_mb_limit).toBe(512)
+		expect(refreshed.on_demand_ready).toBe(0)
+		expect(refreshed.support_manus_history).toBe(0)
+		expect(refreshed.support_hatch_history).toBe(0)
+		expect(refreshed.supported_bot_channel_fbids).toBe('["updated"]')
+		expect(
+			proto.DeviceProps.HistorySyncConfig.decode(refreshed.history_sync_config_protobuf as Uint8Array)
+		).toMatchObject({
+			fullSyncDaysLimit: 30,
+			onDemandReady: false,
+			supportManusHistory: false,
+			supportHatchHistory: false,
+			supportedBotChannelFbids: ['updated']
+		})
+
 		expect(backend.getByDeviceId('other@s.whatsapp.net')).toBeNull()
 	})
 

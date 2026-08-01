@@ -1967,7 +1967,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		try {
 			const props = buildCompanionDeviceProps(config)
-			const hsc = props.historySyncConfig || {}
+			const hsc = props.historySyncConfig
 			let advKeyIndex = 0
 			try {
 				const details = authState.creds.account?.details
@@ -1985,27 +1985,27 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				loginTime: Math.floor(Date.now() / 1000),
 				advKeyIndex,
 				fullSyncRequired: props.requireFullSync ?? undefined,
-				fullSyncDaysLimit: hsc.fullSyncDaysLimit ?? undefined,
-				fullSyncSizeMbLimit: hsc.fullSyncSizeMbLimit ?? undefined,
-				storageQuotaMb: hsc.storageQuotaMb ?? undefined,
-				inlineInitialHistSyncPayloadEnabled: hsc.inlineInitialPayloadInE2EeMsg ?? undefined,
-				recentSyncDaysLimit: hsc.recentSyncDaysLimit ?? undefined,
-				supportCallLogHistory: hsc.supportCallLogHistory ?? undefined,
-				supportBotUserAgentChatHistory: hsc.supportBotUserAgentChatHistory ?? undefined,
-				supportCagReactionsAndPollsHistory: hsc.supportCagReactionsAndPolls ?? undefined,
-				supportRecentSyncChunkMessageTuning: hsc.supportRecentSyncChunkMessageCountTuning ?? undefined,
-				supportHostedGroupMsg: hsc.supportHostedGroupMsg ?? undefined,
-				supportFbidBotChatHistory: hsc.supportFbidBotChatHistory ?? undefined,
-				supportBizHostedMsg: hsc.supportBizHostedMsg ?? undefined,
-				supportAddOnHistorySyncMigration: hsc.supportAddOnHistorySyncMigration ?? undefined,
-				supportMessageAssociation: hsc.supportMessageAssociation ?? undefined,
-				supportGroupHistory: hsc.supportGroupHistory ?? undefined,
-				supportGuestChat: hsc.supportGuestChat ?? undefined,
-				onDemandReady: hsc.onDemandReady ?? undefined,
-				historySyncConfigProtobuf: proto.DeviceProps.HistorySyncConfig.encode(hsc).finish(),
-				supportManusHistory: hsc.supportManusHistory ?? undefined,
-				supportHatchHistory: hsc.supportHatchHistory ?? undefined,
-				supportedBotChannelFbids: hsc.supportedBotChannelFbids ?? undefined
+				fullSyncDaysLimit: hsc?.fullSyncDaysLimit ?? undefined,
+				fullSyncSizeMbLimit: hsc?.fullSyncSizeMbLimit ?? undefined,
+				storageQuotaMb: hsc?.storageQuotaMb ?? undefined,
+				inlineInitialHistSyncPayloadEnabled: hsc?.inlineInitialPayloadInE2EeMsg ?? undefined,
+				recentSyncDaysLimit: hsc?.recentSyncDaysLimit ?? undefined,
+				supportCallLogHistory: hsc?.supportCallLogHistory ?? undefined,
+				supportBotUserAgentChatHistory: hsc?.supportBotUserAgentChatHistory ?? undefined,
+				supportCagReactionsAndPollsHistory: hsc?.supportCagReactionsAndPolls ?? undefined,
+				supportRecentSyncChunkMessageTuning: hsc?.supportRecentSyncChunkMessageCountTuning ?? undefined,
+				supportHostedGroupMsg: hsc?.supportHostedGroupMsg ?? undefined,
+				supportFbidBotChatHistory: hsc?.supportFbidBotChatHistory ?? undefined,
+				supportBizHostedMsg: hsc?.supportBizHostedMsg ?? undefined,
+				supportAddOnHistorySyncMigration: hsc?.supportAddOnHistorySyncMigration ?? undefined,
+				supportMessageAssociation: hsc?.supportMessageAssociation ?? undefined,
+				supportGroupHistory: hsc?.supportGroupHistory ?? undefined,
+				supportGuestChat: hsc?.supportGuestChat ?? undefined,
+				onDemandReady: hsc?.onDemandReady ?? undefined,
+				historySyncConfigProtobuf: hsc ? proto.DeviceProps.HistorySyncConfig.encode(hsc).finish() : null,
+				supportManusHistory: hsc?.supportManusHistory ?? undefined,
+				supportHatchHistory: hsc?.supportHatchHistory ?? undefined,
+				supportedBotChannelFbids: hsc?.supportedBotChannelFbids ?? undefined
 			})
 		} catch (err) {
 			logger.debug({ err }, 'companion_devices mirror: own-device upsert failed (ignored)')

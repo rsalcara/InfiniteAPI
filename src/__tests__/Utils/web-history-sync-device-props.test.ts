@@ -8,7 +8,12 @@ import {
 	getPairCodeCompanionIdentity,
 	getQrCodeCompanionIdentity
 } from '../../Utils/companion-reg-client-utils'
-import { buildCompanionDeviceProps, generateLoginNode, generateRegistrationNode } from '../../Utils/validate-connection'
+import {
+	buildCompanionDeviceProps,
+	buildWebInfo,
+	generateLoginNode,
+	generateRegistrationNode
+} from '../../Utils/validate-connection'
 
 const webConfig = (overrides: Partial<SocketConfig> = {}): SocketConfig => ({
 	...DEFAULT_CONNECTION_CONFIG,
@@ -63,6 +68,12 @@ describe('official Web history-sync DeviceProps', () => {
 		expect(payload.webInfo?.webSubPlatform).toBe(proto.ClientPayload.WebInfo.WebSubPlatform.WIN_HYBRID)
 		expect(payload.passive).toBe(true)
 		expect(payload.pull).toBe(true)
+	})
+
+	it('normalizes desktop browser casing when selecting the Web sub-platform', () => {
+		expect(buildWebInfo(webConfig({ browser: [' mac os ', ' desktop ', '15'] })).webSubPlatform).toBe(
+			proto.ClientPayload.WebInfo.WebSubPlatform.DARWIN
+		)
 	})
 
 	it('keeps Pair Code on Edge while DeviceProps uses UWP for full history', () => {
@@ -157,6 +168,24 @@ describe('official Web history-sync DeviceProps', () => {
 		expect(buildCompanionDeviceProps(webConfig({ browser: ['Ubuntu', 'Chrome', '24.04'] })).platformType).toBe(
 			proto.DeviceProps.PlatformType.CHROME
 		)
+	})
+
+	it.each([
+		['Mac OS', 'Edge', proto.DeviceProps.PlatformType.EDGE],
+		['Ubuntu', 'Chrome', proto.DeviceProps.PlatformType.CHROME]
+	] as const)('does not advertise Windows-only history capabilities for %s', (os, browser, platformType) => {
+		const props = buildCompanionDeviceProps(webConfig({ browser: [os, browser, '1.0'] }))
+
+		expect(props.requireFullSync).toBe(true)
+		expect(props.platformType).toBe(platformType)
+		expect(props.historySyncConfig).toMatchObject({
+			storageQuotaMb: 10240,
+			supportCallLogHistory: false,
+			supportGroupHistory: false
+		})
+		expect(props.historySyncConfig?.fullSyncDaysLimit).toBeUndefined()
+		expect(props.historySyncConfig?.onDemandReady).toBeUndefined()
+		expect(props.historySyncConfig?.completeOnDemandReady).toBeUndefined()
 	})
 
 	it('round-trips the official fields through the registration protobuf', () => {

@@ -372,29 +372,36 @@ export class VoipClient extends EventEmitter {
 				process.on('uncaughtException', installedHandler)
 
 				this.#sock.ev.on('connection.update', (update: any) => {
-					this.emit('connection.update', update)
+					const connection = update.connection
+					const lastDisconnect = update.lastDisconnect
+					const statusCode = lastDisconnect?.error?.output?.statusCode
+					const publicUpdate = {
+						...update,
+						lastDisconnect: lastDisconnect ? { ...lastDisconnect } : lastDisconnect
+					}
+
 					if (update.qr) {
 						console.log('[BAILEYS] QR generated; consume VoipClient connection.update in the application UI')
 					}
 
-					if (update.connection === 'open') {
+					if (connection === 'open') {
 						opened = true
 						detachHandler()
 						resolveOpen()
-						return
-					}
-
-					if (update.connection === 'close' && !opened) {
-						const statusCode = update.lastDisconnect?.error?.output?.statusCode
+					} else if (connection === 'close' && !opened) {
 						const shouldReconnect = statusCode === 515 || statusCode === DisconnectReason?.restartRequired
 						if (shouldReconnect && retries < maxRetries) {
 							retries += 1
 							setTimeout(connectSocket, 1000)
 						} else {
 							detachHandler()
-							rejectOpen(update.lastDisconnect?.error ?? new Error('socket closed before open'))
+							rejectOpen(lastDisconnect?.error ?? new Error('socket closed before open'))
 						}
 					}
+
+					// Lifecycle decisions above use immutable snapshots. Application
+					// listeners receive a copy and cannot alter reconnect/open handling.
+					this.emit('connection.update', publicUpdate)
 				})
 			}
 

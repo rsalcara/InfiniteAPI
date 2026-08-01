@@ -23,6 +23,8 @@ import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 /** Android reserves headroom below SQLite's 999-variable limit and chunks at 975. */
 export const DEFAULT_IN_CHUNK = 975
+/** SQLite's portable host-parameter limit used by the Android-compatible stores. */
+export const SQLITE_MAX_VARIABLES = 999
 
 export interface InClauseQuery {
 	/**
@@ -47,6 +49,22 @@ export function prepareInClause(
 	sqlAfterIn: string,
 	chunkSize: number = DEFAULT_IN_CHUNK
 ): InClauseQuery {
+	const normalizedChunkSize = Math.trunc(chunkSize)
+	if (!Number.isFinite(normalizedChunkSize) || normalizedChunkSize < 1) {
+		throw new RangeError(`chunkSize must be a positive integer, got ${chunkSize}`)
+	}
+
+	function getEffectiveChunkSize(leadingParams: ReadonlyArray<unknown>): number {
+		const remainingVariables = SQLITE_MAX_VARIABLES - leadingParams.length
+		if (remainingVariables < 1) {
+			throw new RangeError(
+				`leadingParams consume the SQLite variable budget (${leadingParams.length}/${SQLITE_MAX_VARIABLES})`
+			)
+		}
+
+		return Math.min(normalizedChunkSize, remainingVariables)
+	}
+
 	// Cache of prepared statements keyed by exact placeholder count. Holding
 	// `Map<number, SqliteStatementLike>` lets us reuse the chunk-sized
 	// statement across calls and only prepare a second one for the (at most
@@ -67,9 +85,10 @@ export function prepareInClause(
 	return {
 		all(leadingParams, inValues) {
 			if (inValues.length === 0) return []
+			const effectiveChunkSize = getEffectiveChunkSize(leadingParams)
 			const out: unknown[] = []
-			for (let i = 0; i < inValues.length; i += chunkSize) {
-				const chunk = inValues.slice(i, i + chunkSize)
+			for (let i = 0; i < inValues.length; i += effectiveChunkSize) {
+				const chunk = inValues.slice(i, i + effectiveChunkSize)
 				const stmt = getStmt(chunk.length)
 				const rows = stmt.all(...leadingParams, ...chunk)
 				if (rows.length > 0) out.push(...rows)
@@ -79,9 +98,10 @@ export function prepareInClause(
 		},
 		run(leadingParams, inValues) {
 			if (inValues.length === 0) return 0
+			const effectiveChunkSize = getEffectiveChunkSize(leadingParams)
 			let total = 0
-			for (let i = 0; i < inValues.length; i += chunkSize) {
-				const chunk = inValues.slice(i, i + chunkSize)
+			for (let i = 0; i < inValues.length; i += effectiveChunkSize) {
+				const chunk = inValues.slice(i, i + effectiveChunkSize)
 				const stmt = getStmt(chunk.length)
 				const result = stmt.run(...leadingParams, ...chunk)
 				total += result.changes

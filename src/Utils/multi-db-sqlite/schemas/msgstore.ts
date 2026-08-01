@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS jid_map (
 );
 
 CREATE INDEX IF NOT EXISTS jid_map_jid_row_id_idx ON jid_map (jid_row_id);
+CREATE INDEX IF NOT EXISTS jid_map_sort_id_idx ON jid_map (sort_id);
 
 CREATE TABLE IF NOT EXISTS user_device (
   _id INTEGER PRIMARY KEY AUTOINCREMENT,

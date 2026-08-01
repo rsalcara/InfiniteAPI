@@ -2126,9 +2126,38 @@ export function recordConnectionAttempt(status: 'success' | 'failure'): void {
 /**
  * Record a message sent
  */
+const MESSAGE_METRIC_TYPES = new Set([
+	'text',
+	'image',
+	'video',
+	'gif',
+	'audio',
+	'voice',
+	'document',
+	'sticker',
+	'sticker_pack',
+	'reaction',
+	'location',
+	'live_location',
+	'contact',
+	'contacts',
+	'poll',
+	'poll_vote',
+	'interactive',
+	'interactive_response',
+	'view_once',
+	'view_once_image',
+	'view_once_video',
+	'view_once_audio',
+	'unknown',
+	'other'
+])
+
+export const normalizeMessageMetricType = (type: string): string => (MESSAGE_METRIC_TYPES.has(type) ? type : 'other')
+
 export function recordMessageSent(type = 'text'): void {
 	try {
-		metrics.messagesSent?.inc({ type })
+		metrics.messagesSent?.inc({ type: normalizeMessageMetricType(type) })
 	} catch {
 		// Metrics not initialized, ignore silently
 	}
@@ -2139,7 +2168,7 @@ export function recordMessageSent(type = 'text'): void {
  */
 export function recordMessageReceived(type = 'text'): void {
 	try {
-		metrics.messagesReceived?.inc({ type })
+		metrics.messagesReceived?.inc({ type: normalizeMessageMetricType(type) })
 	} catch {
 		// Metrics not initialized, ignore silently
 	}

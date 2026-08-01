@@ -27,6 +27,7 @@ import {
 	type JidResolver,
 	shouldAdvanceAndroidMessageStatus
 } from './message-store-backend'
+import { isAnyLidUser, isAnyPnUser } from '../../WABinary'
 import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 export type ReceiptKind = 'delivery' | 'read' | 'played'
@@ -265,7 +266,14 @@ export class ReceiptBackend {
 			const messageRowId = this.resolveMessageRowId(chatJid, fromMe, keyId)
 			if (messageRowId === null) return 0
 			let replayed = 0
-			const messageStatusRow = this.stmts.getMessageStatus.get(messageRowId) as { status: number | null } | undefined
+			// A group receipt is materialized per recipient/device, but it cannot
+			// establish the aggregate message status until every relevant member
+			// has advanced. Live group handling deliberately does not promote the
+			// parent row from one participant, so orphan replay must match it.
+			const canPromoteMessageStatus = isAnyPnUser(chatJid) || isAnyLidUser(chatJid)
+			const messageStatusRow = canPromoteMessageStatus
+				? (this.stmts.getMessageStatus.get(messageRowId) as { status: number | null } | undefined)
+				: undefined
 			let promotedStatus = messageStatusRow?.status ?? null
 
 			for (;;) {

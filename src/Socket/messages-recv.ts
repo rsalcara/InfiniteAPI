@@ -743,8 +743,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const handleReachoutTimelockNotification = (data: Record<string, unknown>) => {
 		const payload = data.xwa2_notify_account_reachout_timelock as
-			| { is_active?: boolean; enforcement_type?: string; time_enforcement_ends?: string }
-			| undefined
+			{ is_active?: boolean; enforcement_type?: string; time_enforcement_ends?: string } | undefined
 
 		if (!payload) {
 			logger.warn('reachout timelock notification missing payload')
@@ -1033,6 +1032,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// the parse for a bodyless <update> avoids the noise log entry.
 			if (!updateNode.content) {
 				logger.debug({ opName }, 'reachout timelock notification has no content, skipping')
+			} else if (Array.isArray(updateNode.content)) {
+				logger.warn({ opName }, 'reachout timelock notification content is a node array, expected string/binary')
 			} else {
 				try {
 					const raw = updateNode.content
@@ -1100,6 +1101,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// non-null assertion and the TypeError-as-log noise.
 			if (!updateNode.content) {
 				logger.debug({ opName }, 'message capping notification has no content, skipping')
+			} else if (Array.isArray(updateNode.content)) {
+				logger.warn({ opName }, 'message capping notification content is a node array, expected string/binary')
 			} else {
 				try {
 					const raw = updateNode.content

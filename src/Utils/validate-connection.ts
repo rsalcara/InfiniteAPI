@@ -205,16 +205,18 @@ const getUserAgent = (config: SocketConfig): proto.ClientPayload.IUserAgent => {
 }
 
 const PLATFORM_MAP = {
-	'Mac OS': proto.ClientPayload.WebInfo.WebSubPlatform.DARWIN,
-	Windows: proto.ClientPayload.WebInfo.WebSubPlatform.WIN32
+	'mac os': proto.ClientPayload.WebInfo.WebSubPlatform.DARWIN,
+	windows: proto.ClientPayload.WebInfo.WebSubPlatform.WIN32
 }
 
 export const buildWebInfo = (config: SocketConfig): proto.ClientPayload.IWebInfo => {
 	let webSubPlatform = proto.ClientPayload.WebInfo.WebSubPlatform.WEB_BROWSER
-	if (config.syncFullHistory && config.browser[0].trim().toLowerCase() === 'windows') {
+	const normalizedOs = config.browser[0].trim().toLowerCase()
+	const normalizedBrowser = config.browser[1].trim().toLowerCase()
+	if (config.syncFullHistory && normalizedOs === 'windows') {
 		webSubPlatform = proto.ClientPayload.WebInfo.WebSubPlatform.WIN_HYBRID
-	} else if (config.syncFullHistory && config.browser[1] === 'Desktop') {
-		webSubPlatform = PLATFORM_MAP[config.browser[0] as keyof typeof PLATFORM_MAP] || webSubPlatform
+	} else if (config.syncFullHistory && normalizedBrowser === 'desktop') {
+		webSubPlatform = PLATFORM_MAP[normalizedOs as keyof typeof PLATFORM_MAP] || webSubPlatform
 	}
 
 	return { webSubPlatform }
@@ -309,7 +311,7 @@ export const buildCompanionDeviceProps = (config: SocketConfig): proto.IDevicePr
 	const isNativeAndroid = config.transportProfile === 'native_android'
 	const isWindowsCompanion =
 		!isNativeAndroid && config.syncFullHistory && config.browser[0].trim().toLowerCase() === 'windows'
-	const webHistorySyncConfig: proto.DeviceProps.IHistorySyncConfig = config.syncFullHistory
+	const webHistorySyncConfig: proto.DeviceProps.IHistorySyncConfig = isWindowsCompanion
 		? {
 				// Captured from the official WhatsApp Windows Beta (UWP) client.
 				// Full-history mode is a two-stage sync: the initial payload makes
