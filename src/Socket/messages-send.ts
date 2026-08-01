@@ -20,6 +20,7 @@ import type {
 } from '../Types'
 import {
 	aggregateMessageKeysNotFromMe,
+	assertCanStartLiveLocation,
 	assertMediaContent,
 	assertMeId,
 	bindWaitForEvent,
@@ -40,13 +41,15 @@ import {
 	getUrlFromDirectPath,
 	getWAUploadToServer,
 	hasNonNullishProperty,
+	type LiveLocationSendOptions,
 	MessageRetryManager,
 	normalizeMessageContent,
 	parseAndInjectE2ESessions,
 	runDetached,
 	safeCacheSet,
 	toNumber,
-	unixTimestampSeconds
+	unixTimestampSeconds,
+	validateLiveLocationSendOptions
 } from '../Utils'
 import { logMessageSent, logTcToken } from '../Utils/baileys-logger'
 import { getUrlInfo } from '../Utils/link-preview'
@@ -3174,32 +3177,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		 */
 		sendLiveLocation: async (
 			jid: string,
-			location: {
-				degreesLatitude: number
-				degreesLongitude: number
-				/** Share window in seconds — populates the `from_me=1` sharer `expires`. */
-				durationSecs?: number
-				/** Android UI label: "Add comment". Stored in LiveLocationMessage.caption. */
-				comment?: string
-				/** @deprecated Use `comment`; retained for API compatibility. */
-				caption?: string
-				accuracyInMeters?: number
-				speedInMps?: number
-				degreesClockwiseFromMagneticNorth?: number
-				sequenceNumber?: number
-				jpegThumbnail?: Uint8Array
-			},
+			location: LiveLocationSendOptions,
 			options: MiscMessageGenerationOptions = {}
 		) => {
-			const userJid = authState.creds.me!.id
-			const durationSecs = location.durationSecs ?? 15 * 60
-			const officialDurations = [15 * 60, 60 * 60, 8 * 60 * 60]
-			if (!officialDurations.includes(durationSecs)) {
-				throw new Boom('Live-location duration must be 900, 3600, or 28800 seconds', {
-					statusCode: 400,
-					data: { durationSecs, allowed: officialDurations }
-				})
-			}
+			const userJid = assertMeId(authState.creds)
+			assertCanStartLiveLocation(jidDecode(userJid)?.device)
+			const durationSecs = validateLiveLocationSendOptions(location)
 
 			const messageTimestampMs = options.timestamp?.getTime() ?? Date.now()
 			const content: proto.IMessage = {

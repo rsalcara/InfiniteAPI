@@ -31,6 +31,13 @@ describe('getRelayMediaType', () => {
 	})
 
 	it.each([
+		['direct', { liveLocationMessage: {} }],
+		['ephemeral wrapped', { ephemeralMessage: { message: { liveLocationMessage: {} } } }]
+	])('classifies %s live location', (_label, message) => {
+		expect(getRelayMediaType(message)).toBe('livelocation')
+	})
+
+	it.each([
 		['ephemeral image', { ephemeralMessage: { message: { imageMessage: {} } } }, 'image'],
 		['document with caption', { documentWithCaptionMessage: { message: { documentMessage: {} } } }, 'document'],
 		['edited video', { editedMessage: { message: { videoMessage: {} } } }, 'video']
