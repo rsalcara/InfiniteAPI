@@ -1,7 +1,7 @@
 import { DEFAULT_CONNECTION_CONFIG } from '../Defaults'
 import type { SocketConfig, UserFacingSocketConfig, WAVersion } from '../Types'
 import { attachAdminAbuseDetector } from '../Utils/admin-abuse-detector'
-import { PRESET_MIGRATION_LEGACY_BROWSER, shouldPreserveUnmarkedLegacyWebIdentity } from '../Utils/connection-presets'
+import { resolveUnmarkedLegacyWebBrowser, shouldPreserveUnmarkedLegacyWebIdentity } from '../Utils/connection-presets'
 import { attachMeUsernameSync } from '../Utils/me-username-sync'
 import {
 	createMessageQuarantineRecorder,
@@ -81,7 +81,7 @@ const mergeSocketConfig = (config: UserFacingSocketConfig): SocketConfig => {
 	// consumer did not provide a browser explicitly. New sessions use the
 	// official Windows hybrid default.
 	if (isLegacyUnmarkedWebSession && config.browser === undefined) {
-		mergedConfig.browser = [...PRESET_MIGRATION_LEGACY_BROWSER]
+		mergedConfig.browser = resolveUnmarkedLegacyWebBrowser(mergedConfig.browser, process.env.BAILEYS_BROWSER)
 	}
 
 	return mergedConfig

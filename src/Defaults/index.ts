@@ -105,12 +105,12 @@ const SIX_HOURS_MS = 6 * 60 * 60 * 1000
  * Desktop. Existing unmarked sessions are migrated with the previous Android
  * tuple in Socket/index.ts so upgrading cannot silently change their identity.
  *
- *   unset / 'windows'    → Browsers.windows('Desktop')
+ *   unset / 'windows'    → captured ['Windows', 'Desktop', '10'] tuple
  *   'android'            → Browsers.android('14') (explicit legacy override)
  *   'android:15'         → Browsers.android('15')
  *   'chrome' / 'macos'   → Browsers.macOS('Chrome')
  */
-const resolveDefaultBrowser = (): [string, string, string] => {
+export const resolveDefaultBrowser = (): [string, string, string] => {
 	const env = process.env.BAILEYS_BROWSER?.trim().toLowerCase()
 	if (!env || env === 'windows' || env === 'win_hybrid' || env === 'desktop') {
 		return [...WINDOWS_HYBRID_BROWSER]
@@ -129,7 +129,7 @@ const resolveDefaultBrowser = (): [string, string, string] => {
 		return Browsers.android(apiLevel)
 	}
 
-	return Browsers.windows('Desktop')
+	return [...WINDOWS_HYBRID_BROWSER]
 }
 
 export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {

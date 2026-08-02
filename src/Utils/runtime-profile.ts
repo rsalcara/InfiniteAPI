@@ -104,9 +104,13 @@ export const resolveInfiniteApiRuntimeProfile = (
 		)
 	}
 
-	if (presetConfig.nativeAndroidAppVariant && env.NATIVE_ANDROID_APP_VARIANT) {
+	if (env.NATIVE_ANDROID_APP_VARIANT) {
 		const explicitVariant = parseNativeVariant(env.NATIVE_ANDROID_APP_VARIANT)
-		if (explicitVariant !== presetConfig.nativeAndroidAppVariant) {
+		const conflictsWithExplicitWebPreset = !!explicitPreset && !presetConfig.nativeAndroidAppVariant
+		if (
+			conflictsWithExplicitWebPreset ||
+			(presetConfig.nativeAndroidAppVariant && explicitVariant !== presetConfig.nativeAndroidAppVariant)
+		) {
 			throw new Boom(
 				`INFINITEAPI_CONNECTION_PRESET=${connectionPreset} conflicts with NATIVE_ANDROID_APP_VARIANT=${env.NATIVE_ANDROID_APP_VARIANT}`,
 				{ statusCode: 400 }

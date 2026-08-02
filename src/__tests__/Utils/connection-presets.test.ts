@@ -1,10 +1,12 @@
-import { DEFAULT_CONNECTION_CONFIG } from '../../Defaults'
+import { DEFAULT_CONNECTION_CONFIG, resolveDefaultBrowser } from '../../Defaults'
 import type { ConnectionPreset, SocketConfig } from '../../Types'
 import { initAuthCreds } from '../../Utils/auth-utils'
 import { getPairCodeCompanionIdentity, getQrCodeCompanionIdentity } from '../../Utils/companion-reg-client-utils'
 import {
+	hasExplicitBaileysBrowserSelection,
 	PRESET_MIGRATION_LEGACY_BROWSER,
 	resolveConnectionPresetConfig,
+	resolveUnmarkedLegacyWebBrowser,
 	shouldPreserveUnmarkedLegacyWebIdentity,
 	WINDOWS_HYBRID_BROWSER
 } from '../../Utils/connection-presets'
@@ -26,6 +28,18 @@ describe('connection identity presets', () => {
 		expect(
 			getPairCodeCompanionIdentity(DEFAULT_CONNECTION_CONFIG.browser, DEFAULT_CONNECTION_CONFIG.syncFullHistory)
 		).toMatchObject({ platformId: '2', platformName: 'EDGE', windowsHybrid: true })
+	})
+
+	it('uses the exact captured Windows tuple for unknown browser selectors', () => {
+		const previous = process.env.BAILEYS_BROWSER
+		process.env.BAILEYS_BROWSER = 'unknown-selector'
+
+		try {
+			expect(resolveDefaultBrowser()).toEqual(WINDOWS_HYBRID_BROWSER)
+		} finally {
+			if (previous === undefined) delete process.env.BAILEYS_BROWSER
+			else process.env.BAILEYS_BROWSER = previous
+		}
 	})
 
 	it.each([
@@ -72,6 +86,21 @@ describe('connection identity presets', () => {
 		).toThrow('conflicts with INFINITEAPI_TRANSPORT')
 	})
 
+	it('rejects a native variant with an explicitly selected Web preset without breaking legacy Web selectors', () => {
+		expect(() =>
+			resolveInfiniteApiRuntimeProfile({
+				INFINITEAPI_CONNECTION_PRESET: 'web_windows_hybrid',
+				NATIVE_ANDROID_APP_VARIANT: 'consumer'
+			})
+		).toThrow('conflicts with NATIVE_ANDROID_APP_VARIANT')
+		expect(() =>
+			resolveInfiniteApiRuntimeProfile({
+				INFINITEAPI_TRANSPORT: 'web',
+				NATIVE_ANDROID_APP_VARIANT: 'consumer'
+			})
+		).not.toThrow()
+	})
+
 	it('persists and reuses the first Web identity instead of converting it on reconnect', () => {
 		const creds = initAuthCreds()
 		const firstConfig: SocketConfig = {
@@ -111,6 +140,15 @@ describe('connection identity presets', () => {
 		)
 	})
 
+	it.each([null, 'corrupt'])('rejects a present malformed Web identity marker: %p', marker => {
+		const creds = initAuthCreds()
+		;(creds as unknown as { webTransportIdentity: unknown }).webTransportIdentity = marker
+
+		expect(() => resolveTransportSession({ ...DEFAULT_CONNECTION_CONFIG }, creds)).toThrow(
+			'Web transport identity is invalid'
+		)
+	})
+
 	it('rejects a legacy marker carrying a Windows hybrid identity', () => {
 		const creds = initAuthCreds()
 		creds.webTransportIdentity = {
@@ -133,5 +171,10 @@ describe('connection identity presets', () => {
 		expect(shouldPreserveUnmarkedLegacyWebIdentity(creds, 'web', false)).toBe(true)
 		expect(shouldPreserveUnmarkedLegacyWebIdentity(creds, 'web', true)).toBe(false)
 		expect(PRESET_MIGRATION_LEGACY_BROWSER).toEqual(['14', 'Android', ''])
+		expect(hasExplicitBaileysBrowserSelection('chrome')).toBe(true)
+		expect(hasExplicitBaileysBrowserSelection('android:15')).toBe(true)
+		expect(hasExplicitBaileysBrowserSelection('typo')).toBe(false)
+		expect(resolveUnmarkedLegacyWebBrowser(['Mac OS', 'Chrome', '15'], 'chrome')).toEqual(['Mac OS', 'Chrome', '15'])
+		expect(resolveUnmarkedLegacyWebBrowser(WINDOWS_HYBRID_BROWSER, 'typo')).toEqual(PRESET_MIGRATION_LEGACY_BROWSER)
 	})
 })

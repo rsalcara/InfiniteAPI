@@ -414,6 +414,15 @@ describe('native_android transport contract', () => {
 		expect(legacyWebCreds.registered).toBe(false)
 	})
 
+	it.each([null, 'corrupt'])('rejects a present malformed Web marker in native mode: %p', marker => {
+		const creds = initAuthCreds()
+		;(creds as unknown as { webTransportIdentity: unknown }).webTransportIdentity = marker
+
+		expect(() => resolveTransportSession(nativeConfig(), creds)).toThrow(
+			'transport isolation: Web credentials cannot be opened by the native_android transport'
+		)
+	})
+
 	it('self-heals the registered marker for an already paired persisted native session', () => {
 		const creds = initAuthCreds()
 		resolveTransportSession(nativeConfig(), creds)

@@ -209,9 +209,10 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 	const profile = config.transportProfile || 'web'
 	const persisted = creds.nativeAndroidIdentity
 	const persistedWeb = creds.webTransportIdentity
+	const hasPersistedWebMarker = Object.prototype.hasOwnProperty.call(creds, 'webTransportIdentity')
 
 	if (profile === 'web') {
-		if (persisted && persistedWeb) {
+		if (persisted && hasPersistedWebMarker) {
 			throw new Boom('transport isolation: credentials contain both Web and native_android identities', {
 				statusCode: 400
 			})
@@ -223,7 +224,11 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 			})
 		}
 
-		if (persistedWeb) {
+		if (hasPersistedWebMarker) {
+			if (!persistedWeb || typeof persistedWeb !== 'object' || Array.isArray(persistedWeb)) {
+				throw new Boom('Web transport identity is invalid', { statusCode: 400 })
+			}
+
 			validatePersistedWebTransportIdentity(persistedWeb)
 			return { profile, webIdentity: persistedWeb, credsChanged: false }
 		}
@@ -241,7 +246,7 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 		throw new Boom('native_android: configuration is required', { statusCode: 400 })
 	}
 
-	if (persistedWeb) {
+	if (hasPersistedWebMarker) {
 		throw new Boom('transport isolation: Web credentials cannot be opened by the native_android transport', {
 			statusCode: 400
 		})

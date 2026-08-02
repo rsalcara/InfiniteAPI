@@ -26,6 +26,26 @@ export const LEGACY_WEB_BROWSER: WABrowserDescription = ['Mac OS', 'Chrome', '15
 /** Previous InfiniteAPI default, used only to avoid converting unmarked sessions during upgrade. */
 export const PRESET_MIGRATION_LEGACY_BROWSER: WABrowserDescription = ['14', 'Android', '']
 
+/** Recognized environment selectors that intentionally overrode the historical browser default. */
+export const hasExplicitBaileysBrowserSelection = (value: string | undefined): boolean => {
+	const normalized = value?.trim().toLowerCase()
+	return (
+		normalized === 'windows' ||
+		normalized === 'win_hybrid' ||
+		normalized === 'desktop' ||
+		normalized === 'chrome' ||
+		normalized === 'macos' ||
+		normalized === 'android' ||
+		!!normalized?.startsWith('android:')
+	)
+}
+
+export const resolveUnmarkedLegacyWebBrowser = (
+	resolvedBrowser: WABrowserDescription,
+	value: string | undefined
+): WABrowserDescription =>
+	hasExplicitBaileysBrowserSelection(value) ? [...resolvedBrowser] : [...PRESET_MIGRATION_LEGACY_BROWSER]
+
 export const resolveConnectionPresetConfig = (preset: ConnectionPreset): ConnectionPresetConfig => {
 	switch (preset) {
 		case 'web_legacy':
