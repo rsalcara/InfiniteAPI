@@ -1,5 +1,6 @@
 import type { proto } from '../../WAProto/index.js'
 import type { Contact } from './Contact'
+import type { HistorySyncStore } from './HistorySync'
 import type { MinimalMessage } from './Message'
 import type { PersistedNativeAndroidIdentity, PersistedWebTransportIdentity } from './Transport'
 
@@ -285,4 +286,6 @@ export type SignalAuthState = {
 export type AuthenticationState = {
 	creds: AuthenticationCreds
 	keys: SignalKeyStore
+	/** Durable history-sync work queue. Built-in auth adapters always provide it. */
+	historySync?: HistorySyncStore
 }

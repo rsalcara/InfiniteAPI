@@ -174,6 +174,7 @@ import makeWASocket from '@whiskeysockets/baileys'
 - [Broadcast Lists & Stories](#broadcast-lists--stories)
     - [Send Broadcast & Stories](#send-broadcast--stories)
     - [Query a Broadcast List's Recipients & Name](#query-a-broadcast-lists-recipients--name)
+- [Durable History Sync](#durable-history-sync)
 - [Writing Custom Functionality](#writing-custom-functionality)
     - [Enabling Debug Level in Baileys Logs](#enabling-debug-level-in-baileys-logs)
     - [How Whatsapp Communicate With Us](#how-whatsapp-communicate-with-us)
@@ -1229,6 +1230,13 @@ await sock.sendMessage(
 const bList = await sock.getBroadcastListInfo('1234@broadcast')
 console.log (`list name: ${bList.name}, recps: ${bList.recipients}`)
 ```
+
+## Durable History Sync
+
+Built-in auth-state adapters persist history-sync work before downloading it and
+resume unfinished chunks after a restart. See
+[Durable History Sync](docs/HISTORY_SYNC_DURABILITY.md) for backend storage,
+retry, ordering, event, and recovery guarantees.
 
 ## Writing Custom Functionality
 Baileys is written with custom functionality in mind. Instead of forking the project & re-writing the internals, you can simply write your own extensions.

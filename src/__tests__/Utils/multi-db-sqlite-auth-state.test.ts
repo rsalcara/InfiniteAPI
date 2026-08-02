@@ -135,6 +135,22 @@ describe('useMultiDbSqliteAuthState', () => {
 		close()
 	})
 
+	it('releases owned handles and the session lock when the history schema cannot be created', async () => {
+		const bootstrap = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		bootstrap.close()
+		const maintenance = new Database(join(dir, 'sync.db'))
+		maintenance.exec('DROP TABLE history_sync_jobs; CREATE VIEW history_sync_jobs AS SELECT 1 AS value')
+		maintenance.close()
+
+		await expect(useMultiDbSqliteAuthState({ sessionDir: dir })).rejects.toThrow()
+
+		const repair = new Database(join(dir, 'sync.db'))
+		repair.exec('DROP VIEW history_sync_jobs')
+		repair.close()
+		const reopened = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		reopened.close()
+	})
+
 	it('creates typed tables in the right .db files', async () => {
 		const { store, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
 

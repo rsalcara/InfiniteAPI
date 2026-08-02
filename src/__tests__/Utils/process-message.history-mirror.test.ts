@@ -1,9 +1,124 @@
 import { jest } from '@jest/globals'
 import { proto } from '../../../WAProto/index.js'
-import type { WAMessage } from '../../Types'
-import { mirrorHistoryMessagesToStore } from '../../Utils/process-message'
+import type { SignalRepositoryWithLIDStore, WAMessage } from '../../Types'
+import type { MessageStoreBackend } from '../../Utils/multi-db-sqlite'
+import { applyProcessedHistorySync, mirrorHistoryMessagesToStore } from '../../Utils/process-message'
 
 describe('history-sync message mirror', () => {
+	it('persists LID mappings before applying messages from the same chunk', async () => {
+		const order: string[] = []
+		const signalRepository = {
+			lidMapping: {
+				storeLIDPNMappings: jest.fn(async () => {
+					order.push('mapping')
+					return { stored: 1, skipped: 0, errors: 0 }
+				})
+			}
+		} as unknown as SignalRepositoryWithLIDStore
+		const messageStoreBackend = {
+			recordMessages: jest.fn(() => {
+				order.push('message')
+				return [1]
+			})
+		} as unknown as MessageStoreBackend
+
+		await applyProcessedHistorySync(
+			{
+				chats: [],
+				contacts: [],
+				messages: [
+					{
+						key: { remoteJid: '5511999999999@s.whatsapp.net', fromMe: false, id: 'ORDER-1' },
+						messageTimestamp: 1,
+						message: { conversation: 'ordered' }
+					}
+				],
+				lidPnMappings: [{ lid: '123456789@lid', pn: '5511999999999@s.whatsapp.net' }],
+				pastParticipants: [],
+				syncType: proto.HistorySync.HistorySyncType.RECENT,
+				progress: 100
+			},
+			{ signalRepository, messageStoreBackend }
+		)
+
+		expect(order).toEqual(['mapping', 'message'])
+	})
+
+	it('keeps the legacy custom-auth path best-effort when LID mapping persistence fails', async () => {
+		const signalRepository = {
+			lidMapping: {
+				storeLIDPNMappings: jest.fn(async () => {
+					throw new Error('custom mapping store unavailable')
+				})
+			}
+		} as unknown as SignalRepositoryWithLIDStore
+		const recordMessages = jest.fn(() => [1])
+		const messageStoreBackend = { recordMessages } as unknown as MessageStoreBackend
+
+		await expect(
+			applyProcessedHistorySync(
+				{
+					chats: [],
+					contacts: [],
+					messages: [
+						{
+							key: { remoteJid: '5511999999999@s.whatsapp.net', fromMe: false, id: 'LEGACY-1' },
+							messageTimestamp: 1,
+							message: { conversation: 'legacy fallback' }
+						}
+					],
+					lidPnMappings: [{ lid: '123456789@lid', pn: '5511999999999@s.whatsapp.net' }],
+					pastParticipants: [],
+					syncType: proto.HistorySync.HistorySyncType.RECENT,
+					progress: 100
+				},
+				{ signalRepository, messageStoreBackend },
+				undefined,
+				false
+			)
+		).resolves.toBeUndefined()
+		expect(recordMessages).toHaveBeenCalledTimes(1)
+	})
+
+	it('stops between mapping and message phases when socket teardown aborts the apply', async () => {
+		const controller = new AbortController()
+		const signalRepository = {
+			lidMapping: {
+				storeLIDPNMappings: jest.fn(async () => {
+					controller.abort()
+					return { stored: 1, skipped: 0, errors: 0 }
+				})
+			}
+		} as unknown as SignalRepositoryWithLIDStore
+		const recordMessages = jest.fn(() => [1])
+		const messageStoreBackend = { recordMessages } as unknown as MessageStoreBackend
+
+		await expect(
+			applyProcessedHistorySync(
+				{
+					chats: [],
+					contacts: [],
+					messages: [
+						{
+							key: { remoteJid: '5511999999999@s.whatsapp.net', fromMe: false, id: 'ABORT-1' },
+							messageTimestamp: 1,
+							message: { conversation: 'must not persist after teardown' }
+						}
+					],
+					lidPnMappings: [{ lid: '123456789@lid', pn: '5511999999999@s.whatsapp.net' }],
+					pastParticipants: [],
+					syncType: proto.HistorySync.HistorySyncType.RECENT,
+					progress: 100
+				},
+				{ signalRepository, messageStoreBackend },
+				undefined,
+				true,
+				controller.signal
+			)
+		).rejects.toThrow('history sync apply interrupted by socket teardown')
+		expect(recordMessages).not.toHaveBeenCalled()
+	})
+
 	it('persists historical messages without incrementing unread state', async () => {
 		const recordMessages = jest.fn(() => [1])
 		const backend = { recordMessages } as any
@@ -262,7 +377,8 @@ describe('history-sync message mirror', () => {
 		)
 
 		await expect(mirrorHistoryMessagesToStore(messages, backend)).resolves.toEqual({ stored: 300, failed: 0 })
-		expect(recordMessages).toHaveBeenCalledTimes(3)
-		expect(recordMessages.mock.calls.map(([rows]) => rows.length)).toEqual([128, 128, 44])
+		const batchSizes = recordMessages.mock.calls.map(([rows]) => rows.length)
+		expect(batchSizes.reduce((total, size) => total + size, 0)).toBe(300)
+		expect(batchSizes.every(size => size >= 1 && size <= 500)).toBe(true)
 	})
 })

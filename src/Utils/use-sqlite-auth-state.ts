@@ -12,8 +12,10 @@ import type BetterSqlite3Module from 'better-sqlite3'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDataTypeMap } from '../Types'
 import { prepareInClause } from './multi-db-sqlite/in-statement-cache'
+import type { SqliteDbLike } from './multi-db-sqlite/types'
 import { initAuthCreds } from './auth-utils'
 import { BufferJSON } from './generics'
+import { SqliteHistorySyncStore } from './history-sync-store'
 import type { ILogger } from './logger'
 
 /**
@@ -219,6 +221,7 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 		}
 
 		db.exec(CREATE_SCHEMA_SQL)
+		const historySync = new SqliteHistorySyncStore(db as unknown as SqliteDbLike)
 
 		const stmts = {
 			credsSelect: db.prepare('SELECT value FROM creds WHERE key = ?'),
@@ -383,6 +386,7 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 				set creds(value: AuthenticationCreds) {
 					stateRef.creds = value
 				},
+				historySync,
 				keys: {
 					get: async (type, ids) => {
 						const out: Record<string, SignalDataTypeMap[typeof type]> = {}

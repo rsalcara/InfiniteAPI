@@ -1162,6 +1162,41 @@ export const encryptMediaRetryRequest = (key: WAMessageKey, mediaKey: Buffer | U
 	return req
 }
 
+/**
+ * Official history-sync reupload receipt. Unlike a normal media retry it is a
+ * peer receipt addressed to our own account and intentionally has no rmr node.
+ */
+export const encryptHistorySyncRetryRequest = (
+	messageId: string,
+	mediaKey: Buffer | Uint8Array,
+	meId: string
+): BinaryNode => {
+	if (!messageId) throw new Boom('Missing message ID for history sync retry request')
+	const receipt = proto.ServerErrorReceipt.encode({ stanzaId: messageId }).finish()
+	const iv = Crypto.randomBytes(12)
+	const ciphertext = aesEncryptGCM(receipt, getMediaRetryKey(mediaKey), iv, Buffer.from(messageId))
+
+	return {
+		tag: 'receipt',
+		attrs: {
+			id: messageId,
+			to: jidNormalizedUser(meId),
+			type: 'server-error',
+			category: 'peer'
+		},
+		content: [
+			{
+				tag: 'encrypt',
+				attrs: {},
+				content: [
+					{ tag: 'enc_p', attrs: {}, content: ciphertext },
+					{ tag: 'enc_iv', attrs: {}, content: iv }
+				]
+			}
+		]
+	}
+}
+
 export const decodeMediaRetryNode = (node: BinaryNode) => {
 	const rmrNode = getBinaryNodeChild(node, 'rmr')
 	if (!rmrNode) {
