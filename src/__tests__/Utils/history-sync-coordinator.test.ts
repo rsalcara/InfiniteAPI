@@ -359,6 +359,79 @@ describe('DurableHistorySyncCoordinator', () => {
 		await coordinator.stop()
 	})
 
+	it('finishes committed recovery callbacks before starting pending work', async () => {
+		await store.enqueue({
+			messageId: 'RECOVERY-COMMITTED',
+			sourceMessageId: 'RECOVERY-COMMITTED',
+			messageKey: { id: 'RECOVERY-COMMITTED', remoteJid: '5511@s.whatsapp.net', fromMe: true },
+			messageTimestamp: 1,
+			notification: proto.Message.HistorySyncNotification.encode(notification()).finish(),
+			syncType: proto.HistorySync.HistorySyncType.RECENT,
+			chunkOrder: 1,
+			progress: 100
+		})
+		await store.commit('RECOVERY-COMMITTED')
+		await store.enqueue({
+			messageId: 'RECOVERY-PENDING',
+			sourceMessageId: 'RECOVERY-PENDING',
+			messageKey: { id: 'RECOVERY-PENDING', remoteJid: '5511@s.whatsapp.net', fromMe: true },
+			messageTimestamp: 1,
+			notification: proto.Message.HistorySyncNotification.encode(notification({ chunkOrder: 2 })).finish(),
+			syncType: proto.HistorySync.HistorySyncType.RECENT,
+			chunkOrder: 2,
+			progress: 100
+		})
+		let releaseCallback!: () => void
+		const callbackStarted = new Promise<void>(resolve => {
+			releaseCallback = resolve
+		})
+		let unblockCallback!: () => void
+		const callbackBlocked = new Promise<void>(resolve => {
+			unblockCallback = resolve
+		})
+		const download = jest.fn(async () => emptyResult())
+		const coordinator = new DurableHistorySyncCoordinator({
+			store,
+			requestOptions: {},
+			download,
+			apply: async () => undefined,
+			requestReupload: async () => undefined,
+			onCommitted: async () => {
+				releaseCallback()
+				await callbackBlocked
+			}
+		})
+
+		const recovery = coordinator.startRecovery()
+		await callbackStarted
+		expect(download).not.toHaveBeenCalled()
+		unblockCallback()
+		await recovery
+		await waitFor(async () => download.mock.calls.length === 1)
+		await coordinator.stop()
+	})
+
+	it('retries the worker after a transient durable-store failure', async () => {
+		const originalClaimNext = store.claimNext.bind(store)
+		const claimNext = jest.spyOn(store, 'claimNext').mockRejectedValueOnce(new Error('temporary sqlite busy'))
+		claimNext.mockImplementation(originalClaimNext)
+		const apply = jest.fn(async () => undefined)
+		const coordinator = new DurableHistorySyncCoordinator({
+			store,
+			requestOptions: {},
+			download: async () => emptyResult(),
+			apply,
+			requestReupload: async () => undefined,
+			random: () => 0
+		})
+
+		await coordinator.enqueue({ id: 'STORE-RETRY', remoteJid: '5511@s.whatsapp.net', fromMe: true }, 1, notification())
+		await waitFor(async () => (await store.get('STORE-RETRY'))?.state === 'committed')
+		expect(claimNext.mock.calls.length).toBeGreaterThanOrEqual(2)
+		expect(apply).toHaveBeenCalledTimes(1)
+		await coordinator.stop()
+	})
+
 	it('bounds teardown while an already admitted apply is slow', async () => {
 		let releaseApply!: () => void
 		const apply = jest.fn(

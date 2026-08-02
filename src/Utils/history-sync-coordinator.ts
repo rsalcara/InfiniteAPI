@@ -184,6 +184,7 @@ export class DurableHistorySyncCoordinator {
 	private currentAbort?: AbortController
 	private currentJobId?: string
 	private currentStoreMutation?: Promise<unknown>
+	private workerFailureCount = 0
 
 	constructor(private readonly options: DurableHistorySyncCoordinatorOptions) {
 		this.now = options.now ?? Date.now
@@ -212,7 +213,6 @@ export class DurableHistorySyncCoordinator {
 	async startRecovery(): Promise<void> {
 		await this.options.store.pruneCommitted(this.now() - this.retentionMs)
 		const jobs = await this.options.store.list()
-		this.schedule(0)
 		const committed = jobs
 			.filter(job => job.state === 'committed')
 			.sort(
@@ -230,6 +230,8 @@ export class DurableHistorySyncCoordinator {
 				)
 			)
 		}
+
+		this.schedule(0)
 	}
 
 	private schedule(delayMs: number): void {
@@ -244,11 +246,26 @@ export class DurableHistorySyncCoordinator {
 			() => {
 				this.timer = undefined
 				if (!this.worker) {
+					let workerRetryDelay: number | undefined
 					this.worker = this.run()
-						.catch(error => this.options.logger?.error({ error }, 'durable history sync worker stopped unexpectedly'))
+						.then(() => {
+							this.workerFailureCount = 0
+						})
+						.catch(error => {
+							this.workerFailureCount++
+							workerRetryDelay = this.retryDelay(this.workerFailureCount)
+							this.options.logger?.error(
+								{ error, retryDelayMs: workerRetryDelay },
+								'durable history sync worker failed; retry scheduled without blocking live messages'
+							)
+						})
 						.finally(() => {
 							this.worker = undefined
-							if (this.rerunRequested) {
+							if (this.stopped) return
+							if (workerRetryDelay !== undefined) {
+								this.rerunRequested = false
+								this.schedule(workerRetryDelay)
+							} else if (this.rerunRequested) {
 								this.rerunRequested = false
 								this.schedule(0)
 							}

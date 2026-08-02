@@ -1,6 +1,5 @@
-import { Mutex } from 'async-mutex'
-import { mkdir, readFile, rename, unlink, writeFile } from 'fs/promises'
-import { dirname } from 'path'
+import { mkdir, readFile, rename, stat, unlink, writeFile } from 'fs/promises'
+import { dirname, resolve } from 'path'
 import { proto } from '../../WAProto/index.js'
 import type {
 	HistorySyncCheckpoint,
@@ -14,6 +13,7 @@ import type {
 } from '../Types'
 import type { SqliteDbLike, SqliteStatementLike } from './multi-db-sqlite/types'
 import { BufferJSON } from './generics'
+import { makeKeyedMutex } from './make-mutex'
 
 const RUNNABLE_STATES: ReadonlyArray<HistorySyncJobState> = ['received', 'downloading', 'decoded', 'applying', 'failed']
 
@@ -41,10 +41,12 @@ const cloneFileState = (state: FileState): FileState => ({
 })
 
 const DEFAULT_PREREQUISITES: HistorySyncPrerequisites = {
-	initialComplete: true,
-	recentComplete: true,
-	allowMissingCheckpoint: true
+	initialComplete: false,
+	recentComplete: false,
+	allowMissingCheckpoint: false
 }
+
+const fileHistorySyncLocks = makeKeyedMutex()
 
 const isProtocolEligible = (
 	jobs: StoredHistorySyncJob[],
@@ -118,30 +120,28 @@ const errorCode = (error: unknown): string | undefined => {
 
 /** Atomic JSON implementation used by the supported multifile auth backend. */
 export class FileHistorySyncStore implements HistorySyncStore {
-	private readonly mutex = new Mutex()
-	private loaded = false
+	private readonly lockKey: string
 	private state = emptyFileState()
 
-	constructor(private readonly path: string) {}
+	constructor(private readonly path: string) {
+		const resolved = resolve(path)
+		this.lockKey = process.platform === 'win32' ? resolved.toLowerCase() : resolved
+	}
 
 	private async load(): Promise<void> {
-		if (this.loaded) return
-		const backup = `${this.path}.bak`
-		try {
-			const raw = await readFile(this.path, 'utf8')
-			this.state = JSON.parse(raw, BufferJSON.reviver) as FileState
-		} catch (error) {
+		let firstError: unknown
+		for (const candidate of [this.path, `${this.path}.bak`, `${this.path}.tmp`]) {
 			try {
-				const raw = await readFile(backup, 'utf8')
+				const raw = await readFile(candidate, 'utf8')
 				this.state = JSON.parse(raw, BufferJSON.reviver) as FileState
-			} catch (backupError) {
-				if (errorCode(error) !== 'ENOENT') throw error
-				if (errorCode(backupError) !== 'ENOENT') throw backupError
-				this.state = emptyFileState()
+				return
+			} catch (error) {
+				if (errorCode(error) !== 'ENOENT' && firstError === undefined) firstError = error
 			}
 		}
 
-		this.loaded = true
+		if (firstError !== undefined) throw firstError
+		this.state = emptyFileState()
 	}
 
 	private async persist(): Promise<void> {
@@ -149,23 +149,28 @@ export class FileHistorySyncStore implements HistorySyncStore {
 		const tmp = `${this.path}.tmp`
 		const backup = `${this.path}.bak`
 		await writeFile(tmp, JSON.stringify(this.state, BufferJSON.replacer))
+		let hasPrimaryFile = false
 		try {
-			await unlink(backup)
+			hasPrimaryFile = (await stat(this.path)).isFile()
 		} catch (error) {
 			if (errorCode(error) !== 'ENOENT') throw error
 		}
 
-		try {
+		if (hasPrimaryFile) {
+			try {
+				await unlink(backup)
+			} catch (error) {
+				if (errorCode(error) !== 'ENOENT') throw error
+			}
+
 			await rename(this.path, backup)
-		} catch (error) {
-			if (errorCode(error) !== 'ENOENT') throw error
 		}
 
 		await rename(tmp, this.path)
 	}
 
 	private async mutate<T>(work: () => T): Promise<T> {
-		return this.mutex.runExclusive(async () => {
+		return fileHistorySyncLocks.mutex(this.lockKey, async () => {
 			await this.load()
 			const previous = this.state
 			this.state = cloneFileState(previous)
@@ -272,7 +277,7 @@ export class FileHistorySyncStore implements HistorySyncStore {
 	}
 
 	async get(messageId: string): Promise<StoredHistorySyncJob | null> {
-		return this.mutex.runExclusive(async () => {
+		return fileHistorySyncLocks.mutex(this.lockKey, async () => {
 			await this.load()
 			const job = this.state.jobs[messageId]
 			return job ? cloneJob(job) : null
@@ -280,14 +285,14 @@ export class FileHistorySyncStore implements HistorySyncStore {
 	}
 
 	async list(): Promise<StoredHistorySyncJob[]> {
-		return this.mutex.runExclusive(async () => {
+		return fileHistorySyncLocks.mutex(this.lockKey, async () => {
 			await this.load()
 			return Object.values(this.state.jobs).sort(sortJobs).map(cloneJob)
 		})
 	}
 
 	async getCheckpoint(phase: HistorySyncCheckpointPhase): Promise<HistorySyncCheckpoint | null> {
-		return this.mutex.runExclusive(async () => {
+		return fileHistorySyncLocks.mutex(this.lockKey, async () => {
 			await this.load()
 			return this.state.checkpoints[phase] ? { ...this.state.checkpoints[phase] } : null
 		})
