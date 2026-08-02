@@ -552,15 +552,16 @@ export const makeSocket = (config: SocketConfig) => {
 		// Consumers attach `creds.update` after makeWASocket returns. Emitting
 		// synchronously here loses the first durable transport identity and a QR
 		// refresh can then select a different catalog entry.
-		setTimeout(
-			() =>
-				ev.emit('creds.update', {
+		const identityUpdate = isNativeAndroid
+			? {
 					nativeAndroidIdentity: authState.creds.nativeAndroidIdentity,
+					registered: authState.creds.registered
+				}
+			: {
 					webTransportIdentity: authState.creds.webTransportIdentity,
 					registered: authState.creds.registered
-				}),
-			0
-		)
+				}
+		setTimeout(() => ev.emit('creds.update', identityUpdate), 0)
 		if (isNativeAndroid) {
 			logger.info(
 				{ transportProfile: 'native_android', selectedProfileId: transportSession.nativeAndroid!.device.profileId },
