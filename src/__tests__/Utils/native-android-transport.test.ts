@@ -423,6 +423,13 @@ describe('native_android transport contract', () => {
 		)
 	})
 
+	it('does not treat an explicit undefined Web field as a persisted marker', () => {
+		const creds = initAuthCreds()
+		creds.webTransportIdentity = undefined
+
+		expect(() => resolveTransportSession(nativeConfig(), creds)).not.toThrow()
+	})
+
 	it('self-heals the registered marker for an already paired persisted native session', () => {
 		const creds = initAuthCreds()
 		resolveTransportSession(nativeConfig(), creds)

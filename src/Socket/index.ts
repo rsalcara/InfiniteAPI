@@ -81,7 +81,10 @@ const mergeSocketConfig = (config: UserFacingSocketConfig): SocketConfig => {
 	// consumer did not provide a browser explicitly. New sessions use the
 	// official Windows hybrid default.
 	if (isLegacyUnmarkedWebSession && config.browser === undefined) {
-		mergedConfig.browser = resolveUnmarkedLegacyWebBrowser(mergedConfig.browser, process.env.BAILEYS_BROWSER)
+		mergedConfig.browser = resolveUnmarkedLegacyWebBrowser(
+			mergedConfig.browser ?? DEFAULT_CONNECTION_CONFIG.browser,
+			process.env.BAILEYS_BROWSER
+		)
 	}
 
 	return mergedConfig

@@ -209,7 +209,7 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 	const profile = config.transportProfile || 'web'
 	const persisted = creds.nativeAndroidIdentity
 	const persistedWeb = creds.webTransportIdentity
-	const hasPersistedWebMarker = Object.prototype.hasOwnProperty.call(creds, 'webTransportIdentity')
+	const hasPersistedWebMarker = persistedWeb !== undefined
 
 	if (profile === 'web') {
 		if (persisted && hasPersistedWebMarker) {
