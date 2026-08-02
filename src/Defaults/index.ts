@@ -2,6 +2,7 @@ import { proto } from '../../WAProto/index.js'
 import { makeLibSignalRepository } from '../Signal/libsignal'
 import type { AuthenticationState, SocketConfig, WAVersion } from '../Types'
 import { Browsers } from '../Utils/browser-utils'
+import { parseBaileysBrowserSelection, WINDOWS_HYBRID_BROWSER } from '../Utils/connection-presets'
 import logger from '../Utils/logger'
 // Single source of truth for WhatsApp Web version - imported from JSON
 import baileysVersionData from './baileys-version.json' with { type: 'json' }
@@ -100,25 +101,20 @@ const SIX_HOURS_MS = 6 * 60 * 60 * 1000
 
 /**
  * Resolves the default browser tuple from the BAILEYS_BROWSER env var.
- * Default: Android companion (SMB_ANDROID) — matches upstream PR #2201.
- * Pair code auto-detects Android and falls back to Chrome in socket.ts.
+ * Default: official Windows hybrid Web companion captured from WhatsApp
+ * Desktop. Existing unmarked sessions are migrated with the previous Android
+ * tuple in Socket/index.ts so upgrading cannot silently change their identity.
  *
- *   unset / 'android'    → Browsers.android('14')
+ *   unset / 'windows'    → captured ['Windows', 'Desktop', '10'] tuple
+ *   'android'            → Browsers.android('14') (explicit legacy override)
  *   'android:15'         → Browsers.android('15')
  *   'chrome' / 'macos'   → Browsers.macOS('Chrome')
  */
-const resolveDefaultBrowser = (): [string, string, string] => {
-	const env = process.env.BAILEYS_BROWSER?.trim().toLowerCase()
-	if (env === 'chrome' || env === 'macos') {
-		return Browsers.macOS('Chrome')
-	}
-
-	if (env?.startsWith('android:')) {
-		const apiLevel = env.split(':')[1] || '14'
-		return Browsers.android(apiLevel)
-	}
-
-	return Browsers.android('14')
+export const resolveDefaultBrowser = (): [string, string, string] => {
+	const selection = parseBaileysBrowserSelection(process.env.BAILEYS_BROWSER)
+	if (selection?.family === 'macos') return Browsers.macOS('Chrome')
+	if (selection?.family === 'android') return Browsers.android(selection.apiLevel)
+	return [...WINDOWS_HYBRID_BROWSER]
 }
 
 export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {

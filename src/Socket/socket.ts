@@ -105,7 +105,6 @@ export const makeSocket = (config: SocketConfig) => {
 		connectTimeoutMs,
 		logger,
 		keepAliveIntervalMs,
-		browser,
 		auth: authState,
 		printQRInTerminal,
 		defaultQueryTimeoutMs,
@@ -125,7 +124,14 @@ export const makeSocket = (config: SocketConfig) => {
 	// the caller's current environment values. This keeps reconnects immutable.
 	const payloadConfig: SocketConfig = isNativeAndroid
 		? { ...config, nativeAndroid: transportSession.nativeAndroid }
-		: config
+		: transportSession.webIdentity
+			? {
+					...config,
+					browser: [...transportSession.webIdentity.browser],
+					syncFullHistory: transportSession.webIdentity.syncFullHistory
+				}
+			: config
+	const browser = payloadConfig.browser
 
 	// Resolve enableUnifiedSession: explicit config > env var > default (true)
 	const enableUnifiedSession =
@@ -546,18 +552,32 @@ export const makeSocket = (config: SocketConfig) => {
 		// Consumers attach `creds.update` after makeWASocket returns. Emitting
 		// synchronously here loses the first durable transport identity and a QR
 		// refresh can then select a different catalog entry.
-		setTimeout(
-			() =>
-				ev.emit('creds.update', {
+		const identityUpdate = isNativeAndroid
+			? {
 					nativeAndroidIdentity: authState.creds.nativeAndroidIdentity,
 					registered: authState.creds.registered
-				}),
-			0
-		)
-		logger.info(
-			{ transportProfile: 'native_android', selectedProfileId: transportSession.nativeAndroid!.device.profileId },
-			'native_android identity selected and persisted for this session'
-		)
+				}
+			: {
+					webTransportIdentity: authState.creds.webTransportIdentity,
+					registered: authState.creds.registered
+				}
+		setTimeout(() => ev.emit('creds.update', identityUpdate), 0)
+		if (isNativeAndroid) {
+			logger.info(
+				{ transportProfile: 'native_android', selectedProfileId: transportSession.nativeAndroid!.device.profileId },
+				'native_android identity selected and persisted for this session'
+			)
+		} else {
+			logger.info(
+				{
+					transportProfile: 'web',
+					connectionPreset: transportSession.webIdentity!.preset,
+					browser: transportSession.webIdentity!.browser,
+					syncFullHistory: transportSession.webIdentity!.syncFullHistory
+				},
+				'Web identity selected and persisted for this session'
+			)
+		}
 	}
 
 	const { creds } = authState
@@ -2083,6 +2103,8 @@ export const makeSocket = (config: SocketConfig) => {
 				// with account/me so reconnects cannot rotate the device profile.
 				updatedCreds.registered = true
 				updatedCreds.nativeAndroidIdentity = authState.creds.nativeAndroidIdentity
+			} else {
+				updatedCreds.webTransportIdentity = authState.creds.webTransportIdentity
 			}
 
 			logger.info(
@@ -2514,7 +2536,7 @@ export const makeSocket = (config: SocketConfig) => {
 		type: 'md' as 'md',
 		ws,
 		ev,
-		authState: { creds, keys },
+		authState: { creds, keys, historySync: authState.historySync },
 		signalRepository,
 		sessionCleanup,
 		sessionActivityTracker,

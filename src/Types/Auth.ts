@@ -1,7 +1,8 @@
 import type { proto } from '../../WAProto/index.js'
 import type { Contact } from './Contact'
+import type { HistorySyncStore } from './HistorySync'
 import type { MinimalMessage } from './Message'
-import type { PersistedNativeAndroidIdentity } from './Transport'
+import type { PersistedNativeAndroidIdentity, PersistedWebTransportIdentity } from './Transport'
 
 export type KeyPair = { public: Uint8Array; private: Uint8Array }
 export type SignedKeyPair = {
@@ -75,6 +76,8 @@ export type AuthenticationCreds = SignalCreds & {
 	 * sessions. Absent means the established Web session format.
 	 */
 	nativeAndroidIdentity?: PersistedNativeAndroidIdentity
+	/** Durable Web preset/browser identity. Added lazily to legacy sessions. */
+	webTransportIdentity?: PersistedWebTransportIdentity
 }
 
 export type SignalDataTypeMap = {
@@ -283,4 +286,6 @@ export type SignalAuthState = {
 export type AuthenticationState = {
 	creds: AuthenticationCreds
 	keys: SignalKeyStore
+	/** Durable history-sync work queue. Built-in auth adapters always provide it. */
+	historySync?: HistorySyncStore
 }

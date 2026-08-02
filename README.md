@@ -174,6 +174,7 @@ import makeWASocket from '@whiskeysockets/baileys'
 - [Broadcast Lists & Stories](#broadcast-lists--stories)
     - [Send Broadcast & Stories](#send-broadcast--stories)
     - [Query a Broadcast List's Recipients & Name](#query-a-broadcast-lists-recipients--name)
+- [Durable History Sync](#durable-history-sync)
 - [Writing Custom Functionality](#writing-custom-functionality)
     - [Enabling Debug Level in Baileys Logs](#enabling-debug-level-in-baileys-logs)
     - [How Whatsapp Communicate With Us](#how-whatsapp-communicate-with-us)
@@ -212,6 +213,9 @@ If the connection is successful, you will see a QR code printed on your terminal
 > [!IMPORTANT]
 > Pairing Code isn't Mobile API, it's a method to connect Whatsapp Web without QR-CODE, you can connect only with one device, see [here](https://faq.whatsapp.com/1324084875126592/?cms_platform=web)
 
+The default Windows hybrid preset keeps Pair Code on the official EDGE `2`
+identity while QR uses UWP `8`. Native Android presets use QR pairing.
+
 The phone number can't have `+` or `()` or `-`, only numbers, you must provide country code
 
 ```ts
@@ -231,18 +235,21 @@ if (!sock.authState.creds.registered) {
 
 ### Receive Full History
 
-1. Set `syncFullHistory` as `true`
-2. Baileys, by default, use chrome browser config
-    - If you'd like to emulate a desktop connection (and receive more message history), this browser setting to your Socket config:
+New sessions default to the captured Windows hybrid identity with
+`syncFullHistory: true`. To configure it explicitly:
 
 ```ts
 const sock = makeWASocket({
     ...otherOpts,
-    // can use Windows, Ubuntu here too
-    browser: Browsers.macOS('Desktop'),
+    browser: Browsers.windows('Desktop'),
     syncFullHistory: true
 })
 ```
+
+Transport identity and auth storage are independent. `multifile`, monolithic
+`sqlite`, and `multidb-sqlite` remain available for every connection preset.
+See [Storage and transport](docs/STORAGE_AND_TRANSPORT.md) for preset selection,
+upgrade behavior, and the complete compatibility matrix.
 
 ## Important Notes About Socket Config
 
@@ -1223,6 +1230,13 @@ await sock.sendMessage(
 const bList = await sock.getBroadcastListInfo('1234@broadcast')
 console.log (`list name: ${bList.name}, recps: ${bList.recipients}`)
 ```
+
+## Durable History Sync
+
+Built-in auth-state adapters persist history-sync work before downloading it and
+resume unfinished chunks after a restart. See
+[Durable History Sync](docs/HISTORY_SYNC_DURABILITY.md) for backend storage,
+retry, ordering, event, and recovery guarantees.
 
 ## Writing Custom Functionality
 Baileys is written with custom functionality in mind. Instead of forking the project & re-writing the internals, you can simply write your own extensions.

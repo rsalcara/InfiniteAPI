@@ -204,7 +204,13 @@ describe('native Android built-in Node attestation provider', () => {
 				INFINITEAPI_TRANSPORT: 'web',
 				INFINITEAPI_AUTH_STORAGE: 'json'
 			})
-		).toEqual({ transportProfile: 'web', authStorage: 'json' })
+		).toEqual({
+			connectionPreset: 'web_windows_hybrid',
+			transportProfile: 'web',
+			authStorage: 'json',
+			browser: ['Windows', 'Desktop', '10'],
+			syncFullHistory: true
+		})
 
 		const native = resolveInfiniteApiRuntimeProfile({
 			INFINITEAPI_TRANSPORT: 'native_android',
@@ -213,6 +219,8 @@ describe('native Android built-in Node attestation provider', () => {
 		})
 		expect(native.transportProfile).toBe('native_android')
 		expect(native.authStorage).toBe('multi_db_sqlite')
+		expect(native.connectionPreset).toBe('native_android_business')
+		expect(native.nativeAndroidAppVariant).toBe('business')
 		expect(native.attestationProvider).toBeInstanceOf(Function)
 	})
 })

@@ -1,15 +1,16 @@
-import type { AuthenticationState, SignalDataSet, SignalDataTypeMap } from '../Types'
+import type { AuthenticationState, HistorySyncStoreSnapshot, SignalDataSet, SignalDataTypeMap } from '../Types'
 import type { ILogger } from './logger'
 
 /**
  * Result of a {@link migrateAuthState} run.
  *
- * `counts` maps each `SignalDataType` to the number of records copied. The
- * `verified` flag is `true` when post-migration id sets match between source
- * and destination.
+ * `counts` maps each `SignalDataType` to the number of records copied, while
+ * `historySync` reports only durable jobs/checkpoints actually applied by this
+ * run. The `verified` flag covers both signal records and durable history state.
  */
 export type MigrateAuthStateResult = {
 	creds: { copied: boolean }
+	historySync: { jobs: number; checkpoints: number; copied: boolean }
 	counts: Partial<Record<keyof SignalDataTypeMap, number>>
 	verified: boolean
 	warnings: string[]
@@ -104,9 +105,20 @@ export async function migrateAuthState({
 
 	const result: MigrateAuthStateResult = {
 		creds: { copied: false },
+		historySync: { jobs: 0, checkpoints: 0, copied: false },
 		counts: {},
 		verified: false,
 		warnings: []
+	}
+	const historySnapshot = from.historySync ? await from.historySync.exportState() : undefined
+	const hasDurableHistoryState = Boolean(
+		historySnapshot &&
+		(historySnapshot.jobs.length > 0 ||
+			historySnapshot.checkpoints.length > 0 ||
+			historySnapshot.compatibilityBaselineConsumed)
+	)
+	if (!to.historySync && hasDurableHistoryState) {
+		throw new Error('migrateAuthState: destination does not support durable history sync state')
 	}
 
 	// 1. Copy creds. `AuthenticationState.creds` is a plain object — `Object.assign`
@@ -118,6 +130,25 @@ export async function migrateAuthState({
 
 	result.creds.copied = true
 	logger?.info('migrateAuthState: creds copied')
+
+	if (historySnapshot && to.historySync) {
+		const applied = await to.historySync.importState(historySnapshot)
+		result.historySync = {
+			jobs: applied.jobs,
+			checkpoints: applied.checkpoints,
+			copied: applied.jobs > 0 || applied.checkpoints > 0 || applied.compatibilityBaselineUpdated
+		}
+		logger?.info(
+			{
+				sourceJobs: historySnapshot.jobs.length,
+				sourceCheckpoints: historySnapshot.checkpoints.length,
+				appliedJobs: applied.jobs,
+				appliedCheckpoints: applied.checkpoints,
+				compatibilityBaselineUpdated: applied.compatibilityBaselineUpdated
+			},
+			'migrateAuthState: durable history sync state copied'
+		)
+	}
 
 	/**
 	 * Build a single-type `SignalDataSet` payload for `to.keys.set`. The
@@ -239,7 +270,7 @@ export async function migrateAuthState({
 
 	// 3. Verify (best-effort).
 	if (verify) {
-		const verifyOk = await verifyMigration(from, to, logger, result.warnings)
+		const verifyOk = await verifyMigration(from, to, logger, result.warnings, historySnapshot)
 		result.verified = verifyOk
 	}
 
@@ -254,7 +285,8 @@ async function verifyMigration(
 	from: AuthenticationState,
 	to: AuthenticationState,
 	logger: ILogger | undefined,
-	warnings: string[]
+	warnings: string[],
+	historySnapshot?: HistorySyncStoreSnapshot
 ): Promise<boolean> {
 	if (!from.keys.listIds && !from.keys.list) return false
 	if (!to.keys.listIds && !to.keys.list) return false
@@ -291,7 +323,86 @@ async function verifyMigration(
 		}
 	}
 
+	if (historySnapshot) {
+		const historyVerified = await verifyHistorySyncMigration(historySnapshot, to, warnings)
+		ok &&= historyVerified
+	}
+
 	logger?.info({ ok }, 'migrateAuthState: verification complete')
+	return ok
+}
+
+async function verifyHistorySyncMigration(
+	source: HistorySyncStoreSnapshot,
+	destination: AuthenticationState,
+	warnings: string[]
+): Promise<boolean> {
+	const hasSourceState = source.jobs.length > 0 || source.checkpoints.length > 0 || source.compatibilityBaselineConsumed
+	if (!destination.historySync) {
+		if (hasSourceState) warnings.push('destination does not support durable history sync verification')
+		return !hasSourceState
+	}
+
+	const target = await destination.historySync.exportState()
+	const targetJobs = new Map(target.jobs.map(job => [job.messageId, job]))
+	const targetCheckpoints = new Map(target.checkpoints.map(checkpoint => [checkpoint.phase, checkpoint]))
+	let ok = true
+
+	for (const sourceJob of source.jobs) {
+		const targetJob = targetJobs.get(sourceJob.messageId)
+		if (!targetJob) {
+			warnings.push(`destination missing history sync job:${sourceJob.messageId}`)
+			ok = false
+			continue
+		}
+
+		const immutableFieldsMatch =
+			targetJob.sourceMessageId === sourceJob.sourceMessageId &&
+			targetJob.messageTimestamp === sourceJob.messageTimestamp &&
+			targetJob.messageKey.id === sourceJob.messageKey.id &&
+			targetJob.messageKey.remoteJid === sourceJob.messageKey.remoteJid &&
+			targetJob.messageKey.fromMe === sourceJob.messageKey.fromMe &&
+			targetJob.messageKey.participant === sourceJob.messageKey.participant &&
+			targetJob.syncType === sourceJob.syncType &&
+			targetJob.chunkOrder === sourceJob.chunkOrder &&
+			Buffer.from(targetJob.notification).equals(Buffer.from(sourceJob.notification))
+		if (!immutableFieldsMatch) {
+			warnings.push(`destination history sync job differs from source:${sourceJob.messageId}`)
+			ok = false
+		}
+
+		if (sourceJob.state === 'committed' && targetJob.state !== 'committed') {
+			warnings.push(`destination history sync job is not committed:${sourceJob.messageId}`)
+			ok = false
+		}
+
+		if (
+			sourceJob.postCommitCompletedAt !== undefined &&
+			(targetJob.postCommitCompletedAt ?? Number.NEGATIVE_INFINITY) < sourceJob.postCommitCompletedAt
+		) {
+			warnings.push(`destination history sync post-commit marker is stale:${sourceJob.messageId}`)
+			ok = false
+		}
+	}
+
+	for (const sourceCheckpoint of source.checkpoints) {
+		const targetCheckpoint = targetCheckpoints.get(sourceCheckpoint.phase)
+		if (
+			!targetCheckpoint ||
+			targetCheckpoint.chunkOrder < sourceCheckpoint.chunkOrder ||
+			(targetCheckpoint.chunkOrder === sourceCheckpoint.chunkOrder &&
+				targetCheckpoint.progress < sourceCheckpoint.progress)
+		) {
+			warnings.push(`destination history sync checkpoint is stale:${sourceCheckpoint.phase}`)
+			ok = false
+		}
+	}
+
+	if (source.compatibilityBaselineConsumed && !target.compatibilityBaselineConsumed) {
+		warnings.push('destination history sync compatibility baseline was not copied')
+		ok = false
+	}
+
 	return ok
 }
 

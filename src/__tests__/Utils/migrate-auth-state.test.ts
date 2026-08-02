@@ -11,9 +11,26 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { proto } from '../../../WAProto/index.js'
+import type { HistorySyncJobInput } from '../../Types'
 import { migrateAuthState } from '../../Utils/migrate-auth-state'
 import { useMultiFileAuthState } from '../../Utils/use-multi-file-auth-state'
 import { useSqliteAuthState } from '../../Utils/use-sqlite-auth-state'
+
+const historyJob = (messageId: string, chunkOrder: number): HistorySyncJobInput => ({
+	messageId,
+	sourceMessageId: messageId,
+	messageKey: { id: messageId, remoteJid: '5511999999999@s.whatsapp.net', fromMe: true },
+	messageTimestamp: 123,
+	notification: proto.Message.HistorySyncNotification.encode({
+		syncType: proto.HistorySync.HistorySyncType.RECENT,
+		chunkOrder,
+		progress: 100
+	}).finish(),
+	syncType: proto.HistorySync.HistorySyncType.RECENT,
+	chunkOrder,
+	progress: 100
+})
 
 describe('migrateAuthState — multi-file → SQLite', () => {
 	let dir: string
@@ -142,6 +159,65 @@ describe('migrateAuthState — multi-file → SQLite', () => {
 			'peer-d@s.whatsapp.net'
 		])
 
+		dst.close()
+	})
+
+	it('copies pending jobs, checkpoints, post-commit markers, and compatibility metadata', async () => {
+		const src = await useMultiFileAuthState(dir)
+		const sourceHistory = src.state.historySync!
+		await sourceHistory.enqueue(historyJob('MIGRATED-COMMIT', 3))
+		await sourceHistory.claimNext(Date.now(), 1_000, {
+			initialComplete: true,
+			recentComplete: true,
+			allowMissingCheckpoint: true
+		})
+		await sourceHistory.commit('MIGRATED-COMMIT', {
+			phase: 'RECENT',
+			syncType: proto.HistorySync.HistorySyncType.RECENT,
+			chunkOrder: 3,
+			progress: 100,
+			messageId: 'MIGRATED-COMMIT',
+			updatedAt: 100
+		})
+		await sourceHistory.markPostCommitCompleted('MIGRATED-COMMIT', 200)
+		await sourceHistory.enqueue(historyJob('MIGRATED-PENDING', 4))
+
+		const dst = await useSqliteAuthState({ dbPath: ':memory:' })
+		const result = await migrateAuthState({ from: src.state, to: dst.state, verify: true })
+		const snapshot = await dst.state.historySync!.exportState()
+
+		expect(result.historySync).toEqual({ jobs: 2, checkpoints: 1, copied: true })
+		expect(snapshot.compatibilityBaselineConsumed).toBe(true)
+		expect(snapshot.checkpoints).toEqual([
+			expect.objectContaining({ phase: 'RECENT', chunkOrder: 3, messageId: 'MIGRATED-COMMIT' })
+		])
+		expect(await dst.state.historySync!.get('MIGRATED-COMMIT')).toMatchObject({
+			state: 'committed',
+			postCommitCompletedAt: 200
+		})
+		expect(await dst.state.historySync!.get('MIGRATED-PENDING')).toMatchObject({ state: 'received' })
+
+		const repeated = await migrateAuthState({ from: src.state, to: dst.state, verify: true })
+		expect(repeated.historySync).toEqual({ jobs: 0, checkpoints: 0, copied: false })
+		expect(repeated.verified).toBe(true)
+		expect(repeated.warnings).toEqual([])
+		dst.close()
+	})
+
+	it('fails verification when a destination does not retain imported history jobs', async () => {
+		const src = await useMultiFileAuthState(dir)
+		await src.state.historySync!.enqueue(historyJob('MISSING-AFTER-IMPORT', 1))
+		const dst = await useSqliteAuthState({ dbPath: ':memory:' })
+		dst.state.historySync!.importState = async () => ({
+			jobs: 0,
+			checkpoints: 0,
+			compatibilityBaselineUpdated: false
+		})
+
+		const result = await migrateAuthState({ from: src.state, to: dst.state, verify: true })
+
+		expect(result.verified).toBe(false)
+		expect(result.warnings).toContain('destination missing history sync job:MISSING-AFTER-IMPORT')
 		dst.close()
 	})
 

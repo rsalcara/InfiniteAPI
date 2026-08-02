@@ -7,9 +7,11 @@ import type {
 	NativeAndroidDeviceProfile,
 	NativeAndroidPairingAttestation,
 	NativeAndroidTransportConfig,
+	PersistedWebTransportIdentity,
 	SocketConfig
 } from '../Types'
 import type { BinaryNode } from '../WABinary'
+import { makePersistedWebTransportIdentity, validatePersistedWebTransportIdentity } from './connection-presets'
 import {
 	GENERIC_NATIVE_ANDROID_FALLBACK_PROFILE_ID,
 	isNativeAndroidCatalogProfile
@@ -195,6 +197,7 @@ const profilesMatch = (left: NativeAndroidDeviceProfile, right: NativeAndroidDev
 export type ResolvedTransportSession = {
 	profile: ConnectionTransportProfile
 	nativeAndroid?: NativeAndroidTransportConfig
+	webIdentity?: PersistedWebTransportIdentity
 	credsChanged: boolean
 }
 
@@ -205,15 +208,34 @@ export type ResolvedTransportSession = {
 export const resolveTransportSession = (config: SocketConfig, creds: AuthenticationCreds): ResolvedTransportSession => {
 	const profile = config.transportProfile || 'web'
 	const persisted = creds.nativeAndroidIdentity
+	const persistedWeb = creds.webTransportIdentity
+	const hasPersistedWebMarker = persistedWeb !== undefined
 
 	if (profile === 'web') {
+		if (persisted && hasPersistedWebMarker) {
+			throw new Boom('transport isolation: credentials contain both Web and native_android identities', {
+				statusCode: 400
+			})
+		}
+
 		if (persisted?.profile === 'native_android') {
 			throw new Boom('transport isolation: native_android credentials cannot be opened by the Web transport', {
 				statusCode: 400
 			})
 		}
 
-		return { profile, credsChanged: false }
+		if (hasPersistedWebMarker) {
+			if (!persistedWeb || typeof persistedWeb !== 'object' || Array.isArray(persistedWeb)) {
+				throw new Boom('Web transport identity is invalid', { statusCode: 400 })
+			}
+
+			validatePersistedWebTransportIdentity(persistedWeb)
+			return { profile, webIdentity: persistedWeb, credsChanged: false }
+		}
+
+		const webIdentity = makePersistedWebTransportIdentity(config.browser, config.syncFullHistory)
+		creds.webTransportIdentity = webIdentity
+		return { profile, webIdentity, credsChanged: true }
 	}
 
 	if (profile !== 'native_android') {
@@ -224,10 +246,17 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 		throw new Boom('native_android: configuration is required', { statusCode: 400 })
 	}
 
+	if (hasPersistedWebMarker) {
+		throw new Boom('transport isolation: Web credentials cannot be opened by the native_android transport', {
+			statusCode: 400
+		})
+	}
+
 	validateNativeAndroidConfig(config.nativeAndroid)
 	const hasCompletedPairing = creds.registered || Boolean(creds.account && creds.me)
 	let recoveredRegisteredMarker = false
 	let migratedAppIdentity = false
+	let migratedConnectionPreset = false
 
 	// Native QR pairing historically persisted account + me + the durable native
 	// identity without setting registered. Recover only that unambiguous state;
@@ -269,7 +298,20 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 		persisted.appVariant = configuredVariant
 		persisted.clientAppId = configuredIdentity.clientAppId
 		persisted.appVersion = config.nativeAndroid.appVersions?.[configuredVariant] ?? config.nativeAndroid.appVersion
+		persisted.preset = configuredVariant === 'consumer' ? 'native_android_consumer' : 'native_android_business'
 		migratedAppIdentity = true
+	}
+
+	if (persisted?.appVariant) {
+		const expectedPreset = persisted.appVariant === 'consumer' ? 'native_android_consumer' : 'native_android_business'
+		if (persisted.preset && persisted.preset !== expectedPreset) {
+			throw new Boom('native_android: persisted preset conflicts with the application variant', { statusCode: 400 })
+		}
+
+		if (!persisted.preset) {
+			persisted.preset = expectedPreset
+			migratedConnectionPreset = true
+		}
 	}
 
 	if (
@@ -292,6 +334,7 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 		creds.nativeAndroidIdentity = {
 			schemaVersion: 1,
 			profile: 'native_android',
+			preset: configuredVariant === 'consumer' ? 'native_android_consumer' : 'native_android_business',
 			appVariant: configuredVariant,
 			clientAppId: appIdentity.clientAppId,
 			appVersion: config.nativeAndroid.appVersions?.[configuredVariant] ?? config.nativeAndroid.appVersion,
@@ -311,7 +354,7 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 			appVersion: effectiveVersion,
 			device: { ...(persisted?.device || config.nativeAndroid.device) }
 		},
-		credsChanged: !persisted || recoveredRegisteredMarker || migratedAppIdentity
+		credsChanged: !persisted || recoveredRegisteredMarker || migratedAppIdentity || migratedConnectionPreset
 	}
 }
 
@@ -364,6 +407,8 @@ export const resolveNativeAndroidPairingAppVariant = (
 	}
 
 	creds.nativeAndroidIdentity.appVariant = detectedVariant
+	creds.nativeAndroidIdentity.preset =
+		detectedVariant === 'consumer' ? 'native_android_consumer' : 'native_android_business'
 	creds.nativeAndroidIdentity.clientAppId = identity.clientAppId
 	creds.nativeAndroidIdentity.appVersion = config.appVersions?.[detectedVariant] ?? config.appVersion
 

@@ -12,8 +12,10 @@ import type BetterSqlite3Module from 'better-sqlite3'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDataTypeMap } from '../Types'
 import { prepareInClause } from './multi-db-sqlite/in-statement-cache'
+import type { SqliteDbLike } from './multi-db-sqlite/types'
 import { initAuthCreds } from './auth-utils'
 import { BufferJSON } from './generics'
+import { SqliteHistorySyncStore } from './history-sync-store'
 import type { ILogger } from './logger'
 
 /**
@@ -219,6 +221,7 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 		}
 
 		db.exec(CREATE_SCHEMA_SQL)
+		const historySync = new SqliteHistorySyncStore(db as unknown as SqliteDbLike)
 
 		const stmts = {
 			credsSelect: db.prepare('SELECT value FROM creds WHERE key = ?'),
@@ -243,6 +246,12 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 			'SELECT id, value FROM signal_keys WHERE type = ? AND id IN (',
 			')'
 		)
+		const clearAuthKeysAndHistory = db.transaction(() => {
+			stmts.clearKeys.run()
+			db!.exec(
+				'DELETE FROM history_sync_jobs; DELETE FROM history_sync_checkpoints; DELETE FROM history_sync_metadata;'
+			)
+		})
 
 		const loadCreds = (): AuthenticationCreds => {
 			const row = stmts.credsSelect.get(CREDS_ROW_KEY) as { value: string } | undefined
@@ -383,6 +392,7 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 				set creds(value: AuthenticationCreds) {
 					stateRef.creds = value
 				},
+				historySync,
 				keys: {
 					get: async (type, ids) => {
 						const out: Record<string, SignalDataTypeMap[typeof type]> = {}
@@ -404,7 +414,7 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 						await runSetWithBusyRetry(data)
 					},
 					clear: async () => {
-						stmts.clearKeys.run()
+						clearAuthKeysAndHistory.immediate()
 					},
 					list: async function* <T extends keyof SignalDataTypeMap>(
 						type: T
