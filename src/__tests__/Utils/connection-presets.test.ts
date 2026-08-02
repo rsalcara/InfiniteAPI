@@ -186,7 +186,7 @@ describe('connection identity presets', () => {
 		)
 	})
 
-	it('preserves the historical browser only for registered unmarked sessions without an explicit browser', () => {
+	it('preserves the historical browser and full-history behavior for registered unmarked sessions', () => {
 		const creds = initAuthCreds()
 		creds.registered = true
 
@@ -198,5 +198,19 @@ describe('connection identity presets', () => {
 		expect(hasExplicitBaileysBrowserSelection('typo')).toBe(false)
 		expect(resolveUnmarkedLegacyWebBrowser(['Mac OS', 'Chrome', '15'], 'chrome')).toEqual(['Mac OS', 'Chrome', '15'])
 		expect(resolveUnmarkedLegacyWebBrowser(WINDOWS_HYBRID_BROWSER, 'typo')).toEqual(PRESET_MIGRATION_LEGACY_BROWSER)
+
+		const resolved = resolveTransportSession(
+			{
+				...DEFAULT_CONNECTION_CONFIG,
+				browser: resolveUnmarkedLegacyWebBrowser(WINDOWS_HYBRID_BROWSER, undefined),
+				syncFullHistory: true
+			},
+			creds
+		)
+		expect(resolved.webIdentity).toMatchObject({
+			preset: 'web_legacy',
+			browser: PRESET_MIGRATION_LEGACY_BROWSER,
+			syncFullHistory: true
+		})
 	})
 })

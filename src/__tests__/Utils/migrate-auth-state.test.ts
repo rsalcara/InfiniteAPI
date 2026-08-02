@@ -196,6 +196,28 @@ describe('migrateAuthState — multi-file → SQLite', () => {
 			postCommitCompletedAt: 200
 		})
 		expect(await dst.state.historySync!.get('MIGRATED-PENDING')).toMatchObject({ state: 'received' })
+
+		const repeated = await migrateAuthState({ from: src.state, to: dst.state, verify: true })
+		expect(repeated.historySync).toEqual({ jobs: 0, checkpoints: 0, copied: false })
+		expect(repeated.verified).toBe(true)
+		expect(repeated.warnings).toEqual([])
+		dst.close()
+	})
+
+	it('fails verification when a destination does not retain imported history jobs', async () => {
+		const src = await useMultiFileAuthState(dir)
+		await src.state.historySync!.enqueue(historyJob('MISSING-AFTER-IMPORT', 1))
+		const dst = await useSqliteAuthState({ dbPath: ':memory:' })
+		dst.state.historySync!.importState = async () => ({
+			jobs: 0,
+			checkpoints: 0,
+			compatibilityBaselineUpdated: false
+		})
+
+		const result = await migrateAuthState({ from: src.state, to: dst.state, verify: true })
+
+		expect(result.verified).toBe(false)
+		expect(result.warnings).toContain('destination missing history sync job:MISSING-AFTER-IMPORT')
 		dst.close()
 	})
 

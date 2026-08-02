@@ -33,8 +33,6 @@ export type DurableHistorySyncCoordinatorOptions = {
 	now?: () => number
 	random?: () => number
 	leaseMs?: number
-	/** @deprecated Retry exhaustion no longer converts transient transport failures into reupload requests. */
-	maxLocalAttempts?: number
 	retentionMs?: number
 	drainTimeoutMs?: number
 	initialHistorySyncComplete?: boolean

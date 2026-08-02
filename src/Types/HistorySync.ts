@@ -62,6 +62,12 @@ export type HistorySyncStoreSnapshot = {
 	compatibilityBaselineConsumed: boolean
 }
 
+export type HistorySyncImportResult = {
+	jobs: number
+	checkpoints: number
+	compatibilityBaselineUpdated: boolean
+}
+
 /** Durable queue capability supplied by the built-in auth-state adapters. */
 export interface HistorySyncStore {
 	enqueue(input: HistorySyncJobInput): Promise<StoredHistorySyncJob>
@@ -79,6 +85,6 @@ export interface HistorySyncStore {
 	getCheckpoint(phase: HistorySyncCheckpointPhase): Promise<HistorySyncCheckpoint | null>
 	pruneCommitted(before: number): Promise<number>
 	exportState(): Promise<HistorySyncStoreSnapshot>
-	importState(snapshot: HistorySyncStoreSnapshot): Promise<void>
+	importState(snapshot: HistorySyncStoreSnapshot): Promise<HistorySyncImportResult>
 	clear(): Promise<void>
 }

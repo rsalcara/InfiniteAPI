@@ -310,6 +310,36 @@ describe('durable history sync store across auth backends', () => {
 		}
 	})
 
+	it('prunes only committed jobs whose post-commit work completed', async () => {
+		const root = await mkdtemp(join(tmpdir(), 'history-sync-prune-'))
+		const assertPruneBoundary = async (store: HistorySyncStore, prefix: string) => {
+			const pendingId = `${prefix}-PENDING-POST-COMMIT`
+			const completedId = `${prefix}-COMPLETED-POST-COMMIT`
+			await store.enqueue(makeJob(pendingId, 1))
+			await store.commit(pendingId)
+			await store.enqueue(makeJob(completedId, 2))
+			await store.commit(completedId)
+			await store.markPostCommitCompleted(completedId)
+
+			expect(await store.pruneCommitted(Date.now() + 60_000)).toBe(1)
+			expect(await store.get(pendingId)).toMatchObject({ state: 'committed' })
+			expect(await store.get(completedId)).toBeNull()
+		}
+
+		try {
+			await assertPruneBoundary(new FileHistorySyncStore(join(root, 'multifile', 'history-sync-state.json')), 'MF')
+			await mkdir(join(root, 'sqlite'))
+			const sqlite = await useSqliteAuthState({ dbPath: join(root, 'sqlite', 'auth.db') })
+			await assertPruneBoundary(sqlite.state.historySync!, 'SQL')
+			sqlite.close()
+			const multidb = await useMultiDbSqliteAuthState({ sessionDir: join(root, 'multidb') })
+			await assertPruneBoundary(multidb.state.historySync!, 'MDB')
+			multidb.close()
+		} finally {
+			await rm(root, { recursive: true, force: true })
+		}
+	})
+
 	it('clears durable history jobs, checkpoints, metadata, and recovery files with auth keys', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'history-sync-clear-'))
 		const seedAndClear = async (store: HistorySyncStore, clear: () => Promise<void>, id: string, filePath?: string) => {

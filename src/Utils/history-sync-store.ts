@@ -5,6 +5,7 @@ import type {
 	HistorySyncCheckpoint,
 	HistorySyncCheckpointPhase,
 	HistorySyncFailure,
+	HistorySyncImportResult,
 	HistorySyncJobInput,
 	HistorySyncJobState,
 	HistorySyncPrerequisites,
@@ -23,6 +24,14 @@ const cloneJob = (job: StoredHistorySyncJob): StoredHistorySyncJob => ({
 	messageKey: { ...job.messageKey },
 	notification: Buffer.from(job.notification)
 })
+
+const checkpointsEqual = (left: HistorySyncCheckpoint, right: HistorySyncCheckpoint): boolean =>
+	left.phase === right.phase &&
+	left.syncType === right.syncType &&
+	left.chunkOrder === right.chunkOrder &&
+	left.progress === right.progress &&
+	left.messageId === right.messageId &&
+	left.updatedAt === right.updatedAt
 
 const sortJobs = (left: StoredHistorySyncJob, right: StoredHistorySyncJob): number =>
 	right.syncType - left.syncType || left.chunkOrder - right.chunkOrder || left.createdAt - right.createdAt
@@ -149,15 +158,16 @@ const syncDirectory = async (path: string): Promise<void> => {
 	try {
 		handle = await open(path, 'r')
 		await handle.sync()
-	} catch (error) {
-		if (errorCode(error) === 'ENOENT') return
-		// Windows does not expose a portable directory fsync. The temporary
-		// file itself is still flushed before the atomic rename.
-		if (process.platform !== 'win32' || !['EBADF', 'EISDIR', 'EINVAL', 'EPERM'].includes(errorCode(error) ?? '')) {
-			throw error
-		}
+	} catch {
+		// Directory fsync is not portable across Windows, network filesystems,
+		// and some container mounts. The temporary file was flushed and atomically
+		// renamed already, so this durability enhancement must remain best-effort.
 	} finally {
-		await handle?.close()
+		try {
+			await handle?.close()
+		} catch {
+			// Closing a directory handle is best-effort for the same reason.
+		}
 	}
 }
 
@@ -392,7 +402,11 @@ export class FileHistorySyncStore implements HistorySyncStore {
 		return this.mutate(() => {
 			let removed = 0
 			for (const [id, job] of Object.entries(this.state.jobs)) {
-				if (job.state === 'committed' && (job.committedAt ?? job.updatedAt) < before) {
+				if (
+					job.state === 'committed' &&
+					job.postCommitCompletedAt !== undefined &&
+					(job.committedAt ?? job.updatedAt) < before
+				) {
 					delete this.state.jobs[id]
 					removed++
 				}
@@ -413,24 +427,34 @@ export class FileHistorySyncStore implements HistorySyncStore {
 		})
 	}
 
-	async importState(snapshot: HistorySyncStoreSnapshot): Promise<void> {
-		await this.mutate(() => {
+	async importState(snapshot: HistorySyncStoreSnapshot): Promise<HistorySyncImportResult> {
+		return this.mutate(() => {
+			let jobs = 0
+			let checkpoints = 0
 			for (const job of snapshot.jobs) {
-				if (!this.state.jobs[job.messageId]) this.state.jobs[job.messageId] = cloneJob(job)
+				if (!this.state.jobs[job.messageId]) {
+					this.state.jobs[job.messageId] = cloneJob(job)
+					jobs++
+				}
 			}
 
 			for (const checkpoint of snapshot.checkpoints) {
 				const current = this.state.checkpoints[checkpoint.phase]
 				if (
-					!current ||
-					checkpoint.chunkOrder > current.chunkOrder ||
-					(checkpoint.chunkOrder === current.chunkOrder && checkpoint.progress >= current.progress)
+					(!current ||
+						checkpoint.chunkOrder > current.chunkOrder ||
+						(checkpoint.chunkOrder === current.chunkOrder && checkpoint.progress >= current.progress)) &&
+					(!current || !checkpointsEqual(current, checkpoint))
 				) {
 					this.state.checkpoints[checkpoint.phase] = { ...checkpoint }
+					checkpoints++
 				}
 			}
 
+			const compatibilityBaselineUpdated =
+				!this.state.compatibilityBaselineConsumed && snapshot.compatibilityBaselineConsumed
 			this.state.compatibilityBaselineConsumed ||= snapshot.compatibilityBaselineConsumed
+			return { jobs, checkpoints, compatibilityBaselineUpdated }
 		})
 	}
 
@@ -639,7 +663,10 @@ export class SqliteHistorySyncStore implements HistorySyncStore {
 			clearJobs: db.prepare('DELETE FROM history_sync_jobs'),
 			clearCheckpoints: db.prepare('DELETE FROM history_sync_checkpoints'),
 			clearMetadata: db.prepare('DELETE FROM history_sync_metadata'),
-			prune: db.prepare("DELETE FROM history_sync_jobs WHERE state = 'committed' AND committed_at < ?")
+			prune: db.prepare(
+				"DELETE FROM history_sync_jobs WHERE state = 'committed' AND committed_at < ? " +
+					'AND post_commit_completed_at IS NOT NULL'
+			)
 		}
 	}
 
@@ -774,18 +801,23 @@ export class SqliteHistorySyncStore implements HistorySyncStore {
 	}
 
 	async exportState(): Promise<HistorySyncStoreSnapshot> {
-		return {
-			jobs: await this.list(),
-			checkpoints: (this.stmts.listCheckpoints.all() as CheckpointRow[]).map(rowToCheckpoint),
-			compatibilityBaselineConsumed:
-				(this.stmts.getMetadata.get(COMPATIBILITY_BASELINE_KEY) as { value: string } | undefined)?.value === 'true'
-		}
+		const readSnapshot = this.db.transaction(
+			(): HistorySyncStoreSnapshot => ({
+				jobs: (this.stmts.list.all() as JobRow[]).map(rowToJob),
+				checkpoints: (this.stmts.listCheckpoints.all() as CheckpointRow[]).map(rowToCheckpoint),
+				compatibilityBaselineConsumed:
+					(this.stmts.getMetadata.get(COMPATIBILITY_BASELINE_KEY) as { value: string } | undefined)?.value === 'true'
+			})
+		)
+		return readSnapshot()
 	}
 
-	async importState(snapshot: HistorySyncStoreSnapshot): Promise<void> {
-		const importSnapshot = this.db.transaction(() => {
+	async importState(snapshot: HistorySyncStoreSnapshot): Promise<HistorySyncImportResult> {
+		const importSnapshot = this.db.transaction((): HistorySyncImportResult => {
+			let jobs = 0
+			let checkpoints = 0
 			for (const job of snapshot.jobs) {
-				this.stmts.importJob.run(
+				jobs += this.stmts.importJob.run(
 					job.messageId,
 					job.sourceMessageId,
 					JSON.stringify(job.messageKey, BufferJSON.replacer),
@@ -804,25 +836,39 @@ export class SqliteHistorySyncStore implements HistorySyncStore {
 					job.committedAt ?? null,
 					job.postCommitCompletedAt ?? null,
 					job.reuploadRequestedAt ?? null
-				)
+				).changes
 			}
 
 			for (const checkpoint of snapshot.checkpoints) {
-				this.stmts.upsertCheckpoint.run(
+				const currentRow = this.stmts.getCheckpoint.get(checkpoint.phase) as CheckpointRow | undefined
+				const current = currentRow ? rowToCheckpoint(currentRow) : undefined
+				const shouldImport =
+					(!current ||
+						checkpoint.chunkOrder > current.chunkOrder ||
+						(checkpoint.chunkOrder === current.chunkOrder && checkpoint.progress >= current.progress)) &&
+					(!current || !checkpointsEqual(current, checkpoint))
+				if (!shouldImport) continue
+
+				checkpoints += this.stmts.upsertCheckpoint.run(
 					checkpoint.phase,
 					checkpoint.syncType,
 					checkpoint.chunkOrder,
 					checkpoint.progress,
 					checkpoint.messageId,
 					checkpoint.updatedAt
-				)
+				).changes
 			}
 
-			if (snapshot.compatibilityBaselineConsumed) {
+			const compatibilityBaselineUpdated =
+				snapshot.compatibilityBaselineConsumed &&
+				(this.stmts.getMetadata.get(COMPATIBILITY_BASELINE_KEY) as { value: string } | undefined)?.value !== 'true'
+			if (compatibilityBaselineUpdated) {
 				this.stmts.setMetadata.run(COMPATIBILITY_BASELINE_KEY, 'true')
 			}
+
+			return { jobs, checkpoints, compatibilityBaselineUpdated }
 		})
-		importSnapshot.immediate()
+		return importSnapshot.immediate()
 	}
 
 	async clear(): Promise<void> {

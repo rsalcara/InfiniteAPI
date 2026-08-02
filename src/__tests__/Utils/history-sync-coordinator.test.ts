@@ -211,8 +211,7 @@ describe('DurableHistorySyncCoordinator', () => {
 			apply: async () => undefined,
 			requestReupload,
 			now: () => 1_000,
-			random: () => 0,
-			maxLocalAttempts: 1
+			random: () => 0
 		})
 
 		await coordinator.startRecovery()
@@ -323,8 +322,7 @@ describe('DurableHistorySyncCoordinator', () => {
 			apply: async () => {
 				throw new Error('local sqlite busy')
 			},
-			requestReupload,
-			maxLocalAttempts: 1
+			requestReupload
 		})
 		await coordinator.enqueue({ id: 'LOCAL-FAIL', remoteJid: '5511@s.whatsapp.net', fromMe: true }, 1, notification())
 		await waitFor(async () => (await store.get('LOCAL-FAIL'))?.state === 'failed')
