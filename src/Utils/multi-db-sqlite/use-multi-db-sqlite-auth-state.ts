@@ -3,6 +3,7 @@ import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDat
 import { initAuthCreds } from '../auth-utils'
 import { generateSignalPubKey } from '../crypto'
 import { BufferJSON } from '../generics'
+import { SqliteHistorySyncStore } from '../history-sync-store'
 import type { ILogger } from '../logger'
 import { makeMutex } from '../make-mutex'
 import { hasPrekeyDirectDistributionIntent } from '../prekey-direct-distribution'
@@ -159,6 +160,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	let appStateSyncKeyStmts: ReturnType<typeof prepareAppStateSyncKeyStatements>
 	let signalTypedBackend: SignalTypedBackend
 	let signalTypedSource: SignalTypedSourceStore
+	let historySync: SqliteHistorySyncStore
 	// Authoritative (PK-jid) store for TC / "privacy" tokens, in wa.db. When
 	// `sourceOfTruth` is on, `'tctoken'` reads/writes route here (signal_kv stays
 	// the superset fallback); replaces the signal_kv `__index` enumeration race.
@@ -190,6 +192,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		signalTypedSource = new SignalTypedSourceStore(signalTypedBackend, opts.logger)
 		rehydrateTypedIdentities(store, signalTypedSource, opts.logger)
 		trustedContactsBackend = new TrustedContactsBackend(store.handle('wa.db'))
+		historySync = new SqliteHistorySyncStore(store.handle('sync.db'))
 	} catch (err) {
 		// Only close the store if WE opened it — injected stores belong to
 		// the caller.
@@ -633,6 +636,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		set creds(value: AuthenticationCreds) {
 			credsRef.current = value
 		},
+		historySync,
 		keys: {
 			prekeyUploads: sourceOfTruth
 				? {
