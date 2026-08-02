@@ -398,7 +398,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					if (!meId) throw new Error('cannot request history sync reupload before authentication')
 					await sendNode(encryptHistorySyncRetryRequest(job.messageId, mediaKey, meId))
 				},
-				onCommitted: async job => {
+				onCommitted: async (job, { recovered }) => {
 					const notification = proto.Message.HistorySyncNotification.decode(job.notification)
 					if (notification.syncType !== proto.HistorySync.HistorySyncType.ON_DEMAND) {
 						const alreadyRecorded = authState.creds.processedHistoryMessages?.some(
@@ -414,7 +414,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 						}
 					}
 
-					markHistorySyncCommitted(notification)
+					if (!recovered) markHistorySyncCommitted(notification)
 				}
 			})
 		: undefined

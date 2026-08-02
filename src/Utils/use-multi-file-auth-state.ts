@@ -479,6 +479,7 @@ export const useMultiFileAuthState = async (
 							)
 							.map(f => unlinkIgnoreMissing(join(folder, f)))
 					)
+					await historySync.clear()
 				},
 				list: async function* <T extends keyof SignalDataTypeMap>(
 					type: T

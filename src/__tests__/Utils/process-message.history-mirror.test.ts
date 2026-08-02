@@ -378,6 +378,7 @@ describe('history-sync message mirror', () => {
 
 		await expect(mirrorHistoryMessagesToStore(messages, backend)).resolves.toEqual({ stored: 300, failed: 0 })
 		const batchSizes = recordMessages.mock.calls.map(([rows]) => rows.length)
+		expect(batchSizes.length).toBeGreaterThan(1)
 		expect(batchSizes.reduce((total, size) => total + size, 0)).toBe(300)
 		expect(batchSizes.every(size => size >= 1 && size <= 500)).toBe(true)
 	})

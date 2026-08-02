@@ -510,6 +510,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			clearAxolotlTx()
 			appStateSyncKeyStmts.clear.run()
 		})
+		await historySync.clear()
 	}
 
 	const finishAuthKeysClear = (label: string): Promise<void> =>
@@ -525,7 +526,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				{
 					reason: 'interrupted-auth-keys-clear',
 					trigger,
-					recoveredStores: ['wa.db', 'msgstore.db', 'axolotl.db', 'creds.db'],
+					recoveredStores: ['wa.db', 'msgstore.db', 'axolotl.db', 'creds.db', 'sync.db'],
 					markerState: 'cleared'
 				},
 				'multi-db-sqlite: completed interrupted auth key clear across every participating database'

@@ -110,8 +110,6 @@ describe('durable history sync store across auth backends', () => {
 				'MF-1'
 			)
 			await first.state.historySync!.markState('MF-1', 'applying')
-			await first.state.keys.clear?.()
-			expect(await first.state.historySync!.get('MF-1')).toMatchObject({ state: 'applying' })
 
 			const reopened = await useMultiFileAuthState(dir)
 			await assertRecoveryAndCheckpoint(reopened.state.historySync!, 'MF-1')
@@ -250,6 +248,131 @@ describe('durable history sync store across auth backends', () => {
 		}
 	})
 
+	it('consumes the missing-checkpoint migration baseline once in every built-in backend', async () => {
+		const root = await mkdtemp(join(tmpdir(), 'history-sync-compatibility-'))
+		const assertConsumedOnce = async (store: HistorySyncStore, prefix: string) => {
+			await store.enqueue(makeJob(`${prefix}-RECENT-3`, 3, proto.HistorySync.HistorySyncType.RECENT))
+			expect((await store.claimNext(Date.now(), 1_000, LEGACY_PREREQUISITES))?.messageId).toBe(`${prefix}-RECENT-3`)
+			await store.commit(`${prefix}-RECENT-3`)
+			await store.enqueue(makeJob(`${prefix}-FULL-3`, 3, proto.HistorySync.HistorySyncType.FULL))
+			expect(await store.claimNext(Date.now(), 1_000, LEGACY_PREREQUISITES)).toBeNull()
+			expect((await store.exportState()).compatibilityBaselineConsumed).toBe(true)
+		}
+
+		try {
+			const multifilePath = join(root, 'multifile', 'history-sync-state.json')
+			await assertConsumedOnce(new FileHistorySyncStore(multifilePath), 'MF')
+			expect(
+				await new FileHistorySyncStore(multifilePath).claimNext(Date.now(), 1_000, LEGACY_PREREQUISITES)
+			).toBeNull()
+
+			await mkdir(join(root, 'sqlite'))
+			const sqlitePath = join(root, 'sqlite', 'auth.db')
+			const sqlite = await useSqliteAuthState({ dbPath: sqlitePath })
+			await assertConsumedOnce(sqlite.state.historySync!, 'SQL')
+			sqlite.close()
+			const reopenedSqlite = await useSqliteAuthState({ dbPath: sqlitePath })
+			expect(await reopenedSqlite.state.historySync!.claimNext(Date.now(), 1_000, LEGACY_PREREQUISITES)).toBeNull()
+			reopenedSqlite.close()
+
+			const multiDbPath = join(root, 'multidb')
+			const multidb = await useMultiDbSqliteAuthState({ sessionDir: multiDbPath })
+			await assertConsumedOnce(multidb.state.historySync!, 'MDB')
+			multidb.close()
+			const reopenedMultidb = await useMultiDbSqliteAuthState({ sessionDir: multiDbPath })
+			expect(await reopenedMultidb.state.historySync!.claimNext(Date.now(), 1_000, LEGACY_PREREQUISITES)).toBeNull()
+			reopenedMultidb.close()
+		} finally {
+			await rm(root, { recursive: true, force: true })
+		}
+	})
+
+	it('persists post-commit completion markers in every built-in backend', async () => {
+		const root = await mkdtemp(join(tmpdir(), 'history-sync-post-commit-'))
+		const assertMarker = async (store: HistorySyncStore, id: string) => {
+			await store.enqueue(makeJob(id, 1))
+			await store.commit(id)
+			await store.markPostCommitCompleted(id, 123_456)
+			expect(await store.get(id)).toMatchObject({ state: 'committed', postCommitCompletedAt: 123_456 })
+		}
+
+		try {
+			await assertMarker(new FileHistorySyncStore(join(root, 'multifile', 'history-sync-state.json')), 'MF-MARKER')
+			await mkdir(join(root, 'sqlite'))
+			const sqlite = await useSqliteAuthState({ dbPath: join(root, 'sqlite', 'auth.db') })
+			await assertMarker(sqlite.state.historySync!, 'SQL-MARKER')
+			sqlite.close()
+			const multidb = await useMultiDbSqliteAuthState({ sessionDir: join(root, 'multidb') })
+			await assertMarker(multidb.state.historySync!, 'MDB-MARKER')
+			multidb.close()
+		} finally {
+			await rm(root, { recursive: true, force: true })
+		}
+	})
+
+	it('clears durable history jobs, checkpoints, metadata, and recovery files with auth keys', async () => {
+		const root = await mkdtemp(join(tmpdir(), 'history-sync-clear-'))
+		const seedAndClear = async (store: HistorySyncStore, clear: () => Promise<void>, id: string, filePath?: string) => {
+			await store.enqueue(makeJob(id, 3))
+			await store.claimNext(Date.now(), 1_000, LEGACY_PREREQUISITES)
+			await store.commit(id, {
+				phase: 'RECENT',
+				syncType: proto.HistorySync.HistorySyncType.RECENT,
+				chunkOrder: 3,
+				progress: 100,
+				messageId: id,
+				updatedAt: Date.now()
+			})
+			await clear()
+			expect(await store.exportState()).toEqual({
+				jobs: [],
+				checkpoints: [],
+				compatibilityBaselineConsumed: false
+			})
+			if (filePath) {
+				await expect(readFile(filePath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+				await expect(readFile(`${filePath}.tmp`, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+				await expect(readFile(`${filePath}.bak`, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+			}
+		}
+
+		try {
+			const multifileDir = join(root, 'multifile')
+			const multifile = await useMultiFileAuthState(multifileDir)
+			await seedAndClear(
+				multifile.state.historySync!,
+				async () => {
+					await multifile.state.keys.clear?.()
+				},
+				'MF-CLEAR',
+				join(multifileDir, 'history-sync-state.json')
+			)
+
+			await mkdir(join(root, 'sqlite'))
+			const sqlite = await useSqliteAuthState({ dbPath: join(root, 'sqlite', 'auth.db') })
+			await seedAndClear(
+				sqlite.state.historySync!,
+				async () => {
+					await sqlite.state.keys.clear?.()
+				},
+				'SQL-CLEAR'
+			)
+			sqlite.close()
+
+			const multidb = await useMultiDbSqliteAuthState({ sessionDir: join(root, 'multidb') })
+			await seedAndClear(
+				multidb.state.historySync!,
+				async () => {
+					await multidb.state.keys.clear?.()
+				},
+				'MDB-CLEAR'
+			)
+			multidb.close()
+		} finally {
+			await rm(root, { recursive: true, force: true })
+		}
+	})
+
 	it('rolls back multifile in-memory state when its atomic write fails', async () => {
 		const dir = await mkdtemp(join(tmpdir(), 'history-sync-rollback-'))
 		try {
@@ -259,7 +382,13 @@ describe('durable history sync store across auth backends', () => {
 			await mkdir(join(dir, 'history-sync-state.json.tmp'))
 
 			await expect(store.markState('ROLLBACK-1', 'decoded')).rejects.toThrow()
-			expect(await store.get('ROLLBACK-1')).toMatchObject({ state: 'received' })
+			const inMemory = store as unknown as {
+				state: { jobs: Record<string, { state: string }> }
+			}
+			expect(inMemory.state.jobs['ROLLBACK-1']?.state).toBe('received')
+			await rm(join(dir, 'history-sync-state.json.tmp'), { recursive: true, force: true })
+			await store.markState('ROLLBACK-1', 'applying')
+			expect(await store.get('ROLLBACK-1')).toMatchObject({ state: 'applying' })
 		} finally {
 			await rm(dir, { recursive: true, force: true })
 		}

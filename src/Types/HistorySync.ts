@@ -31,6 +31,7 @@ export type StoredHistorySyncJob = HistorySyncJobInput & {
 	createdAt: number
 	updatedAt: number
 	committedAt?: number
+	postCommitCompletedAt?: number
 	reuploadRequestedAt?: number
 }
 
@@ -55,6 +56,12 @@ export type HistorySyncPrerequisites = {
 	allowMissingCheckpoint: boolean
 }
 
+export type HistorySyncStoreSnapshot = {
+	jobs: StoredHistorySyncJob[]
+	checkpoints: HistorySyncCheckpoint[]
+	compatibilityBaselineConsumed: boolean
+}
+
 /** Durable queue capability supplied by the built-in auth-state adapters. */
 export interface HistorySyncStore {
 	enqueue(input: HistorySyncJobInput): Promise<StoredHistorySyncJob>
@@ -66,8 +73,12 @@ export interface HistorySyncStore {
 	markState(messageId: string, state: 'decoded' | 'applying'): Promise<void>
 	markFailed(messageId: string, failure: HistorySyncFailure): Promise<void>
 	commit(messageId: string, checkpoint?: HistorySyncCheckpoint): Promise<void>
+	markPostCommitCompleted(messageId: string, completedAt?: number): Promise<void>
 	get(messageId: string): Promise<StoredHistorySyncJob | null>
 	list(): Promise<StoredHistorySyncJob[]>
 	getCheckpoint(phase: HistorySyncCheckpointPhase): Promise<HistorySyncCheckpoint | null>
 	pruneCommitted(before: number): Promise<number>
+	exportState(): Promise<HistorySyncStoreSnapshot>
+	importState(snapshot: HistorySyncStoreSnapshot): Promise<void>
+	clear(): Promise<void>
 }

@@ -29,10 +29,11 @@ export type DurableHistorySyncCoordinatorOptions = {
 	apply: (job: StoredHistorySyncJob, data: ProcessedHistorySync, signal: AbortSignal) => Promise<void>
 	requestReupload: (job: StoredHistorySyncJob, mediaKey: Uint8Array) => Promise<void>
 	download?: typeof downloadAndProcessHistorySyncNotification
-	onCommitted?: (job: StoredHistorySyncJob) => Promise<void> | void
+	onCommitted?: (job: StoredHistorySyncJob, context: { recovered: boolean }) => Promise<void> | void
 	now?: () => number
 	random?: () => number
 	leaseMs?: number
+	/** @deprecated Retry exhaustion no longer converts transient transport failures into reupload requests. */
 	maxLocalAttempts?: number
 	retentionMs?: number
 	drainTimeoutMs?: number
@@ -63,16 +64,20 @@ const postCommitRecoveryRank = (job: StoredHistorySyncJob): number => {
 const delayToEventLoop = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 
 const errorStatus = (error: unknown): number | undefined => {
-	if (!error || typeof error !== 'object') return undefined
-	const candidate = error as { output?: { statusCode?: unknown }; statusCode?: unknown }
-	const value = candidate.output?.statusCode ?? candidate.statusCode
-	return typeof value === 'number' ? value : undefined
+	try {
+		if (!error || typeof error !== 'object') return undefined
+		const candidate = error as { output?: { statusCode?: unknown }; statusCode?: unknown }
+		const value = candidate.output?.statusCode ?? candidate.statusCode
+		return typeof value === 'number' ? value : undefined
+	} catch {
+		return undefined
+	}
 }
 
 const errorMessage = (error: unknown): string => {
-	if (error instanceof Error) return error.message.slice(0, 512)
 	try {
-		return String(error).slice(0, 512)
+		const value = error instanceof Error ? error.message : error
+		return String(value).slice(0, 512)
 	} catch {
 		return 'unknown history sync error'
 	}
@@ -173,7 +178,6 @@ export class DurableHistorySyncCoordinator {
 	private readonly now: () => number
 	private readonly random: () => number
 	private readonly leaseMs: number
-	private readonly maxLocalAttempts: number
 	private readonly retentionMs: number
 	private readonly drainTimeoutMs: number
 	private readonly prerequisites: HistorySyncPrerequisites
@@ -190,7 +194,6 @@ export class DurableHistorySyncCoordinator {
 		this.now = options.now ?? Date.now
 		this.random = options.random ?? Math.random
 		this.leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS
-		this.maxLocalAttempts = options.maxLocalAttempts ?? 5
 		this.retentionMs = options.retentionMs ?? DEFAULT_RETENTION_MS
 		this.drainTimeoutMs = options.drainTimeoutMs ?? 2_000
 		this.prerequisites = {
@@ -213,13 +216,17 @@ export class DurableHistorySyncCoordinator {
 	async startRecovery(): Promise<void> {
 		await this.options.store.pruneCommitted(this.now() - this.retentionMs)
 		const jobs = await this.options.store.list()
+		for (const job of jobs) {
+			if (job.state === 'committed') this.markPrerequisiteComplete(job)
+		}
+
 		const committed = jobs
-			.filter(job => job.state === 'committed')
+			.filter(job => job.state === 'committed' && !job.postCommitCompletedAt)
 			.sort(
 				(left, right) =>
 					postCommitRecoveryRank(left) - postCommitRecoveryRank(right) || left.chunkOrder - right.chunkOrder
 			)
-		for (const job of committed) await this.runPostCommit(job)
+		for (const job of committed) await this.runPostCommit(job, true)
 
 		for (const job of jobs) {
 			if (job.state !== 'reupload_pending') continue
@@ -280,7 +287,7 @@ export class DurableHistorySyncCoordinator {
 	private nextRetryDelay(jobs: StoredHistorySyncJob[]): number | undefined {
 		const due = jobs
 			.flatMap(job => {
-				if (job.state === 'failed') return [job.nextRetryAt]
+				if (job.state === 'failed' && job.nextRetryAt > this.now()) return [job.nextRetryAt]
 				if (
 					(job.state === 'downloading' || job.state === 'decoded' || job.state === 'applying') &&
 					job.leaseUntil > this.now()
@@ -334,9 +341,10 @@ export class DurableHistorySyncCoordinator {
 		if (phase === 'RECENT' && job.progress === 100) this.prerequisites.recentComplete = true
 	}
 
-	private async runPostCommit(job: StoredHistorySyncJob): Promise<void> {
+	private async runPostCommit(job: StoredHistorySyncJob, recovered: boolean): Promise<void> {
 		try {
-			await this.options.onCommitted?.(job)
+			await this.options.onCommitted?.(job, { recovered })
+			await this.mutateStore(() => this.options.store.markPostCommitCompleted(job.messageId, this.now()))
 		} catch (error) {
 			this.options.logger?.warn(
 				{ error, messageId: job.messageId },
@@ -390,7 +398,7 @@ export class DurableHistorySyncCoordinator {
 			await this.mutateStore(() => this.options.store.commit(job.messageId, this.makeCheckpoint(job)))
 			committed = true
 			this.markPrerequisiteComplete(job)
-			await this.runPostCommit(job)
+			await this.runPostCommit(job, false)
 
 			this.options.logger?.info(
 				{ messageId: job.messageId, syncType: job.syncType, chunkOrder: job.chunkOrder, progress: job.progress },
@@ -408,8 +416,7 @@ export class DurableHistorySyncCoordinator {
 				return
 			}
 
-			const reuploadPending =
-				!this.stopped && !downloaded && canRequestReupload && this.requiresReupload(error, job.attemptCount)
+			const reuploadPending = !this.stopped && !downloaded && canRequestReupload && this.requiresReupload(error)
 			const nextRetryAt = reuploadPending ? 0 : this.now() + this.retryDelay(job.attemptCount)
 			try {
 				await this.mutateStore(() =>
@@ -446,12 +453,12 @@ export class DurableHistorySyncCoordinator {
 		}
 	}
 
-	private requiresReupload(error: unknown, attemptCount: number): boolean {
+	private requiresReupload(error: unknown): boolean {
 		const status = errorStatus(error)
 		if (status === 404 || status === 410) return true
 		const message = errorMessage(error).toLowerCase()
 		if (/hash|hmac|mac mismatch|decrypt|inflate|incorrect data|checksum|corrupt/.test(message)) return true
-		return attemptCount >= this.maxLocalAttempts
+		return false
 	}
 
 	private retryDelay(attemptCount: number): number {
