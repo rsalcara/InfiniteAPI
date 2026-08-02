@@ -211,7 +211,15 @@ describe('DurableHistorySyncCoordinator', () => {
 			chunkOrder: 1,
 			progress: 100
 		})
-		await store.claimNext(Date.now(), 1)
+		expect(
+			(
+				await store.claimNext(Date.now(), 1, {
+					initialComplete: true,
+					recentComplete: true,
+					allowMissingCheckpoint: true
+				})
+			)?.messageId
+		).toBe('RECOVER-1')
 		await store.markState('RECOVER-1', 'applying')
 		await new Promise(resolve => setTimeout(resolve, 3))
 

@@ -106,7 +106,9 @@ describe('durable history sync store across auth backends', () => {
 		try {
 			const first = await useMultiFileAuthState(dir)
 			await first.state.historySync!.enqueue(makeJob('MF-1', 7))
-			await first.state.historySync!.claimNext(Date.now(), 60_000)
+			expect((await first.state.historySync!.claimNext(Date.now(), 60_000, LEGACY_PREREQUISITES))?.messageId).toBe(
+				'MF-1'
+			)
 			await first.state.historySync!.markState('MF-1', 'applying')
 			await first.state.keys.clear?.()
 			expect(await first.state.historySync!.get('MF-1')).toMatchObject({ state: 'applying' })
@@ -124,7 +126,9 @@ describe('durable history sync store across auth backends', () => {
 		try {
 			const first = await useSqliteAuthState({ dbPath })
 			await first.state.historySync!.enqueue(makeJob('SQL-1', 7))
-			await first.state.historySync!.claimNext(Date.now(), 60_000)
+			expect((await first.state.historySync!.claimNext(Date.now(), 60_000, LEGACY_PREREQUISITES))?.messageId).toBe(
+				'SQL-1'
+			)
 			await first.state.historySync!.markState('SQL-1', 'applying')
 			first.close()
 
@@ -141,7 +145,9 @@ describe('durable history sync store across auth backends', () => {
 		try {
 			const first = await useMultiDbSqliteAuthState({ sessionDir: dir })
 			await first.state.historySync!.enqueue(makeJob('MDB-1', 7))
-			await first.state.historySync!.claimNext(Date.now(), 60_000)
+			expect((await first.state.historySync!.claimNext(Date.now(), 60_000, LEGACY_PREREQUISITES))?.messageId).toBe(
+				'MDB-1'
+			)
 			await first.state.historySync!.markState('MDB-1', 'applying')
 			first.close()
 
