@@ -10,6 +10,7 @@ import type { ILogger } from './logger'
  */
 export type MigrateAuthStateResult = {
 	creds: { copied: boolean }
+	historySync: { jobs: number; checkpoints: number; copied: boolean }
 	counts: Partial<Record<keyof SignalDataTypeMap, number>>
 	verified: boolean
 	warnings: string[]
@@ -104,9 +105,20 @@ export async function migrateAuthState({
 
 	const result: MigrateAuthStateResult = {
 		creds: { copied: false },
+		historySync: { jobs: 0, checkpoints: 0, copied: false },
 		counts: {},
 		verified: false,
 		warnings: []
+	}
+	const historySnapshot = from.historySync ? await from.historySync.exportState() : undefined
+	const hasDurableHistoryState = Boolean(
+		historySnapshot &&
+		(historySnapshot.jobs.length > 0 ||
+			historySnapshot.checkpoints.length > 0 ||
+			historySnapshot.compatibilityBaselineConsumed)
+	)
+	if (!to.historySync && hasDurableHistoryState) {
+		throw new Error('migrateAuthState: destination does not support durable history sync state')
 	}
 
 	// 1. Copy creds. `AuthenticationState.creds` is a plain object — `Object.assign`
@@ -118,6 +130,19 @@ export async function migrateAuthState({
 
 	result.creds.copied = true
 	logger?.info('migrateAuthState: creds copied')
+
+	if (historySnapshot && to.historySync) {
+		await to.historySync.importState(historySnapshot)
+		result.historySync = {
+			jobs: historySnapshot.jobs.length,
+			checkpoints: historySnapshot.checkpoints.length,
+			copied: true
+		}
+		logger?.info(
+			{ jobs: historySnapshot.jobs.length, checkpoints: historySnapshot.checkpoints.length },
+			'migrateAuthState: durable history sync state copied'
+		)
+	}
 
 	/**
 	 * Build a single-type `SignalDataSet` payload for `to.keys.set`. The

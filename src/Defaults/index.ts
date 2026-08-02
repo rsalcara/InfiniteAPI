@@ -2,7 +2,7 @@ import { proto } from '../../WAProto/index.js'
 import { makeLibSignalRepository } from '../Signal/libsignal'
 import type { AuthenticationState, SocketConfig, WAVersion } from '../Types'
 import { Browsers } from '../Utils/browser-utils'
-import { WINDOWS_HYBRID_BROWSER } from '../Utils/connection-presets'
+import { parseBaileysBrowserSelection, WINDOWS_HYBRID_BROWSER } from '../Utils/connection-presets'
 import logger from '../Utils/logger'
 // Single source of truth for WhatsApp Web version - imported from JSON
 import baileysVersionData from './baileys-version.json' with { type: 'json' }
@@ -111,24 +111,9 @@ const SIX_HOURS_MS = 6 * 60 * 60 * 1000
  *   'chrome' / 'macos'   → Browsers.macOS('Chrome')
  */
 export const resolveDefaultBrowser = (): [string, string, string] => {
-	const env = process.env.BAILEYS_BROWSER?.trim().toLowerCase()
-	if (!env || env === 'windows' || env === 'win_hybrid' || env === 'desktop') {
-		return [...WINDOWS_HYBRID_BROWSER]
-	}
-
-	if (env === 'chrome' || env === 'macos') {
-		return Browsers.macOS('Chrome')
-	}
-
-	if (env === 'android') {
-		return Browsers.android('14')
-	}
-
-	if (env?.startsWith('android:')) {
-		const apiLevel = env.split(':')[1] || '14'
-		return Browsers.android(apiLevel)
-	}
-
+	const selection = parseBaileysBrowserSelection(process.env.BAILEYS_BROWSER)
+	if (selection?.family === 'macos') return Browsers.macOS('Chrome')
+	if (selection?.family === 'android') return Browsers.android(selection.apiLevel)
 	return [...WINDOWS_HYBRID_BROWSER]
 }
 

@@ -50,9 +50,11 @@ RECENT
 FULL
 ```
 
-The job state and its checkpoint commit in one SQLite transaction. The multifile backend performs the equivalent state update through an atomic file replacement and rolls its in-memory state back if the disk write fails.
+The job state and its checkpoint commit in one SQLite transaction. The multifile backend performs the equivalent state update through an atomic file replacement, flushes the temporary file before rename, flushes the containing directory where the operating system supports it, and rolls its in-memory state back if the disk write fails.
 
-Expired `downloading`, `decoded`, or `applying` leases are reclaimed after a restart. Retained commits reconcile their idempotent credentials/status callback on reconnect, covering a crash between checkpoint commit, event delivery, and an external `saveCreds` call. Committed diagnostic rows are retained for seven days; pending work is never deleted during socket teardown.
+Expired `downloading`, `decoded`, or `applying` leases are reclaimed after a restart. Retained commits reconcile their idempotent credentials callback on reconnect, covering a crash between checkpoint commit, event delivery, and an external `saveCreds` call. A persistent post-commit marker prevents repeating a successful callback on later reconnects. Recovered commits never mark the current connection's `INITIAL`, `RECENT`, or `FULL` stream complete; only chunks processed by that connection may update its live completion flags. Committed diagnostic rows are retained for seven days; pending work is never deleted during socket teardown.
+
+`migrateAuthState` copies jobs, checkpoints, post-commit markers, and compatibility metadata when both source and destination expose durable history storage. It rejects a migration to a destination without that capability when the source contains durable history state. Clearing auth keys for logout, re-pair, or key rotation also clears the durable history state; the multifile backend removes the primary, temporary, and backup queue files so an old session cannot be recovered into a new identity.
 
 ## Live message isolation
 
@@ -87,7 +89,7 @@ sock.ev.on('messaging-history.status', status => {
 
 ## Failure behavior
 
-- Network and CDN failures retry with exponential backoff and jitter.
+- Network and CDN failures retry with exponential backoff and jitter without being converted into a reupload merely because they have failed many times.
 - Corrupt, undecryptable, missing, HTTP 404, or HTTP 410 payloads request reupload from the phone.
 - Failures after a successful download are local failures and never request a remote reupload.
 - A partial mandatory persistence failure prevents checkpoint advancement and is retried idempotently.

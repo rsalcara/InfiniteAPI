@@ -108,7 +108,7 @@ onde credenciais e estado são persistidos. São seletores independentes:
 
 | Preset | Transporte | Identidade |
 |---|---|---|
-| `web_legacy` | Web | navegador Web genérico, histórico reduzido |
+| `web_legacy` | Web | navegador Web genérico; novas seleções usam histórico reduzido |
 | `web_windows_hybrid` | Web | Windows Desktop, WIN_HYBRID e histórico completo |
 | `native_android_consumer` | Android nativo | WhatsApp Messenger / ANDROID |
 | `native_android_business` | Android nativo | WhatsApp Business / SMB_ANDROID |
@@ -131,6 +131,13 @@ INFINITEAPI_CONNECTION_PRESET=web_legacy
 
 Mantém o formato Web genérico e não anuncia os recursos exclusivos do Windows
 híbrido. Pode usar qualquer um dos três backends.
+
+Quando `web_legacy` é escolhido explicitamente para uma sessão nova,
+`syncFullHistory` é `false`. A migração automática de uma sessão Web antiga e
+já registrada preserva tanto o tuple de browser quanto o valor histórico de
+`syncFullHistory` (inclusive `true`) para não mudar a identidade ou o volume de
+sincronização de uma sessão em produção. Essa exceção de compatibilidade fica
+persistida na própria sessão; ela não altera o padrão das novas sessões.
 
 ### Web Windows híbrido — padrão
 
@@ -295,6 +302,11 @@ silencioso de Native Android para Web.
 O utilitário de migração permite copiar o estado entre backends suportados, mas
 a migração deve ocorrer com a sessão parada e ser validada antes de remover a
 origem.
+
+Quando a origem possui history sync durável, a migração também transfere a
+fila pendente, checkpoints, marcadores pós-commit e o marcador de compatibilidade.
+Se o destino não implementar essa capacidade e houver estado durável na origem,
+a migração falha explicitamente em vez de descartar chunks silenciosamente.
 
 No multi-banco:
 

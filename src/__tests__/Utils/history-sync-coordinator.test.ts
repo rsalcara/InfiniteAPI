@@ -31,6 +31,17 @@ const notification = (overrides: proto.Message.IHistorySyncNotification = {}) =>
 		...overrides
 	})
 
+const storedInput = (messageId: string, value = notification()) => ({
+	messageId,
+	sourceMessageId: messageId,
+	messageKey: { id: messageId, remoteJid: '5511@s.whatsapp.net', fromMe: true },
+	messageTimestamp: 1,
+	notification: proto.Message.HistorySyncNotification.encode(value).finish(),
+	syncType: value.syncType ?? 0,
+	chunkOrder: value.chunkOrder ?? 0,
+	progress: value.progress ?? 0
+})
+
 const waitFor = async (predicate: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> => {
 	const deadline = Date.now() + timeoutMs
 	while (!(await predicate())) {
@@ -175,6 +186,71 @@ describe('DurableHistorySyncCoordinator', () => {
 		await coordinator.stop()
 	})
 
+	it('keeps transient downloads locally retryable after the former attempt limit', async () => {
+		const requestReupload = jest.fn(async () => undefined)
+		await store.enqueue(storedInput('TRANSIENT-RETRY'))
+		for (let attempt = 0; attempt < 5; attempt++) {
+			await store.claimNext(1_000, 1, {
+				initialComplete: true,
+				recentComplete: true,
+				allowMissingCheckpoint: true
+			})
+			await store.markFailed('TRANSIENT-RETRY', {
+				error: 'ETIMEDOUT',
+				nextRetryAt: 0,
+				reuploadPending: false
+			})
+		}
+
+		const coordinator = new DurableHistorySyncCoordinator({
+			store,
+			requestOptions: {},
+			download: async () => {
+				throw Object.assign(new Error('socket ETIMEDOUT'), { code: 'ETIMEDOUT' })
+			},
+			apply: async () => undefined,
+			requestReupload,
+			now: () => 1_000,
+			random: () => 0,
+			maxLocalAttempts: 1
+		})
+
+		await coordinator.startRecovery()
+		await waitFor(async () => (await store.get('TRANSIENT-RETRY'))?.attemptCount === 6)
+		expect(await store.get('TRANSIENT-RETRY')).toMatchObject({ state: 'failed', lastError: 'socket ETIMEDOUT' })
+		expect(requestReupload).not.toHaveBeenCalled()
+		await coordinator.stop()
+	})
+
+	it('bounds hostile Error.message getters and still records the failure', async () => {
+		const hostile = new Error('hidden')
+		Object.defineProperty(hostile, 'message', {
+			get: () => {
+				throw new Error('hostile getter')
+			}
+		})
+		const coordinator = new DurableHistorySyncCoordinator({
+			store,
+			requestOptions: {},
+			download: async () => {
+				throw hostile
+			},
+			apply: async () => undefined,
+			requestReupload: async () => undefined,
+			now: () => 1_000,
+			random: () => 0
+		})
+
+		await coordinator.enqueue(
+			{ id: 'HOSTILE-ERROR', remoteJid: '5511@s.whatsapp.net', fromMe: true },
+			1,
+			notification()
+		)
+		await waitFor(async () => (await store.get('HOSTILE-ERROR'))?.state === 'failed')
+		expect(await store.get('HOSTILE-ERROR')).toMatchObject({ lastError: 'unknown history sync error' })
+		await coordinator.stop()
+	})
+
 	it('keeps a corrupt keyless inline bootstrap locally retryable', async () => {
 		const requestReupload = jest.fn(async () => undefined)
 		const coordinator = new DurableHistorySyncCoordinator({
@@ -286,8 +362,9 @@ describe('DurableHistorySyncCoordinator', () => {
 			})
 			await originalCommit(messageId, checkpoint)
 		})
-		const onCommitted = jest.fn(async () => {
+		const onCommitted = jest.fn(async (_job: StoredHistorySyncJob, context: { recovered: boolean }) => {
 			expect(await store.getCheckpoint('RECENT')).toMatchObject({ messageId: 'COMMIT-ORDER' })
+			expect(context).toEqual({ recovered: false })
 		})
 		const coordinator = new DurableHistorySyncCoordinator({
 			store,
@@ -302,8 +379,12 @@ describe('DurableHistorySyncCoordinator', () => {
 		await waitFor(async () => commit.mock.calls.length === 1)
 		expect(onCommitted).not.toHaveBeenCalled()
 		releaseCommit()
-		await waitFor(async () => onCommitted.mock.calls.length === 1)
-		expect(await store.get('COMMIT-ORDER')).toMatchObject({ state: 'committed' })
+		await waitFor(async () => Boolean((await store.get('COMMIT-ORDER'))?.postCommitCompletedAt))
+		expect(onCommitted).toHaveBeenCalledTimes(1)
+		expect(await store.get('COMMIT-ORDER')).toMatchObject({
+			state: 'committed',
+			postCommitCompletedAt: expect.any(Number)
+		})
 		await coordinator.stop()
 	})
 
@@ -346,9 +427,9 @@ describe('DurableHistorySyncCoordinator', () => {
 			messageId: 'POST-COMMIT-RECOVERY',
 			updatedAt: Date.now()
 		})
-		const recovered: string[] = []
-		const onCommitted = jest.fn(async (job: StoredHistorySyncJob) => {
-			recovered.push(job.messageId)
+		const recovered: Array<{ id: string; recovered: boolean }> = []
+		const onCommitted = jest.fn(async (job: StoredHistorySyncJob, context: { recovered: boolean }) => {
+			recovered.push({ id: job.messageId, recovered: context.recovered })
 		})
 		const coordinator = new DurableHistorySyncCoordinator({
 			store,
@@ -361,9 +442,99 @@ describe('DurableHistorySyncCoordinator', () => {
 
 		await coordinator.startRecovery()
 		expect(onCommitted).toHaveBeenCalledTimes(2)
-		expect(recovered).toEqual(['POST-COMMIT-INITIAL', 'POST-COMMIT-RECOVERY'])
+		expect(recovered).toEqual([
+			{ id: 'POST-COMMIT-INITIAL', recovered: true },
+			{ id: 'POST-COMMIT-RECOVERY', recovered: true }
+		])
+		expect(await store.get('POST-COMMIT-INITIAL')).toMatchObject({ postCommitCompletedAt: expect.any(Number) })
+		expect(await store.get('POST-COMMIT-RECOVERY')).toMatchObject({ postCommitCompletedAt: expect.any(Number) })
 		await coordinator.startRecovery()
-		expect(onCommitted).toHaveBeenCalledTimes(4)
+		expect(onCommitted).toHaveBeenCalledTimes(2)
+		await coordinator.stop()
+
+		const reopened = new FileHistorySyncStore(join(dir, 'queue.json'))
+		const afterRestart = jest.fn(async () => undefined)
+		const restarted = new DurableHistorySyncCoordinator({
+			store: reopened,
+			requestOptions: {},
+			download: async () => emptyResult(),
+			apply: async () => undefined,
+			requestReupload: async () => undefined,
+			onCommitted: afterRestart
+		})
+		await restarted.startRecovery()
+		expect(afterRestart).not.toHaveBeenCalled()
+		await restarted.stop()
+	})
+
+	it('advances recovery prerequisites from a legacy commit without replaying current-stream completion', async () => {
+		await store.enqueue(
+			storedInput(
+				'LEGACY-INITIAL',
+				notification({ syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP, chunkOrder: 0 })
+			)
+		)
+		await store.commit('LEGACY-INITIAL')
+		await store.enqueue(storedInput('AFTER-LEGACY-INITIAL', notification({ chunkOrder: 1 })))
+		const onCommitted = jest.fn<(job: StoredHistorySyncJob, context: { recovered: boolean }) => void>()
+		const coordinator = new DurableHistorySyncCoordinator({
+			store,
+			requestOptions: {},
+			download: async () => emptyResult(),
+			apply: async () => undefined,
+			requestReupload: async () => undefined,
+			onCommitted,
+			initialHistorySyncComplete: false,
+			recentHistorySyncComplete: false
+		})
+
+		await coordinator.startRecovery()
+		await waitFor(async () => (await store.get('AFTER-LEGACY-INITIAL'))?.state === 'committed')
+		expect(onCommitted.mock.calls[0]?.[1]).toEqual({ recovered: true })
+		expect(onCommitted.mock.calls[1]?.[1]).toEqual({ recovered: false })
+		await coordinator.stop()
+	})
+
+	it('does not spin on an overdue retry blocked by a predecessor in backoff', async () => {
+		const now = Date.now()
+		await store.enqueue(storedInput('BLOCKED-RECENT'))
+		await store.claimNext(now, 1, {
+			initialComplete: true,
+			recentComplete: true,
+			allowMissingCheckpoint: true
+		})
+		await store.markFailed('BLOCKED-RECENT', { error: 'due', nextRetryAt: 0, reuploadPending: false })
+		await store.enqueue(
+			storedInput(
+				'INITIAL-BACKOFF',
+				notification({ syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP, chunkOrder: 0 })
+			)
+		)
+		await store.claimNext(now, 1, {
+			initialComplete: false,
+			recentComplete: false,
+			allowMissingCheckpoint: false
+		})
+		await store.markFailed('INITIAL-BACKOFF', {
+			error: 'later',
+			nextRetryAt: now + 60_000,
+			reuploadPending: false
+		})
+		const claimNext = jest.spyOn(store, 'claimNext')
+		const coordinator = new DurableHistorySyncCoordinator({
+			store,
+			requestOptions: {},
+			download: async () => emptyResult(),
+			apply: async () => undefined,
+			requestReupload: async () => undefined,
+			initialHistorySyncComplete: false,
+			recentHistorySyncComplete: false
+		})
+
+		await coordinator.startRecovery()
+		await waitFor(async () => claimNext.mock.calls.length > 0)
+		await new Promise(resolve => setTimeout(resolve, 30))
+		expect(claimNext).toHaveBeenCalledTimes(1)
 		await coordinator.stop()
 	})
 

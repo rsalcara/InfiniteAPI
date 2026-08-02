@@ -246,6 +246,12 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 			'SELECT id, value FROM signal_keys WHERE type = ? AND id IN (',
 			')'
 		)
+		const clearAuthKeysAndHistory = db.transaction(() => {
+			stmts.clearKeys.run()
+			db!.exec(
+				'DELETE FROM history_sync_jobs; DELETE FROM history_sync_checkpoints; DELETE FROM history_sync_metadata;'
+			)
+		})
 
 		const loadCreds = (): AuthenticationCreds => {
 			const row = stmts.credsSelect.get(CREDS_ROW_KEY) as { value: string } | undefined
@@ -408,7 +414,7 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 						await runSetWithBusyRetry(data)
 					},
 					clear: async () => {
-						stmts.clearKeys.run()
+						clearAuthKeysAndHistory.immediate()
 					},
 					list: async function* <T extends keyof SignalDataTypeMap>(
 						type: T

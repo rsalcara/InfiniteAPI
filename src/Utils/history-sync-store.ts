@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, stat, unlink, writeFile } from 'fs/promises'
+import { mkdir, open, readFile, rename, stat, unlink } from 'fs/promises'
 import { dirname, resolve } from 'path'
 import { proto } from '../../WAProto/index.js'
 import type {
@@ -9,6 +9,7 @@ import type {
 	HistorySyncJobState,
 	HistorySyncPrerequisites,
 	HistorySyncStore,
+	HistorySyncStoreSnapshot,
 	StoredHistorySyncJob
 } from '../Types'
 import type { SqliteDbLike, SqliteStatementLike } from './multi-db-sqlite/types'
@@ -29,15 +30,17 @@ const sortJobs = (left: StoredHistorySyncJob, right: StoredHistorySyncJob): numb
 type FileState = {
 	jobs: Record<string, StoredHistorySyncJob>
 	checkpoints: Partial<Record<HistorySyncCheckpointPhase, HistorySyncCheckpoint>>
+	compatibilityBaselineConsumed: boolean
 }
 
-const emptyFileState = (): FileState => ({ jobs: {}, checkpoints: {} })
+const emptyFileState = (): FileState => ({ jobs: {}, checkpoints: {}, compatibilityBaselineConsumed: false })
 
 const cloneFileState = (state: FileState): FileState => ({
 	jobs: Object.fromEntries(Object.entries(state.jobs).map(([id, job]) => [id, cloneJob(job)])),
 	checkpoints: Object.fromEntries(
 		Object.entries(state.checkpoints).map(([phase, checkpoint]) => [phase, { ...checkpoint }])
-	) as FileState['checkpoints']
+	) as FileState['checkpoints'],
+	compatibilityBaselineConsumed: state.compatibilityBaselineConsumed
 })
 
 const DEFAULT_PREREQUISITES: HistorySyncPrerequisites = {
@@ -46,22 +49,32 @@ const DEFAULT_PREREQUISITES: HistorySyncPrerequisites = {
 	allowMissingCheckpoint: false
 }
 
+const COMPATIBILITY_BASELINE_KEY = 'compatibility_baseline_consumed'
+
 const fileHistorySyncLocks = makeKeyedMutex()
 type FileStateSource = 'primary' | 'backup' | 'temporary' | 'empty'
 
-const isProtocolEligible = (
+type ProtocolEligibility = { eligible: boolean; consumesCompatibilityBaseline: boolean }
+
+const protocolEligibility = (
 	jobs: StoredHistorySyncJob[],
 	checkpoints: Partial<Record<HistorySyncCheckpointPhase, HistorySyncCheckpoint>>,
 	candidate: StoredHistorySyncJob,
-	prerequisites: HistorySyncPrerequisites
-): boolean => {
+	prerequisites: HistorySyncPrerequisites,
+	compatibilityBaselineConsumed: boolean
+): ProtocolEligibility => {
+	const reject = (): ProtocolEligibility => ({ eligible: false, consumesCompatibilityBaseline: false })
+	const accept = (consumesCompatibilityBaseline = false): ProtocolEligibility => ({
+		eligible: true,
+		consumesCompatibilityBaseline
+	})
 	if (
 		jobs.some(
 			other =>
 				other.syncType === candidate.syncType && other.chunkOrder < candidate.chunkOrder && other.state !== 'committed'
 		)
 	) {
-		return false
+		return reject()
 	}
 
 	let predecessorType: proto.HistorySync.HistorySyncType | undefined
@@ -75,13 +88,13 @@ const isProtocolEligible = (
 		predecessorType !== undefined &&
 		jobs.some(other => other.syncType === predecessorType && other.state !== 'committed')
 	) {
-		return false
+		return reject()
 	}
 
 	// A leased job was already admitted before a crash or local retry. Resume it
 	// when an older installation did not yet have durable phase checkpoints, but
 	// never bypass active same-type or cross-phase predecessors checked above.
-	if (candidate.state !== 'received') return true
+	if (candidate.state !== 'received') return accept()
 
 	const phase =
 		candidate.syncType === proto.HistorySync.HistorySyncType.RECENT
@@ -89,10 +102,10 @@ const isProtocolEligible = (
 			: candidate.syncType === proto.HistorySync.HistorySyncType.FULL
 				? 'FULL'
 				: undefined
-	if (!phase) return true
+	if (!phase) return accept()
 
 	if (phase === 'RECENT' && candidate.chunkOrder === 1 && !prerequisites.initialComplete && !checkpoints.INITIAL) {
-		return false
+		return reject()
 	}
 
 	if (
@@ -101,22 +114,51 @@ const isProtocolEligible = (
 		!prerequisites.recentComplete &&
 		checkpoints.RECENT?.progress !== 100
 	) {
-		return false
+		return reject()
 	}
 
 	if (candidate.chunkOrder > 1) {
 		const checkpoint = checkpoints[phase]
-		if (!checkpoint && !prerequisites.allowMissingCheckpoint) return false
-		if (checkpoint && checkpoint.chunkOrder < candidate.chunkOrder - 1) return false
+		if (!checkpoint) {
+			if (!prerequisites.allowMissingCheckpoint || compatibilityBaselineConsumed) return reject()
+			return accept(true)
+		}
+
+		if (checkpoint.chunkOrder < candidate.chunkOrder - 1) return reject()
 	}
 
-	return true
+	return accept()
 }
 
 const errorCode = (error: unknown): string | undefined => {
 	if (!error || typeof error !== 'object' || !('code' in error)) return undefined
 	const code = (error as { code?: unknown }).code
 	return typeof code === 'string' ? code : undefined
+}
+
+const unlinkIfPresent = async (path: string): Promise<void> => {
+	try {
+		await unlink(path)
+	} catch (error) {
+		if (errorCode(error) !== 'ENOENT') throw error
+	}
+}
+
+const syncDirectory = async (path: string): Promise<void> => {
+	let handle
+	try {
+		handle = await open(path, 'r')
+		await handle.sync()
+	} catch (error) {
+		if (errorCode(error) === 'ENOENT') return
+		// Windows does not expose a portable directory fsync. The temporary
+		// file itself is still flushed before the atomic rename.
+		if (process.platform !== 'win32' || !['EBADF', 'EISDIR', 'EINVAL', 'EPERM'].includes(errorCode(error) ?? '')) {
+			throw error
+		}
+	} finally {
+		await handle?.close()
+	}
 }
 
 /** Atomic JSON implementation used by the supported multifile auth backend. */
@@ -139,7 +181,12 @@ export class FileHistorySyncStore implements HistorySyncStore {
 		for (const [candidate, source] of candidates) {
 			try {
 				const raw = await readFile(candidate, 'utf8')
-				this.state = JSON.parse(raw, BufferJSON.reviver) as FileState
+				const parsed = JSON.parse(raw, BufferJSON.reviver) as Partial<FileState>
+				this.state = {
+					jobs: parsed.jobs ?? {},
+					checkpoints: parsed.checkpoints ?? {},
+					compatibilityBaselineConsumed: parsed.compatibilityBaselineConsumed ?? false
+				}
 				return source
 			} catch (error) {
 				if (errorCode(error) !== 'ENOENT' && firstError === undefined) firstError = error
@@ -152,10 +199,18 @@ export class FileHistorySyncStore implements HistorySyncStore {
 	}
 
 	private async persist(source: FileStateSource): Promise<void> {
-		await mkdir(dirname(this.path), { recursive: true })
+		const directory = dirname(this.path)
+		await mkdir(directory, { recursive: true })
 		const tmp = `${this.path}.tmp`
 		const backup = `${this.path}.bak`
-		await writeFile(tmp, JSON.stringify(this.state, BufferJSON.replacer))
+		const tmpHandle = await open(tmp, 'w')
+		try {
+			await tmpHandle.writeFile(JSON.stringify(this.state, BufferJSON.replacer))
+			await tmpHandle.sync()
+		} finally {
+			await tmpHandle.close()
+		}
+
 		let hasPrimaryFile = false
 		try {
 			hasPrimaryFile = (await stat(this.path)).isFile()
@@ -164,12 +219,7 @@ export class FileHistorySyncStore implements HistorySyncStore {
 		}
 
 		if (source === 'primary' && hasPrimaryFile) {
-			try {
-				await unlink(backup)
-			} catch (error) {
-				if (errorCode(error) !== 'ENOENT') throw error
-			}
-
+			await unlinkIfPresent(backup)
 			await rename(this.path, backup)
 		} else if (hasPrimaryFile) {
 			// The primary was unreadable and load() recovered from .bak/.tmp.
@@ -178,6 +228,7 @@ export class FileHistorySyncStore implements HistorySyncStore {
 		}
 
 		await rename(tmp, this.path)
+		await syncDirectory(directory)
 	}
 
 	private async mutate<T>(work: () => T): Promise<T> {
@@ -231,10 +282,25 @@ export class FileHistorySyncStore implements HistorySyncStore {
 					if (!RUNNABLE_STATES.includes(candidate.state)) return false
 					if (candidate.state === 'failed' && candidate.nextRetryAt > now) return false
 					if (candidate.leaseUntil > now) return false
-					return isProtocolEligible(jobs, this.state.checkpoints, candidate, prerequisites)
+					const result = protocolEligibility(
+						jobs,
+						this.state.checkpoints,
+						candidate,
+						prerequisites,
+						this.state.compatibilityBaselineConsumed
+					)
+					return result.eligible
 				})
 				.sort(sortJobs)[0]
 			if (!job) return null
+			const selectedEligibility = protocolEligibility(
+				jobs,
+				this.state.checkpoints,
+				job,
+				prerequisites,
+				this.state.compatibilityBaselineConsumed
+			)
+			if (selectedEligibility.consumesCompatibilityBaseline) this.state.compatibilityBaselineConsumed = true
 			job.state = 'downloading'
 			job.attemptCount += 1
 			job.leaseUntil = now + leaseMs
@@ -274,6 +340,7 @@ export class FileHistorySyncStore implements HistorySyncStore {
 			job.leaseUntil = 0
 			job.updatedAt = now
 			job.committedAt = now
+			delete job.postCommitCompletedAt
 			if (checkpoint) {
 				const current = this.state.checkpoints[checkpoint.phase]
 				if (
@@ -284,6 +351,18 @@ export class FileHistorySyncStore implements HistorySyncStore {
 					this.state.checkpoints[checkpoint.phase] = { ...checkpoint }
 				}
 			}
+		})
+	}
+
+	async markPostCommitCompleted(messageId: string, completedAt = Date.now()): Promise<void> {
+		await this.mutate(() => {
+			const job = this.state.jobs[messageId]
+			if (!job || job.state !== 'committed') {
+				throw new Error(`history sync committed job not found: ${messageId}`)
+			}
+
+			job.postCommitCompletedAt = completedAt
+			job.updatedAt = completedAt
 		})
 	}
 
@@ -322,6 +401,50 @@ export class FileHistorySyncStore implements HistorySyncStore {
 			return removed
 		})
 	}
+
+	async exportState(): Promise<HistorySyncStoreSnapshot> {
+		return fileHistorySyncLocks.mutex(this.lockKey, async () => {
+			await this.load()
+			return {
+				jobs: Object.values(this.state.jobs).map(cloneJob),
+				checkpoints: Object.values(this.state.checkpoints).map(checkpoint => ({ ...checkpoint })),
+				compatibilityBaselineConsumed: this.state.compatibilityBaselineConsumed
+			}
+		})
+	}
+
+	async importState(snapshot: HistorySyncStoreSnapshot): Promise<void> {
+		await this.mutate(() => {
+			for (const job of snapshot.jobs) {
+				if (!this.state.jobs[job.messageId]) this.state.jobs[job.messageId] = cloneJob(job)
+			}
+
+			for (const checkpoint of snapshot.checkpoints) {
+				const current = this.state.checkpoints[checkpoint.phase]
+				if (
+					!current ||
+					checkpoint.chunkOrder > current.chunkOrder ||
+					(checkpoint.chunkOrder === current.chunkOrder && checkpoint.progress >= current.progress)
+				) {
+					this.state.checkpoints[checkpoint.phase] = { ...checkpoint }
+				}
+			}
+
+			this.state.compatibilityBaselineConsumed ||= snapshot.compatibilityBaselineConsumed
+		})
+	}
+
+	async clear(): Promise<void> {
+		await fileHistorySyncLocks.mutex(this.lockKey, async () => {
+			// Delete recovery candidates before the primary so an interrupted
+			// clear cannot resurrect an old session from .bak or .tmp.
+			await unlinkIfPresent(`${this.path}.bak`)
+			await unlinkIfPresent(`${this.path}.tmp`)
+			await unlinkIfPresent(this.path)
+			this.state = emptyFileState()
+			await syncDirectory(dirname(this.path))
+		})
+	}
 }
 
 const HISTORY_SYNC_SCHEMA = `
@@ -342,6 +465,7 @@ CREATE TABLE IF NOT EXISTS history_sync_jobs (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   committed_at INTEGER,
+  post_commit_completed_at INTEGER,
   reupload_requested_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS history_sync_jobs_runnable_idx
@@ -353,6 +477,10 @@ CREATE TABLE IF NOT EXISTS history_sync_checkpoints (
   progress INTEGER NOT NULL,
   message_id TEXT NOT NULL,
   updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS history_sync_metadata (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 `
 
@@ -373,6 +501,7 @@ type JobRow = {
 	created_at: number
 	updated_at: number
 	committed_at: number | null
+	post_commit_completed_at: number | null
 	reupload_requested_at: number | null
 }
 
@@ -396,9 +525,16 @@ type HistorySyncStatementName =
 	| 'markState'
 	| 'markFailed'
 	| 'markCommitted'
+	| 'markPostCommitCompleted'
 	| 'upsertCheckpoint'
 	| 'getCheckpoint'
 	| 'listCheckpoints'
+	| 'getMetadata'
+	| 'setMetadata'
+	| 'importJob'
+	| 'clearJobs'
+	| 'clearCheckpoints'
+	| 'clearMetadata'
 	| 'prune'
 
 const rowToJob = (row: JobRow): StoredHistorySyncJob => ({
@@ -418,6 +554,7 @@ const rowToJob = (row: JobRow): StoredHistorySyncJob => ({
 	createdAt: row.created_at,
 	updatedAt: row.updated_at,
 	committedAt: row.committed_at ?? undefined,
+	postCommitCompletedAt: row.post_commit_completed_at ?? undefined,
 	reuploadRequestedAt: row.reupload_requested_at ?? undefined
 })
 
@@ -436,6 +573,11 @@ export class SqliteHistorySyncStore implements HistorySyncStore {
 
 	constructor(private readonly db: SqliteDbLike) {
 		db.exec(HISTORY_SYNC_SCHEMA)
+		const jobColumns = db.prepare("PRAGMA table_info('history_sync_jobs')").all() as Array<{ name: string }>
+		if (!jobColumns.some(column => column.name === 'post_commit_completed_at')) {
+			db.exec('ALTER TABLE history_sync_jobs ADD COLUMN post_commit_completed_at INTEGER')
+		}
+
 		this.stmts = {
 			get: db.prepare('SELECT * FROM history_sync_jobs WHERE message_id = ?'),
 			list: db.prepare('SELECT * FROM history_sync_jobs ORDER BY sync_type DESC, chunk_order ASC, created_at ASC'),
@@ -468,7 +610,11 @@ export class SqliteHistorySyncStore implements HistorySyncStore {
 					"WHERE message_id = ? AND state <> 'committed'"
 			),
 			markCommitted: db.prepare(
-				"UPDATE history_sync_jobs SET state = 'committed', lease_until = 0, updated_at = ?, committed_at = ? WHERE message_id = ?"
+				"UPDATE history_sync_jobs SET state = 'committed', lease_until = 0, updated_at = ?, committed_at = ?, " +
+					'post_commit_completed_at = NULL WHERE message_id = ?'
+			),
+			markPostCommitCompleted: db.prepare(
+				"UPDATE history_sync_jobs SET post_commit_completed_at = ?, updated_at = ? WHERE message_id = ? AND state = 'committed'"
 			),
 			upsertCheckpoint: db.prepare(
 				'INSERT INTO history_sync_checkpoints (phase, sync_type, chunk_order, progress, message_id, updated_at) ' +
@@ -480,6 +626,19 @@ export class SqliteHistorySyncStore implements HistorySyncStore {
 			),
 			getCheckpoint: db.prepare('SELECT * FROM history_sync_checkpoints WHERE phase = ?'),
 			listCheckpoints: db.prepare('SELECT * FROM history_sync_checkpoints'),
+			getMetadata: db.prepare('SELECT value FROM history_sync_metadata WHERE key = ?'),
+			setMetadata: db.prepare(
+				'INSERT INTO history_sync_metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+			),
+			importJob: db.prepare(
+				'INSERT INTO history_sync_jobs (message_id, source_message_id, message_key_json, message_timestamp, notification, ' +
+					'sync_type, chunk_order, progress, state, attempt_count, next_retry_at, lease_until, last_error, created_at, ' +
+					'updated_at, committed_at, post_commit_completed_at, reupload_requested_at) ' +
+					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(message_id) DO NOTHING'
+			),
+			clearJobs: db.prepare('DELETE FROM history_sync_jobs'),
+			clearCheckpoints: db.prepare('DELETE FROM history_sync_checkpoints'),
+			clearMetadata: db.prepare('DELETE FROM history_sync_metadata'),
 			prune: db.prepare("DELETE FROM history_sync_jobs WHERE state = 'committed' AND committed_at < ?")
 		}
 	}
@@ -534,9 +693,26 @@ export class SqliteHistorySyncStore implements HistorySyncStore {
 			const checkpoints = Object.fromEntries(
 				(this.stmts.listCheckpoints.all() as CheckpointRow[]).map(row => [row.phase, rowToCheckpoint(row)])
 			) as Partial<Record<HistorySyncCheckpointPhase, HistorySyncCheckpoint>>
-			const row = rows.find(candidate => isProtocolEligible(jobs, checkpoints, rowToJob(candidate), prerequisites))
+			const compatibilityBaselineConsumed =
+				(this.stmts.getMetadata.get(COMPATIBILITY_BASELINE_KEY) as { value: string } | undefined)?.value === 'true'
+			const row = rows.find(
+				candidate =>
+					protocolEligibility(jobs, checkpoints, rowToJob(candidate), prerequisites, compatibilityBaselineConsumed)
+						.eligible
+			)
 			if (!row) return null
 			if (this.stmts.claim.run(now + leaseMs, now, row.message_id, now).changes === 0) return null
+			const selectedEligibility = protocolEligibility(
+				jobs,
+				checkpoints,
+				rowToJob(row),
+				prerequisites,
+				compatibilityBaselineConsumed
+			)
+			if (selectedEligibility.consumesCompatibilityBaseline) {
+				this.stmts.setMetadata.run(COMPATIBILITY_BASELINE_KEY, 'true')
+			}
+
 			return rowToJob(this.stmts.get.get(row.message_id) as JobRow)
 		})
 		return claim.immediate()
@@ -573,6 +749,12 @@ export class SqliteHistorySyncStore implements HistorySyncStore {
 		commit.immediate()
 	}
 
+	async markPostCommitCompleted(messageId: string, completedAt = Date.now()): Promise<void> {
+		if (this.stmts.markPostCommitCompleted.run(completedAt, completedAt, messageId).changes === 0) {
+			throw new Error(`history sync committed job not found: ${messageId}`)
+		}
+	}
+
 	async get(messageId: string): Promise<StoredHistorySyncJob | null> {
 		const row = this.stmts.get.get(messageId) as JobRow | undefined
 		return row ? rowToJob(row) : null
@@ -589,5 +771,66 @@ export class SqliteHistorySyncStore implements HistorySyncStore {
 
 	async pruneCommitted(before: number): Promise<number> {
 		return this.stmts.prune.run(before).changes
+	}
+
+	async exportState(): Promise<HistorySyncStoreSnapshot> {
+		return {
+			jobs: await this.list(),
+			checkpoints: (this.stmts.listCheckpoints.all() as CheckpointRow[]).map(rowToCheckpoint),
+			compatibilityBaselineConsumed:
+				(this.stmts.getMetadata.get(COMPATIBILITY_BASELINE_KEY) as { value: string } | undefined)?.value === 'true'
+		}
+	}
+
+	async importState(snapshot: HistorySyncStoreSnapshot): Promise<void> {
+		const importSnapshot = this.db.transaction(() => {
+			for (const job of snapshot.jobs) {
+				this.stmts.importJob.run(
+					job.messageId,
+					job.sourceMessageId,
+					JSON.stringify(job.messageKey, BufferJSON.replacer),
+					job.messageTimestamp ?? null,
+					Buffer.from(job.notification),
+					job.syncType,
+					job.chunkOrder,
+					job.progress,
+					job.state,
+					job.attemptCount,
+					job.nextRetryAt,
+					job.leaseUntil,
+					job.lastError ?? null,
+					job.createdAt,
+					job.updatedAt,
+					job.committedAt ?? null,
+					job.postCommitCompletedAt ?? null,
+					job.reuploadRequestedAt ?? null
+				)
+			}
+
+			for (const checkpoint of snapshot.checkpoints) {
+				this.stmts.upsertCheckpoint.run(
+					checkpoint.phase,
+					checkpoint.syncType,
+					checkpoint.chunkOrder,
+					checkpoint.progress,
+					checkpoint.messageId,
+					checkpoint.updatedAt
+				)
+			}
+
+			if (snapshot.compatibilityBaselineConsumed) {
+				this.stmts.setMetadata.run(COMPATIBILITY_BASELINE_KEY, 'true')
+			}
+		})
+		importSnapshot.immediate()
+	}
+
+	async clear(): Promise<void> {
+		const clear = this.db.transaction(() => {
+			this.stmts.clearJobs.run()
+			this.stmts.clearCheckpoints.run()
+			this.stmts.clearMetadata.run()
+		})
+		clear.immediate()
 	}
 }

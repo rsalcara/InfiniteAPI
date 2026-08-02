@@ -1,6 +1,7 @@
 import { DEFAULT_CONNECTION_CONFIG, resolveDefaultBrowser } from '../../Defaults'
 import type { ConnectionPreset, SocketConfig } from '../../Types'
 import { initAuthCreds } from '../../Utils/auth-utils'
+import { Browsers } from '../../Utils/browser-utils'
 import { getPairCodeCompanionIdentity, getQrCodeCompanionIdentity } from '../../Utils/companion-reg-client-utils'
 import {
 	hasExplicitBaileysBrowserSelection,
@@ -36,6 +37,27 @@ describe('connection identity presets', () => {
 
 		try {
 			expect(resolveDefaultBrowser()).toEqual(WINDOWS_HYBRID_BROWSER)
+		} finally {
+			if (previous === undefined) delete process.env.BAILEYS_BROWSER
+			else process.env.BAILEYS_BROWSER = previous
+		}
+	})
+
+	it.each([
+		['windows', WINDOWS_HYBRID_BROWSER],
+		['win_hybrid', WINDOWS_HYBRID_BROWSER],
+		['desktop', WINDOWS_HYBRID_BROWSER],
+		['chrome', Browsers.macOS('Chrome')],
+		['macos', Browsers.macOS('Chrome')],
+		['android', Browsers.android('14')],
+		['android:15', Browsers.android('15')]
+	] as const)('uses the same canonical parser for the explicit %s selector', (selector, expected) => {
+		const previous = process.env.BAILEYS_BROWSER
+		process.env.BAILEYS_BROWSER = selector
+
+		try {
+			expect(hasExplicitBaileysBrowserSelection(selector)).toBe(true)
+			expect(resolveDefaultBrowser()).toEqual(expected)
 		} finally {
 			if (previous === undefined) delete process.env.BAILEYS_BROWSER
 			else process.env.BAILEYS_BROWSER = previous
