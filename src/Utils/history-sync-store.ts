@@ -47,6 +47,7 @@ const DEFAULT_PREREQUISITES: HistorySyncPrerequisites = {
 }
 
 const fileHistorySyncLocks = makeKeyedMutex()
+type FileStateSource = 'primary' | 'backup' | 'temporary' | 'empty'
 
 const isProtocolEligible = (
 	jobs: StoredHistorySyncJob[],
@@ -128,13 +129,18 @@ export class FileHistorySyncStore implements HistorySyncStore {
 		this.lockKey = process.platform === 'win32' ? resolved.toLowerCase() : resolved
 	}
 
-	private async load(): Promise<void> {
+	private async load(): Promise<FileStateSource> {
 		let firstError: unknown
-		for (const candidate of [this.path, `${this.path}.bak`, `${this.path}.tmp`]) {
+		const candidates = [
+			[this.path, 'primary'],
+			[`${this.path}.bak`, 'backup'],
+			[`${this.path}.tmp`, 'temporary']
+		] as const
+		for (const [candidate, source] of candidates) {
 			try {
 				const raw = await readFile(candidate, 'utf8')
 				this.state = JSON.parse(raw, BufferJSON.reviver) as FileState
-				return
+				return source
 			} catch (error) {
 				if (errorCode(error) !== 'ENOENT' && firstError === undefined) firstError = error
 			}
@@ -142,9 +148,10 @@ export class FileHistorySyncStore implements HistorySyncStore {
 
 		if (firstError !== undefined) throw firstError
 		this.state = emptyFileState()
+		return 'empty'
 	}
 
-	private async persist(): Promise<void> {
+	private async persist(source: FileStateSource): Promise<void> {
 		await mkdir(dirname(this.path), { recursive: true })
 		const tmp = `${this.path}.tmp`
 		const backup = `${this.path}.bak`
@@ -156,7 +163,7 @@ export class FileHistorySyncStore implements HistorySyncStore {
 			if (errorCode(error) !== 'ENOENT') throw error
 		}
 
-		if (hasPrimaryFile) {
+		if (source === 'primary' && hasPrimaryFile) {
 			try {
 				await unlink(backup)
 			} catch (error) {
@@ -164,6 +171,10 @@ export class FileHistorySyncStore implements HistorySyncStore {
 			}
 
 			await rename(this.path, backup)
+		} else if (hasPrimaryFile) {
+			// The primary was unreadable and load() recovered from .bak/.tmp.
+			// Remove only that bad primary; never rotate it over the known-good backup.
+			await unlink(this.path)
 		}
 
 		await rename(tmp, this.path)
@@ -171,12 +182,12 @@ export class FileHistorySyncStore implements HistorySyncStore {
 
 	private async mutate<T>(work: () => T): Promise<T> {
 		return fileHistorySyncLocks.mutex(this.lockKey, async () => {
-			await this.load()
+			const source = await this.load()
 			const previous = this.state
 			this.state = cloneFileState(previous)
 			try {
 				const result = work()
-				await this.persist()
+				await this.persist(source)
 				return result
 			} catch (error) {
 				this.state = previous

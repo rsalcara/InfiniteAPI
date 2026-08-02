@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rename, rm } from 'fs/promises'
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { proto } from '../../../WAProto/index.js'
@@ -296,6 +296,24 @@ describe('durable history sync store across auth backends', () => {
 
 			await rm(path, { recursive: true, force: true })
 			expect(await recovered.get('BACKUP-ONLY')).toMatchObject({ state: 'received' })
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('does not rotate a corrupt primary over a valid recovered backup', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'history-sync-corrupt-primary-'))
+		try {
+			const path = join(dir, 'queue.json')
+			const first = new FileHistorySyncStore(path)
+			await first.enqueue(makeJob('KNOWN-GOOD'))
+			await rename(path, `${path}.bak`)
+			await writeFile(path, '{corrupt')
+
+			const recovered = new FileHistorySyncStore(path)
+			await recovered.markState('KNOWN-GOOD', 'decoded')
+			expect(await recovered.get('KNOWN-GOOD')).toMatchObject({ state: 'decoded' })
+			expect(JSON.parse(await readFile(`${path}.bak`, 'utf8'))).toBeDefined()
 		} finally {
 			await rm(dir, { recursive: true, force: true })
 		}
