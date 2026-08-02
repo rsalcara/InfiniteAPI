@@ -2,6 +2,19 @@ import type { BinaryNode } from '../WABinary'
 
 export type ConnectionTransportProfile = 'web' | 'native_android'
 
+export type WebConnectionPreset = 'web_legacy' | 'web_windows_hybrid'
+export type NativeAndroidConnectionPreset = 'native_android_consumer' | 'native_android_business'
+export type ConnectionPreset = WebConnectionPreset | NativeAndroidConnectionPreset
+
+/** Durable Web identity selected when the session is first opened. */
+export type PersistedWebTransportIdentity = {
+	schemaVersion: 1
+	profile: 'web'
+	preset: WebConnectionPreset
+	browser: [string, string, string]
+	syncFullHistory: boolean
+}
+
 export type NativeAndroidAppVersion = readonly [number, number, number, number]
 export type NativeAndroidAppVariant = 'business' | 'consumer'
 
@@ -121,6 +134,8 @@ export type NativeAndroidTransportConfig = {
 export type PersistedNativeAndroidIdentity = {
 	schemaVersion: 1
 	profile: 'native_android'
+	/** Explicit runtime preset; inferred once when reopening legacy native sessions. */
+	preset?: NativeAndroidConnectionPreset
 	/** Missing on legacy native sessions, which always used the Business ID. */
 	appVariant?: NativeAndroidAppVariant
 	clientAppId?: string

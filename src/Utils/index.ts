@@ -24,6 +24,7 @@ export * from './message-retry-manager'
 export * from './orphan-queue'
 export * from './browser-utils'
 export * from './companion-reg-client-utils'
+export * from './connection-presets'
 
 // === Identity and Session Management ===
 export * from './contact-picture-identity'
