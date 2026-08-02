@@ -379,6 +379,7 @@ describe('native_android transport contract', () => {
 		const resolved = resolveTransportSession(nativeConfig(), creds)
 		expect(resolved.credsChanged).toBe(true)
 		expect(creds.nativeAndroidIdentity?.device).toEqual(nativeAndroid.device)
+		expect(creds.nativeAndroidIdentity?.preset).toBe('native_android_business')
 
 		expect(() => resolveTransportSession(nativeConfig(), creds)).not.toThrow()
 		const regeneratedDynamicIds = {
@@ -518,6 +519,7 @@ describe('native_android transport contract', () => {
 		})
 		expect(config.appVersion).toEqual([2, 26, 29, 5])
 		expect(creds.nativeAndroidIdentity).toMatchObject({
+			preset: 'native_android_consumer',
 			appVariant: 'consumer',
 			clientAppId: WHATSAPP_MESSENGER_CLIENT_APP_ID,
 			appVersion: [2, 26, 29, 5]
@@ -566,6 +568,7 @@ describe('native_android transport contract', () => {
 		expect(retry.credsChanged).toBe(true)
 		expect(retry.nativeAndroid?.appVariant).toBe('consumer')
 		expect(creds.nativeAndroidIdentity).toMatchObject({
+			preset: 'native_android_consumer',
 			appVariant: 'consumer',
 			clientAppId: WHATSAPP_MESSENGER_CLIENT_APP_ID
 		})
@@ -600,11 +603,13 @@ describe('native_android transport contract', () => {
 		creds.me = { id: '123@s.whatsapp.net', name: 'legacy-native' }
 		delete creds.nativeAndroidIdentity!.appVariant
 		delete creds.nativeAndroidIdentity!.clientAppId
+		delete creds.nativeAndroidIdentity!.preset
 
 		const resolved = resolveTransportSession(nativeConfig(), creds)
 
 		expect(resolved.credsChanged).toBe(true)
 		expect(creds.nativeAndroidIdentity).toMatchObject({
+			preset: 'native_android_business',
 			appVariant: 'business',
 			clientAppId: WABA_CLIENT_APP_ID
 		})

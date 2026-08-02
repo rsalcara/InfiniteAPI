@@ -2,6 +2,7 @@ import { proto } from '../../WAProto/index.js'
 import { makeLibSignalRepository } from '../Signal/libsignal'
 import type { AuthenticationState, SocketConfig, WAVersion } from '../Types'
 import { Browsers } from '../Utils/browser-utils'
+import { WINDOWS_HYBRID_BROWSER } from '../Utils/connection-presets'
 import logger from '../Utils/logger'
 // Single source of truth for WhatsApp Web version - imported from JSON
 import baileysVersionData from './baileys-version.json' with { type: 'json' }
@@ -100,17 +101,27 @@ const SIX_HOURS_MS = 6 * 60 * 60 * 1000
 
 /**
  * Resolves the default browser tuple from the BAILEYS_BROWSER env var.
- * Default: Android companion (SMB_ANDROID) — matches upstream PR #2201.
- * Pair code auto-detects Android and falls back to Chrome in socket.ts.
+ * Default: official Windows hybrid Web companion captured from WhatsApp
+ * Desktop. Existing unmarked sessions are migrated with the previous Android
+ * tuple in Socket/index.ts so upgrading cannot silently change their identity.
  *
- *   unset / 'android'    → Browsers.android('14')
+ *   unset / 'windows'    → Browsers.windows('Desktop')
+ *   'android'            → Browsers.android('14') (explicit legacy override)
  *   'android:15'         → Browsers.android('15')
  *   'chrome' / 'macos'   → Browsers.macOS('Chrome')
  */
 const resolveDefaultBrowser = (): [string, string, string] => {
 	const env = process.env.BAILEYS_BROWSER?.trim().toLowerCase()
+	if (!env || env === 'windows' || env === 'win_hybrid' || env === 'desktop') {
+		return [...WINDOWS_HYBRID_BROWSER]
+	}
+
 	if (env === 'chrome' || env === 'macos') {
 		return Browsers.macOS('Chrome')
+	}
+
+	if (env === 'android') {
+		return Browsers.android('14')
 	}
 
 	if (env?.startsWith('android:')) {
@@ -118,7 +129,7 @@ const resolveDefaultBrowser = (): [string, string, string] => {
 		return Browsers.android(apiLevel)
 	}
 
-	return Browsers.android('14')
+	return Browsers.windows('Desktop')
 }
 
 export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
