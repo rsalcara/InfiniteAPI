@@ -3,6 +3,7 @@ import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDat
 import { initAuthCreds } from '../auth-utils'
 import { generateSignalPubKey } from '../crypto'
 import { BufferJSON } from '../generics'
+import { SqliteHistorySyncStore } from '../history-sync-store'
 import type { ILogger } from '../logger'
 import { makeMutex } from '../make-mutex'
 import { hasPrekeyDirectDistributionIntent } from '../prekey-direct-distribution'
@@ -633,6 +634,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		set creds(value: AuthenticationCreds) {
 			credsRef.current = value
 		},
+		historySync: new SqliteHistorySyncStore(store.handle('sync.db')),
 		keys: {
 			prekeyUploads: sourceOfTruth
 				? {

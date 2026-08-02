@@ -231,6 +231,8 @@ if (!sock.authState.creds.registered) {
 
 ### Receive Full History
 
+Built-in auth-state adapters persist history-sync work before downloading it and resume unfinished chunks after a restart. See [Durable History Sync](docs/HISTORY_SYNC_DURABILITY.md) for backend storage, retry, ordering, event, and recovery guarantees.
+
 1. Set `syncFullHistory` as `true`
 2. Baileys, by default, use chrome browser config
     - If you'd like to emulate a desktop connection (and receive more message history), this browser setting to your Socket config:

@@ -65,14 +65,19 @@ import {
 	type RawSyncdMutation,
 	resolveLidToPn
 } from '../Utils'
+import {
+	AdaptiveHistoryBatchController,
+	DurableHistorySyncCoordinator,
+	markHistorySyncCheckpointComplete
+} from '../Utils/history-sync-coordinator'
 import type { ILogger } from '../Utils/logger'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
+import { encryptHistorySyncRetryRequest } from '../Utils/messages-media'
 import {
 	AppStateBackend,
 	ChatSettingsBackend,
 	type ChatSettingsRow,
 	CompanionDevicesBackend,
-	HistorySyncCompanionBackend,
 	JidMapBackend,
 	LocationBackend,
 	type LocationCacheRow,
@@ -90,7 +95,7 @@ import {
 } from '../Utils/multi-db-sqlite'
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
-import processMessage from '../Utils/process-message'
+import processMessage, { applyProcessedHistorySync, emitProcessedHistorySync } from '../Utils/process-message'
 import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
 import {
 	type BinaryNode,
@@ -176,7 +181,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		onUnexpectedError,
 		sendUnifiedSession,
 		skipOfflineBuffer: socketSkippedOfflineBuffer,
-		registerSocketEndHandler
+		registerSocketEndHandler,
+		registerSocketDrainHandler
 	} = sock
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
@@ -214,9 +220,22 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// In-memory history sync completion tracking (resets on reconnection)
 	const historySyncStatus = {
 		initialBootstrapComplete: false,
-		recentSyncComplete: false
+		recentSyncComplete: false,
+		recentSyncPaused: false,
+		fullSyncComplete: false
 	}
 	let historySyncPausedTimeout: NodeJS.Timeout | undefined
+	const markHistorySyncCommitted = (notification: proto.Message.IHistorySyncNotification): void => {
+		const syncType = notification.syncType as proto.HistorySync.HistorySyncType
+		if (markHistorySyncCheckpointComplete(historySyncStatus, notification)) {
+			if (syncType === proto.HistorySync.HistorySyncType.RECENT) {
+				clearTimeout(historySyncPausedTimeout)
+				historySyncPausedTimeout = undefined
+			}
+
+			ev.emit('messaging-history.status', { syncType, status: 'complete', explicit: true })
+		}
+	}
 
 	// Collections blocked on missing app state sync keys (mirrors WA Web's "Blocked" state).
 	// When a key arrives via APP_STATE_SYNC_KEY_SHARE, these are re-synced.
@@ -232,17 +251,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		'sync.db.app_state',
 		'auth_state_keys',
 		() => new AppStateBackend((config.multiDbStore as any).handle('sync.db'))
-	)
-
-	// Mirrors companion history-sync chunk tracking into `history_sync_companion`
-	// (sync.db) when a multi-db-sqlite store is configured. Best-effort: the
-	// existing download/process flow stays authoritative; the table just tracks
-	// each chunk's lifecycle (insert on notification, mark on process, delete on
-	// consume). Same boundary-cast rationale as appStateBackend above.
-	const historySyncCompanionBackend = initOptionalMirror(
-		'sync.db.history_sync_companion',
-		'legacy_history_sync_flow',
-		() => new HistorySyncCompanionBackend((config.multiDbStore as any).handle('sync.db'))
 	)
 
 	// Mirrors contact events into `wa_contacts` (wa.db) — the canonical mobile
@@ -359,6 +367,56 @@ export const makeChatsSocket = (config: SocketConfig) => {
 						messageStoreBackend
 					)
 			)
+		: undefined
+	const historyBatchController = new AdaptiveHistoryBatchController()
+	const hadProcessedHistory = !!authState.creds.processedHistoryMessages?.length
+	const historySyncCoordinator = authState.historySync
+		? new DurableHistorySyncCoordinator({
+				store: authState.historySync,
+				requestOptions: config.options,
+				logger,
+				initialHistorySyncComplete: hadProcessedHistory,
+				recentHistorySyncComplete: hadProcessedHistory,
+				allowMissingHistoryCheckpoint: hadProcessedHistory,
+				apply: async (job, data, signal) => {
+					const notification = proto.Message.HistorySyncNotification.decode(job.notification)
+					await applyProcessedHistorySync(
+						data,
+						{ signalRepository, logger, messageStoreBackend },
+						historyBatchController,
+						true,
+						signal
+					)
+					emitProcessedHistorySync(data, ev, {
+						isLatest: !authState.creds.processedHistoryMessages?.length,
+						chunkOrder: notification.chunkOrder,
+						peerDataRequestSessionId: notification.peerDataRequestSessionId
+					})
+				},
+				requestReupload: async (job, mediaKey) => {
+					const meId = authState.creds.me?.id
+					if (!meId) throw new Error('cannot request history sync reupload before authentication')
+					await sendNode(encryptHistorySyncRetryRequest(job.messageId, mediaKey, meId))
+				},
+				onCommitted: async job => {
+					const notification = proto.Message.HistorySyncNotification.decode(job.notification)
+					if (notification.syncType !== proto.HistorySync.HistorySyncType.ON_DEMAND) {
+						const alreadyRecorded = authState.creds.processedHistoryMessages?.some(
+							entry => entry.key.id === job.messageKey.id
+						)
+						if (!alreadyRecorded) {
+							ev.emit('creds.update', {
+								processedHistoryMessages: [
+									...(authState.creds.processedHistoryMessages || []),
+									{ key: job.messageKey, messageTimestamp: job.messageTimestamp }
+								]
+							})
+						}
+					}
+
+					markHistorySyncCommitted(notification)
+				}
+			})
 		: undefined
 	const mirrorAppStateVersion = (name: WAPatchName, state: LTHashState, source: 'snapshot' | 'patch'): void => {
 		try {
@@ -1769,41 +1827,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		if (historyMsg && shouldProcessHistoryMsg) {
 			const syncType = historyMsg.syncType as proto.HistorySync.HistorySyncType
 
-			// INITIAL_BOOTSTRAP — fire immediately, no progress check (same as WA Web K function)
-			if (
-				syncType === proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP &&
-				!historySyncStatus.initialBootstrapComplete
-			) {
-				historySyncStatus.initialBootstrapComplete = true
-				ev.emit('messaging-history.status', {
-					syncType,
-					status: 'complete',
-					explicit: true
-				})
-			}
-
-			// RECENT with progress === 100 — explicit completion
-			if (
-				syncType === proto.HistorySync.HistorySyncType.RECENT &&
-				historyMsg.progress === 100 &&
-				!historySyncStatus.recentSyncComplete
-			) {
-				historySyncStatus.recentSyncComplete = true
-				clearTimeout(historySyncPausedTimeout)
-				historySyncPausedTimeout = undefined
-				ev.emit('messaging-history.status', {
-					syncType,
-					status: 'complete',
-					explicit: true
-				})
-			}
-
 			// Reset 120s paused timeout on any RECENT chunk (like WA Web's handleChunkProgress)
 			if (syncType === proto.HistorySync.HistorySyncType.RECENT && !historySyncStatus.recentSyncComplete) {
+				historySyncStatus.recentSyncPaused = false
 				clearTimeout(historySyncPausedTimeout)
 				historySyncPausedTimeout = setTimeout(() => {
-					if (!historySyncStatus.recentSyncComplete) {
-						historySyncStatus.recentSyncComplete = true
+					if (!historySyncStatus.recentSyncComplete && !historySyncStatus.recentSyncPaused) {
+						historySyncStatus.recentSyncPaused = true
 						ev.emit('messaging-history.status', {
 							syncType: proto.HistorySync.HistorySyncType.RECENT,
 							status: 'paused',
@@ -1880,7 +1910,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					messageStoreBackend,
 					mediaBackend,
 					addOnBackend,
-					historySyncCompanionBackend,
+					historySyncCoordinator,
 					receiptBackend: receiptReplayBackend
 				})
 			],
@@ -2015,6 +2045,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	ev.on('connection.update', ({ connection, receivedPendingNotifications }) => {
 		if (connection === 'open') {
 			mirrorOwnDevice()
+			historySyncCoordinator?.startRecovery().catch(error => onUnexpectedError(error, 'durable history sync recovery'))
 
 			if (fireInitQueries) {
 				executeInitQueries().catch(error => onUnexpectedError(error, 'init queries'))
@@ -2040,6 +2071,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		historySyncStatus.initialBootstrapComplete = false
 		historySyncStatus.recentSyncComplete = false
+		historySyncStatus.recentSyncPaused = false
+		historySyncStatus.fullSyncComplete = false
 		clearTimeout(historySyncPausedTimeout)
 		historySyncPausedTimeout = undefined
 
@@ -2306,6 +2339,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	})
 
+	if (historySyncCoordinator) {
+		registerSocketDrainHandler(() => historySyncCoordinator.stop())
+	}
+
 	registerSocketEndHandler(() => {
 		if (awaitingSyncTimeout) {
 			clearTimeout(awaitingSyncTimeout)
@@ -2333,15 +2370,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 
 		orphanQueue.clear()
-		// Wipe any straggler history-sync chunk rows. In normal operation the
-		// `finally` in process-message deletes each row after its download, but a
-		// swallowed delete error (best-effort) could leave one behind — this
-		// closes that gap on teardown, mirroring the retry manager's own clear().
-		try {
-			historySyncCompanionBackend?.clear()
-		} catch (err) {
-			logger.debug({ err }, 'history_sync_companion clear on socket-end failed (non-fatal)')
-		}
 	})
 
 	/**

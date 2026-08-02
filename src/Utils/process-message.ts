@@ -40,11 +40,15 @@ import {
 import { aesDecryptGCM, hmacSign, sha256 } from './crypto'
 import { getKeyAuthor, toNumber } from './generics'
 import { downloadAndProcessHistorySyncNotification } from './history'
+import {
+	AdaptiveHistoryBatchController,
+	type DurableHistorySyncCoordinator,
+	type ProcessedHistorySync
+} from './history-sync-coordinator'
 import type { ILogger } from './logger'
 import {
 	ANDROID_VIEW_ONCE_STATE,
 	type AppStateBackend,
-	type HistorySyncCompanionBackend,
 	isAndroidViewOnceMessageType,
 	LOCATION_OPEN_ENDED_EXPIRES_MS,
 	type LocationBackend,
@@ -90,8 +94,8 @@ type ProcessMessageContext = {
 	mediaBackend?: MessageMediaBackend
 	/** Optional msgstore.db mirror — reactions/polls/locations/vcards attached to a message. */
 	addOnBackend?: MessageAddOnBackend
-	/** Optional sync.db mirror — per-chunk companion history-sync tracking (history_sync_companion). */
-	historySyncCompanionBackend?: HistorySyncCompanionBackend
+	/** Durable admission path. Enqueue returns after persistence; processing runs off the live-message path. */
+	historySyncCoordinator?: Pick<DurableHistorySyncCoordinator, 'enqueue'>
 }
 
 /**
@@ -99,9 +103,13 @@ type ProcessMessageContext = {
  * by live traffic. History events remain available to consumers, but the
  * relational store no longer stays nearly empty after a successful bootstrap.
  */
-const HISTORY_MIRROR_BATCH_SIZE = 128
+const HISTORY_MIRROR_BATCH_SIZE = 50
 
 const yieldHistoryMirror = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
+
+const assertHistoryApplyActive = (signal?: AbortSignal): void => {
+	if (signal?.aborted) throw new Error('history sync apply interrupted by socket teardown')
+}
 
 export const isUnavailableViewOnceMessage = (message: WAMessage): boolean => {
 	if (getContentType(normalizeMessageContent(message.message))) return false
@@ -155,7 +163,9 @@ const mapStickerPackToMirror = (
 export const mirrorHistoryMessagesToStore = async (
 	messages: WAMessage[],
 	messageStoreBackend: MessageStoreBackend,
-	logger?: ILogger
+	logger?: ILogger,
+	batchController = new AdaptiveHistoryBatchController(HISTORY_MIRROR_BATCH_SIZE),
+	signal?: AbortSignal
 ): Promise<{ stored: number; failed: number }> => {
 	let stored = 0
 	let failed = 0
@@ -235,15 +245,98 @@ export const mirrorHistoryMessagesToStore = async (
 		}
 	}
 
-	for (let offset = 0; offset < inputs.length; offset += HISTORY_MIRROR_BATCH_SIZE) {
-		await persistBatch(inputs.slice(offset, offset + HISTORY_MIRROR_BATCH_SIZE))
+	for (let offset = 0; offset < inputs.length; ) {
+		assertHistoryApplyActive(signal)
+		const batchSize = batchController.current()
+		const startedAt = Date.now()
+		await persistBatch(inputs.slice(offset, offset + batchSize))
+		batchController.record(Date.now() - startedAt)
+		offset += batchSize
 		// The official Android client executes history chunks in background
 		// workers. Node has one event loop, so yield between bounded commits to
 		// keep Noise frames, keepalive and close callbacks responsive.
 		await yieldHistoryMirror()
 	}
 
+	assertHistoryApplyActive(signal)
+
 	return { stored, failed }
+}
+
+/** Applies one decoded chunk. The durable coordinator checkpoints only after this resolves. */
+export const applyProcessedHistorySync = async (
+	data: ProcessedHistorySync,
+	context: Pick<ProcessMessageContext, 'signalRepository' | 'logger' | 'messageStoreBackend'>,
+	batchController?: AdaptiveHistoryBatchController,
+	strictPersistence = true,
+	signal?: AbortSignal
+): Promise<void> => {
+	const { messageStoreBackend, signalRepository, logger } = context
+	assertHistoryApplyActive(signal)
+	if (data.lidPnMappings?.length) {
+		let result: Awaited<ReturnType<typeof signalRepository.lidMapping.storeLIDPNMappings>> | undefined
+		try {
+			result = await signalRepository.lidMapping.storeLIDPNMappings(data.lidPnMappings)
+		} catch (error) {
+			if (strictPersistence) throw error
+			logger?.warn({ error }, 'Failed to store LID-PN mappings from history sync')
+		}
+
+		if (result) {
+			logger?.debug(
+				{ stored: result.stored, skipped: result.skipped, errors: result.errors },
+				'stored LID-PN mappings from history sync'
+			)
+			if (strictPersistence && result.errors > 0) {
+				throw new Error(`history sync LID mapping persistence failed for ${result.errors} row(s)`)
+			}
+
+			if (result.stored > 0) {
+				logger?.info({ stored: result.stored }, 'fallback LID mappings are now available from history sync')
+			}
+		}
+	}
+
+	assertHistoryApplyActive(signal)
+	if (messageStoreBackend && data.messages?.length) {
+		const result = await mirrorHistoryMessagesToStore(
+			data.messages,
+			messageStoreBackend,
+			logger,
+			batchController,
+			signal
+		)
+		logger?.info(
+			{ input: data.messages.length, stored: result.stored, failed: result.failed },
+			'multi-db-sqlite: history messages mirrored'
+		)
+		if (strictPersistence && result.failed > 0) {
+			throw new Error(`history sync message persistence failed for ${result.failed} row(s)`)
+		}
+	}
+
+	assertHistoryApplyActive(signal)
+}
+
+/** Emits unchanged consumer events after local apply; a failed checkpoint is replayed at least once. */
+export const emitProcessedHistorySync = (
+	data: ProcessedHistorySync,
+	ev: BaileysEventEmitter,
+	metadata: {
+		isLatest: boolean
+		chunkOrder?: number | null
+		peerDataRequestSessionId?: string | null
+	}
+): void => {
+	if (data.lidPnMappings?.length) ev.emit('lid-mapping.update', data.lidPnMappings)
+	ev.emit('messaging-history.set', {
+		...data,
+		isLatest: data.syncType !== proto.HistorySync.HistorySyncType.ON_DEMAND ? metadata.isLatest : undefined,
+		chunkOrder: metadata.chunkOrder,
+		peerDataRequestSessionId: metadata.peerDataRequestSessionId
+	})
+
+	if (data.messages?.length) recordHistorySyncMessages(data.messages.length)
 }
 
 const REAL_MSG_STUB_TYPES = new Set([
@@ -811,7 +904,7 @@ const processMessage = async (
 		receiptBackend,
 		mediaBackend,
 		addOnBackend,
-		historySyncCompanionBackend
+		historySyncCoordinator
 	}: ProcessMessageContext
 ) => {
 	const meUser = creds.me
@@ -1447,110 +1540,30 @@ const processMessage = async (
 				)
 
 				if (process) {
-					// TODO: investigate
-					if (histNotification.syncType !== proto.HistorySync.HistorySyncType.ON_DEMAND) {
-						ev.emit('creds.update', {
-							processedHistoryMessages: [
-								...(creds.processedHistoryMessages || []),
-								{ key: message.key, messageTimestamp: message.messageTimestamp }
-							]
-						})
-					}
-
-					// Best-effort mirror: record this history-sync chunk in
-					// `history_sync_companion` (sync.db) before the download, mirroring
-					// the mobile INSERT. Keyed by the notification message id. Wrapped
-					// so a mirror failure never blocks the real download/process flow.
-					const histMirrorId = message.key.id ?? undefined
-					// Best-effort drop of the transient tracking row. A named helper
-					// keeps the `finally` below a single call (avoids a 5th nesting
-					// level) and centralizes the swallow-and-log.
-					const dropHistMirror = (id: string | undefined) => {
-						if (!historySyncCompanionBackend || !id) return
-						try {
-							historySyncCompanionBackend.delete(id)
-						} catch (err) {
-							logger?.debug({ err, id }, 'history_sync_companion mirror: delete failed (ignored)')
-						}
-					}
-
-					if (historySyncCompanionBackend && histMirrorId) {
-						try {
-							historySyncCompanionBackend.put({
-								messageId: histMirrorId,
-								syncType: histNotification.syncType ?? 0,
-								chunkOrder: histNotification.chunkOrder ?? 0,
-								mediaKey: histNotification.mediaKey ?? null,
-								mediaHash: histNotification.fileSha256
-									? Buffer.from(histNotification.fileSha256).toString('base64')
-									: '',
-								mediaEncHash: histNotification.fileEncSha256
-									? Buffer.from(histNotification.fileEncSha256).toString('base64')
-									: '',
-								fileSize: histNotification.fileLength ? toNumber(histNotification.fileLength) : 0,
-								directPath: histNotification.directPath ?? '',
-								inlinePayload: histNotification.initialHistBootstrapInlinePayload ?? null
-							})
-						} catch (err) {
-							logger?.debug({ err, id: histMirrorId }, 'history_sync_companion mirror: put failed (ignored)')
-						}
-					}
-
-					let data: Awaited<ReturnType<typeof downloadAndProcessHistorySyncNotification>>
-					try {
-						data = await downloadAndProcessHistorySyncNotification(histNotification, options, logger)
-					} finally {
-						// Drop the tracking row whether the chunk was consumed OR the
-						// download threw — `finally` prevents an orphan row when
-						// `downloadAndProcessHistorySyncNotification` rejects (the delete
-						// used to sit after the await, so a throw skipped it).
-						dropHistMirror(histMirrorId)
-					}
-
-					if (messageStoreBackend && data.messages?.length) {
-						const result = await mirrorHistoryMessagesToStore(data.messages, messageStoreBackend, logger)
-						logger?.info(
-							{ input: data.messages.length, stored: result.stored, failed: result.failed },
-							'multi-db-sqlite: history messages mirrored'
+					if (historySyncCoordinator) {
+						await historySyncCoordinator.enqueue(message.key, message.messageTimestamp, histNotification)
+						logger?.debug(
+							{ id: message.key.id, syncType: histNotification.syncType, chunkOrder: histNotification.chunkOrder },
+							'history sync notification admitted to durable queue'
 						)
-					}
-
-					// Emit LID-PN mappings from history sync
-					// This is how WhatsApp Web learns mappings for chats with non-contacts
-					if (data.lidPnMappings?.length) {
-						logger?.debug({ count: data.lidPnMappings.length }, 'processing LID-PN mappings from history sync')
-
-						try {
-							const result = await signalRepository.lidMapping.storeLIDPNMappings(data.lidPnMappings)
-							logger?.debug(
-								{ stored: result.stored, skipped: result.skipped, errors: result.errors },
-								'stored LID-PN mappings from history sync'
-							)
-							// eslint-disable-next-line max-depth
-							if (result.stored > 0) {
-								logger?.info({ stored: result.stored }, 'fallback LID mappings are now available from history sync')
-							}
-						} catch (error) {
-							logger?.warn({ error }, 'Failed to store LID-PN mappings from history sync')
+					} else {
+						// Compatibility path for custom AuthenticationState implementations
+						// that do not expose the optional durable queue capability.
+						const data = await downloadAndProcessHistorySyncNotification(histNotification, options, logger)
+						await applyProcessedHistorySync(data, { signalRepository, logger, messageStoreBackend }, undefined, false)
+						emitProcessedHistorySync(data, ev, {
+							isLatest,
+							chunkOrder: histNotification.chunkOrder,
+							peerDataRequestSessionId: histNotification.peerDataRequestSessionId
+						})
+						if (histNotification.syncType !== proto.HistorySync.HistorySyncType.ON_DEMAND) {
+							ev.emit('creds.update', {
+								processedHistoryMessages: [
+									...(creds.processedHistoryMessages || []),
+									{ key: message.key, messageTimestamp: message.messageTimestamp }
+								]
+							})
 						}
-
-						// Emit all mappings at once for better performance
-
-						if (data.lidPnMappings.length > 0) {
-							ev.emit('lid-mapping.update', data.lidPnMappings)
-						}
-					}
-
-					ev.emit('messaging-history.set', {
-						...data,
-						isLatest: histNotification.syncType !== proto.HistorySync.HistorySyncType.ON_DEMAND ? isLatest : undefined,
-						chunkOrder: histNotification.chunkOrder,
-						peerDataRequestSessionId: histNotification.peerDataRequestSessionId
-					})
-
-					// Record history sync metrics
-					if (data.messages?.length) {
-						recordHistorySyncMessages(data.messages.length)
 					}
 				}
 
