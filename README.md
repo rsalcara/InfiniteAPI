@@ -231,8 +231,6 @@ if (!sock.authState.creds.registered) {
 
 ### Receive Full History
 
-Built-in auth-state adapters persist history-sync work before downloading it and resume unfinished chunks after a restart. See [Durable History Sync](docs/HISTORY_SYNC_DURABILITY.md) for backend storage, retry, ordering, event, and recovery guarantees.
-
 1. Set `syncFullHistory` as `true`
 2. Baileys, by default, use chrome browser config
     - If you'd like to emulate a desktop connection (and receive more message history), this browser setting to your Socket config:
@@ -1225,6 +1223,13 @@ await sock.sendMessage(
 const bList = await sock.getBroadcastListInfo('1234@broadcast')
 console.log (`list name: ${bList.name}, recps: ${bList.recipients}`)
 ```
+
+## Durable History Sync
+
+Built-in auth-state adapters persist history-sync work before downloading it and
+resume unfinished chunks after a restart. See
+[Durable History Sync](docs/HISTORY_SYNC_DURABILITY.md) for backend storage,
+retry, ordering, event, and recovery guarantees.
 
 ## Writing Custom Functionality
 Baileys is written with custom functionality in mind. Instead of forking the project & re-writing the internals, you can simply write your own extensions.
