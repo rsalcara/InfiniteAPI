@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import type { PersistedNativeAndroidIdentity } from '../../Types'
+import type { PersistedNativeAndroidIdentity, PersistedWebTransportIdentity } from '../../Types'
 import { useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
 import { useMultiFileAuthState } from '../../Utils/use-multi-file-auth-state'
 import { useSqliteAuthState } from '../../Utils/use-sqlite-auth-state'
@@ -9,6 +9,7 @@ import { useSqliteAuthState } from '../../Utils/use-sqlite-auth-state'
 const identity: PersistedNativeAndroidIdentity = {
 	schemaVersion: 1,
 	profile: 'native_android',
+	preset: 'native_android_business',
 	device: {
 		profileId: 'persistence-fixture',
 		manufacturer: 'fixture-manufacturer',
@@ -24,6 +25,14 @@ const identity: PersistedNativeAndroidIdentity = {
 	},
 	connectionLc: 17,
 	serverStaticPublicKey: Buffer.alloc(32, 0x5a)
+}
+
+const webIdentity: PersistedWebTransportIdentity = {
+	schemaVersion: 1,
+	profile: 'web',
+	preset: 'web_windows_hybrid',
+	browser: ['Windows', 'Desktop', '10'],
+	syncFullHistory: true
 }
 
 describe('native_android identity persistence', () => {
@@ -68,6 +77,55 @@ describe('native_android identity persistence', () => {
 
 			const reopened = await useMultiDbSqliteAuthState({ sessionDir: dir })
 			expect(reopened.state.creds.nativeAndroidIdentity).toEqual(identity)
+			reopened.close()
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+})
+
+describe('web transport identity persistence', () => {
+	it('round-trips through the legacy multi-file auth state', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'web-identity-multifile-'))
+		try {
+			const first = await useMultiFileAuthState(dir)
+			first.state.creds.webTransportIdentity = webIdentity
+			await first.saveCreds()
+
+			const reopened = await useMultiFileAuthState(dir)
+			expect(reopened.state.creds.webTransportIdentity).toEqual(webIdentity)
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('round-trips through the monolithic SQLite auth state', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'web-identity-sqlite-'))
+		const dbPath = join(dir, 'auth.db')
+		try {
+			const first = await useSqliteAuthState({ dbPath })
+			first.state.creds.webTransportIdentity = webIdentity
+			await first.saveCreds()
+			first.close()
+
+			const reopened = await useSqliteAuthState({ dbPath })
+			expect(reopened.state.creds.webTransportIdentity).toEqual(webIdentity)
+			reopened.close()
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('round-trips through the multi-database SQLite auth state', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'web-identity-multidb-'))
+		try {
+			const first = await useMultiDbSqliteAuthState({ sessionDir: dir })
+			first.state.creds.webTransportIdentity = webIdentity
+			await first.saveCreds()
+			first.close()
+
+			const reopened = await useMultiDbSqliteAuthState({ sessionDir: dir })
+			expect(reopened.state.creds.webTransportIdentity).toEqual(webIdentity)
 			reopened.close()
 		} finally {
 			await rm(dir, { recursive: true, force: true })

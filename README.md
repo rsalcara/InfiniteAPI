@@ -212,6 +212,9 @@ If the connection is successful, you will see a QR code printed on your terminal
 > [!IMPORTANT]
 > Pairing Code isn't Mobile API, it's a method to connect Whatsapp Web without QR-CODE, you can connect only with one device, see [here](https://faq.whatsapp.com/1324084875126592/?cms_platform=web)
 
+The default Windows hybrid preset keeps Pair Code on the official EDGE `2`
+identity while QR uses UWP `8`. Native Android presets use QR pairing.
+
 The phone number can't have `+` or `()` or `-`, only numbers, you must provide country code
 
 ```ts
@@ -231,18 +234,21 @@ if (!sock.authState.creds.registered) {
 
 ### Receive Full History
 
-1. Set `syncFullHistory` as `true`
-2. Baileys, by default, use chrome browser config
-    - If you'd like to emulate a desktop connection (and receive more message history), this browser setting to your Socket config:
+New sessions default to the captured Windows hybrid identity with
+`syncFullHistory: true`. To configure it explicitly:
 
 ```ts
 const sock = makeWASocket({
     ...otherOpts,
-    // can use Windows, Ubuntu here too
-    browser: Browsers.macOS('Desktop'),
+    browser: Browsers.windows('Desktop'),
     syncFullHistory: true
 })
 ```
+
+Transport identity and auth storage are independent. `multifile`, monolithic
+`sqlite`, and `multidb-sqlite` remain available for every connection preset.
+See [Storage and transport](docs/STORAGE_AND_TRANSPORT.md) for preset selection,
+upgrade behavior, and the complete compatibility matrix.
 
 ## Important Notes About Socket Config
 

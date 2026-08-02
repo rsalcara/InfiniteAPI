@@ -16,11 +16,13 @@ obriga usar Native Android.
 Sem variáveis de ambiente, o resolvedor da biblioteca usa:
 
 ```env
-INFINITEAPI_TRANSPORT=web
+INFINITEAPI_CONNECTION_PRESET=web_windows_hybrid
 INFINITEAPI_AUTH_STORAGE=multi_db_sqlite
 ```
 
-Ou seja: **Web + SQLite multi-banco**.
+Ou seja: **Web Windows híbrido + SQLite multi-banco**. A identidade observada
+no cliente oficial é `WEB / WIN_HYBRID / UWP`, com QR usando UWP `8` e Pair
+Code usando EDGE `2`.
 
 Esse padrão preserva compatibilidade. Native Android só é ativado
 explicitamente e nunca converte uma sessão Web já registrada.
@@ -46,8 +48,10 @@ Características:
 Configuração:
 
 ```env
-INFINITEAPI_AUTH_STORAGE=json
+INFINITEAPI_AUTH_STORAGE=multifile
 ```
+
+O alias histórico `json` continua aceito.
 
 ### SQLite único — mono-banco
 
@@ -90,17 +94,48 @@ Características:
 Configuração:
 
 ```env
-INFINITEAPI_AUTH_STORAGE=multi_db_sqlite
+INFINITEAPI_AUTH_STORAGE=multidb-sqlite
 ```
+
+Os aliases históricos `multi_db_sqlite` e `multidb` continuam aceitos.
 
 ---
 
-## 2. Transportes
+## 2. Perfis de conexão
 
-### Web — padrão estável
+O perfil define a identidade apresentada ao WhatsApp. O backend define somente
+onde credenciais e estado são persistidos. São seletores independentes:
+
+| Preset | Transporte | Identidade |
+|---|---|---|
+| `web_legacy` | Web | navegador Web genérico, histórico reduzido |
+| `web_windows_hybrid` | Web | Windows Desktop, WIN_HYBRID e histórico completo |
+| `native_android_consumer` | Android nativo | WhatsApp Messenger / ANDROID |
+| `native_android_business` | Android nativo | WhatsApp Business / SMB_ANDROID |
+
+Configuração preferencial:
 
 ```env
-INFINITEAPI_TRANSPORT=web
+INFINITEAPI_CONNECTION_PRESET=web_windows_hybrid
+```
+
+`INFINITEAPI_TRANSPORT` e `NATIVE_ANDROID_APP_VARIANT` continuam aceitos para
+compatibilidade. Se forem usados junto com um preset contraditório, a aplicação
+falha com erro explícito em vez de escolher uma identidade silenciosamente.
+
+### Web legado
+
+```env
+INFINITEAPI_CONNECTION_PRESET=web_legacy
+```
+
+Mantém o formato Web genérico e não anuncia os recursos exclusivos do Windows
+híbrido. Pode usar qualquer um dos três backends.
+
+### Web Windows híbrido — padrão
+
+```env
+INFINITEAPI_CONNECTION_PRESET=web_windows_hybrid
 ```
 
 Ou diretamente:
@@ -108,17 +143,24 @@ Ou diretamente:
 ```ts
 makeWASocket({
 	transportProfile: 'web',
+	browser: ['Windows', 'Desktop', '10'],
+	syncFullHistory: true,
 	auth: state
 })
 ```
 
-É o comportamento histórico, estável e o fallback de produção. Funciona com
-JSON, SQLite único e multi-banco.
+Novas sessões usam a identidade capturada do WhatsApp Desktop. Sessões Web
+existentes não são convertidas: o browser, o modo de sync e o preset escolhidos
+são persistidos nas credenciais e reutilizados em cada reconexão.
+
+No QR, o quinto campo anuncia UWP `8`. No Pair Code, a mesma sessão usa EDGE
+`2` em `companion_hello`, pois o servidor rejeita UWP nesse call site. Essa
+diferença é intencional e não altera o backend.
 
 ### Native Android — suportado e opt-in
 
 ```env
-INFINITEAPI_TRANSPORT=native_android
+INFINITEAPI_CONNECTION_PRESET=native_android_business
 ```
 
 O provider Node interno é carregado automaticamente. Opcionalmente, o diretório
@@ -131,13 +173,13 @@ INFINITEAPI_NATIVE_ANDROID_STATE_DIR=./sessions/native-android-attestation
 O consumidor/orquestrador deve escolher a variante antes de criar uma sessão:
 
 ```env
-NATIVE_ANDROID_APP_VARIANT=business
+INFINITEAPI_CONNECTION_PRESET=native_android_business
 ```
 
 ou:
 
 ```env
-NATIVE_ANDROID_APP_VARIANT=consumer
+INFINITEAPI_CONNECTION_PRESET=native_android_consumer
 ```
 
 | Variante | Aplicativo primário | Package | Client app ID |
@@ -157,11 +199,12 @@ reinício `515`, reconexão, mensagens, histórico, persistência e restart.
 
 ## 3. Matriz de combinações
 
-| Transporte | JSON | SQLite único | Multi-DB SQLite |
+| Perfil | Multifile | SQLite único | Multi-DB SQLite |
 |---|---:|---:|---:|
-| Web | Sim | Sim | Sim |
-| Native Android Business | Sim | Sim | Sim |
-| Native Android Consumer | Sim | Sim | Sim |
+| `web_legacy` | Sim | Sim | Sim |
+| `web_windows_hybrid` | Sim | Sim | Sim |
+| `native_android_business` | Sim | Sim | Sim |
+| `native_android_consumer` | Sim | Sim | Sim |
 
 As rotas públicas de envio e os eventos não mudam por causa dessa combinação.
 Uma aplicação chama `sendMessage`, `messages.upsert`, recibos e demais APIs da
@@ -183,8 +226,12 @@ import { resolveInfiniteApiRuntimeProfile } from 'baileys'
 const profile = resolveInfiniteApiRuntimeProfile(process.env)
 
 console.log({
+	preset: profile.connectionPreset,
 	transport: profile.transportProfile,
-	storage: profile.authStorage
+	storage: profile.authStorage,
+	browser: profile.browser,
+	syncFullHistory: profile.syncFullHistory,
+	appVariant: profile.nativeAndroidAppVariant
 })
 ```
 
@@ -193,38 +240,36 @@ Exemplos completos:
 ### Compatibilidade máxima — Web + JSON
 
 ```env
-INFINITEAPI_TRANSPORT=web
-INFINITEAPI_AUTH_STORAGE=json
+INFINITEAPI_CONNECTION_PRESET=web_legacy
+INFINITEAPI_AUTH_STORAGE=multifile
 ```
 
 ### Web + mono-banco
 
 ```env
-INFINITEAPI_TRANSPORT=web
+INFINITEAPI_CONNECTION_PRESET=web_windows_hybrid
 INFINITEAPI_AUTH_STORAGE=sqlite
 ```
 
 ### Padrão — Web + multi-banco
 
 ```env
-INFINITEAPI_TRANSPORT=web
-INFINITEAPI_AUTH_STORAGE=multi_db_sqlite
+INFINITEAPI_CONNECTION_PRESET=web_windows_hybrid
+INFINITEAPI_AUTH_STORAGE=multidb-sqlite
 ```
 
 ### Native Android Business + multi-banco
 
 ```env
-INFINITEAPI_TRANSPORT=native_android
-INFINITEAPI_AUTH_STORAGE=multi_db_sqlite
-NATIVE_ANDROID_APP_VARIANT=business
+INFINITEAPI_CONNECTION_PRESET=native_android_business
+INFINITEAPI_AUTH_STORAGE=multidb-sqlite
 ```
 
 ### Native Android Consumer + multi-banco
 
 ```env
-INFINITEAPI_TRANSPORT=native_android
-INFINITEAPI_AUTH_STORAGE=multi_db_sqlite
-NATIVE_ANDROID_APP_VARIANT=consumer
+INFINITEAPI_CONNECTION_PRESET=native_android_consumer
+INFINITEAPI_AUTH_STORAGE=multidb-sqlite
 ```
 
 Variáveis inválidas falham com erro de configuração acionável; não há fallback
@@ -234,10 +279,10 @@ silencioso de Native Android para Web.
 
 ## 5. Regras de sessão
 
-1. Uma nova sessão escolhe transporte, variante e backend antes do QR.
+1. Uma nova sessão escolhe preset e backend antes do QR.
 2. A identidade completa é persistida.
 3. Reinício ou reconexão reutiliza exatamente a identidade persistida.
-4. Uma sessão Web nunca é convertida automaticamente para Native Android.
+4. Uma sessão Web nunca é convertida automaticamente para outro preset ou Native Android.
 5. Business nunca muda silenciosamente para Consumer, nem o contrário.
 6. O perfil de aparelho não é sorteado novamente enquanto a sessão existir.
 7. Para mudar transporte ou variante, crie uma sessão nova.
@@ -268,9 +313,9 @@ uma sessão Web com identidade diferente.
 
 | Necessidade | Recomendação |
 |---|---|
-| produção conservadora | Web + multi-DB SQLite |
-| compatibilidade com instalação antiga | Web + JSON |
-| um único arquivo local | Web + SQLite único |
+| produção conservadora | `web_windows_hybrid` + multi-DB SQLite |
+| compatibilidade com instalação antiga | `web_legacy` + multifile |
+| um único arquivo local | `web_windows_hybrid` + SQLite único |
 | usar identidade Business nativa | Native Android Business + multi-DB |
 | usar identidade Consumer nativa | Native Android Consumer + multi-DB |
 | consultas relacionais de mensagens/localização | multi-DB SQLite |
