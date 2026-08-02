@@ -1911,6 +1911,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					mediaBackend,
 					addOnBackend,
 					historySyncCoordinator,
+					onHistorySyncCommitted: markHistorySyncCommitted,
 					receiptBackend: receiptReplayBackend
 				})
 			],

@@ -197,6 +197,31 @@ describe('durable history sync store across auth backends', () => {
 		}
 	})
 
+	it('does not let a due retry overtake a lower chunk still in backoff', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'history-sync-retry-order-'))
+		try {
+			const auth = await useMultiFileAuthState(dir)
+			const store = auth.state.historySync!
+			const now = Date.now()
+			await store.enqueue(makeJob('RETRY-2', 2))
+			expect((await store.claimNext(now, 1_000))?.messageId).toBe('RETRY-2')
+			await store.markFailed('RETRY-2', { error: 'retry second', nextRetryAt: 0, reuploadPending: false })
+
+			await store.enqueue(makeJob('RETRY-1', 1))
+			expect((await store.claimNext(now, 1_000))?.messageId).toBe('RETRY-1')
+			await store.markFailed('RETRY-1', {
+				error: 'retry first later',
+				nextRetryAt: now + 60_000,
+				reuploadPending: false
+			})
+
+			expect(await store.claimNext(now, 1_000)).toBeNull()
+			expect(await store.get('RETRY-2')).toMatchObject({ state: 'failed' })
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
 	it('preserves INITIAL -> RECENT -> FULL phase barriers in every built-in backend', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'history-sync-phases-'))
 		try {

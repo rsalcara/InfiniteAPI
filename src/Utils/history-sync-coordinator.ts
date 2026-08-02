@@ -341,10 +341,12 @@ export class DurableHistorySyncCoordinator {
 	private async process(job: StoredHistorySyncJob): Promise<void> {
 		let downloaded = false
 		let committed = false
+		let canRequestReupload = false
 		let forwardParentAbort: (() => void) | undefined
 		this.currentJobId = job.messageId
 		try {
 			const notification = proto.Message.HistorySyncNotification.decode(job.notification)
+			canRequestReupload = Boolean(notification.mediaKey?.length)
 			this.currentAbort = new AbortController()
 			const parentSignal = this.options.requestOptions.signal
 			if (parentSignal?.aborted) {
@@ -389,7 +391,8 @@ export class DurableHistorySyncCoordinator {
 				return
 			}
 
-			const reuploadPending = !this.stopped && !downloaded && this.requiresReupload(error, job.attemptCount)
+			const reuploadPending =
+				!this.stopped && !downloaded && canRequestReupload && this.requiresReupload(error, job.attemptCount)
 			const nextRetryAt = reuploadPending ? 0 : this.now() + this.retryDelay(job.attemptCount)
 			try {
 				await this.mutateStore(() =>

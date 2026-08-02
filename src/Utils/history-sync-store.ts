@@ -52,10 +52,6 @@ const isProtocolEligible = (
 	candidate: StoredHistorySyncJob,
 	prerequisites: HistorySyncPrerequisites
 ): boolean => {
-	// A leased job was already admitted before a crash or local retry. Resume it
-	// even if an older installation did not yet have durable phase checkpoints.
-	if (candidate.state !== 'received') return true
-
 	if (
 		jobs.some(
 			other =>
@@ -78,6 +74,11 @@ const isProtocolEligible = (
 	) {
 		return false
 	}
+
+	// A leased job was already admitted before a crash or local retry. Resume it
+	// when an older installation did not yet have durable phase checkpoints, but
+	// never bypass active same-type or cross-phase predecessors checked above.
+	if (candidate.state !== 'received') return true
 
 	const phase =
 		candidate.syncType === proto.HistorySync.HistorySyncType.RECENT

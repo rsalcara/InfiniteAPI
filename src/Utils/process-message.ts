@@ -96,6 +96,8 @@ type ProcessMessageContext = {
 	addOnBackend?: MessageAddOnBackend
 	/** Durable admission path. Enqueue returns after persistence; processing runs off the live-message path. */
 	historySyncCoordinator?: Pick<DurableHistorySyncCoordinator, 'enqueue'>
+	/** Marks compatibility-path completion after synchronous history apply succeeds. */
+	onHistorySyncCommitted?: (notification: proto.Message.IHistorySyncNotification) => void
 }
 
 /**
@@ -904,7 +906,8 @@ const processMessage = async (
 		receiptBackend,
 		mediaBackend,
 		addOnBackend,
-		historySyncCoordinator
+		historySyncCoordinator,
+		onHistorySyncCommitted
 	}: ProcessMessageContext
 ) => {
 	const meUser = creds.me
@@ -1564,6 +1567,8 @@ const processMessage = async (
 								]
 							})
 						}
+
+						onHistorySyncCommitted?.(histNotification)
 					}
 				}
 

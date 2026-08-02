@@ -175,6 +175,31 @@ describe('DurableHistorySyncCoordinator', () => {
 		await coordinator.stop()
 	})
 
+	it('keeps a corrupt keyless inline bootstrap locally retryable', async () => {
+		const requestReupload = jest.fn(async () => undefined)
+		const coordinator = new DurableHistorySyncCoordinator({
+			store,
+			requestOptions: {},
+			download: async () => {
+				throw new Error('inline inflate corrupt')
+			},
+			apply: async () => undefined,
+			requestReupload,
+			now: () => 1_000,
+			random: () => 0
+		})
+
+		await coordinator.enqueue(
+			{ id: 'INLINE-KEYLESS', remoteJid: '5511@s.whatsapp.net', fromMe: true },
+			1,
+			notification({ mediaKey: undefined, initialHistBootstrapInlinePayload: Buffer.from([1, 2, 3]) })
+		)
+		await waitFor(async () => (await store.get('INLINE-KEYLESS'))?.state === 'failed')
+		expect(requestReupload).not.toHaveBeenCalled()
+		expect(await store.get('INLINE-KEYLESS')).toMatchObject({ state: 'failed', nextRetryAt: 1_500 })
+		await coordinator.stop()
+	})
+
 	it('resumes an expired applying lease after restart and commits once', async () => {
 		await store.enqueue({
 			messageId: 'RECOVER-1',
