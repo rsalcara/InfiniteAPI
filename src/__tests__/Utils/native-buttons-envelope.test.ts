@@ -94,6 +94,22 @@ describe('native button protobuf envelope', () => {
 		expect(decoded.interactiveMessage?.nativeFlowMessage?.messageVersion).toBe(1)
 	})
 
+	it('rejects reply-only sets above the 30-option list limit', async () => {
+		await expect(
+			generateWAMessageContent(
+				{
+					text: 'Choose an option',
+					nativeButtons: Array.from({ length: 31 }, (_, index) => ({
+						type: 'reply' as const,
+						id: `option-${index + 1}`,
+						text: `Option ${index + 1}`
+					}))
+				} as AnyMessageContent,
+				options
+			)
+		).rejects.toThrow('Maximum 30 total rows allowed, got 31')
+	})
+
 	it('encodes CTA buttons as a direct interactiveMessage', async () => {
 		const content = await generateWAMessageContent(
 			{

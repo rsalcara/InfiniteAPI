@@ -790,9 +790,10 @@ export type AnyRegularMessageContent = (
 	| {
 			/**
 			 * Native Flow Buttons - Modern button message format
-			 * Sets of up to three buttons use a direct interactiveMessage for
-			 * companion compatibility. Larger reply-only sets retain the legacy
-			 * buttonsMessage envelope for backward compatibility.
+			 * Sets of up to ten reply buttons use a direct interactiveMessage.
+			 * Reply-only sets with 11-30 options are converted to a single-select
+			 * list so current companion clients can render every option reliably.
+			 * CTA and mixed sets continue to use a direct interactiveMessage.
 			 *
 			 * @example
 			 * ```typescript
