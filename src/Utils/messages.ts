@@ -512,8 +512,8 @@ export const formatNativeFlowButton = (button: NativeButton): NativeFlowButton =
 }
 
 /**
- * Generates a button message using Native Flow format wrapped in viewOnceMessage
- * This is the modern approach for button messages that works on iOS and Android
+ * Generates a button message using Native Flow at the protobuf root.
+ * The direct interactiveMessage envelope is understood by current companion clients.
  *
  * @example
  * ```typescript
@@ -583,14 +583,8 @@ export const generateButtonMessage = async (
 		}
 	}
 
-	// Wrap in viewOnceMessage for Web/Android compatibility
-	// NOTE: messageContextInfo removed - breaks iOS delivery
 	return {
-		viewOnceMessage: {
-			message: {
-				interactiveMessage
-			}
-		}
+		interactiveMessage
 	}
 }
 
@@ -1288,27 +1282,25 @@ export const generateWAMessageContent = async (
 			throw new Boom('nativeButtons requires at least one button', { statusCode: 400 })
 		}
 
-		// Check if ALL buttons are quick_reply (type: 'reply')
+		// Preserve the existing quick-reply cardinality while using the same
+		// direct Native Flow envelope as CTA buttons.
 		const allQuickReply = buttons.every((btn: any) => btn.type === 'reply')
 
 		if (allQuickReply) {
-			// Use legacy buttonsMessage format — works on iOS + Android + Web
-			const hasHeaderTitle = !!nativeMsg.headerTitle
-			const buttonsMessage: proto.Message.IButtonsMessage = {
-				contentText: nativeMsg.text || '',
-				footerText: nativeMsg.footer || undefined,
-				headerType: hasHeaderTitle
-					? proto.Message.ButtonsMessage.HeaderType.TEXT
-					: proto.Message.ButtonsMessage.HeaderType.EMPTY,
-				...(hasHeaderTitle ? { text: nativeMsg.headerTitle } : {})
+			m.interactiveMessage = {
+				body: { text: nativeMsg.text || '' },
+				footer: nativeMsg.footer ? { text: nativeMsg.footer } : undefined,
+				header: {
+					title: nativeMsg.headerTitle || '',
+					hasMediaAttachment: false
+				},
+				nativeFlowMessage: {
+					buttons: buttons.map(formatNativeFlowButton),
+					messageParamsJson: JSON.stringify({}),
+					messageVersion: 2
+				}
 			}
-			buttonsMessage.buttons = buttons.map((btn: any, idx: number) => ({
-				buttonId: btn.id || `btn_${idx}`,
-				buttonText: { displayText: btn.text || `Button ${idx + 1}` },
-				type: proto.Message.ButtonsMessage.Button.Type.RESPONSE
-			}))
-			m.buttonsMessage = buttonsMessage
-			options.logger?.info('Sending quick_reply as legacy buttonsMessage (iOS compatible)')
+			options.logger?.info('Sending quick_reply as direct nativeFlowMessage')
 		} else {
 			// CTA buttons (url, copy, call) — use nativeFlowMessage
 			const buttonOptions: ButtonMessageOptions = {
@@ -1320,8 +1312,8 @@ export const generateWAMessageContent = async (
 				headerVideo: nativeMsg.headerVideo
 			}
 			const generated = await generateButtonMessage(buttonOptions, options)
-			m.viewOnceMessage = generated.viewOnceMessage
-			options.logger?.info('Sending CTA buttons as nativeFlowMessage with viewOnceMessage wrapper')
+			m.interactiveMessage = generated.interactiveMessage
+			options.logger?.info('Sending CTA buttons as direct nativeFlowMessage')
 		}
 	}
 	// Check for nativeCarousel

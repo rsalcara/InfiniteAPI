@@ -787,7 +787,7 @@ export type AnyRegularMessageContent = (
 	| {
 			/**
 			 * Native Flow Buttons - Modern button message format
-			 * Works reliably on iOS and Android with viewOnceMessage wrapper
+			 * Encoded as a direct interactiveMessage for companion compatibility.
 			 *
 			 * @example
 			 * ```typescript
