@@ -81043,6 +81043,7 @@ export const proto = $root.proto = (() => {
         values[valuesById[89] = "WASA_ROOT_SECRET_ACTION"] = 89;
         values[valuesById[90] = "BUBBLE_LOCK_MESSAGE_ACTION"] = 90;
         values[valuesById[91] = "LABEL_SUBLIST_ACTION"] = 91;
+        values[valuesById[92] = "DEVICE_CAPABILITIES_V2"] = 92;
         values[valuesById[10001] = "SHARE_OWN_PN"] = 10001;
         values[valuesById[10002] = "BUSINESS_BROADCAST_ACTION"] = 10002;
         values[valuesById[10003] = "AI_THREAD_DELETE_ACTION"] = 10003;
@@ -91867,6 +91868,7 @@ export const proto = $root.proto = (() => {
         SyncActionValue.prototype.wasaRootSecretAction = null;
         SyncActionValue.prototype.bubbleLockMessageAction = null;
         SyncActionValue.prototype.labelSublistAction = null;
+        SyncActionValue.prototype.deviceCapabilitiesV2 = null;
 
         let $oneOfFields;
 
@@ -92362,6 +92364,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(SyncActionValue.prototype, "_deviceCapabilitiesV2", {
+            get: $util.oneOfGetter($oneOfFields = ["deviceCapabilitiesV2"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         SyncActionValue.create = function create(properties) {
             return new SyncActionValue(properties);
         };
@@ -92533,6 +92541,8 @@ export const proto = $root.proto = (() => {
                 $root.proto.SyncActionValue.BubbleLockMessageAction.encode(m.bubbleLockMessageAction, w.uint32(722).fork()).ldelim();
             if (m.labelSublistAction != null && Object.hasOwnProperty.call(m, "labelSublistAction"))
                 $root.proto.SyncActionValue.LabelSublistAction.encode(m.labelSublistAction, w.uint32(730).fork()).ldelim();
+            if (m.deviceCapabilitiesV2 != null && Object.hasOwnProperty.call(m, "deviceCapabilitiesV2"))
+                $root.proto.DeviceCapabilities.encode(m.deviceCapabilitiesV2, w.uint32(738).fork()).ldelim();
             return w;
         };
 
@@ -92871,6 +92881,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 91: {
                         m.labelSublistAction = $root.proto.SyncActionValue.LabelSublistAction.decode(r, r.uint32());
+                        break;
+                    }
+                case 92: {
+                        m.deviceCapabilitiesV2 = $root.proto.DeviceCapabilities.decode(r, r.uint32());
                         break;
                     }
                 default:
@@ -93300,6 +93314,11 @@ export const proto = $root.proto = (() => {
                     throw TypeError(".proto.SyncActionValue.labelSublistAction: object expected");
                 m.labelSublistAction = $root.proto.SyncActionValue.LabelSublistAction.fromObject(d.labelSublistAction);
             }
+            if (d.deviceCapabilitiesV2 != null) {
+                if (typeof d.deviceCapabilitiesV2 !== "object")
+                    throw TypeError(".proto.SyncActionValue.deviceCapabilitiesV2: object expected");
+                m.deviceCapabilitiesV2 = $root.proto.DeviceCapabilities.fromObject(d.deviceCapabilitiesV2);
+            }
             return m;
         };
 
@@ -93719,6 +93738,11 @@ export const proto = $root.proto = (() => {
                 d.labelSublistAction = $root.proto.SyncActionValue.LabelSublistAction.toObject(m.labelSublistAction, o);
                 if (o.oneofs)
                     d._labelSublistAction = "labelSublistAction";
+            }
+            if (m.deviceCapabilitiesV2 != null && m.hasOwnProperty("deviceCapabilitiesV2")) {
+                d.deviceCapabilitiesV2 = $root.proto.DeviceCapabilities.toObject(m.deviceCapabilitiesV2, o);
+                if (o.oneofs)
+                    d._deviceCapabilitiesV2 = "deviceCapabilitiesV2";
             }
             return d;
         };
@@ -102196,6 +102220,7 @@ export const proto = $root.proto = (() => {
             SettingsSyncAction.prototype.shouldPlaySoundForCallNotification = null;
             SettingsSyncAction.prototype.chatThemeId = null;
             SettingsSyncAction.prototype.colorSchemeId = null;
+            SettingsSyncAction.prototype.stockWallpaperImageId = null;
 
             let $oneOfFields;
 
@@ -102397,6 +102422,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(SettingsSyncAction.prototype, "_stockWallpaperImageId", {
+                get: $util.oneOfGetter($oneOfFields = ["stockWallpaperImageId"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             SettingsSyncAction.create = function create(properties) {
                 return new SettingsSyncAction(properties);
             };
@@ -102470,6 +102501,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(258).string(m.chatThemeId);
                 if (m.colorSchemeId != null && Object.hasOwnProperty.call(m, "colorSchemeId"))
                     w.uint32(266).string(m.colorSchemeId);
+                if (m.stockWallpaperImageId != null && Object.hasOwnProperty.call(m, "stockWallpaperImageId"))
+                    w.uint32(274).string(m.stockWallpaperImageId);
                 return w;
             };
 
@@ -102612,6 +102645,10 @@ export const proto = $root.proto = (() => {
                         }
                     case 33: {
                             m.colorSchemeId = r.string();
+                            break;
+                        }
+                    case 34: {
+                            m.stockWallpaperImageId = r.string();
                             break;
                         }
                     default:
@@ -102783,6 +102820,9 @@ export const proto = $root.proto = (() => {
                 }
                 if (d.colorSchemeId != null) {
                     m.colorSchemeId = String(d.colorSchemeId);
+                }
+                if (d.stockWallpaperImageId != null) {
+                    m.stockWallpaperImageId = String(d.stockWallpaperImageId);
                 }
                 return m;
             };
@@ -102956,6 +102996,11 @@ export const proto = $root.proto = (() => {
                     if (o.oneofs)
                         d._colorSchemeId = "colorSchemeId";
                 }
+                if (m.stockWallpaperImageId != null && m.hasOwnProperty("stockWallpaperImageId")) {
+                    d.stockWallpaperImageId = m.stockWallpaperImageId;
+                    if (o.oneofs)
+                        d._stockWallpaperImageId = "stockWallpaperImageId";
+                }
                 return d;
             };
 
@@ -103023,6 +103068,7 @@ export const proto = $root.proto = (() => {
                 values[valuesById[31] = "SHOULD_PLAY_SOUND_FOR_CALL_NOTIFICATION"] = 31;
                 values[valuesById[32] = "CHAT_THEME_ID"] = 32;
                 values[valuesById[33] = "COLOR_SCHEME_ID"] = 33;
+                values[valuesById[34] = "STOCK_WALLPAPER_IMAGE_ID"] = 34;
                 return values;
             })();
 
