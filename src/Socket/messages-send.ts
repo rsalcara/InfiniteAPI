@@ -1891,9 +1891,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					const hasQuickReply = allButtonNames.some((name: string) => name === 'quick_reply')
 					const isCTAOnly = hasCTA && !hasQuickReply
 
-					// For listMessage (legacy format), use direct <list> tag
-					// This matches the known working implementation
-					if (buttonType === 'list') {
+					// Legacy reply buttons must stay out of the Native Flow routing path.
+					// Current Web/Desktop otherwise rejects large sets as phone_only_feature.
+					if (buttonType === 'buttons') {
+						logger.info(
+							{ msgId, to: destinationJid },
+							'[BIZ NODE] Skipped for legacy reply buttons Web/Desktop compatibility'
+						)
+					} else if (buttonType === 'list') {
 						deferredNodes.push({
 							tag: 'biz',
 							attrs: {},
