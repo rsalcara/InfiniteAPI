@@ -1401,29 +1401,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			if (!jidDecode(participant.jid)) throw new Boom('Invalid participant JID')
 		}
 
-		// WORKAROUND (Stage 2 #2572 — round 3, narrowed in round 4 per cubic P2):
-		// For interactive 1-ON-1 sends (buttons / CTA / list / carousel), DETECT
-		// here and choose between:
-		//  - Outer `transaction(meId)` wrap (default, Stage 2 semantics)
-		//  - NO outer wrap (run body() directly, master-like, full isolation
-		//    from Stage 2 transactWith semantics)
-		//
-		// Round 1 (dcdfc09683): isolate per-device encrypt with useLegacyLock.
-		// Round 2 (7f534d28b4): bypass inner tx wrap entirely for interactives.
-		// Round 3 (bb0ab9653c): also bypass outer transaction(meId) — confirmed
-		//   working in staging 2026-05-25, Web renders interactive messages.
-		// Round 4 (this commit): narrow the gate to 1-on-1 ONLY. Group sends
-		//   still need the outer transaction(meId) because `sender-key-memory`
-		//   does a read-modify-write inside the group branch (line ~1233);
-		//   concurrent group sends without the outer lock would race on that
-		//   bucket per cubic dev review. 1-on-1 interactives never touch
-		//   `sender-key-memory`, so the bypass remains safe there.
-		//
-		// Trade-off: loses transactional atomicity for the interactive 1-on-1
-		// send (session writes commit individually via state.set rather than
-		// batched at outer-tx end). For 1-on-1 interactives the only writes
-		// are per-device session updates inside encrypt — independent records,
-		// no atomicity requirement between them.
+		// Interactive 1-on-1 fanout omits the broad outer meId transaction so
+		// sibling device encryptions can each acquire their own record-scoped
+		// Signal transaction. Group/status sends retain the outer transaction for
+		// sender-key-memory read-modify-write atomicity.
 		const _isInteractiveSendBypass =
 			!isGroup && !isStatus && !isNewsletter && (isCarouselMessage(message) || getButtonType(message) !== undefined)
 
@@ -1727,25 +1708,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				await assertSessions(effectiveAllRecipients)
 
-				// WORKAROUND (Stage 2 #2572 sibling-Promise.all regression — 2026-05-25):
-				// the two createParticipantNodes calls below run in Promise.all, each
-				// fanning out per-device encryption that ALSO uses Promise.all. Stage 2's
-				// transactWith documents this exact pattern as unsafe and it correlates
-				// with recipient devices sending retry receipts ("reg id mismatch on retry
-				// without bundle") for interactive messages (buttons / CTA / list /
-				// carousel), preventing Web rendering. Pass `useLegacyLock: true` so the
-				// per-device encryptMessage calls in this fanout use the master-style
-				// legacy `transaction(work, canonicalJid)` pattern. Non-interactive sends
-				// (text, media, poll, peer) keep transactWith and are unaffected.
-				const isInteractiveFanout = isCarouselFanout || getButtonType(message) !== undefined
-
 				const [
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
 					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
 				] = await Promise.all([
 					// For own devices: use DSM (deviceSentMessage) wrapper
-					createParticipantNodes(effectiveMeRecipients, meMsg || message, extraAttrs, undefined, isInteractiveFanout),
-					createParticipantNodes(effectiveOtherRecipients, message, extraAttrs, undefined, isInteractiveFanout)
+					createParticipantNodes(effectiveMeRecipients, meMsg || message, extraAttrs),
+					createParticipantNodes(effectiveOtherRecipients, message, extraAttrs)
 				])
 				participants.push(...meNodes)
 				participants.push(...otherNodes)
