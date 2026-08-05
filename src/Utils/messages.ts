@@ -511,6 +511,37 @@ export const formatNativeFlowButton = (button: NativeButton): NativeFlowButton =
 	}
 }
 
+const prepareNativeButtonHeader = async (
+	{ headerTitle, headerImage, headerVideo }: Pick<ButtonMessageOptions, 'headerTitle' | 'headerImage' | 'headerVideo'>,
+	mediaOptions?: MessageContentGenerationOptions
+): Promise<proto.Message.InteractiveMessage.IHeader> => {
+	if (headerImage && headerVideo) {
+		throw new Boom('Cannot have both headerImage and headerVideo. Choose one.', { statusCode: 400 })
+	}
+
+	const hasMedia = !!(headerImage || headerVideo)
+	const header: proto.Message.InteractiveMessage.IHeader = {
+		title: hasMedia ? '' : headerTitle || '',
+		hasMediaAttachment: hasMedia
+	}
+
+	if (hasMedia) {
+		if (!mediaOptions) {
+			throw new Boom('mediaOptions required for processing header media', { statusCode: 400 })
+		}
+
+		if (headerImage) {
+			const { imageMessage } = await prepareWAMessageMedia({ image: headerImage }, mediaOptions)
+			header.imageMessage = imageMessage
+		} else if (headerVideo) {
+			const { videoMessage } = await prepareWAMessageMedia({ video: headerVideo }, mediaOptions)
+			header.videoMessage = videoMessage
+		}
+	}
+
+	return header
+}
+
 /**
  * Generates a button message using Native Flow at the protobuf root.
  * The direct interactiveMessage envelope is understood by current companion clients.
@@ -543,33 +574,9 @@ export const generateButtonMessage = async (
 		throw new Boom('Maximum 3 buttons allowed', { statusCode: 400 })
 	}
 
-	// Validate mutual exclusivity of media types
-	if (headerImage && headerVideo) {
-		throw new Boom('Cannot have both headerImage and headerVideo. Choose one.', { statusCode: 400 })
-	}
-
 	// Format buttons to Native Flow format
 	const formattedButtons = buttons.map(formatNativeFlowButton)
-
-	// Determine header configuration
-	const hasMedia = !!(headerImage || headerVideo)
-	const header: proto.Message.InteractiveMessage.IHeader = {
-		title: hasMedia ? '' : headerTitle || '',
-		hasMediaAttachment: hasMedia
-	}
-
-	// Process media if present
-	if (hasMedia && mediaOptions) {
-		if (headerImage) {
-			const { imageMessage } = await prepareWAMessageMedia({ image: headerImage }, mediaOptions)
-			header.imageMessage = imageMessage
-		} else if (headerVideo) {
-			const { videoMessage } = await prepareWAMessageMedia({ video: headerVideo }, mediaOptions)
-			header.videoMessage = videoMessage
-		}
-	} else if (hasMedia && !mediaOptions) {
-		throw new Boom('mediaOptions required for processing header media', { statusCode: 400 })
-	}
+	const header = await prepareNativeButtonHeader({ headerTitle, headerImage, headerVideo }, mediaOptions)
 
 	// Build the interactive message (used for CTA buttons: url, copy, call)
 	const interactiveMessage: proto.Message.IInteractiveMessage = {
@@ -1300,8 +1307,15 @@ export const generateWAMessageContent = async (
 		// Legacy buttonsMessage is no longer delivered to companions, so preserve
 		// larger option sets as a single-select list instead of silently dropping it.
 		const allQuickReply = buttons.every((btn: any) => btn.type === 'reply')
+		const formattedQuickReplies = allQuickReply ? buttons.map(formatNativeFlowButton) : undefined
 
 		if (allQuickReply && buttons.length > MAX_WEB_QUICK_REPLY_BUTTONS) {
+			if (nativeMsg.headerImage || nativeMsg.headerVideo) {
+				throw new Boom('Header media is not supported when more than 10 reply buttons are converted to a list', {
+					statusCode: 400
+				})
+			}
+
 			const sections = Array.from(
 				{ length: Math.ceil(buttons.length / LIST_LIMITS.MAX_ROWS_PER_SECTION) },
 				(_, sectionIndex) => ({
@@ -1311,15 +1325,15 @@ export const generateWAMessageContent = async (
 							sectionIndex * LIST_LIMITS.MAX_ROWS_PER_SECTION,
 							(sectionIndex + 1) * LIST_LIMITS.MAX_ROWS_PER_SECTION
 						)
-						.map((btn: any, rowIndex: number) => {
-							const absoluteIndex = sectionIndex * LIST_LIMITS.MAX_ROWS_PER_SECTION + rowIndex
-							const displayText = String(btn.text || `Option ${absoluteIndex + 1}`)
+						.map((btn: any) => {
+							const displayText = String(btn.text)
 							const title = truncateUtf16(displayText, LIST_LIMITS.MAX_ROW_TITLE)
 
 							return {
-								id: btn.id || `btn_${absoluteIndex}`,
+								id: btn.id,
 								title,
-								description: title === displayText ? undefined : displayText
+								description:
+									title === displayText ? undefined : truncateUtf16(displayText, LIST_LIMITS.MAX_ROW_DESCRIPTION)
 							}
 						})
 				})
@@ -1337,15 +1351,21 @@ export const generateWAMessageContent = async (
 				'Sending oversized quick_reply set as single-select list for Web/Desktop compatibility'
 			)
 		} else if (allQuickReply) {
+			const header = await prepareNativeButtonHeader(
+				{
+					headerTitle: nativeMsg.headerTitle,
+					headerImage: nativeMsg.headerImage,
+					headerVideo: nativeMsg.headerVideo
+				},
+				options
+			)
+
 			m.interactiveMessage = {
 				body: { text: nativeMsg.text || '' },
 				footer: nativeMsg.footer ? { text: nativeMsg.footer } : undefined,
-				header: {
-					title: nativeMsg.headerTitle || '',
-					hasMediaAttachment: false
-				},
+				header,
 				nativeFlowMessage: {
-					buttons: buttons.map(formatNativeFlowButton),
+					buttons: formattedQuickReplies,
 					messageParamsJson: JSON.stringify({}),
 					messageVersion: 1
 				}

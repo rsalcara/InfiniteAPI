@@ -60,11 +60,15 @@ o conjunto para uma lista de seleção única, preservando os IDs e os textos.
 Essa conversão evita que clientes Web/Desktop atuais classifiquem a mensagem
 como `phone_only_feature` e deixem de renderizá-la.
 
-**Campos:** `text`, `footer`, `buttons[{ id, text }]`.
+**Campos:** `text`, `footer`, `buttons[{ id, text }]`, `headerTitle` e, para
+1–10 opções, `headerImage` ou `headerVideo`. `id` e `text` são obrigatórios e
+não podem ser vazios. Mídia de cabeçalho não é aceita quando 11–30 opções exigem
+conversão para lista.
 **Limite:** até **30 opções**. Acima de 30, o envio é rejeitado com erro de
 validação. Com 11 ou mais opções, o destinatário abre um botão como
 `View options`/`Ver opções` para visualizar a lista, em vez de receber todos os
-botões inline.
+botões inline. Nessa conversão, títulos são limitados a 24 caracteres e a
+descrição complementar a 72 caracteres, sem dividir pares UTF-16.
 
 ```bash
 curl -X POST http://localhost:8787/v1/messages/send_buttons_helpers \
