@@ -172,6 +172,44 @@ describe('retry receipt routing parity', () => {
 		expect(manager.getRecentMessage('100000000000001:50@lid', 'SHARED-1')?.message).toBe(original)
 	})
 
+	it('isolates reused custom message ids by destination and fails closed on an ambiguous fallback', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const first = { conversation: 'first chat' } as proto.IMessage
+		const second = { conversation: 'second chat' } as proto.IMessage
+
+		manager.addRecentMessage('5511000000001@s.whatsapp.net', 'REUSED-ID', first)
+		manager.addRecentMessage('5511000000002@s.whatsapp.net', 'REUSED-ID', second)
+
+		expect(manager.getRecentMessage('5511000000001@s.whatsapp.net', 'REUSED-ID')?.message).toBe(first)
+		expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'REUSED-ID')?.message).toBe(second)
+		expect(manager.getRecentMessage('100000000000001:24@lid', 'REUSED-ID')).toBeUndefined()
+	})
+
+	it('rolls back only the failed destination when a custom message id is reused', async () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const first = { conversation: 'first chat' } as proto.IMessage
+		const second = { conversation: 'second chat failed' } as proto.IMessage
+
+		manager.addRecentMessage('5511000000001@s.whatsapp.net', 'REUSED-ID', first)
+		await expect(
+			transmitWithRetryPayload({
+				manager,
+				to: '5511000000002@s.whatsapp.net',
+				id: 'REUSED-ID',
+				message: second,
+				isDirectRetry: false,
+				transmit: async () => {
+					expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'REUSED-ID')?.message).toBe(second)
+					throw new Error('second send failed')
+				}
+			})
+		).rejects.toThrow('second send failed')
+
+		expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'REUSED-ID')).toBeUndefined()
+		expect(manager.getRecentMessage('5511000000001@s.whatsapp.net', 'REUSED-ID')?.message).toBe(first)
+		expect(manager.getRecentMessage('100000000000001:24@lid', 'REUSED-ID')).toBeUndefined()
+	})
+
 	it('keeps live-location transport duration with the recent message', () => {
 		const manager = new MessageRetryManager(silent, 5)
 		const liveLocation = {
