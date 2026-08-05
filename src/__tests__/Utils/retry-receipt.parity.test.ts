@@ -4,7 +4,8 @@ import {
 	MessageRetryManager,
 	parseRetryErrorCode,
 	RetryReason,
-	retryReasonFromDecryptionError
+	retryReasonFromDecryptionError,
+	transmitWithRetryPayload
 } from '../../Utils/message-retry-manager'
 import {
 	hasRetrySendBudget,
@@ -129,25 +130,45 @@ describe('retry receipt routing parity', () => {
 		expect(manager.getRecentMessage('100000000000001:50@lid', 'INTERACTIVE-1')?.message).toBe(interactive)
 	})
 
-	it('discards a payload staged for a stanza that failed before transmission', () => {
+	it('stages before transmission and discards a new payload when transmission fails', async () => {
 		const manager = new MessageRetryManager(silent, 5)
 		const message = { conversation: 'not transmitted' } as proto.IMessage
 
-		manager.addRecentMessage('5511000000002@s.whatsapp.net', 'FAILED-1', message)
-		manager.discardRecentMessage('FAILED-1')
+		await expect(
+			transmitWithRetryPayload({
+				manager,
+				to: '5511000000002@s.whatsapp.net',
+				id: 'FAILED-1',
+				message,
+				isDirectRetry: false,
+				transmit: async () => {
+					expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'FAILED-1')?.message).toBe(message)
+					throw new Error('send failed')
+				}
+			})
+		).rejects.toThrow('send failed')
 
 		expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'FAILED-1')).toBeUndefined()
 	})
 
-	it('does not replace a shared payload when a send-to-all retry is staged', () => {
+	it('preserves a shared payload when a send-to-all retry transmission fails', async () => {
 		const manager = new MessageRetryManager(silent, 5)
 		const original = { conversation: 'original outbound payload' } as proto.IMessage
 		const retry = { conversation: 'retry wrapper must not replace it' } as proto.IMessage
 
 		manager.addRecentMessage('5511000000002@s.whatsapp.net', 'SHARED-1', original)
-		const inserted = manager.stageRecentMessage('5511000000002@s.whatsapp.net', 'SHARED-1', retry)
-
-		expect(inserted).toBe(false)
+		await expect(
+			transmitWithRetryPayload({
+				manager,
+				to: '5511000000002@s.whatsapp.net',
+				id: 'SHARED-1',
+				message: retry,
+				isDirectRetry: false,
+				transmit: async () => {
+					throw new Error('retry broadcast failed')
+				}
+			})
+		).rejects.toThrow('retry broadcast failed')
 		expect(manager.getRecentMessage('100000000000001:50@lid', 'SHARED-1')?.message).toBe(original)
 	})
 

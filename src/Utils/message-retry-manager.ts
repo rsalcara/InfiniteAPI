@@ -131,6 +131,16 @@ export interface RetryStatistics {
 	phoneRequests: number
 }
 
+export interface RetryPayloadTransmissionOptions<T> {
+	manager: MessageRetryManager | null
+	to: string
+	id: string
+	message: proto.IMessage
+	isDirectRetry: boolean
+	liveLocationDuration?: number
+	transmit: () => Promise<T>
+}
+
 /**
  * Minimal structural mirror for the `message_base_key` typed table. Satisfied
  * by `SignalTypedBackend` (its methods accept a superset key). Kept structural
@@ -460,15 +470,14 @@ export class MessageRetryManager {
 		return { proceed: true, count: next }
 	}
 
-	/**
-	 * Mark retry as successful
-	 */
-	markRetrySuccess(messageId: string): void {
-		this.statistics.successfulRetries++
-		// Clean up retry counter for successful message
-		this.retryCounters.delete(messageId)
+	/** Completes state held for an inbound message that now decrypts. */
+	markInboundRetrySuccess(messageId: string): boolean {
 		this.cancelPendingPhoneRequest(messageId)
-		this.removeRecentMessage(messageId)
+		if (!this.retryCounters.has(messageId)) return false
+
+		this.statistics.successfulRetries++
+		this.retryCounters.delete(messageId)
+		return true
 	}
 
 	/**
@@ -610,5 +619,30 @@ export class MessageRetryManager {
 		} catch (err) {
 			this.logger.debug({ err }, 'multi-db-sqlite: unordered_stanza_queue mirror (clear) failed (non-fatal)')
 		}
+	}
+}
+
+/**
+ * Makes an outbound payload retryable before it reaches the wire and rolls
+ * back only the cache entry created by this transmission attempt.
+ */
+export const transmitWithRetryPayload = async <T>({
+	manager,
+	to,
+	id,
+	message,
+	isDirectRetry,
+	liveLocationDuration,
+	transmit
+}: RetryPayloadTransmissionOptions<T>): Promise<T> => {
+	const staged = Boolean(
+		manager && !isDirectRetry && manager.stageRecentMessage(to, id, message, { liveLocationDuration })
+	)
+
+	try {
+		return await transmit()
+	} catch (error) {
+		if (staged) manager?.discardRecentMessage(id)
+		throw error
 	}
 }

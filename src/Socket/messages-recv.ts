@@ -4099,7 +4099,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					})
 				} else {
 					if (messageRetryManager && msg.key.id) {
-						messageRetryManager.cancelPendingPhoneRequest(msg.key.id)
+						messageRetryManager.markInboundRetrySuccess(msg.key.id)
 					}
 
 					// Best-effort: a previously-held stanza's resend just decrypted —

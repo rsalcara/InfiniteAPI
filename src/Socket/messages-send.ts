@@ -48,6 +48,7 @@ import {
 	runDetached,
 	safeCacheSet,
 	toNumber,
+	transmitWithRetryPayload,
 	unixTimestampSeconds,
 	validateLiveLocationSendOptions
 } from '../Utils'
@@ -2298,23 +2299,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// Stage the plaintext before transmission. A companion can return a retry
 			// receipt while sendNode is still awaiting the server ACK; caching after the
 			// await leaves that receipt with no payload to re-encrypt.
-			const stagedForRetry = Boolean(
-				messageRetryManager &&
-				!participant &&
-				messageRetryManager.stageRecentMessage(jidNormalizedUser(destinationJid), msgId, message, {
-					liveLocationDuration
-				})
-			)
-
-			try {
-				await sendNode(stanza)
-			} catch (error) {
-				if (stagedForRetry) {
-					messageRetryManager?.discardRecentMessage(msgId)
-				}
-
-				throw error
-			}
+			await transmitWithRetryPayload({
+				manager: messageRetryManager,
+				to: jidNormalizedUser(destinationJid),
+				id: msgId,
+				message,
+				isDirectRetry: Boolean(participant),
+				liveLocationDuration,
+				transmit: () => sendNode(stanza)
+			})
 
 			// Fire-and-forget: issue our token to the contact (like WA Web's sendTcToken).
 			// Gated only by shouldSendNewTcToken — removed tcTokenBuffer?.length guard so

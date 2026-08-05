@@ -50,7 +50,7 @@ describe('MessageRetryManager — unordered_stanza_queue mirror lifecycle', () =
 		expect(countRows()).toBe(1)
 
 		// Retry resolved → counter deleted → mirror row dropped.
-		mgr.markRetrySuccess('MSG-1')
+		mgr.markInboundRetrySuccess('MSG-1')
 		expect(countRows()).toBe(0)
 	})
 
@@ -80,7 +80,7 @@ describe('MessageRetryManager — unordered_stanza_queue mirror lifecycle', () =
 		const mgr = new MessageRetryManager(silent, 5)
 		expect(() => {
 			mgr.tryIncrement('MSG-X')
-			mgr.markRetrySuccess('MSG-X')
+			mgr.markInboundRetrySuccess('MSG-X')
 			mgr.markRetryFailed('MSG-X')
 			mgr.clear()
 		}).not.toThrow()
