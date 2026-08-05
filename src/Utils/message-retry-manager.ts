@@ -131,6 +131,16 @@ export interface RetryStatistics {
 	phoneRequests: number
 }
 
+export interface RetryPayloadTransmissionOptions<T> {
+	manager: MessageRetryManager | null
+	to: string
+	id: string
+	message: proto.IMessage
+	isDirectRetry: boolean
+	liveLocationDuration?: number
+	transmit: () => Promise<T>
+}
+
 /**
  * Minimal structural mirror for the `message_base_key` typed table. Satisfied
  * by `SignalTypedBackend` (its methods accept a superset key). Kept structural
@@ -299,6 +309,23 @@ export class MessageRetryManager {
 	}
 
 	/**
+	 * Stages an outbound payload only when that message id is not already
+	 * retained. Returns true when this call created the entry, allowing its
+	 * caller to roll back only its own failed transmission attempt.
+	 */
+	stageRecentMessage(
+		to: string,
+		id: string,
+		message: proto.IMessage,
+		metadata?: { liveLocationDuration?: number }
+	): boolean {
+		if (this.getRecentMessage(to, id)) return false
+
+		this.addRecentMessage(to, id, message, metadata)
+		return true
+	}
+
+	/**
 	 * Get a recent message from the cache.
 	 *
 	 * First attempts an exact `to+id` key lookup. If that misses — which happens when
@@ -443,14 +470,32 @@ export class MessageRetryManager {
 		return { proceed: true, count: next }
 	}
 
-	/**
-	 * Mark retry as successful
-	 */
-	markRetrySuccess(messageId: string): void {
-		this.statistics.successfulRetries++
-		// Clean up retry counter for successful message
-		this.retryCounters.delete(messageId)
+	/** Completes state held for an inbound message that now decrypts. */
+	markInboundRetrySuccess(messageId: string): boolean {
 		this.cancelPendingPhoneRequest(messageId)
+		if (!this.retryCounters.has(messageId)) return false
+
+		this.statistics.successfulRetries++
+		this.retryCounters.delete(messageId)
+		return true
+	}
+
+	/**
+	 * Records a successful outbound resend without removing the shared payload.
+	 * A single message is encrypted independently for every companion device, so
+	 * another device can still request its own retry after the first resend.
+	 * The recent-message LRU/TTL remains responsible for eventual cleanup.
+	 */
+	markOutboundRetrySuccess(): void {
+		this.statistics.successfulRetries++
+	}
+
+	/**
+	 * Discards a payload that was staged before transmission when the stanza
+	 * itself could not be sent. Successful sends remain in the TTL-bounded cache
+	 * so every companion device can independently request a retry.
+	 */
+	discardRecentMessage(messageId: string): void {
 		this.removeRecentMessage(messageId)
 	}
 
@@ -574,5 +619,30 @@ export class MessageRetryManager {
 		} catch (err) {
 			this.logger.debug({ err }, 'multi-db-sqlite: unordered_stanza_queue mirror (clear) failed (non-fatal)')
 		}
+	}
+}
+
+/**
+ * Makes an outbound payload retryable before it reaches the wire and rolls
+ * back only the cache entry created by this transmission attempt.
+ */
+export const transmitWithRetryPayload = async <T>({
+	manager,
+	to,
+	id,
+	message,
+	isDirectRetry,
+	liveLocationDuration,
+	transmit
+}: RetryPayloadTransmissionOptions<T>): Promise<T> => {
+	const staged = Boolean(
+		manager && !isDirectRetry && manager.stageRecentMessage(to, id, message, { liveLocationDuration })
+	)
+
+	try {
+		return await transmit()
+	} catch (error) {
+		if (staged) manager?.discardRecentMessage(id)
+		throw error
 	}
 }

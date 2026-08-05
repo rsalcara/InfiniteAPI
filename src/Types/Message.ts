@@ -451,7 +451,10 @@ export type ButtonMessageOptions = {
 	headerImage?: WAMediaUpload
 	/** Header video (optional) */
 	headerVideo?: WAMediaUpload
-	/** Message version (default: 2) */
+	/**
+	 * @deprecated Retained for source compatibility. Native Flow buttons use
+	 * protocol version 1 because current companion clients reject version 2.
+	 */
 	messageVersion?: number
 }
 
@@ -787,7 +790,10 @@ export type AnyRegularMessageContent = (
 	| {
 			/**
 			 * Native Flow Buttons - Modern button message format
-			 * Works reliably on iOS and Android with viewOnceMessage wrapper
+			 * Sets of up to ten reply buttons use a direct interactiveMessage.
+			 * Reply-only sets with 11-30 options are converted to a single-select
+			 * list so current companion clients can render every option reliably.
+			 * CTA and mixed sets continue to use a direct interactiveMessage.
 			 *
 			 * @example
 			 * ```typescript
