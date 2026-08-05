@@ -3263,6 +3263,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			liveLocationDurations.push(liveLocationDuration)
 		}
 
+		const availableIds = ids.filter((id, index) => Boolean(id && msgs[index]))
+		if (availableIds.length === 0) {
+			logger.warn(
+				{ jid: remoteJid, ids, participant },
+				'retry receipt ignored because the outbound message payload is unavailable'
+			)
+			return
+		}
+
 		let hasRetryableMessage = false
 		for (let i = 0; i < ids.length; i++) {
 			const id = ids[i]
@@ -3274,8 +3283,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		if (!hasRetryableMessage) {
 			logger.info(
-				{ jid: remoteJid, ids, participant },
-				'retry receipt ignored before session preparation because no message has retry budget'
+				{ jid: remoteJid, ids: availableIds, participant },
+				'retry receipt ignored because all available messages exhausted their per-device retry budget'
 			)
 			return
 		}
@@ -3390,7 +3399,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 
 				await relayMessage(remoteJid, msg, msgRelayOpts)
-				messageRetryManager?.markRetrySuccess(ids[i])
+				// A successful direct resend only repairs this participant's Signal
+				// session. Keep the shared payload available because another linked
+				// device can request a retry for the same message id milliseconds later.
+				messageRetryManager?.markOutboundRetrySuccess()
 			} else {
 				logger.debug({ jid: key.remoteJid, id: ids[i] }, 'recv retry request, but message not available')
 			}
@@ -4087,7 +4099,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					})
 				} else {
 					if (messageRetryManager && msg.key.id) {
-						messageRetryManager.cancelPendingPhoneRequest(msg.key.id)
+						messageRetryManager.markInboundRetrySuccess(msg.key.id)
 					}
 
 					// Best-effort: a previously-held stanza's resend just decrypted —

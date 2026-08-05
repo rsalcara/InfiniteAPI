@@ -48,6 +48,7 @@ import {
 	runDetached,
 	safeCacheSet,
 	toNumber,
+	transmitWithRetryPayload,
 	unixTimestampSeconds,
 	validateLiveLocationSendOptions
 } from '../Utils'
@@ -1401,29 +1402,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			if (!jidDecode(participant.jid)) throw new Boom('Invalid participant JID')
 		}
 
-		// WORKAROUND (Stage 2 #2572 — round 3, narrowed in round 4 per cubic P2):
-		// For interactive 1-ON-1 sends (buttons / CTA / list / carousel), DETECT
-		// here and choose between:
-		//  - Outer `transaction(meId)` wrap (default, Stage 2 semantics)
-		//  - NO outer wrap (run body() directly, master-like, full isolation
-		//    from Stage 2 transactWith semantics)
-		//
-		// Round 1 (dcdfc09683): isolate per-device encrypt with useLegacyLock.
-		// Round 2 (7f534d28b4): bypass inner tx wrap entirely for interactives.
-		// Round 3 (bb0ab9653c): also bypass outer transaction(meId) — confirmed
-		//   working in staging 2026-05-25, Web renders interactive messages.
-		// Round 4 (this commit): narrow the gate to 1-on-1 ONLY. Group sends
-		//   still need the outer transaction(meId) because `sender-key-memory`
-		//   does a read-modify-write inside the group branch (line ~1233);
-		//   concurrent group sends without the outer lock would race on that
-		//   bucket per cubic dev review. 1-on-1 interactives never touch
-		//   `sender-key-memory`, so the bypass remains safe there.
-		//
-		// Trade-off: loses transactional atomicity for the interactive 1-on-1
-		// send (session writes commit individually via state.set rather than
-		// batched at outer-tx end). For 1-on-1 interactives the only writes
-		// are per-device session updates inside encrypt — independent records,
-		// no atomicity requirement between them.
+		// Interactive 1-on-1 fanout omits the broad outer meId transaction so
+		// sibling device encryptions can each acquire their own record-scoped
+		// Signal transaction. Group/status sends retain the outer transaction for
+		// sender-key-memory read-modify-write atomicity.
 		const _isInteractiveSendBypass =
 			!isGroup && !isStatus && !isNewsletter && (isCarouselMessage(message) || getButtonType(message) !== undefined)
 
@@ -1727,25 +1709,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				await assertSessions(effectiveAllRecipients)
 
-				// WORKAROUND (Stage 2 #2572 sibling-Promise.all regression — 2026-05-25):
-				// the two createParticipantNodes calls below run in Promise.all, each
-				// fanning out per-device encryption that ALSO uses Promise.all. Stage 2's
-				// transactWith documents this exact pattern as unsafe and it correlates
-				// with recipient devices sending retry receipts ("reg id mismatch on retry
-				// without bundle") for interactive messages (buttons / CTA / list /
-				// carousel), preventing Web rendering. Pass `useLegacyLock: true` so the
-				// per-device encryptMessage calls in this fanout use the master-style
-				// legacy `transaction(work, canonicalJid)` pattern. Non-interactive sends
-				// (text, media, poll, peer) keep transactWith and are unaffected.
-				const isInteractiveFanout = isCarouselFanout || getButtonType(message) !== undefined
-
 				const [
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
 					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
 				] = await Promise.all([
 					// For own devices: use DSM (deviceSentMessage) wrapper
-					createParticipantNodes(effectiveMeRecipients, meMsg || message, extraAttrs, undefined, isInteractiveFanout),
-					createParticipantNodes(effectiveOtherRecipients, message, extraAttrs, undefined, isInteractiveFanout)
+					createParticipantNodes(effectiveMeRecipients, meMsg || message, extraAttrs),
+					createParticipantNodes(effectiveOtherRecipients, message, extraAttrs)
 				])
 				participants.push(...meNodes)
 				participants.push(...otherNodes)
@@ -1921,9 +1891,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					const hasQuickReply = allButtonNames.some((name: string) => name === 'quick_reply')
 					const isCTAOnly = hasCTA && !hasQuickReply
 
-					// For listMessage (legacy format), use direct <list> tag
-					// This matches the known working implementation
-					if (buttonType === 'list') {
+					// Legacy reply buttons must stay out of the Native Flow routing path.
+					// Current Web/Desktop otherwise rejects large sets as phone_only_feature.
+					if (buttonType === 'buttons') {
+						logger.info(
+							{ msgId, to: destinationJid },
+							'[BIZ NODE] Skipped for legacy reply buttons Web/Desktop compatibility'
+						)
+					} else if (buttonType === 'list') {
 						deferredNodes.push({
 							tag: 'biz',
 							attrs: {},
@@ -2005,31 +1980,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						})
 					}
 
-					// Bot node — required for WhatsApp Web/Desktop to render interactive
-					// messages in 1:1 chats (private user chat).
-					//
-					// History:
-					// - Commit 4cfa95bb92 (Feb 2026) removed the bot node for native_flow
-					//   and list, with the rationale "removing bot node fixes rendering on
-					//   Web/Desktop for both CTA buttons and quick_reply buttons".
-					// - WhatsApp Web has since changed its rendering rules: as of mid-2026,
-					//   the bot node is REQUIRED for CTA-only and list messages to render
-					//   on Web/Desktop. Quick_reply continued to render with the bot node
-					//   (it was never removed for that path), confirming the new requirement
-					//   is "bot node present" rather than "bot node absent".
-					//
-					// Current rule: inject the bot node for ALL private 1:1 interactive
-					// messages — quick_reply, CTA-only, list. Carousels and catalogs are
-					// the only legitimate exceptions:
-					// - Carousels: never had bot node (CDP traces from Pastorini capture
-					//   show carousel stanzas without bot node — keeping our behavior
-					//   aligned with the canonical mobile sender).
-					// - Catalogs: business product list, distinct rendering pipeline.
+					// Native Flow buttons are business actions, not bot-authored messages.
+					// Marking them with biz_bot=1 makes current Web/Desktop route them to
+					// the AI/bot renderer. Legacy buttonsMessage uses the bot marker for
+					// companion fanout, but stays out of Native Flow routing by omitting biz.
 					const isPrivateUserChat =
 						(isPnUser(destinationJid) || isLidUser(destinationJid) || destinationJid?.endsWith('@c.us')) &&
 						!isJidBot(destinationJid)
+					const isNativeFlowButtons = effectiveButtonType === 'native_flow'
 
-					if (isPrivateUserChat && !isCarousel && !isCatalog) {
+					if (isPrivateUserChat && !isCarousel && !isCatalog && !isNativeFlowButtons) {
 						deferredNodes.push({
 							tag: 'bot',
 							attrs: { biz_bot: '1' }
@@ -2037,6 +1997,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						logger.info(
 							{ msgId, to: destinationJid, buttonType: effectiveButtonType },
 							'[BOT NODE] Added bot node (biz_bot=1)'
+						)
+					} else if (isNativeFlowButtons) {
+						logger.debug(
+							{ msgId, to: destinationJid, buttonType: effectiveButtonType },
+							'[BOT NODE] Skipped for Native Flow buttons Web/Desktop compatibility'
 						)
 					} else if (isCarousel) {
 						logger.debug({ msgId, to: destinationJid }, '[BOT NODE] Skipped — carousel message')
@@ -2326,7 +2291,18 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 			// ======= END PROTOCOL INTERCEPTOR =======
 
-			await sendNode(stanza)
+			// Stage the plaintext before transmission. A companion can return a retry
+			// receipt while sendNode is still awaiting the server ACK; caching after the
+			// await leaves that receipt with no payload to re-encrypt.
+			await transmitWithRetryPayload({
+				manager: messageRetryManager,
+				to: jidNormalizedUser(destinationJid),
+				id: msgId,
+				message,
+				isDirectRetry: Boolean(participant),
+				liveLocationDuration,
+				transmit: () => sendNode(stanza)
+			})
 
 			// Fire-and-forget: issue our token to the contact (like WA Web's sendTcToken).
 			// Gated only by shouldSendNewTcToken — removed tcTokenBuffer?.length guard so
@@ -2354,13 +2330,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			// Record message sent metric
 			recordMessageSent(msgType)
-
-			// Add message to retry cache if enabled
-			if (messageRetryManager && !participant) {
-				messageRetryManager.addRecentMessage(jidNormalizedUser(destinationJid), msgId, message, {
-					liveLocationDuration
-				})
-			}
 
 			// Track session activity for cleanup (all target JIDs)
 			if (sessionActivityTracker) {
