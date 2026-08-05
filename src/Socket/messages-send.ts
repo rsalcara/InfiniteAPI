@@ -1982,17 +1982,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 					// Native Flow buttons are business actions, not bot-authored messages.
 					// Marking them with biz_bot=1 makes current Web/Desktop route them to
-					// the AI/bot renderer, where ordinary quick-reply and CTA payloads are
-					// displayed as unsupported. Keep the bot marker for other legacy
-					// interactive formats only.
+					// the AI/bot renderer. Legacy buttonsMessage uses the bot marker for
+					// companion fanout, but stays out of Native Flow routing by omitting biz.
 					const isPrivateUserChat =
 						(isPnUser(destinationJid) || isLidUser(destinationJid) || destinationJid?.endsWith('@c.us')) &&
 						!isJidBot(destinationJid)
 					const isNativeFlowButtons = effectiveButtonType === 'native_flow'
-					const isLegacyReplyButtons = effectiveButtonType === 'buttons'
-					const isWebInteractiveButtons = isNativeFlowButtons || isLegacyReplyButtons
 
-					if (isPrivateUserChat && !isCarousel && !isCatalog && !isWebInteractiveButtons) {
+					if (isPrivateUserChat && !isCarousel && !isCatalog && !isNativeFlowButtons) {
 						deferredNodes.push({
 							tag: 'bot',
 							attrs: { biz_bot: '1' }
@@ -2001,10 +1998,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							{ msgId, to: destinationJid, buttonType: effectiveButtonType },
 							'[BOT NODE] Added bot node (biz_bot=1)'
 						)
-					} else if (isWebInteractiveButtons) {
+					} else if (isNativeFlowButtons) {
 						logger.debug(
 							{ msgId, to: destinationJid, buttonType: effectiveButtonType },
-							'[BOT NODE] Skipped for interactive buttons Web/Desktop compatibility'
+							'[BOT NODE] Skipped for Native Flow buttons Web/Desktop compatibility'
 						)
 					} else if (isCarousel) {
 						logger.debug({ msgId, to: destinationJid }, '[BOT NODE] Skipped — carousel message')
