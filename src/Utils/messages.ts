@@ -850,6 +850,20 @@ const LIST_LIMITS = {
 	MAX_BUTTON_TEXT: 20
 } as const
 
+const MAX_WEB_QUICK_REPLY_BUTTONS = 10
+
+const truncateUtf16 = (value: string, maxLength: number): string => {
+	if (value.length <= maxLength) return value
+
+	let truncated = value.slice(0, maxLength)
+	const lastCodeUnit = truncated.charCodeAt(truncated.length - 1)
+	if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) {
+		truncated = truncated.slice(0, -1)
+	}
+
+	return truncated
+}
+
 /**
  * Validates and sanitizes list message sections according to WhatsApp limits.
  * Truncates strings that exceed max length, throws on structural violations.
@@ -1282,28 +1296,46 @@ export const generateWAMessageContent = async (
 			throw new Boom('nativeButtons requires at least one button', { statusCode: 400 })
 		}
 
-		// Current companions render small reply sets through Native Flow v1.
-		// Larger reply sets remain on the legacy envelope that existing consumers
-		// used before Native Flow; converting them makes the whole message surface
-		// as phone_only_feature on Web/Desktop.
+		// Current Web/Desktop accepts at most ten quick replies in one Native Flow.
+		// Legacy buttonsMessage is no longer delivered to companions, so preserve
+		// larger option sets as a single-select list instead of silently dropping it.
 		const allQuickReply = buttons.every((btn: any) => btn.type === 'reply')
 
-		if (allQuickReply && buttons.length > 3) {
-			const hasHeaderTitle = Boolean(nativeMsg.headerTitle)
-			m.buttonsMessage = {
-				contentText: nativeMsg.text || '',
-				footerText: nativeMsg.footer || undefined,
-				headerType: hasHeaderTitle
-					? proto.Message.ButtonsMessage.HeaderType.TEXT
-					: proto.Message.ButtonsMessage.HeaderType.EMPTY,
-				...(hasHeaderTitle ? { text: nativeMsg.headerTitle } : {}),
-				buttons: buttons.map((btn: any, idx: number) => ({
-					buttonId: btn.id || `btn_${idx}`,
-					buttonText: { displayText: btn.text || `Button ${idx + 1}` },
-					type: proto.Message.ButtonsMessage.Button.Type.RESPONSE
-				}))
-			}
-			options.logger?.info('Sending large quick_reply set as legacy buttonsMessage')
+		if (allQuickReply && buttons.length > MAX_WEB_QUICK_REPLY_BUTTONS) {
+			const sections = Array.from(
+				{ length: Math.ceil(buttons.length / LIST_LIMITS.MAX_ROWS_PER_SECTION) },
+				(_, sectionIndex) => ({
+					title: '',
+					rows: buttons
+						.slice(
+							sectionIndex * LIST_LIMITS.MAX_ROWS_PER_SECTION,
+							(sectionIndex + 1) * LIST_LIMITS.MAX_ROWS_PER_SECTION
+						)
+						.map((btn: any, rowIndex: number) => {
+							const absoluteIndex = sectionIndex * LIST_LIMITS.MAX_ROWS_PER_SECTION + rowIndex
+							const displayText = String(btn.text || `Option ${absoluteIndex + 1}`)
+							const title = truncateUtf16(displayText, LIST_LIMITS.MAX_ROW_TITLE)
+
+							return {
+								id: btn.id || `btn_${absoluteIndex}`,
+								title,
+								description: title === displayText ? undefined : displayText
+							}
+						})
+				})
+			)
+			const generated = generateListMessageLegacy(
+				{ sections },
+				String(nativeMsg.headerTitle || ''),
+				String(nativeMsg.text || ''),
+				'View options',
+				nativeMsg.footer ? String(nativeMsg.footer) : undefined
+			)
+			m.listMessage = generated.listMessage
+			options.logger?.info(
+				{ quickReplyCount: buttons.length, sectionCount: sections.length },
+				'Sending oversized quick_reply set as single-select list for Web/Desktop compatibility'
+			)
 		} else if (allQuickReply) {
 			m.interactiveMessage = {
 				body: { text: nativeMsg.text || '' },

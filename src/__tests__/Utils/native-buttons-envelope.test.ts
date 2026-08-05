@@ -42,11 +42,11 @@ describe('native button protobuf envelope', () => {
 		])
 	})
 
-	it('preserves the legacy envelope for large quick-reply sets', async () => {
+	it('converts oversized quick-reply sets to one Web-compatible list', async () => {
 		const buttons = Array.from({ length: 16 }, (_, index) => ({
 			type: 'reply' as const,
 			id: `option-${index + 1}`,
-			text: index === 13 ? 'Information Technology' : `Option ${index + 1}`
+			text: index === 13 ? '🔧 Tecnologia da Informação' : `Option ${index + 1}`
 		}))
 		const content = await generateWAMessageContent(
 			{
@@ -61,10 +61,37 @@ describe('native button protobuf envelope', () => {
 
 		expect(decoded.interactiveMessage).toBeNull()
 		expect(decoded.viewOnceMessage).toBeNull()
-		expect(decoded.buttonsMessage?.contentText).toBe('Choose a department')
-		expect(decoded.buttonsMessage?.footerText).toBe('Available all day')
-		expect(decoded.buttonsMessage?.buttons).toHaveLength(16)
-		expect(decoded.buttonsMessage?.buttons?.[13]?.buttonText?.displayText).toBe('Information Technology')
+		expect(decoded.buttonsMessage).toBeNull()
+		expect(decoded.listMessage?.description).toBe('Choose a department')
+		expect(decoded.listMessage?.footerText).toBe('Available all day')
+		expect(decoded.listMessage?.buttonText).toBe('View options')
+		expect(decoded.listMessage?.sections?.map(section => section.rows?.length)).toEqual([10, 6])
+		expect(decoded.listMessage?.sections?.[1]?.rows?.[3]).toMatchObject({
+			rowId: 'option-14',
+			title: '🔧 Tecnologia da Informa',
+			description: '🔧 Tecnologia da Informação'
+		})
+	})
+
+	it('keeps ten quick replies in one Native Flow message', async () => {
+		const content = await generateWAMessageContent(
+			{
+				text: 'Choose an option',
+				nativeButtons: Array.from({ length: 10 }, (_, index) => ({
+					type: 'reply' as const,
+					id: `option-${index + 1}`,
+					text: `Option ${index + 1}`
+				}))
+			} as AnyMessageContent,
+			options
+		)
+
+		const decoded = roundTrip(content)
+
+		expect(decoded.listMessage).toBeNull()
+		expect(decoded.buttonsMessage).toBeNull()
+		expect(decoded.interactiveMessage?.nativeFlowMessage?.buttons).toHaveLength(10)
+		expect(decoded.interactiveMessage?.nativeFlowMessage?.messageVersion).toBe(1)
 	})
 
 	it('encodes CTA buttons as a direct interactiveMessage', async () => {
