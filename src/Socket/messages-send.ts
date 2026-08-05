@@ -1975,31 +1975,17 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						})
 					}
 
-					// Bot node — required for WhatsApp Web/Desktop to render interactive
-					// messages in 1:1 chats (private user chat).
-					//
-					// History:
-					// - Commit 4cfa95bb92 (Feb 2026) removed the bot node for native_flow
-					//   and list, with the rationale "removing bot node fixes rendering on
-					//   Web/Desktop for both CTA buttons and quick_reply buttons".
-					// - WhatsApp Web has since changed its rendering rules: as of mid-2026,
-					//   the bot node is REQUIRED for CTA-only and list messages to render
-					//   on Web/Desktop. Quick_reply continued to render with the bot node
-					//   (it was never removed for that path), confirming the new requirement
-					//   is "bot node present" rather than "bot node absent".
-					//
-					// Current rule: inject the bot node for ALL private 1:1 interactive
-					// messages — quick_reply, CTA-only, list. Carousels and catalogs are
-					// the only legitimate exceptions:
-					// - Carousels: never had bot node (CDP traces from Pastorini capture
-					//   show carousel stanzas without bot node — keeping our behavior
-					//   aligned with the canonical mobile sender).
-					// - Catalogs: business product list, distinct rendering pipeline.
+					// Native Flow buttons are business actions, not bot-authored messages.
+					// Marking them with biz_bot=1 makes current Web/Desktop route them to
+					// the AI/bot renderer, where ordinary quick-reply and CTA payloads are
+					// displayed as unsupported. Keep the bot marker for other legacy
+					// interactive formats only.
 					const isPrivateUserChat =
 						(isPnUser(destinationJid) || isLidUser(destinationJid) || destinationJid?.endsWith('@c.us')) &&
 						!isJidBot(destinationJid)
+					const isNativeFlowButtons = effectiveButtonType === 'native_flow'
 
-					if (isPrivateUserChat && !isCarousel && !isCatalog) {
+					if (isPrivateUserChat && !isCarousel && !isCatalog && !isNativeFlowButtons) {
 						deferredNodes.push({
 							tag: 'bot',
 							attrs: { biz_bot: '1' }
@@ -2007,6 +1993,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						logger.info(
 							{ msgId, to: destinationJid, buttonType: effectiveButtonType },
 							'[BOT NODE] Added bot node (biz_bot=1)'
+						)
+					} else if (isNativeFlowButtons) {
+						logger.debug(
+							{ msgId, to: destinationJid, buttonType: effectiveButtonType },
+							'[BOT NODE] Skipped for native_flow Web/Desktop compatibility'
 						)
 					} else if (isCarousel) {
 						logger.debug({ msgId, to: destinationJid }, '[BOT NODE] Skipped — carousel message')
