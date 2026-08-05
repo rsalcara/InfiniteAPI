@@ -109,6 +109,36 @@ describe('retry receipt routing parity', () => {
 		expect(cached?.to).toBe('5511000000002@s.whatsapp.net')
 	})
 
+	it('keeps one outbound payload available for retries from multiple linked devices', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const interactive = {
+			viewOnceMessage: {
+				message: {
+					interactiveMessage: {
+						nativeFlowMessage: {
+							buttons: [{ name: 'cta_url', buttonParamsJson: '{"url":"https://example.com"}' }]
+						}
+					}
+				}
+			}
+		} as proto.IMessage
+		manager.addRecentMessage('5511000000002@s.whatsapp.net', 'INTERACTIVE-1', interactive)
+
+		expect(manager.getRecentMessage('100000000000001:24@lid', 'INTERACTIVE-1')?.message).toBe(interactive)
+		manager.markOutboundRetrySuccess()
+		expect(manager.getRecentMessage('100000000000001:50@lid', 'INTERACTIVE-1')?.message).toBe(interactive)
+	})
+
+	it('discards a payload staged for a stanza that failed before transmission', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const message = { conversation: 'not transmitted' } as proto.IMessage
+
+		manager.addRecentMessage('5511000000002@s.whatsapp.net', 'FAILED-1', message)
+		manager.discardRecentMessage('FAILED-1')
+
+		expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'FAILED-1')).toBeUndefined()
+	})
+
 	it('keeps live-location transport duration with the recent message', () => {
 		const manager = new MessageRetryManager(silent, 5)
 		const liveLocation = {

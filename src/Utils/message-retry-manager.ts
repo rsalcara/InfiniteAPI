@@ -455,6 +455,25 @@ export class MessageRetryManager {
 	}
 
 	/**
+	 * Records a successful outbound resend without removing the shared payload.
+	 * A single message is encrypted independently for every companion device, so
+	 * another device can still request its own retry after the first resend.
+	 * The recent-message LRU/TTL remains responsible for eventual cleanup.
+	 */
+	markOutboundRetrySuccess(): void {
+		this.statistics.successfulRetries++
+	}
+
+	/**
+	 * Discards a payload that was staged before transmission when the stanza
+	 * itself could not be sent. Successful sends remain in the TTL-bounded cache
+	 * so every companion device can independently request a retry.
+	 */
+	discardRecentMessage(messageId: string): void {
+		this.removeRecentMessage(messageId)
+	}
+
+	/**
 	 * Mark retry as failed
 	 */
 	markRetryFailed(messageId: string): void {

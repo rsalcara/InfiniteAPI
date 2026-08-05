@@ -2326,7 +2326,25 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 			// ======= END PROTOCOL INTERCEPTOR =======
 
-			await sendNode(stanza)
+			// Stage the plaintext before transmission. A companion can return a retry
+			// receipt while sendNode is still awaiting the server ACK; caching after the
+			// await leaves that receipt with no payload to re-encrypt.
+			const stagedForRetry = Boolean(messageRetryManager && !participant)
+			if (stagedForRetry) {
+				messageRetryManager!.addRecentMessage(jidNormalizedUser(destinationJid), msgId, message, {
+					liveLocationDuration
+				})
+			}
+
+			try {
+				await sendNode(stanza)
+			} catch (error) {
+				if (stagedForRetry) {
+					messageRetryManager!.discardRecentMessage(msgId)
+				}
+
+				throw error
+			}
 
 			// Fire-and-forget: issue our token to the contact (like WA Web's sendTcToken).
 			// Gated only by shouldSendNewTcToken — removed tcTokenBuffer?.length guard so
@@ -2354,13 +2372,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			// Record message sent metric
 			recordMessageSent(msgType)
-
-			// Add message to retry cache if enabled
-			if (messageRetryManager && !participant) {
-				messageRetryManager.addRecentMessage(jidNormalizedUser(destinationJid), msgId, message, {
-					liveLocationDuration
-				})
-			}
 
 			// Track session activity for cleanup (all target JIDs)
 			if (sessionActivityTracker) {
