@@ -4,7 +4,8 @@ import {
 	MessageRetryManager,
 	parseRetryErrorCode,
 	RetryReason,
-	retryReasonFromDecryptionError
+	retryReasonFromDecryptionError,
+	transmitWithRetryPayload
 } from '../../Utils/message-retry-manager'
 import {
 	hasRetrySendBudget,
@@ -107,6 +108,106 @@ describe('retry receipt routing parity', () => {
 		const cached = manager.getRecentMessage('100000000000001@lid', 'CAROUSEL-1')
 		expect(cached?.message).toBe(carousel)
 		expect(cached?.to).toBe('5511000000002@s.whatsapp.net')
+	})
+
+	it('keeps one outbound payload available for retries from multiple linked devices', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const interactive = {
+			viewOnceMessage: {
+				message: {
+					interactiveMessage: {
+						nativeFlowMessage: {
+							buttons: [{ name: 'cta_url', buttonParamsJson: '{"url":"https://example.com"}' }]
+						}
+					}
+				}
+			}
+		} as proto.IMessage
+		manager.addRecentMessage('5511000000002@s.whatsapp.net', 'INTERACTIVE-1', interactive)
+
+		expect(manager.getRecentMessage('100000000000001:24@lid', 'INTERACTIVE-1')?.message).toBe(interactive)
+		manager.markOutboundRetrySuccess()
+		expect(manager.getRecentMessage('100000000000001:50@lid', 'INTERACTIVE-1')?.message).toBe(interactive)
+	})
+
+	it('stages before transmission and discards a new payload when transmission fails', async () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const message = { conversation: 'not transmitted' } as proto.IMessage
+
+		await expect(
+			transmitWithRetryPayload({
+				manager,
+				to: '5511000000002@s.whatsapp.net',
+				id: 'FAILED-1',
+				message,
+				isDirectRetry: false,
+				transmit: async () => {
+					expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'FAILED-1')?.message).toBe(message)
+					throw new Error('send failed')
+				}
+			})
+		).rejects.toThrow('send failed')
+
+		expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'FAILED-1')).toBeUndefined()
+	})
+
+	it('preserves a shared payload when a send-to-all retry transmission fails', async () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const original = { conversation: 'original outbound payload' } as proto.IMessage
+		const retry = { conversation: 'retry wrapper must not replace it' } as proto.IMessage
+
+		manager.addRecentMessage('5511000000002@s.whatsapp.net', 'SHARED-1', original)
+		await expect(
+			transmitWithRetryPayload({
+				manager,
+				to: '5511000000002@s.whatsapp.net',
+				id: 'SHARED-1',
+				message: retry,
+				isDirectRetry: false,
+				transmit: async () => {
+					throw new Error('retry broadcast failed')
+				}
+			})
+		).rejects.toThrow('retry broadcast failed')
+		expect(manager.getRecentMessage('100000000000001:50@lid', 'SHARED-1')?.message).toBe(original)
+	})
+
+	it('isolates reused custom message ids by destination and fails closed on an ambiguous fallback', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const first = { conversation: 'first chat' } as proto.IMessage
+		const second = { conversation: 'second chat' } as proto.IMessage
+
+		manager.addRecentMessage('5511000000001@s.whatsapp.net', 'REUSED-ID', first)
+		manager.addRecentMessage('5511000000002@s.whatsapp.net', 'REUSED-ID', second)
+
+		expect(manager.getRecentMessage('5511000000001@s.whatsapp.net', 'REUSED-ID')?.message).toBe(first)
+		expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'REUSED-ID')?.message).toBe(second)
+		expect(manager.getRecentMessage('100000000000001:24@lid', 'REUSED-ID')).toBeUndefined()
+	})
+
+	it('rolls back only the failed destination when a custom message id is reused', async () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const first = { conversation: 'first chat' } as proto.IMessage
+		const second = { conversation: 'second chat failed' } as proto.IMessage
+
+		manager.addRecentMessage('5511000000001@s.whatsapp.net', 'REUSED-ID', first)
+		await expect(
+			transmitWithRetryPayload({
+				manager,
+				to: '5511000000002@s.whatsapp.net',
+				id: 'REUSED-ID',
+				message: second,
+				isDirectRetry: false,
+				transmit: async () => {
+					expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'REUSED-ID')?.message).toBe(second)
+					throw new Error('second send failed')
+				}
+			})
+		).rejects.toThrow('second send failed')
+
+		expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'REUSED-ID')).toBeUndefined()
+		expect(manager.getRecentMessage('5511000000001@s.whatsapp.net', 'REUSED-ID')?.message).toBe(first)
+		expect(manager.getRecentMessage('100000000000001:24@lid', 'REUSED-ID')).toBeUndefined()
 	})
 
 	it('keeps live-location transport duration with the recent message', () => {
