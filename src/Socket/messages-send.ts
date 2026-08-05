@@ -1984,8 +1984,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						(isPnUser(destinationJid) || isLidUser(destinationJid) || destinationJid?.endsWith('@c.us')) &&
 						!isJidBot(destinationJid)
 					const isNativeFlowButtons = effectiveButtonType === 'native_flow'
+					const isLegacyReplyButtons = effectiveButtonType === 'buttons'
+					const isWebInteractiveButtons = isNativeFlowButtons || isLegacyReplyButtons
 
-					if (isPrivateUserChat && !isCarousel && !isCatalog && !isNativeFlowButtons) {
+					if (isPrivateUserChat && !isCarousel && !isCatalog && !isWebInteractiveButtons) {
 						deferredNodes.push({
 							tag: 'bot',
 							attrs: { biz_bot: '1' }
@@ -1994,10 +1996,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							{ msgId, to: destinationJid, buttonType: effectiveButtonType },
 							'[BOT NODE] Added bot node (biz_bot=1)'
 						)
-					} else if (isNativeFlowButtons) {
+					} else if (isWebInteractiveButtons) {
 						logger.debug(
 							{ msgId, to: destinationJid, buttonType: effectiveButtonType },
-							'[BOT NODE] Skipped for native_flow Web/Desktop compatibility'
+							'[BOT NODE] Skipped for interactive buttons Web/Desktop compatibility'
 						)
 					} else if (isCarousel) {
 						logger.debug({ msgId, to: destinationJid }, '[BOT NODE] Skipped — carousel message')
