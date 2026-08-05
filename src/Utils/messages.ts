@@ -1282,11 +1282,29 @@ export const generateWAMessageContent = async (
 			throw new Boom('nativeButtons requires at least one button', { statusCode: 400 })
 		}
 
-		// Preserve the existing quick-reply cardinality while using the same
-		// direct Native Flow envelope as CTA buttons.
+		// Current companions render small reply sets through Native Flow v1.
+		// Larger reply sets remain on the legacy envelope that existing consumers
+		// used before Native Flow; converting them makes the whole message surface
+		// as phone_only_feature on Web/Desktop.
 		const allQuickReply = buttons.every((btn: any) => btn.type === 'reply')
 
-		if (allQuickReply) {
+		if (allQuickReply && buttons.length > 3) {
+			const hasHeaderTitle = Boolean(nativeMsg.headerTitle)
+			m.buttonsMessage = {
+				contentText: nativeMsg.text || '',
+				footerText: nativeMsg.footer || undefined,
+				headerType: hasHeaderTitle
+					? proto.Message.ButtonsMessage.HeaderType.TEXT
+					: proto.Message.ButtonsMessage.HeaderType.EMPTY,
+				...(hasHeaderTitle ? { text: nativeMsg.headerTitle } : {}),
+				buttons: buttons.map((btn: any, idx: number) => ({
+					buttonId: btn.id || `btn_${idx}`,
+					buttonText: { displayText: btn.text || `Button ${idx + 1}` },
+					type: proto.Message.ButtonsMessage.Button.Type.RESPONSE
+				}))
+			}
+			options.logger?.info('Sending large quick_reply set as legacy buttonsMessage')
+		} else if (allQuickReply) {
 			m.interactiveMessage = {
 				body: { text: nativeMsg.text || '' },
 				footer: nativeMsg.footer ? { text: nativeMsg.footer } : undefined,

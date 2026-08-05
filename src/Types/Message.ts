@@ -451,7 +451,10 @@ export type ButtonMessageOptions = {
 	headerImage?: WAMediaUpload
 	/** Header video (optional) */
 	headerVideo?: WAMediaUpload
-	/** Message version (default: 2) */
+	/**
+	 * @deprecated Retained for source compatibility. Native Flow buttons use
+	 * protocol version 1 because current companion clients reject version 2.
+	 */
 	messageVersion?: number
 }
 
@@ -787,7 +790,9 @@ export type AnyRegularMessageContent = (
 	| {
 			/**
 			 * Native Flow Buttons - Modern button message format
-			 * Encoded as a direct interactiveMessage for companion compatibility.
+			 * Sets of up to three buttons use a direct interactiveMessage for
+			 * companion compatibility. Larger reply-only sets retain the legacy
+			 * buttonsMessage envelope for backward compatibility.
 			 *
 			 * @example
 			 * ```typescript

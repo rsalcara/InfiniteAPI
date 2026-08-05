@@ -42,6 +42,31 @@ describe('native button protobuf envelope', () => {
 		])
 	})
 
+	it('preserves the legacy envelope for large quick-reply sets', async () => {
+		const buttons = Array.from({ length: 16 }, (_, index) => ({
+			type: 'reply' as const,
+			id: `option-${index + 1}`,
+			text: index === 13 ? 'Information Technology' : `Option ${index + 1}`
+		}))
+		const content = await generateWAMessageContent(
+			{
+				text: 'Choose a department',
+				footer: 'Available all day',
+				nativeButtons: buttons
+			} as AnyMessageContent,
+			options
+		)
+
+		const decoded = roundTrip(content)
+
+		expect(decoded.interactiveMessage).toBeNull()
+		expect(decoded.viewOnceMessage).toBeNull()
+		expect(decoded.buttonsMessage?.contentText).toBe('Choose a department')
+		expect(decoded.buttonsMessage?.footerText).toBe('Available all day')
+		expect(decoded.buttonsMessage?.buttons).toHaveLength(16)
+		expect(decoded.buttonsMessage?.buttons?.[13]?.buttonText?.displayText).toBe('Information Technology')
+	})
+
 	it('encodes CTA buttons as a direct interactiveMessage', async () => {
 		const content = await generateWAMessageContent(
 			{
