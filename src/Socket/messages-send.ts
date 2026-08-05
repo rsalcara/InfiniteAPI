@@ -2329,18 +2329,19 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// Stage the plaintext before transmission. A companion can return a retry
 			// receipt while sendNode is still awaiting the server ACK; caching after the
 			// await leaves that receipt with no payload to re-encrypt.
-			const stagedForRetry = Boolean(messageRetryManager && !participant)
-			if (stagedForRetry) {
-				messageRetryManager!.addRecentMessage(jidNormalizedUser(destinationJid), msgId, message, {
+			const stagedForRetry = Boolean(
+				messageRetryManager &&
+				!participant &&
+				messageRetryManager.stageRecentMessage(jidNormalizedUser(destinationJid), msgId, message, {
 					liveLocationDuration
 				})
-			}
+			)
 
 			try {
 				await sendNode(stanza)
 			} catch (error) {
 				if (stagedForRetry) {
-					messageRetryManager!.discardRecentMessage(msgId)
+					messageRetryManager?.discardRecentMessage(msgId)
 				}
 
 				throw error

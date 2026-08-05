@@ -299,6 +299,23 @@ export class MessageRetryManager {
 	}
 
 	/**
+	 * Stages an outbound payload only when that message id is not already
+	 * retained. Returns true when this call created the entry, allowing its
+	 * caller to roll back only its own failed transmission attempt.
+	 */
+	stageRecentMessage(
+		to: string,
+		id: string,
+		message: proto.IMessage,
+		metadata?: { liveLocationDuration?: number }
+	): boolean {
+		if (this.getRecentMessage(to, id)) return false
+
+		this.addRecentMessage(to, id, message, metadata)
+		return true
+	}
+
+	/**
 	 * Get a recent message from the cache.
 	 *
 	 * First attempts an exact `to+id` key lookup. If that misses — which happens when

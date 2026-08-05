@@ -139,6 +139,18 @@ describe('retry receipt routing parity', () => {
 		expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'FAILED-1')).toBeUndefined()
 	})
 
+	it('does not replace a shared payload when a send-to-all retry is staged', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const original = { conversation: 'original outbound payload' } as proto.IMessage
+		const retry = { conversation: 'retry wrapper must not replace it' } as proto.IMessage
+
+		manager.addRecentMessage('5511000000002@s.whatsapp.net', 'SHARED-1', original)
+		const inserted = manager.stageRecentMessage('5511000000002@s.whatsapp.net', 'SHARED-1', retry)
+
+		expect(inserted).toBe(false)
+		expect(manager.getRecentMessage('100000000000001:50@lid', 'SHARED-1')?.message).toBe(original)
+	})
+
 	it('keeps live-location transport duration with the recent message', () => {
 		const manager = new MessageRetryManager(silent, 5)
 		const liveLocation = {
