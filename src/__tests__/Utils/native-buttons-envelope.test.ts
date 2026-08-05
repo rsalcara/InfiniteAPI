@@ -29,6 +29,7 @@ describe('native button protobuf envelope', () => {
 		expect(decoded.buttonsMessage).toBeNull()
 		expect(decoded.viewOnceMessage).toBeNull()
 		expect(decoded.interactiveMessage?.body?.text).toBe('Confirm the order?')
+		expect(decoded.interactiveMessage?.nativeFlowMessage?.messageVersion).toBe(1)
 		expect(decoded.interactiveMessage?.nativeFlowMessage?.buttons).toEqual([
 			{
 				name: 'quick_reply',
@@ -58,6 +59,7 @@ describe('native button protobuf envelope', () => {
 
 		expect(decoded.buttonsMessage).toBeNull()
 		expect(decoded.viewOnceMessage).toBeNull()
+		expect(decoded.interactiveMessage?.nativeFlowMessage?.messageVersion).toBe(1)
 		expect(decoded.interactiveMessage?.nativeFlowMessage?.buttons?.map(button => button.name)).toEqual([
 			'cta_url',
 			'cta_copy',

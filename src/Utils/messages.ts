@@ -579,7 +579,7 @@ export const generateButtonMessage = async (
 		nativeFlowMessage: {
 			buttons: formattedButtons,
 			messageParamsJson: JSON.stringify({}),
-			messageVersion: 2
+			messageVersion: 1
 		}
 	}
 
@@ -1297,7 +1297,7 @@ export const generateWAMessageContent = async (
 				nativeFlowMessage: {
 					buttons: buttons.map(formatNativeFlowButton),
 					messageParamsJson: JSON.stringify({}),
-					messageVersion: 2
+					messageVersion: 1
 				}
 			}
 			options.logger?.info('Sending quick_reply as direct nativeFlowMessage')
