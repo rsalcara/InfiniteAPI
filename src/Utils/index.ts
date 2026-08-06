@@ -26,6 +26,7 @@ export * from './orphan-queue'
 export * from './browser-utils'
 export * from './companion-reg-client-utils'
 export * from './connection-presets'
+export * from './tc-token-lifecycle'
 
 // === Identity and Session Management ===
 export * from './contact-picture-identity'

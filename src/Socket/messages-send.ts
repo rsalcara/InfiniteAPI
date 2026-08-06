@@ -47,6 +47,7 @@ import {
 	parseAndInjectE2ESessions,
 	runDetached,
 	safeCacheSet,
+	TcTokenLifecycleService,
 	toNumber,
 	transmitWithRetryPayload,
 	unixTimestampSeconds,
@@ -66,14 +67,7 @@ import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prome
 import { appendParticipantFanoutNode } from '../Utils/relay-stanza'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import { resolveSessionFetchJids } from '../Utils/session-fetch-addressing'
-import {
-	getOrCreateTcTokenIssueFlight,
-	resolveTcTokenAliases,
-	selectNewestUsableTcToken,
-	shouldSendNewTcToken,
-	type TcTokenIssueAliasGroup,
-	updateTcTokenIssueState
-} from '../Utils/tc-token-utils'
+import { resolveTcTokenAliases, selectNewestUsableTcToken, shouldSendNewTcToken } from '../Utils/tc-token-utils'
 import {
 	areJidsSameUser,
 	type BinaryNode,
@@ -126,6 +120,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		sendNode,
 		groupMetadata,
 		groupToggleEphemeral,
+		registerSocketDrainHandler,
 		registerSocketEndHandler
 	} = sock
 
@@ -281,11 +276,39 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	// Prevent race conditions in Signal session encryption by user
 	const encryptionMutex = makeKeyedMutex()
 
-	// The official client single-flights GeneratePrivacyTokenJob per canonical JID.
-	// Keep the guard at the public issuance boundary so message send, session
-	// refresh, VoIP, and external callers all share it.
-	const tcTokenIssueFlights = new Map<string, Promise<BinaryNode>>()
-	const tcTokenIssueMutex = makeMutex()
+	const tcTokenLifecycle = new TcTokenLifecycleService({
+		keys: authState.keys,
+		resolvers: { getLIDForPN, getPNForLID },
+		logger,
+		send: job => {
+			const t = job.issueTimestamp.toString()
+			return query(
+				{
+					tag: 'iq',
+					attrs: { to: S_WHATSAPP_NET, type: 'set', xmlns: 'privacy' },
+					content: [
+						{
+							tag: 'tokens',
+							attrs: {},
+							content: [
+								{
+									tag: 'token',
+									attrs: { jid: job.requestedJid, t, type: 'trusted_contact' }
+								}
+							]
+						}
+					]
+				},
+				job.timeoutMs
+			)
+		}
+	})
+	void tcTokenLifecycle
+		.startRecovery()
+		.catch(error =>
+			logger.warn({ error }, 'durable trusted-contact token recovery could not start; jobs remain persisted')
+		)
+	registerSocketDrainHandler(() => tcTokenLifecycle.stop())
 
 	let mediaConn: Promise<MediaConnInfo> | undefined
 	/**
@@ -2363,13 +2386,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		if (deferredTcTokenReissue) {
 			const { jid: reissueJid, issueTimestamp } = deferredTcTokenReissue
-			issuePrivacyTokens([reissueJid], issueTimestamp)
-				.then(() => {
-					logTcToken('reissue_ok', { jid: reissueJid })
-				})
-				.catch(err => {
-					logTcToken('reissue_fail', { jid: reissueJid, error: err?.message })
-				})
+			try {
+				await tcTokenLifecycle.enqueue([reissueJid], issueTimestamp)
+				logTcToken('reissue_ok', { jid: reissueJid, state: 'durably-queued' })
+			} catch (err: any) {
+				// The user message was already accepted by the server. A local job
+				// persistence failure must not become a false delivery failure.
+				logTcToken('reissue_fail', { jid: reissueJid, error: err?.message, state: 'enqueue-failed' })
+			}
 		}
 
 		return msgId
@@ -2407,95 +2431,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return getRelayMediaType(message)
 	}
 
-	const updatePrivacyTokenIssueState = async (
-		aliasGroups: TcTokenIssueAliasGroup[],
-		issueTimestamp: number,
-		phase: 'scheduled' | 'confirmed'
-	): Promise<boolean> => {
-		return updateTcTokenIssueState({
-			keys: authState.keys,
-			aliasGroups,
-			issueTimestamp,
-			phase,
-			onStaleAck: ({ requestedJid, canonicalJid, newerTimestamp }) =>
-				logger.debug(
-					{
-						jid: requestedJid,
-						canonicalJid,
-						ackTimestamp: issueTimestamp,
-						newerTimestamp,
-						action: 'ignored-stale-ack'
-					},
-					'privacy-token issue confirmation did not overwrite a newer issue'
-				)
-		})
-	}
-
-	const runPrivacyTokenIssue = async (
-		aliasGroups: TcTokenIssueAliasGroup[],
-		issueTimestamp: number,
-		timeoutMs?: number
-	): Promise<BinaryNode> => {
-		const t = issueTimestamp.toString()
-		await updatePrivacyTokenIssueState(aliasGroups, issueTimestamp, 'scheduled')
-		const result = await query(
-			{
-				tag: 'iq',
-				attrs: {
-					to: S_WHATSAPP_NET,
-					type: 'set',
-					xmlns: 'privacy'
-				},
-				content: [
-					{
-						tag: 'tokens',
-						attrs: {},
-						content: aliasGroups.map(({ requestedJid }) => ({
-							tag: 'token',
-							attrs: {
-								jid: requestedJid,
-								t,
-								type: 'trusted_contact'
-							}
-						}))
-					}
-				]
-			},
-			timeoutMs ?? 32_000
-		)
-		const confirmed = await updatePrivacyTokenIssueState(aliasGroups, issueTimestamp, 'confirmed')
-		logger.debug(
-			{
-				jids: aliasGroups.map(group => group.requestedJid),
-				issueTimestamp,
-				confirmed,
-				responseType: result.attrs.type
-			},
-			'privacy-token issuance acknowledged; no peer token is expected in the IQ result'
-		)
-
-		return result
-	}
-
 	const issuePrivacyTokens = async (jids: string[], timestamp?: number, timeoutMs?: number): Promise<BinaryNode> => {
-		const normalizedJids = [...new Set(jids.map(jidNormalizedUser))]
-		const aliasGroups = await Promise.all(
-			normalizedJids.map(async requestedJid => ({
-				requestedJid,
-				aliases: await resolveTcTokenAliases(requestedJid, { getLIDForPN, getPNForLID })
-			}))
-		)
-		let result!: Promise<BinaryNode>
-
-		await tcTokenIssueMutex.mutex(async () => {
-			const groupsByCanonical = new Map(aliasGroups.map(group => [group.aliases[0]!, group]))
-			result = getOrCreateTcTokenIssueFlight(tcTokenIssueFlights, [...groupsByCanonical.keys()], uncoveredKeys => {
-				const uncovered = uncoveredKeys.map(key => groupsByCanonical.get(key)!)
-				return runPrivacyTokenIssue(uncovered, timestamp ?? unixTimestampSeconds(), timeoutMs)
-			})
-		})
-
-		return result
+		return tcTokenLifecycle.issue(jids, timestamp, timeoutMs)
 	}
 
 	/** @deprecated This IQ issues our token; use `issuePrivacyTokens`. */
