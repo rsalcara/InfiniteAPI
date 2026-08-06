@@ -1,10 +1,71 @@
-import { appendParticipantFanoutNode } from '../../Utils/relay-stanza'
+import { jest } from '@jest/globals'
+import {
+	appendParticipantFanoutNode,
+	canonicalizeParticipantFanoutRecipient,
+	dedupeParticipantFanout,
+	mapParticipantFanout
+} from '../../Utils/relay-stanza'
 import type { BinaryNode } from '../../WABinary'
 
 const encNode = (value: number): BinaryNode => ({
 	tag: 'enc',
 	attrs: { v: '2', type: 'msg' },
 	content: Buffer.from([value])
+})
+
+describe('participant fanout admission', () => {
+	it('preserves device IDs while canonicalizing PN and LID recipients', async () => {
+		const getLIDForPN = jest.fn(async () => '207421150646274@lid')
+		const recipients = await Promise.all([
+			canonicalizeParticipantFanoutRecipient('5511999999999:1@s.whatsapp.net', getLIDForPN),
+			canonicalizeParticipantFanoutRecipient('5511999999999:2@s.whatsapp.net', getLIDForPN),
+			canonicalizeParticipantFanoutRecipient('207421150646274:3@lid', getLIDForPN)
+		])
+
+		expect(recipients).toEqual(['207421150646274:1@lid', '207421150646274:2@lid', '207421150646274:3@lid'])
+		expect(new Set(recipients).size).toBe(3)
+	})
+
+	it('deduplicates exact canonical PN/LID targets while preserving order', () => {
+		const targets = [
+			{ input: 'pn', canonical: '123:1@lid' },
+			{ input: 'lid', canonical: '123:1@lid' },
+			{ input: 'device-2', canonical: '123:2@lid' }
+		]
+
+		expect(dedupeParticipantFanout(targets, target => target.canonical).map(target => target.input)).toEqual([
+			'pn',
+			'device-2'
+		])
+	})
+
+	it('applies bounded backpressure without reordering a large fanout', async () => {
+		let active = 0
+		let peak = 0
+		const result = await mapParticipantFanout(
+			Array.from({ length: 25 }, (_, index) => index),
+			async value => {
+				active++
+				peak = Math.max(peak, active)
+				await Promise.resolve()
+				active--
+				return value * 2
+			},
+			{ max: 30, concurrency: 4 }
+		)
+
+		expect(peak).toBeLessThanOrEqual(4)
+		expect(result).toEqual(Array.from({ length: 25 }, (_, index) => index * 2))
+	})
+
+	it('rejects oversized fanout before mapping any recipient', async () => {
+		const map = jest.fn(async (value: number) => value)
+
+		await expect(mapParticipantFanout([1, 2, 3], map, { max: 2 })).rejects.toMatchObject({
+			output: { statusCode: 413 }
+		})
+		expect(map).not.toHaveBeenCalled()
+	})
 })
 
 const participantNode = (jid: string, value: number): BinaryNode => ({

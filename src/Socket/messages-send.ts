@@ -64,7 +64,12 @@ import {
 	StickersBackend
 } from '../Utils/multi-db-sqlite'
 import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prometheus-metrics'
-import { appendParticipantFanoutNode } from '../Utils/relay-stanza'
+import {
+	appendParticipantFanoutNode,
+	canonicalizeParticipantFanoutRecipient,
+	dedupeParticipantFanout,
+	mapParticipantFanout
+} from '../Utils/relay-stanza'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import { resolveSessionFetchJids } from '../Utils/session-fetch-addressing'
 import {
@@ -931,11 +936,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		if (!recipientJids.length) {
 			return { nodes: [] as BinaryNode[], shouldIncludeDeviceIdentity: false }
 		}
+		const canonicalRecipients = dedupeParticipantFanout(
+			await mapParticipantFanout(recipientJids, jid => canonicalizeParticipantFanoutRecipient(jid, getLIDForPN)),
+			jid => jid
+		)
 
-		const patched = await patchMessageBeforeSending(message, recipientJids)
+		const patched = await patchMessageBeforeSending(message, canonicalRecipients)
 		const patchedMessages = Array.isArray(patched)
 			? patched
-			: recipientJids.map(jid => ({ recipientJid: jid, message: patched }))
+			: canonicalRecipients.map(jid => ({ recipientJid: jid, message: patched }))
 
 		let shouldIncludeDeviceIdentity = false
 		const meId = authState.creds.me?.id
@@ -946,7 +955,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			shouldIncludeDeviceIdentity = true
 		}
 
-		const encryptionPromises = (patchedMessages as { recipientJid: string; message: proto.IMessage }[]).map(
+		const encrypted = await mapParticipantFanout(
+			patchedMessages as { recipientJid: string; message: proto.IMessage }[],
 			({ recipientJid: jid, message: patchedMessage }: { recipientJid: string; message: proto.IMessage }) =>
 				encryptPatchedMessageForRecipient({
 					jid,
@@ -961,9 +971,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				})
 		)
 
-		const nodes = (await Promise.all(encryptionPromises)).filter(node => node !== null)
+		const nodes = encrypted.filter(node => node !== null)
 
-		if (recipientJids.length > 0 && nodes.length === 0) {
+		if (canonicalRecipients.length > 0 && nodes.length === 0) {
 			recordMessageFailure('send', 'encryption_failed')
 			throw new Boom('All encryptions failed', { statusCode: 500 })
 		}
@@ -1012,17 +1022,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const normalizedRecipients = rawRecipients
 				.map(jidNormalizedUser)
 				.filter(recipient => !areJidsSameUser(recipient, meId) && (!meLid || !areJidsSameUser(recipient, meLid)))
-			const recipients = await Promise.all(
-				normalizedRecipients.map(async recipient => {
-					if (!isAnyPnUser(recipient)) return recipient
-					const lid = await getLIDForPN(recipient)
-					if (lid) return jidNormalizedUser(lid)
-					logger.warn(
-						{ conversationJid, recipient, reason: 'missing-lid-mapping' },
-						'live-location key distribution downgraded to PN'
-					)
-					return recipient
-				})
+			const recipients = dedupeParticipantFanout(
+				await mapParticipantFanout(normalizedRecipients, jid =>
+					canonicalizeParticipantFanoutRecipient(jid, getLIDForPN)
+				),
+				recipient => recipient
 			)
 			if (!recipients.length) return
 
@@ -1042,9 +1046,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// padded plaintext is not the official key-notification wire shape.
 			const distributionBytes = Buffer.from(proto.Message.encode(distributionMessage).finish())
 			const nodes = (
-				await Promise.all(
-					recipients.map(recipient =>
-						encryptionMutex.mutex(recipient, async () => {
+				await mapParticipantFanout(recipients, recipient =>
+					encryptionMutex.mutex(recipient, async () => {
 							try {
 								const { type, ciphertext } = await signalRepository.encryptMessage({
 									jid: recipient,
@@ -1059,8 +1062,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								logger.error({ recipient, err }, 'failed to encrypt live-location key distribution')
 								return null
 							}
-						})
-					)
+					})
 				)
 			).filter((node): node is BinaryNode => node !== null)
 			if (nodes.length !== recipients.length) {
