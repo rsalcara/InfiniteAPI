@@ -189,6 +189,7 @@ describe('history-sync message mirror', () => {
 		}
 
 		await applyProcessedHistorySync(data, { signalRepository, keyStore, messageStoreBackend })
+		const writesAfterFirstApply = (keyStore.set as jest.Mock).mock.calls.length
 		expect(order).toEqual(['mapping', 'tctoken', 'message'])
 		expect(state[lid]).toEqual({
 			token: Buffer.from([9]),
@@ -199,6 +200,7 @@ describe('history-sync message mirror', () => {
 		expect(state[pn]).toBeUndefined()
 
 		await applyProcessedHistorySync(data, { signalRepository, keyStore, messageStoreBackend })
+		expect((keyStore.set as jest.Mock).mock.calls).toHaveLength(writesAfterFirstApply)
 		expect(state[lid]).toEqual({
 			token: Buffer.from([9]),
 			timestamp: '100',

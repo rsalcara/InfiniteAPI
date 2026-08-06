@@ -115,6 +115,7 @@ import { isExpectedSocketTeardownError } from '../Utils/socket-teardown'
 import { buildAckStanza } from '../Utils/stanza-ack'
 import {
 	isRegularUser,
+	isStrictlyNewerTcTokenTimestamp,
 	isTcTokenExpired,
 	parseTrustedContactTokenNotification,
 	resolveIncomingTcTokenAliases,
@@ -2993,7 +2994,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// the authoritative peer-token ingestion path.
 		if (!isRegularUser(from)) return
 
-		for (const { senderLid, timestamp, timestampSource, childTimestamp, outerTimestamp, token } of parsedTokens) {
+		for (const { senderLid, timestamp, timestampSource, token } of parsedTokens) {
 			const aliases = await resolveIncomingTcTokenAliases(from, senderLid, { getLIDForPN, getPNForLID })
 			const storageJid = aliases[0]!
 
@@ -3003,20 +3004,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const existing = existingData[storageJid]
 			const existingTs = Math.max(...aliases.map(alias => Number(existingData[alias]?.timestamp ?? 0)))
 			const incomingTs = timestamp ? Number(timestamp) : 0
-			if (existingTs > 0 && incomingTs > 0 && existingTs > incomingTs) {
+			if (!isStrictlyNewerTcTokenTimestamp(incomingTs, existingTs)) {
 				logger.debug(
-					{ from, senderLid, storageJid, incomingTs, existingTs, action: 'ignored-stale-token' },
-					'privacy-token notification did not overwrite a newer PN/LID token'
-				)
-				continue
-			}
-
-			// Don't store timestamp-less tokens — they expire immediately and would
-			// corrupt a valid existing entry if one is already present
-			if (!incomingTs) {
-				logger.warn(
-					{ from, senderLid, storageJid, childTimestamp, outerTimestamp, action: 'ignored-missing-timestamp' },
-					'privacy-token notification omitted both child and outer timestamps'
+					{ from, senderLid, storageJid, incomingTs, existingTs, action: 'ignored-non-newer-token' },
+					'privacy-token notification did not overwrite an equal or newer PN/LID token'
 				)
 				continue
 			}

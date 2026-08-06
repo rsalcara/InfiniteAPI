@@ -63,6 +63,16 @@ export type TcTokenUsability = {
 	reason?: 'missing-token' | 'empty-token' | 'expired-token'
 }
 
+/** Official incoming-token conflict rule: only a strictly newer timestamp wins. */
+export function isStrictlyNewerTcTokenTimestamp(
+	incoming: number | string | null | undefined,
+	existing: number | string | null | undefined
+): boolean {
+	const incomingTimestamp = Number(incoming ?? 0)
+	const existingTimestamp = Number(existing ?? 0)
+	return Number.isFinite(incomingTimestamp) && incomingTimestamp > 0 && incomingTimestamp > existingTimestamp
+}
+
 /**
  * Evaluates every alias independently and accepts the first usable token.
  * A stale/empty LID row must not mask a valid PN row (or the inverse).
@@ -202,13 +212,12 @@ export async function restoreTcTokensFromHistory({
 				.sort((left, right) => Number(right.senderTimestamp) - Number(left.senderTimestamp))[0]
 
 			const historyIncomingIsNewer =
-				!!entry.token?.length &&
-				Number(entry.timestamp ?? 0) > 0 &&
-				Number(entry.timestamp) >= Number(existingIncoming?.timestamp ?? 0)
+				!!entry.token?.length && isStrictlyNewerTcTokenTimestamp(entry.timestamp, existingIncoming?.timestamp)
 			const historySentIsNewer =
 				Number(entry.senderTimestamp ?? 0) > 0 &&
-				Number(entry.senderTimestamp) >= Number(existingSent?.senderTimestamp ?? 0)
-			if (!historyIncomingIsNewer && !historySentIsNewer && aliases.length === 1) return
+				Number(entry.senderTimestamp) > Number(existingSent?.senderTimestamp ?? 0)
+			const hasLegacyAliasState = aliases.slice(1).some(alias => current[alias] !== undefined)
+			if (!historyIncomingIsNewer && !historySentIsNewer && !hasLegacyAliasState) return
 
 			const incoming = historyIncomingIsNewer
 				? { token: Buffer.from(entry.token!), timestamp: String(entry.timestamp) }
@@ -600,17 +609,12 @@ export async function storeTcTokensFromIqResult({
 		const existingTcData = await keys.get('tctoken', [storageJid])
 		const existingEntry = existingTcData[storageJid]
 
-		// Timestamp monotonicity guard — only store if incoming timestamp >= existing
+		// Timestamp monotonicity guard — only a strictly newer token may replace
+		// the accepted value. Equal timestamps are replays even if bytes differ.
 		// Matches WA Web handleIncomingTcToken
 		const existingTs = existingEntry?.timestamp ? Number(existingEntry.timestamp) : 0
 		const incomingTs = tokenNode.attrs.t ? Number(tokenNode.attrs.t) : 0
-		if (existingTs > 0 && incomingTs > 0 && existingTs > incomingTs) {
-			continue
-		}
-
-		// Don't store timestamp-less tokens at all — isTcTokenExpired treats them
-		// as immediately expired regardless of whether an existing entry is present
-		if (!incomingTs) {
+		if (!isStrictlyNewerTcTokenTimestamp(incomingTs, existingTs)) {
 			continue
 		}
 

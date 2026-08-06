@@ -5,6 +5,7 @@ import {
 	buildTcTokenFromJid,
 	buildTcTokenNode,
 	getOrCreateTcTokenIssueFlight,
+	isStrictlyNewerTcTokenTimestamp,
 	isTcTokenExpired,
 	parseTrustedContactTokenNotification,
 	resolveIncomingTcTokenAliases,
@@ -105,6 +106,38 @@ describe('storeTcTokensFromIqResult', () => {
 				[pn]: expect.objectContaining({ token: Buffer.from([1]) })
 			}
 		})
+	})
+
+	it.each([
+		['identical', Buffer.from([1])],
+		['different', Buffer.from([9])]
+	])('does not overwrite equal-timestamp %s bytes', async (_kind, incomingToken) => {
+		const keys = createMockKeys()
+		const jid = '5511000000000@s.whatsapp.net'
+		const accepted = { token: Buffer.from([1]), timestamp: String(nowSeconds()) }
+		;(keys.get as any).mockResolvedValue({ [jid]: accepted })
+		const node = tokenNode(jid, incomingToken)
+		;(node.attrs as Record<string, string>).t = accepted.timestamp
+
+		const result = await storeTcTokensFromIqResult({
+			result: iqWithTokens([node]),
+			fallbackJid: jid,
+			keys,
+			getLIDForPN: async () => null
+		})
+
+		expect(result).toEqual({ storedJids: [], validTokenNodes: 0 })
+		expect(keys.set).not.toHaveBeenCalled()
+	})
+})
+
+describe('isStrictlyNewerTcTokenTimestamp', () => {
+	it('accepts only a positive timestamp greater than the stored value', () => {
+		expect(isStrictlyNewerTcTokenTimestamp(101, '100')).toBe(true)
+		expect(isStrictlyNewerTcTokenTimestamp(100, '100')).toBe(false)
+		expect(isStrictlyNewerTcTokenTimestamp(99, '100')).toBe(false)
+		expect(isStrictlyNewerTcTokenTimestamp(0, undefined)).toBe(false)
+		expect(isStrictlyNewerTcTokenTimestamp(Number.NaN, undefined)).toBe(false)
 	})
 })
 
