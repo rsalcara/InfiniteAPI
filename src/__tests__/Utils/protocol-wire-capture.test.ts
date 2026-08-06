@@ -30,6 +30,37 @@ describe('protocol wire capture', () => {
 		expect(() => validateProtocolWireCapture('direct_retry', stanza)).toThrow('cannot contain participants')
 	})
 
+	it('rejects a direct retry with more than one top-level enc', () => {
+		const stanza: BinaryNode = {
+			tag: 'message',
+			attrs: { id: 'retry-duplicate', to: '123:4@lid' },
+			content: [enc(), enc()]
+		}
+
+		expect(() => validateProtocolWireCapture('direct_retry', stanza)).toThrow('one top-level enc')
+	})
+
+	it('passes an immutable snapshot to the capture hook', async () => {
+		const stanza: BinaryNode = {
+			tag: 'message',
+			attrs: { id: 'retry-snapshot', to: '123:4@lid' },
+			content: [enc()]
+		}
+		const originalEncoded = Buffer.from((stanza.content as BinaryNode[])[0]!.content as Uint8Array)
+
+		await captureProtocolWire(
+			capture => {
+				capture.node.attrs.to = 'mutated@lid'
+				;((capture.node.content as BinaryNode[])[0]!.content as Uint8Array)[0] = 99
+			},
+			'direct_retry',
+			stanza
+		)
+
+		expect(stanza.attrs.to).toBe('123:4@lid')
+		expect(Buffer.from((stanza.content as BinaryNode[])[0]!.content as Uint8Array)).toEqual(originalEncoded)
+	})
+
 	it('captures the complete legacy group-create IQ before query', async () => {
 		const hook = jest.fn<(capture: any) => void>()
 		const stanza: BinaryNode = {

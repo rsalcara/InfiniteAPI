@@ -1,6 +1,8 @@
 import { jest } from '@jest/globals'
 import {
 	appendParticipantFanoutNode,
+	appendTcTokensToParticipantFanout,
+	buildGroupParticipantNode,
 	canonicalizeParticipantFanoutRecipient,
 	dedupeParticipantFanout,
 	mapParticipantFanout
@@ -65,6 +67,64 @@ describe('participant fanout admission', () => {
 			output: { statusCode: 413 }
 		})
 		expect(map).not.toHaveBeenCalled()
+	})
+
+	it('adds one token per user without collapsing device recipients', async () => {
+		const participants = [
+			participantNode('207421150646274:1@lid', 1),
+			participantNode('207421150646274:2@lid', 2),
+			participantNode('56307306467375:3@lid', 3)
+		]
+		const resolveToken = jest.fn(async (userJid: string) =>
+			userJid.startsWith('207421150646274') ? Buffer.from([9]) : Buffer.from([8])
+		)
+
+		await appendTcTokensToParticipantFanout(participants, { resolveToken })
+
+		expect(resolveToken).toHaveBeenCalledTimes(2)
+		expect((participants[0]!.content as BinaryNode[]).map(node => node.tag)).toEqual(['enc', 'tctoken'])
+		expect((participants[1]!.content as BinaryNode[]).map(node => node.tag)).toEqual(['enc'])
+		expect((participants[2]!.content as BinaryNode[]).map(node => node.tag)).toEqual(['enc', 'tctoken'])
+		expect(participants.map(node => node.attrs.jid)).toEqual([
+			'207421150646274:1@lid',
+			'207421150646274:2@lid',
+			'56307306467375:3@lid'
+		])
+	})
+
+	it('keeps encrypted fanout intact when token lookup fails or hits the user cap', async () => {
+		const participants = [participantNode('1:1@lid', 1), participantNode('2:1@lid', 2)]
+		const onResolveError = jest.fn()
+
+		await appendTcTokensToParticipantFanout(participants, {
+			maxUsers: 1,
+			resolveToken: async () => {
+				throw new Error('store unavailable')
+			},
+			onResolveError
+		})
+
+		expect(onResolveError).toHaveBeenCalledTimes(1)
+		expect(participants.map(node => (node.content as BinaryNode[]).map(child => child.tag))).toEqual([['enc'], ['enc']])
+	})
+
+	it('honors the official AB gate when fanout token contribution is disabled', async () => {
+		const participants = [participantNode('1:1@lid', 1)]
+		const resolveToken = jest.fn(async () => Buffer.from([9]))
+
+		await appendTcTokensToParticipantFanout(participants, { enabled: false, resolveToken })
+
+		expect(resolveToken).not.toHaveBeenCalled()
+		expect((participants[0]!.content as BinaryNode[]).map(node => node.tag)).toEqual(['enc'])
+	})
+
+	it('uses privacy only in the captured legacy group-add participant shape', () => {
+		expect(buildGroupParticipantNode('123@lid', Buffer.from([7]))).toEqual({
+			tag: 'participant',
+			attrs: { jid: '123@lid' },
+			content: [{ tag: 'privacy', attrs: {}, content: Buffer.from([7]) }]
+		})
+		expect(buildGroupParticipantNode('123@lid')).toEqual({ tag: 'participant', attrs: { jid: '123@lid' } })
 	})
 })
 

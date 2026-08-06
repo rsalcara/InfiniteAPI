@@ -53,6 +53,13 @@ export type SocketConfig = {
 		tctoken_duration_sender: number
 		tctoken_num_buckets_sender: number
 	}>
+	/** Mobile-compatible per-user token contribution for participant fanout. */
+	tcTokenFanout?: Partial<{
+		/** Mirrors the mobile AB gate (20605). Undefined follows the official disabled default. */
+		enabled: boolean
+		/** Mirrors the mobile per-stanza user cap (20606). Defaults to the captured 2000-user limit. */
+		maxUsers: number
+	}>
 	/** Opt-in pre-send capture for protocol forensics. Payloads may contain ciphertext or user metadata. */
 	protocolWireCapture?: (capture: ProtocolWireCapture) => void | Promise<void>
 	/** the WS url to connect to WA */

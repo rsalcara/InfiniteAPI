@@ -1,5 +1,5 @@
 import { Boom } from '@hapi/boom'
-import type { SignalDataTypeMap, SignalKeyStoreWithTransaction } from '../Types'
+import { DisconnectReason, type SignalDataTypeMap, type SignalKeyStoreWithTransaction } from '../Types'
 import type { BinaryNode } from '../WABinary'
 import { jidNormalizedUser } from '../WABinary'
 import type { ILogger } from './logger'
@@ -28,12 +28,16 @@ export type TcTokenLifecycleOptions = {
 type Waiter = {
 	resolve: (result: BinaryNode) => void
 	reject: (error: unknown) => void
+	timer?: NodeJS.Timeout
 }
 
 const RETRY_BASE_MS = 1_000
 const RETRY_MAX_MS = 60_000
 const DEFAULT_LEASE_MS = 35_000
 const DEFAULT_TIMEOUT_MS = 32_000
+
+const isTransientDisconnectStatus = (status: number | undefined): boolean =>
+	status === DisconnectReason.timedOut || status === DisconnectReason.connectionClosed
 
 const errorStatus = (error: unknown): number | undefined => {
 	try {
@@ -114,7 +118,18 @@ export class TcTokenLifecycleService {
 
 		const waiter = new Promise<BinaryNode>((resolve, reject) => {
 			const key = this.waiterKey(job)
-			this.waiters.set(key, [...(this.waiters.get(key) ?? []), { resolve, reject }])
+			const entry: Waiter = { resolve, reject }
+			// The caller's timeout bounds only this await. The durable job keeps its
+			// own per-IQ timeout and remains recoverable after this waiter expires.
+			const remaining = Math.max(1, timeoutMs)
+			entry.timer = setTimeout(() => {
+				const current = this.waiters.get(key)?.filter(candidate => candidate !== entry) ?? []
+				if (current.length) this.waiters.set(key, current)
+				else this.waiters.delete(key)
+				reject(this.timeoutError(job, 'caller-timeout-job-retained'))
+			}, remaining)
+			entry.timer.unref?.()
+			this.waiters.set(key, [...(this.waiters.get(key) ?? []), entry])
 		})
 		this.schedule(0)
 		return waiter
@@ -174,11 +189,25 @@ export class TcTokenLifecycleService {
 		return `${job.canonicalJid}:${job.issueTimestamp}`
 	}
 
+	private timeoutError(job: TcTokenIssueJob, reason: 'caller-timeout-job-retained' | 'iq-attempt-timeout'): Boom {
+		return new Boom('trusted-contact token issue timed out', {
+			statusCode: 408,
+			data: {
+				jid: job.requestedJid,
+				canonicalJid: job.canonicalJid,
+				reason,
+				attemptCount: job.attemptCount,
+				action: reason === 'caller-timeout-job-retained' ? 'caller-timeout-job-retained' : 'durable-retry'
+			}
+		})
+	}
+
 	private settle(job: TcTokenIssueJob, result: BinaryNode | undefined, error?: unknown): void {
 		const key = this.waiterKey(job)
 		const waiters = this.waiters.get(key) ?? []
 		this.waiters.delete(key)
 		for (const waiter of waiters) {
+			if (waiter.timer) clearTimeout(waiter.timer)
 			if (error !== undefined) waiter.reject(error)
 			else waiter.resolve(result!)
 		}
@@ -266,14 +295,14 @@ export class TcTokenLifecycleService {
 		if (!job) return
 		this.currentJob = job
 		try {
-			const result = await this.options.send(job)
+			const result = await this.sendWithAttemptTimeout(job)
 			if (this.stopped) return
 			await this.complete(job)
 			this.settle(job, result)
 		} catch (error) {
 			if (this.stopped) return
 			const status = errorStatus(error)
-			if (status !== undefined && status >= 400 && status < 500) {
+			if (status !== undefined && status >= 400 && status < 500 && !isTransientDisconnectStatus(status)) {
 				await this.markTerminal(job, error, status)
 				this.settle(job, undefined, error)
 			} else {
@@ -281,6 +310,21 @@ export class TcTokenLifecycleService {
 			}
 		} finally {
 			if (this.currentJob === job) this.currentJob = undefined
+		}
+	}
+
+	private async sendWithAttemptTimeout(job: TcTokenIssueJob): Promise<BinaryNode> {
+		let timer: NodeJS.Timeout | undefined
+		try {
+			return await Promise.race([
+				this.options.send(job),
+				new Promise<never>((_resolve, reject) => {
+					timer = setTimeout(() => reject(this.timeoutError(job, 'iq-attempt-timeout')), Math.max(1, job.timeoutMs))
+					timer.unref?.()
+				})
+			])
+		} finally {
+			if (timer) clearTimeout(timer)
 		}
 	}
 
@@ -330,13 +374,15 @@ export class TcTokenLifecycleService {
 	}
 
 	private async markRetry(job: TcTokenIssueJob, error: unknown, status?: number): Promise<void> {
-		const retryDelay = Math.round(
+		const calculatedDelay = Math.round(
 			Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.max(0, job.attemptCount - 1)) * (0.5 + this.random())
 		)
+		const nextRetryAt = this.now() + calculatedDelay
+		const retryDelay = Math.max(0, nextRetryAt - this.now())
 		await this.mutateJob(job, current => ({
 			...current,
 			state: 'retry',
-			nextRetryAt: this.now() + retryDelay,
+			nextRetryAt,
 			leaseUntil: 0,
 			updatedAt: this.now(),
 			...(status !== undefined ? { lastStatus: status } : {}),
@@ -404,7 +450,13 @@ export class TcTokenLifecycleService {
 		}
 
 		const error = new Error('trusted-contact token issue interrupted by socket teardown')
-		for (const waiters of this.waiters.values()) for (const waiter of waiters) waiter.reject(error)
+		for (const waiters of this.waiters.values()) {
+			for (const waiter of waiters) {
+				if (waiter.timer) clearTimeout(waiter.timer)
+				waiter.reject(error)
+			}
+		}
+
 		this.waiters.clear()
 		this.trackedJobIds.clear()
 	}

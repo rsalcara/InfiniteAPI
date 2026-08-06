@@ -11,7 +11,24 @@ import {
 } from './Protocols'
 import { USyncUser } from './USyncUser'
 
-export type USyncQueryResultList = { [protocol: string]: unknown; id: string }
+export type USyncContactType = 'in' | 'out' | 'invalid'
+
+/**
+ * A USync row contains more than one identity. WhatsApp uses the PN (`jid`),
+ * the LID (`new_jid`/`lid`) and, for some rollout cohorts, an explicit
+ * `pn_jid` alias. Keep all of them: collapsing the row to `id` makes a cold
+ * recipient impossible to route reliably after the first lookup.
+ */
+export type USyncQueryResultList = {
+	[protocol: string]: unknown
+	id: string
+	jid?: string
+	pnJid?: string
+	newJid?: string
+	lid?: string
+	contactType?: USyncContactType
+	username?: string
+}
 
 export type USyncQueryResult = {
 	list: USyncQueryResultList[]
@@ -86,7 +103,11 @@ export class USyncQuery {
 
 		if (listNode?.content && Array.isArray(listNode.content)) {
 			queryResult.list = listNode.content.reduce((acc: USyncQueryResultList[], node) => {
-				const id = node?.attrs.jid
+				const jid = node?.attrs?.jid
+				const pnJid = node?.attrs?.pn_jid
+				const newJid = node?.attrs?.new_jid
+				const lid = node?.attrs?.lid
+				const id = jid || newJid || pnJid
 				if (id) {
 					const data = Array.isArray(node?.content)
 						? Object.fromEntries(
@@ -103,7 +124,21 @@ export class USyncQuery {
 									.filter(([, b]) => b !== null) as [string, unknown][]
 							)
 						: {}
-					acc.push({ ...data, id })
+					const contactNode = Array.isArray(node?.content)
+						? node.content.find(content => content.tag === 'contact')
+						: undefined
+					const contactType = contactNode?.attrs?.type
+					const username = typeof data.username === 'string' ? data.username : undefined
+					acc.push({
+						...data,
+						id,
+						...(jid ? { jid } : {}),
+						...(pnJid ? { pnJid } : {}),
+						...(newJid ? { newJid } : {}),
+						...(lid ? { lid } : {}),
+						...(contactType === 'in' || contactType === 'out' || contactType === 'invalid' ? { contactType } : {}),
+						...(username ? { username } : {})
+					})
 				}
 
 				return acc

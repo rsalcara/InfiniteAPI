@@ -4,6 +4,21 @@ import { type BinaryNode, isAnyPnUser, jidDecode, jidEncode, jidNormalizedUser, 
 export const MAX_PARTICIPANT_FANOUT = 4096
 export const PARTICIPANT_FANOUT_CONCURRENCY = 32
 
+export type ParticipantTcTokenFanoutOptions = {
+	enabled?: boolean
+	maxUsers?: number
+	concurrency?: number
+	resolveToken: (userJid: string) => Promise<Buffer | undefined>
+	onResolveError?: (error: unknown, userJid: string) => void
+}
+
+/** Official legacy group-add participant shape: privacy is a child of participant. */
+export const buildGroupParticipantNode = (jid: string, privacyToken?: Buffer): BinaryNode => ({
+	tag: 'participant',
+	attrs: { jid },
+	...(privacyToken?.length ? { content: [{ tag: 'privacy', attrs: {}, content: privacyToken }] } : {})
+})
+
 /** Canonicalizes PN recipients to LID without collapsing companion device IDs. */
 export const canonicalizeParticipantFanoutRecipient = async (
 	jid: string,
@@ -49,6 +64,48 @@ export const mapParticipantFanout = async <T, R>(
 	}
 
 	return results
+}
+
+/**
+ * Adds one trusted-contact token per user to the first matching `<to>` node.
+ * Companion devices remain separate encrypted recipients; only token lookup is
+ * deduplicated by user, matching Android's PrivacyToken stanza contributor.
+ * Token lookup is best-effort and can never suppress an encrypted recipient.
+ */
+export const appendTcTokensToParticipantFanout = async (
+	participants: BinaryNode[],
+	options: ParticipantTcTokenFanoutOptions
+): Promise<void> => {
+	if (options.enabled === false || !participants.length) return
+
+	const maxUsers = options.maxUsers ?? MAX_PARTICIPANT_FANOUT
+	if (!Number.isInteger(maxUsers) || maxUsers < 0) throw new Boom('TcToken fanout user limit must be non-negative')
+	if (maxUsers === 0) return
+
+	const firstParticipantByUser = new Map<string, BinaryNode>()
+	for (const participant of participants) {
+		if (participant.tag !== 'to') continue
+		const userJid = jidNormalizedUser(participant.attrs.jid)
+		if (userJid && !firstParticipantByUser.has(userJid)) firstParticipantByUser.set(userJid, participant)
+	}
+
+	const targets = [...firstParticipantByUser.entries()].slice(0, maxUsers)
+	await mapParticipantFanout(
+		targets,
+		async ([userJid, participant]) => {
+			try {
+				const token = await options.resolveToken(userJid)
+				if (!token?.length) return
+				const content = Array.isArray(participant.content) ? participant.content : []
+				if (!content.some(child => child.tag === 'tctoken')) {
+					participant.content = [...content, { tag: 'tctoken', attrs: {}, content: token }]
+				}
+			} catch (error) {
+				options.onResolveError?.(error, userJid)
+			}
+		},
+		{ max: maxUsers, concurrency: options.concurrency }
+	)
 }
 
 /**

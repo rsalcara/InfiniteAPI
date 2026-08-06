@@ -36,6 +36,8 @@ export function isRegularUser(jid: string | undefined): boolean {
 const TC_TOKEN_BUCKET_DURATION = 604800
 /** 4 buckets → ~28-day rolling window — matches WA Web AB prop tctoken_num_buckets */
 const TC_TOKEN_NUM_BUCKETS = 4
+/** Android's absolute lower-bound fallback: 182 days. */
+export const TC_TOKEN_MAX_AGE_SECONDS = 15_724_800
 
 export type TcTokenAbProps = NonNullable<import('../Types').SocketConfig['tcTokenAbProps']>
 export type TcTokenBucketPolicy = {
@@ -78,16 +80,16 @@ export function resolveTcTokenBucketPolicy(
 export function isTcTokenExpired(
 	timestamp: number | string | null | undefined,
 	policy = resolveTcTokenBucketPolicy('web'),
-	mode: 'incoming' | 'sent' = 'incoming'
+	mode: 'incoming' | 'sent' = 'incoming',
+	nowSeconds = Math.floor(Date.now() / 1000)
 ): boolean {
 	if (timestamp === null || timestamp === undefined) return true
 	const ts = typeof timestamp === 'string' ? Number(timestamp) : timestamp
 	if (isNaN(ts)) return true
-	const now = Math.floor(Date.now() / 1000)
 	const { durationSeconds, numBuckets } = policy[mode]
-	const currentBucket = Math.floor(now / durationSeconds)
+	const currentBucket = Math.floor(nowSeconds / durationSeconds)
 	const cutoffBucket = currentBucket - (numBuckets - 1)
-	const cutoffTimestamp = cutoffBucket * durationSeconds
+	const cutoffTimestamp = Math.max(cutoffBucket * durationSeconds, nowSeconds - TC_TOKEN_MAX_AGE_SECONDS)
 	return ts < cutoffTimestamp
 }
 

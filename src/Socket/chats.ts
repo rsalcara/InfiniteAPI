@@ -99,6 +99,8 @@ import processMessage, { applyProcessedHistorySync, emitProcessedHistorySync } f
 import {
 	buildTcTokenFromJid,
 	buildTcTokenNode,
+	isRegularUser,
+	resolveTcTokenAliases,
 	resolveTcTokenBucketPolicy,
 	resolveUsableTcTokenForJid
 } from '../Utils/tc-token-utils'
@@ -115,7 +117,13 @@ import {
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { settleInitialSyncTasks } from './initial-sync-tasks'
-import { executeWMexQuery as genericExecuteWMexQuery } from './mex'
+import {
+	buildMexContactProfileVariables,
+	executeWMexQuery as genericExecuteWMexQuery,
+	MEX_CONTACT_PROFILE_BATCH_SIZE,
+	MEX_CONTACT_PROFILE_QUERY_ID,
+	type MexContactProfileQueryUser
+} from './mex'
 import { makeSocket } from './socket.js'
 
 /**
@@ -804,6 +812,58 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	const executeWMexQuery = <T>(variables: Record<string, unknown>, queryId: string, dataPath: string): Promise<T> => {
 		return genericExecuteWMexQuery<T>(variables, queryId, dataPath, query, generateMessageTag)
+	}
+
+	/**
+	 * Explicit Android-compatible MEX profile enrichment. It is intentionally
+	 * opt-in: unrelated username/newsletter MEX operations have different
+	 * variable contracts and must not receive a privacy token globally.
+	 */
+	const fetchContactProfiles = async (jids: string[]): Promise<Record<string, unknown>[]> => {
+		const users = new Map<string, MexContactProfileQueryUser>()
+		for (const requestedJid of jids) {
+			const normalized = jidNormalizedUser(requestedJid)
+			if (!isRegularUser(normalized)) continue
+
+			let canonicalJid = normalized
+			try {
+				canonicalJid = (await resolveTcTokenAliases(normalized, { getLIDForPN, getPNForLID }))[0] ?? normalized
+			} catch (error) {
+				logger.debug({ error, requestedJid }, 'MEX profile LID canonicalization skipped')
+			}
+
+			if (users.has(canonicalJid)) continue
+
+			const token = await resolveUsableTcTokenForJid({
+				authState,
+				jid: canonicalJid,
+				getLIDForPN,
+				getPNForLID,
+				bucketPolicy: tcTokenBucketPolicy
+			})
+			users.set(canonicalJid, {
+				jid: canonicalJid,
+				...(token.buffer ? { privacyToken: { token: token.buffer, timestamp: token.timestamp } } : {})
+			})
+		}
+
+		const entries = [...users.values()]
+		const results: Record<string, unknown>[] = []
+		for (let offset = 0; offset < entries.length; offset += MEX_CONTACT_PROFILE_BATCH_SIZE) {
+			const variables = buildMexContactProfileVariables(entries.slice(offset, offset + MEX_CONTACT_PROFILE_BATCH_SIZE))
+			results.push(
+				await genericExecuteWMexQuery<Record<string, unknown>>(
+					variables,
+					MEX_CONTACT_PROFILE_QUERY_ID,
+					'',
+					query,
+					generateMessageTag,
+					{ includeQueryId: true, includeTrace: true }
+				)
+			)
+		}
+
+		return results
 	}
 
 	const newMexSessionId = () => randomBytes(8).toString('hex')
@@ -2598,6 +2658,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		removeProfilePicture,
 		updateProfileStatus,
 		updateProfileName,
+		fetchContactProfiles,
 		getMyUsername,
 		setMyUsername,
 		deleteMyUsername,

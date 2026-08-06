@@ -6,7 +6,8 @@ export const validateProtocolWireCapture = (kind: ProtocolWireCapture['kind'], n
 	if (kind === 'direct_retry') {
 		if (node.tag !== 'message') throw new Error('direct retry capture must be a message stanza')
 		if (getBinaryNodeChild(node, 'participants')) throw new Error('direct retry capture cannot contain participants')
-		if (!getBinaryNodeChild(node, 'enc')) throw new Error('direct retry capture must contain one top-level enc')
+		const encNodes = getBinaryNodeChildren(node, 'enc')
+		if (encNodes.length !== 1) throw new Error('direct retry capture must contain one top-level enc')
 		return
 	}
 
@@ -21,6 +22,23 @@ export const validateProtocolWireCapture = (kind: ProtocolWireCapture['kind'], n
 	}
 }
 
+/** Copy a stanza before invoking an untrusted forensic sink. Capture hooks are
+ * observational; they must not be able to mutate the object that sendNode is
+ * about to serialize. */
+const snapshotBinaryNode = (node: BinaryNode): BinaryNode => ({
+	tag: node.tag,
+	attrs: { ...node.attrs },
+	...(node.content === undefined
+		? {}
+		: {
+				content: Array.isArray(node.content)
+					? node.content.map(snapshotBinaryNode)
+					: typeof node.content === 'string'
+						? node.content
+						: Buffer.from(node.content)
+			})
+})
+
 export const captureProtocolWire = async (
 	hook: ((capture: ProtocolWireCapture) => void | Promise<void>) | undefined,
 	kind: ProtocolWireCapture['kind'],
@@ -30,7 +48,8 @@ export const captureProtocolWire = async (
 	if (!hook) return
 	try {
 		validateProtocolWireCapture(kind, node)
-		await hook({ kind, node, encoded: encodeBinaryNode(node), capturedAt: Date.now() })
+		const capturedNode = snapshotBinaryNode(node)
+		await hook({ kind, node: capturedNode, encoded: encodeBinaryNode(capturedNode), capturedAt: Date.now() })
 	} catch (error) {
 		logger?.warn({ error, kind }, 'protocol wire capture failed; send continues unchanged')
 	}

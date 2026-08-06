@@ -706,7 +706,16 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 						compareAndPruneSent: (jid, expectedTimestamp) =>
 							authKeysClearMutex.mutex(async () => {
 								await recoverPendingAuthKeysClearUnlocked('before-access')
-								const current = readTctokenRelational(jid)
+								let current = readTctokenRelational(jid)
+								if (current.kind === 'miss') {
+									const row = signalStmts.select.get('tctoken', jid) as { value: string } | undefined
+									if (!row) return false
+									current = {
+										kind: 'value',
+										value: JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap['tctoken']
+									}
+								}
+
 								if (current.kind !== 'value' || Number(current.value.senderTimestamp ?? 0) !== expectedTimestamp)
 									return false
 								await runWithBusyRetry('tctoken sent prune signal_kv', () => {

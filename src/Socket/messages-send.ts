@@ -31,6 +31,7 @@ import {
 	encodeSignedDeviceIdentity,
 	encodeWAMessage,
 	encryptMediaRetryRequest,
+	evaluateOutboundPolicy,
 	extractDeviceJids,
 	generateMessageIDV2,
 	generateParticipantHashV2,
@@ -46,6 +47,7 @@ import {
 	MessageRetryManager,
 	normalizeMessageContent,
 	parseAndInjectE2ESessions,
+	resolveDirectRecipientUSync,
 	runDetached,
 	safeCacheSet,
 	TcTokenLifecycleService,
@@ -67,6 +69,7 @@ import {
 import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prometheus-metrics'
 import {
 	appendParticipantFanoutNode,
+	appendTcTokensToParticipantFanout,
 	canonicalizeParticipantFanoutRecipient,
 	dedupeParticipantFanout,
 	mapParticipantFanout
@@ -130,6 +133,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		upsertMessage,
 		query,
 		fetchPrivacySettings,
+		fetchAccountReachoutTimelock,
+		fetchNewChatMessageCap,
 		sendNode,
 		groupMetadata,
 		groupToggleEphemeral,
@@ -220,6 +225,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+	const getKnownLIDForPN = signalRepository.lidMapping.getKnownLIDForPN.bind(signalRepository.lidMapping)
 	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
 
 	const userDevicesCache =
@@ -288,6 +294,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 	// Prevent race conditions in Signal session encryption by user
 	const encryptionMutex = makeKeyedMutex()
+	const directRecipientPreflightMutex = makeKeyedMutex()
 
 	const tcTokenLifecycle = new TcTokenLifecycleService({
 		keys: authState.keys,
@@ -307,7 +314,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							content: [
 								{
 									tag: 'token',
-									attrs: { jid: job.requestedJid, t, type: 'trusted_contact' }
+									attrs: { jid: job.canonicalJid, t, type: 'trusted_contact' }
 								}
 							]
 						}
@@ -589,15 +596,27 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const result = await sock.executeUSyncQuery(query)
 
 		if (result) {
-			// TODO: LID MAP this stuff (lid protocol will now return lid with devices)
-			const lidResults = result.list.filter(a => !!a.lid)
+			// Keep the PN/LID aliases returned by USync. The row's `id` is not
+			// guaranteed to be the PN: cold-recipient responses may use `new_jid`
+			// or a LID as the primary identity.
+			const lidResults = result.list
+				.map(row => {
+					const lid = [row.lid, row.newJid, row.jid, row.id].find(
+						value => typeof value === 'string' && isAnyLidUser(value)
+					)
+					const pn = [row.pnJid, row.jid, row.newJid, row.id].find(
+						value => typeof value === 'string' && isAnyPnUser(value)
+					)
+					return lid && pn ? { lid: jidNormalizedUser(lid), pn: jidNormalizedUser(pn) } : undefined
+				})
+				.filter((mapping): mapping is { lid: string; pn: string } => Boolean(mapping))
 			if (lidResults.length > 0) {
 				logger.trace('Storing LID maps from device call')
-				await signalRepository.lidMapping.storeLIDPNMappings(lidResults.map(a => ({ lid: a.lid as string, pn: a.id })))
+				await signalRepository.lidMapping.storeLIDPNMappings(lidResults)
 
 				// Force-refresh sessions for newly mapped LIDs to align identity addressing
 				try {
-					const lids = lidResults.map(a => a.lid as string)
+					const lids = lidResults.map(a => a.lid)
 					if (lids.length) {
 						await assertSessions(lids, true)
 					}
@@ -699,6 +718,182 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 
 		return deviceResults
+	}
+
+	type DirectRecipientPreflight = {
+		requestedPn: string
+		pnJid: string
+		lidJid: string
+		username?: string
+		freshTargetDevices?: DeviceWithJid[]
+	}
+
+	/**
+	 * Resolve a previously unknown PN before its first direct send. The first
+	 * USync validates registration and returns all identity aliases. Once the
+	 * mapping is committed, devices are queried again by LID so Signal sessions
+	 * are never built from a stale PN-addressed row.
+	 */
+	const preflightDirectRecipient = async (requestedJid: string): Promise<DirectRecipientPreflight | undefined> => {
+		const requestedPn = jidNormalizedUser(requestedJid)
+		if (!isAnyPnUser(requestedPn)) return undefined
+
+		const knownLid = await getKnownLIDForPN(requestedPn)
+		if (knownLid) {
+			return {
+				requestedPn,
+				pnJid: requestedPn,
+				lidJid: jidNormalizedUser(knownLid)
+			}
+		}
+
+		return directRecipientPreflightMutex.mutex(requestedPn, async () => {
+			const concurrentlyStoredLid = await getKnownLIDForPN(requestedPn)
+			if (concurrentlyStoredLid) {
+				return {
+					requestedPn,
+					pnJid: requestedPn,
+					lidJid: jidNormalizedUser(concurrentlyStoredLid)
+				}
+			}
+
+			const [reachoutResult, cappingResult] = await Promise.all([
+				fetchAccountReachoutTimelock(false).catch(error => {
+					logger.warn({ error, requestedJid: requestedPn }, 'cold-recipient reachout policy lookup failed')
+					return undefined
+				}),
+				fetchNewChatMessageCap().catch(error => {
+					logger.warn({ error, requestedJid: requestedPn }, 'cold-recipient message-capping lookup failed')
+					return undefined
+				})
+			])
+			const policy = evaluateOutboundPolicy({ reachout: reachoutResult, capping: cappingResult })
+			if (!policy.allowed && policy.restriction) {
+				logger.warn(
+					{ requestedJid: requestedPn, ...policy.restriction },
+					'outbound cold-recipient send blocked by policy'
+				)
+				throw new Boom('Outbound send blocked by WhatsApp account policy', {
+					statusCode: 403,
+					data: { requestedJid: requestedPn, ...policy.restriction }
+				})
+			}
+
+			const phoneUser = jidDecode(requestedPn)?.user
+			if (!phoneUser) {
+				throw new Boom('Invalid recipient PN', {
+					statusCode: 400,
+					data: { requestedJid, category: 'recipient-resolution', reason: 'invalid-pn' }
+				})
+			}
+
+			const usyncQuery = new USyncQuery()
+				.withContext('message')
+				.withContactProtocol()
+				.withLIDProtocol()
+				.withDeviceProtocol()
+				.withUsernameProtocol()
+				.withUser(new USyncUser().withPhone(`+${phoneUser}`))
+			const result = await sock.executeUSyncQuery(usyncQuery)
+			const resolution = resolveDirectRecipientUSync(requestedPn, result?.list ?? [])
+
+			if (!resolution) {
+				logger.warn(
+					{
+						requestedJid: requestedPn,
+						category: 'recipient-resolution',
+						reason: 'registration-or-identity-unavailable',
+						action: 'blocked-no-retry'
+					},
+					'cold-recipient preflight could not resolve a unique registered identity'
+				)
+				throw new Boom('Recipient is not registered or has no resolvable identity', {
+					statusCode: 404,
+					data: {
+						requestedJid: requestedPn,
+						category: 'recipient-resolution',
+						reason: 'registration-or-identity-unavailable'
+					}
+				})
+			}
+
+			if (resolution.contactType !== 'in') {
+				logger.warn(
+					{
+						requestedJid: requestedPn,
+						contactType: resolution.contactType,
+						category: 'recipient-registration',
+						reason: resolution.contactType === 'invalid' ? 'invalid-number' : 'not-registered',
+						action: 'blocked-no-retry'
+					},
+					'cold-recipient preflight rejected the destination'
+				)
+				throw new Boom('Recipient is not registered on WhatsApp', {
+					statusCode: 404,
+					data: {
+						requestedJid: requestedPn,
+						contactType: resolution.contactType,
+						category: 'recipient-registration',
+						reason: resolution.contactType === 'invalid' ? 'invalid-number' : 'not-registered'
+					}
+				})
+			}
+
+			if (!resolution.lidJid) {
+				throw new Boom('Registered recipient has no LID mapping', {
+					statusCode: 503,
+					data: {
+						requestedJid: requestedPn,
+						category: 'recipient-resolution',
+						reason: 'lid-unavailable'
+					}
+				})
+			}
+
+			await signalRepository.lidMapping.storeLIDPNMappings([{ lid: resolution.lidJid, pn: resolution.pnJid }])
+			if (resolution.username) {
+				ev.emit('contacts.upsert', [
+					{
+						id: resolution.lidJid,
+						lid: resolution.lidJid,
+						phoneNumber: resolution.pnJid,
+						username: resolution.username
+					}
+				])
+			}
+
+			const freshTargetDevices = await getUSyncDevices([resolution.lidJid], false, false)
+			if (freshTargetDevices.length === 0) {
+				throw new Boom('Recipient has no addressable devices', {
+					statusCode: 503,
+					data: {
+						requestedJid: requestedPn,
+						lidJid: resolution.lidJid,
+						category: 'recipient-fanout',
+						reason: 'no-devices'
+					}
+				})
+			}
+
+			logger.info(
+				{
+					requestedJid: requestedPn,
+					pnJid: resolution.pnJid,
+					lidJid: resolution.lidJid,
+					username: resolution.username,
+					deviceCount: freshTargetDevices.length
+				},
+				'cold-recipient preflight resolved PN to canonical LID'
+			)
+
+			return {
+				requestedPn,
+				pnJid: resolution.pnJid,
+				lidJid: resolution.lidJid,
+				...(resolution.username ? { username: resolution.username } : {}),
+				freshTargetDevices
+			}
+		})
 	}
 
 	/**
@@ -983,6 +1178,26 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			recordMessageFailure('send', 'encryption_failed')
 			throw new Boom('All encryptions failed', { statusCode: 500 })
 		}
+
+		// Android's PrivacyTokenMessageSendStanzaContributor adds one token to
+		// the first <to> for each user. This is deliberately best-effort: token
+		// lookup must never turn an otherwise valid encrypted fanout into a
+		// failed message, and companion device JIDs remain untouched.
+		await appendTcTokensToParticipantFanout(nodes, {
+			enabled: config.tcTokenFanout?.enabled ?? false,
+			maxUsers: config.tcTokenFanout?.maxUsers ?? 2000,
+			resolveToken: async userJid =>
+				(
+					await resolveUsableTcTokenForJid({
+						authState,
+						jid: userJid,
+						getLIDForPN,
+						getPNForLID,
+						bucketPolicy: tcTokenBucketPolicy
+					})
+				).buffer,
+			onResolveError: (error, userJid) => logger.debug({ error, userJid }, 'participant TcToken lookup skipped')
+		})
 
 		return { nodes, shouldIncludeDeviceIdentity }
 	}
@@ -1325,6 +1540,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const isNewsletter = server === 'newsletter'
 		const isGroupOrStatus = isGroup || isStatus
 		const finalJid = jid
+		const directRecipient =
+			!isRetryResend && !isGroupOrStatus && !isNewsletter ? await preflightDirectRecipient(jid) : undefined
 
 		msgId = msgId || generateMessageIDV2(meId)
 		useUserDevicesCache = useUserDevicesCache !== false
@@ -1694,8 +1911,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								? jidEncode(jidDecode(meLid)?.user!, 'lid', undefined)
 								: jidEncode(jidDecode(meId)?.user!, 's.whatsapp.net', undefined)
 
-						// Enumerate devices for sender and target with consistent addressing
-						const sessionDevices = await getUSyncDevices([senderIdentity, jid], true, false)
+						// Enumerate the target by canonical LID. A newly discovered recipient
+						// already has a forced-refresh result from the second USync, so only
+						// our own devices need another lookup here.
+						const targetLookupJid = directRecipient?.lidJid || jid
+						const sessionDevices = directRecipient?.freshTargetDevices
+							? [...(await getUSyncDevices([senderIdentity], true, false)), ...directRecipient.freshTargetDevices]
+							: await getUSyncDevices([senderIdentity, targetLookupJid], true, false)
 						devices.push(...sessionDevices)
 
 						logger.debug(
@@ -1761,6 +1983,26 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					createParticipantNodes(effectiveMeRecipients, meMsg || message, extraAttrs),
 					createParticipantNodes(effectiveOtherRecipients, message, extraAttrs)
 				])
+				const targetUser = jidDecode(directRecipient?.lidJid || destinationJid)?.user
+				const isExternalDirectRecipient =
+					!isGroupOrStatus &&
+					!isNewsletter &&
+					!isRetryResend &&
+					Boolean(targetUser) &&
+					targetUser !== mePnUser &&
+					targetUser !== meLidUser
+				if (isExternalDirectRecipient && (effectiveOtherRecipients.length === 0 || otherNodes.length === 0)) {
+					throw new Boom('No ciphertext was produced for the recipient', {
+						statusCode: 503,
+						data: {
+							requestedJid: destinationJid,
+							lidJid: directRecipient?.lidJid,
+							category: 'recipient-fanout',
+							reason: 'recipient-fanout-empty'
+						}
+					})
+				}
+
 				participants.push(...meNodes)
 				participants.push(...otherNodes)
 
@@ -2352,6 +2594,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				liveLocationDuration,
 				transmit: () => sendNode(stanza)
 			})
+			if (!isRetryResend) {
+				ev.emit('message.delivery-state', {
+					key: { remoteJid: destinationJid, fromMe: true, id: msgId },
+					state: 'accepted',
+					timestamp: Date.now(),
+					requestedJid: destinationJid,
+					canonicalJid: directRecipient?.lidJid || jidNormalizedUser(destinationJid)
+				})
+			}
 
 			// Fire-and-forget: issue our token to the contact (like WA Web's sendTcToken).
 			// Gated only by shouldSendNewTcToken — removed tcTokenBuffer?.length guard so

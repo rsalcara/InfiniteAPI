@@ -1,4 +1,11 @@
-import { withMexPrivacyToken } from '../../Socket/mex'
+import { jest } from '@jest/globals'
+import {
+	buildMexContactProfileVariables,
+	executeWMexQuery,
+	MEX_CONTACT_PROFILE_QUERY_ID,
+	withMexPrivacyToken
+} from '../../Socket/mex'
+import type { BinaryNode } from '../../WABinary'
 import { USyncQuery, USyncUser } from '../../WAUSync'
 
 describe('USync/MEX privacy-token serialization', () => {
@@ -42,6 +49,50 @@ describe('USync/MEX privacy-token serialization', () => {
 		expect(withMexPrivacyToken({ user_id: '123@lid' }, { token: Buffer.from([1, 2, 3]), timestamp: 456 })).toEqual({
 			user_id: '123@lid',
 			privacy_token: { tctoken: 'AQID', timestamp: '456' }
+		})
+	})
+
+	it('builds the captured MEX profile batch and omits missing tokens per user', () => {
+		expect(
+			buildMexContactProfileVariables([
+				{ jid: '123@lid', privacyToken: { token: Buffer.from([1, 2, 3]), timestamp: 456 } },
+				{ jid: '456@lid' }
+			])
+		).toEqual({
+			include_picture: true,
+			input: {
+				query_input: [{ jid: '123@lid', privacy_token: { tctoken: 'AQID', timestamp: '456' } }, { jid: '456@lid' }],
+				telemetry: { context: 'BACKGROUND' }
+			},
+			picture_field_input: { type: 'IMAGE' }
+		})
+	})
+
+	it('emits queryId and trace only for the explicit captured MEX call site', async () => {
+		const query = jest.fn(async (node: BinaryNode) => ({
+			tag: 'iq',
+			attrs: { id: node.attrs.id || 'test-id' },
+			content: [{ tag: 'result', attrs: {}, content: Buffer.from('{"data":{"ok":true}}') }]
+		}))
+		const variables = buildMexContactProfileVariables([{ jid: '123@lid' }])
+
+		await expect(
+			executeWMexQuery<Record<string, unknown>>(variables, MEX_CONTACT_PROFILE_QUERY_ID, '', query, () => 'tag', {
+				includeQueryId: true,
+				includeTrace: true
+			})
+		).resolves.toEqual({ ok: true })
+
+		const sent = query.mock.calls[0]![0]
+		const content = sent.content as BinaryNode[]
+		expect(content[0]).toEqual({
+			tag: 'trace',
+			attrs: {},
+			content: [{ tag: 'flow_id', attrs: {}, content: Buffer.from(MEX_CONTACT_PROFILE_QUERY_ID) }]
+		})
+		expect(JSON.parse((content[1]!.content as Buffer).toString())).toEqual({
+			queryId: MEX_CONTACT_PROFILE_QUERY_ID,
+			variables
 		})
 	})
 })

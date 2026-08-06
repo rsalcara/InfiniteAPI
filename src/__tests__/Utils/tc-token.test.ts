@@ -82,6 +82,14 @@ describe('independent tctoken pruning', () => {
 			pruneTcTokenHalves({ token: Buffer.from([3]), timestamp: String(expired), senderTimestamp: expired })
 		).toEqual({ next: null, incomingPruned: true, sentPruned: true })
 	})
+
+	it('recognizes an empty placeholder as removable state', () => {
+		expect(pruneTcTokenHalves({ token: Buffer.alloc(0) })).toEqual({
+			next: null,
+			incomingPruned: false,
+			sentPruned: false
+		})
+	})
 })
 
 describe('profile and AB-prop tctoken buckets', () => {
@@ -532,6 +540,18 @@ describe('isTcTokenExpired', () => {
 
 		// Token well before cutoff (e.g. 35 days ago) is expired
 		expect(isTcTokenExpired(nowSeconds() - 35 * 86400)).toBe(true)
+	})
+
+	it('uses the injected clock and the official 182-day absolute fallback', () => {
+		const now = 200_000_000
+		const policy = resolveTcTokenBucketPolicy('native_android', {
+			tctoken_duration: 365 * 86400,
+			tctoken_num_buckets: 4
+		})
+		const fallbackCutoff = now - 15_724_800
+
+		expect(isTcTokenExpired(fallbackCutoff, policy, 'incoming', now)).toBe(false)
+		expect(isTcTokenExpired(fallbackCutoff - 1, policy, 'incoming', now)).toBe(true)
 	})
 })
 

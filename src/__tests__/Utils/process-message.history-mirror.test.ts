@@ -255,6 +255,60 @@ describe('history-sync message mirror', () => {
 		expect(recordMessages).not.toHaveBeenCalled()
 	})
 
+	it('keeps custom-auth history apply best-effort when token persistence fails', async () => {
+		const signalRepository = {
+			lidMapping: {
+				storeLIDPNMappings: jest.fn(async () => ({ stored: 0, skipped: 0, errors: 0 })),
+				getLIDForPN: jest.fn(async () => null),
+				getPNForLID: jest.fn(async () => null)
+			}
+		} as unknown as SignalRepositoryWithLIDStore
+		const keyStore = {
+			get: jest.fn(async () => ({})),
+			set: jest.fn(async () => {
+				throw new Error('custom token store unavailable')
+			}),
+			transaction: jest.fn(async (work: () => Promise<unknown>) => work()),
+			isInTransaction: jest.fn(() => false)
+		} as unknown as SignalKeyStoreWithTransaction
+		const recordMessages = jest.fn(() => [1])
+		const logger = { warn: jest.fn(), info: jest.fn(), debug: jest.fn() }
+
+		await expect(
+			applyProcessedHistorySync(
+				{
+					chats: [],
+					contacts: [],
+					messages: [
+						{
+							key: { remoteJid: '5511999999999@s.whatsapp.net', fromMe: false, id: 'BEST-EFFORT' },
+							messageTimestamp: 1,
+							message: { conversation: 'continue after optional token failure' }
+						}
+					],
+					lidPnMappings: [],
+					tcTokens: [{ jid: '5511999999999@s.whatsapp.net', token: Buffer.from([1]), timestamp: 100 }],
+					pastParticipants: [],
+					syncType: proto.HistorySync.HistorySyncType.RECENT,
+					progress: 100
+				},
+				{
+					signalRepository,
+					keyStore,
+					messageStoreBackend: { recordMessages } as unknown as MessageStoreBackend,
+					logger: logger as any
+				},
+				undefined,
+				false
+			)
+		).resolves.toBeUndefined()
+		expect(recordMessages).toHaveBeenCalledTimes(1)
+		expect(logger.warn).toHaveBeenCalledWith(
+			expect.objectContaining({ error: expect.any(Error) }),
+			'history sync TcToken restore failed; continuing best-effort for custom auth'
+		)
+	})
+
 	it('persists historical messages without incrementing unread state', async () => {
 		const recordMessages = jest.fn(() => [1])
 		const backend = { recordMessages } as any

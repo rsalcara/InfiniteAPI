@@ -85,5 +85,29 @@ describe('SignalingBridge TcToken notification wait', () => {
 
 		await expect(pending).resolves.toBeUndefined()
 		expect(keys.set).not.toBe(wrappedSet)
+		expect(keys.set).toBe(originalSet)
+	})
+
+	it('resolves hosted LID aliases through the PN mapping path', async () => {
+		const hostedLid = '123456789@hosted.lid'
+		const pn = '5511555555555@s.whatsapp.net'
+		const token = Buffer.from([5, 5, 5])
+		const keys = {
+			get: jest.fn(async () => ({ [pn]: { token, timestamp: String(Math.floor(Date.now() / 1000)) } })),
+			set: jest.fn(async () => undefined)
+		}
+		const getPNForLID = jest.fn(async () => pn)
+		const bridge = new SignalingBridge({
+			sock: {
+				authState: { keys },
+				signalRepository: { lidMapping: { getPNForLID } },
+				issuePrivacyTokens: jest.fn(async () => undefined)
+			} as any
+		})
+		await bridge.init()
+
+		await expect(bridge.ensureTcToken(hostedLid)).resolves.toEqual(token)
+		expect(getPNForLID).toHaveBeenCalledWith(hostedLid)
+		bridge.dispose()
 	})
 })

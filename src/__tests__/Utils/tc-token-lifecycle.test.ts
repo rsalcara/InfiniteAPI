@@ -1,6 +1,11 @@
 import { Boom } from '@hapi/boom'
 import { jest } from '@jest/globals'
-import type { SignalDataSet, SignalDataTypeMap, SignalKeyStoreWithTransaction } from '../../Types'
+import {
+	DisconnectReason,
+	type SignalDataSet,
+	type SignalDataTypeMap,
+	type SignalKeyStoreWithTransaction
+} from '../../Types'
 import { TcTokenLifecycleService } from '../../Utils/tc-token-lifecycle'
 
 type AnyRecord = SignalDataTypeMap[keyof SignalDataTypeMap]
@@ -94,6 +99,29 @@ describe('TcTokenLifecycleService', () => {
 		await service.stop()
 	})
 
+	it.each([DisconnectReason.timedOut, DisconnectReason.connectionClosed])(
+		'treats disconnect status %s as transient instead of suppressing the bucket',
+		async status => {
+			const { store, values, key } = makeStore()
+			const service = new TcTokenLifecycleService({
+				keys: store,
+				resolvers,
+				send: async () => {
+					throw new Boom('transient disconnect', { statusCode: status })
+				},
+				now: () => 2_500_000,
+				random: () => 0.5
+			})
+
+			await service.enqueue([jid], 2_500)
+			await service.runDueJobs()
+			expect(values.get(key('tctoken-job', jid))).toEqual(
+				expect.objectContaining({ state: 'retry', lastStatus: status, attemptCount: 1 })
+			)
+			await service.stop()
+		}
+	)
+
 	it('retries a 5xx job after backoff and recovers it after restart', async () => {
 		const { store, values, key } = makeStore()
 		let now = 3_000_000
@@ -120,6 +148,60 @@ describe('TcTokenLifecycleService', () => {
 		expect(send).toHaveBeenCalledTimes(1)
 		expect(values.has(key('tctoken-job', jid))).toBe(false)
 		await recovered.stop()
+	})
+
+	it('keeps retrying 5xx beyond an arbitrary attempt cap', async () => {
+		const { store, values, key } = makeStore()
+		let now = 3_250_000
+		const send = jest.fn(async () => {
+			throw new Boom('server unavailable', { statusCode: 503 })
+		})
+		const service = new TcTokenLifecycleService({
+			keys: store,
+			resolvers,
+			send,
+			now: () => now,
+			random: () => 0.5
+		})
+
+		await service.enqueue([jid], 3_250)
+		for (let attempt = 1; attempt <= 7; attempt++) {
+			await service.runDueJobs()
+			const job = values.get(key('tctoken-job', jid)) as SignalDataTypeMap['tctoken-job']
+			expect(job).toEqual(expect.objectContaining({ state: 'retry', attemptCount: attempt, lastStatus: 503 }))
+			now = job.nextRetryAt
+		}
+
+		expect(send).toHaveBeenCalledTimes(7)
+		await service.stop()
+	})
+
+	it('bounds issue callers without discarding the durable job', async () => {
+		const { store, values, key } = makeStore()
+		let resolveSend!: (value: typeof resultNode) => void
+		const send = jest.fn(
+			() =>
+				new Promise<typeof resultNode>(resolve => {
+					resolveSend = resolve
+				})
+		)
+		const service = new TcTokenLifecycleService({ keys: store, resolvers, send, now: () => 3_500_000 })
+
+		await service.enqueue([jid], 3_500)
+		const running = service.runDueJobs()
+		while (send.mock.calls.length === 0) await tick()
+		await expect(service.issue([jid], 3_500, 10)).rejects.toMatchObject({
+			isBoom: true,
+			output: expect.objectContaining({ statusCode: 408 }),
+			data: expect.objectContaining({
+				reason: 'caller-timeout-job-retained',
+				action: 'caller-timeout-job-retained'
+			})
+		})
+		expect(values.get(key('tctoken-job', jid))).toEqual(expect.objectContaining({ state: 'in_flight' }))
+		await service.stop()
+		resolveSend(resultNode)
+		await running
 	})
 
 	it('does not let a late ACK remove or confirm a newer job', async () => {

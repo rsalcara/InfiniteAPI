@@ -28,6 +28,8 @@ export * from './companion-reg-client-utils'
 export * from './connection-presets'
 export * from './tc-token-lifecycle'
 export * from './protocol-wire-capture'
+export * from './direct-recipient'
+export * from './outbound-policy'
 
 // === Identity and Session Management ===
 export * from './contact-picture-identity'

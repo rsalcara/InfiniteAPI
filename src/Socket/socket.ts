@@ -510,6 +510,26 @@ export const makeSocket = (config: SocketConfig) => {
 
 	const pnFromLIDUSync = async (jids: string[]): Promise<LIDMapping[] | undefined> => {
 		const usyncQuery = new USyncQuery().withLIDProtocol().withContext('background')
+		const regularJids = jids.filter(jid => !isLidUser(jid) && isRegularUser(jid))
+		const aliasGroups = await Promise.all(
+			regularJids.map(async jid => {
+				const knownLid = await signalRepository?.lidMapping.getKnownLIDForPN(jid).catch(() => null)
+				return [knownLid, jid].filter((value): value is string => Boolean(value))
+			})
+		)
+		const tokenIds = [...new Set(aliasGroups.flat())]
+		let tcTokenData: Awaited<ReturnType<typeof keys.get<'tctoken'>>> = {}
+		if (tokenIds.length) {
+			try {
+				tcTokenData = await keys.get('tctoken', tokenIds)
+			} catch (error) {
+				// A token enriches USync but is not required to resolve the mapping.
+				// Preserve the base lookup when a custom auth store is temporarily unavailable.
+				logger.debug({ error, count: tokenIds.length }, 'PN-to-LID USync continuing without optional TcToken state')
+			}
+		}
+
+		let regularIndex = 0
 
 		for (const jid of jids) {
 			if (isLidUser(jid)) {
@@ -518,8 +538,11 @@ export const makeSocket = (config: SocketConfig) => {
 			} else {
 				const user = new USyncUser().withId(jid)
 				if (isRegularUser(jid)) {
-					const tcTokenData = await keys.get('tctoken', [jid])
-					const privacyToken = selectNewestUsableTcToken([[jid, tcTokenData[jid]]], tcTokenBucketPolicy)
+					const aliases = aliasGroups[regularIndex++] ?? [jid]
+					const privacyToken = selectNewestUsableTcToken(
+						aliases.map(alias => [alias, tcTokenData[alias]] as const),
+						tcTokenBucketPolicy
+					)
 					if (privacyToken.entry?.token.length) {
 						user.withPrivacyToken(privacyToken.entry.token, privacyToken.entry.timestamp)
 					}

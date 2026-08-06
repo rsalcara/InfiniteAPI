@@ -302,15 +302,20 @@ export const applyProcessedHistorySync = async (
 
 	assertHistoryApplyActive(signal)
 	if (data.tcTokens?.length) {
-		const result = await restoreTcTokensFromHistory({
-			entries: data.tcTokens,
-			keys: keyStore,
-			resolvers: {
-				getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping),
-				getPNForLID: signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
-			}
-		})
-		logger?.debug(result, 'restored trusted-contact token state from history sync')
+		try {
+			const result = await restoreTcTokensFromHistory({
+				entries: data.tcTokens,
+				keys: keyStore,
+				resolvers: {
+					getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping),
+					getPNForLID: signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
+				}
+			})
+			logger?.debug(result, 'restored trusted-contact token state from history sync')
+		} catch (error) {
+			if (strictPersistence) throw error
+			logger?.warn({ error }, 'history sync TcToken restore failed; continuing best-effort for custom auth')
+		}
 	}
 
 	assertHistoryApplyActive(signal)

@@ -42,7 +42,7 @@ import { encodeSignedDeviceIdentity } from '../../Utils/validate-connection'
 import { decodeBinaryNode } from '../../WABinary/decode'
 import { encodeBinaryNode } from '../../WABinary/encode'
 import { getAllBinaryNodeChildren, getBinaryNodeChild } from '../../WABinary/generic-utils'
-import { jidDecode, jidEncode, jidNormalizedUser } from '../../WABinary/jid-utils'
+import { isAnyLidUser, jidDecode, jidEncode, jidNormalizedUser } from '../../WABinary/jid-utils'
 
 // All the Baileys helpers `SignalingBridge` reaches into. The original
 // third-party lib did a runtime `import("@whiskeysockets/baileys")`; we ship
@@ -121,9 +121,9 @@ export class SignalingBridge {
 		this.#baileys = await loadBaileys()
 
 		// Hook auth-state writes so we observe TC tokens as they land.
-		this.#originalKeysSet = this.#sock.authState.keys.set.bind(this.#sock.authState.keys)
+		this.#originalKeysSet = this.#sock.authState.keys.set
 		this.#wrappedKeysSet = async (data: any) => {
-			const result = await this.#originalKeysSet!(data)
+			const result = await this.#originalKeysSet!.call(this.#sock.authState.keys, data)
 			for (const [jid, entry] of Object.entries<any>(data?.tctoken ?? {})) {
 				if (entry?.token instanceof Uint8Array && entry.token.length > 0) {
 					this.#rememberTcToken(jid, entry.token, entry.timestamp)
@@ -760,7 +760,7 @@ export class SignalingBridge {
 	#resolveTcTokenAliases = async (jid: string): Promise<string[]> => {
 		const bare = this.#toBareJid(jid)
 		const mapping = this.#sock.signalRepository?.lidMapping
-		const mapped = bare.endsWith('@lid') ? await mapping?.getPNForLID?.(bare) : await mapping?.getLIDForPN?.(bare)
+		const mapped = isAnyLidUser(bare) ? await mapping?.getPNForLID?.(bare) : await mapping?.getLIDForPN?.(bare)
 		return [...new Set([mapped ? this.#toBareJid(mapped) : undefined, bare].filter(Boolean))] as string[]
 	}
 }
