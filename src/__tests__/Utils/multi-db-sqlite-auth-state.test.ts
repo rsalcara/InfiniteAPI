@@ -769,6 +769,7 @@ describe('useMultiDbSqliteAuthState', () => {
 			// replacement to fail. The signal_kv backup must remain intact.
 			const waDb = store.handle('wa.db')
 			waDb.prepare('DELETE FROM wa_trusted_contacts WHERE jid = ?').run(jid)
+			waDb.prepare('DELETE FROM wa_trusted_contacts_send WHERE jid = ?').run(jid)
 			waDb.exec(`
 				CREATE TRIGGER fail_legacy_tctoken_prune
 				BEFORE INSERT ON wa_trusted_contacts
