@@ -23,6 +23,8 @@ export type MessageDeliveryStateUpdate = {
 	state: MessageDeliveryState
 	/** Epoch milliseconds when this state was observed locally. */
 	timestamp: number
+	/** Server receipt time, when the stanza supplied one. */
+	serverTimestamp?: number
 	/** JID supplied by the consumer, when it differs from the wire identity. */
 	requestedJid?: string
 	/** Canonical PN/LID used for routing or policy evaluation. */

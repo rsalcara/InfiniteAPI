@@ -745,6 +745,54 @@ describe('useMultiDbSqliteAuthState', () => {
 		}
 	})
 
+	it('keeps the legacy tctoken copy until a fallback-only sent prune is committed relationally', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		const jid = 'legacy-cold-recipient@lid'
+		try {
+			const keys = addTransactionCapability(state.keys, silentLogger(), {
+				maxCommitRetries: 1,
+				delayBetweenTriesMs: 1
+			})
+			const authority = keys.trustedContactTokens!
+			await keys.set({
+				tctoken: {
+					[jid]: {
+						token: Buffer.from([9]),
+						timestamp: '400',
+						senderTimestamp: 450,
+						realIssueTimestamp: 440
+					}
+				}
+			})
+
+			// Recreate a pre-relational/legacy-only contact, then force the relational
+			// replacement to fail. The signal_kv backup must remain intact.
+			const waDb = store.handle('wa.db')
+			waDb.prepare('DELETE FROM wa_trusted_contacts WHERE jid = ?').run(jid)
+			waDb.exec(`
+				CREATE TRIGGER fail_legacy_tctoken_prune
+				BEFORE INSERT ON wa_trusted_contacts
+				WHEN NEW.jid = '${jid}'
+				BEGIN
+					SELECT RAISE(ABORT, 'forced relational prune failure');
+				END;
+			`)
+
+			await expect(authority.compareAndPruneSent(jid, 450)).rejects.toThrow('forced relational prune failure')
+			const retained = (await keys.get('tctoken', [jid]))[jid]!
+			expect(Buffer.from(retained.token)).toEqual(Buffer.from([9]))
+			expect(retained.senderTimestamp).toBe(450)
+
+			waDb.exec('DROP TRIGGER fail_legacy_tctoken_prune')
+			await expect(authority.compareAndPruneSent(jid, 450)).resolves.toBe(true)
+			const incomingOnly = (await keys.get('tctoken', [jid]))[jid]!
+			expect(Buffer.from(incomingOnly.token)).toEqual(Buffer.from([9]))
+			expect(incomingOnly.senderTimestamp).toBeUndefined()
+		} finally {
+			close()
+		}
+	})
+
 	it('replaces a multi-JID tctoken bucket atomically and normalizes non-finite timestamps', async () => {
 		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		const firstJid = 'atomic-first@lid'

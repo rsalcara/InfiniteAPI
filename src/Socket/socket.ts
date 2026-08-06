@@ -79,13 +79,15 @@ import {
 	getAllBinaryNodeChildren,
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
+	isAnyPnUser,
 	isLidUser,
 	jidDecode,
 	jidEncode,
+	jidNormalizedUser,
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { BinaryInfo } from '../WAM/BinaryInfo.js'
-import { USyncQuery, USyncUser } from '../WAUSync/'
+import { mapUSyncResultToLIDMappings, mapUSyncResultToOnWhatsApp, USyncQuery, USyncUser } from '../WAUSync/'
 import { getAuthStoreDrainBarrier, registerAuthStoreDrainBarrier } from './auth-store-drain-barrier'
 import { TcpSocketClient, WebSocketClient } from './Client'
 import { executeWMexQuery } from './mex'
@@ -504,7 +506,10 @@ export const makeSocket = (config: SocketConfig) => {
 		const results = await executeUSyncQuery(usyncQuery)
 
 		if (results) {
-			return results.list.filter(a => !!a.contact).map(({ contact, id }) => ({ jid: id, exists: contact as boolean }))
+			const requestedPns = phoneNumber
+				.map(jid => jidNormalizedUser(jid))
+				.filter((jid): jid is string => isAnyPnUser(jid))
+			return mapUSyncResultToOnWhatsApp(results.list, requestedPns)
 		}
 	}
 
@@ -559,7 +564,7 @@ export const makeSocket = (config: SocketConfig) => {
 		const results = await executeUSyncQuery(usyncQuery)
 
 		if (results) {
-			return results.list.filter(a => !!a.lid).map(({ lid, id }) => ({ pn: id, lid: lid as string }))
+			return mapUSyncResultToLIDMappings(results.list, regularJids)
 		}
 
 		return []

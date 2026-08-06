@@ -35,6 +35,7 @@ import {
 	ACCOUNT_RESTRICTED_TEXT,
 	aesDecryptCTR,
 	aesEncryptGCM,
+	buildMessageAccountRestrictionDiagnostic,
 	canonicalizeReceiptChatJid,
 	cleanMessage,
 	cleanupCorruptedSession,
@@ -45,6 +46,7 @@ import {
 	decryptMessageNode,
 	delay,
 	derivePairingCodeKey,
+	emitMessageDeliveryState,
 	encodeBigEndian,
 	encodeSignedDeviceIdentity,
 	extractAddressingContext,
@@ -3549,11 +3551,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					) {
 						if (status === proto.WebMessageInfo.Status.DELIVERY_ACK && key.fromMe && !isNodeFromMe) {
 							for (const id of ids) {
-								ev.emit('message.delivery-state', {
+								emitMessageDeliveryState(ev, {
 									key: { ...key, id },
 									state: 'delivered',
-									timestamp:
-										Number.isFinite(+(attrs.t ?? 0)) && +(attrs.t ?? 0) > 0 ? +(attrs.t ?? 0) * 1000 : Date.now()
+									...(Number.isFinite(+(attrs.t ?? 0)) && +(attrs.t ?? 0) > 0
+										? { serverTimestamp: +(attrs.t ?? 0) * 1000 }
+										: {})
 								})
 							}
 						}
@@ -4525,10 +4528,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		await normalizeKeyLidToPn(key, signalRepository.lidMapping, logger)
 		if (!attrs.error) {
 			if (attrs.id) {
-				ev.emit('message.delivery-state', {
+				emitMessageDeliveryState(ev, {
 					key,
 					state: 'server_ack',
-					timestamp: Date.now(),
 					serverCode: attrs.class || 'message'
 				})
 			}
@@ -4580,20 +4582,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							const cappingState = capping.status === 'fulfilled' ? capping.value : undefined
 							logger.warn(
 								{
-									jid,
-									msgId,
-									code: attrs.error,
-									category: errorPolicy.kind,
-									reason: serverReason,
-									enforcementType: reachoutState?.enforcementType,
-									enforcementEndsAt: reachoutState?.timeEnforcementEnds?.getTime(),
-									isReachoutActive: reachoutState?.isActive,
-									cappingStatus: cappingState?.capping_status,
-									quota: { total: cappingState?.total_quota, used: cappingState?.used_quota },
-									cycleStart: cappingState?.cycle_start_timestamp,
-									cycleEnd: cappingState?.cycle_end_timestamp,
-									reachoutDiagnostic: reachout.status === 'rejected' ? 'lookup-failed' : 'lookup-complete',
-									cappingDiagnostic: capping.status === 'rejected' ? 'lookup-failed' : 'lookup-complete',
+									...buildMessageAccountRestrictionDiagnostic({
+										jid,
+										msgId,
+										code: attrs.error!,
+										reason: serverReason,
+										reachout: reachoutState,
+										capping: cappingState,
+										reachoutLookup: reachout.status === 'rejected' ? 'lookup-failed' : 'lookup-complete',
+										cappingLookup: capping.status === 'rejected' ? 'lookup-failed' : 'lookup-complete'
+									}),
 									action: 'retry-suppressed'
 								},
 								'463 restriction diagnostics refreshed; no automatic retry or bypass was attempted'
@@ -4648,10 +4646,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					}
 				}
 			])
-			ev.emit('message.delivery-state', {
+			emitMessageDeliveryState(ev, {
 				key,
 				state: 'failed',
-				timestamp: Date.now(),
 				serverCode: attrs.error,
 				category: errorPolicy.kind,
 				reason: attrs.reason || 'reason unavailable',

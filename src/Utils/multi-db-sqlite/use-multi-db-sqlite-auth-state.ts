@@ -667,9 +667,11 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 							authKeysClearMutex.mutex(async () => {
 								await recoverPendingAuthKeysClearUnlocked('before-access')
 								let current = readTctokenRelational(jid)
+								let fromLegacyFallback = false
 								if (current.kind === 'miss') {
 									const row = signalStmts.select.get('tctoken', jid) as { value: string } | undefined
 									if (!row) return false
+									fromLegacyFallback = true
 									current = {
 										kind: 'value',
 										value: JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap['tctoken']
@@ -682,34 +684,46 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 									!Buffer.from(current.value.token).equals(Buffer.from(expectedToken))
 								)
 									return false
-								// Cross-file safe ordering: remove the legacy fallback first,
-								// then physically delete the authoritative incoming row. If the
-								// process crashes between the two, wa.db still owns the token; the
-								// inverse order could expose a stale signal_kv token after a miss.
-								await runWithBusyRetry('tctoken prune signal_kv', () => {
-									signalStmts.del.run('tctoken', jid)
-								})
-								await runWithBusyRetry('tctoken prune relational', () => {
-									trustedContactsBackend.replace(jid, {
-										incoming: null,
-										sent:
-											current.value.senderTimestamp !== undefined
-												? {
-														sentTimestamp: finiteNumberOrZero(current.value.senderTimestamp),
-														realIssueTimestamp: finiteNumberOrNull(current.value.realIssueTimestamp)
-													}
-												: null
+								const replaceRelational = () =>
+									runWithBusyRetry('tctoken prune relational', () => {
+										trustedContactsBackend.replace(jid, {
+											incoming: null,
+											sent:
+												current.value.senderTimestamp !== undefined
+													? {
+															sentTimestamp: finiteNumberOrZero(current.value.senderTimestamp),
+															realIssueTimestamp: finiteNumberOrNull(current.value.realIssueTimestamp)
+														}
+													: null
+										})
 									})
-								})
+								const deleteLegacyFallback = () =>
+									runWithBusyRetry('tctoken prune signal_kv', () => {
+										signalStmts.del.run('tctoken', jid)
+									})
+
+								// A pre-relational row is still the only durable copy, so publish its
+								// replacement in wa.db before deleting signal_kv. Existing relational
+								// rows use the inverse order so a crash cannot expose a stale fallback.
+								if (fromLegacyFallback) {
+									await replaceRelational()
+									await deleteLegacyFallback()
+								} else {
+									await deleteLegacyFallback()
+									await replaceRelational()
+								}
+
 								return true
 							}),
 						compareAndPruneSent: (jid, expectedTimestamp) =>
 							authKeysClearMutex.mutex(async () => {
 								await recoverPendingAuthKeysClearUnlocked('before-access')
 								let current = readTctokenRelational(jid)
+								let fromLegacyFallback = false
 								if (current.kind === 'miss') {
 									const row = signalStmts.select.get('tctoken', jid) as { value: string } | undefined
 									if (!row) return false
+									fromLegacyFallback = true
 									current = {
 										kind: 'value',
 										value: JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap['tctoken']
@@ -718,20 +732,31 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 
 								if (current.kind !== 'value' || Number(current.value.senderTimestamp ?? 0) !== expectedTimestamp)
 									return false
-								await runWithBusyRetry('tctoken sent prune signal_kv', () => {
-									signalStmts.del.run('tctoken', jid)
-								})
-								await runWithBusyRetry('tctoken sent prune relational', () => {
-									trustedContactsBackend.replace(jid, {
-										incoming: current.value.token?.length
-											? {
-													token: Buffer.from(current.value.token),
-													timestamp: finiteNumberOrZero(current.value.timestamp)
-												}
-											: null,
-										sent: null
+								const replaceRelational = () =>
+									runWithBusyRetry('tctoken sent prune relational', () => {
+										trustedContactsBackend.replace(jid, {
+											incoming: current.value.token?.length
+												? {
+														token: Buffer.from(current.value.token),
+														timestamp: finiteNumberOrZero(current.value.timestamp)
+													}
+												: null,
+											sent: null
+										})
 									})
-								})
+								const deleteLegacyFallback = () =>
+									runWithBusyRetry('tctoken sent prune signal_kv', () => {
+										signalStmts.del.run('tctoken', jid)
+									})
+
+								if (fromLegacyFallback) {
+									await replaceRelational()
+									await deleteLegacyFallback()
+								} else {
+									await deleteLegacyFallback()
+									await replaceRelational()
+								}
+
 								return true
 							})
 					}

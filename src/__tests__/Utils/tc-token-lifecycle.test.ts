@@ -151,6 +151,7 @@ describe('TcTokenLifecycleService', () => {
 	})
 
 	it('keeps retrying 5xx beyond an arbitrary attempt cap', async () => {
+		jest.useFakeTimers()
 		const { store, values, key } = makeStore()
 		let now = 3_250_000
 		const send = jest.fn(async () => {
@@ -164,16 +165,57 @@ describe('TcTokenLifecycleService', () => {
 			random: () => 0.5
 		})
 
-		await service.enqueue([jid], 3_250)
-		for (let attempt = 1; attempt <= 7; attempt++) {
-			await service.runDueJobs()
-			const job = values.get(key('tctoken-job', jid)) as SignalDataTypeMap['tctoken-job']
-			expect(job).toEqual(expect.objectContaining({ state: 'retry', attemptCount: attempt, lastStatus: 503 }))
-			now = job.nextRetryAt
-		}
+		try {
+			await service.enqueue([jid], 3_250)
+			for (let attempt = 1; attempt <= 7; attempt++) {
+				await service.runDueJobs()
+				const job = values.get(key('tctoken-job', jid)) as SignalDataTypeMap['tctoken-job']
+				expect(job).toEqual(expect.objectContaining({ state: 'retry', attemptCount: attempt, lastStatus: 503 }))
+				now = job.nextRetryAt
+			}
 
-		expect(send).toHaveBeenCalledTimes(7)
-		await service.stop()
+			expect(send).toHaveBeenCalledTimes(7)
+		} finally {
+			await service.stop()
+			jest.useRealTimers()
+		}
+	})
+
+	it('never overlaps attempts for the same durable job while its IQ is unresolved', async () => {
+		jest.useFakeTimers()
+		const { store } = makeStore()
+		let now = 3_400_000
+		let resolveSend!: (value: typeof resultNode) => void
+		const send = jest.fn(
+			() =>
+				new Promise<typeof resultNode>(resolve => {
+					resolveSend = resolve
+				})
+		)
+		const service = new TcTokenLifecycleService({
+			keys: store,
+			resolvers,
+			send,
+			now: () => now,
+			leaseMs: 35_000
+		})
+
+		try {
+			await service.enqueue([jid], 3_400)
+			const firstRun = service.runDueJobs()
+			for (let attempt = 0; attempt < 10 && send.mock.calls.length === 0; attempt++) await Promise.resolve()
+			expect(send).toHaveBeenCalledTimes(1)
+
+			now += 35_001
+			await service.runDueJobs()
+			expect(send).toHaveBeenCalledTimes(1)
+
+			resolveSend(resultNode)
+			await firstRun
+		} finally {
+			await service.stop()
+			jest.useRealTimers()
+		}
 	})
 
 	it('bounds issue callers without discarding the durable job', async () => {

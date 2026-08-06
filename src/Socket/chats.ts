@@ -102,6 +102,7 @@ import {
 	isRegularUser,
 	resolveTcTokenAliases,
 	resolveTcTokenBucketPolicy,
+	resolveUsableTcTokenForAliases,
 	resolveUsableTcTokenForJid
 } from '../Utils/tc-token-utils'
 import {
@@ -825,20 +826,20 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			const normalized = jidNormalizedUser(requestedJid)
 			if (!isRegularUser(normalized)) continue
 
-			let canonicalJid = normalized
+			let aliases = [normalized]
 			try {
-				canonicalJid = (await resolveTcTokenAliases(normalized, { getLIDForPN, getPNForLID }))[0] ?? normalized
+				aliases = await resolveTcTokenAliases(normalized, { getLIDForPN, getPNForLID })
 			} catch (error) {
 				logger.debug({ error, requestedJid }, 'MEX profile LID canonicalization skipped')
 			}
 
+			const canonicalJid = aliases[0] ?? normalized
+
 			if (users.has(canonicalJid)) continue
 
-			const token = await resolveUsableTcTokenForJid({
+			const token = await resolveUsableTcTokenForAliases({
 				authState,
-				jid: canonicalJid,
-				getLIDForPN,
-				getPNForLID,
+				aliases,
 				bucketPolicy: tcTokenBucketPolicy
 			})
 			users.set(canonicalJid, {

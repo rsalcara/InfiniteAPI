@@ -6,7 +6,14 @@ import {
 	withMexPrivacyToken
 } from '../../Socket/mex'
 import type { BinaryNode } from '../../WABinary'
-import { USyncQuery, USyncUser } from '../../WAUSync'
+import {
+	getUSyncLidIdentity,
+	getUSyncPnIdentity,
+	mapUSyncResultToLIDMappings,
+	mapUSyncResultToOnWhatsApp,
+	USyncQuery,
+	USyncUser
+} from '../../WAUSync'
 
 describe('USync/MEX privacy-token serialization', () => {
 	it('keeps an exact copy of the token on an explicitly enriched USync user', () => {
@@ -36,6 +43,77 @@ describe('USync/MEX privacy-token serialization', () => {
 			attrs: { jid: '5511999999999@s.whatsapp.net' },
 			content: []
 		})
+	})
+
+	it('preserves PN and LID identities without redefining the primary row id', () => {
+		const query = new USyncQuery()
+		const result = query.parseUSyncQueryResult({
+			tag: 'iq',
+			attrs: { type: 'result' },
+			content: [
+				{
+					tag: 'usync',
+					attrs: {},
+					content: [
+						{
+							tag: 'list',
+							attrs: {},
+							content: [
+								{
+									tag: 'user',
+									attrs: { pn_jid: '5511999999999@s.whatsapp.net', new_jid: '123456@lid' }
+								}
+							]
+						}
+					]
+				}
+			]
+		})
+
+		const row = result?.list[0]
+		expect(row).toEqual({
+			id: '5511999999999@s.whatsapp.net',
+			pnJid: '5511999999999@s.whatsapp.net',
+			newJid: '123456@lid'
+		})
+		expect(getUSyncPnIdentity(row!)).toBe('5511999999999@s.whatsapp.net')
+		expect(getUSyncLidIdentity(row!)).toBe('123456@lid')
+	})
+
+	it('keeps a LID-only row while refusing to reinterpret it as a PN', () => {
+		const query = new USyncQuery()
+		const result = query.parseUSyncQueryResult({
+			tag: 'iq',
+			attrs: { type: 'result' },
+			content: [
+				{
+					tag: 'usync',
+					attrs: {},
+					content: [
+						{
+							tag: 'list',
+							attrs: {},
+							content: [{ tag: 'user', attrs: { new_jid: '123456@lid', lid: '123456@lid' } }]
+						}
+					]
+				}
+			]
+		})
+
+		const row = result?.list[0]
+		expect(row).toEqual({ id: '123456@lid', newJid: '123456@lid', lid: '123456@lid' })
+		expect(getUSyncPnIdentity(row!)).toBeUndefined()
+		expect(getUSyncLidIdentity(row!)).toBe('123456@lid')
+	})
+
+	it('uses the requested PN only as a single-row fallback for LID-only USync', () => {
+		const row = { id: '123456@lid', newJid: '123456@lid', lid: '123456@lid', contact: true }
+		expect(mapUSyncResultToLIDMappings([row], ['5511999999999@s.whatsapp.net'])).toEqual([
+			{ pn: '5511999999999@s.whatsapp.net', lid: '123456@lid' }
+		])
+		expect(mapUSyncResultToOnWhatsApp([row], ['5511999999999@s.whatsapp.net'])).toEqual([
+			{ jid: '5511999999999@s.whatsapp.net', exists: true }
+		])
 	})
 
 	it('does not add privacy_token to MEX unless the call site opts in', () => {

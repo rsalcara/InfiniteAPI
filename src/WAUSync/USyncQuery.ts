@@ -1,5 +1,5 @@
 import type { USyncQueryProtocol } from '../Types/USync'
-import { type BinaryNode, getBinaryNodeChild } from '../WABinary'
+import { type BinaryNode, getBinaryNodeChild, isAnyLidUser, isAnyPnUser } from '../WABinary'
 import { USyncBotProfileProtocol } from './Protocols/UsyncBotProfileProtocol'
 import { USyncLIDProtocol } from './Protocols/UsyncLIDProtocol'
 import {
@@ -21,6 +21,7 @@ export type USyncContactType = 'in' | 'out' | 'invalid'
  */
 export type USyncQueryResultList = {
 	[protocol: string]: unknown
+	/** Primary identity selected from the row; it is not guaranteed to be a PN. */
 	id: string
 	jid?: string
 	pnJid?: string
@@ -29,6 +30,33 @@ export type USyncQueryResultList = {
 	contactType?: USyncContactType
 	username?: string
 }
+
+export const getUSyncPnIdentity = (row: USyncQueryResultList): string | undefined =>
+	[row.jid, row.pnJid, row.id].find(isAnyPnUser)
+
+export const getUSyncLidIdentity = (row: USyncQueryResultList): string | undefined =>
+	[row.newJid, row.lid, row.id, row.jid].find(isAnyLidUser)
+
+export const mapUSyncResultToLIDMappings = (
+	rows: USyncQueryResultList[],
+	fallbackPns: readonly string[] = []
+): Array<{ pn: string; lid: string }> =>
+	rows.flatMap(row => {
+		const pn = getUSyncPnIdentity(row) ?? (rows.length === 1 && fallbackPns.length === 1 ? fallbackPns[0] : undefined)
+		const lid = getUSyncLidIdentity(row)
+
+		return pn && isAnyPnUser(pn) && lid ? [{ pn, lid }] : []
+	})
+
+export const mapUSyncResultToOnWhatsApp = (
+	rows: USyncQueryResultList[],
+	fallbackPns: readonly string[] = []
+): Array<{ jid: string; exists: boolean }> =>
+	rows.flatMap(row => {
+		const jid = getUSyncPnIdentity(row) ?? (rows.length === 1 && fallbackPns.length === 1 ? fallbackPns[0] : undefined)
+
+		return row.contact && jid && isAnyPnUser(jid) ? [{ jid, exists: row.contact as boolean }] : []
+	})
 
 export type USyncQueryResult = {
 	list: USyncQueryResultList[]
@@ -107,7 +135,7 @@ export class USyncQuery {
 				const pnJid = node?.attrs?.pn_jid
 				const newJid = node?.attrs?.new_jid
 				const lid = node?.attrs?.lid
-				const id = jid || newJid || pnJid
+				const id = jid || pnJid || newJid || lid
 				if (id) {
 					const data = Array.isArray(node?.content)
 						? Object.fromEntries(

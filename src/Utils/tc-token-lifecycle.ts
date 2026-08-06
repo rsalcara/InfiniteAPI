@@ -70,6 +70,7 @@ export class TcTokenLifecycleService {
 	private readonly maxJobsPerTurn: number
 	private readonly waiters = new Map<string, Waiter[]>()
 	private readonly trackedJobIds = new Set<string>()
+	private readonly inFlightJobIds = new Set<string>()
 	private timer?: NodeJS.Timeout
 	private worker?: Promise<void>
 	private rerunRequested = false
@@ -119,14 +120,14 @@ export class TcTokenLifecycleService {
 		const waiter = new Promise<BinaryNode>((resolve, reject) => {
 			const key = this.waiterKey(job)
 			const entry: Waiter = { resolve, reject }
-			// The caller's timeout bounds only this await. The durable job keeps its
-			// own per-IQ timeout and remains recoverable after this waiter expires.
+			// The caller's timeout bounds only this await. The transport query owns
+			// the per-IQ timeout; the durable job remains recoverable afterwards.
 			const remaining = Math.max(1, timeoutMs)
 			entry.timer = setTimeout(() => {
 				const current = this.waiters.get(key)?.filter(candidate => candidate !== entry) ?? []
 				if (current.length) this.waiters.set(key, current)
 				else this.waiters.delete(key)
-				reject(this.timeoutError(job, 'caller-timeout-job-retained'))
+				reject(this.timeoutError(job))
 			}, remaining)
 			entry.timer.unref?.()
 			this.waiters.set(key, [...(this.waiters.get(key) ?? []), entry])
@@ -189,15 +190,15 @@ export class TcTokenLifecycleService {
 		return `${job.canonicalJid}:${job.issueTimestamp}`
 	}
 
-	private timeoutError(job: TcTokenIssueJob, reason: 'caller-timeout-job-retained' | 'iq-attempt-timeout'): Boom {
+	private timeoutError(job: TcTokenIssueJob): Boom {
 		return new Boom('trusted-contact token issue timed out', {
 			statusCode: 408,
 			data: {
 				jid: job.requestedJid,
 				canonicalJid: job.canonicalJid,
-				reason,
+				reason: 'caller-timeout-job-retained',
 				attemptCount: job.attemptCount,
-				action: reason === 'caller-timeout-job-retained' ? 'caller-timeout-job-retained' : 'durable-retry'
+				action: 'caller-timeout-job-retained'
 			}
 		})
 	}
@@ -291,16 +292,24 @@ export class TcTokenLifecycleService {
 	}
 
 	private async process(snapshot: TcTokenIssueJob): Promise<void> {
-		const job = await this.markInFlight(snapshot)
-		if (!job) return
-		this.currentJob = job
+		const jobId = snapshot.canonicalJid
+		if (this.inFlightJobIds.has(jobId)) return
+		this.inFlightJobIds.add(jobId)
+		let job: TcTokenIssueJob | undefined
 		try {
-			const result = await this.sendWithAttemptTimeout(job)
+			const claimed = await this.markInFlight(snapshot)
+			if (!claimed) return
+			job = claimed
+			this.currentJob = claimed
+			// The transport query owns timeout and connection teardown. A local
+			// Promise.race cannot cancel it and would let a retry overlap this IQ.
+			const result = await this.options.send(claimed)
 			if (this.stopped) return
-			await this.complete(job)
-			this.settle(job, result)
+			await this.complete(claimed)
+			this.settle(claimed, result)
 		} catch (error) {
 			if (this.stopped) return
+			if (!job) throw error
 			const status = errorStatus(error)
 			if (status !== undefined && status >= 400 && status < 500 && !isTransientDisconnectStatus(status)) {
 				await this.markTerminal(job, error, status)
@@ -309,22 +318,8 @@ export class TcTokenLifecycleService {
 				await this.markRetry(job, error, status)
 			}
 		} finally {
-			if (this.currentJob === job) this.currentJob = undefined
-		}
-	}
-
-	private async sendWithAttemptTimeout(job: TcTokenIssueJob): Promise<BinaryNode> {
-		let timer: NodeJS.Timeout | undefined
-		try {
-			return await Promise.race([
-				this.options.send(job),
-				new Promise<never>((_resolve, reject) => {
-					timer = setTimeout(() => reject(this.timeoutError(job, 'iq-attempt-timeout')), Math.max(1, job.timeoutMs))
-					timer.unref?.()
-				})
-			])
-		} finally {
-			if (timer) clearTimeout(timer)
+			if (job && this.currentJob === job) this.currentJob = undefined
+			this.inFlightJobIds.delete(jobId)
 		}
 	}
 

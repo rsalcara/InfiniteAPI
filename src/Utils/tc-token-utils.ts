@@ -468,6 +468,29 @@ type TcTokenParams = {
  */
 export type ResolvedTcToken = { buffer?: Buffer; timestamp?: string }
 
+const clearExpiredTcTokenAliases = async (
+	authState: TcTokenParams['authState'],
+	aliases: string[],
+	tcTokenData: Record<string, SignalDataTypeMap['tctoken'] | undefined>,
+	policy?: TcTokenBucketPolicy
+): Promise<void> => {
+	const expired: Record<string, SignalDataTypeMap['tctoken'] | null> = {}
+	for (const alias of aliases) {
+		const candidate = tcTokenData?.[alias]
+		if (!candidate?.token?.length || !isTcTokenExpired(candidate.timestamp, policy)) continue
+		expired[alias] =
+			candidate.senderTimestamp !== undefined
+				? {
+						token: Buffer.alloc(0),
+						senderTimestamp: candidate.senderTimestamp,
+						realIssueTimestamp: candidate.realIssueTimestamp
+					}
+				: null
+	}
+
+	if (Object.keys(expired).length) await authState.keys.set({ tctoken: expired })
+}
+
 /**
  * Shared retrieval + expiry + opportunistic-cleanup pipeline used by both
  * `buildTcTokenFromJid` (sibling-array shape, kept for legacy call sites)
@@ -507,43 +530,40 @@ async function resolveTcTokenForJid({
 		const aliases = getLIDForPN
 			? await resolveTcTokenAliases(jid, { getLIDForPN, getPNForLID })
 			: [jidNormalizedUser(jid)]
-		const tcTokenData = await authState.keys.get('tctoken', aliases)
+		return resolveUsableTcTokenForAliases({ authState, aliases, bucketPolicy })
+	} catch {
+		return {}
+	}
+}
+
+/** Resolves a token from aliases already canonicalized by the call site. */
+export async function resolveUsableTcTokenForAliases({
+	authState,
+	aliases,
+	bucketPolicy
+}: {
+	authState: TcTokenParams['authState']
+	aliases: string[]
+	bucketPolicy?: TcTokenBucketPolicy
+}): Promise<ResolvedTcToken> {
+	try {
+		const normalizedAliases = [...new Set(aliases.map(jidNormalizedUser))]
+		if (!normalizedAliases.length) return {}
+		const tcTokenData = await authState.keys.get('tctoken', normalizedAliases)
 		const selected = selectNewestUsableTcToken(
-			aliases.map(alias => [alias, tcTokenData?.[alias]] as const),
+			normalizedAliases.map(alias => [alias, tcTokenData?.[alias]] as const),
 			bucketPolicy
 		)
 		const entry = selected.entry
-		const tcTokenBuffer = entry?.token
 
-		if (!selected.usable || !tcTokenBuffer?.length) {
-			if (selected.reason === 'expired-token') {
-				const expired: Record<string, SignalDataTypeMap['tctoken'] | null> = {}
-				const expiredAliases = aliases.filter(alias => {
-					const candidate = tcTokenData?.[alias]
-
-					return !!candidate?.token?.length && isTcTokenExpired(candidate.timestamp, bucketPolicy)
-				})
-
-				for (const alias of expiredAliases) {
-					const candidate = tcTokenData[alias]!
-
-					expired[alias] =
-						candidate.senderTimestamp !== undefined
-							? {
-									token: Buffer.alloc(0),
-									senderTimestamp: candidate.senderTimestamp,
-									realIssueTimestamp: candidate.realIssueTimestamp
-								}
-							: null
-				}
-
-				if (Object.keys(expired).length) await authState.keys.set({ tctoken: expired })
-			}
+		if (!selected.usable || !entry?.token?.length) {
+			if (selected.reason === 'expired-token')
+				await clearExpiredTcTokenAliases(authState, normalizedAliases, tcTokenData, bucketPolicy)
 
 			return {}
 		}
 
-		return { buffer: tcTokenBuffer, timestamp: entry?.timestamp }
+		return { buffer: entry.token, timestamp: entry.timestamp }
 	} catch {
 		return {}
 	}
