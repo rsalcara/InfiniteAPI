@@ -312,6 +312,41 @@ describe('extractLidPnFromConversation', () => {
 })
 
 describe('processHistoryMessage', () => {
+	it('extracts incoming and sent trusted-contact token state from conversations', () => {
+		const result = processHistoryMessage({
+			syncType: proto.HistorySync.HistorySyncType.RECENT,
+			conversations: [
+				{
+					id: '5511999999999@s.whatsapp.net',
+					tcToken: Buffer.from([1, 2, 3]),
+					tcTokenTimestamp: 1_700_000_001,
+					tcTokenSenderTimestamp: 1_700_000_002
+				}
+			]
+		})
+
+		expect(result.tcTokens).toEqual([
+			{
+				jid: '5511999999999@s.whatsapp.net',
+				token: Buffer.from([1, 2, 3]),
+				timestamp: 1_700_000_001,
+				senderTimestamp: 1_700_000_002
+			}
+		])
+	})
+
+	it('does not create history token work for groups or incomplete incoming state', () => {
+		const result = processHistoryMessage({
+			syncType: proto.HistorySync.HistorySyncType.RECENT,
+			conversations: [
+				{ id: '120363000000000000@g.us', tcToken: Buffer.from([1]), tcTokenTimestamp: 10 },
+				{ id: '5511888888888@s.whatsapp.net', tcToken: Buffer.from([2]) }
+			]
+		})
+
+		expect(result.tcTokens).toBeUndefined()
+	})
+
 	describe('phoneNumberToLidMappings extraction', () => {
 		it('should extract LID-PN mappings from history sync payload', () => {
 			const historySync: proto.IHistorySync = {

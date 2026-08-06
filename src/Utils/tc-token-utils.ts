@@ -10,6 +10,7 @@ import {
 	isPnUser,
 	jidNormalizedUser
 } from '../WABinary'
+import type { HistoryTcToken } from './history'
 
 // Same phone-number pattern as WABinary's isJidBot, applied against the user
 // part so the check is invariant to @c.us ↔ @s.whatsapp.net normalization.
@@ -148,6 +149,92 @@ export function selectNewestUsableTcToken(
 export type TcTokenIssueAliasGroup = {
 	requestedJid: string
 	aliases: string[]
+}
+
+export type RestoreHistoryTcTokensResult = {
+	restored: number
+	skipped: number
+}
+
+/**
+ * Restores the two independent trusted-contact token halves carried by a
+ * history conversation. Mappings are expected to be committed before this
+ * runs, allowing a PN row to be canonicalized under its LID in the same
+ * durable history apply that owns the checkpoint.
+ */
+export async function restoreTcTokensFromHistory({
+	entries,
+	keys,
+	resolvers
+}: {
+	entries: readonly HistoryTcToken[]
+	keys: SignalKeyStoreWithTransaction
+	resolvers: TcTokenAliasResolvers
+}): Promise<RestoreHistoryTcTokensResult> {
+	let restored = 0
+	let skipped = 0
+
+	for (const entry of entries) {
+		if (!isRegularUser(entry.jid)) {
+			skipped++
+			continue
+		}
+
+		const aliases = await resolveTcTokenAliases(entry.jid, resolvers)
+		const canonicalJid = aliases[0]!
+		const records = aliases.map(id => ({ type: 'tctoken' as const, id }))
+		let applied = false
+		const work = async () => {
+			const current = await keys.get('tctoken', aliases)
+			const existingIncoming = aliases
+				.map(alias => current[alias])
+				.filter(
+					(candidate): candidate is SignalDataTypeMap['tctoken'] =>
+						!!candidate?.token?.length && Number(candidate.timestamp ?? 0) > 0
+				)
+				.sort((left, right) => Number(right.timestamp) - Number(left.timestamp))[0]
+			const existingSent = aliases
+				.map(alias => current[alias])
+				.filter(
+					(candidate): candidate is SignalDataTypeMap['tctoken'] =>
+						candidate?.senderTimestamp !== undefined && Number(candidate.senderTimestamp) > 0
+				)
+				.sort((left, right) => Number(right.senderTimestamp) - Number(left.senderTimestamp))[0]
+
+			const historyIncomingIsNewer =
+				!!entry.token?.length &&
+				Number(entry.timestamp ?? 0) > 0 &&
+				Number(entry.timestamp) >= Number(existingIncoming?.timestamp ?? 0)
+			const historySentIsNewer =
+				Number(entry.senderTimestamp ?? 0) > 0 &&
+				Number(entry.senderTimestamp) >= Number(existingSent?.senderTimestamp ?? 0)
+			if (!historyIncomingIsNewer && !historySentIsNewer && aliases.length === 1) return
+
+			const incoming = historyIncomingIsNewer
+				? { token: Buffer.from(entry.token!), timestamp: String(entry.timestamp) }
+				: existingIncoming
+			const sent = historySentIsNewer
+				? { senderTimestamp: entry.senderTimestamp, realIssueTimestamp: null as number | null }
+				: existingSent
+			const canonical: SignalDataTypeMap['tctoken'] = {
+				token: incoming?.token ? Buffer.from(incoming.token) : Buffer.alloc(0),
+				...(incoming?.timestamp !== undefined ? { timestamp: String(incoming.timestamp) } : {}),
+				...(sent?.senderTimestamp !== undefined ? { senderTimestamp: Number(sent.senderTimestamp) } : {}),
+				...(sent?.realIssueTimestamp !== undefined ? { realIssueTimestamp: sent.realIssueTimestamp } : {})
+			}
+			const bucket: Record<string, SignalDataTypeMap['tctoken'] | null> = { [canonicalJid]: canonical }
+			for (const alias of aliases.slice(1)) bucket[alias] = null
+			await keys.set({ tctoken: bucket })
+			applied = true
+		}
+
+		if (keys.transactWith) await keys.transactWith({ records }, work)
+		else await keys.transaction(work, `history-tctoken:${records.map(record => record.id).join(',')}`)
+		if (applied) restored++
+		else skipped++
+	}
+
+	return { restored, skipped }
 }
 
 /**

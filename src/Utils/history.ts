@@ -20,6 +20,13 @@ import { downloadContentFromMessage } from './messages-media'
 
 const inflatePromise = promisify(inflate)
 
+export type HistoryTcToken = {
+	jid: string
+	token?: Buffer
+	timestamp?: number
+	senderTimestamp?: number
+}
+
 /**
  * Downloads and decompresses history sync data from WhatsApp servers.
  *
@@ -266,6 +273,7 @@ export const processHistoryMessage = (item: proto.IHistorySync, logger?: ILogger
 	const messages: WAMessage[] = []
 	const contacts: Contact[] = []
 	const chats: Chat[] = []
+	const tcTokens: HistoryTcToken[] = []
 
 	// Use Map for O(1) deduplication of LID-PN mappings
 	const lidPnMap = new Map<string, LIDMapping>()
@@ -300,6 +308,15 @@ export const processHistoryMessage = (item: proto.IHistorySync, logger?: ILogger
 		case proto.HistorySync.HistorySyncType.ON_DEMAND:
 			for (const chat of (item.conversations ?? []) as Chat[]) {
 				const chatId = chat.id!
+				const timestamp = chat.tcTokenTimestamp ? toNumber(chat.tcTokenTimestamp) : undefined
+				const senderTimestamp = chat.tcTokenSenderTimestamp ? toNumber(chat.tcTokenSenderTimestamp) : undefined
+				if (isPersonJid(chatId) && ((chat.tcToken?.length && timestamp) || senderTimestamp)) {
+					tcTokens.push({
+						jid: jidNormalizedUser(chatId),
+						...(chat.tcToken?.length && timestamp ? { token: Buffer.from(chat.tcToken), timestamp } : {}),
+						...(senderTimestamp ? { senderTimestamp } : {})
+					})
+				}
 
 				// Source 2: Extract LID-PN mapping from conversation object
 				// This handles cases where the mapping isn't in phoneNumberToLidMappings
@@ -387,6 +404,7 @@ export const processHistoryMessage = (item: proto.IHistorySync, logger?: ILogger
 		contacts,
 		messages,
 		lidPnMappings,
+		...(tcTokens.length ? { tcTokens } : {}),
 		pastParticipants: item.pastParticipants,
 		syncType: item.syncType,
 		progress: item.progress

@@ -382,7 +382,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					const notification = proto.Message.HistorySyncNotification.decode(job.notification)
 					await applyProcessedHistorySync(
 						data,
-						{ signalRepository, logger, messageStoreBackend },
+						{ signalRepository, keyStore: authState.keys, logger, messageStoreBackend },
 						historyBatchController,
 						true,
 						signal

@@ -65,6 +65,7 @@ import {
 } from './multi-db-sqlite'
 import { type OrphanEntry, OrphanQueue } from './orphan-queue'
 import { metrics, recordHistorySyncMessages } from './prometheus-metrics.js'
+import { restoreTcTokensFromHistory } from './tc-token-utils'
 
 type ProcessMessageContext = {
 	shouldProcessHistoryMsg: boolean
@@ -268,12 +269,12 @@ export const mirrorHistoryMessagesToStore = async (
 /** Applies one decoded chunk. The durable coordinator checkpoints only after this resolves. */
 export const applyProcessedHistorySync = async (
 	data: ProcessedHistorySync,
-	context: Pick<ProcessMessageContext, 'signalRepository' | 'logger' | 'messageStoreBackend'>,
+	context: Pick<ProcessMessageContext, 'signalRepository' | 'keyStore' | 'logger' | 'messageStoreBackend'>,
 	batchController?: AdaptiveHistoryBatchController,
 	strictPersistence = true,
 	signal?: AbortSignal
 ): Promise<void> => {
-	const { messageStoreBackend, signalRepository, logger } = context
+	const { keyStore, messageStoreBackend, signalRepository, logger } = context
 	assertHistoryApplyActive(signal)
 	if (data.lidPnMappings?.length) {
 		let result: Awaited<ReturnType<typeof signalRepository.lidMapping.storeLIDPNMappings>> | undefined
@@ -297,6 +298,19 @@ export const applyProcessedHistorySync = async (
 				logger?.info({ stored: result.stored }, 'fallback LID mappings are now available from history sync')
 			}
 		}
+	}
+
+	assertHistoryApplyActive(signal)
+	if (data.tcTokens?.length) {
+		const result = await restoreTcTokensFromHistory({
+			entries: data.tcTokens,
+			keys: keyStore,
+			resolvers: {
+				getLIDForPN: signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping),
+				getPNForLID: signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
+			}
+		})
+		logger?.debug(result, 'restored trusted-contact token state from history sync')
 	}
 
 	assertHistoryApplyActive(signal)
@@ -1553,7 +1567,12 @@ const processMessage = async (
 						// Compatibility path for custom AuthenticationState implementations
 						// that do not expose the optional durable queue capability.
 						const data = await downloadAndProcessHistorySyncNotification(histNotification, options, logger)
-						await applyProcessedHistorySync(data, { signalRepository, logger, messageStoreBackend }, undefined, false)
+						await applyProcessedHistorySync(
+							data,
+							{ signalRepository, keyStore, logger, messageStoreBackend },
+							undefined,
+							false
+						)
 						emitProcessedHistorySync(data, ev, {
 							isLatest,
 							chunkOrder: histNotification.chunkOrder,
