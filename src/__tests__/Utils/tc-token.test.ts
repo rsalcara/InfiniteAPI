@@ -10,6 +10,7 @@ import {
 	parseTrustedContactTokenNotification,
 	pruneTcTokenHalves,
 	resolveIncomingTcTokenAliases,
+	resolveTcTokenBucketPolicy,
 	resolveTcTokenAliases,
 	selectNewestUsableTcToken,
 	selectUsableTcToken,
@@ -80,6 +81,40 @@ describe('independent tctoken pruning', () => {
 		expect(
 			pruneTcTokenHalves({ token: Buffer.from([3]), timestamp: String(expired), senderTimestamp: expired })
 		).toEqual({ next: null, incomingPruned: true, sentPruned: true })
+	})
+})
+
+describe('profile and AB-prop tctoken buckets', () => {
+	it.each(['web', 'native_android'] as const)('keeps captured defaults for %s', profile => {
+		expect(resolveTcTokenBucketPolicy(profile)).toEqual({
+			profile,
+			incoming: { durationSeconds: BUCKET_DURATION, numBuckets: NUM_BUCKETS },
+			sent: { durationSeconds: BUCKET_DURATION, numBuckets: NUM_BUCKETS }
+		})
+	})
+
+	it('applies incoming and sender AB props independently', () => {
+		const policy = resolveTcTokenBucketPolicy('native_android', {
+			tctoken_duration: 60,
+			tctoken_num_buckets: 2,
+			tctoken_duration_sender: 300,
+			tctoken_num_buckets_sender: 6
+		})
+
+		expect(policy.incoming).toEqual({ durationSeconds: 60, numBuckets: 2 })
+		expect(policy.sent).toEqual({ durationSeconds: 300, numBuckets: 6 })
+	})
+
+	it('rejects invalid AB values without changing safe defaults', () => {
+		const policy = resolveTcTokenBucketPolicy('web', {
+			tctoken_duration: 0,
+			tctoken_num_buckets: -1,
+			tctoken_duration_sender: Number.NaN,
+			tctoken_num_buckets_sender: 1.5
+		})
+
+		expect(policy.incoming).toEqual({ durationSeconds: BUCKET_DURATION, numBuckets: NUM_BUCKETS })
+		expect(policy.sent).toEqual({ durationSeconds: BUCKET_DURATION, numBuckets: NUM_BUCKETS })
 	})
 })
 

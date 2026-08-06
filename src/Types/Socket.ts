@@ -39,6 +39,13 @@ export type SocketConfig = {
 	transportProfile: ConnectionTransportProfile
 	/** Required only when transportProfile is native_android. */
 	nativeAndroid?: NativeAndroidTransportConfig
+	/** Server AB-prop overrides for trusted-contact token bucket policy. */
+	tcTokenAbProps?: Partial<{
+		tctoken_duration: number
+		tctoken_num_buckets: number
+		tctoken_duration_sender: number
+		tctoken_num_buckets_sender: number
+	}>
 	/** the WS url to connect to WA */
 	waWebSocketUrl: string | URL
 	/** Fails the connection if the socket times out in this interval */

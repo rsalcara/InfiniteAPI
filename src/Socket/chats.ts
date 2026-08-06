@@ -96,7 +96,12 @@ import {
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
 import processMessage, { applyProcessedHistorySync, emitProcessedHistorySync } from '../Utils/process-message'
-import { buildTcTokenFromJid, buildTcTokenNode, resolveUsableTcTokenForJid } from '../Utils/tc-token-utils'
+import {
+	buildTcTokenFromJid,
+	buildTcTokenNode,
+	resolveTcTokenBucketPolicy,
+	resolveUsableTcTokenForJid
+} from '../Utils/tc-token-utils'
 import {
 	type BinaryNode,
 	getBinaryNodeChild,
@@ -160,6 +165,7 @@ const recordRawMutation = (
 }
 
 export const makeChatsSocket = (config: SocketConfig) => {
+	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(config.transportProfile, config.tcTokenAbProps)
 	const {
 		logger,
 		markOnlineOnConnect,
@@ -649,7 +655,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		for (const jid of jids) {
 			const user = new USyncUser().withId(jid)
-			const privacyToken = await resolveUsableTcTokenForJid({ authState, jid, getLIDForPN, getPNForLID })
+			const privacyToken = await resolveUsableTcTokenForJid({
+				authState,
+				jid,
+				getLIDForPN,
+				getPNForLID,
+				bucketPolicy: tcTokenBucketPolicy
+			})
 			if (privacyToken.buffer) user.withPrivacyToken(privacyToken.buffer, privacyToken.timestamp)
 			usyncQuery.withUser(user)
 		}
@@ -665,7 +677,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		for (const jid of jids) {
 			const user = new USyncUser().withId(jid)
-			const privacyToken = await resolveUsableTcTokenForJid({ authState, jid, getLIDForPN, getPNForLID })
+			const privacyToken = await resolveUsableTcTokenForJid({
+				authState,
+				jid,
+				getLIDForPN,
+				getPNForLID,
+				bucketPolicy: tcTokenBucketPolicy
+			})
 			if (privacyToken.buffer) user.withPrivacyToken(privacyToken.buffer, privacyToken.timestamp)
 			usyncQuery.withUser(user)
 		}
@@ -1326,7 +1344,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				// tctoken and let the server tell us (vs. doing a USync round trip
 				// that fingerprints us as non-WA-Web).
 				getLIDForPN: getKnownLIDForPN,
-				getPNForLID
+				getPNForLID,
+				bucketPolicy: tcTokenBucketPolicy
 			})
 			if (tctokenNode) {
 				pictureNode.content = [tctokenNode]
@@ -1438,7 +1457,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		const normalizedToJid = jidNormalizedUser(toJid)
 		const isUserJid = isAnyPnUser(normalizedToJid) || isAnyLidUser(normalizedToJid)
 		const tcTokenContent = isUserJid
-			? await buildTcTokenFromJid({ authState, jid: normalizedToJid, getLIDForPN, getPNForLID })
+			? await buildTcTokenFromJid({
+					authState,
+					jid: normalizedToJid,
+					getLIDForPN,
+					getPNForLID,
+					bucketPolicy: tcTokenBucketPolicy
+				})
 			: undefined
 
 		return sendNode({

@@ -7,6 +7,7 @@ import {
 	resolveTcTokenAliases,
 	shouldSendNewTcToken,
 	type TcTokenAliasResolvers,
+	type TcTokenBucketPolicy,
 	updateTcTokenIssueState
 } from './tc-token-utils'
 
@@ -21,6 +22,7 @@ export type TcTokenLifecycleOptions = {
 	random?: () => number
 	leaseMs?: number
 	maxJobsPerTurn?: number
+	bucketPolicy?: TcTokenBucketPolicy
 }
 
 type Waiter = {
@@ -129,7 +131,11 @@ export class TcTokenLifecycleService {
 		let selected!: TcTokenIssueJob
 		const work = async () => {
 			const current = (await this.options.keys.get('tctoken-job', [canonicalJid]))[canonicalJid]
-			if (current && (current.state !== 'terminal' || !shouldSendNewTcToken(current.issueTimestamp))) {
+			if (
+				current &&
+				(current.state !== 'terminal' ||
+					!shouldSendNewTcToken(current.issueTimestamp, this.options.bucketPolicy, Math.floor(this.now() / 1000)))
+			) {
 				selected = current
 				return
 			}

@@ -121,6 +121,7 @@ import {
 	pruneTcTokenHalves,
 	resolveIncomingTcTokenAliases,
 	resolveTcTokenAliases,
+	resolveTcTokenBucketPolicy,
 	selectNewestUsableTcToken
 } from '../Utils/tc-token-utils'
 import {
@@ -199,6 +200,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		enableCTWARecovery,
 		sessionCleanupConfig
 	} = config
+	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(config.transportProfile, config.tcTokenAbProps)
 	// Use nullish coalescing to handle partial config properly
 	const autoCleanCorrupted =
 		sessionCleanupConfig?.autoCleanCorrupted ?? DEFAULT_SESSION_CLEANUP_CONFIG.autoCleanCorrupted
@@ -543,7 +545,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			for (const jid of candidates) {
 				const entry = allData[jid]
 				if (!entry) continue
-				const decision = pruneTcTokenHalves(entry)
+				const decision = pruneTcTokenHalves(entry, tcTokenBucketPolicy)
 				if (decision.incomingPruned) {
 					const expectedTimestamp = Number(entry.timestamp ?? 0)
 					if (await trustedContactTokens.compareAndPrune(jid, expectedTimestamp, entry.token)) incomingPruned++
@@ -592,7 +594,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			for (const jid of jidsToCheck) {
 				const entry = allData[jid]
 				if (!entry) continue
-				const decision = pruneTcTokenHalves(entry)
+				const decision = pruneTcTokenHalves(entry, tcTokenBucketPolicy)
 				if (decision.incomingPruned || decision.sentPruned) pruneSet[jid] = decision.next
 				if (decision.next) survivingJids.push(jid)
 			}
@@ -2445,7 +2447,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				resolveTcTokenAliases(normalizedJid, { getLIDForPN, getPNForLID })
 					.then(async aliases => {
 						const tcData = await authState.keys.get('tctoken', aliases)
-						const selected = selectNewestUsableTcToken(aliases.map(alias => [alias, tcData[alias]] as const))
+						const selected = selectNewestUsableTcToken(
+							aliases.map(alias => [alias, tcData[alias]] as const),
+							tcTokenBucketPolicy
+						)
 						if (selected.usable) {
 							const senderTs = unixTimestampSeconds()
 							logTcToken('reissue', { jid: normalizedJid, reason: 'session_refreshed' })

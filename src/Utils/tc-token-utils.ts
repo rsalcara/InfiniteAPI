@@ -37,6 +37,34 @@ const TC_TOKEN_BUCKET_DURATION = 604800
 /** 4 buckets → ~28-day rolling window — matches WA Web AB prop tctoken_num_buckets */
 const TC_TOKEN_NUM_BUCKETS = 4
 
+export type TcTokenAbProps = NonNullable<import('../Types').SocketConfig['tcTokenAbProps']>
+export type TcTokenBucketPolicy = {
+	profile: 'web' | 'native_android'
+	incoming: { durationSeconds: number; numBuckets: number }
+	sent: { durationSeconds: number; numBuckets: number }
+}
+
+const positiveInteger = (value: number | undefined, fallback: number): number =>
+	Number.isSafeInteger(value) && Number(value) > 0 ? Number(value) : fallback
+
+/** Resolves captured profile defaults and applies server AB props independently per direction. */
+export function resolveTcTokenBucketPolicy(
+	profile: TcTokenBucketPolicy['profile'],
+	abProps: TcTokenAbProps = {}
+): TcTokenBucketPolicy {
+	return {
+		profile,
+		incoming: {
+			durationSeconds: positiveInteger(abProps.tctoken_duration, TC_TOKEN_BUCKET_DURATION),
+			numBuckets: positiveInteger(abProps.tctoken_num_buckets, TC_TOKEN_NUM_BUCKETS)
+		},
+		sent: {
+			durationSeconds: positiveInteger(abProps.tctoken_duration_sender, TC_TOKEN_BUCKET_DURATION),
+			numBuckets: positiveInteger(abProps.tctoken_num_buckets_sender, TC_TOKEN_NUM_BUCKETS)
+		}
+	}
+}
+
 /**
  * Check if a received token is expired using WA Web's rolling bucket algorithm.
  * Reference: WAWebTrustedContactsUtils.isTokenExpired
@@ -47,14 +75,19 @@ const TC_TOKEN_NUM_BUCKETS = 4
  * use identical values (604800 / 4), so we use a single function for both.
  * If WA ever diverges these, add a `mode` parameter here.
  */
-export function isTcTokenExpired(timestamp: number | string | null | undefined): boolean {
+export function isTcTokenExpired(
+	timestamp: number | string | null | undefined,
+	policy = resolveTcTokenBucketPolicy('web'),
+	mode: 'incoming' | 'sent' = 'incoming'
+): boolean {
 	if (timestamp === null || timestamp === undefined) return true
 	const ts = typeof timestamp === 'string' ? Number(timestamp) : timestamp
 	if (isNaN(ts)) return true
 	const now = Math.floor(Date.now() / 1000)
-	const currentBucket = Math.floor(now / TC_TOKEN_BUCKET_DURATION)
-	const cutoffBucket = currentBucket - (TC_TOKEN_NUM_BUCKETS - 1)
-	const cutoffTimestamp = cutoffBucket * TC_TOKEN_BUCKET_DURATION
+	const { durationSeconds, numBuckets } = policy[mode]
+	const currentBucket = Math.floor(now / durationSeconds)
+	const cutoffBucket = currentBucket - (numBuckets - 1)
+	const cutoffTimestamp = cutoffBucket * durationSeconds
 	return ts < cutoffTimestamp
 }
 
@@ -78,13 +111,14 @@ export function isStrictlyNewerTcTokenTimestamp(
  * A stale/empty LID row must not mask a valid PN row (or the inverse).
  */
 export function selectUsableTcToken(
-	candidates: Array<SignalDataTypeMap['tctoken'] | null | undefined>
+	candidates: Array<SignalDataTypeMap['tctoken'] | null | undefined>,
+	policy = resolveTcTokenBucketPolicy('web')
 ): TcTokenUsability {
 	const present = candidates.filter((entry): entry is SignalDataTypeMap['tctoken'] => !!entry)
 	if (present.length === 0) return { usable: false, reason: 'missing-token' }
 	const nonEmpty = present.filter(entry => !!entry.token?.length)
 	if (nonEmpty.length === 0) return { usable: false, reason: 'empty-token' }
-	if (nonEmpty.some(entry => !isTcTokenExpired(entry.timestamp))) return { usable: true }
+	if (nonEmpty.some(entry => !isTcTokenExpired(entry.timestamp, policy))) return { usable: true }
 	return { usable: false, reason: 'expired-token' }
 }
 
@@ -94,11 +128,14 @@ export function selectUsableTcToken(
  *
  * Returns true if senderTimestamp is null/undefined or in a previous bucket.
  */
-export function shouldSendNewTcToken(senderTimestamp: number | undefined): boolean {
+export function shouldSendNewTcToken(
+	senderTimestamp: number | undefined,
+	policy = resolveTcTokenBucketPolicy('web'),
+	nowSeconds = Math.floor(Date.now() / 1000)
+): boolean {
 	if (senderTimestamp === undefined) return true
-	const now = Math.floor(Date.now() / 1000)
-	const currentBucket = Math.floor(now / TC_TOKEN_BUCKET_DURATION)
-	const senderBucket = Math.floor(senderTimestamp / TC_TOKEN_BUCKET_DURATION)
+	const currentBucket = Math.floor(nowSeconds / policy.sent.durationSeconds)
+	const senderBucket = Math.floor(senderTimestamp / policy.sent.durationSeconds)
 	return currentBucket > senderBucket
 }
 
@@ -109,9 +146,12 @@ export type PrunedTcToken = {
 }
 
 /** Prunes incoming and sent halves independently; neither half can delete a still-live peer. */
-export function pruneTcTokenHalves(entry: SignalDataTypeMap['tctoken']): PrunedTcToken {
-	const incomingPruned = !!entry.token?.length && isTcTokenExpired(entry.timestamp)
-	const sentPruned = entry.senderTimestamp !== undefined && isTcTokenExpired(entry.senderTimestamp)
+export function pruneTcTokenHalves(
+	entry: SignalDataTypeMap['tctoken'],
+	policy = resolveTcTokenBucketPolicy('web')
+): PrunedTcToken {
+	const incomingPruned = !!entry.token?.length && isTcTokenExpired(entry.timestamp, policy, 'incoming')
+	const sentPruned = entry.senderTimestamp !== undefined && isTcTokenExpired(entry.senderTimestamp, policy, 'sent')
 	const hasIncoming = !!entry.token?.length && !incomingPruned
 	const hasSent = entry.senderTimestamp !== undefined && !sentPruned
 	if (!hasIncoming && !hasSent) return { next: null, incomingPruned, sentPruned }
@@ -165,7 +205,8 @@ export type SelectedTcToken = TcTokenUsability & {
 
 /** Selects the newest non-empty, non-expired incoming token across PN/LID aliases. */
 export function selectNewestUsableTcToken(
-	candidates: ReadonlyArray<readonly [jid: string, entry: SignalDataTypeMap['tctoken'] | null | undefined]>
+	candidates: ReadonlyArray<readonly [jid: string, entry: SignalDataTypeMap['tctoken'] | null | undefined]>,
+	policy = resolveTcTokenBucketPolicy('web')
 ): SelectedTcToken {
 	const present = candidates.filter(
 		(candidate): candidate is readonly [string, SignalDataTypeMap['tctoken']] => !!candidate[1]
@@ -174,7 +215,7 @@ export function selectNewestUsableTcToken(
 	const nonEmpty = present.filter(([, entry]) => !!entry.token?.length)
 	if (nonEmpty.length === 0) return { usable: false, reason: 'empty-token' }
 	const usable = nonEmpty
-		.filter(([, entry]) => !isTcTokenExpired(entry.timestamp))
+		.filter(([, entry]) => !isTcTokenExpired(entry.timestamp, policy))
 		.sort(([, left], [, right]) => Number(right.timestamp ?? 0) - Number(left.timestamp ?? 0))[0]
 	if (!usable) return { usable: false, reason: 'expired-token' }
 
@@ -410,6 +451,7 @@ type TcTokenParams = {
 	}
 	getLIDForPN?: (pn: string) => Promise<string | null>
 	getPNForLID?: (lid: string) => Promise<string | null>
+	bucketPolicy?: TcTokenBucketPolicy
 }
 
 /**
@@ -453,14 +495,18 @@ async function resolveTcTokenForJid({
 	authState,
 	jid,
 	getLIDForPN,
-	getPNForLID
-}: Pick<TcTokenParams, 'authState' | 'jid' | 'getLIDForPN' | 'getPNForLID'>): Promise<ResolvedTcToken> {
+	getPNForLID,
+	bucketPolicy
+}: Pick<TcTokenParams, 'authState' | 'jid' | 'getLIDForPN' | 'getPNForLID' | 'bucketPolicy'>): Promise<ResolvedTcToken> {
 	try {
 		const aliases = getLIDForPN
 			? await resolveTcTokenAliases(jid, { getLIDForPN, getPNForLID })
 			: [jidNormalizedUser(jid)]
 		const tcTokenData = await authState.keys.get('tctoken', aliases)
-		const selected = selectNewestUsableTcToken(aliases.map(alias => [alias, tcTokenData?.[alias]] as const))
+		const selected = selectNewestUsableTcToken(
+			aliases.map(alias => [alias, tcTokenData?.[alias]] as const),
+			bucketPolicy
+		)
 		const entry = selected.entry
 		const tcTokenBuffer = entry?.token
 
@@ -470,7 +516,7 @@ async function resolveTcTokenForJid({
 				const expiredAliases = aliases.filter(alias => {
 					const candidate = tcTokenData?.[alias]
 
-					return !!candidate?.token?.length && isTcTokenExpired(candidate.timestamp)
+					return !!candidate?.token?.length && isTcTokenExpired(candidate.timestamp, bucketPolicy)
 				})
 
 				for (const alias of expiredAliases) {
@@ -500,7 +546,7 @@ async function resolveTcTokenForJid({
 
 /** Returns the current incoming privacy token for an explicitly selected protocol call site. */
 export async function resolveUsableTcTokenForJid(
-	params: Pick<TcTokenParams, 'authState' | 'jid' | 'getLIDForPN' | 'getPNForLID'>
+	params: Pick<TcTokenParams, 'authState' | 'jid' | 'getLIDForPN' | 'getPNForLID' | 'bucketPolicy'>
 ): Promise<ResolvedTcToken> {
 	return resolveTcTokenForJid(params)
 }
@@ -521,9 +567,10 @@ export async function buildTcTokenFromJid({
 	jid,
 	baseContent = [],
 	getLIDForPN,
-	getPNForLID
+	getPNForLID,
+	bucketPolicy
 }: TcTokenParams): Promise<BinaryNode[] | undefined> {
-	const { buffer } = await resolveTcTokenForJid({ authState, jid, getLIDForPN, getPNForLID })
+	const { buffer } = await resolveTcTokenForJid({ authState, jid, getLIDForPN, getPNForLID, bucketPolicy })
 
 	if (!buffer) {
 		return baseContent.length > 0 ? baseContent : undefined
@@ -548,9 +595,10 @@ export async function buildTcTokenNode({
 	authState,
 	jid,
 	getLIDForPN,
-	getPNForLID
+	getPNForLID,
+	bucketPolicy
 }: Omit<TcTokenParams, 'baseContent'>): Promise<BinaryNode | undefined> {
-	const { buffer } = await resolveTcTokenForJid({ authState, jid, getLIDForPN, getPNForLID })
+	const { buffer } = await resolveTcTokenForJid({ authState, jid, getLIDForPN, getPNForLID, bucketPolicy })
 
 	return buffer ? { tag: 'tctoken', attrs: {}, content: buffer } : undefined
 }

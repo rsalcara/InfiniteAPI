@@ -74,6 +74,7 @@ import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/
 import { resolveSessionFetchJids } from '../Utils/session-fetch-addressing'
 import {
 	resolveTcTokenAliases,
+	resolveTcTokenBucketPolicy,
 	resolveUsableTcTokenForJid,
 	selectNewestUsableTcToken,
 	shouldSendNewTcToken
@@ -118,6 +119,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		enforceAnnounceAdmin
 	} = config
 	const sock = makeNewsletterSocket(config)
+	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(config.transportProfile, config.tcTokenAbProps)
 	const {
 		ev,
 		authState,
@@ -290,6 +292,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		keys: authState.keys,
 		resolvers: { getLIDForPN, getPNForLID },
 		logger,
+		bucketPolicy: tcTokenBucketPolicy,
 		send: job => {
 			const t = job.issueTimestamp.toString()
 			return query(
@@ -575,7 +578,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				authState,
 				jid,
 				getLIDForPN,
-				getPNForLID
+				getPNForLID,
+				bucketPolicy: tcTokenBucketPolicy
 			})
 			if (privacyToken.buffer) user.withPrivacyToken(privacyToken.buffer, privacyToken.timestamp)
 			query.withUser(user)
@@ -2157,7 +2161,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				: [destinationJid]
 			const contactTcTokenData = is1on1Send ? await authState.keys.get('tctoken', tcTokenAliases) : {}
 			const selectedToken = selectNewestUsableTcToken(
-				tcTokenAliases.map(alias => [alias, contactTcTokenData[alias]] as const)
+				tcTokenAliases.map(alias => [alias, contactTcTokenData[alias]] as const),
+				tcTokenBucketPolicy
 			)
 			const existingTokenEntry = tcTokenAliases
 				.map(alias => contactTcTokenData[alias])
@@ -2354,7 +2359,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// and Web cannot render interactive messages (no persisted token).
 			if (
 				is1on1Send &&
-				(shouldSendNewTcToken(existingTokenEntry?.senderTimestamp) || existingTokenEntry?.realIssueTimestamp === 0)
+				(shouldSendNewTcToken(existingTokenEntry?.senderTimestamp, tcTokenBucketPolicy) ||
+					existingTokenEntry?.realIssueTimestamp === 0)
 			) {
 				const issueTimestamp = unixTimestampSeconds()
 				logTcToken('reissue', { jid: destinationJid })

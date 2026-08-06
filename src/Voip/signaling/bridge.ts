@@ -18,6 +18,7 @@ export type BaileysSocket = {
 	presenceSubscribe: (jid: string) => Promise<void>
 	ws: any
 	ev: any
+	tcTokenBucketPolicy?: import('../../Utils/tc-token-utils').TcTokenBucketPolicy
 }
 
 export type SignalingBridgeConfig = {
@@ -696,7 +697,7 @@ export class SignalingBridge {
 
 	#rememberTcToken = (jid: string, token: Uint8Array, timestamp = ''): void => {
 		const bareJid = this.#toBareJid(jid)
-		if (!token.length || isTcTokenExpired(timestamp)) return
+		if (!token.length || isTcTokenExpired(timestamp, this.#sock.tcTokenBucketPolicy)) return
 		this.#observedTcTokens.set(bareJid, { token: Buffer.from(token), timestamp })
 		const waiters = this.#pendingTcTokenWaiters.get(bareJid)
 		if (waiters?.length) {
@@ -737,14 +738,16 @@ export class SignalingBridge {
 		const aliases = await this.#resolveTcTokenAliases(jid)
 		for (const alias of aliases) {
 			const observed = this.#observedTcTokens.get(alias)
-			if (observed?.token.length && !isTcTokenExpired(observed.timestamp)) return Buffer.from(observed.token)
+			if (observed?.token.length && !isTcTokenExpired(observed.timestamp, this.#sock.tcTokenBucketPolicy)) {
+				return Buffer.from(observed.token)
+			}
 		}
 
 		try {
 			const data = await this.#sock.authState.keys.get('tctoken', aliases)
 			for (const alias of aliases) {
 				const entry = data[alias]
-				if (entry?.token?.length && !isTcTokenExpired(entry.timestamp)) {
+				if (entry?.token?.length && !isTcTokenExpired(entry.timestamp, this.#sock.tcTokenBucketPolicy)) {
 					this.#rememberTcToken(alias, entry.token, entry.timestamp)
 					return entry.token
 				}

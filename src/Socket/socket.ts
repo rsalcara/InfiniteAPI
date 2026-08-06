@@ -64,7 +64,7 @@ import {
 	recordConnectionRestart
 } from '../Utils/prometheus-metrics'
 import { createExpectedSocketTeardownError, isExpectedSocketTeardownError } from '../Utils/socket-teardown'
-import { isRegularUser, selectNewestUsableTcToken } from '../Utils/tc-token-utils'
+import { isRegularUser, resolveTcTokenBucketPolicy, selectNewestUsableTcToken } from '../Utils/tc-token-utils'
 import {
 	createUnifiedSessionManager,
 	extractServerTime,
@@ -119,6 +119,7 @@ export const makeSocket = (config: SocketConfig) => {
 	} = config
 	const transportSession = resolveTransportSession(config, authState.creds)
 	const isNativeAndroid = transportSession.profile === 'native_android'
+	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(transportSession.profile, config.tcTokenAbProps)
 	let closed = false
 	const pairingCodeMutex = makeMutex()
 	// ClientPayload must use the resolved, persisted native identity rather than
@@ -518,7 +519,7 @@ export const makeSocket = (config: SocketConfig) => {
 				const user = new USyncUser().withId(jid)
 				if (isRegularUser(jid)) {
 					const tcTokenData = await keys.get('tctoken', [jid])
-					const privacyToken = selectNewestUsableTcToken([[jid, tcTokenData[jid]]])
+					const privacyToken = selectNewestUsableTcToken([[jid, tcTokenData[jid]]], tcTokenBucketPolicy)
 					if (privacyToken.entry?.token.length) {
 						user.withPrivacyToken(privacyToken.entry.token, privacyToken.entry.timestamp)
 					}
@@ -2539,6 +2540,7 @@ export const makeSocket = (config: SocketConfig) => {
 		ws,
 		ev,
 		authState: { creds, keys, historySync: authState.historySync },
+		tcTokenBucketPolicy,
 		signalRepository,
 		sessionCleanup,
 		sessionActivityTracker,
