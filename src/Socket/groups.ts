@@ -2,7 +2,7 @@ import { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto/index.js'
 import type { GroupMetadata, GroupParticipant, ParticipantAction, SocketConfig, WAMessageKey } from '../Types'
 import { WAMessageAddressingMode, WAMessageStubType } from '../Types'
-import { generateMessageIDV2, resolveLidToPn, unixTimestampSeconds } from '../Utils'
+import { captureProtocolWire, generateMessageIDV2, resolveLidToPn, unixTimestampSeconds } from '../Utils'
 import {
 	type BinaryNode,
 	getBinaryNodeChild,
@@ -17,7 +17,7 @@ import { makeChatsSocket } from './chats'
 
 export const makeGroupsSocket = (config: SocketConfig) => {
 	const sock = makeChatsSocket(config)
-	const { authState, ev, query, upsertMessage } = sock
+	const { authState, ev, generateMessageTag, query, upsertMessage } = sock
 	const { signalRepository } = sock
 	const { logger } = config
 
@@ -58,16 +58,25 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 		return metadata
 	}
 
-	const groupQuery = async (jid: string, type: 'get' | 'set', content: BinaryNode[]) =>
-		query({
+	const groupQuery = async (
+		jid: string,
+		type: 'get' | 'set',
+		content: BinaryNode[],
+		captureKind?: 'legacy_group_create'
+	) => {
+		const node: BinaryNode = {
 			tag: 'iq',
 			attrs: {
+				id: generateMessageTag(),
 				type,
 				xmlns: 'w:g2',
 				to: jid
 			},
 			content
-		})
+		}
+		if (captureKind) await captureProtocolWire(config.protocolWireCapture, captureKind, node, logger)
+		return query(node)
+	}
 
 	const groupMetadata = async (jid: string) => {
 		const result = await groupQuery(jid, 'get', [{ tag: 'query', attrs: { request: 'interactive' } }])
@@ -129,19 +138,24 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 		groupMetadata,
 		groupCreate: async (subject: string, participants: string[]) => {
 			const key = generateMessageIDV2()
-			const result = await groupQuery('@g.us', 'set', [
-				{
-					tag: 'create',
-					attrs: {
-						subject,
-						key
-					},
-					content: participants.map(jid => ({
-						tag: 'participant',
-						attrs: { jid }
-					}))
-				}
-			])
+			const result = await groupQuery(
+				'@g.us',
+				'set',
+				[
+					{
+						tag: 'create',
+						attrs: {
+							subject,
+							key
+						},
+						content: participants.map(jid => ({
+							tag: 'participant',
+							attrs: { jid }
+						}))
+					}
+				],
+				'legacy_group_create'
+			)
 			return normalizeGroupMetadata(extractGroupMetadata(result))
 		},
 		groupLeave: async (id: string) => {

@@ -37,7 +37,8 @@ export const mapParticipantFanout = async <T, R>(
 ): Promise<R[]> => {
 	const max = options.max ?? MAX_PARTICIPANT_FANOUT
 	const concurrency = options.concurrency ?? PARTICIPANT_FANOUT_CONCURRENCY
-	if (!Number.isInteger(concurrency) || concurrency < 1) throw new Boom('Participant fanout concurrency must be positive')
+	if (!Number.isInteger(concurrency) || concurrency < 1)
+		throw new Boom('Participant fanout concurrency must be positive')
 	if (items.length > max) {
 		throw new Boom(`Participant fanout exceeds limit (${items.length}/${max})`, { statusCode: 413 })
 	}

@@ -497,7 +497,10 @@ async function resolveTcTokenForJid({
 	getLIDForPN,
 	getPNForLID,
 	bucketPolicy
-}: Pick<TcTokenParams, 'authState' | 'jid' | 'getLIDForPN' | 'getPNForLID' | 'bucketPolicy'>): Promise<ResolvedTcToken> {
+}: Pick<
+	TcTokenParams,
+	'authState' | 'jid' | 'getLIDForPN' | 'getPNForLID' | 'bucketPolicy'
+>): Promise<ResolvedTcToken> {
 	try {
 		const aliases = getLIDForPN
 			? await resolveTcTokenAliases(jid, { getLIDForPN, getPNForLID })

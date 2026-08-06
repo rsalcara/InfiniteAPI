@@ -24,6 +24,7 @@ import {
 	assertMediaContent,
 	assertMeId,
 	bindWaitForEvent,
+	captureProtocolWire,
 	decryptMediaRetryData,
 	DEF_MEDIA_HOST,
 	encodeNewsletterMessage,
@@ -940,6 +941,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		if (!recipientJids.length) {
 			return { nodes: [] as BinaryNode[], shouldIncludeDeviceIdentity: false }
 		}
+
 		const canonicalRecipients = dedupeParticipantFanout(
 			await mapParticipantFanout(recipientJids, jid => canonicalizeParticipantFanoutRecipient(jid, getLIDForPN)),
 			jid => jid
@@ -1052,20 +1054,20 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const nodes = (
 				await mapParticipantFanout(recipients, recipient =>
 					encryptionMutex.mutex(recipient, async () => {
-							try {
-								const { type, ciphertext } = await signalRepository.encryptMessage({
-									jid: recipient,
-									data: distributionBytes
-								})
-								return {
-									tag: 'to',
-									attrs: { jid: recipient },
-									content: [{ tag: 'enc', attrs: { v: '2', type }, content: ciphertext }]
-								} as BinaryNode
-							} catch (err) {
-								logger.error({ recipient, err }, 'failed to encrypt live-location key distribution')
-								return null
-							}
+						try {
+							const { type, ciphertext } = await signalRepository.encryptMessage({
+								jid: recipient,
+								data: distributionBytes
+							})
+							return {
+								tag: 'to',
+								attrs: { jid: recipient },
+								content: [{ tag: 'enc', attrs: { v: '2', type }, content: ciphertext }]
+							} as BinaryNode
+						} catch (err) {
+							logger.error({ recipient, err }, 'failed to encrypt live-location key distribution')
+							return null
+						}
 					})
 				)
 			).filter((node): node is BinaryNode => node !== null)
@@ -2337,6 +2339,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// Stage the plaintext before transmission. A companion can return a retry
 			// receipt while sendNode is still awaiting the server ACK; caching after the
 			// await leaves that receipt with no payload to re-encrypt.
+			if (isRetryResend) {
+				await captureProtocolWire(config.protocolWireCapture, 'direct_retry', stanza, logger)
+			}
+
 			await transmitWithRetryPayload({
 				manager: messageRetryManager,
 				to: jidNormalizedUser(destinationJid),

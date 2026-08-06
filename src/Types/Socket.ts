@@ -13,6 +13,13 @@ import type { ConnectionTransportProfile, NativeAndroidTransportConfig } from '.
 export type WAVersion = [number, number, number]
 export type WABrowserDescription = [string, string, string]
 
+export type ProtocolWireCapture = {
+	kind: 'direct_retry' | 'legacy_group_create'
+	node: import('../WABinary').BinaryNode
+	encoded: Buffer
+	capturedAt: number
+}
+
 export type CacheStore = {
 	/** get a cached key and change the stats */
 	get<T>(key: string): Promise<T> | T | undefined
@@ -46,6 +53,8 @@ export type SocketConfig = {
 		tctoken_duration_sender: number
 		tctoken_num_buckets_sender: number
 	}>
+	/** Opt-in pre-send capture for protocol forensics. Payloads may contain ciphertext or user metadata. */
+	protocolWireCapture?: (capture: ProtocolWireCapture) => void | Promise<void>
 	/** the WS url to connect to WA */
 	waWebSocketUrl: string | URL
 	/** Fails the connection if the socket times out in this interval */
