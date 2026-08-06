@@ -16,6 +16,7 @@ export type TcTokenIssueJob = SignalDataTypeMap['tctoken-job']
 export type TcTokenLifecycleOptions = {
 	keys: SignalKeyStoreWithTransaction
 	resolvers: TcTokenAliasResolvers
+	/** Must honor job.timeoutMs and settle when that transport attempt ends. */
 	send: (job: TcTokenIssueJob) => Promise<BinaryNode>
 	logger?: ILogger
 	now?: () => number
@@ -35,6 +36,9 @@ const RETRY_BASE_MS = 1_000
 const RETRY_MAX_MS = 60_000
 const DEFAULT_LEASE_MS = 35_000
 const DEFAULT_TIMEOUT_MS = 32_000
+
+const normalizeTimeoutMs = (timeoutMs: number): number =>
+	Number.isFinite(timeoutMs) ? Math.max(1, Math.trunc(timeoutMs)) : DEFAULT_TIMEOUT_MS
 
 const isTransientDisconnectStatus = (status: number | undefined): boolean =>
 	status === DisconnectReason.timedOut || status === DisconnectReason.connectionClosed
@@ -166,7 +170,7 @@ export class TcTokenLifecycleService {
 				attemptCount: 0,
 				nextRetryAt: now,
 				leaseUntil: 0,
-				timeoutMs,
+				timeoutMs: normalizeTimeoutMs(timeoutMs),
 				createdAt: now,
 				updatedAt: now
 			}
@@ -303,7 +307,8 @@ export class TcTokenLifecycleService {
 			this.currentJob = claimed
 			// The transport query owns timeout and connection teardown. A local
 			// Promise.race cannot cancel it and would let a retry overlap this IQ.
-			const result = await this.options.send(claimed)
+			const transportJob = { ...claimed, timeoutMs: normalizeTimeoutMs(claimed.timeoutMs) }
+			const result = await this.options.send(transportJob)
 			if (this.stopped) return
 			await this.complete(claimed)
 			this.settle(claimed, result)

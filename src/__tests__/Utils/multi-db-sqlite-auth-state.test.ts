@@ -794,6 +794,88 @@ describe('useMultiDbSqliteAuthState', () => {
 		}
 	})
 
+	it('uses a recoverable tombstone when an incoming-only legacy prune fails between databases', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		const jid = 'legacy-incoming-only@lid'
+		try {
+			const keys = addTransactionCapability(state.keys, silentLogger(), {
+				maxCommitRetries: 1,
+				delayBetweenTriesMs: 1
+			})
+			const authority = keys.trustedContactTokens!
+			await keys.set({ tctoken: { [jid]: { token: Buffer.from([7]), timestamp: '700' } } })
+
+			const waDb = store.handle('wa.db')
+			waDb.prepare('DELETE FROM wa_trusted_contacts WHERE jid = ?').run(jid)
+			waDb.prepare('DELETE FROM wa_trusted_contacts_send WHERE jid = ?').run(jid)
+			const signalDb = store.handle('axolotl.db')
+			signalDb.exec(`
+				CREATE TRIGGER fail_incoming_legacy_delete
+				BEFORE DELETE ON signal_kv
+				WHEN OLD.type = 'tctoken' AND OLD.id = '${jid}'
+				BEGIN
+					SELECT RAISE(ABORT, 'forced legacy incoming delete failure');
+				END;
+			`)
+
+			await expect(authority.compareAndPrune(jid, 700, Buffer.from([7]))).rejects.toThrow(
+				'forced legacy incoming delete failure'
+			)
+			expect((await keys.get('tctoken', [jid]))[jid]).toBeUndefined()
+			expect(new TrustedContactsBackend(waDb).getIncoming(jid)).toEqual({ token: Buffer.alloc(0), timestamp: 0 })
+			expect(signalDb.prepare("SELECT id FROM signal_kv WHERE type = 'tctoken' AND id = ?").get(jid)).toBeDefined()
+
+			signalDb.exec('DROP TRIGGER fail_incoming_legacy_delete')
+			await expect(authority.compareAndPrune(jid, 700, Buffer.from([7]))).resolves.toBe(true)
+			expect((await keys.get('tctoken', [jid]))[jid]).toBeUndefined()
+			expect(new TrustedContactsBackend(waDb).getIncoming(jid)).toBeNull()
+			expect(signalDb.prepare("SELECT id FROM signal_kv WHERE type = 'tctoken' AND id = ?").get(jid)).toBeUndefined()
+		} finally {
+			close()
+		}
+	})
+
+	it('uses a recoverable tombstone when a sent-only legacy prune fails between databases', async () => {
+		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		const jid = 'legacy-sent-only@lid'
+		try {
+			const keys = addTransactionCapability(state.keys, silentLogger(), {
+				maxCommitRetries: 1,
+				delayBetweenTriesMs: 1
+			})
+			const authority = keys.trustedContactTokens!
+			await keys.set({
+				tctoken: { [jid]: { token: Buffer.alloc(0), senderTimestamp: 800, realIssueTimestamp: 790 } }
+			})
+
+			const waDb = store.handle('wa.db')
+			waDb.prepare('DELETE FROM wa_trusted_contacts WHERE jid = ?').run(jid)
+			waDb.prepare('DELETE FROM wa_trusted_contacts_send WHERE jid = ?').run(jid)
+			const signalDb = store.handle('axolotl.db')
+			signalDb.exec(`
+				CREATE TRIGGER fail_sent_legacy_delete
+				BEFORE DELETE ON signal_kv
+				WHEN OLD.type = 'tctoken' AND OLD.id = '${jid}'
+				BEGIN
+					SELECT RAISE(ABORT, 'forced legacy sent delete failure');
+				END;
+			`)
+
+			await expect(authority.compareAndPruneSent(jid, 800)).rejects.toThrow('forced legacy sent delete failure')
+			expect((await keys.get('tctoken', [jid]))[jid]).toBeUndefined()
+			expect(new TrustedContactsBackend(waDb).getIncoming(jid)).toEqual({ token: Buffer.alloc(0), timestamp: 0 })
+			expect(signalDb.prepare("SELECT id FROM signal_kv WHERE type = 'tctoken' AND id = ?").get(jid)).toBeDefined()
+
+			signalDb.exec('DROP TRIGGER fail_sent_legacy_delete')
+			await expect(authority.compareAndPruneSent(jid, 800)).resolves.toBe(true)
+			expect((await keys.get('tctoken', [jid]))[jid]).toBeUndefined()
+			expect(new TrustedContactsBackend(waDb).getIncoming(jid)).toBeNull()
+			expect(signalDb.prepare("SELECT id FROM signal_kv WHERE type = 'tctoken' AND id = ?").get(jid)).toBeUndefined()
+		} finally {
+			close()
+		}
+	})
+
 	it('replaces a multi-JID tctoken bucket atomically and normalizes non-finite timestamps', async () => {
 		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		const firstJid = 'atomic-first@lid'

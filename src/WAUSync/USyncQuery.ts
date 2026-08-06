@@ -1,5 +1,5 @@
 import type { USyncQueryProtocol } from '../Types/USync'
-import { type BinaryNode, getBinaryNodeChild, isAnyLidUser, isAnyPnUser } from '../WABinary'
+import { type BinaryNode, getBinaryNodeChild, isAnyLidUser, isAnyPnUser, jidNormalizedUser } from '../WABinary'
 import { USyncBotProfileProtocol } from './Protocols/UsyncBotProfileProtocol'
 import { USyncLIDProtocol } from './Protocols/UsyncLIDProtocol'
 import {
@@ -37,12 +37,21 @@ export const getUSyncPnIdentity = (row: USyncQueryResultList): string | undefine
 export const getUSyncLidIdentity = (row: USyncQueryResultList): string | undefined =>
 	[row.newJid, row.lid, row.id, row.jid].find(isAnyLidUser)
 
+const getSingleFallbackPn = (
+	rows: readonly USyncQueryResultList[],
+	fallbackPns: readonly string[]
+): string | undefined => {
+	if (rows.length !== 1 || fallbackPns.length !== 1) return undefined
+	const normalized = jidNormalizedUser(fallbackPns[0])
+	return isAnyPnUser(normalized) ? normalized : undefined
+}
+
 export const mapUSyncResultToLIDMappings = (
 	rows: USyncQueryResultList[],
 	fallbackPns: readonly string[] = []
 ): Array<{ pn: string; lid: string }> =>
 	rows.flatMap(row => {
-		const pn = getUSyncPnIdentity(row) ?? (rows.length === 1 && fallbackPns.length === 1 ? fallbackPns[0] : undefined)
+		const pn = getUSyncPnIdentity(row) ?? getSingleFallbackPn(rows, fallbackPns)
 		const lid = getUSyncLidIdentity(row)
 
 		return pn && isAnyPnUser(pn) && lid ? [{ pn, lid }] : []
@@ -53,7 +62,7 @@ export const mapUSyncResultToOnWhatsApp = (
 	fallbackPns: readonly string[] = []
 ): Array<{ jid: string; exists: boolean }> =>
 	rows.flatMap(row => {
-		const jid = getUSyncPnIdentity(row) ?? (rows.length === 1 && fallbackPns.length === 1 ? fallbackPns[0] : undefined)
+		const jid = getUSyncPnIdentity(row) ?? getSingleFallbackPn(rows, fallbackPns)
 
 		return row.contact && jid && isAnyPnUser(jid) ? [{ jid, exists: row.contact as boolean }] : []
 	})

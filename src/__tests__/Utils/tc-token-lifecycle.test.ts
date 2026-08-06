@@ -218,6 +218,18 @@ describe('TcTokenLifecycleService', () => {
 		}
 	})
 
+	it('normalizes a zero timeout before persisting and invoking the transport', async () => {
+		const { store, values, key } = makeStore()
+		const send = jest.fn(async () => resultNode)
+		const service = new TcTokenLifecycleService({ keys: store, resolvers, send, now: () => 3_450_000 })
+
+		await service.enqueue([jid], 3_450, 0)
+		await service.runDueJobs()
+		expect(send).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 1 }))
+		expect(values.has(key('tctoken-job', jid))).toBe(false)
+		await service.stop()
+	})
+
 	it('bounds issue callers without discarding the durable job', async () => {
 		const { store, values, key } = makeStore()
 		let resolveSend!: (value: typeof resultNode) => void

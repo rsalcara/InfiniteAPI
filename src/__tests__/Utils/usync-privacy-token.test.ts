@@ -116,6 +116,17 @@ describe('USync/MEX privacy-token serialization', () => {
 		])
 	})
 
+	it('normalizes a single @c.us fallback before mapping a LID-only row', () => {
+		const row = { id: '123456@lid', lid: '123456@lid', contact: true }
+
+		expect(mapUSyncResultToLIDMappings([row], ['5511999999999@c.us'])).toEqual([
+			{ pn: '5511999999999@s.whatsapp.net', lid: '123456@lid' }
+		])
+		expect(mapUSyncResultToOnWhatsApp([row], ['5511999999999@c.us'])).toEqual([
+			{ jid: '5511999999999@s.whatsapp.net', exists: true }
+		])
+	})
+
 	it('does not add privacy_token to MEX unless the call site opts in', () => {
 		const variables = { user_id: '123@lid' }
 
