@@ -141,7 +141,9 @@ export type RecordRef = {
 export type TrustedContactTokenStore = {
 	readonly authoritative: true
 	listIncoming(): Array<{ jid: string; timestamp: number }>
+	listSent(): Array<{ jid: string; timestamp: number }>
 	compareAndPrune(jid: string, expectedTimestamp: number, expectedToken: Uint8Array): Promise<boolean>
+	compareAndPruneSent(jid: string, expectedTimestamp: number): Promise<boolean>
 }
 
 /**

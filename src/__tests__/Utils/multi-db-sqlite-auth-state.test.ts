@@ -735,6 +735,11 @@ describe('useMultiDbSqliteAuthState', () => {
 			const backend = new TrustedContactsBackend(store.handle('wa.db'))
 			expect(backend.getIncoming(sentJid)).toBeNull()
 			expect(backend.getSent(sentJid)).toEqual({ sentTimestamp: 250, realIssueTimestamp: 240 })
+			expect(authority!.listSent()).toContainEqual({ jid: sentJid, timestamp: 250 })
+			expect(await authority!.compareAndPruneSent(sentJid, 249)).toBe(false)
+			expect(await authority!.compareAndPruneSent(sentJid, 250)).toBe(true)
+			expect((await keys.get('tctoken', [sentJid]))[sentJid]).toBeUndefined()
+			expect(backend.getSent(sentJid)).toBeNull()
 		} finally {
 			close()
 		}

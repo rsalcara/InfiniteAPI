@@ -102,6 +102,31 @@ export function shouldSendNewTcToken(senderTimestamp: number | undefined): boole
 	return currentBucket > senderBucket
 }
 
+export type PrunedTcToken = {
+	next: SignalDataTypeMap['tctoken'] | null
+	incomingPruned: boolean
+	sentPruned: boolean
+}
+
+/** Prunes incoming and sent halves independently; neither half can delete a still-live peer. */
+export function pruneTcTokenHalves(entry: SignalDataTypeMap['tctoken']): PrunedTcToken {
+	const incomingPruned = !!entry.token?.length && isTcTokenExpired(entry.timestamp)
+	const sentPruned = entry.senderTimestamp !== undefined && isTcTokenExpired(entry.senderTimestamp)
+	const hasIncoming = !!entry.token?.length && !incomingPruned
+	const hasSent = entry.senderTimestamp !== undefined && !sentPruned
+	if (!hasIncoming && !hasSent) return { next: null, incomingPruned, sentPruned }
+
+	return {
+		next: {
+			token: hasIncoming ? Buffer.from(entry.token) : Buffer.alloc(0),
+			...(hasIncoming && entry.timestamp !== undefined ? { timestamp: entry.timestamp } : {}),
+			...(hasSent ? { senderTimestamp: entry.senderTimestamp, realIssueTimestamp: entry.realIssueTimestamp } : {})
+		},
+		incomingPruned,
+		sentPruned
+	}
+}
+
 export type TcTokenAliasResolvers = {
 	getLIDForPN: (pn: string) => Promise<string | null>
 	getPNForLID?: (lid: string) => Promise<string | null>

@@ -658,6 +658,11 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				? {
 						authoritative: true,
 						listIncoming: () => trustedContactsBackend.listIncoming(),
+						listSent: () =>
+							trustedContactsBackend.listSentJids().flatMap(jid => {
+								const sent = trustedContactsBackend.getSent(jid)
+								return sent ? [{ jid, timestamp: sent.sentTimestamp }] : []
+							}),
 						compareAndPrune: (jid, expectedTimestamp, expectedToken) =>
 							authKeysClearMutex.mutex(async () => {
 								await recoverPendingAuthKeysClearUnlocked('before-access')
@@ -694,6 +699,31 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 														realIssueTimestamp: finiteNumberOrNull(current.value.realIssueTimestamp)
 													}
 												: null
+									})
+								})
+								return true
+							}),
+						compareAndPruneSent: (jid, expectedTimestamp) =>
+							authKeysClearMutex.mutex(async () => {
+								await recoverPendingAuthKeysClearUnlocked('before-access')
+								const current = readTctokenRelational(jid)
+								if (
+									current.kind !== 'value' ||
+									Number(current.value.senderTimestamp ?? 0) !== expectedTimestamp
+								)
+									return false
+								await runWithBusyRetry('tctoken sent prune signal_kv', () => {
+									signalStmts.del.run('tctoken', jid)
+								})
+								await runWithBusyRetry('tctoken sent prune relational', () => {
+									trustedContactsBackend.replace(jid, {
+										incoming: current.value.token?.length
+											? {
+													token: Buffer.from(current.value.token),
+													timestamp: finiteNumberOrZero(current.value.timestamp)
+												}
+											: null,
+										sent: null
 									})
 								})
 								return true

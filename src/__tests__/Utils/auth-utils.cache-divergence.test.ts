@@ -142,6 +142,7 @@ describe('makeCacheableSignalKeyStore — cache divergence on store failure (H6)
 			trustedContactTokens: {
 				authoritative: true,
 				listIncoming: () => (durable ? [{ jid, timestamp: 100 }] : []),
+				listSent: () => [],
 				compareAndPrune: async (_jid, expectedTimestamp, expectedToken) => {
 					if (
 						!durable ||
@@ -151,7 +152,8 @@ describe('makeCacheableSignalKeyStore — cache divergence on store failure (H6)
 						return false
 					durable = undefined
 					return true
-				}
+				},
+				compareAndPruneSent: async () => false
 			},
 			async get(type, ids) {
 				const out: Record<string, any> = {}

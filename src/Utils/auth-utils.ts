@@ -198,8 +198,14 @@ export function makeCacheableSignalKeyStore(
 			? {
 					authoritative: true,
 					listIncoming: () => store.trustedContactTokens!.listIncoming(),
+					listSent: () => store.trustedContactTokens!.listSent(),
 					compareAndPrune: async (jid, expectedTimestamp, expectedToken) => {
 						const pruned = await store.trustedContactTokens!.compareAndPrune(jid, expectedTimestamp, expectedToken)
+						if (pruned) await cache.del(getUniqueId('tctoken', jid))
+						return pruned
+					},
+					compareAndPruneSent: async (jid, expectedTimestamp) => {
+						const pruned = await store.trustedContactTokens!.compareAndPruneSent(jid, expectedTimestamp)
 						if (pruned) await cache.del(getUniqueId('tctoken', jid))
 						return pruned
 					}

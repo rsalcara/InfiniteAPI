@@ -21,6 +21,7 @@ import type {
 	MessageUserReceipt,
 	NewChatMessageCapInfo,
 	PlaceholderMessageData,
+	SignalDataTypeMap,
 	SocketConfig,
 	WACallEvent,
 	WACallParticipant,
@@ -116,8 +117,8 @@ import { buildAckStanza } from '../Utils/stanza-ack'
 import {
 	isRegularUser,
 	isStrictlyNewerTcTokenTimestamp,
-	isTcTokenExpired,
 	parseTrustedContactTokenNotification,
+	pruneTcTokenHalves,
 	resolveIncomingTcTokenAliases,
 	resolveTcTokenAliases,
 	selectNewestUsableTcToken
@@ -507,6 +508,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const candidates = new Set<string>()
 			try {
 				for (const { jid } of trustedContactTokens.listIncoming()) candidates.add(jid)
+				for (const { jid } of trustedContactTokens.listSent()) candidates.add(jid)
 			} catch (err) {
 				logger.warn(
 					{ err, reason: 'relational-enumeration-failed', fallback: 'signal_kv-listIds' },
@@ -535,19 +537,29 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			if (candidates.size === 0) return
 			const allData = await authState.keys.get('tctoken', Array.from(candidates))
-			let pruned = 0
+			let incomingPruned = 0
+			let sentPruned = 0
 			let refreshed = 0
 			for (const jid of candidates) {
 				const entry = allData[jid]
-				if (!entry?.token || entry.token.length === 0 || !isTcTokenExpired(entry.timestamp)) continue
-				const expectedTimestamp = Number(entry.timestamp ?? 0)
-				if (await trustedContactTokens.compareAndPrune(jid, expectedTimestamp, entry.token)) pruned++
-				else refreshed++ // changed after the snapshot; leave the new token intact
+				if (!entry) continue
+				const decision = pruneTcTokenHalves(entry)
+				if (decision.incomingPruned) {
+					const expectedTimestamp = Number(entry.timestamp ?? 0)
+					if (await trustedContactTokens.compareAndPrune(jid, expectedTimestamp, entry.token)) incomingPruned++
+					else refreshed++
+				}
+
+				if (decision.sentPruned) {
+					if (await trustedContactTokens.compareAndPruneSent(jid, Number(entry.senderTimestamp))) sentPruned++
+					else refreshed++
+				}
 			}
 
-			if (pruned > 0 || refreshed > 0) {
+			if (incomingPruned > 0 || sentPruned > 0 || refreshed > 0) {
 				logTcToken('prune', {
-					pruned,
+					incomingPruned,
+					sentPruned,
 					refreshedDuringPrune: refreshed,
 					via: 'wa_trusted_contacts+signal_kv-superset'
 				})
@@ -558,21 +570,31 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		// Legacy (single-file / no multi-db): __index-backed enumeration.
 		await tcTokenIndexLoaded
-		const pruneSet: Record<string, null> = {}
+		const pruneSet: Record<string, SignalDataTypeMap['tctoken'] | null> = {}
 		const survivingJids: string[] = []
 
-		const jidsToCheck = Array.from(tcTokenKnownJids).filter(j => j !== TC_TOKEN_INDEX_KEY)
+		const legacyCandidates = new Set(Array.from(tcTokenKnownJids).filter(jid => jid.includes('@')))
+		if (authState.keys.listIds) {
+			try {
+				for await (const jid of authState.keys.listIds('tctoken')) {
+					if (jid.includes('@')) legacyCandidates.add(jid)
+				}
+			} catch (err) {
+				logger.warn({ err }, 'tctoken prune: key enumeration failed; using persisted legacy index')
+			}
+		}
+
+		const jidsToCheck = Array.from(legacyCandidates)
 		if (!jidsToCheck.length) return
 
 		try {
 			const allData = await authState.keys.get('tctoken', jidsToCheck)
 			for (const jid of jidsToCheck) {
 				const entry = allData[jid]
-				if (!entry?.token || isTcTokenExpired(entry.timestamp)) {
-					pruneSet[jid] = null
-				} else {
-					survivingJids.push(jid)
-				}
+				if (!entry) continue
+				const decision = pruneTcTokenHalves(entry)
+				if (decision.incomingPruned || decision.sentPruned) pruneSet[jid] = decision.next
+				if (decision.next) survivingJids.push(jid)
 			}
 		} catch {
 			return // batch read failed — skip this pruning cycle

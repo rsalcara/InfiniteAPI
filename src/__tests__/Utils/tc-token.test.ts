@@ -8,6 +8,7 @@ import {
 	isStrictlyNewerTcTokenTimestamp,
 	isTcTokenExpired,
 	parseTrustedContactTokenNotification,
+	pruneTcTokenHalves,
 	resolveIncomingTcTokenAliases,
 	resolveTcTokenAliases,
 	selectNewestUsableTcToken,
@@ -35,6 +36,52 @@ const computeCutoff = () => {
 	const cutoffBucket = currentBucket - (NUM_BUCKETS - 1)
 	return cutoffBucket * BUCKET_DURATION
 }
+
+describe('independent tctoken pruning', () => {
+	it('preserves sent state when only incoming is expired', () => {
+		const expired = computeCutoff() - 1
+		const live = nowSeconds()
+
+		expect(
+			pruneTcTokenHalves({
+				token: Buffer.from([1]),
+				timestamp: String(expired),
+				senderTimestamp: live,
+				realIssueTimestamp: 123
+			})
+		).toEqual({
+			next: { token: Buffer.alloc(0), senderTimestamp: live, realIssueTimestamp: 123 },
+			incomingPruned: true,
+			sentPruned: false
+		})
+	})
+
+	it('preserves incoming state when only sent is expired', () => {
+		const expired = computeCutoff() - 1
+		const live = nowSeconds()
+
+		expect(
+			pruneTcTokenHalves({
+				token: Buffer.from([2]),
+				timestamp: String(live),
+				senderTimestamp: expired,
+				realIssueTimestamp: 123
+			})
+		).toEqual({
+			next: { token: Buffer.from([2]), timestamp: String(live) },
+			incomingPruned: false,
+			sentPruned: true
+		})
+	})
+
+	it('removes the record only when both halves are expired', () => {
+		const expired = computeCutoff() - 1
+
+		expect(
+			pruneTcTokenHalves({ token: Buffer.from([3]), timestamp: String(expired), senderTimestamp: expired })
+		).toEqual({ next: null, incomingPruned: true, sentPruned: true })
+	})
+})
 
 const createMockKeys = (): jest.Mocked<SignalKeyStoreWithTransaction> => ({
 	get: jest.fn<SignalKeyStoreWithTransaction['get']>() as any,
