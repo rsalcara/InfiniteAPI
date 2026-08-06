@@ -397,7 +397,7 @@ type TcTokenParams = {
  * The helper is also responsible for the opportunistic expired-token wipe
  * documented inline. Callers must NOT re-do that bookkeeping.
  */
-type ResolvedTcToken = { buffer?: Buffer }
+export type ResolvedTcToken = { buffer?: Buffer; timestamp?: string }
 
 /**
  * Shared retrieval + expiry + opportunistic-cleanup pipeline used by both
@@ -467,10 +467,17 @@ async function resolveTcTokenForJid({
 			return {}
 		}
 
-		return { buffer: tcTokenBuffer }
+		return { buffer: tcTokenBuffer, timestamp: entry?.timestamp }
 	} catch {
 		return {}
 	}
+}
+
+/** Returns the current incoming privacy token for an explicitly selected protocol call site. */
+export async function resolveUsableTcTokenForJid(
+	params: Pick<TcTokenParams, 'authState' | 'jid' | 'getLIDForPN' | 'getPNForLID'>
+): Promise<ResolvedTcToken> {
+	return resolveTcTokenForJid(params)
 }
 
 /**

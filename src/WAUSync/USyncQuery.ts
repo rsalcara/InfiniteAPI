@@ -46,6 +46,19 @@ export class USyncQuery {
 		return this
 	}
 
+	buildUserNode(user: USyncUser): BinaryNode {
+		const content = this.protocols.map(protocol => protocol.getUserElement(user)).filter(node => node !== null)
+		if (user.privacyToken?.token.length) {
+			content.push({ tag: 'tctoken', attrs: {}, content: Buffer.from(user.privacyToken.token) })
+		}
+
+		return {
+			tag: 'user',
+			attrs: !user.phone && user.id ? { jid: user.id } : {},
+			content
+		}
+	}
+
 	parseUSyncQueryResult(result: BinaryNode | undefined): USyncQueryResult | undefined {
 		if (result?.attrs.type !== 'result') {
 			return

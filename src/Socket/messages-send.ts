@@ -67,7 +67,12 @@ import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prome
 import { appendParticipantFanoutNode } from '../Utils/relay-stanza'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import { resolveSessionFetchJids } from '../Utils/session-fetch-addressing'
-import { resolveTcTokenAliases, selectNewestUsableTcToken, shouldSendNewTcToken } from '../Utils/tc-token-utils'
+import {
+	resolveTcTokenAliases,
+	resolveUsableTcTokenForJid,
+	selectNewestUsableTcToken,
+	shouldSendNewTcToken
+} from '../Utils/tc-token-utils'
 import {
 	areJidsSameUser,
 	type BinaryNode,
@@ -560,7 +565,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const query = new USyncQuery().withContext('message').withDeviceProtocol().withLIDProtocol()
 
 		for (const jid of toFetch) {
-			query.withUser(new USyncUser().withId(jid)) // todo: investigate - the idea here is that <user> should have an inline lid field with the lid being the pn equivalent
+			const user = new USyncUser().withId(jid)
+			const privacyToken = await resolveUsableTcTokenForJid({
+				authState,
+				jid,
+				getLIDForPN,
+				getPNForLID
+			})
+			if (privacyToken.buffer) user.withPrivacyToken(privacyToken.buffer, privacyToken.timestamp)
+			query.withUser(user)
 		}
 
 		const result = await sock.executeUSyncQuery(query)

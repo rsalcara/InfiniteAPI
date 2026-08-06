@@ -2,6 +2,24 @@ import { Boom } from '@hapi/boom'
 import type { BinaryNode } from '../WABinary'
 import { getBinaryNodeChild, S_WHATSAPP_NET } from '../WABinary'
 
+export type MexPrivacyToken = { token: Buffer; timestamp?: string | number }
+
+/** Official MEX USync shape. Callers opt in only for a known regular-user target. */
+export const withMexPrivacyToken = (
+	variables: Record<string, unknown>,
+	privacyToken?: MexPrivacyToken
+): Record<string, unknown> => {
+	if (!privacyToken?.token.length) return variables
+
+	return {
+		...variables,
+		privacy_token: {
+			tctoken: privacyToken.token.toString('base64'),
+			...(privacyToken.timestamp !== undefined ? { timestamp: String(privacyToken.timestamp) } : {})
+		}
+	}
+}
+
 const wMexQuery = (
 	variables: Record<string, unknown>,
 	queryId: string,

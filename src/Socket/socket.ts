@@ -64,6 +64,7 @@ import {
 	recordConnectionRestart
 } from '../Utils/prometheus-metrics'
 import { createExpectedSocketTeardownError, isExpectedSocketTeardownError } from '../Utils/socket-teardown'
+import { isRegularUser, selectNewestUsableTcToken } from '../Utils/tc-token-utils'
 import {
 	createUnifiedSessionManager,
 	extractServerTime,
@@ -436,15 +437,7 @@ export const makeSocket = (config: SocketConfig) => {
 		// variable below has only validated users
 		const validUsers = usyncQuery.users
 
-		const userNodes = validUsers.map(user => {
-			return {
-				tag: 'user',
-				attrs: {
-					jid: !user.phone ? user.id : undefined
-				},
-				content: usyncQuery.protocols.map(a => a.getUserElement(user)).filter(a => a !== null)
-			} as BinaryNode
-		})
+		const userNodes = validUsers.map(user => usyncQuery.buildUserNode(user))
 
 		const listNode: BinaryNode = {
 			tag: 'list',
@@ -522,7 +515,16 @@ export const makeSocket = (config: SocketConfig) => {
 				logger?.warn('LID user found in LID fetch call')
 				continue
 			} else {
-				usyncQuery.withUser(new USyncUser().withId(jid))
+				const user = new USyncUser().withId(jid)
+				if (isRegularUser(jid)) {
+					const tcTokenData = await keys.get('tctoken', [jid])
+					const privacyToken = selectNewestUsableTcToken([[jid, tcTokenData[jid]]])
+					if (privacyToken.entry?.token.length) {
+						user.withPrivacyToken(privacyToken.entry.token, privacyToken.entry.timestamp)
+					}
+				}
+
+				usyncQuery.withUser(user)
 			}
 		}
 

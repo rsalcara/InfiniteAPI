@@ -96,7 +96,7 @@ import {
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
 import processMessage, { applyProcessedHistorySync, emitProcessedHistorySync } from '../Utils/process-message'
-import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
+import { buildTcTokenFromJid, buildTcTokenNode, resolveUsableTcTokenForJid } from '../Utils/tc-token-utils'
 import {
 	type BinaryNode,
 	getBinaryNodeChild,
@@ -648,7 +648,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		const usyncQuery = new USyncQuery().withStatusProtocol()
 
 		for (const jid of jids) {
-			usyncQuery.withUser(new USyncUser().withId(jid))
+			const user = new USyncUser().withId(jid)
+			const privacyToken = await resolveUsableTcTokenForJid({ authState, jid, getLIDForPN, getPNForLID })
+			if (privacyToken.buffer) user.withPrivacyToken(privacyToken.buffer, privacyToken.timestamp)
+			usyncQuery.withUser(user)
 		}
 
 		const result = await sock.executeUSyncQuery(usyncQuery)
@@ -661,7 +664,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		const usyncQuery = new USyncQuery().withDisappearingModeProtocol()
 
 		for (const jid of jids) {
-			usyncQuery.withUser(new USyncUser().withId(jid))
+			const user = new USyncUser().withId(jid)
+			const privacyToken = await resolveUsableTcTokenForJid({ authState, jid, getLIDForPN, getPNForLID })
+			if (privacyToken.buffer) user.withPrivacyToken(privacyToken.buffer, privacyToken.timestamp)
+			usyncQuery.withUser(user)
 		}
 
 		const result = await sock.executeUSyncQuery(usyncQuery)
