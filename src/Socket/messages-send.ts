@@ -48,6 +48,7 @@ import {
 	MessageRetryManager,
 	normalizeMessageContent,
 	parseAndInjectE2ESessions,
+	resolveDirectRecipientWireJid,
 	runDetached,
 	runDirectRecipientPreflight,
 	safeCacheSet,
@@ -1487,7 +1488,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 
 		const participants: BinaryNode[] = []
-		const destinationJid = !isStatus ? finalJid : statusJid
+		const destinationJid = !isStatus ? resolveDirectRecipientWireJid(finalJid, directRecipient?.lidJid) : statusJid
 		const binaryNodeContent: BinaryNode[] = []
 		const devices: DeviceWithJid[] = []
 		let reportingMessage: proto.IMessage | undefined
@@ -1871,7 +1872,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					isExternalDirectRecipient,
 					recipientCount: otherRecipientCount,
 					ciphertextCount: otherNodes.length,
-					requestedJid: destinationJid,
+					requestedJid: jidNormalizedUser(jid),
 					lidJid: directRecipient?.lidJid
 				})
 
@@ -2468,10 +2469,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			})
 			if (!isRetryResend) {
 				emitMessageDeliveryState(ev, {
-					key: { remoteJid: destinationJid, fromMe: true, id: msgId },
+					key: { remoteJid: jidNormalizedUser(jid), fromMe: true, id: msgId },
 					state: 'accepted',
-					requestedJid: destinationJid,
-					canonicalJid: directRecipient?.lidJid || jidNormalizedUser(destinationJid)
+					requestedJid: jidNormalizedUser(jid),
+					canonicalJid: destinationJid
 				})
 			}
 

@@ -34,6 +34,11 @@ export type DirectRecipientPreflightOptions<TDevice> = {
 	logger: Pick<ILogger, 'warn' | 'info'>
 }
 
+/** Keeps a direct-message envelope aligned with the identity used for device fanout. */
+export const resolveDirectRecipientWireJid = (requestedJid: string, resolvedLid?: string): string => {
+	return resolvedLid ? jidNormalizedUser(resolvedLid) : jidNormalizedUser(requestedJid) || requestedJid
+}
+
 export const assertDirectRecipientCiphertext = ({
 	isExternalDirectRecipient,
 	recipientCount,
