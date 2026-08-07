@@ -81,6 +81,17 @@ describe('participant fanout admission', () => {
 		expect(recipients).toEqual(['207421150646274:1@lid', '207421150646274:24@lid', '207421150646274:43@lid'])
 	})
 
+	it('moves a stale credential-LID participant to the freshly resolved self LID', () => {
+		expect(
+			canonicalizeSelfSendFanoutRecipient(
+				'100000000000001:24@lid',
+				'5515991426667:24@s.whatsapp.net',
+				'207421150646274@lid',
+				'100000000000001@lid'
+			)
+		).toBe('207421150646274:24@lid')
+	})
+
 	it('does not alter a remote participant while canonicalizing self-send devices', () => {
 		expect(
 			canonicalizeSelfSendFanoutRecipient(

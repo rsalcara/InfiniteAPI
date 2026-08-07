@@ -69,10 +69,17 @@ export const resolveSelfSendLid = (
 }
 
 /** Moves only the connected account's participant devices to its canonical LID domain. */
-export const canonicalizeSelfSendFanoutRecipient = (jid: string, meId: string, selfLid: string): string => {
+export const canonicalizeSelfSendFanoutRecipient = (
+	jid: string,
+	meId: string,
+	selfLid: string,
+	credentialLid?: string
+): string => {
 	const normalized = jidNormalizedUser(jid)
 	const isOwnPn = isAnyPnUser(normalized) && areJidsSameUser(normalized, meId)
-	const isOwnLid = isAnyLidUser(normalized) && areJidsSameUser(normalized, selfLid)
+	const isOwnLid =
+		isAnyLidUser(normalized) &&
+		(areJidsSameUser(normalized, selfLid) || Boolean(credentialLid && areJidsSameUser(normalized, credentialLid)))
 
 	return isOwnPn || isOwnLid ? transferDevice(jid, selfLid) : jid
 }

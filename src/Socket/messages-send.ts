@@ -1856,7 +1856,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const isCarouselFanout = isCarouselMessage(message)
 				const canonicalizeSelfRecipients = (recipients: string[], ownLid: string) =>
 					dedupeParticipantFanout(
-						recipients.map(recipient => canonicalizeSelfSendFanoutRecipient(recipient, meId, ownLid)),
+						recipients.map(recipient => canonicalizeSelfSendFanoutRecipient(recipient, meId, ownLid, meLid)),
 						recipient => recipient
 					)
 				const effectiveMeRecipients = selfSendLid
