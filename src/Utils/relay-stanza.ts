@@ -52,14 +52,20 @@ export const resolveSelfSendLid = (
 ): string | null => {
 	const destination = jidNormalizedUser(destinationJid)
 	const ownPn = jidNormalizedUser(meId)
-	const lidCandidates = [meLid, mappedLid]
-		.map(jid => jidNormalizedUser(jid ?? undefined))
-		.filter((jid): jid is string => Boolean(jid) && isAnyLidUser(jid))
-	const isOwnDestination =
-		(isAnyPnUser(destination) && isAnyPnUser(ownPn) && areJidsSameUser(destination, ownPn)) ||
-		lidCandidates.some(lid => areJidsSameUser(destination, lid))
+	const normalizedMeLid = jidNormalizedUser(meLid ?? undefined)
+	const normalizedMappedLid = jidNormalizedUser(mappedLid ?? undefined)
+	const lidCandidates = [normalizedMeLid, normalizedMappedLid].filter(
+		(jid): jid is string => Boolean(jid) && isAnyLidUser(jid)
+	)
+	const matchingLid = lidCandidates.find(lid => areJidsSameUser(destination, lid))
+	if (matchingLid) return matchingLid
 
-	return isOwnDestination ? lidCandidates[0] || null : null
+	const isOwnPnDestination = isAnyPnUser(destination) && isAnyPnUser(ownPn) && areJidsSameUser(destination, ownPn)
+	if (!isOwnPnDestination) return null
+
+	// A mapping resolved for the requested PN is fresher than a possibly stale
+	// credential LID. Fall back to the credential only when no mapping exists.
+	return (isAnyLidUser(normalizedMappedLid) && normalizedMappedLid) || normalizedMeLid || null
 }
 
 /** Moves only the connected account's participant devices to its canonical LID domain. */

@@ -30,10 +30,32 @@ describe('participant fanout admission', () => {
 		).toBe('207421150646274@lid')
 	})
 
+	it('prefers the freshly resolved mapping when the credential LID is stale', () => {
+		expect(
+			resolveSelfSendLid(
+				'5515991426667@s.whatsapp.net',
+				'5515991426667:24@s.whatsapp.net',
+				'100000000000001@lid',
+				'207421150646274@lid'
+			)
+		).toBe('207421150646274@lid')
+	})
+
 	it('keeps an own LID destination canonical when the caller already uses LID', () => {
 		expect(resolveSelfSendLid('207421150646274@lid', '5515991426667:24@s.whatsapp.net', '207421150646274:24@lid')).toBe(
 			'207421150646274@lid'
 		)
+	})
+
+	it('returns the LID candidate that actually matches an existing LID destination', () => {
+		expect(
+			resolveSelfSendLid(
+				'207421150646274@lid',
+				'5515991426667:24@s.whatsapp.net',
+				'100000000000001@lid',
+				'207421150646274:24@lid'
+			)
+		).toBe('207421150646274@lid')
 	})
 
 	it('does not switch a remote PN recipient to LID under the self-send rule', () => {

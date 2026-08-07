@@ -4,11 +4,18 @@ import {
 	assertDirectRecipientCiphertext,
 	type DirectRecipientPreflightOptions,
 	resolveDirectRecipientUSync,
+	resolveDirectRecipientWireJid,
 	runDirectRecipientPreflight
 } from '../../Utils/direct-recipient'
 import { USyncQuery } from '../../WAUSync'
 
 describe('PN → LID/username recipient resolution', () => {
+	it('uses the resolved LID on the wire while preserving PN when no mapping exists', () => {
+		expect(resolveDirectRecipientWireJid('5511999999999@c.us', '123456@lid')).toBe('123456@lid')
+		expect(resolveDirectRecipientWireJid('5511999999999@c.us')).toBe('5511999999999@s.whatsapp.net')
+		expect(resolveDirectRecipientWireJid('5511999999999@c.us', 'invalid')).toBe('5511999999999@s.whatsapp.net')
+	})
+
 	it('preserves all USync identity aliases, contact type and username', () => {
 		const query = new USyncQuery().withContactProtocol().withLIDProtocol().withUsernameProtocol()
 		const parsed = query.parseUSyncQueryResult({
