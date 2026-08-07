@@ -54,6 +54,7 @@ const _ALL_TYPES_MAP = {
 	'lid-mapping': true,
 	'device-list': true,
 	tctoken: true,
+	'tctoken-job': true,
 	'identity-key': true,
 	'fast-ratchet-sender-key': true
 } as const

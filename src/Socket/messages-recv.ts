@@ -21,6 +21,7 @@ import type {
 	MessageUserReceipt,
 	NewChatMessageCapInfo,
 	PlaceholderMessageData,
+	SignalDataTypeMap,
 	SocketConfig,
 	WACallEvent,
 	WACallParticipant,
@@ -34,6 +35,7 @@ import {
 	ACCOUNT_RESTRICTED_TEXT,
 	aesDecryptCTR,
 	aesEncryptGCM,
+	buildMessageAccountRestrictionDiagnostic,
 	canonicalizeReceiptChatJid,
 	cleanMessage,
 	cleanupCorruptedSession,
@@ -44,6 +46,7 @@ import {
 	decryptMessageNode,
 	delay,
 	derivePairingCodeKey,
+	emitMessageDeliveryState,
 	encodeBigEndian,
 	encodeSignedDeviceIdentity,
 	extractAddressingContext,
@@ -115,10 +118,12 @@ import { isExpectedSocketTeardownError } from '../Utils/socket-teardown'
 import { buildAckStanza } from '../Utils/stanza-ack'
 import {
 	isRegularUser,
-	isTcTokenExpired,
+	isStrictlyNewerTcTokenTimestamp,
 	parseTrustedContactTokenNotification,
+	pruneTcTokenHalves,
 	resolveIncomingTcTokenAliases,
 	resolveTcTokenAliases,
+	resolveTcTokenBucketPolicy,
 	selectNewestUsableTcToken
 } from '../Utils/tc-token-utils'
 import {
@@ -197,6 +202,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		enableCTWARecovery,
 		sessionCleanupConfig
 	} = config
+	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(config.transportProfile, config.tcTokenAbProps)
 	// Use nullish coalescing to handle partial config properly
 	const autoCleanCorrupted =
 		sessionCleanupConfig?.autoCleanCorrupted ?? DEFAULT_SESSION_CLEANUP_CONFIG.autoCleanCorrupted
@@ -228,7 +234,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		registerSocketDrainHandler,
 		isSocketClosed,
 		// Port de upstream `4dbbba2891` (PR #2442)
-		fetchAccountReachoutTimelock
+		fetchAccountReachoutTimelock,
+		fetchNewChatMessageCap
 	} = sock
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
@@ -506,6 +513,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const candidates = new Set<string>()
 			try {
 				for (const { jid } of trustedContactTokens.listIncoming()) candidates.add(jid)
+				for (const { jid } of trustedContactTokens.listSent()) candidates.add(jid)
 			} catch (err) {
 				logger.warn(
 					{ err, reason: 'relational-enumeration-failed', fallback: 'signal_kv-listIds' },
@@ -534,19 +542,29 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			if (candidates.size === 0) return
 			const allData = await authState.keys.get('tctoken', Array.from(candidates))
-			let pruned = 0
+			let incomingPruned = 0
+			let sentPruned = 0
 			let refreshed = 0
 			for (const jid of candidates) {
 				const entry = allData[jid]
-				if (!entry?.token || entry.token.length === 0 || !isTcTokenExpired(entry.timestamp)) continue
-				const expectedTimestamp = Number(entry.timestamp ?? 0)
-				if (await trustedContactTokens.compareAndPrune(jid, expectedTimestamp, entry.token)) pruned++
-				else refreshed++ // changed after the snapshot; leave the new token intact
+				if (!entry) continue
+				const decision = pruneTcTokenHalves(entry, tcTokenBucketPolicy)
+				if (decision.incomingPruned) {
+					const expectedTimestamp = Number(entry.timestamp ?? 0)
+					if (await trustedContactTokens.compareAndPrune(jid, expectedTimestamp, entry.token)) incomingPruned++
+					else refreshed++
+				}
+
+				if (decision.sentPruned) {
+					if (await trustedContactTokens.compareAndPruneSent(jid, Number(entry.senderTimestamp))) sentPruned++
+					else refreshed++
+				}
 			}
 
-			if (pruned > 0 || refreshed > 0) {
+			if (incomingPruned > 0 || sentPruned > 0 || refreshed > 0) {
 				logTcToken('prune', {
-					pruned,
+					incomingPruned,
+					sentPruned,
 					refreshedDuringPrune: refreshed,
 					via: 'wa_trusted_contacts+signal_kv-superset'
 				})
@@ -557,21 +575,34 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		// Legacy (single-file / no multi-db): __index-backed enumeration.
 		await tcTokenIndexLoaded
-		const pruneSet: Record<string, null> = {}
+		const pruneSet: Record<string, SignalDataTypeMap['tctoken'] | null> = {}
 		const survivingJids: string[] = []
 
-		const jidsToCheck = Array.from(tcTokenKnownJids).filter(j => j !== TC_TOKEN_INDEX_KEY)
+		const legacyCandidates = new Set(Array.from(tcTokenKnownJids).filter(jid => jid.includes('@')))
+		if (authState.keys.listIds) {
+			try {
+				for await (const jid of authState.keys.listIds('tctoken')) {
+					if (jid.includes('@')) legacyCandidates.add(jid)
+				}
+			} catch (err) {
+				logger.warn({ err }, 'tctoken prune: key enumeration failed; using persisted legacy index')
+			}
+		}
+
+		const jidsToCheck = Array.from(legacyCandidates)
 		if (!jidsToCheck.length) return
 
 		try {
 			const allData = await authState.keys.get('tctoken', jidsToCheck)
 			for (const jid of jidsToCheck) {
 				const entry = allData[jid]
-				if (!entry?.token || isTcTokenExpired(entry.timestamp)) {
-					pruneSet[jid] = null
-				} else {
-					survivingJids.push(jid)
-				}
+				if (!entry) continue
+				const decision = pruneTcTokenHalves(entry, tcTokenBucketPolicy)
+				// Empty placeholders have no live half but can survive in legacy
+				// signal_kv after a partial migration. Remove them as well so the
+				// persisted index and the data rows converge.
+				if (decision.incomingPruned || decision.sentPruned || decision.next === null) pruneSet[jid] = decision.next
+				if (decision.next) survivingJids.push(jid)
 			}
 		} catch {
 			return // batch read failed — skip this pruning cycle
@@ -2421,14 +2452,26 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				const normalizedJid = jidNormalizedUser(from)
 				resolveTcTokenAliases(normalizedJid, { getLIDForPN, getPNForLID })
 					.then(async aliases => {
+						const canonicalJid = aliases[0] || normalizedJid
 						const tcData = await authState.keys.get('tctoken', aliases)
-						const selected = selectNewestUsableTcToken(aliases.map(alias => [alias, tcData[alias]] as const))
+						const selected = selectNewestUsableTcToken(
+							aliases.map(alias => [alias, tcData[alias]] as const),
+							tcTokenBucketPolicy
+						)
 						if (selected.usable) {
 							const senderTs = unixTimestampSeconds()
-							logTcToken('reissue', { jid: normalizedJid, reason: 'session_refreshed' })
-							issuePrivacyTokens([normalizedJid], senderTs)
+							logTcToken('reissue', {
+								jid: canonicalJid,
+								requestedJid: normalizedJid,
+								reason: 'session_refreshed'
+							})
+							issuePrivacyTokens([canonicalJid], senderTs)
 								.then(() => {
-									logTcToken('reissue_ok', { jid: normalizedJid, reason: 'session_refreshed' })
+									logTcToken('reissue_ok', {
+										jid: canonicalJid,
+										requestedJid: normalizedJid,
+										reason: 'session_refreshed'
+									})
 								})
 								.catch(err => {
 									logTcToken('reissue_fail', { jid: normalizedJid, error: err?.message })
@@ -2993,59 +3036,55 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// the authoritative peer-token ingestion path.
 		if (!isRegularUser(from)) return
 
-		for (const { senderLid, timestamp, timestampSource, childTimestamp, outerTimestamp, token } of parsedTokens) {
+		for (const { senderLid, timestamp, timestampSource, token } of parsedTokens) {
 			const aliases = await resolveIncomingTcTokenAliases(from, senderLid, { getLIDForPN, getPNForLID })
 			const storageJid = aliases[0]!
-
-			// Timestamp monotonicity applies across PN+LID, matching the official
-			// ORDER BY incoming_tc_token_timestamp DESC LIMIT 1 read.
-			const existingData = await authState.keys.get('tctoken', aliases)
-			const existing = existingData[storageJid]
-			const existingTs = Math.max(...aliases.map(alias => Number(existingData[alias]?.timestamp ?? 0)))
 			const incomingTs = timestamp ? Number(timestamp) : 0
-			if (existingTs > 0 && incomingTs > 0 && existingTs > incomingTs) {
-				logger.debug(
-					{ from, senderLid, storageJid, incomingTs, existingTs, action: 'ignored-stale-token' },
-					'privacy-token notification did not overwrite a newer PN/LID token'
-				)
-				continue
-			}
-
-			// Don't store timestamp-less tokens — they expire immediately and would
-			// corrupt a valid existing entry if one is already present
-			if (!incomingTs) {
-				logger.warn(
-					{ from, senderLid, storageJid, childTimestamp, outerTimestamp, action: 'ignored-missing-timestamp' },
-					'privacy-token notification omitted both child and outer timestamps'
-				)
-				continue
-			}
-
-			const bucket: Record<string, NonNullable<typeof existing> | null> = {
-				[storageJid]: {
-					...existing,
-					token,
-					timestamp
+			let stored = false
+			const work = async () => {
+				// Live notifications and delayed history chunks share this record
+				// lock, so the read/compare/write sequence is one monotonic CAS.
+				const existingData = await authState.keys.get('tctoken', aliases)
+				const existing = existingData[storageJid]
+				const existingTs = Math.max(...aliases.map(alias => Number(existingData[alias]?.timestamp ?? 0)))
+				if (!isStrictlyNewerTcTokenTimestamp(incomingTs, existingTs)) {
+					logger.debug(
+						{ from, senderLid, storageJid, incomingTs, existingTs, action: 'ignored-non-newer-token' },
+						'privacy-token notification did not overwrite an equal or newer PN/LID token'
+					)
+					return
 				}
-			}
-			// Official storage converges on LID. Remove only the incoming half of
-			// a legacy PN alias while preserving any sent-state fields it carries.
-			for (const alias of aliases.slice(1)) {
-				const aliasEntry = existingData[alias]
-				if (!aliasEntry?.token?.length) continue
-				bucket[alias] =
-					aliasEntry.senderTimestamp !== undefined
-						? {
-								token: Buffer.alloc(0),
-								senderTimestamp: aliasEntry.senderTimestamp,
-								realIssueTimestamp: aliasEntry.realIssueTimestamp
-							}
-						: null
+
+				const bucket: Record<string, NonNullable<typeof existing> | null> = {
+					[storageJid]: {
+						...existing,
+						token,
+						timestamp
+					}
+				}
+				// Official storage converges on LID. Remove only the incoming half of
+				// a legacy PN alias while preserving any sent-state fields it carries.
+				for (const alias of aliases.slice(1)) {
+					const aliasEntry = existingData[alias]
+					if (!aliasEntry?.token?.length) continue
+					bucket[alias] =
+						aliasEntry.senderTimestamp !== undefined
+							? {
+									token: Buffer.alloc(0),
+									senderTimestamp: aliasEntry.senderTimestamp,
+									realIssueTimestamp: aliasEntry.realIssueTimestamp
+								}
+							: null
+				}
+
+				await authState.keys.set({ tctoken: bucket })
+				stored = true
 			}
 
-			await authState.keys.set({
-				tctoken: bucket
-			})
+			const records = aliases.map(id => ({ type: 'tctoken' as const, id }))
+			if (authState.keys.transactWith) await authState.keys.transactWith({ records }, work)
+			else await authState.keys.transaction(work, `live-tctoken:${records.map(record => record.id).join(',')}`)
+			if (!stored) continue
 
 			logTcToken('stored', {
 				jid: storageJid,
@@ -3510,6 +3549,18 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						// or another device of ours has read some messages
 						(status >= proto.WebMessageInfo.Status.SERVER_ACK || !isNodeFromMe)
 					) {
+						if (status === proto.WebMessageInfo.Status.DELIVERY_ACK && key.fromMe && !isNodeFromMe) {
+							for (const id of ids) {
+								emitMessageDeliveryState(ev, {
+									key: { ...key, id },
+									state: 'delivered',
+									...(Number.isFinite(+(attrs.t ?? 0)) && +(attrs.t ?? 0) > 0
+										? { serverTimestamp: +(attrs.t ?? 0) * 1000 }
+										: {})
+								})
+							}
+						}
+
 						if (isJidGroup(remoteJid) || isJidStatusBroadcast(remoteJid)) {
 							if (attrs.participant) {
 								const updateKey: keyof MessageUserReceipt =
@@ -4475,6 +4526,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const outboundJid = jidNormalizedUser(recentMessage?.to ?? attrs.from ?? '')
 		const key: WAMessageKey = { remoteJid: outboundJid, fromMe: true, id: attrs.id }
 		await normalizeKeyLidToPn(key, signalRepository.lidMapping, logger)
+		if (!attrs.error) {
+			if (attrs.id) {
+				emitMessageDeliveryState(ev, {
+					key,
+					state: 'server_ack',
+					serverCode: attrs.class || 'message'
+				})
+			}
+
+			return
+		}
 
 		// WARNING: REFRAIN FROM ENABLING THIS FOR NOW. IT WILL CAUSE A LOOP
 		// // current hypothesis is that if pash is sent in the ack
@@ -4503,6 +4565,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			if (is463) {
 				const msgId = attrs.id
 				const jid = outboundJid
+				const serverReason = attrs.reason || 'reason unavailable'
 				logTcToken('error_463', { jid, msgId })
 
 				// Fire-and-forget — detecta reachout timelock quando 463 vem por
@@ -4513,8 +4576,27 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				// (audit PROTO-01 / RACE-01).
 				if (!inFlightReachoutCheck) {
 					inFlightReachoutCheck = true
-					fetchAccountReachoutTimelock(false)
-						.catch(err => logger.warn({ err: err?.message }, 'failed to fetch reachout timelock on 463'))
+					Promise.allSettled([fetchAccountReachoutTimelock(false), fetchNewChatMessageCap()])
+						.then(([reachout, capping]) => {
+							const reachoutState = reachout.status === 'fulfilled' ? reachout.value : undefined
+							const cappingState = capping.status === 'fulfilled' ? capping.value : undefined
+							logger.warn(
+								{
+									...buildMessageAccountRestrictionDiagnostic({
+										jid,
+										msgId,
+										code: attrs.error!,
+										reason: serverReason,
+										reachout: reachoutState,
+										capping: cappingState,
+										reachoutLookup: reachout.status === 'rejected' ? 'lookup-failed' : 'lookup-complete',
+										cappingLookup: capping.status === 'rejected' ? 'lookup-failed' : 'lookup-complete'
+									}),
+									action: 'retry-suppressed'
+								},
+								'463 restriction diagnostics refreshed; no automatic retry or bypass was attempted'
+							)
+						})
 						.finally(() => {
 							inFlightReachoutCheck = false
 						})
@@ -4524,7 +4606,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					{
 						jid,
 						msgId,
-						reason: 'message-account-restriction',
+						code: attrs.error,
+						category: errorPolicy.kind,
+						reason: serverReason,
 						tokenAction: 'none-issuance-iq-is-not-a-fetch',
 						retryAction: 'suppressed'
 					},
@@ -4562,6 +4646,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					}
 				}
 			])
+			emitMessageDeliveryState(ev, {
+				key,
+				state: 'failed',
+				serverCode: attrs.error,
+				category: errorPolicy.kind,
+				reason: attrs.reason || 'reason unavailable',
+				action: 'retry-suppressed'
+			})
 		}
 	}
 

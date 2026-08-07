@@ -18,6 +18,7 @@ export type BaileysSocket = {
 	presenceSubscribe: (jid: string) => Promise<void>
 	ws: any
 	ev: any
+	tcTokenBucketPolicy?: import('../../Utils/tc-token-utils').TcTokenBucketPolicy
 }
 
 export type SignalingBridgeConfig = {
@@ -36,6 +37,7 @@ const ACK_TIMEOUT_MS = 15_000
 import { proto } from '../../../WAProto/index.js'
 import { encodeWAMessage, unpadRandomMax16 } from '../../Utils/generics'
 import { parseAndInjectE2ESessions } from '../../Utils/signal'
+import { isTcTokenExpired, resolveTcTokenAliases } from '../../Utils/tc-token-utils'
 import { encodeSignedDeviceIdentity } from '../../Utils/validate-connection'
 import { decodeBinaryNode } from '../../WABinary/decode'
 import { encodeBinaryNode } from '../../WABinary/encode'
@@ -99,6 +101,9 @@ export class SignalingBridge {
 	readonly #remoteObfuscatedPeerByCallId = new Map<string, string>()
 	readonly #remoteXmppRoutePeerByCallId = new Map<string, string>()
 	readonly #incomingCallPeerById = new Map<string, string>()
+	#originalKeysSet?: (data: any) => Promise<unknown>
+	#wrappedKeysSet?: (data: any) => Promise<unknown>
+	#disposed = false
 
 	#outgoingSignalingQueue = Promise.resolve<void>(undefined)
 	#incomingSignalingQueue = Promise.resolve<void>(undefined)
@@ -116,9 +121,9 @@ export class SignalingBridge {
 		this.#baileys = await loadBaileys()
 
 		// Hook auth-state writes so we observe TC tokens as they land.
-		const originalKeysSet = this.#sock.authState.keys.set.bind(this.#sock.authState.keys)
-		this.#sock.authState.keys.set = async (data: any) => {
-			const result = await originalKeysSet(data)
+		this.#originalKeysSet = this.#sock.authState.keys.set
+		this.#wrappedKeysSet = async (data: any) => {
+			const result = await this.#originalKeysSet!.call(this.#sock.authState.keys, data)
 			for (const [jid, entry] of Object.entries<any>(data?.tctoken ?? {})) {
 				if (entry?.token instanceof Uint8Array && entry.token.length > 0) {
 					this.#rememberTcToken(jid, entry.token, entry.timestamp)
@@ -127,6 +132,8 @@ export class SignalingBridge {
 
 			return result
 		}
+
+		this.#sock.authState.keys.set = this.#wrappedKeysSet
 	}
 
 	sendSignaling = (peerJid: string, callId: string, xmlPayload: Uint8Array): void => {
@@ -148,16 +155,16 @@ export class SignalingBridge {
 	}
 
 	requestTcToken = async (jid: string): Promise<Uint8Array | undefined> => {
-		const userJid = this.#toBareJid(jid)
-		const cached = await this.#getTcToken(userJid)
+		const aliases = await this.#resolveTcTokenAliases(jid)
+		const cached = await this.#getTcToken(aliases[0]!)
 		if (cached?.length) return cached
-
-		// Register before issuing so a notification that races the IQ ACK cannot be
-		// missed. The IQ only announces our token; the peer token arrives later via
-		// privacy_token notification and the keys.set hook resolves this waiter.
-		const tokenNotification = this.#waitForTcToken(userJid, TC_TOKEN_REQUEST_TIMEOUT_MS)
 		const issue = (this.#sock as any).issuePrivacyTokens ?? (this.#sock as any).getPrivacyTokens
-		void Promise.resolve(issue?.([userJid])).catch(() => undefined)
+		if (!issue || this.#disposed) return undefined
+
+		const tokenNotification = Promise.race(
+			aliases.map(alias => this.#waitForTcToken(alias, TC_TOKEN_REQUEST_TIMEOUT_MS))
+		)
+		void Promise.resolve(issue([aliases[0]])).catch(() => undefined)
 
 		return tokenNotification
 	}
@@ -191,34 +198,27 @@ export class SignalingBridge {
 		this.#sock.signalRepository.lidMapping?.getLIDForPN(pnJid)
 
 	issueTcToken = async (jid: string): Promise<boolean> => {
-		const userJid = this.#toBareJid(jid)
-		const issuedAt = Math.floor(Date.now() / 1000)
+		const issue = (this.#sock as any).issuePrivacyTokens ?? (this.#sock as any).getPrivacyTokens
+		if (!issue || this.#disposed) return false
 		try {
-			await this.#sock.query({
-				tag: 'iq',
-				attrs: {
-					to: S_WHATSAPP_NET,
-					type: 'set',
-					xmlns: 'privacy',
-					id: this.#sock.generateMessageTag()
-				},
-				content: [
-					{
-						tag: 'tokens',
-						attrs: {},
-						content: [
-							{
-								tag: 'token',
-								attrs: { jid: userJid, t: String(issuedAt), type: 'trusted_contact' }
-							}
-						]
-					}
-				]
-			})
+			const aliases = await this.#resolveTcTokenAliases(jid)
+			await issue([aliases[0]])
 			return true
 		} catch {
 			return false
 		}
+	}
+
+	dispose = (): void => {
+		if (this.#disposed) return
+		this.#disposed = true
+		if (this.#sock.authState.keys.set === this.#wrappedKeysSet && this.#originalKeysSet) {
+			this.#sock.authState.keys.set = this.#originalKeysSet
+		}
+
+		for (const waiters of this.#pendingTcTokenWaiters.values()) for (const waiter of waiters) waiter(undefined)
+		this.#pendingTcTokenWaiters.clear()
+		this.#observedTcTokens.clear()
 	}
 
 	getRemoteDeviceJid = (callId: string): string | undefined => this.#remoteDevicePeerByCallId.get(callId)
@@ -697,7 +697,7 @@ export class SignalingBridge {
 
 	#rememberTcToken = (jid: string, token: Uint8Array, timestamp = ''): void => {
 		const bareJid = this.#toBareJid(jid)
-		if (!token.length) return
+		if (!token.length || isTcTokenExpired(timestamp, this.#sock.tcTokenBucketPolicy)) return
 		this.#observedTcTokens.set(bareJid, { token: Buffer.from(token), timestamp })
 		const waiters = this.#pendingTcTokenWaiters.get(bareJid)
 		if (waiters?.length) {
@@ -735,18 +735,33 @@ export class SignalingBridge {
 	}
 
 	#getTcToken = async (jid: string): Promise<Uint8Array | undefined> => {
-		const userJid = this.#toBareJid(jid)
-		const observed = this.#observedTcTokens.get(userJid)?.token
-		if (observed?.length) return Buffer.from(observed)
+		const aliases = await this.#resolveTcTokenAliases(jid)
+		for (const alias of aliases) {
+			const observed = this.#observedTcTokens.get(alias)
+			if (observed?.token.length && !isTcTokenExpired(observed.timestamp, this.#sock.tcTokenBucketPolicy)) {
+				return Buffer.from(observed.token)
+			}
+		}
+
 		try {
-			const data = await this.#sock.authState.keys.get('tctoken', [userJid])
-			const token = data[userJid]?.token
-			if (token && token.length > 0) {
-				this.#rememberTcToken(userJid, token, data[userJid]?.timestamp)
-				return token
+			const data = await this.#sock.authState.keys.get('tctoken', aliases)
+			for (const alias of aliases) {
+				const entry = data[alias]
+				if (entry?.token?.length && !isTcTokenExpired(entry.timestamp, this.#sock.tcTokenBucketPolicy)) {
+					this.#rememberTcToken(alias, entry.token, entry.timestamp)
+					return entry.token
+				}
 			}
 		} catch {}
 
 		return undefined
+	}
+
+	#resolveTcTokenAliases = async (jid: string): Promise<string[]> => {
+		const mapping = this.#sock.signalRepository?.lidMapping
+		return resolveTcTokenAliases(jid, {
+			getLIDForPN: async pn => (await mapping?.getLIDForPN?.(pn)) ?? null,
+			getPNForLID: async lid => (await mapping?.getPNForLID?.(lid)) ?? null
+		})
 	}
 }

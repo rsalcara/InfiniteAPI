@@ -26,6 +26,12 @@ export * from './orphan-queue'
 export * from './browser-utils'
 export * from './companion-reg-client-utils'
 export * from './connection-presets'
+export * from './tc-token-lifecycle'
+export * from './protocol-wire-capture'
+export * from './direct-recipient'
+export * from './outbound-policy'
+export * from './message-delivery-state'
+export * from './message-ack-error'
 
 // === Identity and Session Management ===
 export * from './contact-picture-identity'

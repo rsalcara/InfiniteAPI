@@ -75,6 +75,21 @@ describe('migrateAuthState — multi-file → SQLite', () => {
 					timestamp: '1700000000'
 					// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				} as any
+			},
+			'tctoken-job': {
+				'5511999999999@s.whatsapp.net': {
+					canonicalJid: '5511999999999@s.whatsapp.net',
+					requestedJid: '5511999999999@s.whatsapp.net',
+					aliases: ['5511999999999@s.whatsapp.net'],
+					issueTimestamp: 1_700_000_000,
+					state: 'retry',
+					attemptCount: 2,
+					nextRetryAt: 1_700_001_000_000,
+					leaseUntil: 0,
+					timeoutMs: 32_000,
+					createdAt: 1_700_000_000_000,
+					updatedAt: 1_700_000_001_000
+				}
 			}
 		})
 
@@ -87,6 +102,8 @@ describe('migrateAuthState — multi-file → SQLite', () => {
 		expect(result.counts['session']).toBe(2)
 		expect(result.counts['identity-key']).toBe(1)
 		expect(result.counts['app-state-sync-key']).toBe(1)
+		expect(result.counts['tctoken-job']).toBe(1)
+		expect(result.counts.tctoken).toBe(0)
 		expect(result.verified).toBe(true)
 		expect(result.warnings).toEqual([])
 
@@ -106,6 +123,26 @@ describe('migrateAuthState — multi-file → SQLite', () => {
 		expect(appStateKeys['key-id-1']).toBeDefined()
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		expect(Buffer.from((appStateKeys['key-id-1'] as any).keyData)).toEqual(Buffer.from([0xc1, 0xc2, 0xc3]))
+		expect(
+			(await dst.state.keys.get('tctoken-job', ['5511999999999@s.whatsapp.net']))['5511999999999@s.whatsapp.net']
+		).toEqual(
+			expect.objectContaining({
+				canonicalJid: '5511999999999@s.whatsapp.net',
+				requestedJid: '5511999999999@s.whatsapp.net',
+				aliases: ['5511999999999@s.whatsapp.net'],
+				issueTimestamp: 1_700_000_000,
+				state: 'retry',
+				attemptCount: 2,
+				nextRetryAt: 1_700_001_000_000,
+				leaseUntil: 0,
+				timeoutMs: 32_000,
+				createdAt: 1_700_000_000_000,
+				updatedAt: 1_700_000_001_000
+			})
+		)
+		expect(
+			(await dst.state.keys.get('tctoken', ['job-5511999999999@s.whatsapp.net']))['job-5511999999999@s.whatsapp.net']
+		).toBeUndefined()
 
 		dst.close()
 	})

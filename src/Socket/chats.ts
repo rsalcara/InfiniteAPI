@@ -96,7 +96,15 @@ import {
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
 import processMessage, { applyProcessedHistorySync, emitProcessedHistorySync } from '../Utils/process-message'
-import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
+import {
+	buildTcTokenFromJid,
+	buildTcTokenNode,
+	isRegularUser,
+	resolveTcTokenAliases,
+	resolveTcTokenBucketPolicy,
+	resolveUsableTcTokenForAliases,
+	resolveUsableTcTokenForJid
+} from '../Utils/tc-token-utils'
 import {
 	type BinaryNode,
 	getBinaryNodeChild,
@@ -110,7 +118,13 @@ import {
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { settleInitialSyncTasks } from './initial-sync-tasks'
-import { executeWMexQuery as genericExecuteWMexQuery } from './mex'
+import {
+	buildMexContactProfileVariables,
+	executeWMexQuery as genericExecuteWMexQuery,
+	MEX_CONTACT_PROFILE_BATCH_SIZE,
+	MEX_CONTACT_PROFILE_QUERY_ID,
+	type MexContactProfileQueryUser
+} from './mex'
 import { makeSocket } from './socket.js'
 
 /**
@@ -160,6 +174,7 @@ const recordRawMutation = (
 }
 
 export const makeChatsSocket = (config: SocketConfig) => {
+	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(config.transportProfile, config.tcTokenAbProps)
 	const {
 		logger,
 		markOnlineOnConnect,
@@ -382,7 +397,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					const notification = proto.Message.HistorySyncNotification.decode(job.notification)
 					await applyProcessedHistorySync(
 						data,
-						{ signalRepository, logger, messageStoreBackend },
+						{ signalRepository, keyStore: authState.keys, logger, messageStoreBackend },
 						historyBatchController,
 						true,
 						signal
@@ -648,7 +663,16 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		const usyncQuery = new USyncQuery().withStatusProtocol()
 
 		for (const jid of jids) {
-			usyncQuery.withUser(new USyncUser().withId(jid))
+			const user = new USyncUser().withId(jid)
+			const privacyToken = await resolveUsableTcTokenForJid({
+				authState,
+				jid,
+				getLIDForPN,
+				getPNForLID,
+				bucketPolicy: tcTokenBucketPolicy
+			})
+			if (privacyToken.buffer) user.withPrivacyToken(privacyToken.buffer, privacyToken.timestamp)
+			usyncQuery.withUser(user)
 		}
 
 		const result = await sock.executeUSyncQuery(usyncQuery)
@@ -661,7 +685,16 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		const usyncQuery = new USyncQuery().withDisappearingModeProtocol()
 
 		for (const jid of jids) {
-			usyncQuery.withUser(new USyncUser().withId(jid))
+			const user = new USyncUser().withId(jid)
+			const privacyToken = await resolveUsableTcTokenForJid({
+				authState,
+				jid,
+				getLIDForPN,
+				getPNForLID,
+				bucketPolicy: tcTokenBucketPolicy
+			})
+			if (privacyToken.buffer) user.withPrivacyToken(privacyToken.buffer, privacyToken.timestamp)
+			usyncQuery.withUser(user)
 		}
 
 		const result = await sock.executeUSyncQuery(usyncQuery)
@@ -780,6 +813,58 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	const executeWMexQuery = <T>(variables: Record<string, unknown>, queryId: string, dataPath: string): Promise<T> => {
 		return genericExecuteWMexQuery<T>(variables, queryId, dataPath, query, generateMessageTag)
+	}
+
+	/**
+	 * Explicit Android-compatible MEX profile enrichment. It is intentionally
+	 * opt-in: unrelated username/newsletter MEX operations have different
+	 * variable contracts and must not receive a privacy token globally.
+	 */
+	const fetchContactProfiles = async (jids: string[]): Promise<Record<string, unknown>[]> => {
+		const users = new Map<string, MexContactProfileQueryUser>()
+		for (const requestedJid of jids) {
+			const normalized = jidNormalizedUser(requestedJid)
+			if (!isRegularUser(normalized)) continue
+
+			let aliases = [normalized]
+			try {
+				aliases = await resolveTcTokenAliases(normalized, { getLIDForPN, getPNForLID })
+			} catch (error) {
+				logger.debug({ error, requestedJid }, 'MEX profile LID canonicalization skipped')
+			}
+
+			const canonicalJid = aliases[0] ?? normalized
+
+			if (users.has(canonicalJid)) continue
+
+			const token = await resolveUsableTcTokenForAliases({
+				authState,
+				aliases,
+				bucketPolicy: tcTokenBucketPolicy
+			})
+			users.set(canonicalJid, {
+				jid: canonicalJid,
+				...(token.buffer ? { privacyToken: { token: token.buffer, timestamp: token.timestamp } } : {})
+			})
+		}
+
+		const entries = [...users.values()]
+		const results: Record<string, unknown>[] = []
+		for (let offset = 0; offset < entries.length; offset += MEX_CONTACT_PROFILE_BATCH_SIZE) {
+			const variables = buildMexContactProfileVariables(entries.slice(offset, offset + MEX_CONTACT_PROFILE_BATCH_SIZE))
+			results.push(
+				await genericExecuteWMexQuery<Record<string, unknown>>(
+					variables,
+					MEX_CONTACT_PROFILE_QUERY_ID,
+					'',
+					query,
+					generateMessageTag,
+					{ includeQueryId: true, includeTrace: true }
+				)
+			)
+		}
+
+		return results
 	}
 
 	const newMexSessionId = () => randomBytes(8).toString('hex')
@@ -1320,7 +1405,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				// tctoken and let the server tell us (vs. doing a USync round trip
 				// that fingerprints us as non-WA-Web).
 				getLIDForPN: getKnownLIDForPN,
-				getPNForLID
+				getPNForLID,
+				bucketPolicy: tcTokenBucketPolicy
 			})
 			if (tctokenNode) {
 				pictureNode.content = [tctokenNode]
@@ -1432,7 +1518,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		const normalizedToJid = jidNormalizedUser(toJid)
 		const isUserJid = isAnyPnUser(normalizedToJid) || isAnyLidUser(normalizedToJid)
 		const tcTokenContent = isUserJid
-			? await buildTcTokenFromJid({ authState, jid: normalizedToJid, getLIDForPN, getPNForLID })
+			? await buildTcTokenFromJid({
+					authState,
+					jid: normalizedToJid,
+					getLIDForPN,
+					getPNForLID,
+					bucketPolicy: tcTokenBucketPolicy
+				})
 			: undefined
 
 		return sendNode({
@@ -2567,6 +2659,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		removeProfilePicture,
 		updateProfileStatus,
 		updateProfileName,
+		fetchContactProfiles,
 		getMyUsername,
 		setMyUsername,
 		deleteMyUsername,

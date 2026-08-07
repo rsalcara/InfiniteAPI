@@ -90,6 +90,21 @@ export type SignalDataTypeMap = {
 	'lid-mapping': string
 	'device-list': string[]
 	tctoken: { token: Buffer; timestamp?: string; senderTimestamp?: number; realIssueTimestamp?: number | null }
+	'tctoken-job': {
+		canonicalJid: string
+		requestedJid: string
+		aliases: string[]
+		issueTimestamp: number
+		state: 'pending' | 'in_flight' | 'retry' | 'terminal'
+		attemptCount: number
+		nextRetryAt: number
+		leaseUntil: number
+		timeoutMs: number
+		createdAt: number
+		updatedAt: number
+		lastStatus?: number
+		lastError?: string
+	}
 	/** Identity key for Signal Protocol - used for detecting contact reinstalls */
 	'identity-key': Uint8Array
 	/**
@@ -126,7 +141,9 @@ export type RecordRef = {
 export type TrustedContactTokenStore = {
 	readonly authoritative: true
 	listIncoming(): Array<{ jid: string; timestamp: number }>
+	listSent(): Array<{ jid: string; timestamp: number }>
 	compareAndPrune(jid: string, expectedTimestamp: number, expectedToken: Uint8Array): Promise<boolean>
+	compareAndPruneSent(jid: string, expectedTimestamp: number): Promise<boolean>
 }
 
 /**

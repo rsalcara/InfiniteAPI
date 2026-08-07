@@ -344,15 +344,19 @@ export const useMultiFileAuthState = async (
 		const prefix = `${fixFileName(type)}-`
 		// Codex P1 fix: prevent `sender-key` enumeration from absorbing
 		// `sender-key-memory-*` files.
-		const collidingPrefix =
-			type === 'sender-key' ? `${fixFileName('sender-key-memory' as keyof SignalDataTypeMap)}-` : null
+		const collidingPrefixes =
+			type === 'sender-key'
+				? [`${fixFileName('sender-key-memory' as keyof SignalDataTypeMap)}-`]
+				: type === 'tctoken'
+					? [`${fixFileName('tctoken-job' as keyof SignalDataTypeMap)}-`]
+					: []
 
 		const seenEncodedIds = new Set<string>()
 
 		// Pass 1 — primary `*.json` files.
 		for (const filename of entries) {
 			if (!filename.startsWith(prefix) || !filename.endsWith('.json')) continue
-			if (collidingPrefix && filename.startsWith(collidingPrefix)) continue
+			if (collidingPrefixes.some(prefix => filename.startsWith(prefix))) continue
 			const encodedId = filename.slice(prefix.length, -'.json'.length)
 			seenEncodedIds.add(encodedId)
 			yield { id: decodeIdForType(type, encodedId), filename }
@@ -364,7 +368,7 @@ export const useMultiFileAuthState = async (
 		const BAK_SUFFIX = '.json.bak'
 		for (const filename of entries) {
 			if (!filename.startsWith(prefix) || !filename.endsWith(BAK_SUFFIX)) continue
-			if (collidingPrefix && filename.startsWith(collidingPrefix)) continue
+			if (collidingPrefixes.some(prefix => filename.startsWith(prefix))) continue
 			const encodedId = filename.slice(prefix.length, -BAK_SUFFIX.length)
 			if (seenEncodedIds.has(encodedId)) continue
 			seenEncodedIds.add(encodedId)

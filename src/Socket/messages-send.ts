@@ -21,11 +21,14 @@ import type {
 import {
 	aggregateMessageKeysNotFromMe,
 	assertCanStartLiveLocation,
+	assertDirectRecipientCiphertext,
 	assertMediaContent,
 	assertMeId,
 	bindWaitForEvent,
+	captureProtocolWire,
 	decryptMediaRetryData,
 	DEF_MEDIA_HOST,
+	emitMessageDeliveryState,
 	encodeNewsletterMessage,
 	encodeSignedDeviceIdentity,
 	encodeWAMessage,
@@ -46,7 +49,9 @@ import {
 	normalizeMessageContent,
 	parseAndInjectE2ESessions,
 	runDetached,
+	runDirectRecipientPreflight,
 	safeCacheSet,
+	TcTokenLifecycleService,
 	toNumber,
 	transmitWithRetryPayload,
 	unixTimestampSeconds,
@@ -63,16 +68,21 @@ import {
 	StickersBackend
 } from '../Utils/multi-db-sqlite'
 import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prometheus-metrics'
-import { appendParticipantFanoutNode } from '../Utils/relay-stanza'
+import {
+	appendParticipantFanoutNode,
+	appendTcTokensToParticipantFanout,
+	canonicalizeParticipantFanoutRecipient,
+	dedupeParticipantFanout,
+	mapParticipantFanout
+} from '../Utils/relay-stanza'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import { resolveSessionFetchJids } from '../Utils/session-fetch-addressing'
 import {
-	getOrCreateTcTokenIssueFlight,
 	resolveTcTokenAliases,
+	resolveTcTokenBucketPolicy,
+	resolveUsableTcTokenForJid,
 	selectNewestUsableTcToken,
-	shouldSendNewTcToken,
-	type TcTokenIssueAliasGroup,
-	updateTcTokenIssueState
+	shouldSendNewTcToken
 } from '../Utils/tc-token-utils'
 import {
 	areJidsSameUser,
@@ -114,6 +124,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		enforceAnnounceAdmin
 	} = config
 	const sock = makeNewsletterSocket(config)
+	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(config.transportProfile, config.tcTokenAbProps)
 	const {
 		ev,
 		authState,
@@ -123,9 +134,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		upsertMessage,
 		query,
 		fetchPrivacySettings,
+		fetchAccountReachoutTimelock,
+		fetchNewChatMessageCap,
 		sendNode,
 		groupMetadata,
 		groupToggleEphemeral,
+		registerSocketDrainHandler,
 		registerSocketEndHandler
 	} = sock
 
@@ -212,6 +226,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+	const getKnownLIDForPN = signalRepository.lidMapping.getKnownLIDForPN.bind(signalRepository.lidMapping)
 	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
 
 	const userDevicesCache =
@@ -280,12 +295,42 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 	// Prevent race conditions in Signal session encryption by user
 	const encryptionMutex = makeKeyedMutex()
+	const directRecipientPreflightMutex = makeKeyedMutex()
 
-	// The official client single-flights GeneratePrivacyTokenJob per canonical JID.
-	// Keep the guard at the public issuance boundary so message send, session
-	// refresh, VoIP, and external callers all share it.
-	const tcTokenIssueFlights = new Map<string, Promise<BinaryNode>>()
-	const tcTokenIssueMutex = makeMutex()
+	const tcTokenLifecycle = new TcTokenLifecycleService({
+		keys: authState.keys,
+		resolvers: { getLIDForPN, getPNForLID },
+		logger,
+		bucketPolicy: tcTokenBucketPolicy,
+		send: job => {
+			const t = job.issueTimestamp.toString()
+			return query(
+				{
+					tag: 'iq',
+					attrs: { to: S_WHATSAPP_NET, type: 'set', xmlns: 'privacy' },
+					content: [
+						{
+							tag: 'tokens',
+							attrs: {},
+							content: [
+								{
+									tag: 'token',
+									attrs: { jid: job.canonicalJid, t, type: 'trusted_contact' }
+								}
+							]
+						}
+					]
+				},
+				job.timeoutMs
+			)
+		}
+	})
+	void tcTokenLifecycle
+		.startRecovery()
+		.catch(error =>
+			logger.warn({ error }, 'durable trusted-contact token recovery could not start; jobs remain persisted')
+		)
+	registerSocketDrainHandler(() => tcTokenLifecycle.stop())
 
 	let mediaConn: Promise<MediaConnInfo> | undefined
 	/**
@@ -537,21 +582,42 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const query = new USyncQuery().withContext('message').withDeviceProtocol().withLIDProtocol()
 
 		for (const jid of toFetch) {
-			query.withUser(new USyncUser().withId(jid)) // todo: investigate - the idea here is that <user> should have an inline lid field with the lid being the pn equivalent
+			const user = new USyncUser().withId(jid)
+			const privacyToken = await resolveUsableTcTokenForJid({
+				authState,
+				jid,
+				getLIDForPN,
+				getPNForLID,
+				bucketPolicy: tcTokenBucketPolicy
+			})
+			if (privacyToken.buffer) user.withPrivacyToken(privacyToken.buffer, privacyToken.timestamp)
+			query.withUser(user)
 		}
 
 		const result = await sock.executeUSyncQuery(query)
 
 		if (result) {
-			// TODO: LID MAP this stuff (lid protocol will now return lid with devices)
-			const lidResults = result.list.filter(a => !!a.lid)
+			// Keep the PN/LID aliases returned by USync. The row's `id` is not
+			// guaranteed to be the PN: cold-recipient responses may use `new_jid`
+			// or a LID as the primary identity.
+			const lidResults = result.list
+				.map(row => {
+					const lid = [row.lid, row.newJid, row.jid, row.id].find(
+						value => typeof value === 'string' && isAnyLidUser(value)
+					)
+					const pn = [row.pnJid, row.jid, row.newJid, row.id].find(
+						value => typeof value === 'string' && isAnyPnUser(value)
+					)
+					return lid && pn ? { lid: jidNormalizedUser(lid), pn: jidNormalizedUser(pn) } : undefined
+				})
+				.filter((mapping): mapping is { lid: string; pn: string } => Boolean(mapping))
 			if (lidResults.length > 0) {
 				logger.trace('Storing LID maps from device call')
-				await signalRepository.lidMapping.storeLIDPNMappings(lidResults.map(a => ({ lid: a.lid as string, pn: a.id })))
+				await signalRepository.lidMapping.storeLIDPNMappings(lidResults)
 
 				// Force-refresh sessions for newly mapped LIDs to align identity addressing
 				try {
-					const lids = lidResults.map(a => a.lid as string)
+					const lids = lidResults.map(a => a.lid)
 					if (lids.length) {
 						await assertSessions(lids, true)
 					}
@@ -653,6 +719,57 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 
 		return deviceResults
+	}
+
+	/**
+	 * Resolve a previously unknown PN before its first direct send. The first
+	 * USync validates registration and returns all identity aliases. Once the
+	 * mapping is committed, devices are queried again by LID so Signal sessions
+	 * are never built from a stale PN-addressed row.
+	 */
+	const preflightDirectRecipient = async (requestedJid: string) => {
+		const requestedPn = jidNormalizedUser(requestedJid)
+		if (!isAnyPnUser(requestedPn)) return undefined
+
+		const knownLid = await getKnownLIDForPN(requestedPn)
+		if (knownLid) {
+			return {
+				requestedPn,
+				pnJid: requestedPn,
+				lidJid: jidNormalizedUser(knownLid)
+			}
+		}
+
+		return directRecipientPreflightMutex.mutex(requestedPn, () =>
+			runDirectRecipientPreflight<DeviceWithJid>({
+				requestedJid: requestedPn,
+				getKnownLIDForPN,
+				fetchReachout: () => fetchAccountReachoutTimelock(false),
+				fetchCapping: fetchNewChatMessageCap,
+				resolveUSync: async phoneUser => {
+					const query = new USyncQuery()
+						.withContext('message')
+						.withContactProtocol()
+						.withLIDProtocol()
+						.withDeviceProtocol()
+						.withUsernameProtocol()
+						.withUser(new USyncUser().withPhone(`+${phoneUser}`))
+					return (await sock.executeUSyncQuery(query))?.list ?? []
+				},
+				storeMapping: mapping => signalRepository.lidMapping.storeLIDPNMappings([mapping]),
+				onResolvedUsername: resolution =>
+					ev.emit('contacts.upsert', [
+						{
+							id: resolution.lidJid!,
+							lid: resolution.lidJid,
+							phoneNumber: resolution.pnJid,
+							username: resolution.username
+						}
+					]),
+				getDevices: lid => getUSyncDevices([lid], false, false),
+				logger
+			})
+		)
 	}
 
 	/**
@@ -893,13 +1010,18 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		useLegacyLock?: boolean
 	) => {
 		if (!recipientJids.length) {
-			return { nodes: [] as BinaryNode[], shouldIncludeDeviceIdentity: false }
+			return { nodes: [] as BinaryNode[], shouldIncludeDeviceIdentity: false, recipientCount: 0 }
 		}
 
-		const patched = await patchMessageBeforeSending(message, recipientJids)
+		const canonicalRecipients = dedupeParticipantFanout(
+			await mapParticipantFanout(recipientJids, jid => canonicalizeParticipantFanoutRecipient(jid, getLIDForPN)),
+			jid => jid
+		)
+
+		const patched = await patchMessageBeforeSending(message, canonicalRecipients)
 		const patchedMessages = Array.isArray(patched)
 			? patched
-			: recipientJids.map(jid => ({ recipientJid: jid, message: patched }))
+			: canonicalRecipients.map(jid => ({ recipientJid: jid, message: patched }))
 
 		let shouldIncludeDeviceIdentity = false
 		const meId = authState.creds.me?.id
@@ -910,7 +1032,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			shouldIncludeDeviceIdentity = true
 		}
 
-		const encryptionPromises = (patchedMessages as { recipientJid: string; message: proto.IMessage }[]).map(
+		const encrypted = await mapParticipantFanout(
+			patchedMessages as { recipientJid: string; message: proto.IMessage }[],
 			({ recipientJid: jid, message: patchedMessage }: { recipientJid: string; message: proto.IMessage }) =>
 				encryptPatchedMessageForRecipient({
 					jid,
@@ -925,14 +1048,34 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				})
 		)
 
-		const nodes = (await Promise.all(encryptionPromises)).filter(node => node !== null)
+		const nodes = encrypted.filter(node => node !== null)
 
-		if (recipientJids.length > 0 && nodes.length === 0) {
+		if (canonicalRecipients.length > 0 && nodes.length === 0) {
 			recordMessageFailure('send', 'encryption_failed')
 			throw new Boom('All encryptions failed', { statusCode: 500 })
 		}
 
-		return { nodes, shouldIncludeDeviceIdentity }
+		// Android's PrivacyTokenMessageSendStanzaContributor adds one token to
+		// the first <to> for each user. This is deliberately best-effort: token
+		// lookup must never turn an otherwise valid encrypted fanout into a
+		// failed message, and companion device JIDs remain untouched.
+		await appendTcTokensToParticipantFanout(nodes, {
+			enabled: config.tcTokenFanout?.enabled ?? false,
+			maxUsers: config.tcTokenFanout?.maxUsers ?? 2000,
+			resolveToken: async userJid =>
+				(
+					await resolveUsableTcTokenForJid({
+						authState,
+						jid: userJid,
+						getLIDForPN,
+						getPNForLID,
+						bucketPolicy: tcTokenBucketPolicy
+					})
+				).buffer,
+			onResolveError: (error, userJid) => logger.debug({ error, userJid }, 'participant TcToken lookup skipped')
+		})
+
+		return { nodes, shouldIncludeDeviceIdentity, recipientCount: canonicalRecipients.length }
 	}
 
 	const liveLocationKeyMutex = makeMutex()
@@ -976,17 +1119,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const normalizedRecipients = rawRecipients
 				.map(jidNormalizedUser)
 				.filter(recipient => !areJidsSameUser(recipient, meId) && (!meLid || !areJidsSameUser(recipient, meLid)))
-			const recipients = await Promise.all(
-				normalizedRecipients.map(async recipient => {
-					if (!isAnyPnUser(recipient)) return recipient
-					const lid = await getLIDForPN(recipient)
-					if (lid) return jidNormalizedUser(lid)
-					logger.warn(
-						{ conversationJid, recipient, reason: 'missing-lid-mapping' },
-						'live-location key distribution downgraded to PN'
-					)
-					return recipient
-				})
+			const recipients = dedupeParticipantFanout(
+				await mapParticipantFanout(normalizedRecipients, jid =>
+					canonicalizeParticipantFanoutRecipient(jid, getLIDForPN)
+				),
+				recipient => recipient
 			)
 			if (!recipients.length) return
 
@@ -1006,25 +1143,23 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// padded plaintext is not the official key-notification wire shape.
 			const distributionBytes = Buffer.from(proto.Message.encode(distributionMessage).finish())
 			const nodes = (
-				await Promise.all(
-					recipients.map(recipient =>
-						encryptionMutex.mutex(recipient, async () => {
-							try {
-								const { type, ciphertext } = await signalRepository.encryptMessage({
-									jid: recipient,
-									data: distributionBytes
-								})
-								return {
-									tag: 'to',
-									attrs: { jid: recipient },
-									content: [{ tag: 'enc', attrs: { v: '2', type }, content: ciphertext }]
-								} as BinaryNode
-							} catch (err) {
-								logger.error({ recipient, err }, 'failed to encrypt live-location key distribution')
-								return null
-							}
-						})
-					)
+				await mapParticipantFanout(recipients, recipient =>
+					encryptionMutex.mutex(recipient, async () => {
+						try {
+							const { type, ciphertext } = await signalRepository.encryptMessage({
+								jid: recipient,
+								data: distributionBytes
+							})
+							return {
+								tag: 'to',
+								attrs: { jid: recipient },
+								content: [{ tag: 'enc', attrs: { v: '2', type }, content: ciphertext }]
+							} as BinaryNode
+						} catch (err) {
+							logger.error({ recipient, err }, 'failed to encrypt live-location key distribution')
+							return null
+						}
+					})
 				)
 			).filter((node): node is BinaryNode => node !== null)
 			if (nodes.length !== recipients.length) {
@@ -1281,6 +1416,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const isNewsletter = server === 'newsletter'
 		const isGroupOrStatus = isGroup || isStatus
 		const finalJid = jid
+		const directRecipient =
+			!isRetryResend && !isGroupOrStatus && !isNewsletter ? await preflightDirectRecipient(jid) : undefined
 
 		msgId = msgId || generateMessageIDV2(meId)
 		useUserDevicesCache = useUserDevicesCache !== false
@@ -1650,8 +1787,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								? jidEncode(jidDecode(meLid)?.user!, 'lid', undefined)
 								: jidEncode(jidDecode(meId)?.user!, 's.whatsapp.net', undefined)
 
-						// Enumerate devices for sender and target with consistent addressing
-						const sessionDevices = await getUSyncDevices([senderIdentity, jid], true, false)
+						// Enumerate the target by canonical LID. A newly discovered recipient
+						// already has a forced-refresh result from the second USync, so only
+						// our own devices need another lookup here.
+						const targetLookupJid = directRecipient?.lidJid || jid
+						const sessionDevices = directRecipient?.freshTargetDevices
+							? [...(await getUSyncDevices([senderIdentity], true, false)), ...directRecipient.freshTargetDevices]
+							: await getUSyncDevices([senderIdentity, targetLookupJid], true, false)
 						devices.push(...sessionDevices)
 
 						logger.debug(
@@ -1711,12 +1853,28 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				const [
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
-					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
+					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2, recipientCount: otherRecipientCount }
 				] = await Promise.all([
 					// For own devices: use DSM (deviceSentMessage) wrapper
 					createParticipantNodes(effectiveMeRecipients, meMsg || message, extraAttrs),
 					createParticipantNodes(effectiveOtherRecipients, message, extraAttrs)
 				])
+				const targetUser = jidDecode(directRecipient?.lidJid || destinationJid)?.user
+				const isExternalDirectRecipient =
+					!isGroupOrStatus &&
+					!isNewsletter &&
+					!isRetryResend &&
+					Boolean(targetUser) &&
+					targetUser !== mePnUser &&
+					targetUser !== meLidUser
+				assertDirectRecipientCiphertext({
+					isExternalDirectRecipient,
+					recipientCount: otherRecipientCount,
+					ciphertextCount: otherNodes.length,
+					requestedJid: destinationJid,
+					lidJid: directRecipient?.lidJid
+				})
+
 				participants.push(...meNodes)
 				participants.push(...otherNodes)
 
@@ -2119,7 +2277,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				: [destinationJid]
 			const contactTcTokenData = is1on1Send ? await authState.keys.get('tctoken', tcTokenAliases) : {}
 			const selectedToken = selectNewestUsableTcToken(
-				tcTokenAliases.map(alias => [alias, contactTcTokenData[alias]] as const)
+				tcTokenAliases.map(alias => [alias, contactTcTokenData[alias]] as const),
+				tcTokenBucketPolicy
 			)
 			const existingTokenEntry = tcTokenAliases
 				.map(alias => contactTcTokenData[alias])
@@ -2294,6 +2453,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// Stage the plaintext before transmission. A companion can return a retry
 			// receipt while sendNode is still awaiting the server ACK; caching after the
 			// await leaves that receipt with no payload to re-encrypt.
+			if (isRetryResend) {
+				await captureProtocolWire(config.protocolWireCapture, 'direct_retry', stanza, logger)
+			}
+
 			await transmitWithRetryPayload({
 				manager: messageRetryManager,
 				to: jidNormalizedUser(destinationJid),
@@ -2303,6 +2466,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				liveLocationDuration,
 				transmit: () => sendNode(stanza)
 			})
+			if (!isRetryResend) {
+				emitMessageDeliveryState(ev, {
+					key: { remoteJid: destinationJid, fromMe: true, id: msgId },
+					state: 'accepted',
+					requestedJid: destinationJid,
+					canonicalJid: directRecipient?.lidJid || jidNormalizedUser(destinationJid)
+				})
+			}
 
 			// Fire-and-forget: issue our token to the contact (like WA Web's sendTcToken).
 			// Gated only by shouldSendNewTcToken — removed tcTokenBuffer?.length guard so
@@ -2316,7 +2487,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// and Web cannot render interactive messages (no persisted token).
 			if (
 				is1on1Send &&
-				(shouldSendNewTcToken(existingTokenEntry?.senderTimestamp) || existingTokenEntry?.realIssueTimestamp === 0)
+				(shouldSendNewTcToken(existingTokenEntry?.senderTimestamp, tcTokenBucketPolicy) ||
+					existingTokenEntry?.realIssueTimestamp === 0)
 			) {
 				const issueTimestamp = unixTimestampSeconds()
 				logTcToken('reissue', { jid: destinationJid })
@@ -2363,13 +2535,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		if (deferredTcTokenReissue) {
 			const { jid: reissueJid, issueTimestamp } = deferredTcTokenReissue
-			issuePrivacyTokens([reissueJid], issueTimestamp)
-				.then(() => {
-					logTcToken('reissue_ok', { jid: reissueJid })
-				})
-				.catch(err => {
-					logTcToken('reissue_fail', { jid: reissueJid, error: err?.message })
-				})
+			try {
+				await tcTokenLifecycle.enqueue([reissueJid], issueTimestamp)
+				logTcToken('reissue_ok', { jid: reissueJid, state: 'durably-queued' })
+			} catch (err: any) {
+				// The user message was already accepted by the server. A local job
+				// persistence failure must not become a false delivery failure.
+				logTcToken('reissue_fail', { jid: reissueJid, error: err?.message, state: 'enqueue-failed' })
+			}
 		}
 
 		return msgId
@@ -2407,95 +2580,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return getRelayMediaType(message)
 	}
 
-	const updatePrivacyTokenIssueState = async (
-		aliasGroups: TcTokenIssueAliasGroup[],
-		issueTimestamp: number,
-		phase: 'scheduled' | 'confirmed'
-	): Promise<boolean> => {
-		return updateTcTokenIssueState({
-			keys: authState.keys,
-			aliasGroups,
-			issueTimestamp,
-			phase,
-			onStaleAck: ({ requestedJid, canonicalJid, newerTimestamp }) =>
-				logger.debug(
-					{
-						jid: requestedJid,
-						canonicalJid,
-						ackTimestamp: issueTimestamp,
-						newerTimestamp,
-						action: 'ignored-stale-ack'
-					},
-					'privacy-token issue confirmation did not overwrite a newer issue'
-				)
-		})
-	}
-
-	const runPrivacyTokenIssue = async (
-		aliasGroups: TcTokenIssueAliasGroup[],
-		issueTimestamp: number,
-		timeoutMs?: number
-	): Promise<BinaryNode> => {
-		const t = issueTimestamp.toString()
-		await updatePrivacyTokenIssueState(aliasGroups, issueTimestamp, 'scheduled')
-		const result = await query(
-			{
-				tag: 'iq',
-				attrs: {
-					to: S_WHATSAPP_NET,
-					type: 'set',
-					xmlns: 'privacy'
-				},
-				content: [
-					{
-						tag: 'tokens',
-						attrs: {},
-						content: aliasGroups.map(({ requestedJid }) => ({
-							tag: 'token',
-							attrs: {
-								jid: requestedJid,
-								t,
-								type: 'trusted_contact'
-							}
-						}))
-					}
-				]
-			},
-			timeoutMs ?? 32_000
-		)
-		const confirmed = await updatePrivacyTokenIssueState(aliasGroups, issueTimestamp, 'confirmed')
-		logger.debug(
-			{
-				jids: aliasGroups.map(group => group.requestedJid),
-				issueTimestamp,
-				confirmed,
-				responseType: result.attrs.type
-			},
-			'privacy-token issuance acknowledged; no peer token is expected in the IQ result'
-		)
-
-		return result
-	}
-
 	const issuePrivacyTokens = async (jids: string[], timestamp?: number, timeoutMs?: number): Promise<BinaryNode> => {
-		const normalizedJids = [...new Set(jids.map(jidNormalizedUser))]
-		const aliasGroups = await Promise.all(
-			normalizedJids.map(async requestedJid => ({
-				requestedJid,
-				aliases: await resolveTcTokenAliases(requestedJid, { getLIDForPN, getPNForLID })
-			}))
-		)
-		let result!: Promise<BinaryNode>
-
-		await tcTokenIssueMutex.mutex(async () => {
-			const groupsByCanonical = new Map(aliasGroups.map(group => [group.aliases[0]!, group]))
-			result = getOrCreateTcTokenIssueFlight(tcTokenIssueFlights, [...groupsByCanonical.keys()], uncoveredKeys => {
-				const uncovered = uncoveredKeys.map(key => groupsByCanonical.get(key)!)
-				return runPrivacyTokenIssue(uncovered, timestamp ?? unixTimestampSeconds(), timeoutMs)
-			})
-		})
-
-		return result
+		return tcTokenLifecycle.issue(jids, timestamp, timeoutMs)
 	}
 
 	/** @deprecated This IQ issues our token; use `issuePrivacyTokens`. */

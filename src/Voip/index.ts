@@ -619,7 +619,6 @@ export class VoipClient extends EventEmitter {
 		await this.#signaling.ensureSessionsForPeers(deviceList)
 
 		await new Promise(r => setTimeout(r, 500))
-		await this.#signaling.issueTcToken(peerLid)
 		const tcToken = await this.#signaling.ensureTcToken(peerLid, targetPnJid)
 
 		const callId = ('00' + randomBytes(16).toString('hex').slice(2)).toUpperCase()
@@ -851,6 +850,7 @@ export class VoipClient extends EventEmitter {
 		if (this.#ownsSocket) this.#sock?.end?.()
 		this.#engine = null
 		this.#relay = null
+		this.#signaling?.dispose()
 		this.#signaling = null
 		this.#sock = null
 	}
