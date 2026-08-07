@@ -126,7 +126,7 @@ export class TcTokenLifecycleService {
 			const entry: Waiter = { resolve, reject }
 			// The caller's timeout bounds only this await. The transport query owns
 			// the per-IQ timeout; the durable job remains recoverable afterwards.
-			const remaining = Math.max(1, timeoutMs)
+			const remaining = normalizeTimeoutMs(timeoutMs)
 			entry.timer = setTimeout(() => {
 				const current = this.waiters.get(key)?.filter(candidate => candidate !== entry) ?? []
 				if (current.length) this.waiters.set(key, current)

@@ -876,6 +876,144 @@ describe('useMultiDbSqliteAuthState', () => {
 		}
 	})
 
+	it('recovers a tombstone and legacy tctoken fallback after close and reopen', async () => {
+		const jid = 'startup-handoff-recovery@lid'
+		const first = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			await first.state.keys.set({ tctoken: { [jid]: { token: Buffer.from([8]), timestamp: '900' } } })
+			const waDb = first.store.handle('wa.db')
+			waDb.prepare('DELETE FROM wa_trusted_contacts WHERE jid = ?').run(jid)
+			waDb.prepare('DELETE FROM wa_trusted_contacts_send WHERE jid = ?').run(jid)
+			waDb
+				.prepare(
+					'INSERT INTO wa_trusted_contacts (jid, incoming_tc_token, incoming_tc_token_timestamp) VALUES (?, ?, ?)'
+				)
+				.run(jid, Buffer.alloc(0), 0)
+		} finally {
+			first.close()
+		}
+
+		const reopened = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			const backend = new TrustedContactsBackend(reopened.store.handle('wa.db'))
+			expect((await reopened.state.keys.get('tctoken', [jid]))[jid]).toBeUndefined()
+			expect(backend.getIncoming(jid)).toBeNull()
+			expect(
+				reopened.store
+					.handle('axolotl.db')
+					.prepare("SELECT id FROM signal_kv WHERE type = 'tctoken' AND id = ?")
+					.get(jid)
+			).toBeUndefined()
+		} finally {
+			reopened.close()
+		}
+	})
+
+	it('retains the handoff tombstone when startup fallback deletion fails, then retries on the next reopen', async () => {
+		const jid = 'startup-handoff-delete-retry@lid'
+		const first = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			await first.state.keys.set({ tctoken: { [jid]: { token: Buffer.from([9]), timestamp: '901' } } })
+			const waDb = first.store.handle('wa.db')
+			waDb.prepare('DELETE FROM wa_trusted_contacts WHERE jid = ?').run(jid)
+			waDb.prepare('DELETE FROM wa_trusted_contacts_send WHERE jid = ?').run(jid)
+			waDb
+				.prepare(
+					'INSERT INTO wa_trusted_contacts (jid, incoming_tc_token, incoming_tc_token_timestamp) VALUES (?, ?, ?)'
+				)
+				.run(jid, Buffer.alloc(0), 0)
+			first.store.handle('axolotl.db').exec(`
+				CREATE TRIGGER fail_startup_tctoken_delete
+				BEFORE DELETE ON signal_kv
+				WHEN OLD.type = 'tctoken' AND OLD.id = '${jid}'
+				BEGIN
+					SELECT RAISE(ABORT, 'forced startup fallback delete failure');
+				END;
+			`)
+		} finally {
+			first.close()
+		}
+
+		const blocked = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			const backend = new TrustedContactsBackend(blocked.store.handle('wa.db'))
+			expect(backend.getIncoming(jid)).toEqual({ token: Buffer.alloc(0), timestamp: 0 })
+			expect(
+				blocked.store
+					.handle('axolotl.db')
+					.prepare("SELECT id FROM signal_kv WHERE type = 'tctoken' AND id = ?")
+					.get(jid)
+			).toBeDefined()
+			blocked.store.handle('axolotl.db').exec('DROP TRIGGER fail_startup_tctoken_delete')
+		} finally {
+			blocked.close()
+		}
+
+		const recovered = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			const backend = new TrustedContactsBackend(recovered.store.handle('wa.db'))
+			expect(backend.getIncoming(jid)).toBeNull()
+			expect(
+				recovered.store
+					.handle('axolotl.db')
+					.prepare("SELECT id FROM signal_kv WHERE type = 'tctoken' AND id = ?")
+					.get(jid)
+			).toBeUndefined()
+		} finally {
+			recovered.close()
+		}
+	})
+
+	it('retains a tombstone when its startup cleanup fails after legacy deletion, then removes it on the next reopen', async () => {
+		const jid = 'startup-handoff-tombstone-retry@lid'
+		const first = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			await first.state.keys.set({ tctoken: { [jid]: { token: Buffer.from([10]), timestamp: '902' } } })
+			const waDb = first.store.handle('wa.db')
+			waDb.prepare('DELETE FROM wa_trusted_contacts WHERE jid = ?').run(jid)
+			waDb.prepare('DELETE FROM wa_trusted_contacts_send WHERE jid = ?').run(jid)
+			waDb
+				.prepare(
+					'INSERT INTO wa_trusted_contacts (jid, incoming_tc_token, incoming_tc_token_timestamp) VALUES (?, ?, ?)'
+				)
+				.run(jid, Buffer.alloc(0), 0)
+			waDb.exec(`
+				CREATE TRIGGER fail_startup_tctoken_tombstone_delete
+				BEFORE DELETE ON wa_trusted_contacts
+				WHEN OLD.jid = '${jid}'
+				BEGIN
+					SELECT RAISE(ABORT, 'forced startup tombstone delete failure');
+				END;
+			`)
+		} finally {
+			first.close()
+		}
+
+		const blocked = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			expect(
+				blocked.store
+					.handle('axolotl.db')
+					.prepare("SELECT id FROM signal_kv WHERE type = 'tctoken' AND id = ?")
+					.get(jid)
+			).toBeUndefined()
+			expect(new TrustedContactsBackend(blocked.store.handle('wa.db')).getIncoming(jid)).toEqual({
+				token: Buffer.alloc(0),
+				timestamp: 0
+			})
+			blocked.store.handle('wa.db').exec('DROP TRIGGER fail_startup_tctoken_tombstone_delete')
+		} finally {
+			blocked.close()
+		}
+
+		const recovered = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			expect(new TrustedContactsBackend(recovered.store.handle('wa.db')).getIncoming(jid)).toBeNull()
+		} finally {
+			recovered.close()
+		}
+	})
+
 	it('replaces a multi-JID tctoken bucket atomically and normalizes non-finite timestamps', async () => {
 		const { store, state, close } = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		const firstJid = 'atomic-first@lid'

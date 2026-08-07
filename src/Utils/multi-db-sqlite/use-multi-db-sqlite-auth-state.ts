@@ -521,9 +521,26 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 
 			for (const { jid } of tombstones) {
 				const legacy = signalStmts.select.get('tctoken', jid)
-				if (!legacy) {
-					await cleanupTctokenHandoffTombstone(jid, 'tctoken startup orphan tombstone cleanup')
+				if (legacy) {
+					// A crash can leave the relational handoff tombstone and its
+					// legacy signal_kv copy together. The tombstone is authoritative,
+					// so remove the hidden fallback first; only then is it safe to
+					// remove the tombstone itself. If either operation fails, leave
+					// the tombstone in place for the next open.
+					try {
+						await runWithBusyRetry('tctoken startup legacy fallback cleanup', () => {
+							signalStmts.del.run('tctoken', jid)
+						})
+					} catch (error) {
+						opts.logger?.warn?.(
+							{ error, jid, reason: 'legacy-fallback-cleanup-failed', recovery: 'retry-on-next-open' },
+							'multi-db-sqlite: legacy tctoken fallback retained behind tombstone'
+						)
+						continue
+					}
 				}
+
+				await cleanupTctokenHandoffTombstone(jid, 'tctoken startup orphan tombstone cleanup')
 			}
 		} catch (error) {
 			opts.logger?.warn?.({ error }, 'multi-db-sqlite: tctoken tombstone recovery scan failed')

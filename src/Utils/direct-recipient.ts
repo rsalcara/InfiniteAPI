@@ -47,17 +47,24 @@ export const assertDirectRecipientCiphertext = ({
 	requestedJid: string
 	lidJid?: string
 }): void => {
-	if (!isExternalDirectRecipient || (recipientCount > 0 && ciphertextCount > 0)) return
+	if (!isExternalDirectRecipient) return
+	if (recipientCount > 0 && ciphertextCount === recipientCount) return
 
-	throw new Boom('No ciphertext was produced for the recipient', {
-		statusCode: 503,
-		data: {
-			requestedJid,
-			lidJid,
-			category: 'recipient-fanout',
-			reason: 'recipient-fanout-empty'
+	const noCiphertext = ciphertextCount === 0
+	throw new Boom(
+		noCiphertext ? 'No ciphertext was produced for the recipient' : 'Incomplete ciphertext fanout for the recipient',
+		{
+			statusCode: 503,
+			data: {
+				requestedJid,
+				lidJid,
+				category: 'recipient-fanout',
+				reason: ciphertextCount === 0 ? 'recipient-fanout-empty' : 'recipient-fanout-incomplete',
+				recipientCount,
+				ciphertextCount
+			}
 		}
-	})
+	)
 }
 
 const normalizeAlias = (value: unknown): string | undefined => {

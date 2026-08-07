@@ -230,6 +230,41 @@ describe('TcTokenLifecycleService', () => {
 		await service.stop()
 	})
 
+	it.each([Number.NaN, Number.POSITIVE_INFINITY])(
+		'uses the default caller timeout for non-finite timeout %s',
+		async timeoutMs => {
+			jest.useFakeTimers()
+			const { store } = makeStore()
+			let resolveSend!: (value: typeof resultNode) => void
+			const send = jest.fn(
+				() =>
+					new Promise<typeof resultNode>(resolve => {
+						resolveSend = resolve
+					})
+			)
+			const service = new TcTokenLifecycleService({ keys: store, resolvers, send, now: () => 3_475_000 })
+
+			try {
+				const pending = service.issue([jid], 3_475, timeoutMs)
+				const result = pending.then(
+					() => undefined,
+					error => error
+				)
+
+				await jest.advanceTimersByTimeAsync(0)
+				await jest.advanceTimersByTimeAsync(31_999)
+				expect(await Promise.race([result, Promise.resolve('still-waiting')])).toBe('still-waiting')
+
+				await jest.advanceTimersByTimeAsync(1)
+				expect(await result).toMatchObject({ output: { statusCode: 408 } })
+			} finally {
+				await service.stop()
+				resolveSend?.(resultNode)
+				jest.useRealTimers()
+			}
+		}
+	)
+
 	it('bounds issue callers without discarding the durable job', async () => {
 		const { store, values, key } = makeStore()
 		let resolveSend!: (value: typeof resultNode) => void

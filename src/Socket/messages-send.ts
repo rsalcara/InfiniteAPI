@@ -1010,7 +1010,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		useLegacyLock?: boolean
 	) => {
 		if (!recipientJids.length) {
-			return { nodes: [] as BinaryNode[], shouldIncludeDeviceIdentity: false }
+			return { nodes: [] as BinaryNode[], shouldIncludeDeviceIdentity: false, recipientCount: 0 }
 		}
 
 		const canonicalRecipients = dedupeParticipantFanout(
@@ -1075,7 +1075,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			onResolveError: (error, userJid) => logger.debug({ error, userJid }, 'participant TcToken lookup skipped')
 		})
 
-		return { nodes, shouldIncludeDeviceIdentity }
+		return { nodes, shouldIncludeDeviceIdentity, recipientCount: canonicalRecipients.length }
 	}
 
 	const liveLocationKeyMutex = makeMutex()
@@ -1853,7 +1853,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				const [
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
-					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
+					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2, recipientCount: otherRecipientCount }
 				] = await Promise.all([
 					// For own devices: use DSM (deviceSentMessage) wrapper
 					createParticipantNodes(effectiveMeRecipients, meMsg || message, extraAttrs),
@@ -1869,7 +1869,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					targetUser !== meLidUser
 				assertDirectRecipientCiphertext({
 					isExternalDirectRecipient,
-					recipientCount: effectiveOtherRecipients.length,
+					recipientCount: otherRecipientCount,
 					ciphertextCount: otherNodes.length,
 					requestedJid: destinationJid,
 					lidJid: directRecipient?.lidJid

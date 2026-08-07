@@ -37,12 +37,12 @@ const ACK_TIMEOUT_MS = 15_000
 import { proto } from '../../../WAProto/index.js'
 import { encodeWAMessage, unpadRandomMax16 } from '../../Utils/generics'
 import { parseAndInjectE2ESessions } from '../../Utils/signal'
-import { isTcTokenExpired } from '../../Utils/tc-token-utils'
+import { isTcTokenExpired, resolveTcTokenAliases } from '../../Utils/tc-token-utils'
 import { encodeSignedDeviceIdentity } from '../../Utils/validate-connection'
 import { decodeBinaryNode } from '../../WABinary/decode'
 import { encodeBinaryNode } from '../../WABinary/encode'
 import { getAllBinaryNodeChildren, getBinaryNodeChild } from '../../WABinary/generic-utils'
-import { isAnyLidUser, jidDecode, jidEncode, jidNormalizedUser } from '../../WABinary/jid-utils'
+import { jidDecode, jidEncode, jidNormalizedUser } from '../../WABinary/jid-utils'
 
 // All the Baileys helpers `SignalingBridge` reaches into. The original
 // third-party lib did a runtime `import("@whiskeysockets/baileys")`; we ship
@@ -758,9 +758,10 @@ export class SignalingBridge {
 	}
 
 	#resolveTcTokenAliases = async (jid: string): Promise<string[]> => {
-		const bare = this.#toBareJid(jid)
 		const mapping = this.#sock.signalRepository?.lidMapping
-		const mapped = isAnyLidUser(bare) ? await mapping?.getPNForLID?.(bare) : await mapping?.getLIDForPN?.(bare)
-		return [...new Set([mapped ? this.#toBareJid(mapped) : undefined, bare].filter(Boolean))] as string[]
+		return resolveTcTokenAliases(jid, {
+			getLIDForPN: async pn => (await mapping?.getLIDForPN?.(pn)) ?? null,
+			getPNForLID: async lid => (await mapping?.getPNForLID?.(lid)) ?? null
+		})
 	}
 }

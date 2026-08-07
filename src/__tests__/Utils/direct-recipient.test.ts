@@ -188,6 +188,30 @@ describe('cold-recipient preflight orchestration', () => {
 		).toThrow('No ciphertext was produced for the recipient')
 	})
 
+	it('blocks a partial ciphertext fanout for a direct recipient', () => {
+		expect(() =>
+			assertDirectRecipientCiphertext({
+				isExternalDirectRecipient: true,
+				recipientCount: 2,
+				ciphertextCount: 1,
+				requestedJid: pn,
+				lidJid: lid
+			})
+		).toThrow('Incomplete ciphertext fanout for the recipient')
+	})
+
+	it('allows a complete ciphertext fanout for every direct-recipient device', () => {
+		expect(() =>
+			assertDirectRecipientCiphertext({
+				isExternalDirectRecipient: true,
+				recipientCount: 2,
+				ciphertextCount: 2,
+				requestedJid: pn,
+				lidJid: lid
+			})
+		).not.toThrow()
+	})
+
 	it('does not apply the direct-recipient ciphertext guard to groups or retries', () => {
 		expect(() =>
 			assertDirectRecipientCiphertext({

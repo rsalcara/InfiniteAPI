@@ -110,4 +110,23 @@ describe('SignalingBridge TcToken notification wait', () => {
 		expect(getPNForLID).toHaveBeenCalledWith(hostedLid)
 		bridge.dispose()
 	})
+
+	it('issues TcToken to the canonical LID when the request starts with a mapped LID', async () => {
+		const lid = '123456789@lid'
+		const pn = '5511555555555@s.whatsapp.net'
+		const issuePrivacyTokens = jest.fn(async () => ({ tag: 'iq', attrs: { type: 'result' } }))
+		const keys = { get: jest.fn(async () => ({})), set: jest.fn(async () => undefined) }
+		const bridge = new SignalingBridge({
+			sock: {
+				authState: { keys },
+				signalRepository: { lidMapping: { getPNForLID: jest.fn(async () => pn) } },
+				issuePrivacyTokens
+			} as any
+		})
+		await bridge.init()
+
+		await expect(bridge.issueTcToken(lid)).resolves.toBe(true)
+		expect(issuePrivacyTokens).toHaveBeenCalledWith([lid])
+		bridge.dispose()
+	})
 })
