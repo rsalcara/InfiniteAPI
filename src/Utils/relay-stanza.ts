@@ -1,5 +1,14 @@
 import { Boom } from '@hapi/boom'
-import { type BinaryNode, isAnyPnUser, jidDecode, jidEncode, jidNormalizedUser, transferDevice } from '../WABinary'
+import {
+	areJidsSameUser,
+	type BinaryNode,
+	isAnyLidUser,
+	isAnyPnUser,
+	jidDecode,
+	jidEncode,
+	jidNormalizedUser,
+	transferDevice
+} from '../WABinary'
 
 export const MAX_PARTICIPANT_FANOUT = 4096
 export const PARTICIPANT_FANOUT_CONCURRENCY = 32
@@ -32,6 +41,34 @@ export const canonicalizeParticipantFanoutRecipient = async (
 	const lid = await getLIDForPN(jidEncode(source.user, 's.whatsapp.net'))
 	const target = lid && jidDecode(lid)?.user ? lid : normalized
 	return transferDevice(jid, target)
+}
+
+/** Resolves the canonical LID only when a direct destination is the connected account itself. */
+export const resolveSelfSendLid = (
+	destinationJid: string,
+	meId: string,
+	meLid?: string,
+	mappedLid?: string | null
+): string | null => {
+	const destination = jidNormalizedUser(destinationJid)
+	const ownPn = jidNormalizedUser(meId)
+	const lidCandidates = [meLid, mappedLid]
+		.map(jid => jidNormalizedUser(jid ?? undefined))
+		.filter((jid): jid is string => Boolean(jid) && isAnyLidUser(jid))
+	const isOwnDestination =
+		(isAnyPnUser(destination) && isAnyPnUser(ownPn) && areJidsSameUser(destination, ownPn)) ||
+		lidCandidates.some(lid => areJidsSameUser(destination, lid))
+
+	return isOwnDestination ? lidCandidates[0] || null : null
+}
+
+/** Moves only the connected account's participant devices to its canonical LID domain. */
+export const canonicalizeSelfSendFanoutRecipient = (jid: string, meId: string, selfLid: string): string => {
+	const normalized = jidNormalizedUser(jid)
+	const isOwnPn = isAnyPnUser(normalized) && areJidsSameUser(normalized, meId)
+	const isOwnLid = isAnyLidUser(normalized) && areJidsSameUser(normalized, selfLid)
+
+	return isOwnPn || isOwnLid ? transferDevice(jid, selfLid) : jid
 }
 
 export const dedupeParticipantFanout = <T>(items: readonly T[], key: (item: T) => string): T[] => {

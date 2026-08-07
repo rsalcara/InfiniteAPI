@@ -983,7 +983,7 @@ export function logTcToken(
 	if (!isBaileysLogEnabled()) return
 
 	const prefix = sessionName ? `[BAILEYS] [${sessionName}]` : '[BAILEYS]'
-	const jid = typeof data?.jid === 'string' ? ` → ${obfuscateJid(data.jid)}` : ''
+	const jid = typeof data?.jid === 'string' ? ` → ${data.jid}` : ''
 	const rest = data ? { ...data } : undefined
 	if (rest) delete rest.jid
 	const extraStr = rest && Object.keys(rest).length > 0 ? ' ' + formatLogData(rest) : ''

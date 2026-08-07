@@ -4,8 +4,10 @@ import {
 	appendTcTokensToParticipantFanout,
 	buildGroupParticipantNode,
 	canonicalizeParticipantFanoutRecipient,
+	canonicalizeSelfSendFanoutRecipient,
 	dedupeParticipantFanout,
-	mapParticipantFanout
+	mapParticipantFanout,
+	resolveSelfSendLid
 } from '../../Utils/relay-stanza'
 import type { BinaryNode } from '../../WABinary'
 
@@ -16,6 +18,57 @@ const encNode = (value: number): BinaryNode => ({
 })
 
 describe('participant fanout admission', () => {
+	it('resolves a PN self-send to the connected account LID', () => {
+		expect(
+			resolveSelfSendLid('5515991426667@s.whatsapp.net', '5515991426667:24@s.whatsapp.net', '207421150646274:24@lid')
+		).toBe('207421150646274@lid')
+	})
+
+	it('uses a stored mapping when the connected credentials do not include meLid', () => {
+		expect(
+			resolveSelfSendLid('5515991426667@c.us', '5515991426667:24@s.whatsapp.net', undefined, '207421150646274@lid')
+		).toBe('207421150646274@lid')
+	})
+
+	it('keeps an own LID destination canonical when the caller already uses LID', () => {
+		expect(resolveSelfSendLid('207421150646274@lid', '5515991426667:24@s.whatsapp.net', '207421150646274:24@lid')).toBe(
+			'207421150646274@lid'
+		)
+	})
+
+	it('does not switch a remote PN recipient to LID under the self-send rule', () => {
+		expect(
+			resolveSelfSendLid(
+				'5511986557008@s.whatsapp.net',
+				'5515991426667:24@s.whatsapp.net',
+				'207421150646274@lid',
+				'56307306467375@lid'
+			)
+		).toBeNull()
+	})
+
+	it('keeps every self-send participant in the own LID domain without losing device IDs', () => {
+		const meId = '5515991426667:24@s.whatsapp.net'
+		const meLid = '207421150646274@lid'
+		const recipients = [
+			canonicalizeSelfSendFanoutRecipient('5515991426667:1@s.whatsapp.net', meId, meLid),
+			canonicalizeSelfSendFanoutRecipient('5515991426667:24@s.whatsapp.net', meId, meLid),
+			canonicalizeSelfSendFanoutRecipient('207421150646274:43@lid', meId, meLid)
+		]
+
+		expect(recipients).toEqual(['207421150646274:1@lid', '207421150646274:24@lid', '207421150646274:43@lid'])
+	})
+
+	it('does not alter a remote participant while canonicalizing self-send devices', () => {
+		expect(
+			canonicalizeSelfSendFanoutRecipient(
+				'5511986557008:7@s.whatsapp.net',
+				'5515991426667:24@s.whatsapp.net',
+				'207421150646274@lid'
+			)
+		).toBe('5511986557008:7@s.whatsapp.net')
+	})
+
 	it('preserves device IDs while canonicalizing PN and LID recipients', async () => {
 		const getLIDForPN = jest.fn(async () => '207421150646274@lid')
 		const recipients = await Promise.all([

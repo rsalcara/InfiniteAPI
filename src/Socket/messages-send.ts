@@ -72,8 +72,10 @@ import {
 	appendParticipantFanoutNode,
 	appendTcTokensToParticipantFanout,
 	canonicalizeParticipantFanoutRecipient,
+	canonicalizeSelfSendFanoutRecipient,
 	dedupeParticipantFanout,
-	mapParticipantFanout
+	mapParticipantFanout,
+	resolveSelfSendLid
 } from '../Utils/relay-stanza'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import { resolveSessionFetchJids } from '../Utils/session-fetch-addressing'
@@ -1404,6 +1406,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		if (!meId) throw new Boom('Not authenticated', { statusCode: 401 })
 		const meLid = authState.creds.me?.lid
 		const isRetryResend = Boolean(participant?.jid)
+		const isPeerMessage = additionalAttributes?.['category'] === 'peer'
 		let shouldIncludeDeviceIdentity = isRetryResend
 		const statusJid = 'status@broadcast'
 
@@ -1418,6 +1421,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const finalJid = jid
 		const directRecipient =
 			!isRetryResend && !isGroupOrStatus && !isNewsletter ? await preflightDirectRecipient(jid) : undefined
+		const selfSendLid =
+			!isRetryResend && !isPeerMessage ? resolveSelfSendLid(jid, meId, meLid, directRecipient?.lidJid) : null
 
 		msgId = msgId || generateMessageIDV2(meId)
 		useUserDevicesCache = useUserDevicesCache !== false
@@ -1833,20 +1838,30 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					allRecipients.push(jid)
 				}
 
-				// LID canonicalization is required for carousel rendering on Web.
+				// LID canonicalization is required for carousel rendering on Web and for
+				// every normal self-send. A self-send PN envelope with LID participant nodes is
+				// rejected by the server with ACK 400, regardless of message content.
 				// Was experimentally extended to all interactive types (commit ae4de453bf)
 				// but reverted 2026-05-25 — extending it to legacy `buttonsMessage` /
 				// `listMessage` protos didn't fix Web rendering and risks routing buttons
 				// down a different Web pipeline that expects PN envelopes for legacy
-				// proto. Keep carousel-only until we have CDP evidence that another
-				// interactive type also benefits from LID addressing.
+				// proto. Remote recipients therefore keep the existing carousel-only rule.
 				const isCarouselFanout = isCarouselMessage(message)
-				const effectiveMeRecipients = isCarouselFanout
-					? await canonicalizeCarouselRecipients(meRecipients)
-					: meRecipients
-				const effectiveOtherRecipients = isCarouselFanout
-					? await canonicalizeCarouselRecipients(otherRecipients)
-					: otherRecipients
+				const canonicalizeSelfRecipients = (recipients: string[], ownLid: string) =>
+					dedupeParticipantFanout(
+						recipients.map(recipient => canonicalizeSelfSendFanoutRecipient(recipient, meId, ownLid)),
+						recipient => recipient
+					)
+				const effectiveMeRecipients = selfSendLid
+					? canonicalizeSelfRecipients(meRecipients, selfSendLid)
+					: isCarouselFanout
+						? await canonicalizeCarouselRecipients(meRecipients)
+						: meRecipients
+				const effectiveOtherRecipients = selfSendLid
+					? canonicalizeSelfRecipients(otherRecipients, selfSendLid)
+					: isCarouselFanout
+						? await canonicalizeCarouselRecipients(otherRecipients)
+						: otherRecipients
 				const effectiveAllRecipients = [...effectiveMeRecipients, ...effectiveOtherRecipients]
 
 				await assertSessions(effectiveAllRecipients)
@@ -1969,12 +1984,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				})
 			}
 
-			appendParticipantFanoutNode(
-				binaryNodeContent,
-				participants,
-				isRetryResend,
-				additionalAttributes?.['category'] === 'peer'
-			)
+			appendParticipantFanoutNode(binaryNodeContent, participants, isRetryResend, isPeerMessage)
 
 			const stanza: BinaryNode = {
 				tag: 'message',
@@ -2195,6 +2205,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				} else {
 					stanza.attrs.to = participant.jid
 				}
+			} else if (selfSendLid) {
+				// Keep the outer address in the same domain as the participant fanout.
+				// This applies to every normal content type, but only when sending to ourselves.
+				stanza.attrs.to = selfSendLid
+				logger.info(
+					{ msgId, from: destinationJid, to: selfSendLid },
+					'[SELF-SEND] Envelope addressing canonicalized to own LID (match participants)'
+				)
 			} else if (isCarousel) {
 				// CARROUSEL FIX (Option B): keep the envelope `to` consistent with the
 				// LID-canonicalized participants. canonicalizeCarouselRecipients converts the
@@ -2269,7 +2287,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// does not fetch the contact's token. The latter arrives independently through
 			// a `privacy_token` notification.
 			// WA Web never attaches tctoken to peer (AppStateSync) messages — server
-			const isPeerMessage = additionalAttributes?.['category'] === 'peer'
 			const is1on1Send = !isGroup && !isRetryResend && !isStatus && !isNewsletter && !isPeerMessage
 
 			const tcTokenAliases = is1on1Send
