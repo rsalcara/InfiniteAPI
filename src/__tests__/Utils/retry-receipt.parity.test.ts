@@ -185,6 +185,22 @@ describe('retry receipt routing parity', () => {
 		expect(manager.getRecentMessage('100000000000001:24@lid', 'REUSED-ID')).toBeUndefined()
 	})
 
+	it('resolves an exact LID/PN alias before the unique-id fallback', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const first = { conversation: 'first chat' } as proto.IMessage
+		const second = { conversation: 'second chat' } as proto.IMessage
+
+		manager.addRecentMessage('100000000000001@lid', 'ALIAS-ID', first)
+		manager.addRecentMessage('100000000000002@lid', 'ALIAS-ID', second)
+
+		expect(
+			manager.getRecentMessageForJids(['5511000000001@s.whatsapp.net', '100000000000001@lid'], 'ALIAS-ID')?.message
+		).toBe(first)
+		expect(
+			manager.getRecentMessageForJids(['5511000000002@s.whatsapp.net', '100000000000002@lid'], 'ALIAS-ID')?.message
+		).toBe(second)
+	})
+
 	it('rolls back only the failed destination when a custom message id is reused', async () => {
 		const manager = new MessageRetryManager(silent, 5)
 		const first = { conversation: 'first chat' } as proto.IMessage

@@ -54,8 +54,9 @@ export const resolveSelfSendLid = (
 	const ownPn = jidNormalizedUser(meId)
 	const normalizedMeLid = jidNormalizedUser(meLid ?? undefined)
 	const normalizedMappedLid = jidNormalizedUser(mappedLid ?? undefined)
+	const isValidLid = (jid: string): boolean => Boolean(isAnyLidUser(jid) && jidDecode(jid)?.user)
 	const lidCandidates = [normalizedMeLid, normalizedMappedLid].filter(
-		(jid): jid is string => Boolean(jid) && isAnyLidUser(jid)
+		(jid): jid is string => Boolean(jid) && isValidLid(jid)
 	)
 	const matchingLid = lidCandidates.find(lid => areJidsSameUser(destination, lid))
 	if (matchingLid) return matchingLid
@@ -65,7 +66,9 @@ export const resolveSelfSendLid = (
 
 	// A mapping resolved for the requested PN is fresher than a possibly stale
 	// credential LID. Fall back to the credential only when no mapping exists.
-	return (isAnyLidUser(normalizedMappedLid) && normalizedMappedLid) || normalizedMeLid || null
+	return (
+		(isValidLid(normalizedMappedLid) && normalizedMappedLid) || (isValidLid(normalizedMeLid) ? normalizedMeLid : null)
+	)
 }
 
 /** Moves only the connected account's participant devices to its canonical LID domain. */
@@ -84,6 +87,22 @@ export const canonicalizeSelfSendFanoutRecipient = (
 	return isOwnPn || isOwnLid ? transferDevice(jid, selfLid) : jid
 }
 
+/** Fails closed if a self-send participant escaped the canonical LID domain. */
+export const assertSelfSendFanoutLid = (selfLid: string, recipients: readonly string[]): void => {
+	const expected = jidDecode(selfLid)
+	const invalid = recipients.filter(recipient => {
+		const decoded = jidDecode(recipient)
+		return !decoded || decoded.user !== expected?.user || decoded.server !== expected.server
+	})
+
+	if (invalid.length > 0) {
+		throw new Boom('Self-send participant fanout is not canonicalized to the own LID', {
+			statusCode: 503,
+			data: { selfLid, invalidRecipients: invalid, category: 'self-send-addressing' }
+		})
+	}
+}
+
 export const dedupeParticipantFanout = <T>(items: readonly T[], key: (item: T) => string): T[] => {
 	const seen = new Set<string>()
 	return items.filter(item => {
@@ -92,6 +111,24 @@ export const dedupeParticipantFanout = <T>(items: readonly T[], key: (item: T) =
 		seen.add(value)
 		return true
 	})
+}
+
+/** Deduplicates canonical self-send fanout, preferring the DSM copy for own devices. */
+export const dedupeSelfSendFanout = (
+	meRecipients: readonly string[],
+	otherRecipients: readonly string[]
+): { meRecipients: string[]; otherRecipients: string[]; allRecipients: string[] } => {
+	const dedupedMe = dedupeParticipantFanout(meRecipients, recipient => recipient)
+	const meSet = new Set(dedupedMe)
+	const dedupedOther = dedupeParticipantFanout(otherRecipients, recipient => recipient).filter(
+		recipient => !meSet.has(recipient)
+	)
+
+	return {
+		meRecipients: dedupedMe,
+		otherRecipients: dedupedOther,
+		allRecipients: [...dedupedMe, ...dedupedOther]
+	}
 }
 
 /** Maps fanout entries in bounded batches so large groups cannot exhaust memory or Signal locks. */

@@ -3156,6 +3156,27 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		})
 	}
 
+	const resolveRetryLookupJids = async (jid: string): Promise<string[]> => {
+		const normalized = jidNormalizedUser(jid) || jid
+		const aliases = [normalized]
+		if (isPnUser(normalized)) {
+			const lid = await signalRepository.lidMapping.getLIDForPN(normalized)
+			const normalizedLid = lid ? jidNormalizedUser(lid) : ''
+			if (normalizedLid && isLidUser(normalizedLid) && jidDecode(normalizedLid)?.user) aliases.push(normalizedLid)
+		} else if (isLidUser(normalized)) {
+			const pn = await signalRepository.lidMapping.getPNForLID(normalized)
+			const normalizedPn = pn ? jidNormalizedUser(pn) : ''
+			if (normalizedPn && isPnUser(normalizedPn) && jidDecode(normalizedPn)?.user) aliases.push(normalizedPn)
+		}
+
+		return [...new Set(aliases)]
+	}
+
+	const getRecentRetryMessage = async (jid: string, id: string) => {
+		if (!messageRetryManager) return undefined
+		return messageRetryManager.getRecentMessageForJids(await resolveRetryLookupJids(jid), id)
+	}
+
 	const sendMessagesAgain = async (
 		key: WAMessageKey,
 		ids: string[],
@@ -3171,6 +3192,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 
 		const participant = key.participant || remoteJid
+		const retryLookupJids = await resolveRetryLookupJids(remoteJid)
+		const canonicalRemoteJid = retryLookupJids.find(isLidUser) || remoteJid
 
 		const retryCount = +retryNode.attrs.count! || 1
 		const msgId = ids[0]
@@ -3273,7 +3296,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			// Try to get from retry cache first if enabled
 			if (messageRetryManager) {
-				const cachedMsg = messageRetryManager.getRecentMessage(remoteJid, id)
+				const cachedMsg = messageRetryManager.getRecentMessageForJids(retryLookupJids, id)
 				if (cachedMsg) {
 					msg = cachedMsg.message
 					liveLocationDuration = cachedMsg.liveLocationDuration
@@ -3425,7 +3448,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					continue
 				}
 
-				const msgRelayOpts: MessageRelayOptions = { messageId: ids[i] }
+				const msgRelayOpts: MessageRelayOptions = { messageId: ids[i], canonicalJid: canonicalRemoteJid }
 				msgRelayOpts.liveLocationDuration = liveLocationDurations[i]
 
 				if (sendToAll) {
@@ -3458,7 +3481,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const fromMe = !attrs.recipient || ((attrs.type === 'retry' || attrs.type === 'sender') && isNodeFromMe)
 		const recentRetryMessage =
 			attrs.type === 'retry' && fromMe && attrs.id && messageRetryManager
-				? messageRetryManager.getRecentMessage(attrs.recipient ?? attrs.from!, attrs.id)
+				? await getRecentRetryMessage(attrs.recipient ?? attrs.from!, attrs.id)
 				: undefined
 		const retryRoute = resolveRetryReceiptRoute({
 			stanzaFrom: attrs.from!,

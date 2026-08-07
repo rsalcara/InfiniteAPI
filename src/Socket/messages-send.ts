@@ -72,9 +72,11 @@ import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prome
 import {
 	appendParticipantFanoutNode,
 	appendTcTokensToParticipantFanout,
+	assertSelfSendFanoutLid,
 	canonicalizeParticipantFanoutRecipient,
 	canonicalizeSelfSendFanoutRecipient,
 	dedupeParticipantFanout,
+	dedupeSelfSendFanout,
 	mapParticipantFanout,
 	resolveSelfSendLid
 } from '../Utils/relay-stanza'
@@ -1400,7 +1402,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			useUserDevicesCache,
 			useCachedGroupMetadata,
 			statusJidList,
-			liveLocationDuration
+			liveLocationDuration,
+			canonicalJid
 		}: MessageRelayOptions
 	) => {
 		const meId = authState.creds.me?.id
@@ -1494,9 +1497,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		const participants: BinaryNode[] = []
 		const requestedJid = jidNormalizedUser(jid) || jid
+		const retryDestinationJid =
+			isRetryResend && canonicalJid ? resolveDirectRecipientWireJid(finalJid, canonicalJid) : undefined
 		const destinationJid =
 			!isStatus && !isPeerMessage
-				? resolveDirectRecipientWireJid(finalJid, directRecipient?.lidJid)
+				? retryDestinationJid || resolveDirectRecipientWireJid(finalJid, directRecipient?.lidJid)
 				: isStatus
 					? statusJid
 					: finalJid
@@ -1818,21 +1823,27 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 				}
 
-				const allRecipients: string[] = []
 				const meRecipients: string[] = []
 				const otherRecipients: string[] = []
 				const { user: mePnUser } = jidDecode(meId)!
 				const { user: meLidUser } = meLid ? jidDecode(meLid)! : { user: null }
+				const meDevice = jidDecode(meId)?.device
 
 				for (const { user, jid } of devices) {
-					const isExactSenderDevice = jid === meId || (meLid && jid === meLid)
+					const decodedRecipient = jidDecode(jid)
+					const isRotatedSelfSenderDevice = Boolean(
+						selfSendLid && areJidsSameUser(jid, selfSendLid) && decodedRecipient?.device === meDevice
+					)
+					const isExactSenderDevice = jid === meId || (meLid && jid === meLid) || isRotatedSelfSenderDevice
 					if (isExactSenderDevice) {
 						logger.debug({ jid, meId, meLid }, 'Skipping exact sender device (whatsmeow pattern)')
 						continue
 					}
 
-					// Check if this is our device (could match either PN or LID user)
-					const isMe = user === mePnUser || user === meLidUser
+					// Check if this is our device (could match PN, credential LID, or
+					// a freshly resolved self-send LID after rotation).
+					const selfSendUser = selfSendLid ? jidDecode(selfSendLid)?.user : null
+					const isMe = user === mePnUser || user === meLidUser || user === selfSendUser
 
 					if (isMe) {
 						// Send DSM to ALL own companion devices including carousel
@@ -1841,8 +1852,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					} else {
 						otherRecipients.push(jid)
 					}
-
-					allRecipients.push(jid)
 				}
 
 				// LID canonicalization is required for carousel rendering on Web and for
@@ -1859,17 +1868,26 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						recipients.map(recipient => canonicalizeSelfSendFanoutRecipient(recipient, meId, ownLid, meLid)),
 						recipient => recipient
 					)
-				const effectiveMeRecipients = selfSendLid
+				const canonicalMeRecipients = selfSendLid
 					? canonicalizeSelfRecipients(meRecipients, selfSendLid)
 					: isCarouselFanout
 						? await canonicalizeCarouselRecipients(meRecipients)
 						: meRecipients
-				const effectiveOtherRecipients = selfSendLid
+				const canonicalOtherRecipients = selfSendLid
 					? canonicalizeSelfRecipients(otherRecipients, selfSendLid)
 					: isCarouselFanout
 						? await canonicalizeCarouselRecipients(otherRecipients)
 						: otherRecipients
-				const effectiveAllRecipients = [...effectiveMeRecipients, ...effectiveOtherRecipients]
+				const selfSendFanout = selfSendLid
+					? dedupeSelfSendFanout(canonicalMeRecipients, canonicalOtherRecipients)
+					: undefined
+				const effectiveMeRecipients = selfSendFanout?.meRecipients || canonicalMeRecipients
+				const effectiveOtherRecipients = selfSendFanout?.otherRecipients || canonicalOtherRecipients
+				const effectiveAllRecipients = selfSendFanout?.allRecipients || [
+					...effectiveMeRecipients,
+					...effectiveOtherRecipients
+				]
+				if (selfSendLid) assertSelfSendFanoutLid(selfSendLid, effectiveAllRecipients)
 
 				await assertSessions(effectiveAllRecipients)
 
@@ -1882,13 +1900,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					createParticipantNodes(effectiveOtherRecipients, message, extraAttrs)
 				])
 				const targetUser = jidDecode(directRecipient?.lidJid || destinationJid)?.user
+				const selfSendUser = selfSendLid ? jidDecode(selfSendLid)?.user : undefined
 				const isExternalDirectRecipient =
 					!isGroupOrStatus &&
 					!isNewsletter &&
 					!isRetryResend &&
 					Boolean(targetUser) &&
 					targetUser !== mePnUser &&
-					targetUser !== meLidUser
+					targetUser !== meLidUser &&
+					targetUser !== selfSendUser
 				assertDirectRecipientCiphertext({
 					isExternalDirectRecipient,
 					recipientCount: otherRecipientCount,
@@ -2161,6 +2181,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					// companion fanout, but stays out of Native Flow routing by omitting biz.
 					const isPrivateUserChat =
 						(isPnUser(destinationJid) || isLidUser(destinationJid) || destinationJid?.endsWith('@c.us')) &&
+						!isJidBot(jid) &&
 						!isJidBot(destinationJid)
 					const isNativeFlowButtons = effectiveButtonType === 'native_flow'
 

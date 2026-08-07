@@ -342,10 +342,20 @@ export class MessageRetryManager {
 	 * reusing a custom ID across chats must never expose another chat's plaintext.
 	 */
 	getRecentMessage(to: string, id: string): RecentMessage | undefined {
-		const key: RecentMessageKey = { to, id }
-		const keyStr = this.keyToString(key)
-		const exact = this.recentMessagesMap.get(keyStr)
-		if (exact) return exact
+		return this.getRecentMessageForJids([to], id)
+	}
+
+	/**
+	 * Resolve a retry payload through all known wire aliases before using the
+	 * unique-ID fallback. A send can be staged under LID while the receipt key
+	 * is normalized to PN; exact alias lookup keeps that path deterministic even
+	 * when the same custom message ID exists in another chat.
+	 */
+	getRecentMessageForJids(toJids: readonly string[], id: string): RecentMessage | undefined {
+		for (const to of [...new Set(toJids.filter(Boolean))]) {
+			const exact = this.recentMessagesMap.get(this.keyToString({ to, id }))
+			if (exact) return exact
+		}
 
 		const indexedKeyStr = this.getUniqueRecentMessageKey(id)
 		if (indexedKeyStr) return this.recentMessagesMap.get(indexedKeyStr)

@@ -2,10 +2,12 @@ import { jest } from '@jest/globals'
 import {
 	appendParticipantFanoutNode,
 	appendTcTokensToParticipantFanout,
+	assertSelfSendFanoutLid,
 	buildGroupParticipantNode,
 	canonicalizeParticipantFanoutRecipient,
 	canonicalizeSelfSendFanoutRecipient,
 	dedupeParticipantFanout,
+	dedupeSelfSendFanout,
 	mapParticipantFanout,
 	resolveSelfSendLid
 } from '../../Utils/relay-stanza'
@@ -69,6 +71,18 @@ describe('participant fanout admission', () => {
 		).toBeNull()
 	})
 
+	it('rejects malformed credential and mapping LIDs for self-send resolution', () => {
+		expect(resolveSelfSendLid('5515991426667@s.whatsapp.net', '5515991426667:24@s.whatsapp.net', '@lid')).toBeNull()
+		expect(
+			resolveSelfSendLid(
+				'5515991426667@s.whatsapp.net',
+				'5515991426667:24@s.whatsapp.net',
+				'207421150646274@lid',
+				'@lid'
+			)
+		).toBe('207421150646274@lid')
+	})
+
 	it('keeps every self-send participant in the own LID domain without losing device IDs', () => {
 		const meId = '5515991426667:24@s.whatsapp.net'
 		const meLid = '207421150646274@lid'
@@ -125,6 +139,26 @@ describe('participant fanout admission', () => {
 			'pn',
 			'device-2'
 		])
+	})
+
+	it('deduplicates rotated self-send copies across DSM and other recipient groups', () => {
+		expect(
+			dedupeSelfSendFanout(
+				['207421150646274:1@lid', '207421150646274:1@lid'],
+				['207421150646274:1@lid', '207421150646274:2@lid', '207421150646274:2@lid']
+			)
+		).toEqual({
+			meRecipients: ['207421150646274:1@lid'],
+			otherRecipients: ['207421150646274:2@lid'],
+			allRecipients: ['207421150646274:1@lid', '207421150646274:2@lid']
+		})
+	})
+
+	it('fails closed when a self-send fanout contains a non-canonical participant', () => {
+		expect(() =>
+			assertSelfSendFanoutLid('207421150646274@lid', ['207421150646274:1@lid', '5515991426667:2@s.whatsapp.net'])
+		).toThrow('not canonicalized')
+		expect(() => assertSelfSendFanoutLid('207421150646274@lid', ['207421150646274:1@lid'])).not.toThrow()
 	})
 
 	it('applies bounded backpressure without reordering a large fanout', async () => {
