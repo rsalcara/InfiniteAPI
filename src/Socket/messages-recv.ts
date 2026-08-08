@@ -73,6 +73,7 @@ import {
 	resolveContactPictureIdentity,
 	resolveLidToPn,
 	resolveRetryReceiptRoute,
+	resolveRetryRelayDestination,
 	RetryReason,
 	retryReasonFromDecryptionError,
 	safeCacheSet,
@@ -142,6 +143,8 @@ import {
 	getBinaryNodeChildren,
 	getBinaryNodeChildString,
 	getBinaryNodeChildUInt,
+	isAnyLidUser,
+	isAnyPnUser,
 	isJidGroup,
 	isJidNewsletter,
 	isJidStatusBroadcast,
@@ -240,6 +243,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
+	const getKnownLIDForPN = signalRepository.lidMapping.getKnownLIDForPN.bind(signalRepository.lidMapping)
+	const getKnownPNForLID = signalRepository.lidMapping.getKnownPNForLID.bind(signalRepository.lidMapping)
 	const initOptionalMirror = <T>(mirror: string, fallback: string, factory: () => T): T | undefined =>
 		initOptionalMirrorBase(config.multiDbStore, logger, mirror, fallback, factory)
 
@@ -2042,7 +2047,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const attempt = messageRetryManager.tryIncrement(msgId)
 			if (!attempt.proceed) {
 				logger.debug({ msgId, count: attempt.count }, 'reached retry limit with new retry manager, clearing')
-				messageRetryManager.markRetryFailed(msgId)
+				messageRetryManager.markRetryFailed(
+					msgId,
+					msgKey.remoteJid ? await resolveRetryLookupJids(msgKey.remoteJid) : []
+				)
 				recordMessageFailure('retry', 'max_retries_reached')
 
 				// Safety net: clean up corrupted sessions only after all retries exhausted.
@@ -3156,6 +3164,39 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		})
 	}
 
+	const resolveRetryLookupJids = async (jid: string): Promise<string[]> => {
+		const normalized = jidNormalizedUser(jid) || jid
+		const aliases = [normalized]
+		try {
+			if (isAnyPnUser(normalized)) {
+				const lid = await getKnownLIDForPN(normalized)
+				const normalizedLid = lid ? jidNormalizedUser(lid) : ''
+				if (normalizedLid && isAnyLidUser(normalizedLid) && jidDecode(normalizedLid)?.user) aliases.push(normalizedLid)
+			} else if (isAnyLidUser(normalized)) {
+				const pn = await getKnownPNForLID(normalized)
+				const normalizedPn = pn ? jidNormalizedUser(pn) : ''
+				if (normalizedPn && isAnyPnUser(normalizedPn) && jidDecode(normalizedPn)?.user) aliases.push(normalizedPn)
+			}
+		} catch (error) {
+			logger.warn({ error, jid: normalized }, 'retry alias lookup failed; continuing with the receipt JID only')
+		}
+
+		return [...new Set(aliases)]
+	}
+
+	const getRecentRetryMessage = async (jid: string, id: string) => {
+		if (!messageRetryManager) return undefined
+		try {
+			return messageRetryManager.getRecentMessageForJids(await resolveRetryLookupJids(jid), id)
+		} catch (error) {
+			// Receipt handling must remain ACK-able even if a custom cache or mapping
+			// backend fails. Falling back to the stanza route is safer than letting the
+			// server redeliver the same receipt indefinitely.
+			logger.warn({ error, jid, id }, 'retry cache lookup failed; continuing without cached route')
+			return undefined
+		}
+	}
+
 	const sendMessagesAgain = async (
 		key: WAMessageKey,
 		ids: string[],
@@ -3163,7 +3204,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		receiptNode: BinaryNode
 	) => {
 		const remoteJid = key.remoteJid
-		if (!remoteJid || !jidDecode(remoteJid)) {
+		const decodedRemoteJid = jidDecode(typeof remoteJid === 'string' ? remoteJid : undefined)
+		if (typeof remoteJid !== 'string' || !decodedRemoteJid?.user) {
 			throw new Boom('Retry receipt has no valid relay destination', {
 				statusCode: 400,
 				data: { messageIds: ids, participant: key.participant, remoteJid }
@@ -3171,6 +3213,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 
 		const participant = key.participant || remoteJid
+		const retryLookupJids = await resolveRetryLookupJids(remoteJid)
+		const canonicalRemoteJid = retryLookupJids.find(isAnyLidUser) || remoteJid
 
 		const retryCount = +retryNode.attrs.count! || 1
 		const msgId = ids[0]
@@ -3200,8 +3244,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// to keep ordering vs sendMessage's session ops (race-prevention from a3dd21c9).
 		const deleteCanonicalSession = async () => {
 			const updates: { [key: string]: null } = { [sessionId]: null }
-			if (!isLidUser(participant)) {
-				const lid = await signalRepository.lidMapping.getLIDForPN(participant)
+			if (!isAnyLidUser(participant)) {
+				const lid = await getKnownLIDForPN(participant)
 				if (lid) {
 					updates[signalRepository.jidToSignalProtocolAddress(lid)] = null
 				}
@@ -3232,8 +3276,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const verifyCanonicalDelete = async (reason: string) => {
 			try {
 				const lookupKeys: string[] = [sessionId]
-				if (!isLidUser(participant)) {
-					const lid = await signalRepository.lidMapping.getLIDForPN(participant)
+				if (!isAnyLidUser(participant)) {
+					const lid = await getKnownLIDForPN(participant)
 					if (lid) {
 						lookupKeys.push(signalRepository.jidToSignalProtocolAddress(lid))
 					}
@@ -3267,15 +3311,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// Try to get messages from cache first, then fallback to getMessage
 		const msgs: (proto.IMessage | undefined)[] = []
 		const liveLocationDurations: (number | undefined)[] = []
+		const cachedRouteJids: (string | undefined)[] = []
 		for (const id of ids) {
 			let msg: proto.IMessage | undefined
 			let liveLocationDuration: number | undefined
+			let cachedRouteJid: string | undefined
 
 			// Try to get from retry cache first if enabled
 			if (messageRetryManager) {
-				const cachedMsg = messageRetryManager.getRecentMessage(remoteJid, id)
+				// Hosted/PN/LID receipts do not always reproduce the original wire
+				// domain. The manager falls back by id only when exactly one live
+				// payload exists and permanently disables that fallback after an id
+				// collision, so a custom id can never cross chat boundaries.
+				const cachedMsg = messageRetryManager.getRecentMessageForJids(retryLookupJids, id)
 				if (cachedMsg) {
 					msg = cachedMsg.message
+					cachedRouteJid = cachedMsg.to
 					liveLocationDuration = cachedMsg.liveLocationDuration
 					logger.debug({ jid: remoteJid, id }, 'found message in retry cache')
 				}
@@ -3300,6 +3351,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			msgs.push(msg)
 			liveLocationDurations.push(liveLocationDuration)
+			cachedRouteJids.push(cachedRouteJid)
 		}
 
 		const availableIds = ids.filter((id, index) => Boolean(id && msgs[index]))
@@ -3347,7 +3399,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				// a concurrent retry-inject and send/encrypt for the same logical peer would
 				// hold different `parsedKeys.transaction` mutex keys (`PN` vs the resolved
 				// LID), letting them mutate the same canonical session record concurrently.
-				const lid = !isLidUser(participant) ? await signalRepository.lidMapping.getLIDForPN(participant) : null
+				const lid = !isAnyLidUser(participant) ? await getKnownLIDForPN(participant) : null
 				const canonicalJid = lid || participant
 				await signalRepository.injectE2ESession({ jid: canonicalJid, session: bundle })
 				injectedFromBundle = true
@@ -3416,6 +3468,25 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			if (!ids[i]) continue
 
 			if (msg) {
+				const retryDestination = resolveRetryRelayDestination(cachedRouteJids[i], canonicalRemoteJid)
+				if (!retryDestination) {
+					logger.warn(
+						{
+							id: ids[i],
+							remoteJid,
+							participant,
+							cachedRouteJid: cachedRouteJids[i],
+							canonicalRemoteJid,
+							retryLookupJids,
+							reason: 'invalid-relay-destination',
+							action: 'suppressed-no-budget-consumed'
+						},
+						'retry resend suppressed because no validated relay destination exists'
+					)
+					recordMessageFailure('retry', 'invalid_relay_destination')
+					continue
+				}
+
 				const attempt = await reserveSendMessageAgainAttempt(ids[i], participant)
 				if (!attempt.proceed) {
 					logger.info(
@@ -3437,7 +3508,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					}
 				}
 
-				await relayMessage(remoteJid, msg, msgRelayOpts)
+				await relayMessage(retryDestination, msg, msgRelayOpts)
 				// A successful direct resend only repairs this participant's Signal
 				// session. Keep the shared payload available because another linked
 				// device can request a retry for the same message id milliseconds later.
@@ -3458,7 +3529,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const fromMe = !attrs.recipient || ((attrs.type === 'retry' || attrs.type === 'sender') && isNodeFromMe)
 		const recentRetryMessage =
 			attrs.type === 'retry' && fromMe && attrs.id && messageRetryManager
-				? messageRetryManager.getRecentMessage(attrs.recipient ?? attrs.from!, attrs.id)
+				? await getRecentRetryMessage(attrs.recipient ?? attrs.from!, attrs.id)
 				: undefined
 		const retryRoute = resolveRetryReceiptRoute({
 			stanzaFrom: attrs.from!,
@@ -4522,7 +4593,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// Error acks can come from an alternate/device/own-domain JID. The retry
 		// cache records the actual destination used by relayMessage, so prefer it
 		// over attrs.from when correlating the failed outbound stanza.
-		const recentMessage = attrs.id ? messageRetryManager?.getRecentMessage(attrs.from ?? '', attrs.id) : undefined
+		const recentMessage = attrs.id ? await getRecentRetryMessage(attrs.from ?? '', attrs.id) : undefined
 		const outboundJid = jidNormalizedUser(recentMessage?.to ?? attrs.from ?? '')
 		const key: WAMessageKey = { remoteJid: outboundJid, fromMe: true, id: attrs.id }
 		await normalizeKeyLidToPn(key, signalRepository.lidMapping, logger)

@@ -4,11 +4,52 @@ import {
 	assertDirectRecipientCiphertext,
 	type DirectRecipientPreflightOptions,
 	resolveDirectRecipientUSync,
+	resolveDirectRecipientWireJid,
 	runDirectRecipientPreflight
 } from '../../Utils/direct-recipient'
 import { USyncQuery } from '../../WAUSync'
 
 describe('PN → LID/username recipient resolution', () => {
+	it('uses the resolved LID on the wire while preserving PN when no mapping exists', () => {
+		expect(resolveDirectRecipientWireJid('5511999999999@c.us', '123456@lid')).toBe('123456@lid')
+		expect(resolveDirectRecipientWireJid('5511999999999@c.us')).toBe('5511999999999@s.whatsapp.net')
+		expect(resolveDirectRecipientWireJid('5511999999999@c.us', 'invalid')).toBe('5511999999999@s.whatsapp.net')
+		expect(resolveDirectRecipientWireJid('5511999999999@c.us', '@lid')).toBe('5511999999999@s.whatsapp.net')
+	})
+
+	it('does not accept a malformed USync LID alias as a wire destination', () => {
+		const query = new USyncQuery().withContactProtocol().withLIDProtocol()
+		const parsed = query.parseUSyncQueryResult({
+			tag: 'iq',
+			attrs: { type: 'result' },
+			content: [
+				{
+					tag: 'usync',
+					attrs: {},
+					content: [
+						{
+							tag: 'list',
+							attrs: {},
+							content: [
+								{
+									tag: 'user',
+									attrs: { jid: '5511999999999@s.whatsapp.net', new_jid: '@lid' },
+									content: [{ tag: 'contact', attrs: { type: 'in' } }]
+								}
+							]
+						}
+					]
+				}
+			]
+		})
+
+		expect(resolveDirectRecipientUSync('5511999999999@s.whatsapp.net', parsed!.list)).toMatchObject({
+			pnJid: '5511999999999@s.whatsapp.net',
+			destinationJid: '5511999999999@s.whatsapp.net'
+		})
+		expect(resolveDirectRecipientUSync('5511999999999@s.whatsapp.net', parsed!.list)?.lidJid).toBeUndefined()
+	})
+
 	it('preserves all USync identity aliases, contact type and username', () => {
 		const query = new USyncQuery().withContactProtocol().withLIDProtocol().withUsernameProtocol()
 		const parsed = query.parseUSyncQueryResult({
@@ -131,6 +172,19 @@ describe('cold-recipient preflight orchestration', () => {
 		expect(storeMapping).toHaveBeenCalledWith({ lid, pn })
 		expect(getDevices).toHaveBeenCalledWith(lid)
 		expect(calls).toEqual(['mapping', 'devices'])
+	})
+
+	it('does not trust a malformed known mapping and re-runs cold resolution', async () => {
+		const resolveUSync = jest.fn(async () => [{ id: pn, jid: pn, newJid: lid, contactType: 'in' as const }])
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					getKnownLIDForPN: async () => '@lid',
+					resolveUSync
+				})
+			)
+		).resolves.toMatchObject({ lidJid: lid })
+		expect(resolveUSync).toHaveBeenCalledWith('5511999999999')
 	})
 
 	it('returns 403 before USync when reachout policy blocks cold contact', async () => {

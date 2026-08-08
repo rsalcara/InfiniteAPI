@@ -2,10 +2,15 @@ import { jest } from '@jest/globals'
 import {
 	appendParticipantFanoutNode,
 	appendTcTokensToParticipantFanout,
+	assertSelfSendFanoutLid,
 	buildGroupParticipantNode,
 	canonicalizeParticipantFanoutRecipient,
+	canonicalizeSelfSendFanoutRecipient,
 	dedupeParticipantFanout,
-	mapParticipantFanout
+	dedupeSelfSendFanout,
+	isSelfRetryParticipant,
+	mapParticipantFanout,
+	resolveSelfSendLid
 } from '../../Utils/relay-stanza'
 import type { BinaryNode } from '../../WABinary'
 
@@ -16,6 +21,133 @@ const encNode = (value: number): BinaryNode => ({
 })
 
 describe('participant fanout admission', () => {
+	it('resolves a PN self-send to the connected account LID', () => {
+		expect(
+			resolveSelfSendLid('5515991426667@s.whatsapp.net', '5515991426667:24@s.whatsapp.net', '207421150646274:24@lid')
+		).toBe('207421150646274@lid')
+	})
+
+	it('uses a stored mapping when the connected credentials do not include meLid', () => {
+		expect(
+			resolveSelfSendLid('5515991426667@c.us', '5515991426667:24@s.whatsapp.net', undefined, '207421150646274@lid')
+		).toBe('207421150646274@lid')
+	})
+
+	it('prefers the freshly resolved mapping when the credential LID is stale', () => {
+		expect(
+			resolveSelfSendLid(
+				'5515991426667@s.whatsapp.net',
+				'5515991426667:24@s.whatsapp.net',
+				'100000000000001@lid',
+				'207421150646274@lid'
+			)
+		).toBe('207421150646274@lid')
+	})
+
+	it('keeps an own LID destination canonical when the caller already uses LID', () => {
+		expect(resolveSelfSendLid('207421150646274@lid', '5515991426667:24@s.whatsapp.net', '207421150646274:24@lid')).toBe(
+			'207421150646274@lid'
+		)
+	})
+
+	it('returns the LID candidate that actually matches an existing LID destination', () => {
+		expect(
+			resolveSelfSendLid(
+				'207421150646274@lid',
+				'5515991426667:24@s.whatsapp.net',
+				'100000000000001@lid',
+				'207421150646274:24@lid'
+			)
+		).toBe('207421150646274@lid')
+	})
+
+	it('does not switch a remote PN recipient to LID under the self-send rule', () => {
+		expect(
+			resolveSelfSendLid(
+				'5511986557008@s.whatsapp.net',
+				'5515991426667:24@s.whatsapp.net',
+				'207421150646274@lid',
+				'56307306467375@lid'
+			)
+		).toBeNull()
+	})
+
+	it('does not treat a group with a colliding numeric user as the own LID', () => {
+		expect(resolveSelfSendLid('207421150646274@g.us', '5515991426667@s.whatsapp.net', '207421150646274@lid')).toBeNull()
+	})
+
+	it('recognizes regular and hosted own-LID participants on direct retry', () => {
+		const meId = '5515991426667:24@s.whatsapp.net'
+		const meLid = '207421150646274:24@lid'
+
+		expect(isSelfRetryParticipant('207421150646274:40@lid', meId, meLid)).toBe(true)
+		expect(isSelfRetryParticipant('207421150646274:40@hosted.lid', meId, meLid)).toBe(true)
+		expect(isSelfRetryParticipant('5515991426667:40@s.whatsapp.net', meId, meLid)).toBe(true)
+		expect(isSelfRetryParticipant('56307306467375:40@hosted.lid', meId, meLid)).toBe(false)
+	})
+
+	it('rejects malformed credential and mapping LIDs for self-send resolution', () => {
+		expect(resolveSelfSendLid('5515991426667@s.whatsapp.net', '5515991426667:24@s.whatsapp.net', '@lid')).toBeNull()
+		expect(
+			resolveSelfSendLid(
+				'5515991426667@s.whatsapp.net',
+				'5515991426667:24@s.whatsapp.net',
+				'207421150646274@lid',
+				'@lid'
+			)
+		).toBe('207421150646274@lid')
+	})
+
+	it('keeps every self-send participant in the own LID domain without losing device IDs', () => {
+		const meId = '5515991426667:24@s.whatsapp.net'
+		const meLid = '207421150646274@lid'
+		const recipients = [
+			canonicalizeSelfSendFanoutRecipient('5515991426667:1@s.whatsapp.net', meId, meLid),
+			canonicalizeSelfSendFanoutRecipient('5515991426667:24@s.whatsapp.net', meId, meLid),
+			canonicalizeSelfSendFanoutRecipient('207421150646274:43@lid', meId, meLid)
+		]
+
+		expect(recipients).toEqual(['207421150646274:1@lid', '207421150646274:24@lid', '207421150646274:43@lid'])
+	})
+
+	it('moves a stale credential-LID participant to the freshly resolved self LID', () => {
+		expect(
+			canonicalizeSelfSendFanoutRecipient(
+				'100000000000001:24@lid',
+				'5515991426667:24@s.whatsapp.net',
+				'207421150646274@lid',
+				'100000000000001@lid'
+			)
+		).toBe('207421150646274:24@lid')
+	})
+
+	it('moves legacy and hosted own-LID companions to the fresh self LID', () => {
+		expect(
+			canonicalizeSelfSendFanoutRecipient(
+				'100000000000001:40@lid',
+				'5515991426667:24@s.whatsapp.net',
+				'207421150646274@lid'
+			)
+		).toBe('207421150646274:40@lid')
+		expect(
+			canonicalizeSelfSendFanoutRecipient(
+				'100000000000001:41@hosted.lid',
+				'5515991426667:24@s.whatsapp.net',
+				'207421150646274@lid'
+			)
+		).toBe('207421150646274:41@lid')
+	})
+
+	it('does not alter a remote participant while canonicalizing self-send devices', () => {
+		expect(
+			canonicalizeSelfSendFanoutRecipient(
+				'5511986557008:7@s.whatsapp.net',
+				'5515991426667:24@s.whatsapp.net',
+				'207421150646274@lid'
+			)
+		).toBe('5511986557008:7@s.whatsapp.net')
+	})
+
 	it('preserves device IDs while canonicalizing PN and LID recipients', async () => {
 		const getLIDForPN = jest.fn(async () => '207421150646274@lid')
 		const recipients = await Promise.all([
@@ -39,6 +171,26 @@ describe('participant fanout admission', () => {
 			'pn',
 			'device-2'
 		])
+	})
+
+	it('deduplicates rotated self-send copies across DSM and other recipient groups', () => {
+		expect(
+			dedupeSelfSendFanout(
+				['207421150646274:1@lid', '207421150646274:1@lid'],
+				['207421150646274:1@lid', '207421150646274:2@lid', '207421150646274:2@lid']
+			)
+		).toEqual({
+			meRecipients: ['207421150646274:1@lid'],
+			otherRecipients: ['207421150646274:2@lid'],
+			allRecipients: ['207421150646274:1@lid', '207421150646274:2@lid']
+		})
+	})
+
+	it('fails closed when a self-send fanout contains a non-canonical participant', () => {
+		expect(() =>
+			assertSelfSendFanoutLid('207421150646274@lid', ['207421150646274:1@lid', '5515991426667:2@s.whatsapp.net'])
+		).toThrow('not canonicalized')
+		expect(() => assertSelfSendFanoutLid('207421150646274@lid', ['207421150646274:1@lid'])).not.toThrow()
 	})
 
 	it('applies bounded backpressure without reordering a large fanout', async () => {

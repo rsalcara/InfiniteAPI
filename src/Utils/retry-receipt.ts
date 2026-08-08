@@ -1,3 +1,22 @@
+import { isAnyLidUser, isAnyPnUser, jidDecode, jidNormalizedUser } from '../WABinary'
+
+const RETRY_RELAY_SERVERS = new Set([
+	's.whatsapp.net',
+	'hosted',
+	'lid',
+	'hosted.lid',
+	'g.us',
+	'broadcast',
+	'newsletter',
+	'bot',
+	'call'
+])
+
+const isValidRetryRelayRoute = (jid: string): boolean => {
+	const decoded = jidDecode(jid)
+	return Boolean(decoded?.user && RETRY_RELAY_SERVERS.has(decoded.server))
+}
+
 export type RetryReceiptRouteSource =
 	| 'recent-message-cache'
 	| 'recipient-attribute'
@@ -26,11 +45,31 @@ export const resolveRetryReceiptRoute = ({
 	isRetry,
 	recentMessageTo
 }: RetryReceiptRouteInput): { remoteJid: string | undefined; source: RetryReceiptRouteSource } => {
-	if (recentMessageTo) return { remoteJid: recentMessageTo, source: 'recent-message-cache' }
 	if (!isNodeFromMe || isGroup) return { remoteJid: stanzaFrom, source: 'stanza-remote-context' }
 	if (recipient) return { remoteJid: recipient, source: 'recipient-attribute' }
+	if (recentMessageTo) return { remoteJid: recentMessageTo, source: 'recent-message-cache' }
 	if (isRetry) return { remoteJid: undefined, source: 'unresolved' }
 	return { remoteJid: stanzaFrom, source: 'stanza-remote-context' }
+}
+
+/**
+ * Chooses a retry relay destination without reintroducing a PN/LID mismatch.
+ * A persisted LID is authoritative for the original wire route; an older PN
+ * cache entry may be upgraded to the now-known canonical LID after a mapping
+ * was learned between the initial send and the retry receipt.
+ * `cachedRoute` must come from an exact destination+id lookup or the retry
+ * cache's collision-safe unique-id fallback. Ambiguous custom ids never reach
+ * this function.
+ */
+export const resolveRetryRelayDestination = (cachedRoute?: string, canonicalRoute?: string): string | undefined => {
+	const cached = cachedRoute ? jidNormalizedUser(cachedRoute) : ''
+	const canonical = canonicalRoute ? jidNormalizedUser(canonicalRoute) : ''
+	const validCached = cached && isValidRetryRelayRoute(cached) ? cached : undefined
+	const validCanonical = canonical && isValidRetryRelayRoute(canonical) ? canonical : undefined
+	if (!validCached) return validCanonical
+	if (isAnyPnUser(cached) && validCanonical && isAnyLidUser(validCanonical)) return validCanonical
+
+	return validCached
 }
 
 /** Pure state transition used inside the per-message retry lock. */

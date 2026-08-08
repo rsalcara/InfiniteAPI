@@ -1,5 +1,14 @@
 import { Boom } from '@hapi/boom'
-import { type BinaryNode, isAnyPnUser, jidDecode, jidEncode, jidNormalizedUser, transferDevice } from '../WABinary'
+import {
+	areJidsSameUser,
+	type BinaryNode,
+	isAnyLidUser,
+	isAnyPnUser,
+	jidDecode,
+	jidEncode,
+	jidNormalizedUser,
+	transferDevice
+} from '../WABinary'
 
 export const MAX_PARTICIPANT_FANOUT = 4096
 export const PARTICIPANT_FANOUT_CONCURRENCY = 32
@@ -34,6 +43,77 @@ export const canonicalizeParticipantFanoutRecipient = async (
 	return transferDevice(jid, target)
 }
 
+/** Resolves the canonical LID only when a direct destination is the connected account itself. */
+export const resolveSelfSendLid = (
+	destinationJid: string,
+	meId: string,
+	meLid?: string,
+	mappedLid?: string | null
+): string | null => {
+	const destination = jidNormalizedUser(destinationJid)
+	const ownPn = jidNormalizedUser(meId)
+	const normalizedMeLid = jidNormalizedUser(meLid ?? undefined)
+	const normalizedMappedLid = jidNormalizedUser(mappedLid ?? undefined)
+	const isValidLid = (jid: string): boolean => Boolean(isAnyLidUser(jid) && jidDecode(jid)?.user)
+	const lidCandidates = [normalizedMeLid, normalizedMappedLid].filter(
+		(jid): jid is string => Boolean(jid) && isValidLid(jid)
+	)
+	const matchingLid = isAnyLidUser(destination)
+		? lidCandidates.find(lid => areJidsSameUser(destination, lid))
+		: undefined
+	if (matchingLid) return matchingLid
+
+	const isOwnPnDestination = isAnyPnUser(destination) && isAnyPnUser(ownPn) && areJidsSameUser(destination, ownPn)
+	if (!isOwnPnDestination) return null
+
+	// A mapping resolved for the requested PN is fresher than a possibly stale
+	// credential LID. Fall back to the credential only when no mapping exists.
+	return (
+		(isValidLid(normalizedMappedLid) && normalizedMappedLid) || (isValidLid(normalizedMeLid) ? normalizedMeLid : null)
+	)
+}
+
+/** Selects the matching own identity for a direct retry participant. */
+export const isSelfRetryParticipant = (participantJid: string, meId: string, meLid?: string): boolean =>
+	areJidsSameUser(participantJid, isAnyLidUser(participantJid) ? meLid : meId)
+
+/** Moves only the connected account's participant devices to its canonical LID domain. */
+export const canonicalizeSelfSendFanoutRecipient = (
+	jid: string,
+	meId: string,
+	selfLid: string,
+	credentialLid?: string
+): string => {
+	const normalized = jidNormalizedUser(jid)
+	const isOwnPn = isAnyPnUser(normalized) && areJidsSameUser(normalized, meId)
+	const isOwnLid =
+		isAnyLidUser(normalized) &&
+		(areJidsSameUser(normalized, selfLid) || Boolean(credentialLid && areJidsSameUser(normalized, credentialLid)))
+	// A self-send device list can contain a stale/rotated or hosted LID that no
+	// longer matches either current credential. It was still returned by the
+	// own-device lookup, so preserve its device id while moving it to the fresh
+	// canonical self LID before the strict fanout guard runs.
+	const isLegacyOwnLid = isAnyLidUser(normalized) && !isOwnLid
+
+	return isOwnPn || isOwnLid || isLegacyOwnLid ? transferDevice(jid, selfLid) : jid
+}
+
+/** Fails closed if a self-send participant escaped the canonical LID domain. */
+export const assertSelfSendFanoutLid = (selfLid: string, recipients: readonly string[]): void => {
+	const expected = jidDecode(selfLid)
+	const invalid = recipients.filter(recipient => {
+		const decoded = jidDecode(recipient)
+		return !decoded || decoded.user !== expected?.user || decoded.server !== expected.server
+	})
+
+	if (invalid.length > 0) {
+		throw new Boom('Self-send participant fanout is not canonicalized to the own LID', {
+			statusCode: 503,
+			data: { selfLid, invalidRecipients: invalid, category: 'self-send-addressing' }
+		})
+	}
+}
+
 export const dedupeParticipantFanout = <T>(items: readonly T[], key: (item: T) => string): T[] => {
 	const seen = new Set<string>()
 	return items.filter(item => {
@@ -42,6 +122,24 @@ export const dedupeParticipantFanout = <T>(items: readonly T[], key: (item: T) =
 		seen.add(value)
 		return true
 	})
+}
+
+/** Deduplicates canonical self-send fanout, preferring the DSM copy for own devices. */
+export const dedupeSelfSendFanout = (
+	meRecipients: readonly string[],
+	otherRecipients: readonly string[]
+): { meRecipients: string[]; otherRecipients: string[]; allRecipients: string[] } => {
+	const dedupedMe = dedupeParticipantFanout(meRecipients, recipient => recipient)
+	const meSet = new Set(dedupedMe)
+	const dedupedOther = dedupeParticipantFanout(otherRecipients, recipient => recipient).filter(
+		recipient => !meSet.has(recipient)
+	)
+
+	return {
+		meRecipients: dedupedMe,
+		otherRecipients: dedupedOther,
+		allRecipients: [...dedupedMe, ...dedupedOther]
+	}
 }
 
 /** Maps fanout entries in bounded batches so large groups cannot exhaust memory or Signal locks. */

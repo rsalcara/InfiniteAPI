@@ -34,6 +34,14 @@ export type DirectRecipientPreflightOptions<TDevice> = {
 	logger: Pick<ILogger, 'warn' | 'info'>
 }
 
+/** Keeps a direct-message envelope aligned with the identity used for device fanout. */
+export const resolveDirectRecipientWireJid = (requestedJid: string, resolvedLid?: string): string => {
+	const normalizedRequested = jidNormalizedUser(requestedJid) || requestedJid
+	const normalizedLid = resolvedLid ? jidNormalizedUser(resolvedLid) : ''
+
+	return isAnyLidUser(normalizedLid) && jidDecode(normalizedLid)?.user ? normalizedLid : normalizedRequested
+}
+
 export const assertDirectRecipientCiphertext = ({
 	isExternalDirectRecipient,
 	recipientCount,
@@ -73,6 +81,9 @@ const normalizeAlias = (value: unknown): string | undefined => {
 	return normalized || undefined
 }
 
+const isValidLidJid = (jid: string | undefined): jid is string =>
+	Boolean(jid && isAnyLidUser(jid) && jidDecode(jid)?.user)
+
 const aliasesForResult = (result: USyncQueryResultList): string[] => {
 	const aliases = [result.id, result.jid, result.pnJid, result.newJid, result.lid]
 		.map(normalizeAlias)
@@ -103,7 +114,7 @@ export const resolveDirectRecipientUSync = (
 	if (contactType !== 'in' && contactType !== 'out' && contactType !== 'invalid') return undefined
 
 	const aliases = aliasesForResult(result)
-	const lidJid = aliases.find(isAnyLidUser)
+	const lidJid = aliases.find(isValidLidJid)
 	const resolvedPnJid = aliases.find(isAnyPnUser) || pnJid
 	const decodedLid = lidJid ? jidDecode(lidJid) : undefined
 	const username = typeof result.username === 'string' && result.username.length > 0 ? result.username : undefined
@@ -134,7 +145,7 @@ export const runDirectRecipientPreflight = async <TDevice>({
 	if (!isAnyPnUser(requestedPn)) return undefined
 
 	const knownLid = await getKnownLIDForPN(requestedPn)
-	if (knownLid) {
+	if (knownLid && isValidLidJid(jidNormalizedUser(knownLid))) {
 		return { requestedPn, pnJid: requestedPn, lidJid: jidNormalizedUser(knownLid) }
 	}
 

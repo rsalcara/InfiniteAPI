@@ -293,6 +293,11 @@ export class MessageRetryManager {
 		message: proto.IMessage,
 		metadata?: { liveLocationDuration?: number }
 	): void {
+		if (!message) {
+			this.logger.debug(`Skipped retry-cache entry without payload: ${to}/${id}`)
+			return
+		}
+
 		const key: RecentMessageKey = { to, id }
 		const keyStr = this.keyToString(key)
 
@@ -325,6 +330,7 @@ export class MessageRetryManager {
 		message: proto.IMessage,
 		metadata?: { liveLocationDuration?: number }
 	): boolean {
+		if (!message) return false
 		if (this.recentMessagesMap.has(this.keyToString({ to, id }))) return false
 
 		this.addRecentMessage(to, id, message, metadata)
@@ -342,13 +348,34 @@ export class MessageRetryManager {
 	 * reusing a custom ID across chats must never expose another chat's plaintext.
 	 */
 	getRecentMessage(to: string, id: string): RecentMessage | undefined {
-		const key: RecentMessageKey = { to, id }
-		const keyStr = this.keyToString(key)
-		const exact = this.recentMessagesMap.get(keyStr)
+		return this.getRecentMessageForJids([to], id)
+	}
+
+	/**
+	 * Resolve a retry payload through all known wire aliases before using the
+	 * unique-ID fallback. A send can be staged under LID while the receipt key
+	 * is normalized to PN; exact alias lookup keeps that path deterministic even
+	 * when the same custom message ID exists in another chat.
+	 */
+	getRecentMessageForJids(toJids: readonly string[], id: string): RecentMessage | undefined {
+		const exact = this.getExactRecentMessageForJids(toJids, id)
 		if (exact) return exact
 
 		const indexedKeyStr = this.getUniqueRecentMessageKey(id)
-		if (indexedKeyStr) return this.recentMessagesMap.get(indexedKeyStr)
+		if (indexedKeyStr) {
+			const fallback = this.recentMessagesMap.get(indexedKeyStr)
+			if (fallback?.message) return fallback
+		}
+
+		return undefined
+	}
+
+	/** Resolve only an explicit destination/alias key; never fall back by message id. */
+	getExactRecentMessageForJids(toJids: readonly string[], id: string): RecentMessage | undefined {
+		for (const to of [...new Set(toJids.filter(Boolean))]) {
+			const exact = this.recentMessagesMap.get(this.keyToString({ to, id }))
+			if (exact?.message) return exact
+		}
 
 		return undefined
 	}
@@ -496,14 +523,14 @@ export class MessageRetryManager {
 	}
 
 	/**
-	 * Mark retry as failed
+	 * Mark an inbound retry as failed and remove only payload aliases belonging
+	 * to that conversation. A custom id reused elsewhere must remain retryable.
 	 */
-	markRetryFailed(messageId: string): void {
+	markRetryFailed(messageId: string, toJids: readonly string[] = []): void {
 		this.statistics.failedRetries++
 		this.retryCounters.delete(messageId)
 		this.cancelPendingPhoneRequest(messageId)
-		const keyStr = this.getUniqueRecentMessageKey(messageId)
-		if (keyStr) this.recentMessagesMap.delete(keyStr)
+		for (const to of new Set(toJids.filter(Boolean))) this.removeRecentMessage(to, messageId)
 	}
 
 	/**
