@@ -235,8 +235,9 @@ describe('retry receipt routing parity', () => {
 
 	it('does not route a retry through a cache entry without a plaintext payload', () => {
 		const manager = new MessageRetryManager(silent, 5)
-		manager.addRecentMessage('100000000000001@lid', 'EMPTY-ID', undefined as unknown as proto.IMessage)
+		const staged = manager.stageRecentMessage('100000000000001@lid', 'EMPTY-ID', undefined as unknown as proto.IMessage)
 
+		expect(staged).toBe(false)
 		expect(
 			manager.getRecentMessageForJids(['5511000000001@s.whatsapp.net', '100000000000001@lid'], 'EMPTY-ID')
 		).toBeUndefined()

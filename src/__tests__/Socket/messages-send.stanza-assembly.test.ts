@@ -66,6 +66,15 @@ const makeFakeSocket = ({
 	const endHandlers: Array<() => void | Promise<void>> = []
 	const drainHandlers: Array<() => void | Promise<void>> = []
 	const keys = makeKeys()
+	const getKnownPNForLID = jest.fn(async (jid: string) =>
+		jid.startsWith('100000000000001')
+			? ownPn
+			: jid.startsWith('100000000000002')
+				? corruptRemoteReverse
+					? ownPn
+					: remotePn
+				: null
+	)
 	const mapping = {
 		getLIDForPN: async (jid: string) =>
 			jid.startsWith('5511000000001') && ownMapping ? ownLid : jid.startsWith('5511000000002') ? remoteLid : null,
@@ -73,14 +82,7 @@ const makeFakeSocket = ({
 			jid.startsWith('5511000000001') && ownMapping ? ownLid : jid.startsWith('5511000000002') ? remoteLid : null,
 		getPNForLID: async (jid: string) =>
 			jid.startsWith('100000000000001') ? ownPn : jid.startsWith('100000000000002') ? remotePn : null,
-		getKnownPNForLID: async (jid: string) =>
-			jid.startsWith('100000000000001')
-				? ownPn
-				: jid.startsWith('100000000000002')
-					? corruptRemoteReverse
-						? ownPn
-						: remotePn
-					: null,
+		getKnownPNForLID,
 		getLIDsForPNs: async (jids: string[]) =>
 			jids.flatMap(jid =>
 				jid.startsWith('5511000000001') ? (ownMapping ? [{ pn: jid, lid: ownLid }] : []) : [{ pn: jid, lid: remoteLid }]
@@ -128,7 +130,7 @@ const makeFakeSocket = ({
 			for (const handler of [...drainHandlers, ...endHandlers]) await handler()
 		}
 	}
-	return { sock, sent, encryptions }
+	return { sock, sent, encryptions, mapping }
 }
 
 const makeConfig = (auth: any): SocketConfig => ({
@@ -233,6 +235,7 @@ describe('messages-send stanza assembly', () => {
 			expect(stanza.attrs.to).toBe(remoteLid)
 			const remoteEncryptions = fake.encryptions.filter(item => item.jid.startsWith('100000000000002'))
 			expect(remoteEncryptions.length).toBeGreaterThan(0)
+			expect(fake.mapping.getKnownPNForLID).not.toHaveBeenCalled()
 		} finally {
 			await socket.end(new Error('test completed'))
 		}

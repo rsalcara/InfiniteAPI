@@ -330,6 +330,7 @@ export class MessageRetryManager {
 		message: proto.IMessage,
 		metadata?: { liveLocationDuration?: number }
 	): boolean {
+		if (!message) return false
 		if (this.recentMessagesMap.has(this.keyToString({ to, id }))) return false
 
 		this.addRecentMessage(to, id, message, metadata)
