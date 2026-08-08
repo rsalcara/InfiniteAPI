@@ -59,8 +59,13 @@ const makeDeviceResult = (jid: string) => ({
 
 const makeFakeSocket = ({
 	ownMapping = true,
-	corruptRemoteReverse = false
-}: { ownMapping?: boolean; corruptRemoteReverse?: boolean } = {}) => {
+	corruptRemoteReverse = false,
+	returnPnDevicesForLidQueries = false
+}: {
+	ownMapping?: boolean
+	corruptRemoteReverse?: boolean
+	returnPnDevicesForLidQueries?: boolean
+} = {}) => {
 	const sent: any[] = []
 	const encryptions: CapturedEncryption[] = []
 	const endHandlers: Array<() => void | Promise<void>> = []
@@ -120,7 +125,14 @@ const makeFakeSocket = ({
 		registerSocketDrainHandler: (handler: () => void | Promise<void>) => drainHandlers.push(handler),
 		registerSocketEndHandler: (handler: () => void | Promise<void>) => endHandlers.push(handler),
 		executeUSyncQuery: async (query: { users: Array<{ id?: string }> }) => ({
-			list: query.users.flatMap(user => (user.id ? [makeDeviceResult(user.id)] : []))
+			list: query.users.flatMap(user => {
+				if (!user.id) return []
+				if (!returnPnDevicesForLidQueries) return [makeDeviceResult(user.id)]
+				if (user.id.startsWith('100000000000001')) return [makeDeviceResult(ownPn)]
+				if (user.id.startsWith('100000000000002')) return [makeDeviceResult(remotePn)]
+
+				return [makeDeviceResult(user.id)]
+			})
 		}),
 		sendNode: async (node: any) => {
 			sent.push(node)
@@ -192,6 +204,9 @@ describe('messages-send stanza assembly', () => {
 			const participants = stanza.content.find((node: any) => node.tag === 'participants')?.content || []
 			expect(participants.length).toBeGreaterThan(0)
 			expect(participants.every((node: any) => jidDecode(node.attrs.jid)?.server === 'lid')).toBe(true)
+			expect(participants.some((node: any) => jidDecode(node.attrs.jid)?.user === jidDecode(remoteLid)?.user)).toBe(
+				true
+			)
 			const ownEncryption = fake.encryptions.find(item => item.jid.startsWith('100000000000001'))
 			expect(ownEncryption).toBeDefined()
 			const dsm = proto.Message.decode(unpadRandomMax16(ownEncryption!.data))
@@ -215,7 +230,33 @@ describe('messages-send stanza assembly', () => {
 			const participants = stanza.content.find((node: any) => node.tag === 'participants')?.content || []
 			expect(participants.length).toBeGreaterThan(0)
 			expect(participants.every((node: any) => jidDecode(node.attrs.jid)?.server === 'lid')).toBe(true)
+			expect(participants.some((node: any) => jidDecode(node.attrs.jid)?.user === jidDecode(remoteLid)?.user)).toBe(
+				true
+			)
 			expect(fake.encryptions.some(item => item.jid.startsWith('100000000000001'))).toBe(true)
+			expect(fake.encryptions.some(item => jidDecode(item.jid)?.server === 's.whatsapp.net')).toBe(false)
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('canonicalizes stale PN device rows before building a remote LID fanout', async () => {
+		const fake = makeFakeSocket({ returnPnDevicesForLidQueries: true })
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			await socket.relayMessage(remotePn, proto.Message.fromObject({ conversation: 'stale PN device rows' }), {
+				messageId: 'REMOTE-STALE-PN-1'
+			})
+
+			const stanza = fake.sent.at(-1)
+			expect(stanza.attrs.to).toBe(remoteLid)
+			const participants = stanza.content.find((node: any) => node.tag === 'participants')?.content || []
+			expect(participants.length).toBeGreaterThan(0)
+			expect(participants.every((node: any) => jidDecode(node.attrs.jid)?.server === 'lid')).toBe(true)
+			expect(participants.some((node: any) => jidDecode(node.attrs.jid)?.user === jidDecode(remoteLid)?.user)).toBe(
+				true
+			)
 			expect(fake.encryptions.some(item => jidDecode(item.jid)?.server === 's.whatsapp.net')).toBe(false)
 		} finally {
 			await socket.end(new Error('test completed'))
