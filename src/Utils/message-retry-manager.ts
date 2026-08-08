@@ -293,6 +293,11 @@ export class MessageRetryManager {
 		message: proto.IMessage,
 		metadata?: { liveLocationDuration?: number }
 	): void {
+		if (!message) {
+			this.logger.debug(`Skipped retry-cache entry without payload: ${to}/${id}`)
+			return
+		}
+
 		const key: RecentMessageKey = { to, id }
 		const keyStr = this.keyToString(key)
 
@@ -517,15 +522,14 @@ export class MessageRetryManager {
 	}
 
 	/**
-	 * Mark retry as failed
+	 * Mark an inbound retry as failed and remove only payload aliases belonging
+	 * to that conversation. A custom id reused elsewhere must remain retryable.
 	 */
-	markRetryFailed(messageId: string): void {
+	markRetryFailed(messageId: string, toJids: readonly string[] = []): void {
 		this.statistics.failedRetries++
 		this.retryCounters.delete(messageId)
 		this.cancelPendingPhoneRequest(messageId)
-		const indexEntry = this.messageKeyIndex.get(messageId)
-		for (const keyStr of indexEntry?.keys ?? []) this.recentMessagesMap.delete(keyStr)
-		this.messageKeyIndex.delete(messageId)
+		for (const to of new Set(toJids.filter(Boolean))) this.removeRecentMessage(to, messageId)
 	}
 
 	/**

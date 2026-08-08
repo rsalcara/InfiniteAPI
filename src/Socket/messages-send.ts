@@ -234,7 +234,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 	const getKnownLIDForPN = signalRepository.lidMapping.getKnownLIDForPN.bind(signalRepository.lidMapping)
 	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
-	const getKnownPNForLID = signalRepository.lidMapping.getKnownPNForLID.bind(signalRepository.lidMapping)
 
 	const userDevicesCache =
 		config.userDevicesCache ||
@@ -1427,17 +1426,17 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const finalJid = jid
 		const directRecipient =
 			!isRetryResend && !isGroupOrStatus && !isNewsletter ? await preflightDirectRecipient(jid) : undefined
-		let knownPnForLidDestination: string | undefined
+		let mappedSelfLid: string | undefined
 		if (!isRetryResend && isAnyLidUser(jid)) {
 			try {
-				knownPnForLidDestination = (await getKnownPNForLID(jid)) || undefined
+				const knownOwnLid = await getKnownLIDForPN(jidNormalizedUser(meId))
+				const normalizedOwnLid = knownOwnLid ? jidNormalizedUser(knownOwnLid) : ''
+				if (normalizedOwnLid && areJidsSameUser(jid, normalizedOwnLid)) mappedSelfLid = normalizedOwnLid
 			} catch (error) {
-				logger.debug({ error, jid }, 'known LID reverse lookup failed; continuing with the requested LID')
+				logger.debug({ error, jid }, 'known own-LID lookup failed; treating the requested LID as a remote route')
 			}
 		}
 
-		const mappedSelfLid =
-			knownPnForLidDestination && areJidsSameUser(knownPnForLidDestination, meId) ? jidNormalizedUser(jid) : undefined
 		const selfSendLid =
 			!isRetryResend && !isPeerMessage
 				? resolveSelfSendLid(jid, meId, meLid, directRecipient?.lidJid || mappedSelfLid)
@@ -1813,7 +1812,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 						// Use conversation-appropriate sender identity
 						const senderIdentity =
-							isLid && meLid
+							isAnyLidUser(destinationJid) && meLid
 								? jidEncode(jidDecode(meLid)?.user!, 'lid', undefined)
 								: jidEncode(jidDecode(meId)?.user!, 's.whatsapp.net', undefined)
 

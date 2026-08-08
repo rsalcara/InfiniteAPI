@@ -242,15 +242,34 @@ describe('retry receipt routing parity', () => {
 		).toBeUndefined()
 	})
 
-	it('removes every destination entry when a reused id is exhausted', () => {
+	it('does not let an empty payload overwrite an exact retryable message', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const original = { conversation: 'retryable payload' } as proto.IMessage
+		manager.addRecentMessage('100000000000001@lid', 'PAYLOAD-ID', original)
+		manager.addRecentMessage('100000000000001@lid', 'PAYLOAD-ID', undefined as unknown as proto.IMessage)
+
+		expect(manager.getRecentMessage('100000000000001@lid', 'PAYLOAD-ID')?.message).toBe(original)
+	})
+
+	it('uses the unique-id fallback for a hosted-domain alias', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const original = { conversation: 'hosted retry payload' } as proto.IMessage
+		manager.addRecentMessage('100000000000001@lid', 'HOSTED-ID', original)
+
+		expect(manager.getRecentMessageForJids(['100000000000001@hosted.lid'], 'HOSTED-ID')?.message).toBe(original)
+	})
+
+	it('removes only the exhausted destination when a custom id is reused', () => {
 		const manager = new MessageRetryManager(silent, 5)
 		manager.addRecentMessage('5511000000001@s.whatsapp.net', 'DUPLICATE-ID', { conversation: 'one' } as proto.IMessage)
 		manager.addRecentMessage('5511000000002@s.whatsapp.net', 'DUPLICATE-ID', { conversation: 'two' } as proto.IMessage)
 
-		manager.markRetryFailed('DUPLICATE-ID')
+		manager.markRetryFailed('DUPLICATE-ID', ['5511000000001@s.whatsapp.net'])
 
 		expect(manager.getRecentMessage('5511000000001@s.whatsapp.net', 'DUPLICATE-ID')).toBeUndefined()
-		expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'DUPLICATE-ID')).toBeUndefined()
+		expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'DUPLICATE-ID')?.message).toEqual({
+			conversation: 'two'
+		})
 	})
 
 	it('rolls back only the failed destination when a custom message id is reused', async () => {

@@ -2047,7 +2047,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const attempt = messageRetryManager.tryIncrement(msgId)
 			if (!attempt.proceed) {
 				logger.debug({ msgId, count: attempt.count }, 'reached retry limit with new retry manager, clearing')
-				messageRetryManager.markRetryFailed(msgId)
+				messageRetryManager.markRetryFailed(
+					msgId,
+					msgKey.remoteJid ? await resolveRetryLookupJids(msgKey.remoteJid) : []
+				)
 				recordMessageFailure('retry', 'max_retries_reached')
 
 				// Safety net: clean up corrupted sessions only after all retries exhausted.
@@ -3316,7 +3319,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			// Try to get from retry cache first if enabled
 			if (messageRetryManager) {
-				const cachedMsg = messageRetryManager.getExactRecentMessageForJids(retryLookupJids, id)
+				// Hosted/PN/LID receipts do not always reproduce the original wire
+				// domain. The manager falls back by id only when exactly one live
+				// payload exists and permanently disables that fallback after an id
+				// collision, so a custom id can never cross chat boundaries.
+				const cachedMsg = messageRetryManager.getRecentMessageForJids(retryLookupJids, id)
 				if (cachedMsg) {
 					msg = cachedMsg.message
 					cachedRouteJid = cachedMsg.to
@@ -3461,6 +3468,25 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			if (!ids[i]) continue
 
 			if (msg) {
+				const retryDestination = resolveRetryRelayDestination(cachedRouteJids[i], canonicalRemoteJid)
+				if (!retryDestination) {
+					logger.warn(
+						{
+							id: ids[i],
+							remoteJid,
+							participant,
+							cachedRouteJid: cachedRouteJids[i],
+							canonicalRemoteJid,
+							retryLookupJids,
+							reason: 'invalid-relay-destination',
+							action: 'suppressed-no-budget-consumed'
+						},
+						'retry resend suppressed because no validated relay destination exists'
+					)
+					recordMessageFailure('retry', 'invalid_relay_destination')
+					continue
+				}
+
 				const attempt = await reserveSendMessageAgainAttempt(ids[i], participant)
 				if (!attempt.proceed) {
 					logger.info(
@@ -3480,12 +3506,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						jid: participant,
 						count: +retryNode.attrs.count!
 					}
-				}
-
-				const retryDestination = resolveRetryRelayDestination(cachedRouteJids[i], canonicalRemoteJid)
-				if (!retryDestination) {
-					logger.warn({ id: ids[i], remoteJid }, 'retry resend suppressed because no valid relay destination exists')
-					continue
 				}
 
 				await relayMessage(retryDestination, msg, msgRelayOpts)

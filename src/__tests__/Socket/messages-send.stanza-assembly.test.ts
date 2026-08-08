@@ -57,7 +57,10 @@ const makeDeviceResult = (jid: string) => ({
 	}
 })
 
-const makeFakeSocket = () => {
+const makeFakeSocket = ({
+	ownMapping = true,
+	corruptRemoteReverse = false
+}: { ownMapping?: boolean; corruptRemoteReverse?: boolean } = {}) => {
 	const sent: any[] = []
 	const encryptions: CapturedEncryption[] = []
 	const endHandlers: Array<() => void | Promise<void>> = []
@@ -65,15 +68,23 @@ const makeFakeSocket = () => {
 	const keys = makeKeys()
 	const mapping = {
 		getLIDForPN: async (jid: string) =>
-			jid.startsWith('5511000000001') ? ownLid : jid.startsWith('5511000000002') ? remoteLid : null,
+			jid.startsWith('5511000000001') && ownMapping ? ownLid : jid.startsWith('5511000000002') ? remoteLid : null,
 		getKnownLIDForPN: async (jid: string) =>
-			jid.startsWith('5511000000001') ? ownLid : jid.startsWith('5511000000002') ? remoteLid : null,
+			jid.startsWith('5511000000001') && ownMapping ? ownLid : jid.startsWith('5511000000002') ? remoteLid : null,
 		getPNForLID: async (jid: string) =>
 			jid.startsWith('100000000000001') ? ownPn : jid.startsWith('100000000000002') ? remotePn : null,
 		getKnownPNForLID: async (jid: string) =>
-			jid.startsWith('100000000000001') ? ownPn : jid.startsWith('100000000000002') ? remotePn : null,
+			jid.startsWith('100000000000001')
+				? ownPn
+				: jid.startsWith('100000000000002')
+					? corruptRemoteReverse
+						? ownPn
+						: remotePn
+					: null,
 		getLIDsForPNs: async (jids: string[]) =>
-			jids.map(jid => ({ pn: jid, lid: jid.startsWith('5511000000001') ? ownLid : remoteLid })),
+			jids.flatMap(jid =>
+				jid.startsWith('5511000000001') ? (ownMapping ? [{ pn: jid, lid: ownLid }] : []) : [{ pn: jid, lid: remoteLid }]
+			),
 		storeLIDPNMappings: async () => undefined
 	}
 	const signalRepository = {
@@ -106,8 +117,8 @@ const makeFakeSocket = () => {
 		groupToggleEphemeral: async () => undefined,
 		registerSocketDrainHandler: (handler: () => void | Promise<void>) => drainHandlers.push(handler),
 		registerSocketEndHandler: (handler: () => void | Promise<void>) => endHandlers.push(handler),
-		executeUSyncQuery: async () => ({
-			list: [makeDeviceResult(ownLid), makeDeviceResult(remoteLid)]
+		executeUSyncQuery: async (query: { users: Array<{ id?: string }> }) => ({
+			list: query.users.flatMap(user => (user.id ? [makeDeviceResult(user.id)] : []))
 		}),
 		sendNode: async (node: any) => {
 			sent.push(node)
@@ -183,6 +194,45 @@ describe('messages-send stanza assembly', () => {
 			expect(ownEncryption).toBeDefined()
 			const dsm = proto.Message.decode(unpadRandomMax16(ownEncryption!.data))
 			expect(dsm.deviceSentMessage?.destinationJid).toBe(remoteLid)
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('keeps a remote LID envelope aligned when the own PN mapping cache is cold', async () => {
+		const fake = makeFakeSocket({ ownMapping: false })
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			await socket.relayMessage(remotePn, proto.Message.fromObject({ conversation: 'cold own mapping' }), {
+				messageId: 'REMOTE-COLD-OWN-1'
+			})
+
+			const stanza = fake.sent.at(-1)
+			expect(stanza.attrs.to).toBe(remoteLid)
+			const participants = stanza.content.find((node: any) => node.tag === 'participants')?.content || []
+			expect(participants.length).toBeGreaterThan(0)
+			expect(participants.every((node: any) => jidDecode(node.attrs.jid)?.server === 'lid')).toBe(true)
+			expect(fake.encryptions.some(item => item.jid.startsWith('100000000000001'))).toBe(true)
+			expect(fake.encryptions.some(item => jidDecode(item.jid)?.server === 's.whatsapp.net')).toBe(false)
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('does not classify a remote LID as self-send from a corrupt reverse mapping', async () => {
+		const fake = makeFakeSocket({ ownMapping: false, corruptRemoteReverse: true })
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			await socket.relayMessage(remoteLid, proto.Message.fromObject({ conversation: 'remote LID' }), {
+				messageId: 'REMOTE-LID-1'
+			})
+
+			const stanza = fake.sent.at(-1)
+			expect(stanza.attrs.to).toBe(remoteLid)
+			const remoteEncryptions = fake.encryptions.filter(item => item.jid.startsWith('100000000000002'))
+			expect(remoteEncryptions.length).toBeGreaterThan(0)
 		} finally {
 			await socket.end(new Error('test completed'))
 		}

@@ -57,14 +57,12 @@ export const resolveRetryReceiptRoute = ({
  * A persisted LID is authoritative for the original wire route; an older PN
  * cache entry may be upgraded to the now-known canonical LID after a mapping
  * was learned between the initial send and the retry receipt.
- * `exactCachedRoute` must come from a destination+id lookup, never the
- * unique-message-id fallback used only to restore an omitted receipt route.
+ * `cachedRoute` must come from an exact destination+id lookup or the retry
+ * cache's collision-safe unique-id fallback. Ambiguous custom ids never reach
+ * this function.
  */
-export const resolveRetryRelayDestination = (
-	exactCachedRoute?: string,
-	canonicalRoute?: string
-): string | undefined => {
-	const cached = exactCachedRoute ? jidNormalizedUser(exactCachedRoute) : ''
+export const resolveRetryRelayDestination = (cachedRoute?: string, canonicalRoute?: string): string | undefined => {
+	const cached = cachedRoute ? jidNormalizedUser(cachedRoute) : ''
 	const canonical = canonicalRoute ? jidNormalizedUser(canonicalRoute) : ''
 	const validCached = cached && isValidRetryRelayRoute(cached) ? cached : undefined
 	const validCanonical = canonical && isValidRetryRelayRoute(canonical) ? canonical : undefined
