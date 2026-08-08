@@ -73,6 +73,7 @@ import {
 	resolveContactPictureIdentity,
 	resolveLidToPn,
 	resolveRetryReceiptRoute,
+	resolveRetryRelayDestination,
 	RetryReason,
 	retryReasonFromDecryptionError,
 	safeCacheSet,
@@ -3480,7 +3481,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					}
 				}
 
-				await relayMessage(cachedRouteJids[i] || canonicalRemoteJid, msg, msgRelayOpts)
+				await relayMessage(resolveRetryRelayDestination(cachedRouteJids[i], canonicalRemoteJid)!, msg, msgRelayOpts)
 				// A successful direct resend only repairs this participant's Signal
 				// session. Keep the shared payload available because another linked
 				// device can request a retry for the same message id milliseconds later.

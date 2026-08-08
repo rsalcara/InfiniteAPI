@@ -12,6 +12,7 @@ import {
 	nextRetrySendAttempt,
 	persistRetrySendReservation,
 	resolveRetryReceiptRoute,
+	resolveRetryRelayDestination,
 	shouldIncludeRetryKeysForSession
 } from '../../Utils/retry-receipt'
 import {
@@ -27,6 +28,16 @@ import {
 const silent = P({ level: 'silent' })
 
 describe('retry receipt routing parity', () => {
+	it('upgrades an old PN retry route when a canonical LID is now known', () => {
+		expect(resolveRetryRelayDestination('5511000000001@s.whatsapp.net', '100000000000001@lid')).toBe(
+			'100000000000001@lid'
+		)
+	})
+
+	it('preserves the original LID route across a later mapping rotation', () => {
+		expect(resolveRetryRelayDestination('100000000000001@lid', '100000000000002@lid')).toBe('100000000000001@lid')
+	})
+
 	it('restores the original destination for a fromMe LID receipt without recipient', () => {
 		expect(
 			resolveRetryReceiptRoute({

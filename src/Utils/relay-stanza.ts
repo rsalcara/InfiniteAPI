@@ -89,8 +89,13 @@ export const canonicalizeSelfSendFanoutRecipient = (
 	const isOwnLid =
 		isAnyLidUser(normalized) &&
 		(areJidsSameUser(normalized, selfLid) || Boolean(credentialLid && areJidsSameUser(normalized, credentialLid)))
+	// A self-send device list can contain a stale/rotated or hosted LID that no
+	// longer matches either current credential. It was still returned by the
+	// own-device lookup, so preserve its device id while moving it to the fresh
+	// canonical self LID before the strict fanout guard runs.
+	const isLegacyOwnLid = isAnyLidUser(normalized) && !isOwnLid
 
-	return isOwnPn || isOwnLid ? transferDevice(jid, selfLid) : jid
+	return isOwnPn || isOwnLid || isLegacyOwnLid ? transferDevice(jid, selfLid) : jid
 }
 
 /** Fails closed if a self-send participant escaped the canonical LID domain. */

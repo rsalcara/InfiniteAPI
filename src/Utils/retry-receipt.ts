@@ -1,3 +1,5 @@
+import { isAnyLidUser, isAnyPnUser, jidDecode, jidNormalizedUser } from '../WABinary'
+
 export type RetryReceiptRouteSource =
 	| 'recent-message-cache'
 	| 'recipient-attribute'
@@ -31,6 +33,21 @@ export const resolveRetryReceiptRoute = ({
 	if (recipient) return { remoteJid: recipient, source: 'recipient-attribute' }
 	if (isRetry) return { remoteJid: undefined, source: 'unresolved' }
 	return { remoteJid: stanzaFrom, source: 'stanza-remote-context' }
+}
+
+/**
+ * Chooses a retry relay destination without reintroducing a PN/LID mismatch.
+ * A persisted LID is authoritative for the original wire route; an older PN
+ * cache entry may be upgraded to the now-known canonical LID after a mapping
+ * was learned between the initial send and the retry receipt.
+ */
+export const resolveRetryRelayDestination = (cachedRoute?: string, canonicalRoute?: string): string | undefined => {
+	const cached = cachedRoute ? jidNormalizedUser(cachedRoute) : ''
+	const canonical = canonicalRoute ? jidNormalizedUser(canonicalRoute) : ''
+	if (!cached) return canonical || undefined
+	if (isAnyPnUser(cached) && isAnyLidUser(canonical) && Boolean(jidDecode(canonical)?.user)) return canonical
+
+	return cached
 }
 
 /** Pure state transition used inside the per-message retry lock. */

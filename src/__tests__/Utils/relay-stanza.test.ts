@@ -121,6 +121,23 @@ describe('participant fanout admission', () => {
 		).toBe('207421150646274:24@lid')
 	})
 
+	it('moves legacy and hosted own-LID companions to the fresh self LID', () => {
+		expect(
+			canonicalizeSelfSendFanoutRecipient(
+				'100000000000001:40@lid',
+				'5515991426667:24@s.whatsapp.net',
+				'207421150646274@lid'
+			)
+		).toBe('207421150646274:40@lid')
+		expect(
+			canonicalizeSelfSendFanoutRecipient(
+				'100000000000001:41@hosted.lid',
+				'5515991426667:24@s.whatsapp.net',
+				'207421150646274@lid'
+			)
+		).toBe('207421150646274:41@lid')
+	})
+
 	it('does not alter a remote participant while canonicalizing self-send devices', () => {
 		expect(
 			canonicalizeSelfSendFanoutRecipient(

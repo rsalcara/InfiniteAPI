@@ -2240,7 +2240,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				if (isJidGroup(destinationJid)) {
 					stanza.attrs.to = destinationJid
 					stanza.attrs.participant = participant.jid
-				} else if (areJidsSameUser(participant.jid, meId)) {
+				} else if (isSelfRetryParticipant(participant.jid, meId, meLid)) {
 					stanza.attrs.to = participant.jid
 					stanza.attrs.recipient = destinationJid
 				} else {
