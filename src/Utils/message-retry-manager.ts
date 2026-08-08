@@ -354,11 +354,14 @@ export class MessageRetryManager {
 	getRecentMessageForJids(toJids: readonly string[], id: string): RecentMessage | undefined {
 		for (const to of [...new Set(toJids.filter(Boolean))]) {
 			const exact = this.recentMessagesMap.get(this.keyToString({ to, id }))
-			if (exact) return exact
+			if (exact?.message) return exact
 		}
 
 		const indexedKeyStr = this.getUniqueRecentMessageKey(id)
-		if (indexedKeyStr) return this.recentMessagesMap.get(indexedKeyStr)
+		if (indexedKeyStr) {
+			const fallback = this.recentMessagesMap.get(indexedKeyStr)
+			if (fallback?.message) return fallback
+		}
 
 		return undefined
 	}
@@ -512,8 +515,9 @@ export class MessageRetryManager {
 		this.statistics.failedRetries++
 		this.retryCounters.delete(messageId)
 		this.cancelPendingPhoneRequest(messageId)
-		const keyStr = this.getUniqueRecentMessageKey(messageId)
-		if (keyStr) this.recentMessagesMap.delete(keyStr)
+		const indexEntry = this.messageKeyIndex.get(messageId)
+		for (const keyStr of indexEntry?.keys ?? []) this.recentMessagesMap.delete(keyStr)
+		this.messageKeyIndex.delete(messageId)
 	}
 
 	/**

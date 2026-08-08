@@ -77,6 +77,7 @@ import {
 	canonicalizeSelfSendFanoutRecipient,
 	dedupeParticipantFanout,
 	dedupeSelfSendFanout,
+	isSelfRetryParticipant,
 	mapParticipantFanout,
 	resolveSelfSendLid
 } from '../Utils/relay-stanza'
@@ -233,6 +234,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 	const getKnownLIDForPN = signalRepository.lidMapping.getKnownLIDForPN.bind(signalRepository.lidMapping)
 	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
+	const getKnownPNForLID = signalRepository.lidMapping.getKnownPNForLID.bind(signalRepository.lidMapping)
 
 	const userDevicesCache =
 		config.userDevicesCache ||
@@ -737,11 +739,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		if (!isAnyPnUser(requestedPn)) return undefined
 
 		const knownLid = await getKnownLIDForPN(requestedPn)
-		if (knownLid) {
+		const normalizedKnownLid = knownLid ? jidNormalizedUser(knownLid) : ''
+		if (normalizedKnownLid && isAnyLidUser(normalizedKnownLid) && jidDecode(normalizedKnownLid)?.user) {
 			return {
 				requestedPn,
 				pnJid: requestedPn,
-				lidJid: jidNormalizedUser(knownLid)
+				lidJid: normalizedKnownLid
 			}
 		}
 
@@ -1402,8 +1405,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			useUserDevicesCache,
 			useCachedGroupMetadata,
 			statusJidList,
-			liveLocationDuration,
-			canonicalJid
+			liveLocationDuration
 		}: MessageRelayOptions
 	) => {
 		const meId = authState.creds.me?.id
@@ -1425,8 +1427,21 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const finalJid = jid
 		const directRecipient =
 			!isRetryResend && !isGroupOrStatus && !isNewsletter ? await preflightDirectRecipient(jid) : undefined
+		let knownPnForLidDestination: string | undefined
+		if (!isRetryResend && isAnyLidUser(jid)) {
+			try {
+				knownPnForLidDestination = (await getKnownPNForLID(jid)) || undefined
+			} catch (error) {
+				logger.debug({ error, jid }, 'known LID reverse lookup failed; continuing with the requested LID')
+			}
+		}
+
+		const mappedSelfLid =
+			knownPnForLidDestination && areJidsSameUser(knownPnForLidDestination, meId) ? jidNormalizedUser(jid) : undefined
 		const selfSendLid =
-			!isRetryResend && !isPeerMessage ? resolveSelfSendLid(jid, meId, meLid, directRecipient?.lidJid) : null
+			!isRetryResend && !isPeerMessage
+				? resolveSelfSendLid(jid, meId, meLid, directRecipient?.lidJid || mappedSelfLid)
+				: null
 
 		msgId = msgId || generateMessageIDV2(meId)
 		useUserDevicesCache = useUserDevicesCache !== false
@@ -1497,11 +1512,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		const participants: BinaryNode[] = []
 		const requestedJid = jidNormalizedUser(jid) || jid
-		const retryDestinationJid =
-			isRetryResend && canonicalJid ? resolveDirectRecipientWireJid(finalJid, canonicalJid) : undefined
 		const destinationJid =
 			!isStatus && !isPeerMessage
-				? retryDestinationJid || resolveDirectRecipientWireJid(finalJid, directRecipient?.lidJid)
+				? resolveDirectRecipientWireJid(finalJid, directRecipient?.lidJid)
 				: isStatus
 					? statusJid
 					: finalJid
@@ -1929,10 +1942,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			if (isRetryResend) {
 				if (!participant) throw new Boom('Missing participant for retry resend')
-				// Only check for regular LID users, NOT hosted LID users
-				// Hosted LID users should use meId for comparison, not meLid
-				const isParticipantLid = isLidUser(participant.jid)
-				const isMe = areJidsSameUser(participant.jid, isParticipantLid ? meLid : meId)
+				// Hosted LID receipts use the same self-device comparison as regular
+				// LID receipts. A strict `@lid` check leaves the hosted own-device
+				// retry on the remote-message path and omits the DSM wrapper.
+				const isMe = isSelfRetryParticipant(participant.jid, meId, meLid)
 
 				// For group/status retry resends, attach a SenderKeyDistributionMessage so
 				// the recipient can decrypt our group ciphertext even when their local

@@ -58,7 +58,9 @@ export const resolveSelfSendLid = (
 	const lidCandidates = [normalizedMeLid, normalizedMappedLid].filter(
 		(jid): jid is string => Boolean(jid) && isValidLid(jid)
 	)
-	const matchingLid = lidCandidates.find(lid => areJidsSameUser(destination, lid))
+	const matchingLid = isAnyLidUser(destination)
+		? lidCandidates.find(lid => areJidsSameUser(destination, lid))
+		: undefined
 	if (matchingLid) return matchingLid
 
 	const isOwnPnDestination = isAnyPnUser(destination) && isAnyPnUser(ownPn) && areJidsSameUser(destination, ownPn)
@@ -70,6 +72,10 @@ export const resolveSelfSendLid = (
 		(isValidLid(normalizedMappedLid) && normalizedMappedLid) || (isValidLid(normalizedMeLid) ? normalizedMeLid : null)
 	)
 }
+
+/** Selects the matching own identity for a direct retry participant. */
+export const isSelfRetryParticipant = (participantJid: string, meId: string, meLid?: string): boolean =>
+	areJidsSameUser(participantJid, isAnyLidUser(participantJid) ? meLid : meId)
 
 /** Moves only the connected account's participant devices to its canonical LID domain. */
 export const canonicalizeSelfSendFanoutRecipient = (

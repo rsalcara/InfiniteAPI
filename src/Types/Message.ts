@@ -976,8 +976,6 @@ type MinimalRelayOptions = {
 export type MessageRelayOptions = MinimalRelayOptions & {
 	/** only send to a specific participant; used when a message decryption fails for a single user */
 	participant?: { jid: string; count: number }
-	/** canonical chat JID retained for a retry resend whose receipt was normalized to PN */
-	canonicalJid?: string
 	/** additional attributes to add to the WA binary node */
 	additionalAttributes?: { [_: string]: string }
 	additionalNodes?: BinaryNode[]

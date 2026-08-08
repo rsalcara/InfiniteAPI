@@ -8,6 +8,7 @@ import {
 	canonicalizeSelfSendFanoutRecipient,
 	dedupeParticipantFanout,
 	dedupeSelfSendFanout,
+	isSelfRetryParticipant,
 	mapParticipantFanout,
 	resolveSelfSendLid
 } from '../../Utils/relay-stanza'
@@ -69,6 +70,20 @@ describe('participant fanout admission', () => {
 				'56307306467375@lid'
 			)
 		).toBeNull()
+	})
+
+	it('does not treat a group with a colliding numeric user as the own LID', () => {
+		expect(resolveSelfSendLid('207421150646274@g.us', '5515991426667@s.whatsapp.net', '207421150646274@lid')).toBeNull()
+	})
+
+	it('recognizes regular and hosted own-LID participants on direct retry', () => {
+		const meId = '5515991426667:24@s.whatsapp.net'
+		const meLid = '207421150646274:24@lid'
+
+		expect(isSelfRetryParticipant('207421150646274:40@lid', meId, meLid)).toBe(true)
+		expect(isSelfRetryParticipant('207421150646274:40@hosted.lid', meId, meLid)).toBe(true)
+		expect(isSelfRetryParticipant('5515991426667:40@s.whatsapp.net', meId, meLid)).toBe(true)
+		expect(isSelfRetryParticipant('56307306467375:40@hosted.lid', meId, meLid)).toBe(false)
 	})
 
 	it('rejects malformed credential and mapping LIDs for self-send resolution', () => {

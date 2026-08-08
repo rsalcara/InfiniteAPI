@@ -201,6 +201,26 @@ describe('retry receipt routing parity', () => {
 		).toBe(second)
 	})
 
+	it('does not route a retry through a cache entry without a plaintext payload', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		manager.addRecentMessage('100000000000001@lid', 'EMPTY-ID', undefined as unknown as proto.IMessage)
+
+		expect(
+			manager.getRecentMessageForJids(['5511000000001@s.whatsapp.net', '100000000000001@lid'], 'EMPTY-ID')
+		).toBeUndefined()
+	})
+
+	it('removes every destination entry when a reused id is exhausted', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		manager.addRecentMessage('5511000000001@s.whatsapp.net', 'DUPLICATE-ID', { conversation: 'one' } as proto.IMessage)
+		manager.addRecentMessage('5511000000002@s.whatsapp.net', 'DUPLICATE-ID', { conversation: 'two' } as proto.IMessage)
+
+		manager.markRetryFailed('DUPLICATE-ID')
+
+		expect(manager.getRecentMessage('5511000000001@s.whatsapp.net', 'DUPLICATE-ID')).toBeUndefined()
+		expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'DUPLICATE-ID')).toBeUndefined()
+	})
+
 	it('rolls back only the failed destination when a custom message id is reused', async () => {
 		const manager = new MessageRetryManager(silent, 5)
 		const first = { conversation: 'first chat' } as proto.IMessage
