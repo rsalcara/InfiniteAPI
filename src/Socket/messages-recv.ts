@@ -3201,7 +3201,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		receiptNode: BinaryNode
 	) => {
 		const remoteJid = key.remoteJid
-		if (!remoteJid || !jidDecode(remoteJid)) {
+		const decodedRemoteJid = jidDecode(typeof remoteJid === 'string' ? remoteJid : undefined)
+		if (typeof remoteJid !== 'string' || !decodedRemoteJid?.user) {
 			throw new Boom('Retry receipt has no valid relay destination', {
 				statusCode: 400,
 				data: { messageIds: ids, participant: key.participant, remoteJid }
@@ -3315,7 +3316,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			// Try to get from retry cache first if enabled
 			if (messageRetryManager) {
-				const cachedMsg = messageRetryManager.getRecentMessageForJids(retryLookupJids, id)
+				const cachedMsg = messageRetryManager.getExactRecentMessageForJids(retryLookupJids, id)
 				if (cachedMsg) {
 					msg = cachedMsg.message
 					cachedRouteJid = cachedMsg.to
@@ -3481,7 +3482,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					}
 				}
 
-				await relayMessage(resolveRetryRelayDestination(cachedRouteJids[i], canonicalRemoteJid)!, msg, msgRelayOpts)
+				const retryDestination = resolveRetryRelayDestination(cachedRouteJids[i], canonicalRemoteJid)
+				if (!retryDestination) {
+					logger.warn({ id: ids[i], remoteJid }, 'retry resend suppressed because no valid relay destination exists')
+					continue
+				}
+
+				await relayMessage(retryDestination, msg, msgRelayOpts)
 				// A successful direct resend only repairs this participant's Signal
 				// session. Keep the shared payload available because another linked
 				// device can request a retry for the same message id milliseconds later.

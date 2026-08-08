@@ -38,6 +38,11 @@ describe('retry receipt routing parity', () => {
 		expect(resolveRetryRelayDestination('100000000000001@lid', '100000000000002@lid')).toBe('100000000000001@lid')
 	})
 
+	it('rejects malformed retry routes before they reach the relay', () => {
+		expect(resolveRetryRelayDestination('@lid', '100000000000001@lid')).toBe('100000000000001@lid')
+		expect(resolveRetryRelayDestination(undefined, '@lid')).toBeUndefined()
+	})
+
 	it('restores the original destination for a fromMe LID receipt without recipient', () => {
 		expect(
 			resolveRetryReceiptRoute({
@@ -103,6 +108,17 @@ describe('retry receipt routing parity', () => {
 				isRetry: true
 			}).remoteJid
 		).toBe('5511000000002@s.whatsapp.net')
+
+		expect(
+			resolveRetryReceiptRoute({
+				stanzaFrom: '100000000000001@lid',
+				recipient: '5511000000002@s.whatsapp.net',
+				recentMessageTo: '5511000000003@s.whatsapp.net',
+				isNodeFromMe: true,
+				isGroup: false,
+				isRetry: true
+			})
+		).toEqual({ remoteJid: '5511000000002@s.whatsapp.net', source: 'recipient-attribute' })
 	})
 
 	it('keeps an interactive carousel payload unchanged in the recent-message fallback', () => {
@@ -210,6 +226,7 @@ describe('retry receipt routing parity', () => {
 		expect(
 			manager.getRecentMessageForJids(['5511000000002@s.whatsapp.net', '100000000000002@lid'], 'ALIAS-ID')?.message
 		).toBe(second)
+		expect(manager.getExactRecentMessageForJids(['5511000000001@s.whatsapp.net'], 'ALIAS-ID')).toBeUndefined()
 	})
 
 	it('does not route a retry through a cache entry without a plaintext payload', () => {

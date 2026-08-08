@@ -28,9 +28,9 @@ export const resolveRetryReceiptRoute = ({
 	isRetry,
 	recentMessageTo
 }: RetryReceiptRouteInput): { remoteJid: string | undefined; source: RetryReceiptRouteSource } => {
-	if (recentMessageTo) return { remoteJid: recentMessageTo, source: 'recent-message-cache' }
 	if (!isNodeFromMe || isGroup) return { remoteJid: stanzaFrom, source: 'stanza-remote-context' }
 	if (recipient) return { remoteJid: recipient, source: 'recipient-attribute' }
+	if (recentMessageTo) return { remoteJid: recentMessageTo, source: 'recent-message-cache' }
 	if (isRetry) return { remoteJid: undefined, source: 'unresolved' }
 	return { remoteJid: stanzaFrom, source: 'stanza-remote-context' }
 }
@@ -40,14 +40,21 @@ export const resolveRetryReceiptRoute = ({
  * A persisted LID is authoritative for the original wire route; an older PN
  * cache entry may be upgraded to the now-known canonical LID after a mapping
  * was learned between the initial send and the retry receipt.
+ * `exactCachedRoute` must come from a destination+id lookup, never the
+ * unique-message-id fallback used only to restore an omitted receipt route.
  */
-export const resolveRetryRelayDestination = (cachedRoute?: string, canonicalRoute?: string): string | undefined => {
-	const cached = cachedRoute ? jidNormalizedUser(cachedRoute) : ''
+export const resolveRetryRelayDestination = (
+	exactCachedRoute?: string,
+	canonicalRoute?: string
+): string | undefined => {
+	const cached = exactCachedRoute ? jidNormalizedUser(exactCachedRoute) : ''
 	const canonical = canonicalRoute ? jidNormalizedUser(canonicalRoute) : ''
-	if (!cached) return canonical || undefined
+	const validCached = cached && Boolean(jidDecode(cached)?.user) ? cached : undefined
+	const validCanonical = canonical && Boolean(jidDecode(canonical)?.user) ? canonical : undefined
+	if (!validCached) return validCanonical
 	if (isAnyPnUser(cached) && isAnyLidUser(canonical) && Boolean(jidDecode(canonical)?.user)) return canonical
 
-	return cached
+	return validCached
 }
 
 /** Pure state transition used inside the per-message retry lock. */

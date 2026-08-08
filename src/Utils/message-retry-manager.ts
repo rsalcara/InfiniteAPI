@@ -352,15 +352,23 @@ export class MessageRetryManager {
 	 * when the same custom message ID exists in another chat.
 	 */
 	getRecentMessageForJids(toJids: readonly string[], id: string): RecentMessage | undefined {
-		for (const to of [...new Set(toJids.filter(Boolean))]) {
-			const exact = this.recentMessagesMap.get(this.keyToString({ to, id }))
-			if (exact?.message) return exact
-		}
+		const exact = this.getExactRecentMessageForJids(toJids, id)
+		if (exact) return exact
 
 		const indexedKeyStr = this.getUniqueRecentMessageKey(id)
 		if (indexedKeyStr) {
 			const fallback = this.recentMessagesMap.get(indexedKeyStr)
 			if (fallback?.message) return fallback
+		}
+
+		return undefined
+	}
+
+	/** Resolve only an explicit destination/alias key; never fall back by message id. */
+	getExactRecentMessageForJids(toJids: readonly string[], id: string): RecentMessage | undefined {
+		for (const to of [...new Set(toJids.filter(Boolean))]) {
+			const exact = this.recentMessagesMap.get(this.keyToString({ to, id }))
+			if (exact?.message) return exact
 		}
 
 		return undefined
