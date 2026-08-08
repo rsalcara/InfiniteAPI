@@ -1,5 +1,22 @@
 import { isAnyLidUser, isAnyPnUser, jidDecode, jidNormalizedUser } from '../WABinary'
 
+const RETRY_RELAY_SERVERS = new Set([
+	's.whatsapp.net',
+	'hosted',
+	'lid',
+	'hosted.lid',
+	'g.us',
+	'broadcast',
+	'newsletter',
+	'bot',
+	'call'
+])
+
+const isValidRetryRelayRoute = (jid: string): boolean => {
+	const decoded = jidDecode(jid)
+	return Boolean(decoded?.user && RETRY_RELAY_SERVERS.has(decoded.server))
+}
+
 export type RetryReceiptRouteSource =
 	| 'recent-message-cache'
 	| 'recipient-attribute'
@@ -49,8 +66,8 @@ export const resolveRetryRelayDestination = (
 ): string | undefined => {
 	const cached = exactCachedRoute ? jidNormalizedUser(exactCachedRoute) : ''
 	const canonical = canonicalRoute ? jidNormalizedUser(canonicalRoute) : ''
-	const validCached = cached && Boolean(jidDecode(cached)?.user) ? cached : undefined
-	const validCanonical = canonical && Boolean(jidDecode(canonical)?.user) ? canonical : undefined
+	const validCached = cached && isValidRetryRelayRoute(cached) ? cached : undefined
+	const validCanonical = canonical && isValidRetryRelayRoute(canonical) ? canonical : undefined
 	if (!validCached) return validCanonical
 	if (isAnyPnUser(cached) && isAnyLidUser(canonical) && Boolean(jidDecode(canonical)?.user)) return canonical
 

@@ -41,6 +41,7 @@ describe('retry receipt routing parity', () => {
 	it('rejects malformed retry routes before they reach the relay', () => {
 		expect(resolveRetryRelayDestination('@lid', '100000000000001@lid')).toBe('100000000000001@lid')
 		expect(resolveRetryRelayDestination(undefined, '@lid')).toBeUndefined()
+		expect(resolveRetryRelayDestination('123@', '123@bogus')).toBeUndefined()
 	})
 
 	it('restores the original destination for a fromMe LID receipt without recipient', () => {
