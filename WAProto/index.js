@@ -30000,6 +30000,7 @@ export const proto = $root.proto = (() => {
         DeviceCapabilities.prototype.memberNameTagPrimarySupport = null;
         DeviceCapabilities.prototype.aiThread = null;
         DeviceCapabilities.prototype.aiFbidMigration = null;
+        DeviceCapabilities.prototype.bizAiSettingsSync = null;
 
         let $oneOfFields;
 
@@ -30045,6 +30046,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(DeviceCapabilities.prototype, "_bizAiSettingsSync", {
+            get: $util.oneOfGetter($oneOfFields = ["bizAiSettingsSync"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         DeviceCapabilities.create = function create(properties) {
             return new DeviceCapabilities(properties);
         };
@@ -30066,6 +30073,8 @@ export const proto = $root.proto = (() => {
                 $root.proto.DeviceCapabilities.AiThread.encode(m.aiThread, w.uint32(50).fork()).ldelim();
             if (m.aiFbidMigration != null && Object.hasOwnProperty.call(m, "aiFbidMigration"))
                 $root.proto.DeviceCapabilities.AiFbidMigration.encode(m.aiFbidMigration, w.uint32(58).fork()).ldelim();
+            if (m.bizAiSettingsSync != null && Object.hasOwnProperty.call(m, "bizAiSettingsSync"))
+                $root.proto.DeviceCapabilities.BizAiSettingsSync.encode(m.bizAiSettingsSync, w.uint32(66).fork()).ldelim();
             return w;
         };
 
@@ -30104,6 +30113,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 7: {
                         m.aiFbidMigration = $root.proto.DeviceCapabilities.AiFbidMigration.decode(r, r.uint32());
+                        break;
+                    }
+                case 8: {
+                        m.bizAiSettingsSync = $root.proto.DeviceCapabilities.BizAiSettingsSync.decode(r, r.uint32());
                         break;
                     }
                 default:
@@ -30183,6 +30196,11 @@ export const proto = $root.proto = (() => {
                     throw TypeError(".proto.DeviceCapabilities.aiFbidMigration: object expected");
                 m.aiFbidMigration = $root.proto.DeviceCapabilities.AiFbidMigration.fromObject(d.aiFbidMigration);
             }
+            if (d.bizAiSettingsSync != null) {
+                if (typeof d.bizAiSettingsSync !== "object")
+                    throw TypeError(".proto.DeviceCapabilities.bizAiSettingsSync: object expected");
+                m.bizAiSettingsSync = $root.proto.DeviceCapabilities.BizAiSettingsSync.fromObject(d.bizAiSettingsSync);
+            }
             return m;
         };
 
@@ -30224,6 +30242,11 @@ export const proto = $root.proto = (() => {
                 d.aiFbidMigration = $root.proto.DeviceCapabilities.AiFbidMigration.toObject(m.aiFbidMigration, o);
                 if (o.oneofs)
                     d._aiFbidMigration = "aiFbidMigration";
+            }
+            if (m.bizAiSettingsSync != null && m.hasOwnProperty("bizAiSettingsSync")) {
+                d.bizAiSettingsSync = $root.proto.DeviceCapabilities.BizAiSettingsSync.toObject(m.bizAiSettingsSync, o);
+                if (o.oneofs)
+                    d._bizAiSettingsSync = "bizAiSettingsSync";
             }
             return d;
         };
@@ -30448,6 +30471,94 @@ export const proto = $root.proto = (() => {
             })();
 
             return AiThread;
+        })();
+
+        DeviceCapabilities.BizAiSettingsSync = (function() {
+
+            function BizAiSettingsSync(p) {
+                if (p)
+                    for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null)
+                            this[ks[i]] = p[ks[i]];
+            }
+
+            BizAiSettingsSync.prototype.handoffRemovalTimingEnabled = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BizAiSettingsSync.prototype, "_handoffRemovalTimingEnabled", {
+                get: $util.oneOfGetter($oneOfFields = ["handoffRemovalTimingEnabled"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            BizAiSettingsSync.create = function create(properties) {
+                return new BizAiSettingsSync(properties);
+            };
+
+            BizAiSettingsSync.encode = function encode(m, w) {
+                if (!w)
+                    w = $Writer.create();
+                if (m.handoffRemovalTimingEnabled != null && Object.hasOwnProperty.call(m, "handoffRemovalTimingEnabled"))
+                    w.uint32(8).bool(m.handoffRemovalTimingEnabled);
+                return w;
+            };
+
+            BizAiSettingsSync.decode = function decode(r, l, e) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.DeviceCapabilities.BizAiSettingsSync();
+                while (r.pos < c) {
+                    var t = r.uint32();
+                    if (t === e)
+                        break;
+                    switch (t >>> 3) {
+                    case 1: {
+                            m.handoffRemovalTimingEnabled = r.bool();
+                            break;
+                        }
+                    default:
+                        r.skipType(t & 7);
+                        break;
+                    }
+                }
+                return m;
+            };
+
+            BizAiSettingsSync.fromObject = function fromObject(d) {
+                if (d instanceof $root.proto.DeviceCapabilities.BizAiSettingsSync)
+                    return d;
+                var m = new $root.proto.DeviceCapabilities.BizAiSettingsSync();
+                if (d.handoffRemovalTimingEnabled != null) {
+                    m.handoffRemovalTimingEnabled = Boolean(d.handoffRemovalTimingEnabled);
+                }
+                return m;
+            };
+
+            BizAiSettingsSync.toObject = function toObject(m, o) {
+                if (!o)
+                    o = {};
+                var d = {};
+                if (m.handoffRemovalTimingEnabled != null && m.hasOwnProperty("handoffRemovalTimingEnabled")) {
+                    d.handoffRemovalTimingEnabled = m.handoffRemovalTimingEnabled;
+                    if (o.oneofs)
+                        d._handoffRemovalTimingEnabled = "handoffRemovalTimingEnabled";
+                }
+                return d;
+            };
+
+            BizAiSettingsSync.prototype.toJSON = function toJSON() {
+                return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            BizAiSettingsSync.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                if (typeUrlPrefix === undefined) {
+                    typeUrlPrefix = "type.googleapis.com";
+                }
+                return typeUrlPrefix + "/proto.DeviceCapabilities.BizAiSettingsSync";
+            };
+
+            return BizAiSettingsSync;
         })();
 
         DeviceCapabilities.BusinessBroadcast = (function() {
@@ -61214,6 +61325,7 @@ export const proto = $root.proto = (() => {
             MusicMessage.MusicMessageStyle = (function() {
                 const valuesById = {}, values = Object.create(valuesById);
                 values[valuesById[0] = "UNKNOWN"] = 0;
+                values[valuesById[1] = "VINYL"] = 1;
                 return values;
             })();
 
@@ -98665,6 +98777,10 @@ export const proto = $root.proto = (() => {
                 case 16:
                     m.type = 16;
                     break;
+                case "MENTIONS_AND_REPLIES":
+                case 17:
+                    m.type = 17;
+                    break;
                 }
                 if (d.isImmutable != null) {
                     m.isImmutable = Boolean(d.isImmutable);
@@ -98767,6 +98883,7 @@ export const proto = $root.proto = (() => {
                 values[valuesById[14] = "INVITES"] = 14;
                 values[valuesById[15] = "THIRD_PARTY"] = 15;
                 values[valuesById[16] = "LEAD"] = 16;
+                values[valuesById[17] = "MENTIONS_AND_REPLIES"] = 17;
                 return values;
             })();
 

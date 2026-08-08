@@ -4415,6 +4415,7 @@ export namespace proto {
         memberNameTagPrimarySupport?: (proto.DeviceCapabilities.MemberNameTagPrimarySupport|null);
         aiThread?: (proto.DeviceCapabilities.IAiThread|null);
         aiFbidMigration?: (proto.DeviceCapabilities.IAiFbidMigration|null);
+        bizAiSettingsSync?: (proto.DeviceCapabilities.IBizAiSettingsSync|null);
     }
 
     class DeviceCapabilities implements IDeviceCapabilities {
@@ -4426,6 +4427,7 @@ export namespace proto {
         public memberNameTagPrimarySupport?: (proto.DeviceCapabilities.MemberNameTagPrimarySupport|null);
         public aiThread?: (proto.DeviceCapabilities.IAiThread|null);
         public aiFbidMigration?: (proto.DeviceCapabilities.IAiFbidMigration|null);
+        public bizAiSettingsSync?: (proto.DeviceCapabilities.IBizAiSettingsSync|null);
         public static create(properties?: proto.IDeviceCapabilities): proto.DeviceCapabilities;
         public static encode(m: proto.IDeviceCapabilities, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.DeviceCapabilities;
@@ -4476,6 +4478,22 @@ export namespace proto {
                 INFRA = 1,
                 FULL = 2
             }
+        }
+
+        interface IBizAiSettingsSync {
+            handoffRemovalTimingEnabled?: (boolean|null);
+        }
+
+        class BizAiSettingsSync implements IBizAiSettingsSync {
+            constructor(p?: proto.DeviceCapabilities.IBizAiSettingsSync);
+            public handoffRemovalTimingEnabled?: (boolean|null);
+            public static create(properties?: proto.DeviceCapabilities.IBizAiSettingsSync): proto.DeviceCapabilities.BizAiSettingsSync;
+            public static encode(m: proto.DeviceCapabilities.IBizAiSettingsSync, w?: $protobuf.Writer): $protobuf.Writer;
+            public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.DeviceCapabilities.BizAiSettingsSync;
+            public static fromObject(d: { [k: string]: any }): proto.DeviceCapabilities.BizAiSettingsSync;
+            public static toObject(m: proto.DeviceCapabilities.BizAiSettingsSync, o?: $protobuf.IConversionOptions): { [k: string]: any };
+            public toJSON(): { [k: string]: any };
+            public static getTypeUrl(typeUrlPrefix?: string): string;
         }
 
         interface IBusinessBroadcast {
@@ -8719,7 +8737,8 @@ export namespace proto {
         namespace MusicMessage {
 
             enum MusicMessageStyle {
-                UNKNOWN = 0
+                UNKNOWN = 0,
+                VINYL = 1
             }
         }
 
@@ -14120,7 +14139,8 @@ export namespace proto {
                 LOCKED = 13,
                 INVITES = 14,
                 THIRD_PARTY = 15,
-                LEAD = 16
+                LEAD = 16,
+                MENTIONS_AND_REPLIES = 17
             }
         }
 
