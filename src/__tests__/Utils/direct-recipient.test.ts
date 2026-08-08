@@ -2,6 +2,7 @@ import { jest } from '@jest/globals'
 import { ReachoutTimelockEnforcementType } from '../../Types'
 import {
 	assertDirectRecipientCiphertext,
+	buildDirectRecipientChatMerges,
 	type DirectRecipientPreflightOptions,
 	resolveDirectRecipientUSync,
 	resolveDirectRecipientWireJid,
@@ -10,6 +11,49 @@ import {
 import { USyncQuery } from '../../WAUSync'
 
 describe('PN → LID/username recipient resolution', () => {
+	it('merges the wire LID and requested PN into one canonical consumer chat', () => {
+		const requestedPn = '5543991910391@s.whatsapp.net'
+		const canonicalPn = '554391910391@s.whatsapp.net'
+		const privateLid = '127496221651050@lid'
+
+		expect(
+			buildDirectRecipientChatMerges({ requestedPn, pnJid: canonicalPn, lidJid: privateLid }, 1_786_000_000_000)
+		).toEqual([
+			{
+				id: canonicalPn,
+				merged: true,
+				previousId: privateLid,
+				mergedAt: 1_786_000_000_000
+			},
+			{
+				id: canonicalPn,
+				merged: true,
+				previousId: requestedPn,
+				mergedAt: 1_786_000_000_000
+			}
+		])
+	})
+
+	it('emits only the LID merge when the requested PN is already canonical', () => {
+		expect(
+			buildDirectRecipientChatMerges(
+				{
+					requestedPn: '554391910391@s.whatsapp.net',
+					pnJid: '554391910391@s.whatsapp.net',
+					lidJid: '127496221651050@lid'
+				},
+				123
+			)
+		).toEqual([
+			{
+				id: '554391910391@s.whatsapp.net',
+				merged: true,
+				previousId: '127496221651050@lid',
+				mergedAt: 123
+			}
+		])
+	})
+
 	it('uses the resolved LID on the wire while preserving PN when no mapping exists', () => {
 		expect(resolveDirectRecipientWireJid('5511999999999@c.us', '123456@lid')).toBe('123456@lid')
 		expect(resolveDirectRecipientWireJid('5511999999999@c.us')).toBe('5511999999999@s.whatsapp.net')
@@ -162,16 +206,22 @@ describe('cold-recipient preflight orchestration', () => {
 			calls.push('devices')
 			return [device]
 		})
+		const onResolvedIdentity = jest.fn(async () => {
+			calls.push('identity')
+		})
 
-		await expect(runDirectRecipientPreflight(options({ storeMapping, getDevices }))).resolves.toMatchObject({
+		await expect(
+			runDirectRecipientPreflight(options({ storeMapping, onResolvedIdentity, getDevices }))
+		).resolves.toMatchObject({
 			requestedPn: pn,
 			pnJid: pn,
 			lidJid: lid,
 			freshTargetDevices: [device]
 		})
 		expect(storeMapping).toHaveBeenCalledWith({ lid, pn })
+		expect(onResolvedIdentity).toHaveBeenCalledWith({ requestedPn: pn, pnJid: pn, lidJid: lid })
 		expect(getDevices).toHaveBeenCalledWith(lid)
-		expect(calls).toEqual(['mapping', 'devices'])
+		expect(calls).toEqual(['mapping', 'identity', 'devices'])
 	})
 
 	it('does not trust a malformed known mapping and re-runs cold resolution', async () => {

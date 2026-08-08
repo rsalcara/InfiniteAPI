@@ -12,6 +12,9 @@ const ownPn = '5511000000001@s.whatsapp.net'
 const ownLid = '100000000000001@lid'
 const remotePn = '5511000000002@s.whatsapp.net'
 const remoteLid = '100000000000002@lid'
+const coldRequestedPn = '5543991910391@s.whatsapp.net'
+const coldCanonicalPn = '554391910391@s.whatsapp.net'
+const coldLid = '127496221651050@lid'
 
 const noopLogger = {
 	level: 'silent',
@@ -60,11 +63,13 @@ const makeDeviceResult = (jid: string) => ({
 const makeFakeSocket = ({
 	ownMapping = true,
 	corruptRemoteReverse = false,
-	returnPnDevicesForLidQueries = false
+	returnPnDevicesForLidQueries = false,
+	coldRecipient = false
 }: {
 	ownMapping?: boolean
 	corruptRemoteReverse?: boolean
 	returnPnDevicesForLidQueries?: boolean
+	coldRecipient?: boolean
 } = {}) => {
 	const sent: any[] = []
 	const encryptions: CapturedEncryption[] = []
@@ -78,15 +83,35 @@ const makeFakeSocket = ({
 				? corruptRemoteReverse
 					? ownPn
 					: remotePn
-				: null
+				: jid.startsWith('127496221651050') && coldRecipient
+					? coldCanonicalPn
+					: null
 	)
 	const mapping = {
 		getLIDForPN: async (jid: string) =>
-			jid.startsWith('5511000000001') && ownMapping ? ownLid : jid.startsWith('5511000000002') ? remoteLid : null,
+			jid.startsWith('5511000000001') && ownMapping
+				? ownLid
+				: jid.startsWith('5511000000002')
+					? remoteLid
+					: jid.startsWith('554391910391') && coldRecipient
+						? coldLid
+						: null,
 		getKnownLIDForPN: async (jid: string) =>
-			jid.startsWith('5511000000001') && ownMapping ? ownLid : jid.startsWith('5511000000002') ? remoteLid : null,
+			jid.startsWith('5511000000001') && ownMapping
+				? ownLid
+				: jid.startsWith('5511000000002')
+					? remoteLid
+					: jid.startsWith('554391910391') && coldRecipient
+						? coldLid
+						: null,
 		getPNForLID: async (jid: string) =>
-			jid.startsWith('100000000000001') ? ownPn : jid.startsWith('100000000000002') ? remotePn : null,
+			jid.startsWith('100000000000001')
+				? ownPn
+				: jid.startsWith('100000000000002')
+					? remotePn
+					: jid.startsWith('127496221651050') && coldRecipient
+						? coldCanonicalPn
+						: null,
 		getKnownPNForLID,
 		getLIDsForPNs: async (jids: string[]) =>
 			jids.flatMap(jid =>
@@ -124,8 +149,21 @@ const makeFakeSocket = ({
 		groupToggleEphemeral: async () => undefined,
 		registerSocketDrainHandler: (handler: () => void | Promise<void>) => drainHandlers.push(handler),
 		registerSocketEndHandler: (handler: () => void | Promise<void>) => endHandlers.push(handler),
-		executeUSyncQuery: async (query: { users: Array<{ id?: string }> }) => ({
-			list: query.users.flatMap(user => {
+		executeUSyncQuery: async (query: any) => ({
+			list: query.users.flatMap((user: any) => {
+				if (coldRecipient && (user as any).phone) {
+					return [
+						{
+							id: coldCanonicalPn,
+							jid: coldCanonicalPn,
+							pnJid: coldCanonicalPn,
+							newJid: coldLid,
+							lid: coldLid,
+							contactType: 'in'
+						}
+					]
+				}
+
 				if (!user.id) return []
 				if (!returnPnDevicesForLidQueries) return [makeDeviceResult(user.id)]
 				if (user.id.startsWith('100000000000001')) return [makeDeviceResult(ownPn)]
@@ -235,6 +273,36 @@ describe('messages-send stanza assembly', () => {
 			)
 			expect(fake.encryptions.some(item => item.jid.startsWith('100000000000001'))).toBe(true)
 			expect(fake.encryptions.some(item => jidDecode(item.jid)?.server === 's.whatsapp.net')).toBe(false)
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('publishes one canonical chat identity for a cold recipient whose PN changes', async () => {
+		const fake = makeFakeSocket({ coldRecipient: true })
+		activeFakeSocket = fake.sock
+		const chatUpdates: any[] = []
+		const deliveryStates: any[] = []
+		fake.sock.ev.on('chats.update', (updates: any[]) => chatUpdates.push(...updates))
+		fake.sock.ev.on('message.delivery-state', (update: any) => deliveryStates.push(update))
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			const sent = await socket.sendMessage(coldRequestedPn, { text: 'cold identity' })
+
+			expect(sent!.key.remoteJid).toBe(coldCanonicalPn)
+			expect(sent!.key.remoteJidAlt).toBe(coldLid)
+			expect(fake.sent.at(-1).attrs.to).toBe(coldLid)
+			expect(deliveryStates.at(-1)).toMatchObject({
+				requestedJid: coldRequestedPn,
+				canonicalJid: coldCanonicalPn,
+				key: { remoteJid: coldRequestedPn }
+			})
+			expect(chatUpdates).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ id: coldCanonicalPn, previousId: coldLid, merged: true }),
+					expect.objectContaining({ id: coldCanonicalPn, previousId: coldRequestedPn, merged: true })
+				])
+			)
 		} finally {
 			await socket.end(new Error('test completed'))
 		}

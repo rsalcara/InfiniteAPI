@@ -25,6 +25,7 @@ import {
 	assertMediaContent,
 	assertMeId,
 	bindWaitForEvent,
+	buildDirectRecipientChatMerges,
 	captureProtocolWire,
 	decryptMediaRetryData,
 	DEF_MEDIA_HOST,
@@ -764,6 +765,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					return (await sock.executeUSyncQuery(query))?.list ?? []
 				},
 				storeMapping: mapping => signalRepository.lidMapping.storeLIDPNMappings([mapping]),
+				onResolvedIdentity: identity => {
+					const merges = buildDirectRecipientChatMerges(identity)
+					if (merges.length > 0) ev.emit('chats.update', merges)
+				},
 				onResolvedUsername: resolution =>
 					ev.emit('contacts.upsert', [
 						{
@@ -1398,6 +1403,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		message: proto.IMessage,
 		{
 			messageId: msgId,
+			onResolvedRecipient,
 			participant,
 			additionalAttributes,
 			additionalNodes,
@@ -1424,6 +1430,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const isNewsletter = server === 'newsletter'
 		const isGroupOrStatus = isGroup || isStatus
 		const finalJid = jid
+		const requestedJid = jidNormalizedUser(jid) || jid
 		const directRecipient =
 			!isRetryResend && !isGroupOrStatus && !isNewsletter ? await preflightDirectRecipient(jid) : undefined
 		let mappedSelfLid: string | undefined
@@ -1510,13 +1517,21 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 
 		const participants: BinaryNode[] = []
-		const requestedJid = jidNormalizedUser(jid) || jid
 		const destinationJid =
 			!isStatus && !isPeerMessage
 				? resolveDirectRecipientWireJid(finalJid, directRecipient?.lidJid)
 				: isStatus
 					? statusJid
 					: finalJid
+		const publicCanonicalJid =
+			!isStatus && !isGroupOrStatus && !isNewsletter && !isPeerMessage
+				? directRecipient?.pnJid || requestedJid
+				: requestedJid
+
+		if (onResolvedRecipient) {
+			await onResolvedRecipient({ requestedJid, canonicalJid: publicCanonicalJid, wireJid: destinationJid })
+		}
+
 		const binaryNodeContent: BinaryNode[] = []
 		const devices: DeviceWithJid[] = []
 		let reportingMessage: proto.IMessage | undefined
@@ -2528,7 +2543,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					key: { remoteJid: requestedJid, fromMe: true, id: msgId },
 					state: 'accepted',
 					requestedJid,
-					canonicalJid: destinationJid
+					canonicalJid: publicCanonicalJid
 				})
 			}
 
@@ -2891,7 +2906,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// Without this, child media items reference a non-existent album key
 			await relayMessage(jid, albumRootMsg.message!, {
 				messageId: albumRootMsg.key.id!,
-				useCachedGroupMetadata: options.useCachedGroupMetadata
+				useCachedGroupMetadata: options.useCachedGroupMetadata,
+				onResolvedRecipient: ({ canonicalJid, wireJid }) => {
+					albumRootMsg.key.remoteJid = canonicalJid
+					if (isAnyLidUser(wireJid)) albumRootMsg.key.remoteJidAlt = wireJid
+				}
 			})
 
 			// Emit own event for album root if configured
@@ -3009,7 +3028,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						// Relay the message
 						await relayMessage(jid, mediaMsg.message, {
 							messageId: mediaMsg.key.id!,
-							useCachedGroupMetadata: options.useCachedGroupMetadata
+							useCachedGroupMetadata: options.useCachedGroupMetadata,
+							onResolvedRecipient: ({ canonicalJid, wireJid }) => {
+								mediaMsg.key.remoteJid = canonicalJid
+								if (isAnyLidUser(wireJid)) mediaMsg.key.remoteJidAlt = wireJid
+							}
 						})
 
 						// Emit own event if configured
@@ -3228,7 +3251,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					useCachedGroupMetadata: options.useCachedGroupMetadata,
 					additionalAttributes,
 					statusJidList: options.statusJidList,
-					additionalNodes
+					additionalNodes,
+					onResolvedRecipient: ({ canonicalJid, wireJid }) => {
+						fullMsg.key.remoteJid = canonicalJid
+						if (isAnyLidUser(wireJid)) fullMsg.key.remoteJidAlt = wireJid
+					}
 				})
 
 				// A SENT sticker becomes "recent" (mobile parity).
@@ -3328,7 +3355,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				messageId: fullMsg.key.id!,
 				useCachedGroupMetadata: options.useCachedGroupMetadata,
 				statusJidList: options.statusJidList,
-				liveLocationDuration: durationSecs
+				liveLocationDuration: durationSecs,
+				onResolvedRecipient: ({ canonicalJid, wireJid }) => {
+					fullMsg.key.remoteJid = canonicalJid
+					if (isAnyLidUser(wireJid)) fullMsg.key.remoteJidAlt = wireJid
+				}
 			})
 
 			// Match the Android job order: enqueue the initial live-location

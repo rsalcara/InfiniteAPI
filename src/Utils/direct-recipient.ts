@@ -1,5 +1,5 @@
 import { Boom } from '@hapi/boom'
-import type { NewChatMessageCapInfo, ReachoutTimelockState } from '../Types'
+import type { ChatUpdate, NewChatMessageCapInfo, ReachoutTimelockState } from '../Types'
 import { isAnyLidUser, isAnyPnUser, jidDecode, jidNormalizedUser } from '../WABinary'
 import type { USyncContactType, USyncQueryResultList } from '../WAUSync'
 import type { ILogger } from './logger'
@@ -22,6 +22,12 @@ export type DirectRecipientPreflightResult<TDevice> = {
 	freshTargetDevices?: TDevice[]
 }
 
+export type DirectRecipientIdentity = {
+	requestedPn: string
+	pnJid: string
+	lidJid: string
+}
+
 export type DirectRecipientPreflightOptions<TDevice> = {
 	requestedJid: string
 	getKnownLIDForPN: (pn: string) => Promise<string | null>
@@ -29,9 +35,37 @@ export type DirectRecipientPreflightOptions<TDevice> = {
 	fetchCapping: () => Promise<NewChatMessageCapInfo | undefined>
 	resolveUSync: (phoneUser: string) => Promise<USyncQueryResultList[]>
 	storeMapping: (mapping: { lid: string; pn: string }) => Promise<unknown>
+	/** Called after the canonical PN/LID mapping is durably stored. */
+	onResolvedIdentity?: (identity: DirectRecipientIdentity) => void | Promise<void>
 	onResolvedUsername?: (resolution: DirectRecipientResolution) => void
 	getDevices: (lid: string) => Promise<TDevice[]>
 	logger: Pick<ILogger, 'warn' | 'info'>
+}
+
+/**
+ * Builds consumer-facing chat merges for a cold recipient. The wire route is
+ * the LID, while the public conversation identity is the canonical PN. The
+ * originally requested PN is also an alias because USync can canonicalize a
+ * stale/username-backed number to a different PN.
+ */
+export const buildDirectRecipientChatMerges = (
+	{ requestedPn, pnJid, lidJid }: DirectRecipientIdentity,
+	mergedAt = Date.now()
+): ChatUpdate[] => {
+	const canonical = jidNormalizedUser(pnJid)
+	const normalizedLid = jidNormalizedUser(lidJid)
+	if (!isAnyPnUser(canonical) || !isAnyLidUser(normalizedLid) || !jidDecode(normalizedLid)?.user) return []
+
+	const previousIds = [...new Set([jidNormalizedUser(lidJid), jidNormalizedUser(requestedPn)])].filter(
+		previousId => previousId && previousId !== canonical
+	)
+
+	return previousIds.map(previousId => ({
+		id: canonical,
+		merged: true,
+		previousId,
+		mergedAt
+	}))
 }
 
 /** Keeps a direct-message envelope aligned with the identity used for device fanout. */
@@ -137,6 +171,7 @@ export const runDirectRecipientPreflight = async <TDevice>({
 	fetchCapping,
 	resolveUSync,
 	storeMapping,
+	onResolvedIdentity,
 	onResolvedUsername,
 	getDevices,
 	logger
@@ -228,6 +263,11 @@ export const runDirectRecipientPreflight = async <TDevice>({
 	}
 
 	await storeMapping({ lid: resolution.lidJid, pn: resolution.pnJid })
+	await onResolvedIdentity?.({
+		requestedPn,
+		pnJid: resolution.pnJid,
+		lidJid: resolution.lidJid
+	})
 	if (resolution.username) onResolvedUsername?.(resolution)
 
 	const freshTargetDevices = await getDevices(resolution.lidJid)
