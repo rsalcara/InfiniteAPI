@@ -69,7 +69,7 @@ export const resolveRetryRelayDestination = (
 	const validCached = cached && isValidRetryRelayRoute(cached) ? cached : undefined
 	const validCanonical = canonical && isValidRetryRelayRoute(canonical) ? canonical : undefined
 	if (!validCached) return validCanonical
-	if (isAnyPnUser(cached) && isAnyLidUser(canonical) && Boolean(jidDecode(canonical)?.user)) return canonical
+	if (isAnyPnUser(cached) && validCanonical && isAnyLidUser(validCanonical)) return validCanonical
 
 	return validCached
 }

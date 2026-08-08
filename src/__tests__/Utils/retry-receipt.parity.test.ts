@@ -42,6 +42,9 @@ describe('retry receipt routing parity', () => {
 		expect(resolveRetryRelayDestination('@lid', '100000000000001@lid')).toBe('100000000000001@lid')
 		expect(resolveRetryRelayDestination(undefined, '@lid')).toBeUndefined()
 		expect(resolveRetryRelayDestination('123@', '123@bogus')).toBeUndefined()
+		expect(resolveRetryRelayDestination('5511000000001@s.whatsapp.net', '100000000000001@hosted.lid.evil')).toBe(
+			'5511000000001@s.whatsapp.net'
+		)
 	})
 
 	it('restores the original destination for a fromMe LID receipt without recipient', () => {
