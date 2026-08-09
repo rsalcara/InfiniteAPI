@@ -858,18 +858,7 @@ const LIST_LIMITS = {
 } as const
 
 const MAX_WEB_QUICK_REPLY_BUTTONS = 10
-
-const truncateUtf16 = (value: string, maxLength: number): string => {
-	if (value.length <= maxLength) return value
-
-	let truncated = value.slice(0, maxLength)
-	const lastCodeUnit = truncated.charCodeAt(truncated.length - 1)
-	if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) {
-		truncated = truncated.slice(0, -1)
-	}
-
-	return truncated
-}
+const MAX_LEGACY_QUICK_REPLY_BUTTONS = 16
 
 /**
  * Validates and sanitizes list message sections according to WhatsApp limits.
@@ -1304,51 +1293,40 @@ export const generateWAMessageContent = async (
 		}
 
 		// Current Web/Desktop accepts at most ten quick replies in one Native Flow.
-		// Legacy buttonsMessage is no longer delivered to companions, so preserve
-		// larger option sets as a single-select list instead of silently dropping it.
+		// Keep larger supported sets in the legacy reply envelope. Converting them
+		// to listMessage changes the message type and current mobile clients may
+		// discard that synthetic list even when Web/Desktop renders it.
 		const allQuickReply = buttons.every((btn: any) => btn.type === 'reply')
 		const formattedQuickReplies = allQuickReply ? buttons.map(formatNativeFlowButton) : undefined
 
 		if (allQuickReply && buttons.length > MAX_WEB_QUICK_REPLY_BUTTONS) {
+			if (buttons.length > MAX_LEGACY_QUICK_REPLY_BUTTONS) {
+				throw new Boom(`Maximum ${MAX_LEGACY_QUICK_REPLY_BUTTONS} reply buttons allowed`, { statusCode: 400 })
+			}
+
 			if (nativeMsg.headerImage || nativeMsg.headerVideo) {
-				throw new Boom('Header media is not supported when more than 10 reply buttons are converted to a list', {
+				throw new Boom('Header media is not supported when more than 10 reply buttons use the legacy envelope', {
 					statusCode: 400
 				})
 			}
 
-			const sections = Array.from(
-				{ length: Math.ceil(buttons.length / LIST_LIMITS.MAX_ROWS_PER_SECTION) },
-				(_, sectionIndex) => ({
-					title: '',
-					rows: buttons
-						.slice(
-							sectionIndex * LIST_LIMITS.MAX_ROWS_PER_SECTION,
-							(sectionIndex + 1) * LIST_LIMITS.MAX_ROWS_PER_SECTION
-						)
-						.map((btn: any) => {
-							const displayText = String(btn.text)
-							const title = truncateUtf16(displayText, LIST_LIMITS.MAX_ROW_TITLE)
-
-							return {
-								id: btn.id,
-								title,
-								description:
-									title === displayText ? undefined : truncateUtf16(displayText, LIST_LIMITS.MAX_ROW_DESCRIPTION)
-							}
-						})
-				})
-			)
-			const generated = generateListMessageLegacy(
-				{ sections },
-				String(nativeMsg.headerTitle || ''),
-				String(nativeMsg.text || ''),
-				'View options',
-				nativeMsg.footer ? String(nativeMsg.footer) : undefined
-			)
-			m.listMessage = generated.listMessage
+			const hasHeaderTitle = Boolean(nativeMsg.headerTitle)
+			m.buttonsMessage = {
+				contentText: nativeMsg.text || '',
+				footerText: nativeMsg.footer || undefined,
+				headerType: hasHeaderTitle
+					? proto.Message.ButtonsMessage.HeaderType.TEXT
+					: proto.Message.ButtonsMessage.HeaderType.EMPTY,
+				...(hasHeaderTitle ? { text: nativeMsg.headerTitle } : {}),
+				buttons: buttons.map((btn: any, idx: number) => ({
+					buttonId: btn.id || `btn_${idx}`,
+					buttonText: { displayText: btn.text || `Button ${idx + 1}` },
+					type: proto.Message.ButtonsMessage.Button.Type.RESPONSE
+				}))
+			}
 			options.logger?.info(
-				{ quickReplyCount: buttons.length, sectionCount: sections.length },
-				'Sending oversized quick_reply set as single-select list for Web/Desktop compatibility'
+				{ quickReplyCount: buttons.length },
+				'Sending oversized quick_reply set as legacy buttonsMessage'
 			)
 		} else if (allQuickReply) {
 			const header = await prepareNativeButtonHeader(

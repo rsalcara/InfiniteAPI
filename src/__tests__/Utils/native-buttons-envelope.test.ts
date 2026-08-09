@@ -51,7 +51,7 @@ describe('native button protobuf envelope', () => {
 		])
 	})
 
-	it('converts oversized quick-reply sets to one Web-compatible list', async () => {
+	it('preserves sixteen quick replies in the legacy reply envelope', async () => {
 		const buttons = Array.from({ length: 16 }, (_, index) => ({
 			type: 'reply' as const,
 			id: `option-${index + 1}`,
@@ -70,15 +70,13 @@ describe('native button protobuf envelope', () => {
 
 		expect(decoded.interactiveMessage).toBeNull()
 		expect(decoded.viewOnceMessage).toBeNull()
-		expect(decoded.buttonsMessage).toBeNull()
-		expect(decoded.listMessage?.description).toBe('Choose a department')
-		expect(decoded.listMessage?.footerText).toBe('Available all day')
-		expect(decoded.listMessage?.buttonText).toBe('View options')
-		expect(decoded.listMessage?.sections?.map(section => section.rows?.length)).toEqual([10, 6])
-		expect(decoded.listMessage?.sections?.[1]?.rows?.[3]).toMatchObject({
-			rowId: 'option-14',
-			title: '🔧 Tecnologia da Informa',
-			description: '🔧 Tecnologia da Informação'
+		expect(decoded.listMessage).toBeNull()
+		expect(decoded.buttonsMessage?.contentText).toBe('Choose a department')
+		expect(decoded.buttonsMessage?.footerText).toBe('Available all day')
+		expect(decoded.buttonsMessage?.buttons).toHaveLength(16)
+		expect(decoded.buttonsMessage?.buttons?.[13]).toMatchObject({
+			buttonId: 'option-14',
+			buttonText: { displayText: '🔧 Tecnologia da Informação' }
 		})
 	})
 
@@ -106,7 +104,7 @@ describe('native button protobuf envelope', () => {
 	it.each([
 		['id', { type: 'reply', id: '', text: 'Missing id' }],
 		['text', { type: 'reply', id: 'missing-text', text: '' }]
-	] as const)('rejects an empty reply %s before oversized list conversion', async (_field, invalidButton) => {
+	] as const)('rejects an empty reply %s before legacy envelope conversion', async (_field, invalidButton) => {
 		const buttons = Array.from({ length: 11 }, (_, index) => ({
 			type: 'reply' as const,
 			id: `option-${index + 1}`,
@@ -119,8 +117,8 @@ describe('native button protobuf envelope', () => {
 		).rejects.toThrow(`Button ${_field} is required and cannot be empty`)
 	})
 
-	it('bounds oversized reply descriptions without splitting surrogate pairs', async () => {
-		const longText = `${'X'.repeat(71)}😀tail`
+	it('does not rewrite labels when replies use the legacy envelope', async () => {
+		const longText = `${'X'.repeat(32)}😀tail`
 		const content = await generateWAMessageContent(
 			{
 				text: 'Choose an option',
@@ -133,11 +131,10 @@ describe('native button protobuf envelope', () => {
 			options
 		)
 		const decoded = roundTrip(content)
-		const firstRow = decoded.listMessage?.sections?.[0]?.rows?.[0]
+		const firstButton = decoded.buttonsMessage?.buttons?.[0]
 
-		expect(firstRow?.title).toBe('X'.repeat(24))
-		expect(firstRow?.description).toBe('X'.repeat(71))
-		expect(firstRow?.description).toHaveLength(71)
+		expect(firstButton?.buttonId).toBe('option-1')
+		expect(firstButton?.buttonText?.displayText).toBe(longText)
 	})
 
 	it.each([
@@ -172,7 +169,7 @@ describe('native button protobuf envelope', () => {
 	})
 
 	it.each(['headerImage', 'headerVideo'] as const)(
-		'rejects %s when oversized replies require list conversion',
+		'rejects %s when oversized replies require the legacy envelope',
 		async field => {
 			await expect(
 				generateWAMessageContent(
@@ -187,16 +184,16 @@ describe('native button protobuf envelope', () => {
 					} as AnyMessageContent,
 					options
 				)
-			).rejects.toThrow('Header media is not supported when more than 10 reply buttons are converted to a list')
+			).rejects.toThrow('Header media is not supported when more than 10 reply buttons use the legacy envelope')
 		}
 	)
 
-	it('rejects reply-only sets above the 30-option list limit', async () => {
+	it('rejects reply-only sets above the 16-button compatibility limit', async () => {
 		await expect(
 			generateWAMessageContent(
 				{
 					text: 'Choose an option',
-					nativeButtons: Array.from({ length: 31 }, (_, index) => ({
+					nativeButtons: Array.from({ length: 17 }, (_, index) => ({
 						type: 'reply' as const,
 						id: `option-${index + 1}`,
 						text: `Option ${index + 1}`
@@ -204,7 +201,7 @@ describe('native button protobuf envelope', () => {
 				} as AnyMessageContent,
 				options
 			)
-		).rejects.toThrow('Maximum 30 total rows allowed, got 31')
+		).rejects.toThrow('Maximum 16 reply buttons allowed')
 	})
 
 	it('encodes CTA buttons as a direct interactiveMessage', async () => {

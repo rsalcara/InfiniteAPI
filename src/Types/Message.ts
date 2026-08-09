@@ -791,9 +791,10 @@ export type AnyRegularMessageContent = (
 			/**
 			 * Native Flow Buttons - Modern button message format
 			 * Sets of up to ten reply buttons use a direct interactiveMessage.
-			 * Reply-only sets with 11-30 options are converted to a single-select
-			 * list so current companion clients can render every option reliably.
-			 * CTA and mixed sets continue to use a direct interactiveMessage.
+			 * Reply-only sets with 11-16 options use the legacy reply envelope so
+			 * the message type and button identifiers remain unchanged.
+			 * CTA-only sets continue to use a direct interactiveMessage. Combining
+			 * reply and CTA buttons is not interoperable with current Web clients.
 			 *
 			 * @example
 			 * ```typescript
@@ -802,7 +803,7 @@ export type AnyRegularMessageContent = (
 			 *   nativeButtons: [
 			 *     { type: 'url', text: 'Visit Site', url: 'https://example.com' },
 			 *     { type: 'copy', text: 'Copy Code', copyText: 'ABC123' },
-			 *     { type: 'reply', text: 'Contact Us', id: 'btn_contact' }
+			 *     { type: 'call', text: 'Contact Us', phoneNumber: '+5511999999999' }
 			 *   ],
 			 *   footer: 'Powered by InfiniteAPI'
 			 * })
