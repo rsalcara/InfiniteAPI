@@ -104,6 +104,10 @@ export interface RecentMessage {
 	to: string
 	message: proto.IMessage
 	timestamp: number
+	/** JID originally supplied by the consumer for delivery-state correlation. */
+	requestedJid?: string
+	/** Public canonical conversation identity resolved before transmission. */
+	canonicalJid?: string
 	/**
 	 * Transport metadata carried by the encrypted child rather than IMessage.
 	 * It must survive an immediate retry so a live-location resend retains the
@@ -138,8 +142,12 @@ export interface RetryPayloadTransmissionOptions<T> {
 	message: proto.IMessage
 	isDirectRetry: boolean
 	liveLocationDuration?: number
+	requestedJid?: string
+	canonicalJid?: string
 	transmit: () => Promise<T>
 }
+
+export type RecentMessageMetadata = Pick<RecentMessage, 'liveLocationDuration' | 'requestedJid' | 'canonicalJid'>
 
 /**
  * Minimal structural mirror for the `message_base_key` typed table. Satisfied
@@ -287,12 +295,7 @@ export class MessageRetryManager {
 	/**
 	 * Add a recent message to the cache for retry handling
 	 */
-	addRecentMessage(
-		to: string,
-		id: string,
-		message: proto.IMessage,
-		metadata?: { liveLocationDuration?: number }
-	): void {
+	addRecentMessage(to: string, id: string, message: proto.IMessage, metadata?: RecentMessageMetadata): void {
 		if (!message) {
 			this.logger.debug(`Skipped retry-cache entry without payload: ${to}/${id}`)
 			return
@@ -306,7 +309,9 @@ export class MessageRetryManager {
 			to,
 			message,
 			timestamp: Date.now(),
-			liveLocationDuration: metadata?.liveLocationDuration
+			liveLocationDuration: metadata?.liveLocationDuration,
+			requestedJid: metadata?.requestedJid,
+			canonicalJid: metadata?.canonicalJid
 		})
 		const indexEntry = this.messageKeyIndex.get(id) || { keys: new Set<string>(), fallbackAmbiguous: false }
 		if ([...indexEntry.keys].some(indexedKey => indexedKey !== keyStr)) {
@@ -324,12 +329,7 @@ export class MessageRetryManager {
 	 * are not already retained. Returns true when this call created the entry,
 	 * allowing its caller to roll back only its own failed transmission attempt.
 	 */
-	stageRecentMessage(
-		to: string,
-		id: string,
-		message: proto.IMessage,
-		metadata?: { liveLocationDuration?: number }
-	): boolean {
+	stageRecentMessage(to: string, id: string, message: proto.IMessage, metadata?: RecentMessageMetadata): boolean {
 		if (!message) return false
 		if (this.recentMessagesMap.has(this.keyToString({ to, id }))) return false
 
@@ -669,10 +669,14 @@ export const transmitWithRetryPayload = async <T>({
 	message,
 	isDirectRetry,
 	liveLocationDuration,
+	requestedJid,
+	canonicalJid,
 	transmit
 }: RetryPayloadTransmissionOptions<T>): Promise<T> => {
 	const staged = Boolean(
-		manager && !isDirectRetry && manager.stageRecentMessage(to, id, message, { liveLocationDuration })
+		manager &&
+		!isDirectRetry &&
+		manager.stageRecentMessage(to, id, message, { liveLocationDuration, requestedJid, canonicalJid })
 	)
 
 	try {

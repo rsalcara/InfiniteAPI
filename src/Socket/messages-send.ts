@@ -769,7 +769,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					const merges = buildDirectRecipientChatMerges(identity)
 					if (merges.length > 0) ev.emit('chats.update', merges)
 				},
-				onResolvedUsername: resolution =>
+				onResolvedUsername: resolution => {
 					ev.emit('contacts.upsert', [
 						{
 							id: resolution.lidJid!,
@@ -777,7 +777,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							phoneNumber: resolution.pnJid,
 							username: resolution.username
 						}
-					]),
+					])
+				},
 				getDevices: lid => getUSyncDevices([lid], false, false),
 				logger
 			})
@@ -2553,6 +2554,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				message,
 				isDirectRetry: Boolean(participant),
 				liveLocationDuration,
+				requestedJid,
+				canonicalJid: publicCanonicalJid,
 				transmit: () => sendNode(stanza)
 			})
 			if (!isRetryResend) {

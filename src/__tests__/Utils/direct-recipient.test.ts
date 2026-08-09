@@ -54,6 +54,16 @@ describe('PN → LID/username recipient resolution', () => {
 		])
 	})
 
+	it('rejects a canonical PN whose user component is empty', () => {
+		expect(
+			buildDirectRecipientChatMerges({
+				requestedPn: '5543991910391@s.whatsapp.net',
+				pnJid: '@s.whatsapp.net',
+				lidJid: '127496221651050@lid'
+			})
+		).toEqual([])
+	})
+
 	it('uses the resolved LID on the wire while preserving PN when no mapping exists', () => {
 		expect(resolveDirectRecipientWireJid('5511999999999@c.us', '123456@lid')).toBe('123456@lid')
 		expect(resolveDirectRecipientWireJid('5511999999999@c.us')).toBe('5511999999999@s.whatsapp.net')
@@ -258,6 +268,23 @@ describe('cold-recipient preflight orchestration', () => {
 		expect(logger.warn).toHaveBeenCalledWith(
 			expect.objectContaining({ requestedJid: pn, errors: 1 }),
 			'cold-recipient mapping was not durable; merge notification suppressed'
+		)
+	})
+
+	it('contains an asynchronous username notification rejection', async () => {
+		const logger = { warn: jest.fn(), info: jest.fn() }
+		const onResolvedUsername = jest.fn(async () => {
+			throw new Error('async contact listener failed')
+		})
+
+		await expect(runDirectRecipientPreflight(options({ onResolvedUsername, logger }))).resolves.toMatchObject({
+			pnJid: pn,
+			lidJid: lid,
+			freshTargetDevices: [device]
+		})
+		expect(logger.warn).toHaveBeenCalledWith(
+			expect.objectContaining({ requestedJid: pn }),
+			'cold-recipient contact notification failed; send continues'
 		)
 	})
 

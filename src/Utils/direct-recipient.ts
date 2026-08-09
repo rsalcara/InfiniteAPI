@@ -37,7 +37,7 @@ export type DirectRecipientPreflightOptions<TDevice> = {
 	storeMapping: (mapping: { lid: string; pn: string }) => Promise<unknown>
 	/** Called after the canonical PN/LID mapping is durably stored. */
 	onResolvedIdentity?: (identity: DirectRecipientIdentity) => void | Promise<void>
-	onResolvedUsername?: (resolution: DirectRecipientResolution) => void
+	onResolvedUsername?: (resolution: DirectRecipientResolution) => void | Promise<void>
 	getDevices: (lid: string) => Promise<TDevice[]>
 	logger: Pick<ILogger, 'warn' | 'info'>
 }
@@ -54,7 +54,14 @@ export const buildDirectRecipientChatMerges = (
 ): ChatUpdate[] => {
 	const canonical = jidNormalizedUser(pnJid)
 	const normalizedLid = jidNormalizedUser(lidJid)
-	if (!isAnyPnUser(canonical) || !isAnyLidUser(normalizedLid) || !jidDecode(normalizedLid)?.user) return []
+	if (
+		!isAnyPnUser(canonical) ||
+		!jidDecode(canonical)?.user ||
+		!isAnyLidUser(normalizedLid) ||
+		!jidDecode(normalizedLid)?.user
+	) {
+		return []
+	}
 
 	const previousIds = [...new Set([jidNormalizedUser(lidJid), jidNormalizedUser(requestedPn)])].filter(
 		previousId => previousId && previousId !== canonical
@@ -286,7 +293,7 @@ export const runDirectRecipientPreflight = async <TDevice>({
 
 	if (resolution.username) {
 		try {
-			onResolvedUsername?.(resolution)
+			await onResolvedUsername?.(resolution)
 		} catch (error) {
 			logger.warn({ error, requestedJid: requestedPn }, 'cold-recipient contact notification failed; send continues')
 		}

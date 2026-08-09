@@ -3623,11 +3623,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					) {
 						if (status === proto.WebMessageInfo.Status.DELIVERY_ACK && key.fromMe && !isNodeFromMe) {
 							for (const id of ids) {
+								const cachedDelivery = await getRecentRetryMessage(wireJid, id)
 								emitMessageDeliveryState(ev, {
 									key: { ...key, id },
 									state: 'delivered',
-									canonicalJid: key.remoteJid ?? undefined,
-									wireJid,
+									requestedJid: cachedDelivery?.requestedJid,
+									canonicalJid: cachedDelivery?.canonicalJid ?? key.remoteJid ?? undefined,
+									wireJid: cachedDelivery?.to ?? wireJid,
 									...(Number.isFinite(+(attrs.t ?? 0)) && +(attrs.t ?? 0) > 0
 										? { serverTimestamp: +(attrs.t ?? 0) * 1000 }
 										: {})
@@ -4606,8 +4608,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				emitMessageDeliveryState(ev, {
 					key,
 					state: 'server_ack',
-					canonicalJid: key.remoteJid ?? undefined,
-					wireJid,
+					requestedJid: recentMessage?.requestedJid,
+					canonicalJid: recentMessage?.canonicalJid ?? key.remoteJid ?? undefined,
+					wireJid: recentMessage?.to ?? wireJid,
 					serverCode: attrs.class || 'message'
 				})
 			}
@@ -4726,8 +4729,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			emitMessageDeliveryState(ev, {
 				key,
 				state: 'failed',
-				canonicalJid: key.remoteJid ?? undefined,
-				wireJid,
+				requestedJid: recentMessage?.requestedJid,
+				canonicalJid: recentMessage?.canonicalJid ?? key.remoteJid ?? undefined,
+				wireJid: recentMessage?.to ?? wireJid,
 				serverCode: attrs.error,
 				category: errorPolicy.kind,
 				reason: attrs.reason || 'reason unavailable',

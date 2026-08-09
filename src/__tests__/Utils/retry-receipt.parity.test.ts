@@ -314,6 +314,20 @@ describe('retry receipt routing parity', () => {
 		expect(cached?.message).toBe(liveLocation)
 		expect(cached?.liveLocationDuration).toBe(1800)
 	})
+
+	it('keeps requested and canonical identities for later delivery states', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const message = { conversation: 'cold recipient' } as proto.IMessage
+		manager.addRecentMessage('127496221651050@lid', 'COLD-DELIVERY-1', message, {
+			requestedJid: '5543991910391@s.whatsapp.net',
+			canonicalJid: '554391910391@s.whatsapp.net'
+		})
+
+		expect(manager.getRecentMessage('127496221651050@lid', 'COLD-DELIVERY-1')).toMatchObject({
+			requestedJid: '5543991910391@s.whatsapp.net',
+			canonicalJid: '554391910391@s.whatsapp.net'
+		})
+	})
 })
 
 describe('retry attempt accounting', () => {

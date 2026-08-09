@@ -2,8 +2,9 @@
 import { jest } from '@jest/globals'
 import { EventEmitter } from 'events'
 import { proto } from '../../../WAProto/index.js'
-import type { SignalKeyStore, SocketConfig } from '../../Types'
+import type { SignalKeyStore, SocketConfig, WAMessage } from '../../Types'
 import { unpadRandomMax16 } from '../../Utils/generics'
+import { normalizeMessageJids } from '../../Utils/process-message'
 import { jidDecode } from '../../WABinary'
 
 type CapturedEncryption = { jid: string; data: Uint8Array }
@@ -288,8 +289,16 @@ describe('messages-send stanza assembly', () => {
 		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
 		try {
 			const sent = await socket.sendMessage(coldRequestedPn, { text: 'cold identity' })
+			const inboundReply = {
+				key: { remoteJid: coldLid, fromMe: false, id: 'COLD-REPLY-1' },
+				message: { conversation: 'reply' }
+			} as WAMessage
+			await normalizeMessageJids(inboundReply, {
+				lidMapping: { getPNForLID: async () => coldCanonicalPn }
+			} as any)
 
 			expect(sent!.key.remoteJid).toBe(coldCanonicalPn)
+			expect(inboundReply.key.remoteJid).toBe(sent!.key.remoteJid)
 			expect(sent!.key.remoteJidAlt).toBe(coldLid)
 			expect(fake.sent.at(-1).attrs.to).toBe(coldLid)
 			expect(deliveryStates.at(-1)).toMatchObject({
