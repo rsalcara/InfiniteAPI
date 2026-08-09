@@ -25,4 +25,22 @@ describe('message delivery state contract', () => {
 			{ key, state: 'delivered', timestamp: 20_000, serverTimestamp: 19_000 }
 		)
 	})
+
+	it('serializes the public chat identity and wire route separately', () => {
+		const update = buildMessageDeliveryState({
+			key: { remoteJid: '554391910391@s.whatsapp.net', fromMe: true, id: 'cold-1' },
+			state: 'accepted',
+			requestedJid: '5543991910391@s.whatsapp.net',
+			canonicalJid: '554391910391@s.whatsapp.net',
+			wireJid: '127496221651050@lid',
+			observedAt: 20_000
+		})
+
+		expect(JSON.parse(JSON.stringify(update))).toMatchObject({
+			key: { remoteJid: '554391910391@s.whatsapp.net' },
+			requestedJid: '5543991910391@s.whatsapp.net',
+			canonicalJid: '554391910391@s.whatsapp.net',
+			wireJid: '127496221651050@lid'
+		})
+	})
 })

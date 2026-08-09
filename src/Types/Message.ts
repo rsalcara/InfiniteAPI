@@ -974,6 +974,12 @@ type MinimalRelayOptions = {
 }
 
 export type MessageRelayOptions = MinimalRelayOptions & {
+	/** Notifies the caller of the public canonical identity used for this direct send. */
+	onResolvedRecipient?: (identity: {
+		requestedJid: string
+		canonicalJid: string
+		wireJid: string
+	}) => void | Promise<void>
 	/** only send to a specific participant; used when a message decryption fails for a single user */
 	participant?: { jid: string; count: number }
 	/** additional attributes to add to the WA binary node */

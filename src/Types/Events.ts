@@ -27,8 +27,10 @@ export type MessageDeliveryStateUpdate = {
 	serverTimestamp?: number
 	/** JID supplied by the consumer, when it differs from the wire identity. */
 	requestedJid?: string
-	/** Canonical PN/LID used for routing or policy evaluation. */
+	/** Public canonical PN used as the consumer-facing conversation identity. */
 	canonicalJid?: string
+	/** JID used on the WhatsApp wire (usually a private LID for direct sends). */
+	wireJid?: string
 	serverCode?: string
 	category?: string
 	reason?: string

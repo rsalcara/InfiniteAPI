@@ -3582,6 +3582,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			fromMe,
 			participant: attrs.participant
 		}
+		const wireJid = remoteJid
 
 		// Normalize LID→PN in the receipt key when the mapping is known. If
 		// WhatsApp has not supplied the mapping yet, retain a bare LID rather
@@ -3622,9 +3623,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					) {
 						if (status === proto.WebMessageInfo.Status.DELIVERY_ACK && key.fromMe && !isNodeFromMe) {
 							for (const id of ids) {
+								const cachedDelivery = await getRecentRetryMessage(wireJid, id)
 								emitMessageDeliveryState(ev, {
 									key: { ...key, id },
 									state: 'delivered',
+									requestedJid: cachedDelivery?.requestedJid,
+									canonicalJid: cachedDelivery?.canonicalJid ?? key.remoteJid ?? undefined,
+									wireJid: cachedDelivery?.to ?? wireJid,
 									...(Number.isFinite(+(attrs.t ?? 0)) && +(attrs.t ?? 0) > 0
 										? { serverTimestamp: +(attrs.t ?? 0) * 1000 }
 										: {})
@@ -4596,12 +4601,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const recentMessage = attrs.id ? await getRecentRetryMessage(attrs.from ?? '', attrs.id) : undefined
 		const outboundJid = jidNormalizedUser(recentMessage?.to ?? attrs.from ?? '')
 		const key: WAMessageKey = { remoteJid: outboundJid, fromMe: true, id: attrs.id }
+		const wireJid = outboundJid
 		await normalizeKeyLidToPn(key, signalRepository.lidMapping, logger)
 		if (!attrs.error) {
 			if (attrs.id) {
 				emitMessageDeliveryState(ev, {
 					key,
 					state: 'server_ack',
+					requestedJid: recentMessage?.requestedJid,
+					canonicalJid: recentMessage?.canonicalJid ?? key.remoteJid ?? undefined,
+					wireJid: recentMessage?.to ?? wireJid,
 					serverCode: attrs.class || 'message'
 				})
 			}
@@ -4720,6 +4729,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			emitMessageDeliveryState(ev, {
 				key,
 				state: 'failed',
+				requestedJid: recentMessage?.requestedJid,
+				canonicalJid: recentMessage?.canonicalJid ?? key.remoteJid ?? undefined,
+				wireJid: recentMessage?.to ?? wireJid,
 				serverCode: attrs.error,
 				category: errorPolicy.kind,
 				reason: attrs.reason || 'reason unavailable',
