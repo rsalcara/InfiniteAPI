@@ -1318,9 +1318,9 @@ export const generateWAMessageContent = async (
 					? proto.Message.ButtonsMessage.HeaderType.TEXT
 					: proto.Message.ButtonsMessage.HeaderType.EMPTY,
 				...(hasHeaderTitle ? { text: nativeMsg.headerTitle } : {}),
-				buttons: buttons.map((btn: any, idx: number) => ({
-					buttonId: btn.id || `btn_${idx}`,
-					buttonText: { displayText: btn.text || `Button ${idx + 1}` },
+				buttons: buttons.map((btn: any) => ({
+					buttonId: btn.id,
+					buttonText: { displayText: btn.text },
 					type: proto.Message.ButtonsMessage.Button.Type.RESPONSE
 				}))
 			}
