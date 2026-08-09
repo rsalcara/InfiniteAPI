@@ -224,6 +224,43 @@ describe('cold-recipient preflight orchestration', () => {
 		expect(calls).toEqual(['mapping', 'identity', 'devices'])
 	})
 
+	it('continues device resolution when a chat merge listener throws', async () => {
+		const logger = { warn: jest.fn(), info: jest.fn() }
+		const onResolvedIdentity = jest.fn(() => {
+			throw new Error('consumer listener failed')
+		})
+
+		await expect(runDirectRecipientPreflight(options({ onResolvedIdentity, logger }))).resolves.toMatchObject({
+			pnJid: pn,
+			lidJid: lid,
+			freshTargetDevices: [device]
+		})
+		expect(logger.warn).toHaveBeenCalledWith(
+			expect.objectContaining({ requestedJid: pn }),
+			'cold-recipient chat merge notification failed; send continues'
+		)
+	})
+
+	it('suppresses merge notification when mapping persistence reports an error', async () => {
+		const logger = { warn: jest.fn(), info: jest.fn() }
+		const onResolvedIdentity = jest.fn(() => undefined)
+
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					storeMapping: async () => ({ stored: 0, skipped: 0, errors: 1 }),
+					onResolvedIdentity,
+					logger
+				})
+			)
+		).resolves.toMatchObject({ pnJid: pn, lidJid: lid, freshTargetDevices: [device] })
+		expect(onResolvedIdentity).not.toHaveBeenCalled()
+		expect(logger.warn).toHaveBeenCalledWith(
+			expect.objectContaining({ requestedJid: pn, errors: 1 }),
+			'cold-recipient mapping was not durable; merge notification suppressed'
+		)
+	})
+
 	it('does not trust a malformed known mapping and re-runs cold resolution', async () => {
 		const resolveUSync = jest.fn(async () => [{ id: pn, jid: pn, newJid: lid, contactType: 'in' as const }])
 		await expect(

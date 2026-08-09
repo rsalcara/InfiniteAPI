@@ -262,13 +262,35 @@ export const runDirectRecipientPreflight = async <TDevice>({
 		})
 	}
 
-	await storeMapping({ lid: resolution.lidJid, pn: resolution.pnJid })
-	await onResolvedIdentity?.({
-		requestedPn,
-		pnJid: resolution.pnJid,
-		lidJid: resolution.lidJid
-	})
-	if (resolution.username) onResolvedUsername?.(resolution)
+	const storeResult = await storeMapping({ lid: resolution.lidJid, pn: resolution.pnJid })
+	const mappingErrors =
+		typeof storeResult === 'object' && storeResult !== null && 'errors' in storeResult
+			? Number((storeResult as { errors?: unknown }).errors) || 0
+			: 0
+	if (mappingErrors === 0) {
+		try {
+			await onResolvedIdentity?.({
+				requestedPn,
+				pnJid: resolution.pnJid,
+				lidJid: resolution.lidJid
+			})
+		} catch (error) {
+			logger.warn({ error, requestedJid: requestedPn }, 'cold-recipient chat merge notification failed; send continues')
+		}
+	} else {
+		logger.warn(
+			{ requestedJid: requestedPn, lidJid: resolution.lidJid, pnJid: resolution.pnJid, errors: mappingErrors },
+			'cold-recipient mapping was not durable; merge notification suppressed'
+		)
+	}
+
+	if (resolution.username) {
+		try {
+			onResolvedUsername?.(resolution)
+		} catch (error) {
+			logger.warn({ error, requestedJid: requestedPn }, 'cold-recipient contact notification failed; send continues')
+		}
+	}
 
 	const freshTargetDevices = await getDevices(resolution.lidJid)
 	if (freshTargetDevices.length === 0) {

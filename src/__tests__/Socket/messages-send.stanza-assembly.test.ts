@@ -295,7 +295,8 @@ describe('messages-send stanza assembly', () => {
 			expect(deliveryStates.at(-1)).toMatchObject({
 				requestedJid: coldRequestedPn,
 				canonicalJid: coldCanonicalPn,
-				key: { remoteJid: coldRequestedPn }
+				wireJid: coldLid,
+				key: { remoteJid: coldCanonicalPn, remoteJidAlt: coldLid }
 			})
 			expect(chatUpdates).toEqual(
 				expect.arrayContaining([
@@ -303,6 +304,29 @@ describe('messages-send stanza assembly', () => {
 					expect.objectContaining({ id: coldCanonicalPn, previousId: coldRequestedPn, merged: true })
 				])
 			)
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('continues a cold-recipient relay when the identity callback throws', async () => {
+		const fake = makeFakeSocket({ coldRecipient: true })
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			await expect(
+				socket.relayMessage(
+					coldRequestedPn,
+					{ conversation: 'callback isolation' },
+					{
+						messageId: 'COLD-CALLBACK-1',
+						onResolvedRecipient: () => {
+							throw new Error('consumer callback failed')
+						}
+					}
+				)
+			).resolves.toBe('COLD-CALLBACK-1')
+			expect(fake.sent.at(-1).attrs).toMatchObject({ id: 'COLD-CALLBACK-1', to: coldLid })
 		} finally {
 			await socket.end(new Error('test completed'))
 		}

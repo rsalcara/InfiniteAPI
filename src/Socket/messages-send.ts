@@ -1529,7 +1529,24 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				: requestedJid
 
 		if (onResolvedRecipient) {
-			await onResolvedRecipient({ requestedJid, canonicalJid: publicCanonicalJid, wireJid: destinationJid })
+			let timeout: NodeJS.Timeout | undefined
+			try {
+				await Promise.race([
+					Promise.resolve(
+						onResolvedRecipient({ requestedJid, canonicalJid: publicCanonicalJid, wireJid: destinationJid })
+					),
+					new Promise<never>((_, reject) => {
+						timeout = setTimeout(() => reject(new Error('recipient identity callback timed out')), 5_000)
+					})
+				])
+			} catch (error) {
+				logger.warn(
+					{ error, requestedJid, canonicalJid: publicCanonicalJid },
+					'recipient identity callback failed; send continues'
+				)
+			} finally {
+				if (timeout) clearTimeout(timeout)
+			}
 		}
 
 		const binaryNodeContent: BinaryNode[] = []
@@ -2540,10 +2557,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			})
 			if (!isRetryResend) {
 				emitMessageDeliveryState(ev, {
-					key: { remoteJid: requestedJid, fromMe: true, id: msgId },
+					key: {
+						remoteJid: publicCanonicalJid,
+						remoteJidAlt: isAnyLidUser(destinationJid) ? destinationJid : undefined,
+						fromMe: true,
+						id: msgId
+					},
 					state: 'accepted',
 					requestedJid,
-					canonicalJid: publicCanonicalJid
+					canonicalJid: publicCanonicalJid,
+					wireJid: destinationJid
 				})
 			}
 
