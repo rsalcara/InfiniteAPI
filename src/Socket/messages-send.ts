@@ -2172,14 +2172,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					const hasQuickReply = allButtonNames.some((name: string) => name === 'quick_reply')
 					const isCTAOnly = hasCTA && !hasQuickReply
 
-					// Legacy reply buttons must stay out of the Native Flow routing path.
-					// Current Web/Desktop otherwise rejects large sets as phone_only_feature.
-					if (buttonType === 'buttons') {
-						logger.info(
-							{ msgId, to: destinationJid },
-							'[BIZ NODE] Skipped for legacy reply buttons Web/Desktop compatibility'
-						)
-					} else if (buttonType === 'list') {
+					if (buttonType === 'list') {
 						deferredNodes.push({
 							tag: 'biz',
 							attrs: {},
@@ -2195,6 +2188,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						})
 						logger.info({ msgId, to: destinationJid }, '[BIZ NODE] Injected biz > list (product_list, v=2)')
 					} else {
+						// Legacy buttonsMessage uses the same outer business routing
+						// contributor as the proven #710 wire shape. The message payload
+						// remains legacy; only the stanza advertises the interactive route.
 						const SPECIAL_FLOW_NAMES: Record<string, string> = {
 							review_and_pay: 'payment_info',
 							payment_info: 'payment_info',

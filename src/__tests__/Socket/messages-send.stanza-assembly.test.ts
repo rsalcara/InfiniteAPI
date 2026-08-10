@@ -272,7 +272,9 @@ describe('messages-send stanza assembly', () => {
 	it('keeps a remote legacy reply-button envelope and fanout on PN', async () => {
 		const fake = makeFakeSocket()
 		activeFakeSocket = fake.sock
-		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		const config = makeConfig(fake.sock.authState)
+		config.enableInteractiveMessages = true
+		const socket = makeMessagesSocket(config as any)
 		try {
 			await socket.relayMessage(remotePn, legacyReplyMessage(), { messageId: 'REMOTE-BUTTONS-PN-1' })
 
@@ -281,6 +283,18 @@ describe('messages-send stanza assembly', () => {
 			const participants = stanza.content.find((node: any) => node.tag === 'participants')?.content || []
 			expect(participants.length).toBeGreaterThan(0)
 			expect(participants.every((node: any) => jidDecode(node.attrs.jid)?.server === 's.whatsapp.net')).toBe(true)
+			const biz = stanza.content.find((node: any) => node.tag === 'biz')
+			expect(biz?.content?.[0]).toMatchObject({
+				tag: 'interactive',
+				attrs: { type: 'native_flow', v: '1' },
+				content: [
+					{
+						tag: 'native_flow',
+						attrs: { name: 'mixed', v: '9' }
+					}
+				]
+			})
+			expect(stanza.content.some((node: any) => node.tag === 'bot')).toBe(true)
 			const ownEncryption = fake.encryptions.find(item => item.jid.startsWith('5511000000001'))
 			expect(ownEncryption).toBeDefined()
 			const dsm = proto.Message.decode(unpadRandomMax16(ownEncryption!.data))
