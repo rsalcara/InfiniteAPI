@@ -661,18 +661,24 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	const buildTcTokenUsers = (jids: string[]) =>
-		mapParticipantFanout(jids, async jid => {
-			const user = new USyncUser().withId(jid)
-			const privacyToken = await resolveUsableTcTokenForJid({
-				authState,
-				jid,
-				getLIDForPN,
-				getPNForLID,
-				bucketPolicy: tcTokenBucketPolicy
-			})
-			if (privacyToken.buffer) user.withPrivacyToken(privacyToken.buffer, privacyToken.timestamp)
-			return user
-		})
+		mapParticipantFanout(
+			jids,
+			async jid => {
+				const user = new USyncUser().withId(jid)
+				const privacyToken = await resolveUsableTcTokenForJid({
+					authState,
+					jid,
+					getLIDForPN,
+					getPNForLID,
+					bucketPolicy: tcTokenBucketPolicy
+				})
+				if (privacyToken.buffer) user.withPrivacyToken(privacyToken.buffer, privacyToken.timestamp)
+				return user
+			},
+			// These public queries historically accepted the complete variadic input.
+			// Bound concurrency without imposing the message-fanout safety ceiling.
+			{ max: jids.length }
+		)
 
 	const fetchStatus = async (...jids: string[]) => {
 		const usyncQuery = new USyncQuery().withStatusProtocol()
