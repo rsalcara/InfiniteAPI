@@ -229,6 +229,20 @@ jest.unstable_mockModule('../../Socket/newsletter.js', () => ({
 const { makeMessagesSocket } = await import('../../Socket/messages-send.js')
 
 describe('messages-send stanza assembly', () => {
+	const legacyReplyMessage = () =>
+		proto.Message.fromObject({
+			buttonsMessage: {
+				contentText: 'Choose an option',
+				footerText: 'Support',
+				headerType: proto.Message.ButtonsMessage.HeaderType.EMPTY,
+				buttons: Array.from({ length: 16 }, (_, index) => ({
+					buttonId: `option-${index + 1}`,
+					buttonText: { displayText: `Option ${index + 1}` },
+					type: proto.Message.ButtonsMessage.Button.Type.RESPONSE
+				}))
+			}
+		})
+
 	it('keeps remote envelope, participant fanout and DSM destination in the same LID route', async () => {
 		const fake = makeFakeSocket()
 		activeFakeSocket = fake.sock
@@ -250,6 +264,62 @@ describe('messages-send stanza assembly', () => {
 			expect(ownEncryption).toBeDefined()
 			const dsm = proto.Message.decode(unpadRandomMax16(ownEncryption!.data))
 			expect(dsm.deviceSentMessage?.destinationJid).toBe(remoteLid)
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('keeps a remote legacy reply-button envelope and fanout on PN', async () => {
+		const fake = makeFakeSocket()
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			await socket.relayMessage(remotePn, legacyReplyMessage(), { messageId: 'REMOTE-BUTTONS-PN-1' })
+
+			const stanza = fake.sent.at(-1)
+			expect(stanza.attrs.to).toBe(remotePn)
+			const participants = stanza.content.find((node: any) => node.tag === 'participants')?.content || []
+			expect(participants.length).toBeGreaterThan(0)
+			expect(participants.every((node: any) => jidDecode(node.attrs.jid)?.server === 's.whatsapp.net')).toBe(true)
+			const ownEncryption = fake.encryptions.find(item => item.jid.startsWith('5511000000001'))
+			expect(ownEncryption).toBeDefined()
+			const dsm = proto.Message.decode(unpadRandomMax16(ownEncryption!.data))
+			expect(dsm.deviceSentMessage?.destinationJid).toBe(remotePn)
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('uses the canonical PN for cold-recipient legacy reply buttons', async () => {
+		const fake = makeFakeSocket({ coldRecipient: true })
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			await socket.relayMessage(coldRequestedPn, legacyReplyMessage(), { messageId: 'COLD-BUTTONS-PN-1' })
+
+			const stanza = fake.sent.at(-1)
+			expect(stanza.attrs.to).toBe(coldCanonicalPn)
+			expect(stanza.attrs.to).not.toBe(coldRequestedPn)
+			const participants = stanza.content.find((node: any) => node.tag === 'participants')?.content || []
+			expect(participants.length).toBeGreaterThan(0)
+			expect(participants.every((node: any) => jidDecode(node.attrs.jid)?.server === 's.whatsapp.net')).toBe(true)
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('keeps legacy reply-button self-send on the canonical own LID', async () => {
+		const fake = makeFakeSocket()
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			await socket.relayMessage(ownPn, legacyReplyMessage(), { messageId: 'SELF-BUTTONS-LID-1' })
+
+			const stanza = fake.sent.at(-1)
+			expect(stanza.attrs.to).toBe(ownLid)
+			const participants = stanza.content.find((node: any) => node.tag === 'participants')?.content || []
+			expect(participants.length).toBeGreaterThan(0)
+			expect(participants.every((node: any) => jidDecode(node.attrs.jid)?.server === 'lid')).toBe(true)
 		} finally {
 			await socket.end(new Error('test completed'))
 		}
