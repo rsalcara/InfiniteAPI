@@ -464,6 +464,10 @@ const validateNonEmptyString = (value: string | undefined, fieldName: string): v
  * Validates the fields required by each native button type.
  */
 const validateNativeButton = (button: NativeButton): void => {
+	if (!button || typeof button !== 'object') {
+		throw new Boom('Invalid native button', { statusCode: 400 })
+	}
+
 	validateNonEmptyString(button.text, 'text')
 
 	switch (button.type) {
@@ -1304,15 +1308,21 @@ export const generateWAMessageContent = async (
 	// Check for nativeButtons first - this is the recommended modern approach
 	if (hasNonNullishProperty(message, 'nativeButtons')) {
 		const nativeMsg = message as any
-		const buttons = nativeMsg.nativeButtons as any[]
+		const nativeButtons = nativeMsg.nativeButtons
+		if (!Array.isArray(nativeButtons)) {
+			throw new Boom('nativeButtons must be an array', { statusCode: 400 })
+		}
 
-		if (!buttons || buttons.length === 0) {
+		if (nativeButtons.length === 0) {
 			throw new Boom('nativeButtons requires at least one button', { statusCode: 400 })
 		}
 
+		for (const button of nativeButtons) validateNativeButton(button)
+		const buttons = nativeButtons as NativeButton[]
+
 		// Standard reply sets use the legacy envelope validated across mobile and
 		// companion clients. Sets beyond that envelope's limit become a list.
-		const allQuickReply = buttons.every((btn: any) => btn.type === 'reply')
+		const allQuickReply = buttons.every(btn => btn.type === 'reply')
 
 		if (allQuickReply) {
 			const hasHeaderMedia = Boolean(nativeMsg.headerImage || nativeMsg.headerVideo)
@@ -1326,8 +1336,6 @@ export const generateWAMessageContent = async (
 					statusCode: 400
 				})
 			}
-
-			for (const button of buttons) validateNativeButton(button)
 
 			if (buttons.length > MAX_LEGACY_QUICK_REPLY_BUTTONS) {
 				const sections = Array.from(
