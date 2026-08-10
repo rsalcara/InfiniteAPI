@@ -1020,16 +1020,19 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		message: proto.IMessage,
 		extraAttrs?: BinaryNode['attrs'],
 		dsmMessage?: proto.IMessage,
-		useLegacyLock?: boolean
+		useLegacyLock?: boolean,
+		preserveRecipientJids = false
 	) => {
 		if (!recipientJids.length) {
 			return { nodes: [] as BinaryNode[], shouldIncludeDeviceIdentity: false, recipientCount: 0 }
 		}
 
-		const canonicalRecipients = dedupeParticipantFanout(
-			await mapParticipantFanout(recipientJids, jid => canonicalizeParticipantFanoutRecipient(jid, getLIDForPN)),
-			jid => jid
-		)
+		const canonicalRecipients = preserveRecipientJids
+			? dedupeParticipantFanout(recipientJids, jid => jid)
+			: dedupeParticipantFanout(
+					await mapParticipantFanout(recipientJids, jid => canonicalizeParticipantFanoutRecipient(jid, getLIDForPN)),
+					jid => jid
+				)
 
 		const patched = await patchMessageBeforeSending(message, canonicalRecipients)
 		const patchedMessages = Array.isArray(patched)
@@ -1450,6 +1453,29 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				? resolveSelfSendLid(jid, meId, meLid, directRecipient?.lidJid || mappedSelfLid)
 				: null
 
+		// WhatsApp's legacy buttonsMessage is a PN-envelope protocol. The
+		// recipient preflight normally canonicalizes direct sends to a private
+		// LID, which is correct for text/media/native-flow messages, but the
+		// legacy reply-button pipeline silently drops when its outer envelope is
+		// changed to LID. Keep this narrow exception external-only and use the
+		// canonical PN recovered from the LID map so stale requested numbers do
+		// not create a second conversation.
+		const isLegacyReplyButtons = Boolean(
+			message.buttonsMessage &&
+			!message.buttonsMessage.imageMessage &&
+			!message.buttonsMessage.videoMessage &&
+			!message.buttonsMessage.documentMessage
+		)
+		const mappedCanonicalPn =
+			isLegacyReplyButtons && directRecipient?.lidJid && !selfSendLid
+				? await getPNForLID(directRecipient.lidJid)
+				: undefined
+		const legacyButtonsPnCandidate = jidNormalizedUser(mappedCanonicalPn || directRecipient?.pnJid || requestedJid)
+		const legacyButtonsWireJid =
+			isLegacyReplyButtons && !selfSendLid && isAnyPnUser(legacyButtonsPnCandidate)
+				? legacyButtonsPnCandidate
+				: undefined
+
 		msgId = msgId || generateMessageIDV2(meId)
 		useUserDevicesCache = useUserDevicesCache !== false
 		useCachedGroupMetadata = useCachedGroupMetadata !== false && !isStatus
@@ -1520,13 +1546,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const participants: BinaryNode[] = []
 		const destinationJid =
 			!isStatus && !isPeerMessage
-				? resolveDirectRecipientWireJid(finalJid, directRecipient?.lidJid)
+				? legacyButtonsWireJid || resolveDirectRecipientWireJid(finalJid, directRecipient?.lidJid)
 				: isStatus
 					? statusJid
 					: finalJid
 		const publicCanonicalJid =
 			!isStatus && !isGroupOrStatus && !isNewsletter && !isPeerMessage
-				? directRecipient?.pnJid || requestedJid
+				? mappedCanonicalPn || directRecipient?.pnJid || requestedJid
 				: requestedJid
 
 		if (onResolvedRecipient) {
@@ -1852,10 +1878,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						// Enumerate the target by canonical LID. A newly discovered recipient
 						// already has a forced-refresh result from the second USync, so only
 						// our own devices need another lookup here.
-						const targetLookupJid = directRecipient?.lidJid || jid
-						const sessionDevices = directRecipient?.freshTargetDevices
-							? [...(await getUSyncDevices([senderIdentity], true, false)), ...directRecipient.freshTargetDevices]
-							: await getUSyncDevices([senderIdentity, targetLookupJid], true, false)
+						const targetLookupJid = legacyButtonsWireJid || directRecipient?.lidJid || jid
+						const sessionDevices =
+							!legacyButtonsWireJid && directRecipient?.freshTargetDevices
+								? [...(await getUSyncDevices([senderIdentity], true, false)), ...directRecipient.freshTargetDevices]
+								: await getUSyncDevices([senderIdentity, targetLookupJid], true, false)
 						devices.push(...sessionDevices)
 
 						logger.debug(
@@ -1941,8 +1968,22 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2, recipientCount: otherRecipientCount }
 				] = await Promise.all([
 					// For own devices: use DSM (deviceSentMessage) wrapper
-					createParticipantNodes(effectiveMeRecipients, meMsg || message, extraAttrs),
-					createParticipantNodes(effectiveOtherRecipients, message, extraAttrs)
+					createParticipantNodes(
+						effectiveMeRecipients,
+						meMsg || message,
+						extraAttrs,
+						undefined,
+						isLegacyReplyButtons,
+						Boolean(legacyButtonsWireJid)
+					),
+					createParticipantNodes(
+						effectiveOtherRecipients,
+						message,
+						extraAttrs,
+						undefined,
+						isLegacyReplyButtons,
+						Boolean(legacyButtonsWireJid)
+					)
 				])
 				const targetUser = jidDecode(directRecipient?.lidJid || destinationJid)?.user
 				const selfSendUser = selfSendLid ? jidDecode(selfSendLid)?.user : undefined
@@ -2131,14 +2172,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					const hasQuickReply = allButtonNames.some((name: string) => name === 'quick_reply')
 					const isCTAOnly = hasCTA && !hasQuickReply
 
-					// Legacy reply buttons must stay out of the Native Flow routing path.
-					// Current Web/Desktop otherwise rejects large sets as phone_only_feature.
-					if (buttonType === 'buttons') {
-						logger.info(
-							{ msgId, to: destinationJid },
-							'[BIZ NODE] Skipped for legacy reply buttons Web/Desktop compatibility'
-						)
-					} else if (buttonType === 'list') {
+					if (buttonType === 'list') {
 						deferredNodes.push({
 							tag: 'biz',
 							attrs: {},
@@ -2154,6 +2188,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						})
 						logger.info({ msgId, to: destinationJid }, '[BIZ NODE] Injected biz > list (product_list, v=2)')
 					} else {
+						// Legacy buttonsMessage uses the same outer business routing
+						// contributor as the proven #710 wire shape. The message payload
+						// remains legacy; only the stanza advertises the interactive route.
 						const SPECIAL_FLOW_NAMES: Record<string, string> = {
 							review_and_pay: 'payment_info',
 							payment_info: 'payment_info',
