@@ -461,16 +461,35 @@ const validateNonEmptyString = (value: string | undefined, fieldName: string): v
 }
 
 /**
- * Converts a NativeButton to the WhatsApp Native Flow format
- * Includes validation for required fields
+ * Validates the fields required by each native button type.
  */
-export const formatNativeFlowButton = (button: NativeButton): NativeFlowButton => {
-	// Validate common field
+const validateNativeButton = (button: NativeButton): void => {
 	validateNonEmptyString(button.text, 'text')
 
 	switch (button.type) {
 		case 'url':
 			validateNonEmptyString(button.url, 'url')
+			return
+		case 'copy':
+			validateNonEmptyString(button.copyText, 'copyText')
+			return
+		case 'reply':
+			validateNonEmptyString(button.id, 'id')
+			return
+		case 'call':
+			validateNonEmptyString(button.phoneNumber, 'phoneNumber')
+			return
+		default:
+			throw new Boom('Invalid button type', { statusCode: 400 })
+	}
+}
+
+/** Converts a validated NativeButton to the WhatsApp Native Flow format. */
+export const formatNativeFlowButton = (button: NativeButton): NativeFlowButton => {
+	validateNativeButton(button)
+
+	switch (button.type) {
+		case 'url':
 			return {
 				name: 'cta_url',
 				buttonParamsJson: JSON.stringify({
@@ -480,34 +499,20 @@ export const formatNativeFlowButton = (button: NativeButton): NativeFlowButton =
 				})
 			}
 		case 'copy':
-			validateNonEmptyString(button.copyText, 'copyText')
 			return {
 				name: 'cta_copy',
-				buttonParamsJson: JSON.stringify({
-					display_text: button.text,
-					copy_code: button.copyText
-				})
+				buttonParamsJson: JSON.stringify({ display_text: button.text, copy_code: button.copyText })
 			}
 		case 'reply':
-			validateNonEmptyString(button.id, 'id')
 			return {
 				name: 'quick_reply',
-				buttonParamsJson: JSON.stringify({
-					display_text: button.text,
-					id: button.id
-				})
+				buttonParamsJson: JSON.stringify({ display_text: button.text, id: button.id })
 			}
 		case 'call':
-			validateNonEmptyString(button.phoneNumber, 'phoneNumber')
 			return {
 				name: 'cta_call',
-				buttonParamsJson: JSON.stringify({
-					display_text: button.text,
-					phone_number: button.phoneNumber
-				})
+				buttonParamsJson: JSON.stringify({ display_text: button.text, phone_number: button.phoneNumber })
 			}
-		default:
-			throw new Boom('Invalid button type', { statusCode: 400 })
 	}
 }
 
@@ -1308,7 +1313,6 @@ export const generateWAMessageContent = async (
 		// Standard reply sets use the legacy envelope validated across mobile and
 		// companion clients. Sets beyond that envelope's limit become a list.
 		const allQuickReply = buttons.every((btn: any) => btn.type === 'reply')
-		const formattedQuickReplies = allQuickReply ? buttons.map(formatNativeFlowButton) : undefined
 
 		if (allQuickReply) {
 			const hasHeaderMedia = Boolean(nativeMsg.headerImage || nativeMsg.headerVideo)
@@ -1322,6 +1326,8 @@ export const generateWAMessageContent = async (
 					statusCode: 400
 				})
 			}
+
+			for (const button of buttons) validateNativeButton(button)
 
 			if (buttons.length > MAX_LEGACY_QUICK_REPLY_BUTTONS) {
 				const sections = Array.from(
@@ -1380,7 +1386,7 @@ export const generateWAMessageContent = async (
 					footer: nativeMsg.footer ? { text: nativeMsg.footer } : undefined,
 					header,
 					nativeFlowMessage: {
-						buttons: formattedQuickReplies,
+						buttons: buttons.map(formatNativeFlowButton),
 						messageParamsJson: JSON.stringify({}),
 						messageVersion: 1
 					}

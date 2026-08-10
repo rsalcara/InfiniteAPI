@@ -3,7 +3,7 @@ import { proto } from '../../WAProto/index.js'
 import type { GroupMetadata, GroupParticipant, ParticipantAction, SocketConfig, WAMessageKey } from '../Types'
 import { WAMessageAddressingMode, WAMessageStubType } from '../Types'
 import { captureProtocolWire, generateMessageIDV2, resolveLidToPn, unixTimestampSeconds } from '../Utils'
-import { buildGroupParticipantNode, mapParticipantFanout } from '../Utils/relay-stanza'
+import { buildGroupParticipantNode, mapParticipantFanout, MAX_PARTICIPANT_FANOUT } from '../Utils/relay-stanza'
 import { resolveTcTokenBucketPolicy, resolveUsableTcTokenForJid } from '../Utils/tc-token-utils'
 import {
 	type BinaryNode,
@@ -25,10 +25,25 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(config.transportProfile, config.tcTokenAbProps)
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
-	const buildPrivacyParticipantNodes = async (participants: string[]): Promise<BinaryNode[]> =>
-		mapParticipantFanout(
+	const buildPrivacyParticipantNodes = async (participants: string[]): Promise<BinaryNode[]> => {
+		const enabled = config.tcTokenFanout?.enabled ?? false
+		const maxUsers = config.tcTokenFanout?.maxUsers ?? 2000
+		if (!Number.isInteger(maxUsers) || maxUsers < 0) {
+			throw new Boom('TcToken fanout user limit must be non-negative')
+		}
+
+		const tokenUsers = new Set<string>()
+		if (enabled) {
+			for (const participant of participants) {
+				if (tokenUsers.size >= maxUsers) break
+				tokenUsers.add(jidNormalizedUser(participant))
+			}
+		}
+
+		return mapParticipantFanout(
 			participants,
 			async participantJid => {
+				if (!tokenUsers.has(jidNormalizedUser(participantJid))) return buildGroupParticipantNode(participantJid)
 				try {
 					const token = await resolveUsableTcTokenForJid({
 						authState,
@@ -43,8 +58,9 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 					return buildGroupParticipantNode(participantJid)
 				}
 			},
-			{ max: 4096, concurrency: 32 }
+			{ max: MAX_PARTICIPANT_FANOUT, concurrency: 32 }
 		)
+	}
 
 	/** Normalize group metadata participant IDs from LID to PN */
 	const normalizeGroupMetadata = async (metadata: GroupMetadata): Promise<GroupMetadata> => {

@@ -977,13 +977,26 @@ describe('tctoken integration scenarios', () => {
 	})
 
 	describe('expired token awaits a fresh notification', () => {
+		it('does not erase a fresh token that arrives before cleanup acquires its lock', async () => {
+			const expiredTs = String(nowSeconds() - 30 * 86400)
+			const freshTs = String(nowSeconds())
+			;(mockKeys.get as any)
+				.mockResolvedValueOnce({ [JID_A]: { token: TOKEN_A, timestamp: expiredTs } })
+				.mockResolvedValueOnce({ [JID_A]: { token: TOKEN_B, timestamp: freshTs } })
+
+			await expect(buildTcTokenFromJid({ authState: { keys: mockKeys }, jid: JID_A })).resolves.toBeUndefined()
+			expect(mockKeys.set).not.toHaveBeenCalled()
+		})
+
 		it('expired token is deleted, then an incoming notification stores its replacement', async () => {
 			const expiredTs = String(nowSeconds() - 30 * 86400)
 			const freshTs = String(nowSeconds())
 
 			// Read expired token → returns undefined, triggers cleanup
 			// @ts-ignore
-			mockKeys.get.mockResolvedValueOnce({ [JID_A]: { token: TOKEN_A, timestamp: expiredTs } })
+			;(mockKeys.get as any)
+				.mockResolvedValueOnce({ [JID_A]: { token: TOKEN_A, timestamp: expiredTs } })
+				.mockResolvedValueOnce({ [JID_A]: { token: TOKEN_A, timestamp: expiredTs } })
 
 			const result1 = await buildTcTokenFromJid({ authState: { keys: mockKeys }, jid: JID_A })
 			expect(result1).toBeUndefined()

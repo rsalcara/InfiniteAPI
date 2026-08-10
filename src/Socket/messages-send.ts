@@ -113,7 +113,7 @@ import {
 	type JidWithDevice,
 	S_WHATSAPP_NET
 } from '../WABinary'
-import { USyncQuery, USyncUser } from '../WAUSync'
+import { mapUSyncResultToLIDMappings, USyncQuery, USyncUser } from '../WAUSync'
 import { makeNewsletterSocket } from './newsletter'
 
 export const makeMessagesSocket = (config: SocketConfig) => {
@@ -235,6 +235,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 	const getKnownLIDForPN = signalRepository.lidMapping.getKnownLIDForPN.bind(signalRepository.lidMapping)
 	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
+	const getKnownPNForLID = signalRepository.lidMapping.getKnownPNForLID.bind(signalRepository.lidMapping)
 
 	const userDevicesCache =
 		config.userDevicesCache ||
@@ -332,12 +333,20 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			)
 		}
 	})
-	void tcTokenLifecycle
-		.startRecovery()
-		.catch(error =>
-			logger.warn({ error }, 'durable trusted-contact token recovery could not start; jobs remain persisted')
-		)
-	registerSocketDrainHandler(() => tcTokenLifecycle.stop())
+	const startTcTokenRecovery = ({ connection }: { connection?: string }) => {
+		if (connection !== 'open') return
+		void tcTokenLifecycle
+			.startRecovery()
+			.catch(error =>
+				logger.warn({ error }, 'durable trusted-contact token recovery could not start; jobs remain persisted')
+			)
+	}
+
+	ev.on('connection.update', startTcTokenRecovery)
+	registerSocketDrainHandler(async () => {
+		ev.off('connection.update', startTcTokenRecovery)
+		await tcTokenLifecycle.stop()
+	})
 
 	let mediaConn: Promise<MediaConnInfo> | undefined
 	/**
@@ -588,7 +597,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		const query = new USyncQuery().withContext('message').withDeviceProtocol().withLIDProtocol()
 
-		for (const jid of toFetch) {
+		const users = await mapParticipantFanout(toFetch, async jid => {
 			const user = new USyncUser().withId(jid)
 			const privacyToken = await resolveUsableTcTokenForJid({
 				authState,
@@ -598,8 +607,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				bucketPolicy: tcTokenBucketPolicy
 			})
 			if (privacyToken.buffer) user.withPrivacyToken(privacyToken.buffer, privacyToken.timestamp)
-			query.withUser(user)
-		}
+			return user
+		})
+		for (const user of users) query.withUser(user)
 
 		const result = await sock.executeUSyncQuery(query)
 
@@ -607,17 +617,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// Keep the PN/LID aliases returned by USync. The row's `id` is not
 			// guaranteed to be the PN: cold-recipient responses may use `new_jid`
 			// or a LID as the primary identity.
-			const lidResults = result.list
-				.map(row => {
-					const lid = [row.lid, row.newJid, row.jid, row.id].find(
-						value => typeof value === 'string' && isAnyLidUser(value)
-					)
-					const pn = [row.pnJid, row.jid, row.newJid, row.id].find(
-						value => typeof value === 'string' && isAnyPnUser(value)
-					)
-					return lid && pn ? { lid: jidNormalizedUser(lid), pn: jidNormalizedUser(pn) } : undefined
-				})
-				.filter((mapping): mapping is { lid: string; pn: string } => Boolean(mapping))
+			const lidResults = mapUSyncResultToLIDMappings(result.list, toFetch)
 			if (lidResults.length > 0) {
 				logger.trace('Storing LID maps from device call')
 				await signalRepository.lidMapping.storeLIDPNMappings(lidResults)
@@ -741,9 +741,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const knownLid = await getKnownLIDForPN(requestedPn)
 		const normalizedKnownLid = knownLid ? jidNormalizedUser(knownLid) : ''
 		if (normalizedKnownLid && isAnyLidUser(normalizedKnownLid) && jidDecode(normalizedKnownLid)?.user) {
+			const knownPn = await getKnownPNForLID(normalizedKnownLid)
+			const normalizedKnownPn = knownPn ? jidNormalizedUser(knownPn) : ''
 			return {
 				requestedPn,
-				pnJid: requestedPn,
+				pnJid:
+					normalizedKnownPn && isAnyPnUser(normalizedKnownPn) && jidDecode(normalizedKnownPn)?.user
+						? normalizedKnownPn
+						: requestedPn,
 				lidJid: normalizedKnownLid
 			}
 		}
@@ -2596,18 +2601,22 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				transmit: () => sendNode(stanza)
 			})
 			if (!isRetryResend) {
-				emitMessageDeliveryState(ev, {
-					key: {
-						remoteJid: publicCanonicalJid,
-						remoteJidAlt: isAnyLidUser(destinationJid) ? destinationJid : undefined,
-						fromMe: true,
-						id: msgId
+				emitMessageDeliveryState(
+					ev,
+					{
+						key: {
+							remoteJid: publicCanonicalJid,
+							remoteJidAlt: isAnyLidUser(destinationJid) ? destinationJid : undefined,
+							fromMe: true,
+							id: msgId
+						},
+						state: 'accepted',
+						requestedJid,
+						canonicalJid: publicCanonicalJid,
+						wireJid: destinationJid
 					},
-					state: 'accepted',
-					requestedJid,
-					canonicalJid: publicCanonicalJid,
-					wireJid: destinationJid
-				})
+					logger
+				)
 			}
 
 			// Fire-and-forget: issue our token to the contact (like WA Web's sendTcToken).

@@ -38,7 +38,7 @@ export const canonicalizeParticipantFanoutRecipient = async (
 	if (!source || !normalized) return normalized
 	if (!isAnyPnUser(normalized)) return transferDevice(jid, normalized)
 
-	const lid = await getLIDForPN(jidEncode(source.user, 's.whatsapp.net'))
+	const lid = await getLIDForPN(jidEncode(source.user, source.server === 'hosted' ? 'hosted' : 's.whatsapp.net'))
 	const target = lid && jidDecode(lid)?.user ? lid : normalized
 	return transferDevice(jid, target)
 }

@@ -43,4 +43,19 @@ describe('message delivery state contract', () => {
 			wireJid: '127496221651050@lid'
 		})
 	})
+
+	it('isolates synchronous consumer listener failures', () => {
+		const logger = { warn: jest.fn() } as any
+		const ev = {
+			emit: jest.fn(() => {
+				throw new Error('consumer failed')
+			})
+		} as unknown as BaileysEventEmitter
+
+		expect(() => emitMessageDeliveryState(ev, { key, state: 'accepted', observedAt: 10_000 }, logger)).not.toThrow()
+		expect(logger.warn).toHaveBeenCalledWith(
+			expect.objectContaining({ state: 'accepted', messageId: key.id }),
+			'message.delivery-state listener failed; message processing continues'
+		)
+	})
 })

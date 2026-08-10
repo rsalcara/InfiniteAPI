@@ -58,7 +58,11 @@ const activeCapping = (
 	return {
 		code: 'message-capping',
 		category: 'capping',
-		reason: info.capping_status || (cappedByQuota ? 'quota-exhausted' : 'reason unavailable'),
+		reason: cappedByStatus
+			? info.capping_status || 'status-capped'
+			: cappedByQuota
+				? 'quota-exhausted'
+				: 'reason unavailable',
 		quota: { total: info.total_quota, used: info.used_quota },
 		...(cycleStart ? { cycleStart } : {}),
 		...(cycleEnd ? { cycleEnd } : {}),

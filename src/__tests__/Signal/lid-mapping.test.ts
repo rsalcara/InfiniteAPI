@@ -50,7 +50,7 @@ describe('LIDMappingStore', () => {
 	})
 
 	describe('getKnownPNForLID', () => {
-		it('reads a cached reverse mapping without invoking the USync resolver', async () => {
+		it('reads a stored reverse mapping without invoking the USync resolver', async () => {
 			const lid = '12345:99@hosted.lid'
 			// @ts-ignore
 			mockKeys.get.mockResolvedValue({ '12345_reverse': '54321' } as unknown as SignalDataTypeMap['lid-mapping'])

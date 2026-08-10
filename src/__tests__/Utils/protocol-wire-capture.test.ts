@@ -5,6 +5,18 @@ import type { BinaryNode } from '../../WABinary'
 const enc = (): BinaryNode => ({ tag: 'enc', attrs: { v: '2', type: 'msg' }, content: Buffer.from([1, 2]) })
 
 describe('protocol wire capture', () => {
+	it('does not wait for a capture hook that never settles', async () => {
+		const stanza: BinaryNode = {
+			tag: 'message',
+			attrs: { id: 'retry-stalled', to: '123:4@lid' },
+			content: [enc()]
+		}
+
+		await expect(
+			captureProtocolWire(() => new Promise<void>(() => undefined), 'direct_retry', stanza)
+		).resolves.toBeUndefined()
+	})
+
 	it('captures a direct retry only with one top-level encrypted payload', async () => {
 		const hook = jest.fn<(capture: any) => void>()
 		const stanza: BinaryNode = {

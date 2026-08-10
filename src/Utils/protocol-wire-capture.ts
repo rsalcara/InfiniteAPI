@@ -49,7 +49,17 @@ export const captureProtocolWire = async (
 	try {
 		validateProtocolWireCapture(kind, node)
 		const capturedNode = snapshotBinaryNode(node)
-		await hook({ kind, node: capturedNode, encoded: encodeBinaryNode(capturedNode), capturedAt: Date.now() })
+		const capture = { kind, node: capturedNode, encoded: encodeBinaryNode(capturedNode), capturedAt: Date.now() }
+		try {
+			const pending = hook(capture)
+			if (pending) {
+				void Promise.resolve(pending).catch(error =>
+					logger?.warn({ error, kind }, 'protocol wire capture failed; send continues unchanged')
+				)
+			}
+		} catch (error) {
+			logger?.warn({ error, kind }, 'protocol wire capture failed; send continues unchanged')
+		}
 	} catch (error) {
 		logger?.warn({ error, kind }, 'protocol wire capture failed; send continues unchanged')
 	}
