@@ -64,6 +64,7 @@ import {
 	recordConnectionRestart
 } from '../Utils/prometheus-metrics'
 import { createExpectedSocketTeardownError, isExpectedSocketTeardownError } from '../Utils/socket-teardown'
+import { isRegularUser, resolveTcTokenBucketPolicy, selectNewestUsableTcToken } from '../Utils/tc-token-utils'
 import {
 	createUnifiedSessionManager,
 	extractServerTime,
@@ -78,13 +79,15 @@ import {
 	getAllBinaryNodeChildren,
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
+	isAnyPnUser,
 	isLidUser,
 	jidDecode,
 	jidEncode,
+	jidNormalizedUser,
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { BinaryInfo } from '../WAM/BinaryInfo.js'
-import { USyncQuery, USyncUser } from '../WAUSync/'
+import { mapUSyncResultToLIDMappings, mapUSyncResultToOnWhatsApp, USyncQuery, USyncUser } from '../WAUSync/'
 import { getAuthStoreDrainBarrier, registerAuthStoreDrainBarrier } from './auth-store-drain-barrier'
 import { TcpSocketClient, WebSocketClient } from './Client'
 import { executeWMexQuery } from './mex'
@@ -118,6 +121,7 @@ export const makeSocket = (config: SocketConfig) => {
 	} = config
 	const transportSession = resolveTransportSession(config, authState.creds)
 	const isNativeAndroid = transportSession.profile === 'native_android'
+	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(transportSession.profile, config.tcTokenAbProps)
 	let closed = false
 	const pairingCodeMutex = makeMutex()
 	// ClientPayload must use the resolved, persisted native identity rather than
@@ -436,15 +440,7 @@ export const makeSocket = (config: SocketConfig) => {
 		// variable below has only validated users
 		const validUsers = usyncQuery.users
 
-		const userNodes = validUsers.map(user => {
-			return {
-				tag: 'user',
-				attrs: {
-					jid: !user.phone ? user.id : undefined
-				},
-				content: usyncQuery.protocols.map(a => a.getUserElement(user)).filter(a => a !== null)
-			} as BinaryNode
-		})
+		const userNodes = validUsers.map(user => usyncQuery.buildUserNode(user))
 
 		const listNode: BinaryNode = {
 			tag: 'list',
@@ -510,19 +506,54 @@ export const makeSocket = (config: SocketConfig) => {
 		const results = await executeUSyncQuery(usyncQuery)
 
 		if (results) {
-			return results.list.filter(a => !!a.contact).map(({ contact, id }) => ({ jid: id, exists: contact as boolean }))
+			const requestedPns = phoneNumber
+				.map(jid => jidNormalizedUser(jid))
+				.filter((jid): jid is string => isAnyPnUser(jid))
+			return mapUSyncResultToOnWhatsApp(results.list, requestedPns)
 		}
 	}
 
 	const pnFromLIDUSync = async (jids: string[]): Promise<LIDMapping[] | undefined> => {
 		const usyncQuery = new USyncQuery().withLIDProtocol().withContext('background')
+		const regularJids = jids.filter(jid => !isLidUser(jid) && isRegularUser(jid))
+		const aliasGroups = await Promise.all(
+			regularJids.map(async jid => {
+				const knownLid = await signalRepository?.lidMapping.getKnownLIDForPN(jid).catch(() => null)
+				return [knownLid, jid].filter((value): value is string => Boolean(value))
+			})
+		)
+		const tokenIds = [...new Set(aliasGroups.flat())]
+		let tcTokenData: Awaited<ReturnType<typeof keys.get<'tctoken'>>> = {}
+		if (tokenIds.length) {
+			try {
+				tcTokenData = await keys.get('tctoken', tokenIds)
+			} catch (error) {
+				// A token enriches USync but is not required to resolve the mapping.
+				// Preserve the base lookup when a custom auth store is temporarily unavailable.
+				logger.debug({ error, count: tokenIds.length }, 'PN-to-LID USync continuing without optional TcToken state')
+			}
+		}
+
+		let regularIndex = 0
 
 		for (const jid of jids) {
 			if (isLidUser(jid)) {
 				logger?.warn('LID user found in LID fetch call')
 				continue
 			} else {
-				usyncQuery.withUser(new USyncUser().withId(jid))
+				const user = new USyncUser().withId(jid)
+				if (isRegularUser(jid)) {
+					const aliases = aliasGroups[regularIndex++] ?? [jid]
+					const privacyToken = selectNewestUsableTcToken(
+						aliases.map(alias => [alias, tcTokenData[alias]] as const),
+						tcTokenBucketPolicy
+					)
+					if (privacyToken.entry?.token.length) {
+						user.withPrivacyToken(privacyToken.entry.token, privacyToken.entry.timestamp)
+					}
+				}
+
+				usyncQuery.withUser(user)
 			}
 		}
 
@@ -533,7 +564,7 @@ export const makeSocket = (config: SocketConfig) => {
 		const results = await executeUSyncQuery(usyncQuery)
 
 		if (results) {
-			return results.list.filter(a => !!a.lid).map(({ lid, id }) => ({ pn: id, lid: lid as string }))
+			return mapUSyncResultToLIDMappings(results.list, regularJids)
 		}
 
 		return []
@@ -2537,6 +2568,7 @@ export const makeSocket = (config: SocketConfig) => {
 		ws,
 		ev,
 		authState: { creds, keys, historySync: authState.historySync },
+		tcTokenBucketPolicy,
 		signalRepository,
 		sessionCleanup,
 		sessionActivityTracker,

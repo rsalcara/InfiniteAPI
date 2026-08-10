@@ -15,6 +15,7 @@ import {
 	logMessageReceived,
 	logMessageSent,
 	logRetry,
+	logTcToken,
 	logWarn
 } from '../../Utils/baileys-logger.js'
 
@@ -182,6 +183,14 @@ describe('Baileys Console Logging Functions', () => {
 		it('should include session name for messages', () => {
 			logMessageSent('MSG789', 'user@lid', 'session-abc')
 			expect(consoleSpy).toHaveBeenCalledWith('[BAILEYS] [session-abc] 📤 Message sent: MSG789 → user@lid')
+		})
+	})
+
+	describe('logTcToken', () => {
+		it('shows the complete JID in the operator-facing lifecycle log', () => {
+			logTcToken('attached', { jid: '5515991426667@s.whatsapp.net' })
+
+			expect(consoleSpy).toHaveBeenCalledWith('[BAILEYS] 🔑 TcToken attached → 5515991426667@s.whatsapp.net')
 		})
 	})
 

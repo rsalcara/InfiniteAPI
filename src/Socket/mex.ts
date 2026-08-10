@@ -2,12 +2,63 @@ import { Boom } from '@hapi/boom'
 import type { BinaryNode } from '../WABinary'
 import { getBinaryNodeChild, S_WHATSAPP_NET } from '../WABinary'
 
+export type MexPrivacyToken = { token: Buffer; timestamp?: string | number }
+export type MexContactProfileQueryUser = { jid: string; privacyToken?: MexPrivacyToken }
+export type WMexQueryOptions = { includeQueryId?: boolean; includeTrace?: boolean }
+
+export const MEX_CONTACT_PROFILE_QUERY_ID = '32735378489440100'
+export const MEX_CONTACT_PROFILE_BATCH_SIZE = 40
+
+/** Official MEX USync shape. Callers opt in only for a known regular-user target. */
+export const withMexPrivacyToken = (
+	variables: Record<string, unknown>,
+	privacyToken?: MexPrivacyToken
+): Record<string, unknown> => {
+	if (!privacyToken?.token.length) return variables
+
+	return {
+		...variables,
+		privacy_token: {
+			tctoken: privacyToken.token.toString('base64'),
+			...(privacyToken.timestamp !== undefined ? { timestamp: String(privacyToken.timestamp) } : {})
+		}
+	}
+}
+
+/** Exact variable envelope captured from Android's background profile enrichment query. */
+export const buildMexContactProfileVariables = (
+	users: readonly MexContactProfileQueryUser[]
+): Record<string, unknown> => ({
+	include_picture: true,
+	input: {
+		query_input: users.map(({ jid, privacyToken }) => withMexPrivacyToken({ jid }, privacyToken)),
+		telemetry: { context: 'BACKGROUND' }
+	},
+	picture_field_input: { type: 'IMAGE' }
+})
+
 const wMexQuery = (
 	variables: Record<string, unknown>,
 	queryId: string,
 	query: (node: BinaryNode) => Promise<BinaryNode>,
-	generateMessageTag: () => string
+	generateMessageTag: () => string,
+	options: WMexQueryOptions = {}
 ) => {
+	const content: BinaryNode[] = []
+	if (options.includeTrace) {
+		content.push({
+			tag: 'trace',
+			attrs: {},
+			content: [{ tag: 'flow_id', attrs: {}, content: Buffer.from(queryId, 'utf-8') }]
+		})
+	}
+
+	content.push({
+		tag: 'query',
+		attrs: { query_id: queryId },
+		content: Buffer.from(JSON.stringify(options.includeQueryId ? { queryId, variables } : { variables }), 'utf-8')
+	})
+
 	return query({
 		tag: 'iq',
 		attrs: {
@@ -16,13 +67,7 @@ const wMexQuery = (
 			to: S_WHATSAPP_NET,
 			xmlns: 'w:mex'
 		},
-		content: [
-			{
-				tag: 'query',
-				attrs: { query_id: queryId },
-				content: Buffer.from(JSON.stringify({ variables }), 'utf-8')
-			}
-		]
+		content
 	})
 }
 
@@ -31,9 +76,10 @@ export const executeWMexQuery = async <T>(
 	queryId: string,
 	dataPath: string,
 	query: (node: BinaryNode) => Promise<BinaryNode>,
-	generateMessageTag: () => string
+	generateMessageTag: () => string,
+	options: WMexQueryOptions = {}
 ): Promise<T> => {
-	const result = await wMexQuery(variables, queryId, query, generateMessageTag)
+	const result = await wMexQuery(variables, queryId, query, generateMessageTag, options)
 	const child = getBinaryNodeChild(result, 'result')
 	if (child?.content) {
 		const data = JSON.parse(child.content.toString())

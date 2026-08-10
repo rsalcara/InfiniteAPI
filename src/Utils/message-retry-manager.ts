@@ -104,6 +104,10 @@ export interface RecentMessage {
 	to: string
 	message: proto.IMessage
 	timestamp: number
+	/** JID originally supplied by the consumer for delivery-state correlation. */
+	requestedJid?: string
+	/** Public canonical conversation identity resolved before transmission. */
+	canonicalJid?: string
 	/**
 	 * Transport metadata carried by the encrypted child rather than IMessage.
 	 * It must survive an immediate retry so a live-location resend retains the
@@ -138,8 +142,12 @@ export interface RetryPayloadTransmissionOptions<T> {
 	message: proto.IMessage
 	isDirectRetry: boolean
 	liveLocationDuration?: number
+	requestedJid?: string
+	canonicalJid?: string
 	transmit: () => Promise<T>
 }
+
+export type RecentMessageMetadata = Pick<RecentMessage, 'liveLocationDuration' | 'requestedJid' | 'canonicalJid'>
 
 /**
  * Minimal structural mirror for the `message_base_key` typed table. Satisfied
@@ -287,12 +295,12 @@ export class MessageRetryManager {
 	/**
 	 * Add a recent message to the cache for retry handling
 	 */
-	addRecentMessage(
-		to: string,
-		id: string,
-		message: proto.IMessage,
-		metadata?: { liveLocationDuration?: number }
-	): void {
+	addRecentMessage(to: string, id: string, message: proto.IMessage, metadata?: RecentMessageMetadata): void {
+		if (!message) {
+			this.logger.debug(`Skipped retry-cache entry without payload: ${to}/${id}`)
+			return
+		}
+
 		const key: RecentMessageKey = { to, id }
 		const keyStr = this.keyToString(key)
 
@@ -301,7 +309,9 @@ export class MessageRetryManager {
 			to,
 			message,
 			timestamp: Date.now(),
-			liveLocationDuration: metadata?.liveLocationDuration
+			liveLocationDuration: metadata?.liveLocationDuration,
+			requestedJid: metadata?.requestedJid,
+			canonicalJid: metadata?.canonicalJid
 		})
 		const indexEntry = this.messageKeyIndex.get(id) || { keys: new Set<string>(), fallbackAmbiguous: false }
 		if ([...indexEntry.keys].some(indexedKey => indexedKey !== keyStr)) {
@@ -319,12 +329,8 @@ export class MessageRetryManager {
 	 * are not already retained. Returns true when this call created the entry,
 	 * allowing its caller to roll back only its own failed transmission attempt.
 	 */
-	stageRecentMessage(
-		to: string,
-		id: string,
-		message: proto.IMessage,
-		metadata?: { liveLocationDuration?: number }
-	): boolean {
+	stageRecentMessage(to: string, id: string, message: proto.IMessage, metadata?: RecentMessageMetadata): boolean {
+		if (!message) return false
 		if (this.recentMessagesMap.has(this.keyToString({ to, id }))) return false
 
 		this.addRecentMessage(to, id, message, metadata)
@@ -342,13 +348,34 @@ export class MessageRetryManager {
 	 * reusing a custom ID across chats must never expose another chat's plaintext.
 	 */
 	getRecentMessage(to: string, id: string): RecentMessage | undefined {
-		const key: RecentMessageKey = { to, id }
-		const keyStr = this.keyToString(key)
-		const exact = this.recentMessagesMap.get(keyStr)
+		return this.getRecentMessageForJids([to], id)
+	}
+
+	/**
+	 * Resolve a retry payload through all known wire aliases before using the
+	 * unique-ID fallback. A send can be staged under LID while the receipt key
+	 * is normalized to PN; exact alias lookup keeps that path deterministic even
+	 * when the same custom message ID exists in another chat.
+	 */
+	getRecentMessageForJids(toJids: readonly string[], id: string): RecentMessage | undefined {
+		const exact = this.getExactRecentMessageForJids(toJids, id)
 		if (exact) return exact
 
 		const indexedKeyStr = this.getUniqueRecentMessageKey(id)
-		if (indexedKeyStr) return this.recentMessagesMap.get(indexedKeyStr)
+		if (indexedKeyStr) {
+			const fallback = this.recentMessagesMap.get(indexedKeyStr)
+			if (fallback?.message) return fallback
+		}
+
+		return undefined
+	}
+
+	/** Resolve only an explicit destination/alias key; never fall back by message id. */
+	getExactRecentMessageForJids(toJids: readonly string[], id: string): RecentMessage | undefined {
+		for (const to of [...new Set(toJids.filter(Boolean))]) {
+			const exact = this.recentMessagesMap.get(this.keyToString({ to, id }))
+			if (exact?.message) return exact
+		}
 
 		return undefined
 	}
@@ -496,14 +523,14 @@ export class MessageRetryManager {
 	}
 
 	/**
-	 * Mark retry as failed
+	 * Mark an inbound retry as failed and remove only payload aliases belonging
+	 * to that conversation. A custom id reused elsewhere must remain retryable.
 	 */
-	markRetryFailed(messageId: string): void {
+	markRetryFailed(messageId: string, toJids: readonly string[] = []): void {
 		this.statistics.failedRetries++
 		this.retryCounters.delete(messageId)
 		this.cancelPendingPhoneRequest(messageId)
-		const keyStr = this.getUniqueRecentMessageKey(messageId)
-		if (keyStr) this.recentMessagesMap.delete(keyStr)
+		for (const to of new Set(toJids.filter(Boolean))) this.removeRecentMessage(to, messageId)
 	}
 
 	/**
@@ -642,10 +669,14 @@ export const transmitWithRetryPayload = async <T>({
 	message,
 	isDirectRetry,
 	liveLocationDuration,
+	requestedJid,
+	canonicalJid,
 	transmit
 }: RetryPayloadTransmissionOptions<T>): Promise<T> => {
 	const staged = Boolean(
-		manager && !isDirectRetry && manager.stageRecentMessage(to, id, message, { liveLocationDuration })
+		manager &&
+		!isDirectRetry &&
+		manager.stageRecentMessage(to, id, message, { liveLocationDuration, requestedJid, canonicalJid })
 	)
 
 	try {

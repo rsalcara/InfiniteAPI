@@ -16,6 +16,27 @@ import type { LabelAssociation } from './LabelAssociation'
 import type { MessageUpsertType, MessageUserReceiptUpdate, WAMessage, WAMessageKey, WAMessageUpdate } from './Message'
 import type { ConnectionState, NewChatMessageCapInfo } from './State'
 
+export type MessageDeliveryState = 'accepted' | 'server_ack' | 'delivered' | 'failed'
+
+export type MessageDeliveryStateUpdate = {
+	key: WAMessageKey
+	state: MessageDeliveryState
+	/** Epoch milliseconds when this state was observed locally. */
+	timestamp: number
+	/** Server receipt time in epoch milliseconds, when the stanza supplied one. */
+	serverTimestamp?: number
+	/** JID supplied by the consumer, when it differs from the wire identity. */
+	requestedJid?: string
+	/** Public canonical PN used as the consumer-facing conversation identity. */
+	canonicalJid?: string
+	/** JID used on the WhatsApp wire (usually a private LID for direct sends). */
+	wireJid?: string
+	serverCode?: string
+	category?: string
+	reason?: string
+	action?: 'none' | 'blocked-no-retry' | 'retry-suppressed'
+}
+
 // TODO: refactor this mess
 export type BaileysEventMap = {
 	/** connection state has been updated -- WS closed, opened, connecting etc. */
@@ -61,6 +82,8 @@ export type BaileysEventMap = {
 
 	'messages.delete': { keys: WAMessageKey[] } | { jid: string; all: true }
 	'messages.update': WAMessageUpdate[]
+	/** Distinguishes local acceptance, server ACK and peer delivery. */
+	'message.delivery-state': MessageDeliveryStateUpdate
 	'messages.media-update': { key: WAMessageKey; media?: { ciphertext: Uint8Array; iv: Uint8Array }; error?: Boom }[]
 	/**
 	 * add/update the given messages. If they were received while the connection was online,

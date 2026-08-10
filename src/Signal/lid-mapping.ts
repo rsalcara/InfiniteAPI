@@ -704,6 +704,35 @@ export class LIDMappingStore {
 		})
 	}
 
+	/** Reverse lookup that only reads the local mapping cache/store. */
+	async getKnownPNForLID(lid: string): Promise<string | null> {
+		this.checkDestroyed()
+
+		return this.trackOperation(async () => {
+			if (!isAnyLidUser(lid)) return null
+
+			const decoded = jidDecode(lid)
+			if (!decoded) return null
+
+			const lidUser = decoded.user
+			let pnUser = this.mappingCache.get(`lid:${lidUser}`)
+			if (!pnUser) {
+				const stored = await this.keys.get('lid-mapping', [`${lidUser}_reverse`])
+				const storedPnUser = stored[`${lidUser}_reverse`]
+				if (typeof storedPnUser === 'string' && storedPnUser) {
+					pnUser = storedPnUser
+					this.mappingCache.set(`lid:${lidUser}`, pnUser)
+					this.mappingCache.set(`pn:${pnUser}`, lidUser)
+				}
+			}
+
+			if (!pnUser) return null
+
+			const pnServer = decoded.server === 'hosted.lid' ? 'hosted' : 's.whatsapp.net'
+			return `${pnUser}${decoded.device ? `:${decoded.device}` : ''}@${pnServer}`
+		})
+	}
+
 	/**
 	 * Get LIDs for multiple PNs - Optimized batch operation
 	 *
