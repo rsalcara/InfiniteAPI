@@ -17,7 +17,7 @@ rodar:
 | # | Tipo | Endpoint | Limite |
 |---|------|----------|--------|
 | 1 | Menu de texto | `send_menu` | opções ilimitadas (lista numerada em texto) |
-| 2 | Botões Quick Reply | `send_buttons_helpers` | **1–10** em `native_flow`; **11–16** no envelope legado |
+| 2 | Botões Quick Reply | `send_buttons_helpers` | **1–16** no envelope legado; **17–30** como lista |
 | 3 | CTA misto (URL / Copy / Call) | `send_interactive_helpers` | tipos `url`, `copy`, `call` (combináveis) |
 | 4 | Lista (dropdown) | `send_list_helpers` | até **10 seções × 3 rows = 30 rows** |
 | 5 | Enquete (Poll) | `send_poll` | **2 a 12** opções |
@@ -54,16 +54,16 @@ curl -X POST http://localhost:8787/v1/messages/send_menu \
 
 ## 2. Botões Quick Reply (`send_buttons_helpers`)
 
-Botões de resposta rápida. De 1 a 10 opções, usa `native_flow` e o cliente pode
-renderizá-las inline. De 11 a 16 opções, usa o `buttonsMessage` legado para
-preservar o tipo da mensagem, os IDs e os textos. O cliente pode apresentar
-esse conjunto maior como botões ou como um menu de opções.
+Botões de resposta rápida. De 1 a 16 opções, usa o `buttonsMessage` legado
+validado em clientes móveis e vinculados. De 17 a 30 opções, converte o conjunto
+em uma única `listMessage`, dividida em seções de até 10 itens e mantendo os IDs
+de seleção.
 
 **Campos:** `text`, `footer`, `buttons[{ id, text }]`, `headerTitle` e, para
-1–10 opções, `headerImage` ou `headerVideo`. `id` e `text` são obrigatórios e
-não podem ser vazios. Mídia de cabeçalho não é aceita no envelope legado.
-**Limite:** até **16 opções**. Acima de 16, o envio é rejeitado com erro de
-validação.
+Com `headerImage` ou `headerVideo`, até 10 opções usam `native_flow`; mídia de
+cabeçalho não é aceita acima desse limite. `id` e `text` são obrigatórios e não
+podem ser vazios. **Limite total:** até **30 opções**. Acima de 30, o envio é
+rejeitado com erro de validação.
 
 ```bash
 curl -X POST http://localhost:8787/v1/messages/send_buttons_helpers \
@@ -489,8 +489,8 @@ consumidor (ver `getAggregateVotesInPollMessage`).
 
 - A renderização depende da versão e do cliente. Homologue os fluxos nas
   versões de Android, iOS e WhatsApp Web/Desktop usadas pelo seu público.
-- Quick replies usam `native_flow` até 10 opções. De 11 a 16, usam o envelope
-  legado; CTAs continuam usando `native_flow`.
+- Quick replies sem mídia usam o envelope legado até 16 opções. De 17 a 30,
+  usam uma lista; CTAs continuam usando `native_flow`.
 - Carrossel: o protocolo suporta até **10 cards**; cada card precisa de imagem.
 - Respeite os limites de caracteres da lista (título ≤ 24, descrição ≤ 72,
   `buttonText` ≤ 20) — textos maiores podem ser truncados na renderização.
