@@ -59,7 +59,7 @@ validado em clientes móveis e vinculados. De 17 a 30 opções, converte o conju
 em uma única `listMessage`, dividida em seções de até 10 itens e mantendo os IDs
 de seleção.
 
-**Campos:** `text`, `footer`, `buttons[{ id, text }]`, `headerTitle` e, para
+**Campos:** `text`, `footer`, `buttons[{ id, text }]`, `headerTitle`.
 Com `headerImage` ou `headerVideo`, até 10 opções usam `native_flow`; mídia de
 cabeçalho não é aceita acima desse limite. `id` e `text` são obrigatórios e não
 podem ser vazios. **Limite total:** até **30 opções**. Acima de 30, o envio é
