@@ -51,7 +51,7 @@ describe('native button protobuf envelope', () => {
 		])
 	})
 
-	it('preserves sixteen quick replies in the legacy reply envelope', async () => {
+	it('encodes sixteen quick replies in one Native Flow message', async () => {
 		const buttons = Array.from({ length: 16 }, (_, index) => ({
 			type: 'reply' as const,
 			id: `option-${index + 1}`,
@@ -68,15 +68,19 @@ describe('native button protobuf envelope', () => {
 
 		const decoded = roundTrip(content)
 
-		expect(decoded.interactiveMessage).toBeNull()
+		expect(decoded.interactiveMessage?.body?.text).toBe('Choose a department')
+		expect(decoded.interactiveMessage?.footer?.text).toBe('Available all day')
 		expect(decoded.viewOnceMessage).toBeNull()
 		expect(decoded.listMessage).toBeNull()
-		expect(decoded.buttonsMessage?.contentText).toBe('Choose a department')
-		expect(decoded.buttonsMessage?.footerText).toBe('Available all day')
-		expect(decoded.buttonsMessage?.buttons).toHaveLength(16)
-		expect(decoded.buttonsMessage?.buttons?.[13]).toMatchObject({
-			buttonId: 'option-14',
-			buttonText: { displayText: '🔧 Tecnologia da Informação' }
+		expect(decoded.buttonsMessage).toBeNull()
+		expect(decoded.interactiveMessage?.nativeFlowMessage?.messageVersion).toBe(1)
+		expect(decoded.interactiveMessage?.nativeFlowMessage?.buttons).toHaveLength(16)
+		expect(decoded.interactiveMessage?.nativeFlowMessage?.buttons?.[13]).toEqual({
+			name: 'quick_reply',
+			buttonParamsJson: JSON.stringify({
+				display_text: '🔧 Tecnologia da Informação',
+				id: 'option-14'
+			})
 		})
 	})
 
@@ -104,7 +108,7 @@ describe('native button protobuf envelope', () => {
 	it.each([
 		['id', { type: 'reply', id: '', text: 'Missing id' }],
 		['text', { type: 'reply', id: 'missing-text', text: '' }]
-	] as const)('rejects an empty reply %s before legacy envelope conversion', async (_field, invalidButton) => {
+	] as const)('rejects an empty reply %s before Native Flow encoding', async (_field, invalidButton) => {
 		const buttons = Array.from({ length: 11 }, (_, index) => ({
 			type: 'reply' as const,
 			id: `option-${index + 1}`,
@@ -117,7 +121,7 @@ describe('native button protobuf envelope', () => {
 		).rejects.toThrow(`Button ${_field} is required and cannot be empty`)
 	})
 
-	it('does not rewrite labels when replies use the legacy envelope', async () => {
+	it('does not rewrite labels in larger Native Flow reply sets', async () => {
 		const longText = `${'X'.repeat(32)}😀tail`
 		const content = await generateWAMessageContent(
 			{
@@ -131,10 +135,11 @@ describe('native button protobuf envelope', () => {
 			options
 		)
 		const decoded = roundTrip(content)
-		const firstButton = decoded.buttonsMessage?.buttons?.[0]
+		const firstButton = decoded.interactiveMessage?.nativeFlowMessage?.buttons?.[0]
+		const params = JSON.parse(firstButton?.buttonParamsJson || '{}')
 
-		expect(firstButton?.buttonId).toBe('option-1')
-		expect(firstButton?.buttonText?.displayText).toBe(longText)
+		expect(firstButton?.name).toBe('quick_reply')
+		expect(params).toEqual({ display_text: longText, id: 'option-1' })
 	})
 
 	it.each([
@@ -154,10 +159,11 @@ describe('native button protobuf envelope', () => {
 		const content = await generateWAMessageContent(
 			{
 				text: 'Choose an option',
-				nativeButtons: [
-					{ type: 'reply', id: 'first', text: 'First' },
-					{ type: 'reply', id: 'second', text: 'Second' }
-				],
+				nativeButtons: Array.from({ length: 16 }, (_, index) => ({
+					type: 'reply' as const,
+					id: `option-${index + 1}`,
+					text: `Option ${index + 1}`
+				})),
 				[field]: media
 			} as AnyMessageContent,
 			cachedMediaOptions(cachedMessage)
@@ -167,26 +173,6 @@ describe('native button protobuf envelope', () => {
 		expect(header?.hasMediaAttachment).toBe(true)
 		expect(header?.[expectedField]).toBeTruthy()
 	})
-
-	it.each(['headerImage', 'headerVideo'] as const)(
-		'rejects %s when oversized replies require the legacy envelope',
-		async field => {
-			await expect(
-				generateWAMessageContent(
-					{
-						text: 'Choose an option',
-						nativeButtons: Array.from({ length: 11 }, (_, index) => ({
-							type: 'reply' as const,
-							id: `option-${index + 1}`,
-							text: `Option ${index + 1}`
-						})),
-						[field]: { url: 'https://example.com/header' }
-					} as AnyMessageContent,
-					options
-				)
-			).rejects.toThrow('Header media is not supported when more than 10 reply buttons use the legacy envelope')
-		}
-	)
 
 	it('rejects reply-only sets above the 16-button compatibility limit', async () => {
 		await expect(

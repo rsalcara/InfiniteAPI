@@ -857,8 +857,7 @@ const LIST_LIMITS = {
 	MAX_BUTTON_TEXT: 20
 } as const
 
-const MAX_WEB_QUICK_REPLY_BUTTONS = 10
-const MAX_LEGACY_QUICK_REPLY_BUTTONS = 16
+const MAX_QUICK_REPLY_BUTTONS = 16
 
 /**
  * Validates and sanitizes list message sections according to WhatsApp limits.
@@ -1292,43 +1291,16 @@ export const generateWAMessageContent = async (
 			throw new Boom('nativeButtons requires at least one button', { statusCode: 400 })
 		}
 
-		// Current Web/Desktop accepts at most ten quick replies in one Native Flow.
-		// Keep larger supported sets in the legacy reply envelope. Converting them
-		// to listMessage changes the message type and current mobile clients may
-		// discard that synthetic list even when Web/Desktop renders it.
+		// Reply-only Native Flow sets are interoperable across current mobile,
+		// Web and Desktop clients up to the supported 16-button limit.
 		const allQuickReply = buttons.every((btn: any) => btn.type === 'reply')
 		const formattedQuickReplies = allQuickReply ? buttons.map(formatNativeFlowButton) : undefined
 
-		if (allQuickReply && buttons.length > MAX_WEB_QUICK_REPLY_BUTTONS) {
-			if (buttons.length > MAX_LEGACY_QUICK_REPLY_BUTTONS) {
-				throw new Boom(`Maximum ${MAX_LEGACY_QUICK_REPLY_BUTTONS} reply buttons allowed`, { statusCode: 400 })
-			}
+		if (allQuickReply && buttons.length > MAX_QUICK_REPLY_BUTTONS) {
+			throw new Boom(`Maximum ${MAX_QUICK_REPLY_BUTTONS} reply buttons allowed`, { statusCode: 400 })
+		}
 
-			if (nativeMsg.headerImage || nativeMsg.headerVideo) {
-				throw new Boom('Header media is not supported when more than 10 reply buttons use the legacy envelope', {
-					statusCode: 400
-				})
-			}
-
-			const hasHeaderTitle = Boolean(nativeMsg.headerTitle)
-			m.buttonsMessage = {
-				contentText: nativeMsg.text || '',
-				footerText: nativeMsg.footer || undefined,
-				headerType: hasHeaderTitle
-					? proto.Message.ButtonsMessage.HeaderType.TEXT
-					: proto.Message.ButtonsMessage.HeaderType.EMPTY,
-				...(hasHeaderTitle ? { text: nativeMsg.headerTitle } : {}),
-				buttons: buttons.map((btn: any) => ({
-					buttonId: btn.id,
-					buttonText: { displayText: btn.text },
-					type: proto.Message.ButtonsMessage.Button.Type.RESPONSE
-				}))
-			}
-			options.logger?.info(
-				{ quickReplyCount: buttons.length },
-				'Sending oversized quick_reply set as legacy buttonsMessage'
-			)
-		} else if (allQuickReply) {
+		if (allQuickReply) {
 			const header = await prepareNativeButtonHeader(
 				{
 					headerTitle: nativeMsg.headerTitle,
