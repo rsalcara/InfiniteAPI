@@ -5,10 +5,13 @@ import {
 	buildTcTokenFromJid,
 	buildTcTokenNode,
 	getOrCreateTcTokenIssueFlight,
+	isStrictlyNewerTcTokenTimestamp,
 	isTcTokenExpired,
 	parseTrustedContactTokenNotification,
+	pruneTcTokenHalves,
 	resolveIncomingTcTokenAliases,
 	resolveTcTokenAliases,
+	resolveTcTokenBucketPolicy,
 	selectNewestUsableTcToken,
 	selectUsableTcToken,
 	shouldSendNewTcToken,
@@ -34,6 +37,94 @@ const computeCutoff = () => {
 	const cutoffBucket = currentBucket - (NUM_BUCKETS - 1)
 	return cutoffBucket * BUCKET_DURATION
 }
+
+describe('independent tctoken pruning', () => {
+	it('preserves sent state when only incoming is expired', () => {
+		const expired = computeCutoff() - 1
+		const live = nowSeconds()
+
+		expect(
+			pruneTcTokenHalves({
+				token: Buffer.from([1]),
+				timestamp: String(expired),
+				senderTimestamp: live,
+				realIssueTimestamp: 123
+			})
+		).toEqual({
+			next: { token: Buffer.alloc(0), senderTimestamp: live, realIssueTimestamp: 123 },
+			incomingPruned: true,
+			sentPruned: false
+		})
+	})
+
+	it('preserves incoming state when only sent is expired', () => {
+		const expired = computeCutoff() - 1
+		const live = nowSeconds()
+
+		expect(
+			pruneTcTokenHalves({
+				token: Buffer.from([2]),
+				timestamp: String(live),
+				senderTimestamp: expired,
+				realIssueTimestamp: 123
+			})
+		).toEqual({
+			next: { token: Buffer.from([2]), timestamp: String(live) },
+			incomingPruned: false,
+			sentPruned: true
+		})
+	})
+
+	it('removes the record only when both halves are expired', () => {
+		const expired = computeCutoff() - 1
+
+		expect(
+			pruneTcTokenHalves({ token: Buffer.from([3]), timestamp: String(expired), senderTimestamp: expired })
+		).toEqual({ next: null, incomingPruned: true, sentPruned: true })
+	})
+
+	it('recognizes an empty placeholder as removable state', () => {
+		expect(pruneTcTokenHalves({ token: Buffer.alloc(0) })).toEqual({
+			next: null,
+			incomingPruned: false,
+			sentPruned: false
+		})
+	})
+})
+
+describe('profile and AB-prop tctoken buckets', () => {
+	it.each(['web', 'native_android'] as const)('keeps captured defaults for %s', profile => {
+		expect(resolveTcTokenBucketPolicy(profile)).toEqual({
+			profile,
+			incoming: { durationSeconds: BUCKET_DURATION, numBuckets: NUM_BUCKETS },
+			sent: { durationSeconds: BUCKET_DURATION, numBuckets: NUM_BUCKETS }
+		})
+	})
+
+	it('applies incoming and sender AB props independently', () => {
+		const policy = resolveTcTokenBucketPolicy('native_android', {
+			tctoken_duration: 60,
+			tctoken_num_buckets: 2,
+			tctoken_duration_sender: 300,
+			tctoken_num_buckets_sender: 6
+		})
+
+		expect(policy.incoming).toEqual({ durationSeconds: 60, numBuckets: 2 })
+		expect(policy.sent).toEqual({ durationSeconds: 300, numBuckets: 6 })
+	})
+
+	it('rejects invalid AB values without changing safe defaults', () => {
+		const policy = resolveTcTokenBucketPolicy('web', {
+			tctoken_duration: 0,
+			tctoken_num_buckets: -1,
+			tctoken_duration_sender: Number.NaN,
+			tctoken_num_buckets_sender: 1.5
+		})
+
+		expect(policy.incoming).toEqual({ durationSeconds: BUCKET_DURATION, numBuckets: NUM_BUCKETS })
+		expect(policy.sent).toEqual({ durationSeconds: BUCKET_DURATION, numBuckets: NUM_BUCKETS })
+	})
+})
 
 const createMockKeys = (): jest.Mocked<SignalKeyStoreWithTransaction> => ({
 	get: jest.fn<SignalKeyStoreWithTransaction['get']>() as any,
@@ -105,6 +196,38 @@ describe('storeTcTokensFromIqResult', () => {
 				[pn]: expect.objectContaining({ token: Buffer.from([1]) })
 			}
 		})
+	})
+
+	it.each([
+		['identical', Buffer.from([1])],
+		['different', Buffer.from([9])]
+	])('does not overwrite equal-timestamp %s bytes', async (_kind, incomingToken) => {
+		const keys = createMockKeys()
+		const jid = '5511000000000@s.whatsapp.net'
+		const accepted = { token: Buffer.from([1]), timestamp: String(nowSeconds()) }
+		;(keys.get as any).mockResolvedValue({ [jid]: accepted })
+		const node = tokenNode(jid, incomingToken)
+		;(node.attrs as Record<string, string>).t = accepted.timestamp
+
+		const result = await storeTcTokensFromIqResult({
+			result: iqWithTokens([node]),
+			fallbackJid: jid,
+			keys,
+			getLIDForPN: async () => null
+		})
+
+		expect(result).toEqual({ storedJids: [], validTokenNodes: 0 })
+		expect(keys.set).not.toHaveBeenCalled()
+	})
+})
+
+describe('isStrictlyNewerTcTokenTimestamp', () => {
+	it('accepts only a positive timestamp greater than the stored value', () => {
+		expect(isStrictlyNewerTcTokenTimestamp(101, '100')).toBe(true)
+		expect(isStrictlyNewerTcTokenTimestamp(100, '100')).toBe(false)
+		expect(isStrictlyNewerTcTokenTimestamp(99, '100')).toBe(false)
+		expect(isStrictlyNewerTcTokenTimestamp(0, undefined)).toBe(false)
+		expect(isStrictlyNewerTcTokenTimestamp(Number.NaN, undefined)).toBe(false)
 	})
 })
 
@@ -417,6 +540,18 @@ describe('isTcTokenExpired', () => {
 
 		// Token well before cutoff (e.g. 35 days ago) is expired
 		expect(isTcTokenExpired(nowSeconds() - 35 * 86400)).toBe(true)
+	})
+
+	it('uses the injected clock and the official 182-day absolute fallback', () => {
+		const now = 200_000_000
+		const policy = resolveTcTokenBucketPolicy('native_android', {
+			tctoken_duration: 365 * 86400,
+			tctoken_num_buckets: 4
+		})
+		const fallbackCutoff = now - 15_724_800
+
+		expect(isTcTokenExpired(fallbackCutoff, policy, 'incoming', now)).toBe(false)
+		expect(isTcTokenExpired(fallbackCutoff - 1, policy, 'incoming', now)).toBe(true)
 	})
 })
 

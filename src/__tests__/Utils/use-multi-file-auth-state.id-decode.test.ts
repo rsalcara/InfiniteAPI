@@ -93,4 +93,30 @@ describe('useMultiFileAuthState — list/listIds id decoding', () => {
 
 		expect(enumerated).toEqual(['__index'])
 	})
+
+	it('does not let tctoken enumeration absorb the tctoken-job namespace', async () => {
+		const { state } = await useMultiFileAuthState(dir)
+		await state.keys.set({
+			tctoken: { 'contact@lid': { token: Buffer.from([1]), timestamp: '10' } },
+			'tctoken-job': {
+				'contact@lid': {
+					canonicalJid: 'contact@lid',
+					requestedJid: 'contact@s.whatsapp.net',
+					aliases: ['contact@lid', 'contact@s.whatsapp.net'],
+					issueTimestamp: 10,
+					state: 'pending',
+					attemptCount: 0,
+					nextRetryAt: 0,
+					leaseUntil: 0,
+					timeoutMs: 32_000,
+					createdAt: 0,
+					updatedAt: 0
+				}
+			}
+		})
+
+		const tokenIds: string[] = []
+		for await (const id of state.keys.listIds!('tctoken')) tokenIds.push(id)
+		expect(tokenIds).toEqual(['contact@lid'])
+	})
 })

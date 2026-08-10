@@ -2,7 +2,9 @@ import { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto/index.js'
 import type { GroupMetadata, GroupParticipant, ParticipantAction, SocketConfig, WAMessageKey } from '../Types'
 import { WAMessageAddressingMode, WAMessageStubType } from '../Types'
-import { generateMessageIDV2, resolveLidToPn, unixTimestampSeconds } from '../Utils'
+import { captureProtocolWire, generateMessageIDV2, resolveLidToPn, unixTimestampSeconds } from '../Utils'
+import { buildGroupParticipantNode, mapParticipantFanout } from '../Utils/relay-stanza'
+import { resolveTcTokenBucketPolicy, resolveUsableTcTokenForJid } from '../Utils/tc-token-utils'
 import {
 	type BinaryNode,
 	getBinaryNodeChild,
@@ -17,9 +19,32 @@ import { makeChatsSocket } from './chats'
 
 export const makeGroupsSocket = (config: SocketConfig) => {
 	const sock = makeChatsSocket(config)
-	const { authState, ev, query, upsertMessage } = sock
+	const { authState, ev, generateMessageTag, query, upsertMessage } = sock
 	const { signalRepository } = sock
 	const { logger } = config
+	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(config.transportProfile, config.tcTokenAbProps)
+	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
+	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
+	const buildPrivacyParticipantNodes = async (participants: string[]): Promise<BinaryNode[]> =>
+		mapParticipantFanout(
+			participants,
+			async participantJid => {
+				try {
+					const token = await resolveUsableTcTokenForJid({
+						authState,
+						jid: participantJid,
+						getLIDForPN,
+						getPNForLID,
+						bucketPolicy: tcTokenBucketPolicy
+					})
+					return buildGroupParticipantNode(participantJid, token.buffer)
+				} catch (error) {
+					logger.debug({ error, participantJid }, 'group participant TcToken lookup skipped')
+					return buildGroupParticipantNode(participantJid)
+				}
+			},
+			{ max: 4096, concurrency: 32 }
+		)
 
 	/** Normalize group metadata participant IDs from LID to PN */
 	const normalizeGroupMetadata = async (metadata: GroupMetadata): Promise<GroupMetadata> => {
@@ -58,16 +83,25 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 		return metadata
 	}
 
-	const groupQuery = async (jid: string, type: 'get' | 'set', content: BinaryNode[]) =>
-		query({
+	const groupQuery = async (
+		jid: string,
+		type: 'get' | 'set',
+		content: BinaryNode[],
+		captureKind?: 'legacy_group_create'
+	) => {
+		const node: BinaryNode = {
 			tag: 'iq',
 			attrs: {
+				id: generateMessageTag(),
 				type,
 				xmlns: 'w:g2',
 				to: jid
 			},
 			content
-		})
+		}
+		if (captureKind) await captureProtocolWire(config.protocolWireCapture, captureKind, node, logger)
+		return query(node)
+	}
 
 	const groupMetadata = async (jid: string) => {
 		const result = await groupQuery(jid, 'get', [{ tag: 'query', attrs: { request: 'interactive' } }])
@@ -129,19 +163,22 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 		groupMetadata,
 		groupCreate: async (subject: string, participants: string[]) => {
 			const key = generateMessageIDV2()
-			const result = await groupQuery('@g.us', 'set', [
-				{
-					tag: 'create',
-					attrs: {
-						subject,
-						key
-					},
-					content: participants.map(jid => ({
-						tag: 'participant',
-						attrs: { jid }
-					}))
-				}
-			])
+			const participantNodes = await buildPrivacyParticipantNodes(participants)
+			const result = await groupQuery(
+				'@g.us',
+				'set',
+				[
+					{
+						tag: 'create',
+						attrs: {
+							subject,
+							key
+						},
+						content: participantNodes
+					}
+				],
+				'legacy_group_create'
+			)
 			return normalizeGroupMetadata(extractGroupMetadata(result))
 		},
 		groupLeave: async (id: string) => {
@@ -198,14 +235,18 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 			})
 		},
 		groupParticipantsUpdate: async (jid: string, participants: string[], action: ParticipantAction) => {
+			// Android's privacy child is used for participant add, and the same
+			// participant shape is used by legacy group creation. Other actions
+			// retain their wire contract exactly.
+			const participantNodes =
+				action === 'add'
+					? await buildPrivacyParticipantNodes(participants)
+					: participants.map(participantJid => buildGroupParticipantNode(participantJid))
 			const result = await groupQuery(jid, 'set', [
 				{
 					tag: action,
 					attrs: {},
-					content: participants.map(jid => ({
-						tag: 'participant',
-						attrs: { jid }
-					}))
+					content: participantNodes
 				}
 			])
 			const node = getBinaryNodeChild(result, action)
