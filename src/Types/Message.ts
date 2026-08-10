@@ -790,7 +790,9 @@ export type AnyRegularMessageContent = (
 	| {
 			/**
 			 * Native Flow Buttons - Modern button message format
-			 * Reply-only sets of up to 16 buttons use a direct interactiveMessage.
+			 * Sets of up to ten reply buttons use a direct interactiveMessage.
+			 * Reply-only sets with 11-16 options use the legacy reply envelope so
+			 * the message type and button identifiers remain unchanged.
 			 * CTA-only sets continue to use a direct interactiveMessage. Combining
 			 * reply and CTA buttons is not interoperable with current Web clients.
 			 *
