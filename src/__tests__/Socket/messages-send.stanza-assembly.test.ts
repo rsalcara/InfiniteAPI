@@ -7,7 +7,7 @@ import { unpadRandomMax16 } from '../../Utils/generics'
 import { normalizeMessageJids } from '../../Utils/process-message'
 import { jidDecode } from '../../WABinary'
 
-type CapturedEncryption = { jid: string; data: Uint8Array }
+type CapturedEncryption = { jid: string; data: Uint8Array; useLegacyLock?: boolean }
 
 const ownPn = '5511000000001@s.whatsapp.net'
 const ownLid = '100000000000001@lid'
@@ -123,8 +123,16 @@ const makeFakeSocket = ({
 	const signalRepository = {
 		lidMapping: mapping,
 		validateSession: async () => ({ exists: true }),
-		encryptMessage: async ({ jid, data }: { jid: string; data: Uint8Array }) => {
-			encryptions.push({ jid, data })
+		encryptMessage: async ({
+			jid,
+			data,
+			useLegacyLock
+		}: {
+			jid: string
+			data: Uint8Array
+			useLegacyLock?: boolean
+		}) => {
+			encryptions.push({ jid, data, useLegacyLock })
 			return { type: 'pkmsg' as const, ciphertext: Buffer.from(`ciphertext:${jid}`) }
 		},
 		jidToSignalProtocolAddress: (jid: string) => jid,
@@ -295,6 +303,8 @@ describe('messages-send stanza assembly', () => {
 				]
 			})
 			expect(stanza.content.some((node: any) => node.tag === 'bot')).toBe(true)
+			expect(fake.encryptions.length).toBeGreaterThan(0)
+			expect(fake.encryptions.every(item => item.useLegacyLock === true)).toBe(true)
 			const ownEncryption = fake.encryptions.find(item => item.jid.startsWith('5511000000001'))
 			expect(ownEncryption).toBeDefined()
 			const dsm = proto.Message.decode(unpadRandomMax16(ownEncryption!.data))

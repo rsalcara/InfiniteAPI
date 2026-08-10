@@ -1973,7 +1973,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						meMsg || message,
 						extraAttrs,
 						undefined,
-						undefined,
+						isLegacyReplyButtons,
 						Boolean(legacyButtonsWireJid)
 					),
 					createParticipantNodes(
@@ -1981,7 +1981,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						message,
 						extraAttrs,
 						undefined,
-						undefined,
+						isLegacyReplyButtons,
 						Boolean(legacyButtonsWireJid)
 					)
 				])
