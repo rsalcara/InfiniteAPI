@@ -454,8 +454,8 @@ export const hasNonNullishProperty = <K extends PropertyKey>(
 /**
  * Validates that a string is not empty or whitespace-only
  */
-const validateNonEmptyString = (value: string | undefined, fieldName: string): void => {
-	if (!value || value.trim().length === 0) {
+const validateNonEmptyString = (value: unknown, fieldName: string): void => {
+	if (typeof value !== 'string' || value.trim().length === 0) {
 		throw new Boom(`Button ${fieldName} is required and cannot be empty`, { statusCode: 400 })
 	}
 }
