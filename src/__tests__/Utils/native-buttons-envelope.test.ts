@@ -203,6 +203,7 @@ describe('native button protobuf envelope', () => {
 		expect(decoded.listMessage?.footerText).toBe('Available all day')
 		expect(decoded.listMessage?.buttonText).toBe('View options')
 		expect(decoded.listMessage?.sections?.map(section => section.rows?.length)).toEqual([10, 7])
+		expect(decoded.listMessage?.sections?.map(section => section.title)).toEqual(['Options 1-10', 'Options 11-17'])
 		expect(decoded.listMessage?.sections?.[1]?.rows?.[3]).toMatchObject({
 			rowId: 'option-14',
 			title: '🔧 Tecnologia da Informa',
@@ -223,7 +224,13 @@ describe('native button protobuf envelope', () => {
 			options
 		)
 
-		expect(roundTrip(content).listMessage?.sections?.map(section => section.rows?.length)).toEqual([10, 10, 10])
+		const sections = roundTrip(content).listMessage?.sections
+		expect(sections?.map(section => section.rows?.length)).toEqual([10, 10, 10])
+		expect(sections?.map(section => section.title)).toEqual([
+			'Options 1-10',
+			'Options 11-20',
+			'Options 21-30'
+		])
 	})
 
 	it('rejects reply-only sets above the 30-option list limit', async () => {

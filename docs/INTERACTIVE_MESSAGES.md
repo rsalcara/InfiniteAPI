@@ -56,8 +56,9 @@ curl -X POST http://localhost:8787/v1/messages/send_menu \
 
 Botões de resposta rápida. De 1 a 16 opções, usa o `buttonsMessage` legado
 validado em clientes móveis e vinculados. De 17 a 30 opções, converte o conjunto
-em uma única `listMessage`, dividida em seções de até 10 itens e mantendo os IDs
-de seleção.
+em uma única `listMessage`, dividida em seções tituladas de até 10 itens e
+mantendo os IDs de seleção. As seções tituladas reproduzem o mesmo caminho do
+envio `nativeList`, inclusive em smartphone e WhatsApp Web.
 
 **Campos:** `text`, `footer`, `buttons[{ id, text }]`, `headerTitle`.
 Com `headerImage` ou `headerVideo`, até 10 opções usam `native_flow`; mídia de

@@ -1326,25 +1326,37 @@ export const generateWAMessageContent = async (
 			if (buttons.length > MAX_LEGACY_QUICK_REPLY_BUTTONS) {
 				const sections = Array.from(
 					{ length: Math.ceil(buttons.length / LIST_LIMITS.MAX_ROWS_PER_SECTION) },
-					(_, sectionIndex) => ({
-						title: '',
-						rows: buttons
-							.slice(
-								sectionIndex * LIST_LIMITS.MAX_ROWS_PER_SECTION,
-								(sectionIndex + 1) * LIST_LIMITS.MAX_ROWS_PER_SECTION
-							)
-							.map((btn: any) => {
-								const displayText = String(btn.text)
-								const title = truncateUtf16(displayText, LIST_LIMITS.MAX_ROW_TITLE)
+					(_, sectionIndex) => {
+						const firstOption = sectionIndex * LIST_LIMITS.MAX_ROWS_PER_SECTION + 1
+						const lastOption = Math.min(
+							firstOption + LIST_LIMITS.MAX_ROWS_PER_SECTION - 1,
+							buttons.length
+						)
 
-								return {
-									id: btn.id,
-									title,
-									description:
-										title === displayText ? undefined : truncateUtf16(displayText, LIST_LIMITS.MAX_ROW_DESCRIPTION)
-								}
-							})
-					})
+						return {
+							// Mobile clients discard multi-section lists whose section titles
+							// are empty. Match the proven nativeList path with a stable title.
+							title: `Options ${firstOption}-${lastOption}`,
+							rows: buttons
+								.slice(
+									sectionIndex * LIST_LIMITS.MAX_ROWS_PER_SECTION,
+									(sectionIndex + 1) * LIST_LIMITS.MAX_ROWS_PER_SECTION
+								)
+								.map((btn: any) => {
+									const displayText = String(btn.text)
+									const title = truncateUtf16(displayText, LIST_LIMITS.MAX_ROW_TITLE)
+
+									return {
+										id: btn.id,
+										title,
+										description:
+											title === displayText
+												? undefined
+												: truncateUtf16(displayText, LIST_LIMITS.MAX_ROW_DESCRIPTION)
+									}
+								})
+						}
+					}
 				)
 				const generated = generateListMessageLegacy(
 					{ sections },
