@@ -1328,10 +1328,7 @@ export const generateWAMessageContent = async (
 					{ length: Math.ceil(buttons.length / LIST_LIMITS.MAX_ROWS_PER_SECTION) },
 					(_, sectionIndex) => {
 						const firstOption = sectionIndex * LIST_LIMITS.MAX_ROWS_PER_SECTION + 1
-						const lastOption = Math.min(
-							firstOption + LIST_LIMITS.MAX_ROWS_PER_SECTION - 1,
-							buttons.length
-						)
+						const lastOption = Math.min(firstOption + LIST_LIMITS.MAX_ROWS_PER_SECTION - 1, buttons.length)
 
 						return {
 							// Mobile clients discard multi-section lists whose section titles
@@ -1350,9 +1347,7 @@ export const generateWAMessageContent = async (
 										id: btn.id,
 										title,
 										description:
-											title === displayText
-												? undefined
-												: truncateUtf16(displayText, LIST_LIMITS.MAX_ROW_DESCRIPTION)
+											title === displayText ? undefined : truncateUtf16(displayText, LIST_LIMITS.MAX_ROW_DESCRIPTION)
 									}
 								})
 						}

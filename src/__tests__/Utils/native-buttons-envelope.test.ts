@@ -226,11 +226,7 @@ describe('native button protobuf envelope', () => {
 
 		const sections = roundTrip(content).listMessage?.sections
 		expect(sections?.map(section => section.rows?.length)).toEqual([10, 10, 10])
-		expect(sections?.map(section => section.title)).toEqual([
-			'Options 1-10',
-			'Options 11-20',
-			'Options 21-30'
-		])
+		expect(sections?.map(section => section.title)).toEqual(['Options 1-10', 'Options 11-20', 'Options 21-30'])
 	})
 
 	it('rejects reply-only sets above the 30-option list limit', async () => {
