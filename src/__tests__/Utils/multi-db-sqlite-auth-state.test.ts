@@ -909,6 +909,36 @@ describe('useMultiDbSqliteAuthState', () => {
 		}
 	})
 
+	it('preserves the legacy tctoken source of truth when relational tombstones exist', async () => {
+		const jid = 'legacy-source-of-truth@lid'
+		const first = await useMultiDbSqliteAuthState({ sessionDir: dir })
+		try {
+			await first.state.keys.set({ tctoken: { [jid]: { token: Buffer.from([8]), timestamp: '900' } } })
+			const waDb = first.store.handle('wa.db')
+			waDb.prepare('DELETE FROM wa_trusted_contacts WHERE jid = ?').run(jid)
+			waDb.prepare('DELETE FROM wa_trusted_contacts_send WHERE jid = ?').run(jid)
+			waDb
+				.prepare(
+					'INSERT INTO wa_trusted_contacts (jid, incoming_tc_token, incoming_tc_token_timestamp) VALUES (?, ?, ?)'
+				)
+				.run(jid, Buffer.alloc(0), 0)
+		} finally {
+			first.close()
+		}
+
+		const legacy = await useMultiDbSqliteAuthState({ sessionDir: dir, signalSourceOfTruth: false })
+		try {
+			const stored = (await legacy.state.keys.get('tctoken', [jid]))[jid]
+			expect(Buffer.from(stored!.token)).toEqual(Buffer.from([8]))
+			expect(stored!.timestamp).toBe('900')
+			expect(
+				legacy.store.handle('axolotl.db').prepare("SELECT id FROM signal_kv WHERE type = 'tctoken' AND id = ?").get(jid)
+			).toBeDefined()
+		} finally {
+			legacy.close()
+		}
+	})
+
 	it('retains the handoff tombstone when startup fallback deletion fails, then retries on the next reopen', async () => {
 		const jid = 'startup-handoff-delete-retry@lid'
 		const first = await useMultiDbSqliteAuthState({ sessionDir: dir })

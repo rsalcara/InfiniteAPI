@@ -1,4 +1,5 @@
 import type { BaileysEventEmitter, MessageDeliveryState, MessageDeliveryStateUpdate, WAMessageKey } from '../Types'
+import type { ILogger } from './logger'
 
 export type MessageDeliveryStateInput = Omit<MessageDeliveryStateUpdate, 'timestamp' | 'state' | 'key'> & {
 	key: WAMessageKey
@@ -22,9 +23,18 @@ export const buildMessageDeliveryState = ({
 /** Emits the same delivery contract from every outbound/inbound call site. */
 export const emitMessageDeliveryState = (
 	ev: BaileysEventEmitter,
-	input: MessageDeliveryStateInput
+	input: MessageDeliveryStateInput,
+	logger?: ILogger
 ): MessageDeliveryStateUpdate => {
 	const update = buildMessageDeliveryState(input)
-	ev.emit('message.delivery-state', update)
+	try {
+		ev.emit('message.delivery-state', update)
+	} catch (error) {
+		logger?.warn(
+			{ error, state: update.state, messageId: update.key.id },
+			'message.delivery-state listener failed; message processing continues'
+		)
+	}
+
 	return update
 }

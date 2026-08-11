@@ -160,6 +160,15 @@ describe('participant fanout admission', () => {
 		expect(new Set(recipients).size).toBe(3)
 	})
 
+	it('preserves the hosted PN domain when resolving a participant LID', async () => {
+		const getLIDForPN = jest.fn(async () => '207421150646274@hosted.lid')
+
+		await expect(canonicalizeParticipantFanoutRecipient('5511999999999:99@hosted', getLIDForPN)).resolves.toBe(
+			'207421150646274:99@hosted.lid'
+		)
+		expect(getLIDForPN).toHaveBeenCalledWith('5511999999999@hosted')
+	})
+
 	it('deduplicates exact canonical PN/LID targets while preserving order', () => {
 		const targets = [
 			{ input: 'pn', canonical: '123:1@lid' },

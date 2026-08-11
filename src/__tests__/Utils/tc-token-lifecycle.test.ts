@@ -47,6 +47,56 @@ const resolvers = { getLIDForPN: async () => null, getPNForLID: async () => null
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
 describe('TcTokenLifecycleService', () => {
+	it('does not create a duplicate job when the persisted sent bucket is still valid', async () => {
+		const { store, values, key } = makeStore()
+		await store.set({ tctoken: { [jid]: { token: Buffer.alloc(0), senderTimestamp: 900 } } })
+		const send = jest.fn(async () => resultNode)
+		const service = new TcTokenLifecycleService({ keys: store, resolvers, send, now: () => 900_000 })
+
+		await service.enqueue([jid], 900)
+		expect(send).not.toHaveBeenCalled()
+		expect(values.has(key('tctoken-job', jid))).toBe(false)
+		await service.stop()
+	})
+
+	it('requires enumeration before claiming restart recovery', async () => {
+		const { store } = makeStore(false)
+		const service = new TcTokenLifecycleService({ keys: store, resolvers, send: async () => resultNode })
+
+		await expect(service.startRecovery()).rejects.toThrow('restart recovery requires keys.list or keys.listIds')
+		await service.stop()
+	})
+
+	it('reuses a durable job stored under a newly resolved alias', async () => {
+		const { store, values, key } = makeStore()
+		const lid = '123456@lid'
+		const existing: SignalDataTypeMap['tctoken-job'] = {
+			canonicalJid: jid,
+			requestedJid: jid,
+			aliases: [jid],
+			issueTimestamp: 1_000,
+			state: 'pending',
+			attemptCount: 0,
+			nextRetryAt: 1_000_000,
+			leaseUntil: 0,
+			timeoutMs: 32_000,
+			createdAt: 1_000_000,
+			updatedAt: 1_000_000
+		}
+		await store.set({ 'tctoken-job': { [jid]: existing } })
+		const service = new TcTokenLifecycleService({
+			keys: store,
+			resolvers: { getLIDForPN: async () => lid, getPNForLID: async () => jid },
+			send: async () => resultNode,
+			now: () => 1_000_000
+		})
+
+		await service.enqueue([lid], 1_000)
+		expect(values.get(key('tctoken-job', jid))).toEqual(existing)
+		expect(values.has(key('tctoken-job', lid))).toBe(false)
+		await service.stop()
+	})
+
 	it('runs newly queued jobs when the custom key store cannot enumerate records', async () => {
 		const { store, values, key } = makeStore(false)
 		const send = jest.fn(async () => resultNode)

@@ -77,6 +77,7 @@ const makeFakeSocket = ({
 	const endHandlers: Array<() => void | Promise<void>> = []
 	const drainHandlers: Array<() => void | Promise<void>> = []
 	const keys = makeKeys()
+	let coldMappingKnown = false
 	const getKnownPNForLID = jest.fn(async (jid: string) =>
 		jid.startsWith('100000000000001')
 			? ownPn
@@ -102,7 +103,7 @@ const makeFakeSocket = ({
 				? ownLid
 				: jid.startsWith('5511000000002')
 					? remoteLid
-					: jid.startsWith('554391910391') && coldRecipient
+					: (jid.startsWith('554391910391') || (coldMappingKnown && jid.startsWith('5543991910391'))) && coldRecipient
 						? coldLid
 						: null,
 		getPNForLID: async (jid: string) =>
@@ -118,7 +119,9 @@ const makeFakeSocket = ({
 			jids.flatMap(jid =>
 				jid.startsWith('5511000000001') ? (ownMapping ? [{ pn: jid, lid: ownLid }] : []) : [{ pn: jid, lid: remoteLid }]
 			),
-		storeLIDPNMappings: async () => undefined
+		storeLIDPNMappings: async () => {
+			coldMappingKnown = true
+		}
 	}
 	const signalRepository = {
 		lidMapping: mapping,
@@ -383,6 +386,7 @@ describe('messages-send stanza assembly', () => {
 		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
 		try {
 			const sent = await socket.sendMessage(coldRequestedPn, { text: 'cold identity' })
+			const sentAgain = await socket.sendMessage(coldRequestedPn, { text: 'cold identity again' })
 			const inboundReply = {
 				key: { remoteJid: coldLid, fromMe: false, id: 'COLD-REPLY-1' },
 				message: { conversation: 'reply' }
@@ -392,6 +396,7 @@ describe('messages-send stanza assembly', () => {
 			} as any)
 
 			expect(sent!.key.remoteJid).toBe(coldCanonicalPn)
+			expect(sentAgain!.key.remoteJid).toBe(coldCanonicalPn)
 			expect(inboundReply.key.remoteJid).toBe(sent!.key.remoteJid)
 			expect(sent!.key.remoteJidAlt).toBe(coldLid)
 			expect(fake.sent.at(-1).attrs.to).toBe(coldLid)

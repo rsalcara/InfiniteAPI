@@ -547,7 +547,10 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		}
 	}
 
-	await recoverOrphanedTctokenHandoffTombstones()
+	// Relational tombstones are authoritative only in typed-table mode. With
+	// the kill switch off, signal_kv is the source of truth and must never be
+	// deleted based on stale relational handoff state from an earlier run.
+	if (sourceOfTruth) await recoverOrphanedTctokenHandoffTombstones()
 
 	const msgstoreDb = store.handle('msgstore.db')
 	const axolotlDb = store.handle('axolotl.db')

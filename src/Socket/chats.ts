@@ -96,6 +96,7 @@ import {
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
 import processMessage, { applyProcessedHistorySync, emitProcessedHistorySync } from '../Utils/process-message'
+import { mapParticipantFanout } from '../Utils/relay-stanza'
 import {
 	buildTcTokenFromJid,
 	buildTcTokenNode,
@@ -659,21 +660,29 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		return botList
 	}
 
+	const buildTcTokenUsers = (jids: string[]) =>
+		mapParticipantFanout(
+			jids,
+			async jid => {
+				const user = new USyncUser().withId(jid)
+				const privacyToken = await resolveUsableTcTokenForJid({
+					authState,
+					jid,
+					getLIDForPN,
+					getPNForLID,
+					bucketPolicy: tcTokenBucketPolicy
+				})
+				if (privacyToken.buffer) user.withPrivacyToken(privacyToken.buffer, privacyToken.timestamp)
+				return user
+			},
+			// These public queries historically accepted the complete variadic input.
+			// Bound concurrency without imposing the message-fanout safety ceiling.
+			{ max: jids.length }
+		)
+
 	const fetchStatus = async (...jids: string[]) => {
 		const usyncQuery = new USyncQuery().withStatusProtocol()
-
-		for (const jid of jids) {
-			const user = new USyncUser().withId(jid)
-			const privacyToken = await resolveUsableTcTokenForJid({
-				authState,
-				jid,
-				getLIDForPN,
-				getPNForLID,
-				bucketPolicy: tcTokenBucketPolicy
-			})
-			if (privacyToken.buffer) user.withPrivacyToken(privacyToken.buffer, privacyToken.timestamp)
-			usyncQuery.withUser(user)
-		}
+		for (const user of await buildTcTokenUsers(jids)) usyncQuery.withUser(user)
 
 		const result = await sock.executeUSyncQuery(usyncQuery)
 		if (result) {
@@ -683,19 +692,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	const fetchDisappearingDuration = async (...jids: string[]) => {
 		const usyncQuery = new USyncQuery().withDisappearingModeProtocol()
-
-		for (const jid of jids) {
-			const user = new USyncUser().withId(jid)
-			const privacyToken = await resolveUsableTcTokenForJid({
-				authState,
-				jid,
-				getLIDForPN,
-				getPNForLID,
-				bucketPolicy: tcTokenBucketPolicy
-			})
-			if (privacyToken.buffer) user.withPrivacyToken(privacyToken.buffer, privacyToken.timestamp)
-			usyncQuery.withUser(user)
-		}
+		for (const user of await buildTcTokenUsers(jids)) usyncQuery.withUser(user)
 
 		const result = await sock.executeUSyncQuery(usyncQuery)
 		if (result) {

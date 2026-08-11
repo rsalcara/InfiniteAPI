@@ -454,23 +454,46 @@ export const hasNonNullishProperty = <K extends PropertyKey>(
 /**
  * Validates that a string is not empty or whitespace-only
  */
-const validateNonEmptyString = (value: string | undefined, fieldName: string): void => {
-	if (!value || value.trim().length === 0) {
+const validateNonEmptyString = (value: unknown, fieldName: string): void => {
+	if (typeof value !== 'string' || value.trim().length === 0) {
 		throw new Boom(`Button ${fieldName} is required and cannot be empty`, { statusCode: 400 })
 	}
 }
 
 /**
- * Converts a NativeButton to the WhatsApp Native Flow format
- * Includes validation for required fields
+ * Validates the fields required by each native button type.
  */
-export const formatNativeFlowButton = (button: NativeButton): NativeFlowButton => {
-	// Validate common field
+const validateNativeButton = (button: NativeButton): void => {
+	if (!button || typeof button !== 'object') {
+		throw new Boom('Invalid native button', { statusCode: 400 })
+	}
+
 	validateNonEmptyString(button.text, 'text')
 
 	switch (button.type) {
 		case 'url':
 			validateNonEmptyString(button.url, 'url')
+			return
+		case 'copy':
+			validateNonEmptyString(button.copyText, 'copyText')
+			return
+		case 'reply':
+			validateNonEmptyString(button.id, 'id')
+			return
+		case 'call':
+			validateNonEmptyString(button.phoneNumber, 'phoneNumber')
+			return
+		default:
+			throw new Boom('Invalid button type', { statusCode: 400 })
+	}
+}
+
+/** Converts a validated NativeButton to the WhatsApp Native Flow format. */
+export const formatNativeFlowButton = (button: NativeButton): NativeFlowButton => {
+	validateNativeButton(button)
+
+	switch (button.type) {
+		case 'url':
 			return {
 				name: 'cta_url',
 				buttonParamsJson: JSON.stringify({
@@ -480,34 +503,20 @@ export const formatNativeFlowButton = (button: NativeButton): NativeFlowButton =
 				})
 			}
 		case 'copy':
-			validateNonEmptyString(button.copyText, 'copyText')
 			return {
 				name: 'cta_copy',
-				buttonParamsJson: JSON.stringify({
-					display_text: button.text,
-					copy_code: button.copyText
-				})
+				buttonParamsJson: JSON.stringify({ display_text: button.text, copy_code: button.copyText })
 			}
 		case 'reply':
-			validateNonEmptyString(button.id, 'id')
 			return {
 				name: 'quick_reply',
-				buttonParamsJson: JSON.stringify({
-					display_text: button.text,
-					id: button.id
-				})
+				buttonParamsJson: JSON.stringify({ display_text: button.text, id: button.id })
 			}
 		case 'call':
-			validateNonEmptyString(button.phoneNumber, 'phoneNumber')
 			return {
 				name: 'cta_call',
-				buttonParamsJson: JSON.stringify({
-					display_text: button.text,
-					phone_number: button.phoneNumber
-				})
+				buttonParamsJson: JSON.stringify({ display_text: button.text, phone_number: button.phoneNumber })
 			}
-		default:
-			throw new Boom('Invalid button type', { statusCode: 400 })
 	}
 }
 
@@ -1299,16 +1308,21 @@ export const generateWAMessageContent = async (
 	// Check for nativeButtons first - this is the recommended modern approach
 	if (hasNonNullishProperty(message, 'nativeButtons')) {
 		const nativeMsg = message as any
-		const buttons = nativeMsg.nativeButtons as any[]
+		const nativeButtons = nativeMsg.nativeButtons
+		if (!Array.isArray(nativeButtons)) {
+			throw new Boom('nativeButtons must be an array', { statusCode: 400 })
+		}
 
-		if (!buttons || buttons.length === 0) {
+		if (nativeButtons.length === 0) {
 			throw new Boom('nativeButtons requires at least one button', { statusCode: 400 })
 		}
 
+		for (const button of nativeButtons) validateNativeButton(button)
+		const buttons = nativeButtons as NativeButton[]
+
 		// Standard reply sets use the legacy envelope validated across mobile and
 		// companion clients. Sets beyond that envelope's limit become a list.
-		const allQuickReply = buttons.every((btn: any) => btn.type === 'reply')
-		const formattedQuickReplies = allQuickReply ? buttons.map(formatNativeFlowButton) : undefined
+		const allQuickReply = buttons.every(btn => btn.type === 'reply')
 
 		if (allQuickReply) {
 			const hasHeaderMedia = Boolean(nativeMsg.headerImage || nativeMsg.headerVideo)
@@ -1380,7 +1394,7 @@ export const generateWAMessageContent = async (
 					footer: nativeMsg.footer ? { text: nativeMsg.footer } : undefined,
 					header,
 					nativeFlowMessage: {
-						buttons: formattedQuickReplies,
+						buttons: buttons.map(formatNativeFlowButton),
 						messageParamsJson: JSON.stringify({}),
 						messageVersion: 1
 					}

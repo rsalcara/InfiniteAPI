@@ -2,6 +2,18 @@ import { NewChatMessageCappingStatusType, ReachoutTimelockEnforcementType } from
 import { evaluateOutboundPolicy } from '../../Utils/outbound-policy'
 
 describe('outbound cold-recipient policy', () => {
+	it('reports quota exhaustion instead of a non-blocking capping status', () => {
+		expect(
+			evaluateOutboundPolicy({
+				capping: {
+					capping_status: NewChatMessageCappingStatusType.NONE,
+					total_quota: 10,
+					used_quota: 10
+				}
+			})
+		).toMatchObject({ allowed: false, restriction: { reason: 'quota-exhausted' } })
+	})
+
 	it('blocks an active reachout restriction without retry or bypass', () => {
 		const now = Date.UTC(2026, 7, 6)
 		expect(

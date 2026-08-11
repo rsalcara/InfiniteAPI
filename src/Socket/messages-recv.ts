@@ -125,7 +125,8 @@ import {
 	resolveIncomingTcTokenAliases,
 	resolveTcTokenAliases,
 	resolveTcTokenBucketPolicy,
-	selectNewestUsableTcToken
+	selectNewestUsableTcToken,
+	TC_TOKEN_LEGACY_TRANSACTION_KEY
 } from '../Utils/tc-token-utils'
 import {
 	handleUsernameDeleteNotification as handleUsernameDeleteNotificationImpl,
@@ -3091,7 +3092,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			const records = aliases.map(id => ({ type: 'tctoken' as const, id }))
 			if (authState.keys.transactWith) await authState.keys.transactWith({ records }, work)
-			else await authState.keys.transaction(work, `live-tctoken:${records.map(record => record.id).join(',')}`)
+			else await authState.keys.transaction(work, TC_TOKEN_LEGACY_TRANSACTION_KEY)
 			if (!stored) continue
 
 			logTcToken('stored', {
@@ -3184,10 +3185,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		return [...new Set(aliases)]
 	}
 
-	const getRecentRetryMessage = async (jid: string, id: string) => {
+	const getRecentRetryMessage = async (jid: string, id: string, resolvedAliases?: string[]) => {
 		if (!messageRetryManager) return undefined
 		try {
-			return messageRetryManager.getRecentMessageForJids(await resolveRetryLookupJids(jid), id)
+			return messageRetryManager.getRecentMessageForJids(resolvedAliases ?? (await resolveRetryLookupJids(jid)), id)
 		} catch (error) {
 			// Receipt handling must remain ACK-able even if a custom cache or mapping
 			// backend fails. Falling back to the stanza route is safer than letting the
@@ -3622,18 +3623,23 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						(status >= proto.WebMessageInfo.Status.SERVER_ACK || !isNodeFromMe)
 					) {
 						if (status === proto.WebMessageInfo.Status.DELIVERY_ACK && key.fromMe && !isNodeFromMe) {
+							const deliveryLookupJids = await resolveRetryLookupJids(wireJid)
 							for (const id of ids) {
-								const cachedDelivery = await getRecentRetryMessage(wireJid, id)
-								emitMessageDeliveryState(ev, {
-									key: { ...key, id },
-									state: 'delivered',
-									requestedJid: cachedDelivery?.requestedJid,
-									canonicalJid: cachedDelivery?.canonicalJid ?? key.remoteJid ?? undefined,
-									wireJid: cachedDelivery?.to ?? wireJid,
-									...(Number.isFinite(+(attrs.t ?? 0)) && +(attrs.t ?? 0) > 0
-										? { serverTimestamp: +(attrs.t ?? 0) * 1000 }
-										: {})
-								})
+								const cachedDelivery = await getRecentRetryMessage(wireJid, id, deliveryLookupJids)
+								emitMessageDeliveryState(
+									ev,
+									{
+										key: { ...key, id },
+										state: 'delivered',
+										requestedJid: cachedDelivery?.requestedJid,
+										canonicalJid: cachedDelivery?.canonicalJid ?? key.remoteJid ?? undefined,
+										wireJid: cachedDelivery?.to ?? wireJid,
+										...(Number.isFinite(+(attrs.t ?? 0)) && +(attrs.t ?? 0) > 0
+											? { serverTimestamp: +(attrs.t ?? 0) * 1000 }
+											: {})
+									},
+									logger
+								)
 							}
 						}
 
@@ -4605,14 +4611,18 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		await normalizeKeyLidToPn(key, signalRepository.lidMapping, logger)
 		if (!attrs.error) {
 			if (attrs.id) {
-				emitMessageDeliveryState(ev, {
-					key,
-					state: 'server_ack',
-					requestedJid: recentMessage?.requestedJid,
-					canonicalJid: recentMessage?.canonicalJid ?? key.remoteJid ?? undefined,
-					wireJid: recentMessage?.to ?? wireJid,
-					serverCode: attrs.class || 'message'
-				})
+				emitMessageDeliveryState(
+					ev,
+					{
+						key,
+						state: 'server_ack',
+						requestedJid: recentMessage?.requestedJid,
+						canonicalJid: recentMessage?.canonicalJid ?? key.remoteJid ?? undefined,
+						wireJid: recentMessage?.to ?? wireJid,
+						serverCode: attrs.class || 'message'
+					},
+					logger
+				)
 			}
 
 			return
@@ -4726,17 +4736,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					}
 				}
 			])
-			emitMessageDeliveryState(ev, {
-				key,
-				state: 'failed',
-				requestedJid: recentMessage?.requestedJid,
-				canonicalJid: recentMessage?.canonicalJid ?? key.remoteJid ?? undefined,
-				wireJid: recentMessage?.to ?? wireJid,
-				serverCode: attrs.error,
-				category: errorPolicy.kind,
-				reason: attrs.reason || 'reason unavailable',
-				action: 'retry-suppressed'
-			})
+			emitMessageDeliveryState(
+				ev,
+				{
+					key,
+					state: 'failed',
+					requestedJid: recentMessage?.requestedJid,
+					canonicalJid: recentMessage?.canonicalJid ?? key.remoteJid ?? undefined,
+					wireJid: recentMessage?.to ?? wireJid,
+					serverCode: attrs.error,
+					category: errorPolicy.kind,
+					reason: attrs.reason || 'reason unavailable',
+					action: 'retry-suppressed'
+				},
+				logger
+			)
 		}
 	}
 

@@ -6,6 +6,7 @@ import type { ILogger } from './logger'
 import {
 	resolveTcTokenAliases,
 	shouldSendNewTcToken,
+	TC_TOKEN_LEGACY_TRANSACTION_KEY,
 	type TcTokenAliasResolvers,
 	type TcTokenBucketPolicy,
 	updateTcTokenIssueState
@@ -89,6 +90,10 @@ export class TcTokenLifecycleService {
 	}
 
 	async startRecovery(): Promise<void> {
+		if (!this.options.keys.list && !this.options.keys.listIds) {
+			throw new Error('trusted-contact token restart recovery requires keys.list or keys.listIds')
+		}
+
 		this.schedule(0)
 	}
 
@@ -115,6 +120,10 @@ export class TcTokenLifecycleService {
 
 	private async enqueueAndWait(jid: string, timestamp: number, timeoutMs: number): Promise<BinaryNode> {
 		const job = await this.enqueueOne(jid, timestamp, timeoutMs)
+		if (!job) {
+			throw new Boom('trusted-contact token was already issued in the current bucket', { statusCode: 409 })
+		}
+
 		if (job.state === 'terminal') {
 			throw new Boom(job.lastError || 'trusted-contact token issue is terminal for the current bucket', {
 				statusCode: job.lastStatus ?? 400
@@ -140,23 +149,39 @@ export class TcTokenLifecycleService {
 		return waiter
 	}
 
-	private async enqueueOne(jid: string, timestamp: number, timeoutMs: number): Promise<TcTokenIssueJob> {
+	private async enqueueOne(jid: string, timestamp: number, timeoutMs: number): Promise<TcTokenIssueJob | undefined> {
 		if (this.stopped) throw new Error('trusted-contact token lifecycle is stopped')
 		const aliases = await resolveTcTokenAliases(jid, this.options.resolvers)
 		const canonicalJid = aliases[0]!
 		const records = [
 			...aliases.map(id => ({ type: 'tctoken' as const, id })),
-			{ type: 'tctoken-job' as const, id: canonicalJid }
+			...aliases.map(id => ({ type: 'tctoken-job' as const, id }))
 		]
-		let selected!: TcTokenIssueJob
+		let selected: TcTokenIssueJob | undefined
 		const work = async () => {
-			const current = (await this.options.keys.get('tctoken-job', [canonicalJid]))[canonicalJid]
+			const jobsByAlias = await this.options.keys.get('tctoken-job', aliases)
+			const current = aliases
+				.map(alias => jobsByAlias[alias])
+				.filter((job): job is TcTokenIssueJob => Boolean(job))
+				.sort((left, right) => right.issueTimestamp - left.issueTimestamp || right.updatedAt - left.updatedAt)[0]
 			if (
 				current &&
 				(current.state !== 'terminal' ||
 					!shouldSendNewTcToken(current.issueTimestamp, this.options.bucketPolicy, Math.floor(this.now() / 1000)))
 			) {
 				selected = current
+				return
+			}
+
+			const tokenState = await this.options.keys.get('tctoken', aliases)
+			const newestSentTimestamp = aliases.reduce<number | undefined>((newest, alias) => {
+				const value = tokenState[alias]?.senderTimestamp
+				return value !== undefined && (newest === undefined || value > newest) ? value : newest
+			}, undefined)
+			if (
+				newestSentTimestamp !== undefined &&
+				!shouldSendNewTcToken(newestSentTimestamp, this.options.bucketPolicy, Math.floor(this.now() / 1000))
+			) {
 				return
 			}
 
@@ -180,13 +205,18 @@ export class TcTokenLifecycleService {
 				issueTimestamp: timestamp,
 				phase: 'scheduled'
 			})
-			await this.options.keys.set({ 'tctoken-job': { [canonicalJid]: selected } })
+			await this.options.keys.set({
+				'tctoken-job': Object.fromEntries(
+					aliases.map(alias => [alias, alias === canonicalJid ? selected! : null] as const)
+				)
+			})
 		}
 
 		if (this.options.keys.transactWith) await this.options.keys.transactWith({ records }, work)
-		else await this.options.keys.transaction(work, `privacy-token-job:${canonicalJid}`)
+		else await this.options.keys.transaction(work, TC_TOKEN_LEGACY_TRANSACTION_KEY)
+		if (!selected) return undefined
 		if (selected.state === 'terminal') this.trackedJobIds.delete(canonicalJid)
-		else this.trackedJobIds.add(canonicalJid)
+		else this.trackedJobIds.add(selected.canonicalJid)
 		return selected
 	}
 
@@ -229,7 +259,12 @@ export class TcTokenLifecycleService {
 		this.timer = setTimeout(
 			() => {
 				this.timer = undefined
-				if (this.worker) return
+				if (this.worker) {
+					this.rerunRequested = true
+
+					return
+				}
+
 				const run = () => this.runDueJobs()
 				this.worker = (this.options.keys.runOutsideTransaction ? this.options.keys.runOutsideTransaction(run) : run())
 					.catch(error => {
@@ -254,6 +289,16 @@ export class TcTokenLifecycleService {
 		const jobs: TcTokenIssueJob[] = []
 		if (this.options.keys.list) {
 			for await (const [id, job] of this.options.keys.list('tctoken-job')) {
+				this.trackedJobIds.add(id)
+				jobs.push(job)
+			}
+		} else if (this.options.keys.listIds) {
+			const ids: string[] = []
+			for await (const id of this.options.keys.listIds('tctoken-job')) ids.push(id)
+			const records = await this.options.keys.get('tctoken-job', ids)
+			for (const id of ids) {
+				const job = records[id]
+				if (!job) continue
 				this.trackedJobIds.add(id)
 				jobs.push(job)
 			}
@@ -369,7 +414,7 @@ export class TcTokenLifecycleService {
 		}
 
 		if (this.options.keys.transactWith) await this.options.keys.transactWith({ records }, work)
-		else await this.options.keys.transaction(work, `privacy-token-complete:${job.canonicalJid}`)
+		else await this.options.keys.transaction(work, TC_TOKEN_LEGACY_TRANSACTION_KEY)
 		if (completed) this.trackedJobIds.delete(job.canonicalJid)
 	}
 
@@ -421,7 +466,7 @@ export class TcTokenLifecycleService {
 		}
 
 		if (this.options.keys.transactWith) await this.options.keys.transactWith({ records: [record] }, work)
-		else await this.options.keys.transaction(work, `privacy-token-job:${job.canonicalJid}`)
+		else await this.options.keys.transaction(work, TC_TOKEN_LEGACY_TRANSACTION_KEY)
 	}
 
 	async stop(): Promise<void> {

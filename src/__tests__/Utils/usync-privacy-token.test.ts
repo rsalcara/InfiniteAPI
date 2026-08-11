@@ -127,6 +127,19 @@ describe('USync/MEX privacy-token serialization', () => {
 		])
 	})
 
+	it('normalizes an explicit @c.us row identity before mapping', () => {
+		const row = { id: '5511999999999@c.us', jid: '5511999999999@c.us', lid: '123456@lid', contact: true }
+
+		expect(getUSyncPnIdentity(row)).toBe('5511999999999@s.whatsapp.net')
+		expect(mapUSyncResultToLIDMappings([row])).toEqual([{ pn: '5511999999999@s.whatsapp.net', lid: '123456@lid' }])
+	})
+
+	it('keeps an explicit negative contact result', () => {
+		const row = { id: '5511999999999@s.whatsapp.net', contact: false }
+
+		expect(mapUSyncResultToOnWhatsApp([row])).toEqual([{ jid: '5511999999999@s.whatsapp.net', exists: false }])
+	})
+
 	it('does not add privacy_token to MEX unless the call site opts in', () => {
 		const variables = { user_id: '123@lid' }
 

@@ -20,6 +20,17 @@ const roundTrip = (message: proto.IMessage) =>
 	proto.Message.decode(proto.Message.encode(proto.Message.create(message)).finish())
 
 describe('native button protobuf envelope', () => {
+	it.each([
+		['a non-array value', {}],
+		['a null element', [null]],
+		['a non-string label', [{ type: 'reply', id: 'option-1', text: 1 }]],
+		['a non-string reply id', [{ type: 'reply', id: 1, text: 'Option 1' }]]
+	])('rejects %s with a client error before button classification', async (_label, nativeButtons) => {
+		await expect(
+			generateWAMessageContent({ text: 'Choose an option', nativeButtons } as AnyMessageContent, options)
+		).rejects.toMatchObject({ output: { statusCode: 400 } })
+	})
+
 	it('encodes quick replies in the legacy reply envelope', async () => {
 		const content = await generateWAMessageContent(
 			{

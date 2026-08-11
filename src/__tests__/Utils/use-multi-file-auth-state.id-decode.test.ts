@@ -118,5 +118,9 @@ describe('useMultiFileAuthState — list/listIds id decoding', () => {
 		const tokenIds: string[] = []
 		for await (const id of state.keys.listIds!('tctoken')) tokenIds.push(id)
 		expect(tokenIds).toEqual(['contact@lid'])
+
+		const jobIds: string[] = []
+		for await (const id of state.keys.listIds!('tctoken-job')) jobIds.push(id)
+		expect(jobIds).toEqual(['contact@lid'])
 	})
 })

@@ -32,7 +32,10 @@ export type USyncQueryResultList = {
 }
 
 export const getUSyncPnIdentity = (row: USyncQueryResultList): string | undefined =>
-	[row.jid, row.pnJid, row.id].find(isAnyPnUser)
+	[row.jid, row.pnJid, row.id]
+		.filter((candidate): candidate is string => typeof candidate === 'string')
+		.map(jidNormalizedUser)
+		.find(isAnyPnUser)
 
 export const getUSyncLidIdentity = (row: USyncQueryResultList): string | undefined =>
 	[row.newJid, row.lid, row.id, row.jid].find(isAnyLidUser)
@@ -64,7 +67,7 @@ export const mapUSyncResultToOnWhatsApp = (
 	rows.flatMap(row => {
 		const jid = getUSyncPnIdentity(row) ?? getSingleFallbackPn(rows, fallbackPns)
 
-		return row.contact && jid && isAnyPnUser(jid) ? [{ jid, exists: row.contact as boolean }] : []
+		return typeof row.contact === 'boolean' && jid && isAnyPnUser(jid) ? [{ jid, exists: row.contact }] : []
 	})
 
 export type USyncQueryResult = {

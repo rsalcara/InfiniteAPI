@@ -40,6 +40,8 @@ const TC_TOKEN_NUM_BUCKETS = 4
 export const TC_TOKEN_MAX_AGE_SECONDS = 15_724_800
 
 export type TcTokenAbProps = NonNullable<import('../Types').SocketConfig['tcTokenAbProps']>
+/** Shared fallback lock for stores without record-scoped transactions. */
+export const TC_TOKEN_LEGACY_TRANSACTION_KEY = 'tctoken-records'
 export type TcTokenBucketPolicy = {
 	profile: 'web' | 'native_android'
 	incoming: { durationSeconds: number; numBuckets: number }
@@ -306,7 +308,7 @@ export async function restoreTcTokensFromHistory({
 		}
 
 		if (keys.transactWith) await keys.transactWith({ records }, work)
-		else await keys.transaction(work, `history-tctoken:${records.map(record => record.id).join(',')}`)
+		else await keys.transaction(work, TC_TOKEN_LEGACY_TRANSACTION_KEY)
 		if (applied) restored++
 		else skipped++
 	}
@@ -418,7 +420,7 @@ export async function updateTcTokenIssueState({
 	if (keys.transactWith) {
 		await keys.transactWith({ records }, work)
 	} else {
-		await keys.transaction(work, `privacy-token-issue:${records.map(record => record.id).join(',')}`)
+		await keys.transaction(work, TC_TOKEN_LEGACY_TRANSACTION_KEY)
 	}
 
 	return applied
@@ -471,24 +473,30 @@ export type ResolvedTcToken = { buffer?: Buffer; timestamp?: string }
 const clearExpiredTcTokenAliases = async (
 	authState: TcTokenParams['authState'],
 	aliases: string[],
-	tcTokenData: Record<string, SignalDataTypeMap['tctoken'] | undefined>,
 	policy?: TcTokenBucketPolicy
 ): Promise<void> => {
-	const expired: Record<string, SignalDataTypeMap['tctoken'] | null> = {}
-	for (const alias of aliases) {
-		const candidate = tcTokenData?.[alias]
-		if (!candidate?.token?.length || !isTcTokenExpired(candidate.timestamp, policy)) continue
-		expired[alias] =
-			candidate.senderTimestamp !== undefined
-				? {
-						token: Buffer.alloc(0),
-						senderTimestamp: candidate.senderTimestamp,
-						realIssueTimestamp: candidate.realIssueTimestamp
-					}
-				: null
+	const records = aliases.map(id => ({ type: 'tctoken' as const, id }))
+	const work = async () => {
+		const current = await authState.keys.get('tctoken', aliases)
+		const expired: Record<string, SignalDataTypeMap['tctoken'] | null> = {}
+		for (const alias of aliases) {
+			const candidate = current[alias]
+			if (!candidate?.token?.length || !isTcTokenExpired(candidate.timestamp, policy)) continue
+			expired[alias] =
+				candidate.senderTimestamp !== undefined
+					? {
+							token: Buffer.alloc(0),
+							senderTimestamp: candidate.senderTimestamp,
+							realIssueTimestamp: candidate.realIssueTimestamp
+						}
+					: null
+		}
+
+		if (Object.keys(expired).length) await authState.keys.set({ tctoken: expired })
 	}
 
-	if (Object.keys(expired).length) await authState.keys.set({ tctoken: expired })
+	if (authState.keys.transactWith) await authState.keys.transactWith({ records }, work)
+	else await authState.keys.transaction(work, TC_TOKEN_LEGACY_TRANSACTION_KEY)
 }
 
 /**
@@ -558,7 +566,7 @@ export async function resolveUsableTcTokenForAliases({
 
 		if (!selected.usable || !entry?.token?.length) {
 			if (selected.reason === 'expired-token')
-				await clearExpiredTcTokenAliases(authState, normalizedAliases, tcTokenData, bucketPolicy)
+				await clearExpiredTcTokenAliases(authState, normalizedAliases, bucketPolicy)
 
 			return {}
 		}
