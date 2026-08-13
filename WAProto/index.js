@@ -30001,6 +30001,7 @@ export const proto = $root.proto = (() => {
         DeviceCapabilities.prototype.aiThread = null;
         DeviceCapabilities.prototype.aiFbidMigration = null;
         DeviceCapabilities.prototype.bizAiSettingsSync = null;
+        DeviceCapabilities.prototype.contactRefresh = null;
 
         let $oneOfFields;
 
@@ -30052,6 +30053,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(DeviceCapabilities.prototype, "_contactRefresh", {
+            get: $util.oneOfGetter($oneOfFields = ["contactRefresh"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         DeviceCapabilities.create = function create(properties) {
             return new DeviceCapabilities(properties);
         };
@@ -30075,6 +30082,8 @@ export const proto = $root.proto = (() => {
                 $root.proto.DeviceCapabilities.AiFbidMigration.encode(m.aiFbidMigration, w.uint32(58).fork()).ldelim();
             if (m.bizAiSettingsSync != null && Object.hasOwnProperty.call(m, "bizAiSettingsSync"))
                 $root.proto.DeviceCapabilities.BizAiSettingsSync.encode(m.bizAiSettingsSync, w.uint32(66).fork()).ldelim();
+            if (m.contactRefresh != null && Object.hasOwnProperty.call(m, "contactRefresh"))
+                $root.proto.DeviceCapabilities.ContactRefresh.encode(m.contactRefresh, w.uint32(74).fork()).ldelim();
             return w;
         };
 
@@ -30117,6 +30126,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 8: {
                         m.bizAiSettingsSync = $root.proto.DeviceCapabilities.BizAiSettingsSync.decode(r, r.uint32());
+                        break;
+                    }
+                case 9: {
+                        m.contactRefresh = $root.proto.DeviceCapabilities.ContactRefresh.decode(r, r.uint32());
                         break;
                     }
                 default:
@@ -30201,6 +30214,11 @@ export const proto = $root.proto = (() => {
                     throw TypeError(".proto.DeviceCapabilities.bizAiSettingsSync: object expected");
                 m.bizAiSettingsSync = $root.proto.DeviceCapabilities.BizAiSettingsSync.fromObject(d.bizAiSettingsSync);
             }
+            if (d.contactRefresh != null) {
+                if (typeof d.contactRefresh !== "object")
+                    throw TypeError(".proto.DeviceCapabilities.contactRefresh: object expected");
+                m.contactRefresh = $root.proto.DeviceCapabilities.ContactRefresh.fromObject(d.contactRefresh);
+            }
             return m;
         };
 
@@ -30247,6 +30265,11 @@ export const proto = $root.proto = (() => {
                 d.bizAiSettingsSync = $root.proto.DeviceCapabilities.BizAiSettingsSync.toObject(m.bizAiSettingsSync, o);
                 if (o.oneofs)
                     d._bizAiSettingsSync = "bizAiSettingsSync";
+            }
+            if (m.contactRefresh != null && m.hasOwnProperty("contactRefresh")) {
+                d.contactRefresh = $root.proto.DeviceCapabilities.ContactRefresh.toObject(m.contactRefresh, o);
+                if (o.oneofs)
+                    d._contactRefresh = "contactRefresh";
             }
             return d;
         };
@@ -30739,6 +30762,94 @@ export const proto = $root.proto = (() => {
             values[valuesById[1] = "MINIMAL"] = 1;
             values[valuesById[2] = "FULL"] = 2;
             return values;
+        })();
+
+        DeviceCapabilities.ContactRefresh = (function() {
+
+            function ContactRefresh(p) {
+                if (p)
+                    for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null)
+                            this[ks[i]] = p[ks[i]];
+            }
+
+            ContactRefresh.prototype.refreshSupported = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ContactRefresh.prototype, "_refreshSupported", {
+                get: $util.oneOfGetter($oneOfFields = ["refreshSupported"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            ContactRefresh.create = function create(properties) {
+                return new ContactRefresh(properties);
+            };
+
+            ContactRefresh.encode = function encode(m, w) {
+                if (!w)
+                    w = $Writer.create();
+                if (m.refreshSupported != null && Object.hasOwnProperty.call(m, "refreshSupported"))
+                    w.uint32(8).bool(m.refreshSupported);
+                return w;
+            };
+
+            ContactRefresh.decode = function decode(r, l, e) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.DeviceCapabilities.ContactRefresh();
+                while (r.pos < c) {
+                    var t = r.uint32();
+                    if (t === e)
+                        break;
+                    switch (t >>> 3) {
+                    case 1: {
+                            m.refreshSupported = r.bool();
+                            break;
+                        }
+                    default:
+                        r.skipType(t & 7);
+                        break;
+                    }
+                }
+                return m;
+            };
+
+            ContactRefresh.fromObject = function fromObject(d) {
+                if (d instanceof $root.proto.DeviceCapabilities.ContactRefresh)
+                    return d;
+                var m = new $root.proto.DeviceCapabilities.ContactRefresh();
+                if (d.refreshSupported != null) {
+                    m.refreshSupported = Boolean(d.refreshSupported);
+                }
+                return m;
+            };
+
+            ContactRefresh.toObject = function toObject(m, o) {
+                if (!o)
+                    o = {};
+                var d = {};
+                if (m.refreshSupported != null && m.hasOwnProperty("refreshSupported")) {
+                    d.refreshSupported = m.refreshSupported;
+                    if (o.oneofs)
+                        d._refreshSupported = "refreshSupported";
+                }
+                return d;
+            };
+
+            ContactRefresh.prototype.toJSON = function toJSON() {
+                return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            ContactRefresh.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                if (typeUrlPrefix === undefined) {
+                    typeUrlPrefix = "type.googleapis.com";
+                }
+                return typeUrlPrefix + "/proto.DeviceCapabilities.ContactRefresh";
+            };
+
+            return ContactRefresh;
         })();
 
         DeviceCapabilities.LIDMigration = (function() {
