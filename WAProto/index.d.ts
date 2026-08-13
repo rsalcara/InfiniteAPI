@@ -4416,6 +4416,7 @@ export namespace proto {
         aiThread?: (proto.DeviceCapabilities.IAiThread|null);
         aiFbidMigration?: (proto.DeviceCapabilities.IAiFbidMigration|null);
         bizAiSettingsSync?: (proto.DeviceCapabilities.IBizAiSettingsSync|null);
+        contactRefresh?: (proto.DeviceCapabilities.IContactRefresh|null);
     }
 
     class DeviceCapabilities implements IDeviceCapabilities {
@@ -4428,6 +4429,7 @@ export namespace proto {
         public aiThread?: (proto.DeviceCapabilities.IAiThread|null);
         public aiFbidMigration?: (proto.DeviceCapabilities.IAiFbidMigration|null);
         public bizAiSettingsSync?: (proto.DeviceCapabilities.IBizAiSettingsSync|null);
+        public contactRefresh?: (proto.DeviceCapabilities.IContactRefresh|null);
         public static create(properties?: proto.IDeviceCapabilities): proto.DeviceCapabilities;
         public static encode(m: proto.IDeviceCapabilities, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.DeviceCapabilities;
@@ -4524,6 +4526,22 @@ export namespace proto {
             NONE = 0,
             MINIMAL = 1,
             FULL = 2
+        }
+
+        interface IContactRefresh {
+            refreshSupported?: (boolean|null);
+        }
+
+        class ContactRefresh implements IContactRefresh {
+            constructor(p?: proto.DeviceCapabilities.IContactRefresh);
+            public refreshSupported?: (boolean|null);
+            public static create(properties?: proto.DeviceCapabilities.IContactRefresh): proto.DeviceCapabilities.ContactRefresh;
+            public static encode(m: proto.DeviceCapabilities.IContactRefresh, w?: $protobuf.Writer): $protobuf.Writer;
+            public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.DeviceCapabilities.ContactRefresh;
+            public static fromObject(d: { [k: string]: any }): proto.DeviceCapabilities.ContactRefresh;
+            public static toObject(m: proto.DeviceCapabilities.ContactRefresh, o?: $protobuf.IConversionOptions): { [k: string]: any };
+            public toJSON(): { [k: string]: any };
+            public static getTypeUrl(typeUrlPrefix?: string): string;
         }
 
         interface ILIDMigration {
