@@ -1,4 +1,5 @@
 import type { proto } from '../../WAProto/index.js'
+import type { AppStateSyncKeyStore } from './AppStateSync'
 import type { Contact } from './Contact'
 import type { HistorySyncStore } from './HistorySync'
 import type { MinimalMessage } from './Message'
@@ -305,4 +306,6 @@ export type AuthenticationState = {
 	keys: SignalKeyStore
 	/** Durable history-sync work queue. Built-in auth adapters always provide it. */
 	historySync?: HistorySyncStore
+	/** Durable app-state missing-key/request lifecycle. Built-in auth adapters always provide it. */
+	appStateSyncKeys?: AppStateSyncKeyStore
 }

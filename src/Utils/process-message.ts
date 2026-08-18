@@ -99,6 +99,12 @@ type ProcessMessageContext = {
 	historySyncCoordinator?: Pick<DurableHistorySyncCoordinator, 'enqueue'>
 	/** Marks compatibility-path completion after synchronous history apply succeeds. */
 	onHistorySyncCommitted?: (notification: proto.Message.IHistorySyncNotification) => void
+	/** Official durable App State syncd-key request/share lifecycle. */
+	onAppStateSyncKeyRequest?: (senderJid: string, request: proto.Message.IAppStateSyncKeyRequest) => Promise<void>
+	onAppStateSyncKeyShare?: (
+		senderJid: string,
+		share: proto.Message.IAppStateSyncKeyShare
+	) => Promise<string | undefined>
 }
 
 /**
@@ -376,6 +382,7 @@ const REAL_MSG_REQ_ME_STUB_TYPES = new Set([WAMessageStubType.GROUP_PARTICIPANT_
 // isn't reallocated on every processed protocol message.
 const SELF_ONLY_PROTOCOL_TYPES = new Set<proto.Message.ProtocolMessage.Type>([
 	proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION,
+	proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_REQUEST,
 	proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_SHARE,
 	proto.Message.ProtocolMessage.Type.LID_MIGRATION_MAPPING_SYNC,
 	proto.Message.ProtocolMessage.Type.PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE
@@ -926,7 +933,9 @@ const processMessage = async (
 		mediaBackend,
 		addOnBackend,
 		historySyncCoordinator,
-		onHistorySyncCommitted
+		onHistorySyncCommitted,
+		onAppStateSyncKeyRequest,
+		onAppStateSyncKeyShare
 	}: ProcessMessageContext
 ) => {
 	const meUser = creds.me
@@ -1597,8 +1606,28 @@ const processMessage = async (
 				}
 
 				break
-			case proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_SHARE:
+			case proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_REQUEST: {
+				const request = protocolMsg.appStateSyncKeyRequest
+				if (request && onAppStateSyncKeyRequest) {
+					await onAppStateSyncKeyRequest(fromJid, request)
+				} else if (request) {
+					logger?.debug(
+						{ keyCount: request.keyIds?.length ?? 0 },
+						'app-state key request ignored without lifecycle capability'
+					)
+				}
+
+				break
+			}
+
+			case proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_SHARE: {
 				const keys = protocolMsg.appStateSyncKeyShare?.keys
+				if (protocolMsg.appStateSyncKeyShare && onAppStateSyncKeyShare) {
+					const newAppStateSyncKeyId = await onAppStateSyncKeyShare(fromJid, protocolMsg.appStateSyncKeyShare)
+					if (newAppStateSyncKeyId) ev.emit('creds.update', { myAppStateKeyId: newAppStateSyncKeyId })
+					break
+				}
+
 				if (keys?.length) {
 					let newAppStateSyncKeyId = ''
 					let isNewlyGeneratedKey = false
@@ -1667,6 +1696,8 @@ const processMessage = async (
 				}
 
 				break
+			}
+
 			case proto.Message.ProtocolMessage.Type.REVOKE: {
 				if (!protocolMsg.key?.id) {
 					logger?.debug({ protocolMsg }, 'processMessage: REVOKE with no target id, dropping')

@@ -51,9 +51,13 @@ import {
 	type ChatMutationMap,
 	decodePatches,
 	decodeSyncdSnapshot,
+	encodeSignedDeviceIdentity,
 	encodeSyncdPatch,
+	encodeWAMessage,
 	ensureLTHashStateVersion,
+	extractDeviceJids,
 	extractSyncdPatches,
+	generateMessageIDV2,
 	generateProfilePicture,
 	getHistoryMsg,
 	isAppStateSyncIrrecoverable,
@@ -61,10 +65,18 @@ import {
 	MAX_SYNC_ATTEMPTS,
 	newLTHashState,
 	OrphanQueue,
+	parseAndInjectE2ESessions,
 	processSyncAction,
 	type RawSyncdMutation,
 	resolveLidToPn
 } from '../Utils'
+import {
+	discoverOwnAppStateDevices,
+	encodeExplicitDeviceJid,
+	selectOtherOwnDevices
+} from '../Utils/app-state-sync-key-devices'
+import { AppStateSyncKeyLifecycle } from '../Utils/app-state-sync-key-lifecycle'
+import { buildAppStateSyncKeyPeerNode } from '../Utils/app-state-sync-key-peer'
 import {
 	AdaptiveHistoryBatchController,
 	DurableHistorySyncCoordinator,
@@ -108,6 +120,7 @@ import {
 } from '../Utils/tc-token-utils'
 import {
 	type BinaryNode,
+	type FullJid,
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
 	isAnyLidUser,
@@ -268,6 +281,155 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		'auth_state_keys',
 		() => new AppStateBackend((config.multiDbStore as any).handle('sync.db'))
 	)
+
+	const listOwnAppStateDevices = async (): Promise<string[]> => {
+		const meId = authState.creds.me?.id
+		if (!meId) throw new Boom('Not authenticated', { statusCode: 401 })
+		const me = jidDecode(meId)
+		if (!me) throw new Boom('Invalid own device identity', { statusCode: 401 })
+		const meLid = authState.creds.me?.lid
+		const meLidDecoded = jidDecode(meLid)
+		const cacheUsers = [...new Set([me.user, meLidDecoded?.user].filter(Boolean) as string[])]
+
+		const readCachedDevices = async (): Promise<FullJid[] | undefined> => {
+			const cached: FullJid[] = []
+			let found = false
+			if (config.userDevicesCache) {
+				for (const user of cacheUsers) {
+					const rows = await config.userDevicesCache.get<FullJid[]>(user)
+					if (Array.isArray(rows)) {
+						found = true
+						cached.push(...rows)
+					}
+				}
+			}
+
+			const stored = await authState.keys.get('device-list', cacheUsers)
+			for (const user of cacheUsers) {
+				const server = user === meLidDecoded?.user ? meLidDecoded.server : me.server
+				const storedDevices = stored[user]
+				if (Array.isArray(storedDevices)) found = true
+				for (const rawDevice of storedDevices ?? []) {
+					const device = Number(rawDevice)
+					if (Number.isInteger(device) && device >= 0) cached.push({ user, server, device })
+				}
+			}
+
+			return found ? selectOtherOwnDevices(cached, meId, meLid) : undefined
+		}
+
+		const devices = await discoverOwnAppStateDevices({
+			fetchDevices: async () => {
+				const usync = new USyncQuery().withContext('message').withDeviceProtocol().withLIDProtocol()
+				usync.withUser(new USyncUser().withId(jidNormalizedUser(meId)))
+				const result = await sock.executeUSyncQuery(usync)
+				const extracted = extractDeviceJids(result?.list ?? [], meId, meLidDecoded?.user ?? '', false)
+				return selectOtherOwnDevices(extracted, meId, meLid)
+			},
+			readCachedDevices,
+			writeCachedDevices: async fresh => {
+				const byUser = new Map<string, FullJid[]>()
+				for (const device of fresh) {
+					const rows = byUser.get(device.user) ?? []
+					rows.push(device)
+					byUser.set(device.user, rows)
+				}
+
+				for (const user of cacheUsers) {
+					if (config.userDevicesCache) await config.userDevicesCache.set(user, byUser.get(user) ?? [])
+				}
+
+				await authState.keys.set({
+					'device-list': Object.fromEntries(
+						cacheUsers.map(user => [user, (byUser.get(user) ?? []).map(device => String(device.device))])
+					)
+				})
+			},
+			onFetchError: error =>
+				logger.warn({ error }, 'own-device USync failed; trying durable device-list for app-state key recovery'),
+			onCacheWriteError: error =>
+				logger.warn({ error }, 'failed to persist own-device list; continuing with fresh USync result')
+		})
+
+		return devices.map(encodeExplicitDeviceJid)
+	}
+
+	const ensurePeerDeviceSession = async (targetDeviceJid: string): Promise<void> => {
+		const sessionId = signalRepository.jidToSignalProtocolAddress(targetDeviceJid)
+		try {
+			const session = await authState.keys.get('session', [sessionId])
+			if (session[sessionId]) return
+		} catch {
+			// Fetching the authoritative encrypt bundle below is the recovery path.
+		}
+
+		const result = await query({
+			tag: 'iq',
+			attrs: { xmlns: 'encrypt', type: 'get', to: S_WHATSAPP_NET },
+			content: [{ tag: 'key', attrs: {}, content: [{ tag: 'user', attrs: { jid: targetDeviceJid } }] }]
+		})
+		await parseAndInjectE2ESessions(result, signalRepository)
+	}
+
+	const sendAppStatePeerMessage = async (
+		targetDeviceJid: string,
+		message: proto.IMessage,
+		messageId: string
+	): Promise<void> => {
+		await ensurePeerDeviceSession(targetDeviceJid)
+		const encrypted = await signalRepository.encryptMessage({
+			jid: targetDeviceJid,
+			data: encodeWAMessage(message)
+		})
+		let deviceIdentity: Uint8Array | undefined
+		if (encrypted.type === 'pkmsg') {
+			const account = authState.creds.account
+			if (account) deviceIdentity = encodeSignedDeviceIdentity(account, true)
+		}
+
+		// SendPeerMessageJob marks peer_messages.acked only after the transport
+		// future completes. query() registers the ACK listener before writing and
+		// converts a late/missing ACK into a retryable timeout.
+		await query(buildAppStateSyncKeyPeerNode({ targetDeviceJid, messageId, encrypted, deviceIdentity }))
+	}
+
+	const appStateSyncKeyLifecycle = authState.appStateSyncKeys
+		? new AppStateSyncKeyLifecycle({
+				store: authState.appStateSyncKeys,
+				keyStore: authState.keys,
+				logger,
+				getOwnJid: () => jidNormalizedUser(authState.creds.me?.id),
+				getOwnLid: () => authState.creds.me?.lid,
+				getActiveKeyId: () => authState.creds.myAppStateKeyId,
+				listOwnDevices: listOwnAppStateDevices,
+				sendPeerMessage: sendAppStatePeerMessage,
+				retryCollections: async collections => {
+					const valid = collections.filter((name): name is WAPatchName =>
+						(ALL_WA_PATCH_NAMES as readonly string[]).includes(name)
+					)
+					for (const name of valid) blockedCollections.delete(name)
+					if (valid.length) await resyncAppState(valid, false)
+				},
+				generateMessageId: () => generateMessageIDV2(authState.creds.me?.id)
+			})
+		: undefined
+
+	const queueMissingAppStateKeyRecovery = async (name: WAPatchName, error: any): Promise<boolean> => {
+		if (!isMissingKeyError(error) || !appStateSyncKeyLifecycle || typeof error.data?.keyId !== 'string') {
+			return false
+		}
+
+		try {
+			await appStateSyncKeyLifecycle.requestMissingKey(name, error.data.keyId)
+			return true
+		} catch (recoveryError) {
+			logger.error(
+				{ recoveryError, name, keyId: error.data.keyId },
+				'failed to persist app-state missing-key recovery; retaining compatibility retry'
+			)
+			return false
+		}
+	}
 
 	// Mirrors contact events into `wa_contacts` (wa.db) — the canonical mobile
 	// central contact table. Persistent (no socket-close wipe). Populated from
@@ -1286,7 +1448,16 @@ export const makeChatsSocket = (config: SocketConfig) => {
 								error: error.stack
 							}
 
-							if (isMissingKeyError(error) && attemptsMap[name] >= MAX_SYNC_ATTEMPTS) {
+							const durableRecoveryQueued = await queueMissingAppStateKeyRecovery(name, error)
+
+							if (durableRecoveryQueued) {
+								logger.warn(
+									{ ...logData, keyId: error.data.keyId },
+									`${name} blocked on missing key; durable syncd-key-request queued`
+								)
+								blockedCollections.add(name)
+								collectionsToHandle.delete(name)
+							} else if (isMissingKeyError(error) && attemptsMap[name] >= MAX_SYNC_ATTEMPTS) {
 								// WA Web treats missing keys as "Blocked" — park the collection
 								// until the key arrives via APP_STATE_SYNC_KEY_SHARE.
 								logger.warn(
@@ -2001,6 +2172,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					addOnBackend,
 					historySyncCoordinator,
 					onHistorySyncCommitted: markHistorySyncCommitted,
+					onAppStateSyncKeyRequest: appStateSyncKeyLifecycle
+						? (senderJid, request) => appStateSyncKeyLifecycle.handleKeyRequest(senderJid, request)
+						: undefined,
+					onAppStateSyncKeyShare: appStateSyncKeyLifecycle
+						? (senderJid, share) => appStateSyncKeyLifecycle.handleKeyShare(senderJid, share)
+						: undefined,
 					receiptBackend: receiptReplayBackend
 				})
 			],
@@ -2136,6 +2313,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		if (connection === 'open') {
 			mirrorOwnDevice()
 			historySyncCoordinator?.startRecovery().catch(error => onUnexpectedError(error, 'durable history sync recovery'))
+			appStateSyncKeyLifecycle
+				?.startRecovery()
+				.catch(error => onUnexpectedError(error, 'durable app-state sync key recovery'))
 
 			if (fireInitQueries) {
 				executeInitQueries().catch(error => onUnexpectedError(error, 'init queries'))
@@ -2148,6 +2328,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		// Clean up app state sync key cache on connection close
 		if (connection === 'close') {
+			appStateSyncKeyLifecycle?.stop()
 			blockedCollections.clear()
 			clearTimeout(historySyncPausedTimeout)
 			historySyncPausedTimeout = undefined
@@ -2254,6 +2435,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// collections blocked on a missing key, trigger a re-sync for just those collections.
 	// This mirrors WA Web's Blocked → retry-on-key-arrival behavior.
 	ev.on('creds.update', ({ myAppStateKeyId }) => {
+		// The durable lifecycle correlates exact key sets and retries only the
+		// collections whose missing-key dependencies are now resolved. Running
+		// the legacy listener as well would retry every blocked collection and
+		// duplicate the lifecycle's resync.
+		if (appStateSyncKeyLifecycle) return
 		if (!myAppStateKeyId || blockedCollections.size === 0) {
 			return
 		}
