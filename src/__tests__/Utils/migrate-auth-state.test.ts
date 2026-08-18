@@ -13,6 +13,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { proto } from '../../../WAProto/index.js'
 import type { HistorySyncJobInput } from '../../Types'
+import { encodeAppStateSyncKeyRequestData } from '../../Utils/app-state-sync-key-lifecycle'
 import { migrateAuthState } from '../../Utils/migrate-auth-state'
 import { useMultiFileAuthState } from '../../Utils/use-multi-file-auth-state'
 import { useSqliteAuthState } from '../../Utils/use-sqlite-auth-state'
@@ -238,6 +239,31 @@ describe('migrateAuthState — multi-file → SQLite', () => {
 		expect(repeated.historySync).toEqual({ jobs: 0, checkpoints: 0, copied: false })
 		expect(repeated.verified).toBe(true)
 		expect(repeated.warnings).toEqual([])
+		dst.close()
+	})
+
+	it('copies durable missing-key recovery and peer requests idempotently', async () => {
+		const src = await useMultiFileAuthState(dir)
+		await src.state.appStateSyncKeys!.recordMissingKey('AAAAAEGV', 'regular')
+		await src.state.appStateSyncKeys!.enqueuePeerMessage({
+			messageType: 39,
+			remoteJid: '5511999999999@s.whatsapp.net',
+			targetDeviceJid: '5511999999999:2@s.whatsapp.net',
+			messageId: 'migrate-peer-39',
+			timestamp: 123,
+			data: encodeAppStateSyncKeyRequestData(['AAAAAEGV'])
+		})
+		const dst = await useSqliteAuthState({ dbPath: ':memory:' })
+
+		const first = await migrateAuthState({ from: src.state, to: dst.state, verify: true })
+		expect(first.appStateSyncKeys).toEqual({ missingKeys: 1, peerMessages: 1, copied: true })
+		expect(await dst.state.appStateSyncKeys!.listMissingCollections()).toEqual(['regular'])
+		expect(await dst.state.appStateSyncKeys!.listPeerMessages(39)).toEqual([
+			expect.objectContaining({ messageId: 'migrate-peer-39', targetDeviceJid: '5511999999999:2@s.whatsapp.net' })
+		])
+
+		await migrateAuthState({ from: src.state, to: dst.state, verify: true })
+		expect(await dst.state.appStateSyncKeys!.listPeerMessages(39)).toHaveLength(1)
 		dst.close()
 	})
 

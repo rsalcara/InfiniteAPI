@@ -107,6 +107,16 @@ type ProcessMessageContext = {
 	) => Promise<string | undefined>
 }
 
+// The public message key is normalized before it reaches processMessage, which
+// deliberately removes device suffixes. App State peer authorization needs the
+// exact stanza author, so retain it out-of-band without leaking an internal
+// transport field through messages.upsert.
+const rawProtocolSenders = new WeakMap<WAMessage, string>()
+
+export const rememberRawProtocolSender = (message: WAMessage, senderJid: string): void => {
+	if (senderJid) rawProtocolSenders.set(message, senderJid)
+}
+
 /**
  * Persist history-sync messages into the same typed message/chat tables used
  * by live traffic. History events remain available to consumers, but the
@@ -1528,7 +1538,7 @@ const processMessage = async (
 		// Compare by user (same WhatsApp account, any device) instead of strict fromMe — otherwise
 		// we drop the keys the phone is trying to share and app state sync hangs on "missing key
 		// from v0, parking after 2 attempts".
-		const fromJid = message.key.participant || message.key.remoteJid || ''
+		const fromJid = rawProtocolSenders.get(message) || message.key.participant || message.key.remoteJid || ''
 		const isFromOwnAccount =
 			message.key.fromMe ||
 			areJidsSameUser(fromJid, meId) ||
@@ -1808,7 +1818,7 @@ const processMessage = async (
 
 							if (cachedData && typeof cachedData === 'object') {
 								// Preserve pushName if not present in PDO response
-								// eslint-disable-next-line max-depth
+
 								if (cachedData.pushName && !webMessageInfo.pushName) {
 									webMessageInfo.pushName = cachedData.pushName
 									logger?.debug({ msgId: webMessageInfo.key?.id }, 'CTWA: Restored pushName from cached metadata')
@@ -1816,7 +1826,7 @@ const processMessage = async (
 
 								// Preserve participantAlt (LID) if not present in PDO response
 								// This is critical for maintaining LID/PN mapping in groups
-								// eslint-disable-next-line max-depth
+
 								if (cachedData.participantAlt && webMessageInfo.key) {
 									const msgKey = webMessageInfo.key as WAMessageKey
 									// eslint-disable-next-line max-depth
@@ -1830,7 +1840,7 @@ const processMessage = async (
 								}
 
 								// Preserve original participant if not in PDO response
-								// eslint-disable-next-line max-depth
+
 								if (cachedData.participant && webMessageInfo.key && !webMessageInfo.key.participant) {
 									webMessageInfo.key.participant = cachedData.participant
 									logger?.debug({ msgId: webMessageInfo.key?.id }, 'CTWA: Restored participant from cached metadata')
@@ -1838,7 +1848,7 @@ const processMessage = async (
 
 								// Only use cached timestamp if PDO response doesn't have one
 								// PDO response timestamp is more authoritative if present
-								// eslint-disable-next-line max-depth
+
 								if (!webMessageInfo.messageTimestamp && cachedData.messageTimestamp) {
 									webMessageInfo.messageTimestamp = cachedData.messageTimestamp
 								}

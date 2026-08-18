@@ -70,6 +70,7 @@ import {
 	normalizeMessageJids,
 	parseRetryErrorCode,
 	persistRetrySendReservation,
+	rememberRawProtocolSender,
 	resolveContactPictureIdentity,
 	resolveLidToPn,
 	resolveRetryReceiptRoute,
@@ -3900,6 +3901,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				msmsgSecretCache,
 				config.onMessageQuarantine
 			)
+			rememberRawProtocolSender(msg, author)
 
 			const alt = msg.key.participantAlt || msg.key.remoteJidAlt
 			// Handle LID/PN mappings with hybrid approach:

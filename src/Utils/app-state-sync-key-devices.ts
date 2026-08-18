@@ -1,5 +1,5 @@
 import type { FullJid } from '../WABinary'
-import { jidDecode } from '../WABinary'
+import { jidDecode, WAJIDDomains } from '../WABinary'
 
 type DiscoverOwnDevicesOptions = {
 	fetchDevices: () => Promise<FullJid[]>
@@ -40,7 +40,16 @@ export const selectOtherOwnDevices = (devices: FullJid[], ownJid: string, ownLid
 
 	for (const device of ordered) {
 		if (!belongsToAccount(device) || device.device === undefined || device.device === ownDevice) continue
-		if (!byDevice.has(device.device)) byDevice.set(device.device, device)
+		const isLidAlias = Boolean(lid?.user && device.user === lid.user)
+		const canonical = isLidAlias
+			? {
+					...device,
+					user: own.user,
+					server: device.server === 'hosted.lid' ? ('hosted' as const) : ('s.whatsapp.net' as const),
+					domainType: device.server === 'hosted.lid' ? WAJIDDomains.HOSTED : WAJIDDomains.WHATSAPP
+				}
+			: device
+		if (!byDevice.has(device.device)) byDevice.set(device.device, canonical)
 	}
 
 	return [...byDevice.values()]
@@ -59,7 +68,15 @@ export const discoverOwnAppStateDevices = async ({
 		devices = await fetchDevices()
 	} catch (error) {
 		onFetchError?.(error)
-		const cached = await readCachedDevices()
+		let cached: FullJid[] | undefined
+		try {
+			cached = await readCachedDevices()
+		} catch {
+			// Preserve the authoritative USync failure. The cache is only a
+			// fallback and must not hide the reason fresh discovery failed.
+			throw error
+		}
+
 		if (cached === undefined) throw error
 		return cached
 	}

@@ -479,11 +479,11 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	// jittered-exponential-backoff against the `DELETE FROM jid_map` exec
 	// (which previously had no busy retry and would surface SQLITE_BUSY
 	// directly to the caller after the 5 s busy_timeout expired).
-	const runWithBusyRetry = async (label: string, work: () => void): Promise<void> => {
+	const runWithBusyRetry = async (label: string, work: () => void | Promise<void>): Promise<void> => {
 		let lastError: unknown
 		for (let attempt = 0; attempt < MAX_BUSY_ATTEMPTS; attempt++) {
 			try {
-				work()
+				await work()
 				return
 			} catch (err) {
 				const code = (err as { code?: string } | null)?.code
@@ -575,7 +575,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			appStateSyncKeyStmts.clear.run()
 		})
 		await historySync.clear()
-		await appStateSyncKeys.clear()
+		await runWithBusyRetry(`${label}: app-state recovery`, () => appStateSyncKeys.clear())
 	}
 
 	const finishAuthKeysClear = (label: string): Promise<void> =>

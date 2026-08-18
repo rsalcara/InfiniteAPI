@@ -17,7 +17,11 @@ export const buildAppStateSyncKeyPeerNode = ({
 	deviceIdentity
 }: BuildAppStateSyncKeyPeerNodeOptions): BinaryNode => {
 	const target = jidDecode(targetDeviceJid)
-	if (!target || target.device === undefined) {
+	// jidDecode intentionally collapses `:0` to device=undefined. Peer jobs,
+	// however, must retain an explicit destination device, including the
+	// primary phone. Validate the wire spelling instead of decoder truthiness.
+	const explicitDevice = /:(0|[1-9]\d*)@/.exec(targetDeviceJid)?.[1]
+	if (!target?.user || explicitDevice === undefined) {
 		throw new Boom('App-state peer message requires an explicit target device', { statusCode: 400 })
 	}
 

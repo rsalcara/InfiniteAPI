@@ -159,6 +159,21 @@ describe('AppStateSyncKeyLifecycle — official types 38/39 recovery', () => {
 		lifecycle.stop()
 	})
 
+	it('requests outstanding keys from a newly discovered own device', async () => {
+		const { store } = await makeFileStore()
+		let devices = [deviceOne]
+		const { lifecycle, sendPeerMessage } = makeLifecycle(store, { listOwnDevices: async () => devices })
+		await lifecycle.startRecovery()
+		await lifecycle.requestMissingKey('regular', missingKeyId)
+		await lifecycle.runRecovery()
+		expect(sendPeerMessage).toHaveBeenCalledTimes(1)
+
+		devices = [deviceOne, deviceTwo]
+		await lifecycle.runRecovery()
+		expect(sendPeerMessage).toHaveBeenCalledTimes(2)
+		expect((await store.listPeerMessages(39)).map(row => row.targetDeviceJid)).toEqual([deviceOne, deviceTwo])
+	})
+
 	it('reports MissingKeyOnAllClients without enqueueing a request when no other device exists', async () => {
 		const { store } = await makeFileStore()
 		const { lifecycle, logger, sendPeerMessage } = makeLifecycle(store, { listOwnDevices: async () => [] })
@@ -320,6 +335,33 @@ describe('AppStateSyncKeyLifecycle — official types 38/39 recovery', () => {
 		lifecycle.stop()
 	})
 
+	it('redrains a peer message enqueued while another send is in flight', async () => {
+		const { store } = await makeFileStore()
+		let releaseFirst!: () => void
+		const firstBlocked = new Promise<void>(resolve => {
+			releaseFirst = resolve
+		})
+		const send = jest.fn(async () => {
+			if (send.mock.calls.length === 1) await firstBlocked
+		})
+		const { lifecycle } = makeLifecycle(store, {
+			listOwnDevices: async () => [deviceOne, deviceTwo],
+			sendPeerMessage: send
+		})
+		await lifecycle.startRecovery()
+		const request = { keyIds: [{ keyId: Buffer.from(missingKeyId, 'base64') }] }
+		const first = lifecycle.handleKeyRequest(deviceOne, request)
+		await flushTimers()
+		const second = lifecycle.handleKeyRequest(deviceTwo, request)
+		await flushTimers()
+		expect(send).toHaveBeenCalledTimes(1)
+
+		releaseFirst()
+		await Promise.all([first, second])
+		expect(send).toHaveBeenCalledTimes(2)
+		expect(await store.listUnackedPeerMessages()).toEqual([])
+	})
+
 	it('keeps a request unacked until send completion and retries a transient failure', async () => {
 		const { store } = await makeFileStore()
 		let release!: () => void
@@ -422,6 +464,33 @@ describe('AppStateSyncKeyLifecycle — official types 38/39 recovery', () => {
 			'app-state sync key is missing on every registered client'
 		)
 		lifecycle.stop()
+	})
+
+	it('retries collections unblocked by a partial response even when another collection remains missing', async () => {
+		const { store } = await makeFileStore()
+		const secondId = encodeAppStateSyncKeyId({ deviceId: 0, epoch: 16790 })
+		await store.recordMissingKey(missingKeyId, 'regular')
+		await store.recordMissingKey(secondId, 'regular_low')
+		await store.enqueuePeerMessage({
+			messageType: 39,
+			remoteJid: ownJid,
+			targetDeviceJid: deviceOne,
+			messageId: 'partial-ready',
+			timestamp: 1,
+			data: encodeAppStateSyncKeyRequestData([missingKeyId, secondId])
+		})
+		const { lifecycle, retryCollections } = makeLifecycle(store, { listOwnDevices: async () => [] })
+		await lifecycle.startRecovery()
+
+		await lifecycle.handleKeyShare(deviceOne, {
+			keys: [
+				{ keyId: { keyId: Buffer.from(missingKeyId, 'base64') }, keyData: keyData(3, 3) },
+				{ keyId: { keyId: Buffer.from(secondId, 'base64') } }
+			]
+		})
+
+		expect(retryCollections).toHaveBeenCalledWith(['regular'])
+		expect(await store.listMissingCollections()).toEqual(['regular_low'])
 	})
 
 	it('rejects foreign/unknown devices but accepts PN/LID aliases with the same device number', async () => {

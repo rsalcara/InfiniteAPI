@@ -108,6 +108,7 @@ const validateKeyData = (keyData: proto.Message.IAppStateSyncKeyData): void => {
 export class AppStateSyncKeyLifecycle {
 	private readonly mutex = makeMutex()
 	private drainPromise: Promise<void> | undefined
+	private drainRequested = false
 	private retryTimer: NodeJS.Timeout | undefined
 	private recoveryTimer: NodeJS.Timeout | undefined
 	private retryAttempt = 0
@@ -118,17 +119,22 @@ export class AppStateSyncKeyLifecycle {
 
 	async startRecovery(): Promise<void> {
 		this.stopped = false
-		const missing = await this.deps.store.listMissingKeyIds()
-		if (missing.length) {
-			const existing = await this.deps.keyStore.get('app-state-sync-key', missing)
-			const recovered = missing.filter(keyId => Boolean(existing[keyId]))
-			if (recovered.length) {
-				const ready = await this.deps.store.resolveKeys(recovered)
-				if (ready.length) await this.deps.retryCollections(ready)
+		try {
+			const missing = await this.deps.store.listMissingKeyIds()
+			if (missing.length) {
+				const existing = await this.deps.keyStore.get('app-state-sync-key', missing)
+				const recovered = missing.filter(keyId => Boolean(existing[keyId]))
+				if (recovered.length) {
+					const ready = await this.deps.store.resolveKeys(recovered)
+					if (ready.length) await this.deps.retryCollections(ready)
+				}
 			}
-		}
 
-		await this.runRecovery()
+			await this.runRecovery()
+		} catch (error) {
+			this.scheduleRecoveryRetry()
+			throw error
+		}
 	}
 
 	/** Runs persisted request creation and delivery now; safe to call repeatedly. */
@@ -181,16 +187,16 @@ export class AppStateSyncKeyLifecycle {
 			const missing = await this.deps.store.listMissingKeyIds()
 			if (!missing.length) return
 			const requests = await this.deps.store.listPeerMessages(APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE)
-			const alreadyRequested = new Set(requests.flatMap(row => decodeAppStateSyncKeyRequestData(row.data)))
-			const newMissing = missing.filter(keyId => !alreadyRequested.has(keyId))
-			if (!newMissing.length) return
-
 			const devices = uniqueSorted(await this.deps.listOwnDevices())
 			if (!devices.length) {
+				// Persisted requests still represent devices awaiting a response.
+				// Only declare all-clients-missing when no request can be sent or
+				// correlated at all.
+				if (requests.length) return
 				this.deps.logger.error(
 					{
 						collections: await this.deps.store.listMissingCollections(),
-						keyIds: newMissing,
+						keyIds: missing,
 						state: 'MissingKeyOnAllClients'
 					},
 					'app-state sync key is missing on every registered client'
@@ -198,22 +204,29 @@ export class AppStateSyncKeyLifecycle {
 				return
 			}
 
-			const data = encodeAppStateSyncKeyRequestData(newMissing)
+			const persisted: Array<{ targetDeviceJid: string; keyIds: string[] }> = []
 			for (const targetDeviceJid of devices) {
+				const alreadyRequested = new Set(
+					requests
+						.filter(row => sameDeviceNumber(row.targetDeviceJid, targetDeviceJid))
+						.flatMap(row => decodeAppStateSyncKeyRequestData(row.data))
+				)
+				const newMissing = missing.filter(keyId => !alreadyRequested.has(keyId))
+				if (!newMissing.length) continue
 				await this.deps.store.enqueuePeerMessage({
 					messageType: APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE,
 					remoteJid: this.deps.getOwnJid(),
 					targetDeviceJid,
 					messageId: this.deps.generateMessageId(),
 					timestamp: Date.now(),
-					data
+					data: encodeAppStateSyncKeyRequestData(newMissing)
 				})
+				persisted.push({ targetDeviceJid, keyIds: newMissing })
 			}
 
-			this.deps.logger.info(
-				{ keyIds: newMissing, targetDevices: devices },
-				'app-state sync missing-key requests persisted'
-			)
+			if (persisted.length) {
+				this.deps.logger.info({ requests: persisted }, 'app-state sync missing-key requests persisted')
+			}
 		})
 	}
 
@@ -253,13 +266,15 @@ export class AppStateSyncKeyLifecycle {
 			}))
 		}
 
-		await this.deps.store.enqueuePeerMessage({
-			messageType: APP_STATE_SYNC_KEY_SHARE_MESSAGE_TYPE,
-			remoteJid: this.deps.getOwnJid(),
-			targetDeviceJid: senderJid,
-			messageId: this.deps.generateMessageId(),
-			timestamp: Date.now(),
-			data: encodeShareData(share)
+		await this.mutex.mutex(async () => {
+			await this.deps.store.enqueuePeerMessage({
+				messageType: APP_STATE_SYNC_KEY_SHARE_MESSAGE_TYPE,
+				remoteJid: this.deps.getOwnJid(),
+				targetDeviceJid: senderJid,
+				messageId: this.deps.generateMessageId(),
+				timestamp: Date.now(),
+				data: encodeShareData(share)
+			})
 		})
 		await this.drain()
 	}
@@ -286,42 +301,45 @@ export class AppStateSyncKeyLifecycle {
 		const exactResponseKeyIds = uniqueSorted(responseKeyIds)
 		if (!exactResponseKeyIds.length) return undefined
 		const suppliedKeyIds = Object.keys(supplied)
-		await this.deps.keyStore.transaction(async () => {
-			if (suppliedKeyIds.length) await this.deps.keyStore.set({ 'app-state-sync-key': supplied })
-		}, this.deps.getOwnJid())
+		const result = await this.mutex.mutex(async () => {
+			await this.deps.keyStore.transaction(async () => {
+				if (suppliedKeyIds.length) await this.deps.keyStore.set({ 'app-state-sync-key': supplied })
+			}, this.deps.getOwnJid())
 
-		const readyCollections = suppliedKeyIds.length ? await this.deps.store.resolveKeys(suppliedKeyIds) : []
-		const allSupplied = suppliedKeyIds.length === exactResponseKeyIds.length
-		const requests = await this.deps.store.listPeerMessages(APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE)
-		const completed = requests
-			.filter(row => {
-				if (!setsEqual(decodeAppStateSyncKeyRequestData(row.data), exactResponseKeyIds)) return false
-				return allSupplied || sameDeviceNumber(row.targetDeviceJid, senderJid)
-			})
-			.map(row => row.id)
-		await this.deps.store.deletePeerMessages(completed)
+			const readyCollections = suppliedKeyIds.length ? await this.deps.store.resolveKeys(suppliedKeyIds) : []
+			const allSupplied = suppliedKeyIds.length === exactResponseKeyIds.length
+			const requests = await this.deps.store.listPeerMessages(APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE)
+			const completed = requests
+				.filter(row => {
+					if (!setsEqual(decodeAppStateSyncKeyRequestData(row.data), exactResponseKeyIds)) return false
+					return allSupplied || sameDeviceNumber(row.targetDeviceJid, senderJid)
+				})
+				.map(row => row.id)
+			await this.deps.store.deletePeerMessages(completed)
 
-		const stillMissing = await this.deps.store.listMissingCollections()
-		const remainingRequests = await this.deps.store.listPeerMessages(APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE)
-		if (stillMissing.length && !remainingRequests.length) {
-			this.deps.logger.error(
-				{ collections: stillMissing, state: 'MissingKeyOnAllClients', keyIds: exactResponseKeyIds },
-				'app-state sync key is missing on every registered client'
-			)
-		} else if (readyCollections.length) {
-			await this.deps.retryCollections(readyCollections)
-		}
+			const stillMissing = await this.deps.store.listMissingCollections()
+			const remainingRequests = await this.deps.store.listPeerMessages(APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE)
+			if (stillMissing.length && !remainingRequests.length) {
+				this.deps.logger.error(
+					{ collections: stillMissing, state: 'MissingKeyOnAllClients', keyIds: exactResponseKeyIds },
+					'app-state sync key is missing on every registered client'
+				)
+			}
 
-		const activeKeyId = this.deps.getActiveKeyId()
-		const activeCandidate = uniqueSorted(suppliedKeyIds)
-			.filter(keyId => isNewerKeyId(keyId, activeKeyId))
-			.sort((left, right) => {
-				const a = parseAppStateSyncKeyId(left)
-				const b = parseAppStateSyncKeyId(right)
-				return b.epoch - a.epoch || a.deviceId - b.deviceId
-			})[0]
+			const activeKeyId = this.deps.getActiveKeyId()
+			const activeCandidate = uniqueSorted(suppliedKeyIds)
+				.filter(keyId => isNewerKeyId(keyId, activeKeyId))
+				.sort((left, right) => {
+					const a = parseAppStateSyncKeyId(left)
+					const b = parseAppStateSyncKeyId(right)
+					return b.epoch - a.epoch || a.deviceId - b.deviceId
+				})[0]
 
-		return activeCandidate
+			return { activeCandidate, readyCollections }
+		})
+
+		if (result.readyCollections.length) await this.deps.retryCollections(result.readyCollections)
+		return result.activeCandidate
 	}
 
 	private async sendStored(row: StoredAppStateSyncPeerMessage): Promise<void> {
@@ -370,21 +388,28 @@ export class AppStateSyncKeyLifecycle {
 
 	private drain(): Promise<void> {
 		if (this.stopped) return Promise.resolve()
-		if (this.drainPromise) return this.drainPromise
+		if (this.drainPromise) {
+			this.drainRequested = true
+			return this.drainPromise
+		}
+
 		this.drainPromise = (async () => {
-			for (const row of await this.deps.store.listUnackedPeerMessages()) {
-				if (this.stopped) return
-				try {
-					await this.sendStored(row)
-				} catch (error) {
-					this.deps.logger.warn(
-						{ error, peerMessageId: row.id, messageType: row.messageType, targetDeviceJid: row.targetDeviceJid },
-						'app-state sync peer message send failed; durable retry retained'
-					)
-					this.scheduleRetry()
-					return
+			do {
+				this.drainRequested = false
+				for (const row of await this.deps.store.listUnackedPeerMessages()) {
+					if (this.stopped) return
+					try {
+						await this.sendStored(row)
+					} catch (error) {
+						this.deps.logger.warn(
+							{ error, peerMessageId: row.id, messageType: row.messageType, targetDeviceJid: row.targetDeviceJid },
+							'app-state sync peer message send failed; durable retry retained'
+						)
+						this.scheduleRetry()
+						return
+					}
 				}
-			}
+			} while (this.drainRequested)
 
 			this.retryAttempt = 0
 		})().finally(() => {

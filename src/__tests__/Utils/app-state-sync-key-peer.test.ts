@@ -47,6 +47,16 @@ describe('buildAppStateSyncKeyPeerNode — official SendPeerMessageJob wire cont
 		expect(content[1]?.content).toEqual(Buffer.from([9, 9]))
 	})
 
+	it('keeps primary device 0 explicit on the peer wire', () => {
+		const primary = '5511999999999:0@s.whatsapp.net'
+		const node = buildAppStateSyncKeyPeerNode({
+			targetDeviceJid: primary,
+			messageId: 'peer-primary',
+			encrypted: { type: 'msg', ciphertext: Buffer.from([1]) }
+		})
+		expect(node.attrs.to).toBe(primary)
+	})
+
 	it('fails closed for a pkmsg without signed device identity', () => {
 		expect(() =>
 			buildAppStateSyncKeyPeerNode({

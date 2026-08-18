@@ -19,6 +19,18 @@ export type StoredAppStateSyncPeerMessage = AppStateSyncPeerMessageInput & {
 	acked: boolean
 }
 
+export type AppStateSyncDevice = {
+	user: string
+	server: string
+	device: number
+	domainType?: number
+}
+
+export type AppStateSyncKeyStoreSnapshot = {
+	missingKeys: Array<{ keyId: string; collectionName: string }>
+	peerMessages: StoredAppStateSyncPeerMessage[]
+}
+
 /** Durable missing-key and peer-message capability supplied by built-in auth adapters. */
 export interface AppStateSyncKeyStore {
 	recordMissingKey(keyId: string, collectionName: string): Promise<void>
@@ -30,5 +42,7 @@ export interface AppStateSyncKeyStore {
 	listUnackedPeerMessages(): Promise<StoredAppStateSyncPeerMessage[]>
 	markPeerMessageAcked(id: string): Promise<void>
 	deletePeerMessages(ids: string[]): Promise<void>
+	exportState(): Promise<AppStateSyncKeyStoreSnapshot>
+	importState(snapshot: AppStateSyncKeyStoreSnapshot): Promise<void>
 	clear(): Promise<void>
 }

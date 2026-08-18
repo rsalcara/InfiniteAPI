@@ -482,6 +482,7 @@ export const useMultiFileAuthState = async (
 								f =>
 									f !== 'creds.json' &&
 									!f.startsWith('history-sync-state.json') &&
+									!f.startsWith('app-state-sync-state.json') &&
 									(f.endsWith('.json') || f.endsWith('.json.tmp') || f.endsWith('.json.bak'))
 							)
 							.map(f => unlinkIgnoreMissing(join(folder, f)))

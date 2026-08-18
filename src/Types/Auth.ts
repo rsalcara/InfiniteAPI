@@ -90,6 +90,8 @@ export type SignalDataTypeMap = {
 	'app-state-sync-version': LTHashState
 	'lid-mapping': string
 	'device-list': string[]
+	/** Full App State peer-device identities; separate from libsignal's numeric device-list. */
+	'app-state-device-list': import('./AppStateSync').AppStateSyncDevice[]
 	tctoken: { token: Buffer; timestamp?: string; senderTimestamp?: number; realIssueTimestamp?: number | null }
 	'tctoken-job': {
 		canonicalJid: string

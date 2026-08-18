@@ -290,10 +290,20 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		const meLid = authState.creds.me?.lid
 		const meLidDecoded = jidDecode(meLid)
 		const cacheUsers = [...new Set([me.user, meLidDecoded?.user].filter(Boolean) as string[])]
+		const appStateDeviceCacheKey = jidNormalizedUser(meId)
 
 		const readCachedDevices = async (): Promise<FullJid[] | undefined> => {
 			const cached: FullJid[] = []
 			let found = false
+			const exactStored = await authState.keys.get('app-state-device-list', [appStateDeviceCacheKey])
+			for (const device of exactStored[appStateDeviceCacheKey] ?? []) {
+				const decoded = jidDecode(`${device.user}:${device.device}@${device.server}`)
+				if (decoded?.user && Number.isInteger(device.device) && device.device >= 0) {
+					found = true
+					cached.push({ ...decoded, domainType: device.domainType ?? decoded.domainType, device: device.device })
+				}
+			}
+
 			if (config.userDevicesCache) {
 				for (const user of cacheUsers) {
 					const rows = await config.userDevicesCache.get<FullJid[]>(user)
@@ -328,6 +338,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			},
 			readCachedDevices,
 			writeCachedDevices: async fresh => {
+				const durableFresh = fresh.flatMap(device =>
+					device.device === undefined
+						? []
+						: [{ user: device.user, server: device.server, device: device.device, domainType: device.domainType }]
+				)
 				const byUser = new Map<string, FullJid[]>()
 				for (const device of fresh) {
 					const rows = byUser.get(device.user) ?? []
@@ -340,6 +355,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				}
 
 				await authState.keys.set({
+					'app-state-device-list': { [appStateDeviceCacheKey]: durableFresh },
 					'device-list': Object.fromEntries(
 						cacheUsers.map(user => [user, (byUser.get(user) ?? []).map(device => String(device.device))])
 					)

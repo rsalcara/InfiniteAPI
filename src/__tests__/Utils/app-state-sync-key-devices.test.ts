@@ -33,6 +33,22 @@ describe('app-state sync own-device discovery', () => {
 		])
 	})
 
+	it('canonicalizes LID-only USync rows to the PN device registry and preserves hosted routing', () => {
+		expect(
+			selectOtherOwnDevices(
+				[
+					{ user: '123456789012345', server: 'lid', device: 4 },
+					{ user: '123456789012345', server: 'hosted.lid', device: 5 }
+				],
+				ownJid,
+				ownLid
+			)
+		).toEqual([
+			{ user: '5511999999999', server: 's.whatsapp.net', device: 4, domainType: 0 },
+			{ user: '5511999999999', server: 'hosted', device: 5, domainType: 128 }
+		])
+	})
+
 	it('uses and persists a successful empty USync result instead of stale cache', async () => {
 		const writeCachedDevices = jest.fn(async () => undefined)
 		const readCachedDevices = jest.fn(async () => [
@@ -79,6 +95,20 @@ describe('app-state sync own-device discovery', () => {
 				writeCachedDevices: async () => undefined
 			})
 		).rejects.toThrow('USync unavailable')
+	})
+
+	it('preserves the USync error when reading the durable fallback also fails', async () => {
+		await expect(
+			discoverOwnAppStateDevices({
+				fetchDevices: async () => {
+					throw new Error('USync root cause')
+				},
+				readCachedDevices: async () => {
+					throw new Error('cache secondary failure')
+				},
+				writeCachedDevices: async () => undefined
+			})
+		).rejects.toThrow('USync root cause')
 	})
 
 	it('keeps the fresh result when only durable persistence fails', async () => {

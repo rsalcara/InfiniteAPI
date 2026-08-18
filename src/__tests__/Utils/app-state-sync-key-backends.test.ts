@@ -155,6 +155,11 @@ describe('durable App State key recovery — independent built-in auth backends'
 				'INSERT INTO peer_messages (message_type, key_remote_jid, key_from_me, key_id, device_id, timestamp, data, acked) VALUES (70, ?, 1, ?, ?, ?, ?, 0)'
 			).run('5511999999999@s.whatsapp.net', 'unrelated', '5511999999999:2@s.whatsapp.net', 1, '{}')
 			expect(await store.listUnackedPeerMessages()).toEqual([])
+			expect(await store.listPeerMessages()).toEqual([])
+			await store.clear()
+			expect(db.prepare('SELECT message_type FROM peer_messages').all() as Array<{ message_type: number }>).toEqual([
+				{ message_type: 70 }
+			])
 		} finally {
 			db.close()
 		}

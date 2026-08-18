@@ -2,6 +2,7 @@ import { mkdir, open, readFile, rename, stat, unlink } from 'fs/promises'
 import { dirname, resolve } from 'path'
 import type {
 	AppStateSyncKeyStore,
+	AppStateSyncKeyStoreSnapshot,
 	AppStateSyncPeerMessageInput,
 	AppStateSyncPeerMessageType,
 	StoredAppStateSyncPeerMessage
@@ -163,13 +164,19 @@ export class FileAppStateSyncKeyStore implements AppStateSyncKeyStore {
 	listPeerMessages(messageType?: AppStateSyncPeerMessageType): Promise<StoredAppStateSyncPeerMessage[]> {
 		return this.read(state =>
 			state.peerMessages
-				.filter(row => messageType === undefined || row.messageType === messageType)
+				.filter(row =>
+					messageType === undefined ? row.messageType === 38 || row.messageType === 39 : row.messageType === messageType
+				)
 				.map(row => ({ ...row }))
 		)
 	}
 
 	listUnackedPeerMessages(): Promise<StoredAppStateSyncPeerMessage[]> {
-		return this.read(state => state.peerMessages.filter(row => !row.acked).map(row => ({ ...row })))
+		return this.read(state =>
+			state.peerMessages
+				.filter(row => (row.messageType === 38 || row.messageType === 39) && !row.acked)
+				.map(row => ({ ...row }))
+		)
 	}
 
 	async markPeerMessageAcked(id: string): Promise<void> {
@@ -184,6 +191,34 @@ export class FileAppStateSyncKeyStore implements AppStateSyncKeyStore {
 		const selected = new Set(ids)
 		await this.mutate(state => {
 			state.peerMessages = state.peerMessages.filter(row => !selected.has(row.id))
+		})
+	}
+
+	async exportState(): Promise<AppStateSyncKeyStoreSnapshot> {
+		return this.read(state => ({
+			missingKeys: Object.entries(state.missingKeys).flatMap(([keyId, collections]) =>
+				collections.map(collectionName => ({ keyId, collectionName }))
+			),
+			peerMessages: state.peerMessages
+				.filter(row => row.messageType === 38 || row.messageType === 39)
+				.map(row => ({ ...row }))
+		}))
+	}
+
+	async importState(snapshot: AppStateSyncKeyStoreSnapshot): Promise<void> {
+		await this.mutate(state => {
+			for (const { keyId, collectionName } of snapshot.missingKeys) {
+				const collections = new Set(state.missingKeys[keyId] ?? [])
+				collections.add(collectionName)
+				state.missingKeys[keyId] = [...collections].sort()
+			}
+
+			const existing = new Set(state.peerMessages.map(row => row.messageId))
+			for (const row of snapshot.peerMessages) {
+				if (existing.has(row.messageId)) continue
+				state.peerMessages.push({ ...row, id: String(state.nextPeerMessageId++), acked: row.acked })
+				existing.add(row.messageId)
+			}
 		})
 	}
 
@@ -254,7 +289,7 @@ export class SqliteAppStateSyncKeyStore implements AppStateSyncKeyStore {
 				'INSERT INTO peer_messages (message_type, key_remote_jid, key_from_me, key_id, device_id, timestamp, data, acked) VALUES (?, ?, 1, ?, ?, ?, ?, 0)'
 			),
 			listPeer: db.prepare(
-				'SELECT _id, message_type, key_remote_jid, key_id, device_id, timestamp, data, acked FROM peer_messages ORDER BY _id'
+				'SELECT _id, message_type, key_remote_jid, key_id, device_id, timestamp, data, acked FROM peer_messages WHERE message_type IN (38, 39) ORDER BY _id'
 			),
 			listPeerByType: db.prepare(
 				'SELECT _id, message_type, key_remote_jid, key_id, device_id, timestamp, data, acked FROM peer_messages WHERE message_type = ? ORDER BY _id'
@@ -263,10 +298,10 @@ export class SqliteAppStateSyncKeyStore implements AppStateSyncKeyStore {
 				'SELECT _id, message_type, key_remote_jid, key_id, device_id, timestamp, data, acked ' +
 					'FROM peer_messages WHERE message_type IN (38, 39) AND acked = 0 ORDER BY _id'
 			),
-			ackPeer: db.prepare('UPDATE peer_messages SET acked = 1 WHERE _id = ?'),
-			deletePeer: db.prepare('DELETE FROM peer_messages WHERE _id = ?'),
+			ackPeer: db.prepare('UPDATE peer_messages SET acked = 1 WHERE _id = ? AND message_type IN (38, 39)'),
+			deletePeer: db.prepare('DELETE FROM peer_messages WHERE _id = ? AND message_type IN (38, 39)'),
 			clearMissing: db.prepare('DELETE FROM missing_keys'),
-			clearPeer: db.prepare('DELETE FROM peer_messages')
+			clearPeer: db.prepare('DELETE FROM peer_messages WHERE message_type IN (38, 39)')
 		}
 	}
 
@@ -341,10 +376,45 @@ export class SqliteAppStateSyncKeyStore implements AppStateSyncKeyStore {
 		})(ids)
 	}
 
+	async exportState(): Promise<AppStateSyncKeyStoreSnapshot> {
+		const missingKeys = this.listMissingRows().map(row => ({
+			keyId: encodeAppStateSyncKeyId(row),
+			collectionName: row.collectionName
+		}))
+		return { missingKeys, peerMessages: await this.listPeerMessages() }
+	}
+
+	async importState(snapshot: AppStateSyncKeyStoreSnapshot): Promise<void> {
+		const tx = this.db.transaction((value: AppStateSyncKeyStoreSnapshot) => {
+			for (const row of value.missingKeys) {
+				const parts = parseAppStateSyncKeyId(row.keyId)
+				this.stmts.insertMissing!.run(parts.deviceId, parts.epoch, row.collectionName)
+			}
+
+			const existing = new Set((this.stmts.listPeer!.all() as PeerRow[]).map(row => row.key_id))
+			for (const row of value.peerMessages) {
+				if (existing.has(row.messageId)) continue
+				const inserted = this.stmts.insertPeer!.run(
+					row.messageType,
+					row.remoteJid,
+					row.messageId,
+					row.targetDeviceJid,
+					row.timestamp,
+					row.data
+				)
+				if (row.acked) this.stmts.ackPeer!.run(inserted.lastInsertRowid)
+				existing.add(row.messageId)
+			}
+		})
+		tx.immediate(snapshot)
+	}
+
 	async clear(): Promise<void> {
-		this.db.transaction(() => {
-			this.stmts.clearMissing!.run()
-			this.stmts.clearPeer!.run()
-		})()
+		this.db
+			.transaction(() => {
+				this.stmts.clearMissing!.run()
+				this.stmts.clearPeer!.run()
+			})
+			.immediate()
 	}
 }
