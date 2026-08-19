@@ -37,6 +37,12 @@ const sameDeviceNumber = (left: string, right: string): boolean => {
 	return Boolean(a && b && (a.device ?? 0) === (b.device ?? 0))
 }
 
+const sameExplicitDeviceNumber = (left: string, right: string): boolean => {
+	const a = jidDecode(left)
+	const b = jidDecode(right)
+	return Boolean(a && b && typeof a.device === 'number' && typeof b.device === 'number' && a.device === b.device)
+}
+
 const isNewerKeyId = (candidate: string, current: string | undefined): boolean => {
 	if (!current) return true
 
@@ -345,6 +351,37 @@ export class AppStateSyncKeyLifecycle {
 
 		if (result.readyCollections.length) await this.deps.retryCollections(result.readyCollections)
 		return result.activeCandidate
+	}
+
+	/**
+	 * Completes Android's peer_messages lifecycle for type-38 key shares.
+	 * The transport ACK only marks the row acked; the receiving companion's
+	 * `peer_msg` delivery receipt is what authorizes its durable deletion.
+	 */
+	async handlePeerDeliveryReceipt(senderJid: string, messageIds: string[]): Promise<void> {
+		const ownJid = this.deps.getOwnJid()
+		const ownLid = this.deps.getOwnLid()
+		if (
+			!jidDecode(senderJid) ||
+			(!areJidsSameUser(senderJid, ownJid) && (!ownLid || !areJidsSameUser(senderJid, ownLid)))
+		) {
+			this.deps.logger.warn({ senderJid }, 'dropping app-state sync peer receipt from foreign account')
+			return
+		}
+
+		const ids = new Set(messageIds.filter(Boolean))
+		if (!ids.size) return
+		const shares = await this.deps.store.listPeerMessages(APP_STATE_SYNC_KEY_SHARE_MESSAGE_TYPE)
+		const completed = shares
+			.filter(row => ids.has(row.messageId) && sameExplicitDeviceNumber(row.targetDeviceJid, senderJid))
+			.map(row => row.id)
+		if (!completed.length) return
+
+		await this.deps.store.deletePeerMessages(completed)
+		this.deps.logger.debug(
+			{ senderJid, peerMessageIds: completed, messageIds: [...ids] },
+			'app-state sync key shares completed by peer delivery receipt'
+		)
 	}
 
 	private async sendStored(row: StoredAppStateSyncPeerMessage): Promise<void> {

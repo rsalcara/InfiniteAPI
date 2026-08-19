@@ -233,6 +233,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		sendReceipt,
 		uploadPreKeys,
 		sendPeerDataOperationMessage,
+		handleAppStateSyncKeyPeerReceipt,
 		messageRetryManager,
 		issuePrivacyTokens,
 		registerSocketEndHandler,
@@ -3613,9 +3614,20 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			ids.push(...items.map(i => i.attrs.id!))
 		}
 
+		let peerReceiptStoreFailed = false
+
 		try {
 			await Promise.all([
 				receiptMutex.mutex(jidNormalizedUser(remoteJid) || 'unknown', async () => {
+					if (attrs.type === 'peer_msg' && handleAppStateSyncKeyPeerReceipt) {
+						try {
+							await handleAppStateSyncKeyPeerReceipt(attrs.participant || attrs.from!, ids)
+						} catch (error) {
+							peerReceiptStoreFailed = true
+							throw error
+						}
+					}
+
 					const status = getStatusFromReceiptType(attrs.type)
 					if (
 						typeof status !== 'undefined' &&
@@ -3809,7 +3821,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				})
 			])
 		} finally {
-			await sendMessageAck(node).catch(ackErr => logger.error({ ackErr }, 'failed to ack receipt'))
+			await sendMessageAck(node, peerReceiptStoreFailed ? NACK_REASONS.UnhandledError : undefined).catch(ackErr =>
+				logger.error({ ackErr }, 'failed to ack receipt')
+			)
 		}
 	}
 

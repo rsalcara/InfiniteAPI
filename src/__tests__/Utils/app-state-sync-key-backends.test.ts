@@ -64,6 +64,15 @@ const exerciseDurableBackend = async (open: () => Promise<OpenedBackend>): Promi
 		data: encodeAppStateSyncKeyRequestData([keyId])
 	})
 	await firstStore.markPeerMessageAcked(request.id)
+	const share = await firstStore.enqueuePeerMessage({
+		messageType: 38,
+		remoteJid: '5511999999999@s.whatsapp.net',
+		targetDeviceJid: '5511999999999:2@s.whatsapp.net',
+		messageId: 'share-38',
+		timestamp: 1_700_000_000_001,
+		data: JSON.stringify({ appStateSyncKeyShareProtoString: '', isNewlyGeneratedKey: false })
+	})
+	await firstStore.markPeerMessageAcked(share.id)
 	first.close()
 
 	const reopened = await open()
@@ -87,6 +96,9 @@ const exerciseDurableBackend = async (open: () => Promise<OpenedBackend>): Promi
 		})
 	])
 	expect(await reopenedStore.listUnackedPeerMessages()).toEqual([])
+	expect(await reopenedStore.listPeerMessages(38)).toEqual([
+		expect.objectContaining({ messageId: 'share-38', acked: true })
+	])
 
 	if (reopened.insertUnrelated) {
 		reopened.insertUnrelated()
@@ -98,6 +110,9 @@ const exerciseDurableBackend = async (open: () => Promise<OpenedBackend>): Promi
 	expect(await reopened.state.historySync?.getCheckpoint('INITIAL')).toEqual(
 		expect.objectContaining({ messageId: 'history-checkpoint-source', progress: 100 })
 	)
+	await reopenedStore.deletePeerMessages((await reopenedStore.listPeerMessages(38)).map(row => row.id))
+	expect(await reopenedStore.listPeerMessages(38)).toEqual([])
+	expect(await reopenedStore.listPeerMessages(39)).toHaveLength(1)
 	await reopenedStore.deletePeerMessages((await reopenedStore.listPeerMessages(39)).map(row => row.id))
 	expect(await reopenedStore.listPeerMessages(39)).toEqual([])
 	reopened.close()

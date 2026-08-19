@@ -569,6 +569,98 @@ describe('AppStateSyncKeyLifecycle — official types 38/39 recovery', () => {
 		).resolves.toBeUndefined()
 		lifecycle.stop()
 	})
+
+	it('deletes an acked type-38 only after the matching own-device peer receipt', async () => {
+		const { store } = await makeFileStore()
+		const share = await store.enqueuePeerMessage({
+			messageType: 38,
+			remoteJid: ownJid,
+			targetDeviceJid: deviceTwo,
+			messageId: 'share-delivered',
+			timestamp: 1,
+			data: JSON.stringify({ appStateSyncKeyShareProtoString: '', isNewlyGeneratedKey: false })
+		})
+		const { lifecycle } = makeLifecycle(store)
+
+		await lifecycle.handlePeerDeliveryReceipt(ownJid, ['share-delivered'])
+		expect(await store.listPeerMessages(38)).toHaveLength(1)
+		await store.markPeerMessageAcked(share.id)
+		await lifecycle.handlePeerDeliveryReceipt('999999999999:2@s.whatsapp.net', ['share-delivered'])
+		await lifecycle.handlePeerDeliveryReceipt(deviceOne, ['share-delivered'])
+		await lifecycle.handlePeerDeliveryReceipt(deviceTwo, ['another-id'])
+		expect(await store.listPeerMessages(38)).toHaveLength(1)
+
+		await lifecycle.handlePeerDeliveryReceipt(`${jidUser(ownLid)}:2@lid`, ['share-delivered'])
+		expect(await store.listPeerMessages(38)).toEqual([])
+	})
+
+	it('lets the peer receipt complete type-38 across a crash before the transport ACK flag is persisted', async () => {
+		const { store } = await makeFileStore()
+		await store.enqueuePeerMessage({
+			messageType: 38,
+			remoteJid: ownJid,
+			targetDeviceJid: deviceOne,
+			messageId: 'share-before-local-ack',
+			timestamp: 1,
+			data: JSON.stringify({ appStateSyncKeyShareProtoString: '', isNewlyGeneratedKey: false })
+		})
+		const { lifecycle } = makeLifecycle(store)
+
+		await lifecycle.handlePeerDeliveryReceipt(deviceOne, ['share-before-local-ack'])
+		expect(await store.listPeerMessages(38)).toEqual([])
+	})
+
+	it('retains type-39 requests when a peer delivery receipt completes type-38', async () => {
+		const { store } = await makeFileStore()
+		const share = await store.enqueuePeerMessage({
+			messageType: 38,
+			remoteJid: ownJid,
+			targetDeviceJid: deviceOne,
+			messageId: 'shared-message-id',
+			timestamp: 1,
+			data: JSON.stringify({ appStateSyncKeyShareProtoString: '', isNewlyGeneratedKey: false })
+		})
+		await store.markPeerMessageAcked(share.id)
+		await store.enqueuePeerMessage({
+			messageType: 39,
+			remoteJid: ownJid,
+			targetDeviceJid: deviceOne,
+			messageId: 'shared-message-id',
+			timestamp: 2,
+			data: encodeAppStateSyncKeyRequestData([missingKeyId])
+		})
+		const { lifecycle } = makeLifecycle(store)
+
+		await lifecycle.handlePeerDeliveryReceipt(deviceOne, ['shared-message-id'])
+		expect(await store.listPeerMessages(38)).toEqual([])
+		expect(await store.listPeerMessages(39)).toHaveLength(1)
+	})
+
+	it('retains type-38 when durable receipt completion fails so the stanza can be retried', async () => {
+		const { store } = await makeFileStore()
+		const share = await store.enqueuePeerMessage({
+			messageType: 38,
+			remoteJid: ownJid,
+			targetDeviceJid: deviceOne,
+			messageId: 'share-delete-failure',
+			timestamp: 1,
+			data: JSON.stringify({ appStateSyncKeyShareProtoString: '', isNewlyGeneratedKey: false })
+		})
+		await store.markPeerMessageAcked(share.id)
+		const deletePeerMessages = store.deletePeerMessages.bind(store)
+		store.deletePeerMessages = jest.fn(async () => {
+			throw new Error('disk unavailable')
+		})
+		const { lifecycle } = makeLifecycle(store)
+
+		await expect(lifecycle.handlePeerDeliveryReceipt(deviceOne, ['share-delete-failure'])).rejects.toThrow(
+			'disk unavailable'
+		)
+		expect(await store.listPeerMessages(38)).toHaveLength(1)
+		store.deletePeerMessages = deletePeerMessages
+		await lifecycle.handlePeerDeliveryReceipt(deviceOne, ['share-delete-failure'])
+		expect(await store.listPeerMessages(38)).toEqual([])
+	})
 })
 
 const jidUser = (jid: string): string => jid.slice(0, jid.indexOf('@'))

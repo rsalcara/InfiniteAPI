@@ -431,6 +431,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				generateMessageId: () => generateMessageIDV2(authState.creds.me?.id)
 			})
 		: undefined
+	const handleAppStateSyncKeyPeerReceipt = appStateSyncKeyLifecycle
+		? (senderJid: string, messageIds: string[]) =>
+				appStateSyncKeyLifecycle.handlePeerDeliveryReceipt(senderJid, messageIds)
+		: undefined
 
 	const queueMissingAppStateKeyRecovery = async (name: WAPatchName, error: any): Promise<boolean> => {
 		if (!isMissingKeyError(error) || !appStateSyncKeyLifecycle || typeof error.data?.keyId !== 'string') {
@@ -2831,6 +2835,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	return {
 		...sock,
+		handleAppStateSyncKeyPeerReceipt,
 		createCallLink,
 		getBotListV2,
 		getStoredContact,
