@@ -41787,7 +41787,6 @@ export const proto = $root.proto = (() => {
         Message.prototype.newsletterFollowerInviteMessageV2 = null;
         Message.prototype.pollResultSnapshotMessageV3 = null;
         Message.prototype.newsletterAdminProfileMessage = null;
-        Message.prototype.newsletterAdminProfileMessageV2 = null;
         Message.prototype.spoilerMessage = null;
         Message.prototype.pollCreationMessageV6 = null;
         Message.prototype.conditionalRevealMessage = null;
@@ -42382,12 +42381,6 @@ export const proto = $root.proto = (() => {
         });
 
         // Virtual OneOf for proto3 optional field
-        Object.defineProperty(Message.prototype, "_newsletterAdminProfileMessageV2", {
-            get: $util.oneOfGetter($oneOfFields = ["newsletterAdminProfileMessageV2"]),
-            set: $util.oneOfSetter($oneOfFields)
-        });
-
-        // Virtual OneOf for proto3 optional field
         Object.defineProperty(Message.prototype, "_spoilerMessage", {
             get: $util.oneOfGetter($oneOfFields = ["spoilerMessage"]),
             set: $util.oneOfSetter($oneOfFields)
@@ -42670,8 +42663,6 @@ export const proto = $root.proto = (() => {
                 $root.proto.Message.PollResultSnapshotMessage.encode(m.pollResultSnapshotMessageV3, w.uint32(922).fork()).ldelim();
             if (m.newsletterAdminProfileMessage != null && Object.hasOwnProperty.call(m, "newsletterAdminProfileMessage"))
                 $root.proto.Message.FutureProofMessage.encode(m.newsletterAdminProfileMessage, w.uint32(930).fork()).ldelim();
-            if (m.newsletterAdminProfileMessageV2 != null && Object.hasOwnProperty.call(m, "newsletterAdminProfileMessageV2"))
-                $root.proto.Message.FutureProofMessage.encode(m.newsletterAdminProfileMessageV2, w.uint32(938).fork()).ldelim();
             if (m.spoilerMessage != null && Object.hasOwnProperty.call(m, "spoilerMessage"))
                 $root.proto.Message.FutureProofMessage.encode(m.spoilerMessage, w.uint32(946).fork()).ldelim();
             if (m.pollCreationMessageV6 != null && Object.hasOwnProperty.call(m, "pollCreationMessageV6"))
@@ -43094,10 +43085,6 @@ export const proto = $root.proto = (() => {
                     }
                 case 116: {
                         m.newsletterAdminProfileMessage = $root.proto.Message.FutureProofMessage.decode(r, r.uint32());
-                        break;
-                    }
-                case 117: {
-                        m.newsletterAdminProfileMessageV2 = $root.proto.Message.FutureProofMessage.decode(r, r.uint32());
                         break;
                     }
                 case 118: {
@@ -43645,11 +43632,6 @@ export const proto = $root.proto = (() => {
                 if (typeof d.newsletterAdminProfileMessage !== "object")
                     throw TypeError(".proto.Message.newsletterAdminProfileMessage: object expected");
                 m.newsletterAdminProfileMessage = $root.proto.Message.FutureProofMessage.fromObject(d.newsletterAdminProfileMessage);
-            }
-            if (d.newsletterAdminProfileMessageV2 != null) {
-                if (typeof d.newsletterAdminProfileMessageV2 !== "object")
-                    throw TypeError(".proto.Message.newsletterAdminProfileMessageV2: object expected");
-                m.newsletterAdminProfileMessageV2 = $root.proto.Message.FutureProofMessage.fromObject(d.newsletterAdminProfileMessageV2);
             }
             if (d.spoilerMessage != null) {
                 if (typeof d.spoilerMessage !== "object")
@@ -44207,11 +44189,6 @@ export const proto = $root.proto = (() => {
                 d.newsletterAdminProfileMessage = $root.proto.Message.FutureProofMessage.toObject(m.newsletterAdminProfileMessage, o);
                 if (o.oneofs)
                     d._newsletterAdminProfileMessage = "newsletterAdminProfileMessage";
-            }
-            if (m.newsletterAdminProfileMessageV2 != null && m.hasOwnProperty("newsletterAdminProfileMessageV2")) {
-                d.newsletterAdminProfileMessageV2 = $root.proto.Message.FutureProofMessage.toObject(m.newsletterAdminProfileMessageV2, o);
-                if (o.oneofs)
-                    d._newsletterAdminProfileMessageV2 = "newsletterAdminProfileMessageV2";
             }
             if (m.spoilerMessage != null && m.hasOwnProperty("spoilerMessage")) {
                 d.spoilerMessage = $root.proto.Message.FutureProofMessage.toObject(m.spoilerMessage, o);
