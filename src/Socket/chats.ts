@@ -73,6 +73,7 @@ import {
 import {
 	discoverOwnAppStateDevices,
 	encodeExplicitDeviceJid,
+	readTypedOwnAppStateDevices,
 	selectOtherOwnDevices
 } from '../Utils/app-state-sync-key-devices'
 import { AppStateSyncKeyLifecycle } from '../Utils/app-state-sync-key-lifecycle'
@@ -295,14 +296,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		const readCachedDevices = async (): Promise<FullJid[] | undefined> => {
 			const cached: FullJid[] = []
 			let found = false
-			const exactStored = await authState.keys.get('app-state-device-list', [appStateDeviceCacheKey])
-			for (const device of exactStored[appStateDeviceCacheKey] ?? []) {
-				const decoded = jidDecode(`${device.user}:${device.device}@${device.server}`)
-				if (decoded?.user && Number.isInteger(device.device) && device.device >= 0) {
-					found = true
-					cached.push({ ...decoded, domainType: device.domainType ?? decoded.domainType, device: device.device })
-				}
-			}
+			const exact = await readTypedOwnAppStateDevices({
+				read: async () =>
+					(await authState.keys.get('app-state-device-list', [appStateDeviceCacheKey]))?.[appStateDeviceCacheKey],
+				ownJid: meId,
+				ownLid: meLid,
+				onReadError: error =>
+					logger.warn({ error }, 'failed to read typed own-device cache; trying legacy device caches')
+			})
+			if (exact !== undefined) return exact
 
 			if (config.userDevicesCache) {
 				for (const user of cacheUsers) {

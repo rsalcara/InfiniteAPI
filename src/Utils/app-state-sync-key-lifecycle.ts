@@ -189,14 +189,19 @@ export class AppStateSyncKeyLifecycle {
 			const requests = await this.deps.store.listPeerMessages(APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE)
 			const devices = uniqueSorted(await this.deps.listOwnDevices())
 			if (!devices.length) {
-				// Persisted requests still represent devices awaiting a response.
-				// Only declare all-clients-missing when no request can be sent or
-				// correlated at all.
-				if (requests.length) return
+				const requested = new Set(requests.flatMap(row => decodeAppStateSyncKeyRequestData(row.data)))
+				const unrequested = missing.filter(keyId => !requested.has(keyId))
+				// Existing rows can still receive a late response. They must not,
+				// however, hide a different key that has never been requested.
+				if (!unrequested.length) return
+				const snapshot = await this.deps.store.exportState()
+				const collections = [
+					...new Set(snapshot.missingKeys.filter(row => unrequested.includes(row.keyId)).map(row => row.collectionName))
+				].sort()
 				this.deps.logger.error(
 					{
-						collections: await this.deps.store.listMissingCollections(),
-						keyIds: missing,
+						collections,
+						keyIds: unrequested,
 						state: 'MissingKeyOnAllClients'
 					},
 					'app-state sync key is missing on every registered client'

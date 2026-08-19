@@ -189,6 +189,34 @@ describe('AppStateSyncKeyLifecycle — official types 38/39 recovery', () => {
 		)
 	})
 
+	it('reports a newly missing unrequested key even when an older request is still pending', async () => {
+		const { store } = await makeFileStore()
+		const olderKeyId = encodeAppStateSyncKeyId({ deviceId: 0, epoch: 16788 })
+		await store.recordMissingKey(olderKeyId, 'regular_low')
+		await store.enqueuePeerMessage({
+			messageType: 39,
+			remoteJid: ownJid,
+			targetDeviceJid: deviceOne,
+			messageId: 'older-pending-request',
+			timestamp: 1,
+			data: encodeAppStateSyncKeyRequestData([olderKeyId])
+		})
+		await store.recordMissingKey(missingKeyId, 'regular')
+		const { lifecycle, logger } = makeLifecycle(store, { listOwnDevices: async () => [] })
+
+		await lifecycle.startRecovery()
+
+		expect(logger.error).toHaveBeenCalledWith(
+			expect.objectContaining({
+				state: 'MissingKeyOnAllClients',
+				collections: ['regular'],
+				keyIds: [missingKeyId]
+			}),
+			'app-state sync key is missing on every registered client'
+		)
+		lifecycle.stop()
+	})
+
 	it('retries device discovery after a transient failure without requiring a restart', async () => {
 		const { store } = await makeFileStore()
 		await store.recordMissingKey(missingKeyId, 'regular')

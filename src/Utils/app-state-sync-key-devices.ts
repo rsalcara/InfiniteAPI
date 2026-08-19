@@ -1,3 +1,4 @@
+import type { AppStateSyncDevice } from '../Types'
 import type { FullJid } from '../WABinary'
 import { jidDecode, WAJIDDomains } from '../WABinary'
 
@@ -7,6 +8,13 @@ type DiscoverOwnDevicesOptions = {
 	writeCachedDevices: (devices: FullJid[]) => Promise<void>
 	onFetchError?: (error: unknown) => void
 	onCacheWriteError?: (error: unknown) => void
+}
+
+type ReadTypedOwnDevicesOptions = {
+	read: () => Promise<unknown>
+	ownJid: string
+	ownLid?: string
+	onReadError?: (error: unknown) => void
 }
 
 /** Keeps device 0 explicit; jidEncode intentionally collapses `:0`. */
@@ -53,6 +61,33 @@ export const selectOtherOwnDevices = (devices: FullJid[], ownJid: string, ownLid
 	}
 
 	return [...byDevice.values()]
+}
+
+/** Returns undefined only when the typed cache is absent or unreadable; an empty array is authoritative. */
+export const readTypedOwnAppStateDevices = async ({
+	read,
+	ownJid,
+	ownLid,
+	onReadError
+}: ReadTypedOwnDevicesOptions): Promise<FullJid[] | undefined> => {
+	let stored: unknown
+	try {
+		stored = await read()
+	} catch (error) {
+		onReadError?.(error)
+		return undefined
+	}
+
+	if (!Array.isArray(stored)) return undefined
+	const decoded = stored.flatMap(value => {
+		if (!value || typeof value !== 'object') return []
+		const device = value as Partial<AppStateSyncDevice>
+		if (!device.user || !device.server || !Number.isInteger(device.device) || Number(device.device) < 0) return []
+		const jid = jidDecode(`${device.user}:${device.device}@${device.server}`)
+		if (!jid?.user) return []
+		return [{ ...jid, domainType: device.domainType ?? jid.domainType, device: Number(device.device) }]
+	})
+	return selectOtherOwnDevices(decoded, ownJid, ownLid)
 }
 
 /** Fresh USync is authoritative; durable cache is used only when it fails. */

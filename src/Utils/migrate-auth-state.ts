@@ -363,7 +363,7 @@ async function verifyMigration(
 		} else {
 			const target = await to.appStateSyncKeys.exportState()
 			const targetMissing = new Set(target.missingKeys.map(row => `${row.keyId}\u0000${row.collectionName}`))
-			const targetPeers = new Set(target.peerMessages.map(row => row.messageId))
+			const targetPeers = new Map(target.peerMessages.map(row => [row.messageId, row]))
 			for (const row of appStateSnapshot.missingKeys) {
 				if (!targetMissing.has(`${row.keyId}\u0000${row.collectionName}`)) {
 					warnings.push(`destination missing app-state recovery key:${row.keyId}:${row.collectionName}`)
@@ -372,8 +372,24 @@ async function verifyMigration(
 			}
 
 			for (const row of appStateSnapshot.peerMessages) {
-				if (!targetPeers.has(row.messageId)) {
+				const migrated = targetPeers.get(row.messageId)
+				if (!migrated) {
 					warnings.push(`destination missing app-state peer message:${row.messageId}`)
+					ok = false
+					continue
+				}
+
+				const samePayload =
+					migrated.messageType === row.messageType &&
+					migrated.remoteJid === row.remoteJid &&
+					migrated.targetDeviceJid === row.targetDeviceJid &&
+					migrated.timestamp === row.timestamp &&
+					migrated.data === row.data
+				// Delivery is monotonic: a destination may legitimately ACK an
+				// imported pending row while verification is still running.
+				const validAckState = !row.acked || migrated.acked
+				if (!samePayload || !validAckState) {
+					warnings.push(`destination has conflicting app-state peer message:${row.messageId}`)
 					ok = false
 				}
 			}

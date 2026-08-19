@@ -377,11 +377,16 @@ export class SqliteAppStateSyncKeyStore implements AppStateSyncKeyStore {
 	}
 
 	async exportState(): Promise<AppStateSyncKeyStoreSnapshot> {
-		const missingKeys = this.listMissingRows().map(row => ({
-			keyId: encodeAppStateSyncKeyId(row),
-			collectionName: row.collectionName
-		}))
-		return { missingKeys, peerMessages: await this.listPeerMessages() }
+		const readSnapshot = this.db.transaction(
+			(): AppStateSyncKeyStoreSnapshot => ({
+				missingKeys: this.listMissingRows().map(row => ({
+					keyId: encodeAppStateSyncKeyId(row),
+					collectionName: row.collectionName
+				})),
+				peerMessages: (this.stmts.listPeer!.all() as PeerRow[]).map(mapPeerRow)
+			})
+		)
+		return readSnapshot()
 	}
 
 	async importState(snapshot: AppStateSyncKeyStoreSnapshot): Promise<void> {

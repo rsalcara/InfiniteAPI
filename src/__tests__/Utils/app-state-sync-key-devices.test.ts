@@ -2,6 +2,7 @@ import { jest } from '@jest/globals'
 import {
 	discoverOwnAppStateDevices,
 	encodeExplicitDeviceJid,
+	readTypedOwnAppStateDevices,
 	selectOtherOwnDevices
 } from '../../Utils/app-state-sync-key-devices'
 
@@ -64,6 +65,25 @@ describe('app-state sync own-device discovery', () => {
 		).resolves.toEqual([])
 		expect(writeCachedDevices).toHaveBeenCalledWith([])
 		expect(readCachedDevices).not.toHaveBeenCalled()
+	})
+
+	it('treats a persisted empty typed device list as authoritative', async () => {
+		await expect(readTypedOwnAppStateDevices({ read: async () => [], ownJid, ownLid })).resolves.toEqual([])
+	})
+
+	it('allows legacy device fallbacks when the typed device cache cannot be read', async () => {
+		const onReadError = jest.fn()
+		await expect(
+			readTypedOwnAppStateDevices({
+				read: async () => {
+					throw new Error('typed cache unavailable')
+				},
+				ownJid,
+				ownLid,
+				onReadError
+			})
+		).resolves.toBeUndefined()
+		expect(onReadError).toHaveBeenCalledWith(expect.objectContaining({ message: 'typed cache unavailable' }))
 	})
 
 	it('falls back to the durable device list only when USync fails', async () => {

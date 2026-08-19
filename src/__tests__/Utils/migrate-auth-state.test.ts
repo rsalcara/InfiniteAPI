@@ -267,6 +267,55 @@ describe('migrateAuthState — multi-file → SQLite', () => {
 		dst.close()
 	})
 
+	it('rejects a peer-message id collision with different recovery content', async () => {
+		const src = await useMultiFileAuthState(dir)
+		await src.state.appStateSyncKeys!.enqueuePeerMessage({
+			messageType: 39,
+			remoteJid: '5511999999999@s.whatsapp.net',
+			targetDeviceJid: '5511999999999:2@s.whatsapp.net',
+			messageId: 'colliding-peer-id',
+			timestamp: 123,
+			data: encodeAppStateSyncKeyRequestData(['AAAAAEGV'])
+		})
+		const dst = await useSqliteAuthState({ dbPath: ':memory:' })
+		await dst.state.appStateSyncKeys!.enqueuePeerMessage({
+			messageType: 39,
+			remoteJid: '5511999999999@s.whatsapp.net',
+			targetDeviceJid: '5511999999999:4@s.whatsapp.net',
+			messageId: 'colliding-peer-id',
+			timestamp: 123,
+			data: encodeAppStateSyncKeyRequestData(['AAAAAEGV'])
+		})
+
+		const result = await migrateAuthState({ from: src.state, to: dst.state, verify: true })
+
+		expect(result.verified).toBe(false)
+		expect(result.warnings).toContain('destination has conflicting app-state peer message:colliding-peer-id')
+		dst.close()
+	})
+
+	it('accepts destination ACK progress for an otherwise identical imported peer message', async () => {
+		const src = await useMultiFileAuthState(dir)
+		const peer = {
+			messageType: 39 as const,
+			remoteJid: '5511999999999@s.whatsapp.net',
+			targetDeviceJid: '5511999999999:2@s.whatsapp.net',
+			messageId: 'peer-acked-during-migration',
+			timestamp: 123,
+			data: encodeAppStateSyncKeyRequestData(['AAAAAEGV'])
+		}
+		await src.state.appStateSyncKeys!.enqueuePeerMessage(peer)
+		const dst = await useSqliteAuthState({ dbPath: ':memory:' })
+		const target = await dst.state.appStateSyncKeys!.enqueuePeerMessage(peer)
+		await dst.state.appStateSyncKeys!.markPeerMessageAcked(target.id)
+
+		const result = await migrateAuthState({ from: src.state, to: dst.state, verify: true })
+
+		expect(result.verified).toBe(true)
+		expect(result.warnings).toEqual([])
+		dst.close()
+	})
+
 	it('fails verification when a destination does not retain imported history jobs', async () => {
 		const src = await useMultiFileAuthState(dir)
 		await src.state.historySync!.enqueue(historyJob('MISSING-AFTER-IMPORT', 1))

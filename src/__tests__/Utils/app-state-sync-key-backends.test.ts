@@ -164,4 +164,36 @@ describe('durable App State key recovery — independent built-in auth backends'
 			db.close()
 		}
 	})
+
+	it('exports missing keys and peer messages from one SQLite read transaction', async () => {
+		const db = new Database(':memory:')
+		try {
+			const store = new SqliteAppStateSyncKeyStore(db as never)
+			await store.recordMissingKey(keyId, 'regular')
+			await store.enqueuePeerMessage({
+				messageType: 39,
+				remoteJid: '5511999999999@s.whatsapp.net',
+				targetDeviceJid: '5511999999999:2@s.whatsapp.net',
+				messageId: 'snapshot-peer-39',
+				timestamp: 1,
+				data: encodeAppStateSyncKeyRequestData([keyId])
+			})
+
+			const internal = store as unknown as {
+				listMissingRows: () => Array<{ deviceId: number; epoch: number; collectionName: string }>
+			}
+			const listMissingRows = internal.listMissingRows.bind(store)
+			internal.listMissingRows = () => {
+				expect(db.inTransaction).toBe(true)
+				return listMissingRows()
+			}
+
+			await expect(store.exportState()).resolves.toEqual({
+				missingKeys: [{ keyId, collectionName: 'regular' }],
+				peerMessages: [expect.objectContaining({ messageId: 'snapshot-peer-39', messageType: 39 })]
+			})
+		} finally {
+			db.close()
+		}
+	})
 })
