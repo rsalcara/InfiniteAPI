@@ -83,10 +83,12 @@ export const readTypedOwnAppStateDevices = async ({
 		if (!value || typeof value !== 'object') return []
 		const device = value as Partial<AppStateSyncDevice>
 		if (!device.user || !device.server || !Number.isInteger(device.device) || Number(device.device) < 0) return []
-		const jid = jidDecode(`${device.user}:${device.device}@${device.server}`)
+		const server = device.server === 'c.us' ? 's.whatsapp.net' : device.server
+		const jid = jidDecode(`${device.user}:${device.device}@${server}`)
 		if (!jid?.user) return []
 		return [{ ...jid, domainType: device.domainType ?? jid.domainType, device: Number(device.device) }]
 	})
+	if (decoded.length === 0 && stored.length > 0) return undefined
 	return selectOtherOwnDevices(decoded, ownJid, ownLid)
 }
 

@@ -86,6 +86,26 @@ describe('app-state sync own-device discovery', () => {
 		expect(onReadError).toHaveBeenCalledWith(expect.objectContaining({ message: 'typed cache unavailable' }))
 	})
 
+	it('canonicalizes c.us typed device rows to the WhatsApp PN server', async () => {
+		await expect(
+			readTypedOwnAppStateDevices({
+				read: async () => [{ user: '5511999999999', server: 'c.us', device: 4 }],
+				ownJid,
+				ownLid
+			})
+		).resolves.toEqual([{ user: '5511999999999', server: 's.whatsapp.net', device: 4, domainType: 0 }])
+	})
+
+	it('falls back when a non-empty typed device cache is entirely invalid', async () => {
+		await expect(
+			readTypedOwnAppStateDevices({
+				read: async () => [{ user: '', server: 'c.us', device: 'bad' }],
+				ownJid,
+				ownLid
+			})
+		).resolves.toBeUndefined()
+	})
+
 	it('falls back to the durable device list only when USync fails', async () => {
 		const cached = [{ user: '5511999999999', server: 's.whatsapp.net' as const, device: 0 }]
 		const writeCachedDevices = jest.fn(async () => undefined)
