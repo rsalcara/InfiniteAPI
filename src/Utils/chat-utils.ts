@@ -190,7 +190,9 @@ export const encodeSyncdPatch = async (
 ) => {
 	const key = !!myAppStateKeyId ? await getAppStateSyncKey(myAppStateKeyId) : undefined
 	if (!key) {
-		throw new Boom(`myAppStateKey ("${myAppStateKeyId}") not present`, { data: { isMissingKey: true } })
+		throw new Boom(`myAppStateKey ("${myAppStateKeyId}") not present`, {
+			data: { isMissingKey: true, keyId: myAppStateKeyId }
+		})
 	}
 
 	const encKeyId = Buffer.from(myAppStateKeyId, 'base64')
@@ -357,7 +359,7 @@ export const decodeSyncdMutations = async (
 		const keyEnc = await getAppStateSyncKey(base64Key)
 		if (!keyEnc) {
 			throw new Boom(`failed to find key "${base64Key}" to decode mutation`, {
-				data: { isMissingKey: true, msgMutations }
+				data: { isMissingKey: true, keyId: base64Key, msgMutations }
 			})
 		}
 
@@ -388,7 +390,9 @@ export const decodeSyncdPatch = async (
 		const base64Key = Buffer.from(msgKeyId).toString('base64')
 		const mainKeyObj = await getAppStateSyncKey(base64Key)
 		if (!mainKeyObj) {
-			throw new Boom(`failed to find key "${base64Key}" to decode patch`, { data: { isMissingKey: true, msg } })
+			throw new Boom(`failed to find key "${base64Key}" to decode patch`, {
+				data: { isMissingKey: true, keyId: base64Key, msg }
+			})
 		}
 
 		const mainKeyData = mainKeyObj.keyData
@@ -584,7 +588,9 @@ export const decodeSyncdSnapshot = async (
 		const base64Key = Buffer.from(snapKeyId).toString('base64')
 		const keyEnc = await getAppStateSyncKey(base64Key)
 		if (!keyEnc) {
-			throw new Boom(`failed to find key "${base64Key}" to decode mutation`, { data: { isMissingKey: true } })
+			throw new Boom(`failed to find key "${base64Key}" to decode mutation`, {
+				data: { isMissingKey: true, keyId: base64Key }
+			})
 		}
 
 		const snapKeyData = keyEnc.keyData
@@ -695,7 +701,9 @@ export const decodePatches = async (
 			const base64Key = Buffer.from(patchKeyId).toString('base64')
 			const keyEnc = await getAppStateSyncKey(base64Key)
 			if (!keyEnc) {
-				throw new Boom(`failed to find key "${base64Key}" to decode mutation`, { data: { isMissingKey: true } })
+				throw new Boom(`failed to find key "${base64Key}" to decode mutation`, {
+					data: { isMissingKey: true, keyId: base64Key }
+				})
 			}
 
 			const patchKeyData = keyEnc.keyData

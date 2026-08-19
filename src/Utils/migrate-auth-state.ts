@@ -1,4 +1,10 @@
-import type { AuthenticationState, HistorySyncStoreSnapshot, SignalDataSet, SignalDataTypeMap } from '../Types'
+import type {
+	AppStateSyncKeyStoreSnapshot,
+	AuthenticationState,
+	HistorySyncStoreSnapshot,
+	SignalDataSet,
+	SignalDataTypeMap
+} from '../Types'
 import type { ILogger } from './logger'
 
 /**
@@ -11,6 +17,7 @@ import type { ILogger } from './logger'
 export type MigrateAuthStateResult = {
 	creds: { copied: boolean }
 	historySync: { jobs: number; checkpoints: number; copied: boolean }
+	appStateSyncKeys: { missingKeys: number; peerMessages: number; copied: boolean }
 	counts: Partial<Record<keyof SignalDataTypeMap, number>>
 	verified: boolean
 	warnings: string[]
@@ -53,6 +60,7 @@ const _ALL_TYPES_MAP = {
 	'app-state-sync-version': true,
 	'lid-mapping': true,
 	'device-list': true,
+	'app-state-device-list': true,
 	tctoken: true,
 	'tctoken-job': true,
 	'identity-key': true,
@@ -107,11 +115,13 @@ export async function migrateAuthState({
 	const result: MigrateAuthStateResult = {
 		creds: { copied: false },
 		historySync: { jobs: 0, checkpoints: 0, copied: false },
+		appStateSyncKeys: { missingKeys: 0, peerMessages: 0, copied: false },
 		counts: {},
 		verified: false,
 		warnings: []
 	}
 	const historySnapshot = from.historySync ? await from.historySync.exportState() : undefined
+	const appStateSnapshot = from.appStateSyncKeys ? await from.appStateSyncKeys.exportState() : undefined
 	const hasDurableHistoryState = Boolean(
 		historySnapshot &&
 		(historySnapshot.jobs.length > 0 ||
@@ -120,6 +130,13 @@ export async function migrateAuthState({
 	)
 	if (!to.historySync && hasDurableHistoryState) {
 		throw new Error('migrateAuthState: destination does not support durable history sync state')
+	}
+
+	const hasAppStateRecovery = Boolean(
+		appStateSnapshot && (appStateSnapshot.missingKeys.length || appStateSnapshot.peerMessages.length)
+	)
+	if (!to.appStateSyncKeys && hasAppStateRecovery) {
+		throw new Error('migrateAuthState: destination does not support durable app-state key recovery state')
 	}
 
 	// 1. Copy creds. `AuthenticationState.creds` is a plain object — `Object.assign`
@@ -149,6 +166,16 @@ export async function migrateAuthState({
 			},
 			'migrateAuthState: durable history sync state copied'
 		)
+	}
+
+	if (appStateSnapshot && to.appStateSyncKeys) {
+		await to.appStateSyncKeys.importState(appStateSnapshot)
+		result.appStateSyncKeys = {
+			missingKeys: appStateSnapshot.missingKeys.length,
+			peerMessages: appStateSnapshot.peerMessages.length,
+			copied: appStateSnapshot.missingKeys.length > 0 || appStateSnapshot.peerMessages.length > 0
+		}
+		logger?.info(result.appStateSyncKeys, 'migrateAuthState: durable app-state key recovery copied')
 	}
 
 	/**
@@ -271,7 +298,7 @@ export async function migrateAuthState({
 
 	// 3. Verify (best-effort).
 	if (verify) {
-		const verifyOk = await verifyMigration(from, to, logger, result.warnings, historySnapshot)
+		const verifyOk = await verifyMigration(from, to, logger, result.warnings, historySnapshot, appStateSnapshot)
 		result.verified = verifyOk
 	}
 
@@ -287,7 +314,8 @@ async function verifyMigration(
 	to: AuthenticationState,
 	logger: ILogger | undefined,
 	warnings: string[],
-	historySnapshot?: HistorySyncStoreSnapshot
+	historySnapshot?: HistorySyncStoreSnapshot,
+	appStateSnapshot?: AppStateSyncKeyStoreSnapshot
 ): Promise<boolean> {
 	if (!from.keys.listIds && !from.keys.list) return false
 	if (!to.keys.listIds && !to.keys.list) return false
@@ -327,6 +355,45 @@ async function verifyMigration(
 	if (historySnapshot) {
 		const historyVerified = await verifyHistorySyncMigration(historySnapshot, to, warnings)
 		ok &&= historyVerified
+	}
+
+	if (appStateSnapshot) {
+		if (!to.appStateSyncKeys) {
+			if (appStateSnapshot.missingKeys.length || appStateSnapshot.peerMessages.length) ok = false
+		} else {
+			const target = await to.appStateSyncKeys.exportState()
+			const targetMissing = new Set(target.missingKeys.map(row => `${row.keyId}\u0000${row.collectionName}`))
+			const targetPeers = new Map(target.peerMessages.map(row => [row.messageId, row]))
+			for (const row of appStateSnapshot.missingKeys) {
+				if (!targetMissing.has(`${row.keyId}\u0000${row.collectionName}`)) {
+					warnings.push(`destination missing app-state recovery key:${row.keyId}:${row.collectionName}`)
+					ok = false
+				}
+			}
+
+			for (const row of appStateSnapshot.peerMessages) {
+				const migrated = targetPeers.get(row.messageId)
+				if (!migrated) {
+					warnings.push(`destination missing app-state peer message:${row.messageId}`)
+					ok = false
+					continue
+				}
+
+				const samePayload =
+					migrated.messageType === row.messageType &&
+					migrated.remoteJid === row.remoteJid &&
+					migrated.targetDeviceJid === row.targetDeviceJid &&
+					migrated.timestamp === row.timestamp &&
+					migrated.data === row.data
+				// Delivery is monotonic: a destination may legitimately ACK an
+				// imported pending row while verification is still running.
+				const validAckState = !row.acked || migrated.acked
+				if (!samePayload || !validAckState) {
+					warnings.push(`destination has conflicting app-state peer message:${row.messageId}`)
+					ok = false
+				}
+			}
+		}
 	}
 
 	logger?.info({ ok }, 'migrateAuthState: verification complete')

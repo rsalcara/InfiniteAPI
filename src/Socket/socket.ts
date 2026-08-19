@@ -2567,7 +2567,12 @@ export const makeSocket = (config: SocketConfig) => {
 		type: 'md' as 'md',
 		ws,
 		ev,
-		authState: { creds, keys, historySync: authState.historySync },
+		authState: {
+			creds,
+			keys,
+			historySync: authState.historySync,
+			appStateSyncKeys: authState.appStateSyncKeys
+		},
 		tcTokenBucketPolicy,
 		signalRepository,
 		sessionCleanup,

@@ -1,4 +1,5 @@
 import type { proto } from '../../WAProto/index.js'
+import type { AppStateSyncKeyStore } from './AppStateSync'
 import type { Contact } from './Contact'
 import type { HistorySyncStore } from './HistorySync'
 import type { MinimalMessage } from './Message'
@@ -89,6 +90,8 @@ export type SignalDataTypeMap = {
 	'app-state-sync-version': LTHashState
 	'lid-mapping': string
 	'device-list': string[]
+	/** Full App State peer-device identities; separate from libsignal's numeric device-list. */
+	'app-state-device-list': import('./AppStateSync').AppStateSyncDevice[]
 	tctoken: { token: Buffer; timestamp?: string; senderTimestamp?: number; realIssueTimestamp?: number | null }
 	'tctoken-job': {
 		canonicalJid: string
@@ -305,4 +308,6 @@ export type AuthenticationState = {
 	keys: SignalKeyStore
 	/** Durable history-sync work queue. Built-in auth adapters always provide it. */
 	historySync?: HistorySyncStore
+	/** Durable app-state missing-key/request lifecycle. Built-in auth adapters always provide it. */
+	appStateSyncKeys?: AppStateSyncKeyStore
 }
