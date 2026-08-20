@@ -81552,6 +81552,8 @@ export const proto = $root.proto = (() => {
         values[valuesById[91] = "LABEL_SUBLIST_ACTION"] = 91;
         values[valuesById[92] = "DEVICE_CAPABILITIES_V2"] = 92;
         values[valuesById[93] = "CTWA_MESSAGE_RECEIVED_ACTION"] = 93;
+        values[valuesById[94] = "SHARED_DEVICE_ALLOWLIST_ACTION"] = 94;
+        values[valuesById[95] = "CONTACT_MANAGER_METADATA_ACTION"] = 95;
         values[valuesById[10001] = "SHARE_OWN_PN"] = 10001;
         values[valuesById[10002] = "BUSINESS_BROADCAST_ACTION"] = 10002;
         values[valuesById[10003] = "AI_THREAD_DELETE_ACTION"] = 10003;
@@ -92378,6 +92380,8 @@ export const proto = $root.proto = (() => {
         SyncActionValue.prototype.labelSublistAction = null;
         SyncActionValue.prototype.deviceCapabilitiesV2 = null;
         SyncActionValue.prototype.ctwaMessageReceivedAction = null;
+        SyncActionValue.prototype.sharedDeviceAllowlistAction = null;
+        SyncActionValue.prototype.contactManagerMetadataAction = null;
 
         let $oneOfFields;
 
@@ -92885,6 +92889,18 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(SyncActionValue.prototype, "_sharedDeviceAllowlistAction", {
+            get: $util.oneOfGetter($oneOfFields = ["sharedDeviceAllowlistAction"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(SyncActionValue.prototype, "_contactManagerMetadataAction", {
+            get: $util.oneOfGetter($oneOfFields = ["contactManagerMetadataAction"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         SyncActionValue.create = function create(properties) {
             return new SyncActionValue(properties);
         };
@@ -93060,6 +93076,10 @@ export const proto = $root.proto = (() => {
                 $root.proto.DeviceCapabilities.encode(m.deviceCapabilitiesV2, w.uint32(738).fork()).ldelim();
             if (m.ctwaMessageReceivedAction != null && Object.hasOwnProperty.call(m, "ctwaMessageReceivedAction"))
                 $root.proto.SyncActionValue.CtwaMessageReceivedAction.encode(m.ctwaMessageReceivedAction, w.uint32(746).fork()).ldelim();
+            if (m.sharedDeviceAllowlistAction != null && Object.hasOwnProperty.call(m, "sharedDeviceAllowlistAction"))
+                $root.proto.SyncActionValue.SharedDeviceAllowlistAction.encode(m.sharedDeviceAllowlistAction, w.uint32(754).fork()).ldelim();
+            if (m.contactManagerMetadataAction != null && Object.hasOwnProperty.call(m, "contactManagerMetadataAction"))
+                $root.proto.SyncActionValue.ContactManagerMetadataAction.encode(m.contactManagerMetadataAction, w.uint32(762).fork()).ldelim();
             return w;
         };
 
@@ -93406,6 +93426,14 @@ export const proto = $root.proto = (() => {
                     }
                 case 93: {
                         m.ctwaMessageReceivedAction = $root.proto.SyncActionValue.CtwaMessageReceivedAction.decode(r, r.uint32());
+                        break;
+                    }
+                case 94: {
+                        m.sharedDeviceAllowlistAction = $root.proto.SyncActionValue.SharedDeviceAllowlistAction.decode(r, r.uint32());
+                        break;
+                    }
+                case 95: {
+                        m.contactManagerMetadataAction = $root.proto.SyncActionValue.ContactManagerMetadataAction.decode(r, r.uint32());
                         break;
                     }
                 default:
@@ -93845,6 +93873,16 @@ export const proto = $root.proto = (() => {
                     throw TypeError(".proto.SyncActionValue.ctwaMessageReceivedAction: object expected");
                 m.ctwaMessageReceivedAction = $root.proto.SyncActionValue.CtwaMessageReceivedAction.fromObject(d.ctwaMessageReceivedAction);
             }
+            if (d.sharedDeviceAllowlistAction != null) {
+                if (typeof d.sharedDeviceAllowlistAction !== "object")
+                    throw TypeError(".proto.SyncActionValue.sharedDeviceAllowlistAction: object expected");
+                m.sharedDeviceAllowlistAction = $root.proto.SyncActionValue.SharedDeviceAllowlistAction.fromObject(d.sharedDeviceAllowlistAction);
+            }
+            if (d.contactManagerMetadataAction != null) {
+                if (typeof d.contactManagerMetadataAction !== "object")
+                    throw TypeError(".proto.SyncActionValue.contactManagerMetadataAction: object expected");
+                m.contactManagerMetadataAction = $root.proto.SyncActionValue.ContactManagerMetadataAction.fromObject(d.contactManagerMetadataAction);
+            }
             return m;
         };
 
@@ -94274,6 +94312,16 @@ export const proto = $root.proto = (() => {
                 d.ctwaMessageReceivedAction = $root.proto.SyncActionValue.CtwaMessageReceivedAction.toObject(m.ctwaMessageReceivedAction, o);
                 if (o.oneofs)
                     d._ctwaMessageReceivedAction = "ctwaMessageReceivedAction";
+            }
+            if (m.sharedDeviceAllowlistAction != null && m.hasOwnProperty("sharedDeviceAllowlistAction")) {
+                d.sharedDeviceAllowlistAction = $root.proto.SyncActionValue.SharedDeviceAllowlistAction.toObject(m.sharedDeviceAllowlistAction, o);
+                if (o.oneofs)
+                    d._sharedDeviceAllowlistAction = "sharedDeviceAllowlistAction";
+            }
+            if (m.contactManagerMetadataAction != null && m.hasOwnProperty("contactManagerMetadataAction")) {
+                d.contactManagerMetadataAction = $root.proto.SyncActionValue.ContactManagerMetadataAction.toObject(m.contactManagerMetadataAction, o);
+                if (o.oneofs)
+                    d._contactManagerMetadataAction = "contactManagerMetadataAction";
             }
             return d;
         };
@@ -96843,6 +96891,94 @@ export const proto = $root.proto = (() => {
             };
 
             return ContactAction;
+        })();
+
+        SyncActionValue.ContactManagerMetadataAction = (function() {
+
+            function ContactManagerMetadataAction(p) {
+                if (p)
+                    for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null)
+                            this[ks[i]] = p[ks[i]];
+            }
+
+            ContactManagerMetadataAction.prototype.isHidden = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(ContactManagerMetadataAction.prototype, "_isHidden", {
+                get: $util.oneOfGetter($oneOfFields = ["isHidden"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            ContactManagerMetadataAction.create = function create(properties) {
+                return new ContactManagerMetadataAction(properties);
+            };
+
+            ContactManagerMetadataAction.encode = function encode(m, w) {
+                if (!w)
+                    w = $Writer.create();
+                if (m.isHidden != null && Object.hasOwnProperty.call(m, "isHidden"))
+                    w.uint32(8).bool(m.isHidden);
+                return w;
+            };
+
+            ContactManagerMetadataAction.decode = function decode(r, l, e) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.SyncActionValue.ContactManagerMetadataAction();
+                while (r.pos < c) {
+                    var t = r.uint32();
+                    if (t === e)
+                        break;
+                    switch (t >>> 3) {
+                    case 1: {
+                            m.isHidden = r.bool();
+                            break;
+                        }
+                    default:
+                        r.skipType(t & 7);
+                        break;
+                    }
+                }
+                return m;
+            };
+
+            ContactManagerMetadataAction.fromObject = function fromObject(d) {
+                if (d instanceof $root.proto.SyncActionValue.ContactManagerMetadataAction)
+                    return d;
+                var m = new $root.proto.SyncActionValue.ContactManagerMetadataAction();
+                if (d.isHidden != null) {
+                    m.isHidden = Boolean(d.isHidden);
+                }
+                return m;
+            };
+
+            ContactManagerMetadataAction.toObject = function toObject(m, o) {
+                if (!o)
+                    o = {};
+                var d = {};
+                if (m.isHidden != null && m.hasOwnProperty("isHidden")) {
+                    d.isHidden = m.isHidden;
+                    if (o.oneofs)
+                        d._isHidden = "isHidden";
+                }
+                return d;
+            };
+
+            ContactManagerMetadataAction.prototype.toJSON = function toJSON() {
+                return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            ContactManagerMetadataAction.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                if (typeUrlPrefix === undefined) {
+                    typeUrlPrefix = "type.googleapis.com";
+                }
+                return typeUrlPrefix + "/proto.SyncActionValue.ContactManagerMetadataAction";
+            };
+
+            return ContactManagerMetadataAction;
         })();
 
         SyncActionValue.CtwaMessageReceivedAction = (function() {
@@ -103707,6 +103843,94 @@ export const proto = $root.proto = (() => {
             })();
 
             return SettingsSyncAction;
+        })();
+
+        SyncActionValue.SharedDeviceAllowlistAction = (function() {
+
+            function SharedDeviceAllowlistAction(p) {
+                if (p)
+                    for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null)
+                            this[ks[i]] = p[ks[i]];
+            }
+
+            SharedDeviceAllowlistAction.prototype.allowed = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(SharedDeviceAllowlistAction.prototype, "_allowed", {
+                get: $util.oneOfGetter($oneOfFields = ["allowed"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            SharedDeviceAllowlistAction.create = function create(properties) {
+                return new SharedDeviceAllowlistAction(properties);
+            };
+
+            SharedDeviceAllowlistAction.encode = function encode(m, w) {
+                if (!w)
+                    w = $Writer.create();
+                if (m.allowed != null && Object.hasOwnProperty.call(m, "allowed"))
+                    w.uint32(8).bool(m.allowed);
+                return w;
+            };
+
+            SharedDeviceAllowlistAction.decode = function decode(r, l, e) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.SyncActionValue.SharedDeviceAllowlistAction();
+                while (r.pos < c) {
+                    var t = r.uint32();
+                    if (t === e)
+                        break;
+                    switch (t >>> 3) {
+                    case 1: {
+                            m.allowed = r.bool();
+                            break;
+                        }
+                    default:
+                        r.skipType(t & 7);
+                        break;
+                    }
+                }
+                return m;
+            };
+
+            SharedDeviceAllowlistAction.fromObject = function fromObject(d) {
+                if (d instanceof $root.proto.SyncActionValue.SharedDeviceAllowlistAction)
+                    return d;
+                var m = new $root.proto.SyncActionValue.SharedDeviceAllowlistAction();
+                if (d.allowed != null) {
+                    m.allowed = Boolean(d.allowed);
+                }
+                return m;
+            };
+
+            SharedDeviceAllowlistAction.toObject = function toObject(m, o) {
+                if (!o)
+                    o = {};
+                var d = {};
+                if (m.allowed != null && m.hasOwnProperty("allowed")) {
+                    d.allowed = m.allowed;
+                    if (o.oneofs)
+                        d._allowed = "allowed";
+                }
+                return d;
+            };
+
+            SharedDeviceAllowlistAction.prototype.toJSON = function toJSON() {
+                return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            SharedDeviceAllowlistAction.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                if (typeUrlPrefix === undefined) {
+                    typeUrlPrefix = "type.googleapis.com";
+                }
+                return typeUrlPrefix + "/proto.SyncActionValue.SharedDeviceAllowlistAction";
+            };
+
+            return SharedDeviceAllowlistAction;
         })();
 
         SyncActionValue.StarAction = (function() {
