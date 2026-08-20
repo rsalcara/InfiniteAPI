@@ -1,4 +1,5 @@
 export * from './Auth'
+export * from './AppStateSync'
 export * from './GroupMetadata'
 export * from './HistorySync'
 export * from './Chat'

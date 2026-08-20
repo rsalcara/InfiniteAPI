@@ -99,6 +99,22 @@ type ProcessMessageContext = {
 	historySyncCoordinator?: Pick<DurableHistorySyncCoordinator, 'enqueue'>
 	/** Marks compatibility-path completion after synchronous history apply succeeds. */
 	onHistorySyncCommitted?: (notification: proto.Message.IHistorySyncNotification) => void
+	/** Official durable App State syncd-key request/share lifecycle. */
+	onAppStateSyncKeyRequest?: (senderJid: string, request: proto.Message.IAppStateSyncKeyRequest) => Promise<void>
+	onAppStateSyncKeyShare?: (
+		senderJid: string,
+		share: proto.Message.IAppStateSyncKeyShare
+	) => Promise<string | undefined>
+}
+
+// The public message key is normalized before it reaches processMessage, which
+// deliberately removes device suffixes. App State peer authorization needs the
+// exact stanza author, so retain it out-of-band without leaking an internal
+// transport field through messages.upsert.
+const rawProtocolSenders = new WeakMap<WAMessage, string>()
+
+export const rememberRawProtocolSender = (message: WAMessage, senderJid: string): void => {
+	if (senderJid) rawProtocolSenders.set(message, senderJid)
 }
 
 /**
@@ -376,6 +392,7 @@ const REAL_MSG_REQ_ME_STUB_TYPES = new Set([WAMessageStubType.GROUP_PARTICIPANT_
 // isn't reallocated on every processed protocol message.
 const SELF_ONLY_PROTOCOL_TYPES = new Set<proto.Message.ProtocolMessage.Type>([
 	proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION,
+	proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_REQUEST,
 	proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_SHARE,
 	proto.Message.ProtocolMessage.Type.LID_MIGRATION_MAPPING_SYNC,
 	proto.Message.ProtocolMessage.Type.PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE
@@ -926,7 +943,9 @@ const processMessage = async (
 		mediaBackend,
 		addOnBackend,
 		historySyncCoordinator,
-		onHistorySyncCommitted
+		onHistorySyncCommitted,
+		onAppStateSyncKeyRequest,
+		onAppStateSyncKeyShare
 	}: ProcessMessageContext
 ) => {
 	const meUser = creds.me
@@ -1519,7 +1538,7 @@ const processMessage = async (
 		// Compare by user (same WhatsApp account, any device) instead of strict fromMe — otherwise
 		// we drop the keys the phone is trying to share and app state sync hangs on "missing key
 		// from v0, parking after 2 attempts".
-		const fromJid = message.key.participant || message.key.remoteJid || ''
+		const fromJid = rawProtocolSenders.get(message) || message.key.participant || message.key.remoteJid || ''
 		const isFromOwnAccount =
 			message.key.fromMe ||
 			areJidsSameUser(fromJid, meId) ||
@@ -1597,8 +1616,28 @@ const processMessage = async (
 				}
 
 				break
-			case proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_SHARE:
+			case proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_REQUEST: {
+				const request = protocolMsg.appStateSyncKeyRequest
+				if (request && onAppStateSyncKeyRequest) {
+					await onAppStateSyncKeyRequest(fromJid, request)
+				} else if (request) {
+					logger?.debug(
+						{ keyCount: request.keyIds?.length ?? 0 },
+						'app-state key request ignored without lifecycle capability'
+					)
+				}
+
+				break
+			}
+
+			case proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_SHARE: {
 				const keys = protocolMsg.appStateSyncKeyShare?.keys
+				if (protocolMsg.appStateSyncKeyShare && onAppStateSyncKeyShare) {
+					const newAppStateSyncKeyId = await onAppStateSyncKeyShare(fromJid, protocolMsg.appStateSyncKeyShare)
+					if (newAppStateSyncKeyId) ev.emit('creds.update', { myAppStateKeyId: newAppStateSyncKeyId })
+					break
+				}
+
 				if (keys?.length) {
 					let newAppStateSyncKeyId = ''
 					let isNewlyGeneratedKey = false
@@ -1667,6 +1706,8 @@ const processMessage = async (
 				}
 
 				break
+			}
+
 			case proto.Message.ProtocolMessage.Type.REVOKE: {
 				if (!protocolMsg.key?.id) {
 					logger?.debug({ protocolMsg }, 'processMessage: REVOKE with no target id, dropping')
@@ -1777,7 +1818,7 @@ const processMessage = async (
 
 							if (cachedData && typeof cachedData === 'object') {
 								// Preserve pushName if not present in PDO response
-								// eslint-disable-next-line max-depth
+
 								if (cachedData.pushName && !webMessageInfo.pushName) {
 									webMessageInfo.pushName = cachedData.pushName
 									logger?.debug({ msgId: webMessageInfo.key?.id }, 'CTWA: Restored pushName from cached metadata')
@@ -1785,7 +1826,7 @@ const processMessage = async (
 
 								// Preserve participantAlt (LID) if not present in PDO response
 								// This is critical for maintaining LID/PN mapping in groups
-								// eslint-disable-next-line max-depth
+
 								if (cachedData.participantAlt && webMessageInfo.key) {
 									const msgKey = webMessageInfo.key as WAMessageKey
 									// eslint-disable-next-line max-depth
@@ -1799,7 +1840,7 @@ const processMessage = async (
 								}
 
 								// Preserve original participant if not in PDO response
-								// eslint-disable-next-line max-depth
+
 								if (cachedData.participant && webMessageInfo.key && !webMessageInfo.key.participant) {
 									webMessageInfo.key.participant = cachedData.participant
 									logger?.debug({ msgId: webMessageInfo.key?.id }, 'CTWA: Restored participant from cached metadata')
@@ -1807,7 +1848,7 @@ const processMessage = async (
 
 								// Only use cached timestamp if PDO response doesn't have one
 								// PDO response timestamp is more authoritative if present
-								// eslint-disable-next-line max-depth
+
 								if (!webMessageInfo.messageTimestamp && cachedData.messageTimestamp) {
 									webMessageInfo.messageTimestamp = cachedData.messageTimestamp
 								}

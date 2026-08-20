@@ -1,5 +1,6 @@
 import { proto } from '../../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDataTypeMap } from '../../Types'
+import { SqliteAppStateSyncKeyStore } from '../app-state-sync-key-store'
 import { initAuthCreds } from '../auth-utils'
 import { generateSignalPubKey } from '../crypto'
 import { BufferJSON } from '../generics'
@@ -161,6 +162,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	let signalTypedBackend: SignalTypedBackend
 	let signalTypedSource: SignalTypedSourceStore
 	let historySync: SqliteHistorySyncStore
+	let appStateSyncKeys: SqliteAppStateSyncKeyStore
 	// Authoritative (PK-jid) store for TC / "privacy" tokens, in wa.db. When
 	// `sourceOfTruth` is on, `'tctoken'` reads/writes route here (signal_kv stays
 	// the superset fallback); replaces the signal_kv `__index` enumeration race.
@@ -193,6 +195,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		rehydrateTypedIdentities(store, signalTypedSource, opts.logger)
 		trustedContactsBackend = new TrustedContactsBackend(store.handle('wa.db'))
 		historySync = new SqliteHistorySyncStore(store.handle('sync.db'))
+		appStateSyncKeys = new SqliteAppStateSyncKeyStore(store.handle('sync.db'))
 	} catch (err) {
 		// Only close the store if WE opened it — injected stores belong to
 		// the caller.
@@ -476,11 +479,11 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	// jittered-exponential-backoff against the `DELETE FROM jid_map` exec
 	// (which previously had no busy retry and would surface SQLITE_BUSY
 	// directly to the caller after the 5 s busy_timeout expired).
-	const runWithBusyRetry = async (label: string, work: () => void): Promise<void> => {
+	const runWithBusyRetry = async (label: string, work: () => void | Promise<void>): Promise<void> => {
 		let lastError: unknown
 		for (let attempt = 0; attempt < MAX_BUSY_ATTEMPTS; attempt++) {
 			try {
-				work()
+				await work()
 				return
 			} catch (err) {
 				const code = (err as { code?: string } | null)?.code
@@ -572,6 +575,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			appStateSyncKeyStmts.clear.run()
 		})
 		await historySync.clear()
+		await runWithBusyRetry(`${label}: app-state recovery`, () => appStateSyncKeys.clear())
 	}
 
 	const finishAuthKeysClear = (label: string): Promise<void> =>
@@ -699,6 +703,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			credsRef.current = value
 		},
 		historySync,
+		appStateSyncKeys,
 		keys: {
 			prekeyUploads: sourceOfTruth
 				? {

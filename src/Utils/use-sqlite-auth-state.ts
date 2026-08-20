@@ -13,6 +13,7 @@ import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDataTypeMap } from '../Types'
 import { prepareInClause } from './multi-db-sqlite/in-statement-cache'
 import type { SqliteDbLike } from './multi-db-sqlite/types'
+import { SqliteAppStateSyncKeyStore } from './app-state-sync-key-store'
 import { initAuthCreds } from './auth-utils'
 import { BufferJSON } from './generics'
 import { SqliteHistorySyncStore } from './history-sync-store'
@@ -222,6 +223,7 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 
 		db.exec(CREATE_SCHEMA_SQL)
 		const historySync = new SqliteHistorySyncStore(db as unknown as SqliteDbLike)
+		const appStateSyncKeys = new SqliteAppStateSyncKeyStore(db as unknown as SqliteDbLike)
 
 		const stmts = {
 			credsSelect: db.prepare('SELECT value FROM creds WHERE key = ?'),
@@ -249,7 +251,8 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 		const clearAuthKeysAndHistory = db.transaction(() => {
 			stmts.clearKeys.run()
 			db!.exec(
-				'DELETE FROM history_sync_jobs; DELETE FROM history_sync_checkpoints; DELETE FROM history_sync_metadata;'
+				'DELETE FROM history_sync_jobs; DELETE FROM history_sync_checkpoints; DELETE FROM history_sync_metadata; ' +
+					'DELETE FROM missing_keys; DELETE FROM peer_messages WHERE message_type IN (38, 39);'
 			)
 		})
 
@@ -393,6 +396,7 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 					stateRef.creds = value
 				},
 				historySync,
+				appStateSyncKeys,
 				keys: {
 					get: async (type, ids) => {
 						const out: Record<string, SignalDataTypeMap[typeof type]> = {}

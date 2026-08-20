@@ -14,7 +14,7 @@ import P from 'pino'
 import { proto } from '../../../WAProto/index.js'
 import type { AuthenticationCreds, BaileysEventEmitter, WAMessage } from '../../Types'
 import { initAuthCreds } from '../../Utils/auth-utils'
-import processMessage from '../../Utils/process-message'
+import processMessage, { rememberRawProtocolSender } from '../../Utils/process-message'
 
 const silent = P({ level: 'silent' })
 
@@ -140,6 +140,107 @@ describe('processMessage — protocolMessage guard (regression for blanket fromM
 
 		// No creds.update fired — the spoofed key share was rejected.
 		expect(credUpdates.filter(u => u.myAppStateKeyId !== undefined)).toHaveLength(0)
+	})
+
+	it('routes type 39 once through the durable lifecycle handler', async () => {
+		const { ctx } = makeContext()
+		let handled = 0
+		;(ctx as any).onAppStateSyncKeyRequest = async () => {
+			handled++
+		}
+
+		const msg: WAMessage = {
+			key: {
+				remoteJid: 'me@s.whatsapp.net',
+				participant: 'me:2@s.whatsapp.net',
+				fromMe: true,
+				id: 'request-39'
+			},
+			message: protocolMessage(proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_REQUEST, {
+				appStateSyncKeyRequest: { keyIds: [{ keyId: Buffer.from('AAAAAEGV', 'base64') }] }
+			}),
+			messageTimestamp: 1675888000
+		}
+
+		await processMessage(msg, ctx as any)
+		expect(handled).toBe(1)
+	})
+
+	it('passes the raw companion device author after the public message key was normalized', async () => {
+		const { ctx } = makeContext()
+		const senders: string[] = []
+		;(ctx as any).onAppStateSyncKeyRequest = async (senderJid: string) => {
+			senders.push(senderJid)
+		}
+
+		const msg: WAMessage = {
+			key: { remoteJid: 'me@s.whatsapp.net', participant: 'me@s.whatsapp.net', fromMe: true, id: 'raw-39' },
+			message: protocolMessage(proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_REQUEST, {
+				appStateSyncKeyRequest: { keyIds: [{ keyId: Buffer.from('AAAAAEGV', 'base64') }] }
+			}),
+			messageTimestamp: 1675888000
+		}
+		rememberRawProtocolSender(msg, 'me:7@s.whatsapp.net')
+
+		await processMessage(msg, ctx as any)
+		expect(senders).toEqual(['me:7@s.whatsapp.net'])
+	})
+
+	it('routes type 38 once without also writing the legacy peer-message mirror', async () => {
+		const events = new EventEmitter() as unknown as BaileysEventEmitter
+		const credUpdates: any[] = []
+		;(events as any).on('creds.update', (update: any) => credUpdates.push(update))
+		let handled = 0
+		let legacyKeyWrites = 0
+		let legacyMirrorWrites = 0
+		const ctx = {
+			shouldProcessHistoryMsg: false,
+			placeholderResendCache: undefined,
+			ev: events,
+			creds: credsWithMe(),
+			keyStore: {
+				set: async () => {
+					legacyKeyWrites++
+				},
+				get: async () => ({}),
+				transaction: async (work: () => Promise<void>) => work()
+			},
+			signalRepository: {},
+			logger: silent,
+			options: {},
+			getMessage: async () => undefined,
+			appStateBackend: {
+				recordPeerMessage: () => {
+					legacyMirrorWrites++
+					return 1
+				},
+				ackPeerMessage: () => {}
+			},
+			onAppStateSyncKeyShare: async () => {
+				handled++
+				return 'AAAAAEGV'
+			}
+		}
+		const msg: WAMessage = {
+			key: {
+				remoteJid: 'me@s.whatsapp.net',
+				participant: 'me:2@s.whatsapp.net',
+				fromMe: true,
+				id: 'share-38'
+			},
+			message: protocolMessage(proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_SHARE, {
+				appStateSyncKeyShare: {
+					keys: [{ keyId: { keyId: Buffer.from('AAAAAEGV', 'base64') } }]
+				}
+			}),
+			messageTimestamp: 1675888000
+		}
+
+		await processMessage(msg, ctx as any)
+		expect(handled).toBe(1)
+		expect(legacyKeyWrites).toBe(0)
+		expect(legacyMirrorWrites).toBe(0)
+		expect(credUpdates).toEqual([{ myAppStateKeyId: 'AAAAAEGV' }])
 	})
 })
 

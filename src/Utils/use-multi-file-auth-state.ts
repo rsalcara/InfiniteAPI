@@ -3,6 +3,7 @@ import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'fs/pr
 import { join } from 'path'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap } from '../Types'
+import { FileAppStateSyncKeyStore } from './app-state-sync-key-store'
 import { initAuthCreds } from './auth-utils'
 import { BufferJSON } from './generics'
 import { FileHistorySyncStore } from './history-sync-store'
@@ -271,6 +272,7 @@ export const useMultiFileAuthState = async (
 
 	const creds: AuthenticationCreds = ((await readData('creds.json')) as AuthenticationCreds | null) || initAuthCreds()
 	const historySync = new FileHistorySyncStore(join(folder, 'history-sync-state.json'))
+	const appStateSyncKeys = new FileAppStateSyncKeyStore(join(folder, 'app-state-sync-state.json'))
 
 	/**
 	 * Reverse `fixFileName` for the only id spaces that actually use the two
@@ -380,6 +382,7 @@ export const useMultiFileAuthState = async (
 		state: {
 			creds,
 			historySync,
+			appStateSyncKeys,
 			keys: {
 				get: async (type, ids) => {
 					const data: { [_: string]: SignalDataTypeMap[typeof type] } = {}
@@ -479,11 +482,13 @@ export const useMultiFileAuthState = async (
 								f =>
 									f !== 'creds.json' &&
 									!f.startsWith('history-sync-state.json') &&
+									!f.startsWith('app-state-sync-state.json') &&
 									(f.endsWith('.json') || f.endsWith('.json.tmp') || f.endsWith('.json.bak'))
 							)
 							.map(f => unlinkIgnoreMissing(join(folder, f)))
 					)
 					await historySync.clear()
+					await appStateSyncKeys.clear()
 				},
 				list: async function* <T extends keyof SignalDataTypeMap>(
 					type: T
