@@ -313,6 +313,38 @@ sock.ev.on('creds.update', saveCreds)
 > [!NOTE]
 > When a message is received/sent, due to signal sessions needing updating, the auth keys (`authState.keys`) will update. Whenever that happens, you must save the updated keys (`authState.keys.set()` is called). Not doing so will prevent your messages from reaching the recipient & cause other unexpected consequences. The `useMultiFileAuthState` function automatically takes care of that, but for any other serious implementation -- you will need to be very careful with the key state management.
 
+### Custom auth-state recovery capabilities
+
+The built-in multifile, SQLite, and multi-db SQLite adapters include durable history sync, TcToken, and App State key-recovery stores. A custom `AuthenticationState` must explicitly provide and certify its App State recovery store:
+
+```ts
+import makeWASocket, { createAppStateSyncKeyStore } from '@whiskeysockets/baileys'
+
+const appStateSyncKeys = createAppStateSyncKeyStore(customAppStateStore, {
+    persistence: 'durable'
+})
+
+const sock = makeWASocket({
+    instanceId: 'customer-instance-id',
+    auth: {
+        creds,
+        keys,
+        appStateSyncKeys,
+        storage: {
+            backend: 'custom',
+            historySyncDurable: false,
+            tcTokenDurable: false
+        }
+    }
+})
+
+sock.ev.on('auth-state.capabilities', capabilities => {
+    console.log(capabilities)
+})
+```
+
+The factory validates the complete type-38/type-39 store contract and binds class methods without copying state. A missing, incomplete, or uncertified store does not block connection or message traffic; the socket reports `APP_STATE_SYNC_RECOVERY_UNAVAILABLE`, exposes `sock.authCapabilities`, and leaves durable App State key recovery disabled instead of using an in-memory fallback.
+
 ## Handling Events
 
 - Baileys uses the EventEmitter syntax for events.

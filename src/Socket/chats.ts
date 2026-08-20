@@ -395,11 +395,17 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		await query(buildAppStateSyncKeyPeerNode({ targetDeviceJid, messageId, encrypted, deviceIdentity }))
 	}
 
+	const appStateSyncRecoveryLogger = logger.child({
+		subsystem: 'app-state-sync-key-recovery',
+		instanceId: sock.authCapabilities.instanceId,
+		accountJid: sock.authCapabilities.accountJid,
+		backend: sock.authCapabilities.backend
+	})
 	const appStateSyncKeyLifecycle = authState.appStateSyncKeys
 		? new AppStateSyncKeyLifecycle({
 				store: authState.appStateSyncKeys,
 				keyStore: authState.keys,
-				logger,
+				logger: appStateSyncRecoveryLogger,
 				getOwnJid: () => jidNormalizedUser(authState.creds.me?.id),
 				getOwnLid: () => authState.creds.me?.lid,
 				getActiveKeyId: () => authState.creds.myAppStateKeyId,
@@ -422,15 +428,18 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	const queueMissingAppStateKeyRecovery = async (name: WAPatchName, error: unknown): Promise<boolean> => {
 		const keyId = (error as { data?: { keyId?: unknown } })?.data?.keyId
-		if (!isMissingKeyError(error) || !appStateSyncKeyLifecycle || typeof keyId !== 'string') {
+		if (!isMissingKeyError(error) || typeof keyId !== 'string') {
 			return false
 		}
+
+		appStateSyncRecoveryLogger.warn({ collection: name, keyId }, 'app-state sync missing key detected')
+		if (!appStateSyncKeyLifecycle) return false
 
 		try {
 			await appStateSyncKeyLifecycle.requestMissingKey(name, keyId)
 			return true
 		} catch (recoveryError) {
-			logger.error(
+			appStateSyncRecoveryLogger.error(
 				{ recoveryError, name, keyId },
 				'failed to persist app-state missing-key recovery; retaining compatibility retry'
 			)

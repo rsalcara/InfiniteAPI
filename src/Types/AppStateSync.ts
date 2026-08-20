@@ -40,6 +40,11 @@ export type AppStateSyncKeyStoreSnapshot = {
 
 /** Durable missing-key and peer-message capability supplied by built-in auth adapters. */
 export interface AppStateSyncKeyStore {
+	/**
+	 * Explicit durability certificate. Built-in adapters and stores wrapped by
+	 * createAppStateSyncKeyStore expose this marker after runtime validation.
+	 */
+	readonly durable?: true
 	recordMissingKey(keyId: string, collectionName: string): Promise<void>
 	listMissingKeyIds(): Promise<string[]>
 	listMissingCollections(): Promise<string[]>

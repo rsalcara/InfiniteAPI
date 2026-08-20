@@ -1,6 +1,7 @@
 import type { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, LIDMapping } from './Auth'
+import type { AuthStateCapabilities } from './AuthCapabilities'
 import type { WACallEvent } from './Call'
 import type { Chat, ChatUpdate, PresenceData } from './Chat'
 import type { Contact } from './Contact'
@@ -41,6 +42,8 @@ export type MessageDeliveryStateUpdate = {
 export type BaileysEventMap = {
 	/** connection state has been updated -- WS closed, opened, connecting etc. */
 	'connection.update': Partial<ConnectionState>
+	/** Emitted once when the socket opens with its validated auth-state capabilities. */
+	'auth-state.capabilities': AuthStateCapabilities
 	/** credentials updated -- some metadata, keys or something */
 	'creds.update': Partial<AuthenticationCreds>
 	/** set chats (history sync), everything is reverse chronologically sorted */

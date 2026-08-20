@@ -5,6 +5,7 @@ import { join } from 'path'
 import type { AppStateSyncKeyStore, AuthenticationState } from '../../Types'
 import { encodeAppStateSyncKeyRequestData } from '../../Utils/app-state-sync-key-lifecycle'
 import { FileAppStateSyncKeyStore, SqliteAppStateSyncKeyStore } from '../../Utils/app-state-sync-key-store'
+import { inspectAuthStateCapabilities } from '../../Utils/auth-state-capabilities'
 import type { ILogger } from '../../Utils/logger'
 import { useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
 import { useMultiFileAuthState } from '../../Utils/use-multi-file-auth-state'
@@ -36,6 +37,17 @@ const requireStore = (state: AuthenticationState): AppStateSyncKeyStore => {
 const exerciseDurableBackend = async (open: () => Promise<OpenedBackend>): Promise<void> => {
 	const first = await open()
 	const firstStore = requireStore(first.state)
+	expect(firstStore.durable).toBe(true)
+	expect(first.state.storage).toEqual(expect.objectContaining({ historySyncDurable: true, tcTokenDurable: true }))
+	expect(first.state.storage?.backend).not.toBe('custom')
+	expect(inspectAuthStateCapabilities(first.state, 'built-in').capabilities).toEqual(
+		expect.objectContaining({
+			appStateSyncRecovery: true,
+			historySyncDurable: true,
+			tcTokenDurable: true,
+			issues: []
+		})
+	)
 	if (!first.state.historySync) throw new Error('built-in auth adapter did not expose historySync')
 	await first.state.historySync.enqueue({
 		messageId: 'history-checkpoint-source',
