@@ -39,9 +39,29 @@ type FileState = {
 
 const emptyFileState = (): FileState => ({ nextPeerMessageId: 1, missingKeys: {}, peerMessages: [] })
 const fileLocks = makeKeyedMutex()
+const SQLITE_BUSY_ATTEMPTS = 5
+const SQLITE_BUSY_RETRY_BASE_MS = 25
 
 const errorCode = (error: unknown): string | undefined =>
 	error && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code) : undefined
+
+const runWithSqliteBusyRetry = async <T>(work: () => T): Promise<T> => {
+	let lastError: unknown
+	for (let attempt = 0; attempt < SQLITE_BUSY_ATTEMPTS; attempt++) {
+		try {
+			return work()
+		} catch (error) {
+			const code = errorCode(error)
+			if (code !== 'SQLITE_BUSY' && code !== 'SQLITE_BUSY_SNAPSHOT') throw error
+			lastError = error
+			if (attempt === SQLITE_BUSY_ATTEMPTS - 1) break
+			const delay = Math.round(SQLITE_BUSY_RETRY_BASE_MS * 2 ** attempt * (0.5 + Math.random()))
+			await new Promise<void>(resolveDelay => setTimeout(resolveDelay, delay))
+		}
+	}
+
+	throw lastError
+}
 
 const unlinkIfPresent = async (path: string): Promise<void> => {
 	try {
@@ -248,6 +268,7 @@ export class FileAppStateSyncKeyStore implements AppStateSyncKeyStore {
 			let missingKeys = 0
 			let peerMessages = 0
 			for (const { keyId, collectionName } of snapshot.missingKeys) {
+				parseAppStateSyncKeyId(keyId)
 				const collections = new Set(state.missingKeys[keyId] ?? [])
 				const before = collections.size
 				collections.add(collectionName)
@@ -394,7 +415,7 @@ export class SqliteAppStateSyncKeyStore implements AppStateSyncKeyStore {
 				this.stmts.deleteMissing!.run(parts.deviceId, parts.epoch)
 			}
 		})
-		remove.immediate(keyIds)
+		await runWithSqliteBusyRetry(() => remove.immediate(keyIds))
 		const stillBlocked = new Set(this.listMissingRows().map(row => row.collectionName))
 		return [...affected].filter(collection => !stillBlocked.has(collection)).sort()
 	}
@@ -428,11 +449,10 @@ export class SqliteAppStateSyncKeyStore implements AppStateSyncKeyStore {
 
 	async deletePeerMessages(ids: string[]): Promise<void> {
 		if (!ids.length) return
-		this.db
-			.transaction((selected: string[]) => {
-				for (const id of selected) this.stmts.deletePeer!.run(id)
-			})
-			.immediate(ids)
+		const remove = this.db.transaction((selected: string[]) => {
+			for (const id of selected) this.stmts.deletePeer!.run(id)
+		})
+		await runWithSqliteBusyRetry(() => remove.immediate(ids))
 	}
 
 	async exportState(): Promise<AppStateSyncKeyStoreSnapshot> {

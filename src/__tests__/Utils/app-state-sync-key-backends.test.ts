@@ -151,6 +151,14 @@ describe('durable App State key recovery — independent built-in auth backends'
 		await expect(recovered.listMissingCollections()).resolves.toEqual(['critical_block'])
 	})
 
+	it('rejects malformed missing-key ids when importing into the file backend', async () => {
+		const store = new FileAppStateSyncKeyStore(join(dir, 'app-state-sync-key-recovery.json'))
+		await expect(
+			store.importState({ missingKeys: [{ keyId: 'malformed', collectionName: 'regular' }], peerMessages: [] })
+		).rejects.toThrow('invalid app-state sync key id')
+		await expect(store.listMissingKeyIds()).resolves.toEqual([])
+	})
+
 	it('persists independently in monolithic sqlite', async () => {
 		const dbPath = join(dir, 'auth.db')
 		await exerciseDurableBackend(async () => {
@@ -249,6 +257,40 @@ describe('durable App State key recovery — independent built-in auth backends'
 			})
 		} finally {
 			db.close()
+		}
+	})
+
+	it('retries contended IMMEDIATE recovery deletes', async () => {
+		const dbPath = join(dir, 'busy-recovery.db')
+		const blocker = new Database(dbPath)
+		const writer = new Database(dbPath)
+		let releaseTimer: ReturnType<typeof setTimeout> | undefined
+		writer.pragma('busy_timeout = 1')
+		try {
+			const store = new SqliteAppStateSyncKeyStore(writer as never)
+			await store.recordMissingKey(keyId, 'regular')
+			const peer = await store.enqueuePeerMessage({
+				messageType: 39,
+				remoteJid: '5511999999999@s.whatsapp.net',
+				targetDeviceJid: '5511999999999:2@s.whatsapp.net',
+				messageId: 'busy-peer-39',
+				timestamp: 1,
+				data: encodeAppStateSyncKeyRequestData([keyId])
+			})
+
+			blocker.exec('BEGIN IMMEDIATE')
+			releaseTimer = setTimeout(() => blocker.exec('COMMIT'), 5)
+			await expect(store.resolveKeys([keyId])).resolves.toEqual(['regular'])
+
+			blocker.exec('BEGIN IMMEDIATE')
+			releaseTimer = setTimeout(() => blocker.exec('COMMIT'), 5)
+			await expect(store.deletePeerMessages([peer.id])).resolves.toBeUndefined()
+			await expect(store.listPeerMessages(39)).resolves.toEqual([])
+		} finally {
+			if (releaseTimer) clearTimeout(releaseTimer)
+			if (blocker.inTransaction) blocker.exec('ROLLBACK')
+			writer.close()
+			blocker.close()
 		}
 	})
 })

@@ -469,7 +469,7 @@ export class AppStateSyncKeyLifecycle {
 		})().finally(() => {
 			this.drainPromise = undefined
 			if (this.drainRequested && !this.stopped && !this.retryTimer) {
-				this.drain().catch(error =>
+				return this.drain().catch(error =>
 					this.deps.logger.error({ error }, 'app-state sync peer-message follow-up drain failed')
 				)
 			}
