@@ -6185,7 +6185,6 @@ export namespace proto {
         newsletterFollowerInviteMessageV2?: (proto.Message.INewsletterFollowerInviteMessage|null);
         pollResultSnapshotMessageV3?: (proto.Message.IPollResultSnapshotMessage|null);
         newsletterAdminProfileMessage?: (proto.Message.IFutureProofMessage|null);
-        newsletterAdminProfileMessageV2?: (proto.Message.IFutureProofMessage|null);
         spoilerMessage?: (proto.Message.IFutureProofMessage|null);
         pollCreationMessageV6?: (proto.Message.IPollCreationMessage|null);
         conditionalRevealMessage?: (proto.Message.IConditionalRevealMessage|null);
@@ -6300,7 +6299,6 @@ export namespace proto {
         public newsletterFollowerInviteMessageV2?: (proto.Message.INewsletterFollowerInviteMessage|null);
         public pollResultSnapshotMessageV3?: (proto.Message.IPollResultSnapshotMessage|null);
         public newsletterAdminProfileMessage?: (proto.Message.IFutureProofMessage|null);
-        public newsletterAdminProfileMessageV2?: (proto.Message.IFutureProofMessage|null);
         public spoilerMessage?: (proto.Message.IFutureProofMessage|null);
         public pollCreationMessageV6?: (proto.Message.IPollCreationMessage|null);
         public conditionalRevealMessage?: (proto.Message.IConditionalRevealMessage|null);
@@ -11627,6 +11625,8 @@ export namespace proto {
         LABEL_SUBLIST_ACTION = 91,
         DEVICE_CAPABILITIES_V2 = 92,
         CTWA_MESSAGE_RECEIVED_ACTION = 93,
+        SHARED_DEVICE_ALLOWLIST_ACTION = 94,
+        CONTACT_MANAGER_METADATA_ACTION = 95,
         SHARE_OWN_PN = 10001,
         BUSINESS_BROADCAST_ACTION = 10002,
         AI_THREAD_DELETE_ACTION = 10003
@@ -13316,6 +13316,8 @@ export namespace proto {
         labelSublistAction?: (proto.SyncActionValue.ILabelSublistAction|null);
         deviceCapabilitiesV2?: (proto.IDeviceCapabilities|null);
         ctwaMessageReceivedAction?: (proto.SyncActionValue.ICtwaMessageReceivedAction|null);
+        sharedDeviceAllowlistAction?: (proto.SyncActionValue.ISharedDeviceAllowlistAction|null);
+        contactManagerMetadataAction?: (proto.SyncActionValue.IContactManagerMetadataAction|null);
     }
 
     class SyncActionValue implements ISyncActionValue {
@@ -13404,6 +13406,8 @@ export namespace proto {
         public labelSublistAction?: (proto.SyncActionValue.ILabelSublistAction|null);
         public deviceCapabilitiesV2?: (proto.IDeviceCapabilities|null);
         public ctwaMessageReceivedAction?: (proto.SyncActionValue.ICtwaMessageReceivedAction|null);
+        public sharedDeviceAllowlistAction?: (proto.SyncActionValue.ISharedDeviceAllowlistAction|null);
+        public contactManagerMetadataAction?: (proto.SyncActionValue.IContactManagerMetadataAction|null);
         public static create(properties?: proto.ISyncActionValue): proto.SyncActionValue;
         public static encode(m: proto.ISyncActionValue, w?: $protobuf.Writer): $protobuf.Writer;
         public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue;
@@ -13819,6 +13823,22 @@ export namespace proto {
             public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue.ContactAction;
             public static fromObject(d: { [k: string]: any }): proto.SyncActionValue.ContactAction;
             public static toObject(m: proto.SyncActionValue.ContactAction, o?: $protobuf.IConversionOptions): { [k: string]: any };
+            public toJSON(): { [k: string]: any };
+            public static getTypeUrl(typeUrlPrefix?: string): string;
+        }
+
+        interface IContactManagerMetadataAction {
+            isHidden?: (boolean|null);
+        }
+
+        class ContactManagerMetadataAction implements IContactManagerMetadataAction {
+            constructor(p?: proto.SyncActionValue.IContactManagerMetadataAction);
+            public isHidden?: (boolean|null);
+            public static create(properties?: proto.SyncActionValue.IContactManagerMetadataAction): proto.SyncActionValue.ContactManagerMetadataAction;
+            public static encode(m: proto.SyncActionValue.IContactManagerMetadataAction, w?: $protobuf.Writer): $protobuf.Writer;
+            public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue.ContactManagerMetadataAction;
+            public static fromObject(d: { [k: string]: any }): proto.SyncActionValue.ContactManagerMetadataAction;
+            public static toObject(m: proto.SyncActionValue.ContactManagerMetadataAction, o?: $protobuf.IConversionOptions): { [k: string]: any };
             public toJSON(): { [k: string]: any };
             public static getTypeUrl(typeUrlPrefix?: string): string;
         }
@@ -14955,6 +14975,22 @@ export namespace proto {
                 WINDOWS = 3,
                 MAC = 4
             }
+        }
+
+        interface ISharedDeviceAllowlistAction {
+            allowed?: (boolean|null);
+        }
+
+        class SharedDeviceAllowlistAction implements ISharedDeviceAllowlistAction {
+            constructor(p?: proto.SyncActionValue.ISharedDeviceAllowlistAction);
+            public allowed?: (boolean|null);
+            public static create(properties?: proto.SyncActionValue.ISharedDeviceAllowlistAction): proto.SyncActionValue.SharedDeviceAllowlistAction;
+            public static encode(m: proto.SyncActionValue.ISharedDeviceAllowlistAction, w?: $protobuf.Writer): $protobuf.Writer;
+            public static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.SyncActionValue.SharedDeviceAllowlistAction;
+            public static fromObject(d: { [k: string]: any }): proto.SyncActionValue.SharedDeviceAllowlistAction;
+            public static toObject(m: proto.SyncActionValue.SharedDeviceAllowlistAction, o?: $protobuf.IConversionOptions): { [k: string]: any };
+            public toJSON(): { [k: string]: any };
+            public static getTypeUrl(typeUrlPrefix?: string): string;
         }
 
         interface IStarAction {
