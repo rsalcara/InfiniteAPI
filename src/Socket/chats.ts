@@ -432,8 +432,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			return false
 		}
 
-		appStateSyncRecoveryLogger.warn({ collection: name, keyId }, 'app-state sync missing key detected')
 		if (!appStateSyncKeyLifecycle) return false
+
+		appStateSyncRecoveryLogger.warn({ collection: name, keyId }, 'app-state sync missing key detected')
 
 		try {
 			await appStateSyncKeyLifecycle.requestMissingKey(name, keyId)

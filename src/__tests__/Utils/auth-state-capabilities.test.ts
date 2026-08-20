@@ -90,6 +90,35 @@ describe('auth-state recovery capabilities', () => {
 		expect(result.capabilities.issues).toContain('appStateSyncKeys.clear:missing')
 	})
 
+	it('fails closed when inspecting a required method throws', () => {
+		const invalid = new CustomAppStateStore()
+		Object.defineProperty(invalid, 'clear', {
+			get: () => {
+				throw new Error('hostile getter')
+			}
+		})
+
+		expect(() => inspectAuthStateCapabilities(authState(invalid), 'throwing-store')).not.toThrow()
+		const result = inspectAuthStateCapabilities(authState(invalid), 'throwing-store')
+		expect(result.capabilities.appStateSyncRecovery).toBe(false)
+		expect(result.capabilities.appStateSyncRecoveryReason).toBe('invalid-store')
+		expect(result.capabilities.issues).toContain('appStateSyncKeys.clear:missing')
+	})
+
+	it('fails closed when inspecting the durability marker throws', () => {
+		const invalid = new CustomAppStateStore()
+		Object.defineProperty(invalid, 'durable', {
+			get: () => {
+				throw new Error('hostile durability getter')
+			}
+		})
+
+		const result = inspectAuthStateCapabilities(authState(invalid), 'throwing-durability')
+		expect(result.capabilities.appStateSyncRecovery).toBe(false)
+		expect(result.capabilities.appStateSyncRecoveryReason).toBe('invalid-store')
+		expect(result.capabilities.issues).toContain('appStateSyncKeys.durable:unreadable')
+	})
+
 	it('does not trust a structurally complete store without a durability certificate', () => {
 		const result = inspectAuthStateCapabilities(authState(new CustomAppStateStore()), 'unverified-store')
 
@@ -98,7 +127,7 @@ describe('auth-state recovery capabilities', () => {
 		expect(result.capabilities.issues).toEqual(['appStateSyncKeys.durable:unverified'])
 	})
 
-	it('factory validates, binds, and certifies a custom durable store', async () => {
+	it('factory validates, binds, and records the custom store durability declaration', async () => {
 		const source = new CustomAppStateStore()
 		const store = createAppStateSyncKeyStore(source, { persistence: 'durable' })
 		const state = authState(store)
@@ -124,6 +153,37 @@ describe('auth-state recovery capabilities', () => {
 			appStateSyncRecoveryReason: undefined,
 			issues: ['tcToken.durable:unverified']
 		})
+	})
+
+	it('does not trust durability metadata from an unrecognized runtime backend', () => {
+		const state = authState(createAppStateSyncKeyStore(new CustomAppStateStore(), { persistence: 'durable' }))
+		state.historySync = {} as NonNullable<AuthenticationState['historySync']>
+		state.storage = {
+			backend: 'third-party' as AuthenticationState['storage'] extends infer T
+				? T extends { backend: infer B }
+					? B
+					: never
+				: never,
+			historySyncDurable: true,
+			tcTokenDurable: true
+		}
+
+		const result = inspectAuthStateCapabilities(state, 'unknown-backend')
+
+		expect(result.capabilities).toEqual(
+			expect.objectContaining({
+				backend: 'custom',
+				historySyncDurable: false,
+				tcTokenDurable: false
+			})
+		)
+		expect(result.capabilities.issues).toEqual(
+			expect.arrayContaining([
+				'storage.backend:unrecognized',
+				'historySync.durable:unverified',
+				'tcToken.durable:unverified'
+			])
+		)
 	})
 
 	it('factory fails closed when a required method is absent', () => {

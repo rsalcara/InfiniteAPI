@@ -42,7 +42,7 @@ export type MessageDeliveryStateUpdate = {
 export type BaileysEventMap = {
 	/** connection state has been updated -- WS closed, opened, connecting etc. */
 	'connection.update': Partial<ConnectionState>
-	/** Emitted once when the socket opens with its validated auth-state capabilities. */
+	/** Emitted once shortly after makeWASocket() returns, independently of connection state. */
 	'auth-state.capabilities': AuthStateCapabilities
 	/** credentials updated -- some metadata, keys or something */
 	'creds.update': Partial<AuthenticationCreds>

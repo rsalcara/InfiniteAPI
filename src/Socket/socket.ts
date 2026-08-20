@@ -664,7 +664,11 @@ export const makeSocket = (config: SocketConfig) => {
 	const authInspection = inspectAuthStateCapabilities(authState, authInstanceId, accountJid)
 	const authCapabilities = authInspection.capabilities
 	if (!authCapabilities.appStateSyncRecovery) {
-		logger.warn(
+		const report =
+			authCapabilities.appStateSyncRecoveryReason === 'missing-store'
+				? logger.warn.bind(logger)
+				: logger.error.bind(logger)
+		report(
 			{
 				code: 'APP_STATE_SYNC_RECOVERY_UNAVAILABLE',
 				reason: authCapabilities.appStateSyncRecoveryReason,
@@ -680,9 +684,7 @@ export const makeSocket = (config: SocketConfig) => {
 	// Defer the public event by one microtask so callers can attach listeners
 	// immediately after makeWASocket() returns. It is emitted once per socket,
 	// independently of whether the transport reaches the open state.
-	queueMicrotask(() => {
-		if (!closed) ev.emit('auth-state.capabilities', authCapabilities)
-	})
+	queueMicrotask(() => ev.emit('auth-state.capabilities', authCapabilities))
 
 	// Callbacks run on socket close to release per-module resources (caches, timers) and prevent
 	// memory leaks on disconnect. Adapted from upstream #2191 — but we deliberately do NOT call

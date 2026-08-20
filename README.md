@@ -343,7 +343,9 @@ sock.ev.on('auth-state.capabilities', capabilities => {
 })
 ```
 
-The factory validates the complete type-38/type-39 store contract and binds class methods without copying state. A missing, incomplete, or uncertified store does not block connection or message traffic; the socket reports `APP_STATE_SYNC_RECOVERY_UNAVAILABLE`, exposes `sock.authCapabilities`, and leaves durable App State key recovery disabled instead of using an in-memory fallback.
+The factory validates the complete type-38/type-39 store contract and binds class methods without copying state. The `persistence: 'durable'` option records the caller's assertion that the store survives process restarts; the library cannot prove that property from method inspection alone. A missing, incomplete, or uncertified store does not block connection or message traffic; the socket reports `APP_STATE_SYNC_RECOVERY_UNAVAILABLE`, exposes `sock.authCapabilities`, and leaves durable App State key recovery disabled instead of using an in-memory fallback.
+
+Capability metadata for `historySync` and TcToken is currently trusted only for the built-in `multifile`, SQLite, and multi-db SQLite adapters. Custom adapters are reported as `durability-unverified` for those capabilities even when they provide the corresponding fields; this prevents an unverified adapter from claiming restart-safe persistence. Custom history-sync and TcToken certification requires a separately validated adapter contract.
 
 ## Handling Events
 
