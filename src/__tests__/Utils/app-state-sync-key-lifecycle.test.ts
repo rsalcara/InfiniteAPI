@@ -71,6 +71,14 @@ const flushTimers = async (delay = 10): Promise<void> => {
 	await new Promise(resolve => setTimeout(resolve, delay))
 }
 
+const waitFor = async (condition: () => boolean | Promise<boolean>, timeoutMs = 1_000): Promise<void> => {
+	const deadline = Date.now() + timeoutMs
+	while (!(await condition())) {
+		if (Date.now() >= deadline) throw new Error('timed out waiting for lifecycle condition')
+		await flushTimers(5)
+	}
+}
+
 type LifecycleOverrides = Partial<ConstructorParameters<typeof AppStateSyncKeyLifecycle>[0]>
 
 const makeLifecycle = (store: AppStateSyncKeyStore, overrides: LifecycleOverrides = {}) => {
@@ -379,9 +387,8 @@ describe('AppStateSyncKeyLifecycle — official types 38/39 recovery', () => {
 		await lifecycle.startRecovery()
 		const request = { keyIds: [{ keyId: Buffer.from(missingKeyId, 'base64') }] }
 		const first = lifecycle.handleKeyRequest(deviceOne, request)
-		await flushTimers()
+		await waitFor(() => send.mock.calls.length === 1)
 		const second = lifecycle.handleKeyRequest(deviceTwo, request)
-		await flushTimers()
 		expect(send).toHaveBeenCalledTimes(1)
 
 		releaseFirst()
@@ -406,13 +413,13 @@ describe('AppStateSyncKeyLifecycle — official types 38/39 recovery', () => {
 		await lifecycle.startRecovery()
 		await lifecycle.requestMissingKey('regular', missingKeyId)
 		await lifecycle.runRecovery()
-		const pendingSend = lifecycle.runRecovery()
-		await flushTimers()
+		await lifecycle.runRecovery()
+		await waitFor(() => send.mock.calls.length === 2)
 
 		expect(send).toHaveBeenCalledTimes(2)
 		expect((await store.listPeerMessages(39))[0]?.acked).toBe(false)
 		release()
-		await pendingSend
+		await waitFor(async () => Boolean((await store.listPeerMessages(39))[0]?.acked))
 		expect((await store.listPeerMessages(39))[0]?.acked).toBe(true)
 		lifecycle.stop()
 	})
@@ -444,6 +451,51 @@ describe('AppStateSyncKeyLifecycle — official types 38/39 recovery', () => {
 		} finally {
 			await rm(dir, { recursive: true, force: true })
 		}
+	})
+
+	it('removes a persisted type-39 request on restart when every requested key is already stored', async () => {
+		const { store } = await makeFileStore()
+		await store.recordMissingKey(missingKeyId, 'regular')
+		await store.enqueuePeerMessage({
+			messageType: 39,
+			remoteJid: ownJid,
+			targetDeviceJid: deviceOne,
+			messageId: 'satisfied-before-restart',
+			timestamp: 1,
+			data: encodeAppStateSyncKeyRequestData([missingKeyId])
+		})
+		const { lifecycle, keyStore, sendPeerMessage, retryCollections } = makeLifecycle(store)
+		keyStore.values.set(keyStore.recordKey('app-state-sync-key', missingKeyId), keyData(1, 1))
+
+		await lifecycle.startRecovery()
+
+		expect(await store.listMissingKeyIds()).toEqual([])
+		expect(await store.listPeerMessages(39)).toEqual([])
+		expect(sendPeerMessage).not.toHaveBeenCalled()
+		expect(retryCollections).toHaveBeenCalledWith(['regular'])
+	})
+
+	it('keeps the scheduled peer-send backoff authoritative during a new recovery pass', async () => {
+		const { store } = await makeFileStore()
+		const secondId = encodeAppStateSyncKeyId({ deviceId: 0, epoch: 16790 })
+		const sendPeerMessage = jest.fn(async () => {
+			throw new Error('offline')
+		})
+		const { lifecycle } = makeLifecycle(store, {
+			listOwnDevices: async () => [deviceOne],
+			sendPeerMessage,
+			retryDelayMs: 10_000
+		})
+		await lifecycle.startRecovery()
+		await lifecycle.requestMissingKey('regular', missingKeyId)
+		await lifecycle.runRecovery()
+		expect(sendPeerMessage).toHaveBeenCalledTimes(1)
+
+		await lifecycle.requestMissingKey('critical_block', secondId)
+		await flushTimers(50)
+
+		expect(sendPeerMessage).toHaveBeenCalledTimes(1)
+		expect(await store.listPeerMessages(39)).toHaveLength(2)
 	})
 
 	it('correlates partial responses by exact key set and reports all-clients-missing only after the final device', async () => {

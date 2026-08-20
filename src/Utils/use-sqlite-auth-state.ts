@@ -252,7 +252,7 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 			stmts.clearKeys.run()
 			db!.exec(
 				'DELETE FROM history_sync_jobs; DELETE FROM history_sync_checkpoints; DELETE FROM history_sync_metadata; ' +
-					'DELETE FROM missing_keys; DELETE FROM peer_messages;'
+					'DELETE FROM missing_keys; DELETE FROM peer_messages WHERE message_type IN (38, 39);'
 			)
 		})
 

@@ -50,6 +50,20 @@ describe('app-state sync own-device discovery', () => {
 		])
 	})
 
+	it('rejects cross-domain own-user rows and canonicalizes fresh c.us PN rows', () => {
+		expect(
+			selectOtherOwnDevices(
+				[
+					{ user: '5511999999999', server: 'g.us', device: 3 },
+					{ user: '123456789012345', server: 's.whatsapp.net', device: 4 },
+					{ user: '5511999999999', server: 'c.us', device: 5 }
+				],
+				ownJid,
+				ownLid
+			)
+		).toEqual([{ user: '5511999999999', server: 's.whatsapp.net', device: 5, domainType: 0 }])
+	})
+
 	it('uses and persists a successful empty USync result instead of stale cache', async () => {
 		const writeCachedDevices = jest.fn(async () => undefined)
 		const readCachedDevices = jest.fn(async () => [
@@ -100,6 +114,16 @@ describe('app-state sync own-device discovery', () => {
 		await expect(
 			readTypedOwnAppStateDevices({
 				read: async () => [{ user: '', server: 'c.us', device: 'bad' }],
+				ownJid,
+				ownLid
+			})
+		).resolves.toBeUndefined()
+	})
+
+	it('falls back when typed rows match the account user but use invalid domains', async () => {
+		await expect(
+			readTypedOwnAppStateDevices({
+				read: async () => [{ user: '5511999999999', server: 'g.us', device: 4 }],
 				ownJid,
 				ownLid
 			})

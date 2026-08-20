@@ -1,3 +1,5 @@
+import type { JidServer } from '../WABinary'
+
 export const APP_STATE_SYNC_KEY_SHARE_MESSAGE_TYPE = 38 as const
 export const APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE = 39 as const
 
@@ -21,9 +23,14 @@ export type StoredAppStateSyncPeerMessage = AppStateSyncPeerMessageInput & {
 
 export type AppStateSyncDevice = {
 	user: string
-	server: string
+	server: JidServer
 	device: number
 	domainType?: number
+}
+
+export type AppStateSyncKeyImportResult = {
+	missingKeys: number
+	peerMessages: number
 }
 
 export type AppStateSyncKeyStoreSnapshot = {
@@ -43,6 +50,6 @@ export interface AppStateSyncKeyStore {
 	markPeerMessageAcked(id: string): Promise<void>
 	deletePeerMessages(ids: string[]): Promise<void>
 	exportState(): Promise<AppStateSyncKeyStoreSnapshot>
-	importState(snapshot: AppStateSyncKeyStoreSnapshot): Promise<void>
+	importState(snapshot: AppStateSyncKeyStoreSnapshot): Promise<AppStateSyncKeyImportResult>
 	clear(): Promise<void>
 }

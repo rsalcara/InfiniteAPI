@@ -37,8 +37,6 @@ export const selectOtherOwnDevices = (devices: FullJid[], ownJid: string, ownLid
 	if (!own?.user) throw new Error('missing own device identity')
 
 	const ownDevice = own.device ?? 0
-	const belongsToAccount = (device: FullJid): boolean =>
-		device.user === own.user || Boolean(lid?.user && device.user === lid.user)
 	const ordered = [...devices].sort((left, right) => {
 		const leftIsPn = left.user === own.user ? 0 : 1
 		const rightIsPn = right.user === own.user ? 0 : 1
@@ -47,20 +45,41 @@ export const selectOtherOwnDevices = (devices: FullJid[], ownJid: string, ownLid
 	const byDevice = new Map<number, FullJid>()
 
 	for (const device of ordered) {
-		if (!belongsToAccount(device) || device.device === undefined || device.device === ownDevice) continue
-		const isLidAlias = Boolean(lid?.user && device.user === lid.user)
-		const canonical = isLidAlias
-			? {
-					...device,
-					user: own.user,
-					server: device.server === 'hosted.lid' ? ('hosted' as const) : ('s.whatsapp.net' as const),
-					domainType: device.server === 'hosted.lid' ? WAJIDDomains.HOSTED : WAJIDDomains.WHATSAPP
-				}
-			: device
-		if (!byDevice.has(device.device)) byDevice.set(device.device, canonical)
+		const canonical = normalizeOwnAccountDevice(device, own, lid)
+		if (!canonical || canonical.device === ownDevice) continue
+		const deviceId = canonical.device!
+		if (!byDevice.has(deviceId)) byDevice.set(deviceId, canonical)
 	}
 
 	return [...byDevice.values()]
+}
+
+const normalizeOwnAccountDevice = (device: FullJid, own: FullJid, lid: FullJid | undefined): FullJid | undefined => {
+	if (device.device === undefined || !Number.isInteger(device.device) || device.device < 0) return undefined
+
+	if (device.user === own.user && ['s.whatsapp.net', 'c.us', 'hosted'].includes(device.server)) {
+		const server = device.server === 'c.us' ? ('s.whatsapp.net' as const) : device.server
+		const domainType =
+			device.domainType ??
+			(device.server === 'c.us' ? WAJIDDomains.WHATSAPP : server === 'hosted' ? WAJIDDomains.HOSTED : undefined)
+		return {
+			...device,
+			server,
+			...(domainType === undefined ? {} : { domainType })
+		}
+	}
+
+	if (lid?.user && device.user === lid.user && (device.server === 'lid' || device.server === 'hosted.lid')) {
+		const hosted = device.server === 'hosted.lid'
+		return {
+			...device,
+			user: own.user,
+			server: hosted ? 'hosted' : 's.whatsapp.net',
+			domainType: hosted ? WAJIDDomains.HOSTED : WAJIDDomains.WHATSAPP
+		}
+	}
+
+	return undefined
 }
 
 /** Returns undefined only when the typed cache is absent or unreadable; an empty array is authoritative. */
@@ -89,7 +108,12 @@ export const readTypedOwnAppStateDevices = async ({
 		return [{ ...jid, domainType: device.domainType ?? jid.domainType, device: Number(device.device) }]
 	})
 	if (decoded.length === 0 && stored.length > 0) return undefined
-	return selectOtherOwnDevices(decoded, ownJid, ownLid)
+	const own = jidDecode(ownJid)
+	const lid = jidDecode(ownLid)
+	if (!own?.user) throw new Error('missing own device identity')
+	const valid = decoded.filter(device => normalizeOwnAccountDevice(device, own, lid))
+	if (valid.length === 0 && stored.length > 0) return undefined
+	return selectOtherOwnDevices(valid, ownJid, ownLid)
 }
 
 /** Fresh USync is authoritative; durable cache is used only when it fails. */

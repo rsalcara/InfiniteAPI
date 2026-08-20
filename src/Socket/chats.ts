@@ -345,22 +345,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 						? []
 						: [{ user: device.user, server: device.server, device: device.device, domainType: device.domainType }]
 				)
-				const byUser = new Map<string, FullJid[]>()
-				for (const device of fresh) {
-					const rows = byUser.get(device.user) ?? []
-					rows.push(device)
-					byUser.set(device.user, rows)
-				}
-
-				for (const user of cacheUsers) {
-					if (config.userDevicesCache) await config.userDevicesCache.set(user, byUser.get(user) ?? [])
-				}
-
 				await authState.keys.set({
-					'app-state-device-list': { [appStateDeviceCacheKey]: durableFresh },
-					'device-list': Object.fromEntries(
-						cacheUsers.map(user => [user, (byUser.get(user) ?? []).map(device => String(device.device))])
-					)
+					'app-state-device-list': { [appStateDeviceCacheKey]: durableFresh }
 				})
 			},
 			onFetchError: error =>
@@ -373,10 +359,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	const ensurePeerDeviceSession = async (targetDeviceJid: string): Promise<void> => {
-		const sessionId = signalRepository.jidToSignalProtocolAddress(targetDeviceJid)
 		try {
-			const session = await authState.keys.get('session', [sessionId])
-			if (session[sessionId]) return
+			if ((await signalRepository.validateSession(targetDeviceJid)).exists) return
 		} catch {
 			// Fetching the authoritative encrypt bundle below is the recovery path.
 		}
@@ -436,17 +420,18 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				appStateSyncKeyLifecycle.handlePeerDeliveryReceipt(senderJid, messageIds)
 		: undefined
 
-	const queueMissingAppStateKeyRecovery = async (name: WAPatchName, error: any): Promise<boolean> => {
-		if (!isMissingKeyError(error) || !appStateSyncKeyLifecycle || typeof error.data?.keyId !== 'string') {
+	const queueMissingAppStateKeyRecovery = async (name: WAPatchName, error: unknown): Promise<boolean> => {
+		const keyId = (error as { data?: { keyId?: unknown } })?.data?.keyId
+		if (!isMissingKeyError(error) || !appStateSyncKeyLifecycle || typeof keyId !== 'string') {
 			return false
 		}
 
 		try {
-			await appStateSyncKeyLifecycle.requestMissingKey(name, error.data.keyId)
+			await appStateSyncKeyLifecycle.requestMissingKey(name, keyId)
 			return true
 		} catch (recoveryError) {
 			logger.error(
-				{ recoveryError, name, keyId: error.data.keyId },
+				{ recoveryError, name, keyId },
 				'failed to persist app-state missing-key recovery; retaining compatibility retry'
 			)
 			return false

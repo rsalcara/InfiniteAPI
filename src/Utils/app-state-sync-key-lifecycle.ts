@@ -136,6 +136,8 @@ export class AppStateSyncKeyLifecycle {
 				}
 			}
 
+			await this.removeSatisfiedRequests()
+
 			await this.runRecovery()
 		} catch (error) {
 			this.scheduleRecoveryRetry()
@@ -147,9 +149,7 @@ export class AppStateSyncKeyLifecycle {
 	async runRecovery(): Promise<void> {
 		if (this.stopped) return
 		if (this.recoveryTimer) clearTimeout(this.recoveryTimer)
-		if (this.retryTimer) clearTimeout(this.retryTimer)
 		this.recoveryTimer = undefined
-		this.retryTimer = undefined
 		try {
 			await this.ensureRequestsForMissingKeys()
 			this.recoveryAttempt = 0
@@ -158,7 +158,10 @@ export class AppStateSyncKeyLifecycle {
 			throw error
 		}
 
-		await this.drain()
+		// A scheduled peer-send retry owns the exponential backoff. New missing
+		// keys may be persisted while it is pending, but must not collapse that
+		// delay into an immediate retry storm.
+		if (!this.retryTimer) await this.drain()
 	}
 
 	stop(): void {
@@ -239,6 +242,15 @@ export class AppStateSyncKeyLifecycle {
 				this.deps.logger.info({ requests: persisted }, 'app-state sync missing-key requests persisted')
 			}
 		})
+	}
+
+	private async removeSatisfiedRequests(): Promise<void> {
+		const missing = new Set(await this.deps.store.listMissingKeyIds())
+		const requests = await this.deps.store.listPeerMessages(APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE)
+		const completed = requests
+			.filter(row => decodeAppStateSyncKeyRequestData(row.data).every(keyId => !missing.has(keyId)))
+			.map(row => row.id)
+		if (completed.length) await this.deps.store.deletePeerMessages(completed)
 	}
 
 	private async isKnownOwnDevice(senderJid: string, acceptRequestedTarget = false): Promise<boolean> {
@@ -456,6 +468,11 @@ export class AppStateSyncKeyLifecycle {
 			this.retryAttempt = 0
 		})().finally(() => {
 			this.drainPromise = undefined
+			if (this.drainRequested && !this.stopped && !this.retryTimer) {
+				this.drain().catch(error =>
+					this.deps.logger.error({ error }, 'app-state sync peer-message follow-up drain failed')
+				)
+			}
 		})
 		return this.drainPromise
 	}

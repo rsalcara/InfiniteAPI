@@ -1,12 +1,14 @@
 import { mkdir, open, readFile, rename, stat, unlink } from 'fs/promises'
 import { dirname, resolve } from 'path'
 import type {
+	AppStateSyncKeyImportResult,
 	AppStateSyncKeyStore,
 	AppStateSyncKeyStoreSnapshot,
 	AppStateSyncPeerMessageInput,
 	AppStateSyncPeerMessageType,
 	StoredAppStateSyncPeerMessage
 } from '../Types'
+import { APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE, APP_STATE_SYNC_KEY_SHARE_MESSAGE_TYPE } from '../Types/AppStateSync'
 import type { SqliteDbLike, SqliteStatementLike } from './multi-db-sqlite/types'
 import { BufferJSON } from './generics'
 import { makeKeyedMutex } from './make-mutex'
@@ -49,6 +51,29 @@ const unlinkIfPresent = async (path: string): Promise<void> => {
 	}
 }
 
+const syncDirectory = async (path: string): Promise<void> => {
+	let handle
+	try {
+		handle = await open(path, 'r')
+		await handle.sync()
+	} catch {
+		// Directory fsync is best-effort on Windows and some container mounts.
+	} finally {
+		try {
+			await handle?.close()
+		} catch {
+			// Best-effort for the same portability reason.
+		}
+	}
+}
+
+const samePeerPayload = (left: StoredAppStateSyncPeerMessage, right: StoredAppStateSyncPeerMessage): boolean =>
+	left.messageType === right.messageType &&
+	left.remoteJid === right.remoteJid &&
+	left.targetDeviceJid === right.targetDeviceJid &&
+	left.timestamp === right.timestamp &&
+	left.data === right.data
+
 export class FileAppStateSyncKeyStore implements AppStateSyncKeyStore {
 	private readonly lockKey: string
 
@@ -62,7 +87,7 @@ export class FileAppStateSyncKeyStore implements AppStateSyncKeyStore {
 		// The temporary file is fsync'ed and closed before the rename sequence.
 		// If the process dies after primary -> backup but before tmp -> primary,
 		// the tmp file is the newest complete state and must win over the backup.
-		for (const candidate of [this.path, `${this.path}.tmp`, `${this.path}.bak`]) {
+		for (const candidate of [`${this.path}.tmp`, this.path, `${this.path}.bak`]) {
 			try {
 				const parsed = JSON.parse(await readFile(candidate, 'utf8'), BufferJSON.reviver) as Partial<FileState>
 				return {
@@ -104,6 +129,7 @@ export class FileAppStateSyncKeyStore implements AppStateSyncKeyStore {
 		}
 
 		await rename(temporary, this.path)
+		await syncDirectory(dirname(this.path))
 	}
 
 	private async read<T>(work: (state: FileState) => T): Promise<T> {
@@ -165,7 +191,10 @@ export class FileAppStateSyncKeyStore implements AppStateSyncKeyStore {
 		return this.read(state =>
 			state.peerMessages
 				.filter(row =>
-					messageType === undefined ? row.messageType === 38 || row.messageType === 39 : row.messageType === messageType
+					messageType === undefined
+						? row.messageType === APP_STATE_SYNC_KEY_SHARE_MESSAGE_TYPE ||
+							row.messageType === APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE
+						: row.messageType === messageType
 				)
 				.map(row => ({ ...row }))
 		)
@@ -174,7 +203,12 @@ export class FileAppStateSyncKeyStore implements AppStateSyncKeyStore {
 	listUnackedPeerMessages(): Promise<StoredAppStateSyncPeerMessage[]> {
 		return this.read(state =>
 			state.peerMessages
-				.filter(row => (row.messageType === 38 || row.messageType === 39) && !row.acked)
+				.filter(
+					row =>
+						(row.messageType === APP_STATE_SYNC_KEY_SHARE_MESSAGE_TYPE ||
+							row.messageType === APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE) &&
+						!row.acked
+				)
 				.map(row => ({ ...row }))
 		)
 	}
@@ -200,25 +234,47 @@ export class FileAppStateSyncKeyStore implements AppStateSyncKeyStore {
 				collections.map(collectionName => ({ keyId, collectionName }))
 			),
 			peerMessages: state.peerMessages
-				.filter(row => row.messageType === 38 || row.messageType === 39)
+				.filter(
+					row =>
+						row.messageType === APP_STATE_SYNC_KEY_SHARE_MESSAGE_TYPE ||
+						row.messageType === APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE
+				)
 				.map(row => ({ ...row }))
 		}))
 	}
 
-	async importState(snapshot: AppStateSyncKeyStoreSnapshot): Promise<void> {
-		await this.mutate(state => {
+	async importState(snapshot: AppStateSyncKeyStoreSnapshot): Promise<AppStateSyncKeyImportResult> {
+		return this.mutate(state => {
+			let missingKeys = 0
+			let peerMessages = 0
 			for (const { keyId, collectionName } of snapshot.missingKeys) {
 				const collections = new Set(state.missingKeys[keyId] ?? [])
+				const before = collections.size
 				collections.add(collectionName)
 				state.missingKeys[keyId] = [...collections].sort()
+				if (collections.size > before) missingKeys++
 			}
 
-			const existing = new Set(state.peerMessages.map(row => row.messageId))
+			const existing = new Map(state.peerMessages.map(row => [row.messageId, row]))
 			for (const row of snapshot.peerMessages) {
-				if (existing.has(row.messageId)) continue
-				state.peerMessages.push({ ...row, id: String(state.nextPeerMessageId++), acked: row.acked })
-				existing.add(row.messageId)
+				const current = existing.get(row.messageId)
+
+				if (current) {
+					if (samePeerPayload(current, row) && row.acked && !current.acked) {
+						current.acked = true
+						peerMessages++
+					}
+
+					continue
+				}
+
+				const inserted = { ...row, id: String(state.nextPeerMessageId++), acked: row.acked }
+				state.peerMessages.push(inserted)
+				existing.set(row.messageId, inserted)
+				peerMessages++
 			}
+
+			return { missingKeys, peerMessages }
 		})
 	}
 
@@ -227,6 +283,7 @@ export class FileAppStateSyncKeyStore implements AppStateSyncKeyStore {
 			await unlinkIfPresent(`${this.path}.bak`)
 			await unlinkIfPresent(`${this.path}.tmp`)
 			await unlinkIfPresent(this.path)
+			await syncDirectory(dirname(this.path))
 		})
 	}
 }
@@ -337,7 +394,7 @@ export class SqliteAppStateSyncKeyStore implements AppStateSyncKeyStore {
 				this.stmts.deleteMissing!.run(parts.deviceId, parts.epoch)
 			}
 		})
-		remove(keyIds)
+		remove.immediate(keyIds)
 		const stillBlocked = new Set(this.listMissingRows().map(row => row.collectionName))
 		return [...affected].filter(collection => !stillBlocked.has(collection)).sort()
 	}
@@ -371,9 +428,11 @@ export class SqliteAppStateSyncKeyStore implements AppStateSyncKeyStore {
 
 	async deletePeerMessages(ids: string[]): Promise<void> {
 		if (!ids.length) return
-		this.db.transaction((selected: string[]) => {
-			for (const id of selected) this.stmts.deletePeer!.run(id)
-		})(ids)
+		this.db
+			.transaction((selected: string[]) => {
+				for (const id of selected) this.stmts.deletePeer!.run(id)
+			})
+			.immediate(ids)
 	}
 
 	async exportState(): Promise<AppStateSyncKeyStoreSnapshot> {
@@ -389,16 +448,42 @@ export class SqliteAppStateSyncKeyStore implements AppStateSyncKeyStore {
 		return readSnapshot()
 	}
 
-	async importState(snapshot: AppStateSyncKeyStoreSnapshot): Promise<void> {
+	async importState(snapshot: AppStateSyncKeyStoreSnapshot): Promise<AppStateSyncKeyImportResult> {
+		let missingKeys = 0
+		let peerMessages = 0
 		const tx = this.db.transaction((value: AppStateSyncKeyStoreSnapshot) => {
+			const currentMissing = new Set(
+				this.listMissingRows().map(row => `${encodeAppStateSyncKeyId(row)}\u0000${row.collectionName}`)
+			)
 			for (const row of value.missingKeys) {
 				const parts = parseAppStateSyncKeyId(row.keyId)
 				this.stmts.insertMissing!.run(parts.deviceId, parts.epoch, row.collectionName)
+				const identity = `${row.keyId}\u0000${row.collectionName}`
+				if (!currentMissing.has(identity)) {
+					currentMissing.add(identity)
+					missingKeys++
+				}
 			}
 
-			const existing = new Set((this.stmts.listPeer!.all() as PeerRow[]).map(row => row.key_id))
+			const existing = new Map(
+				(this.stmts.listPeer!.all() as PeerRow[]).map(raw => {
+					const row = mapPeerRow(raw)
+					return [row.messageId, row]
+				})
+			)
 			for (const row of value.peerMessages) {
-				if (existing.has(row.messageId)) continue
+				const current = existing.get(row.messageId)
+
+				if (current) {
+					if (samePeerPayload(current, row) && row.acked && !current.acked) {
+						this.stmts.ackPeer!.run(current.id)
+						current.acked = true
+						peerMessages++
+					}
+
+					continue
+				}
+
 				const inserted = this.stmts.insertPeer!.run(
 					row.messageType,
 					row.remoteJid,
@@ -408,10 +493,12 @@ export class SqliteAppStateSyncKeyStore implements AppStateSyncKeyStore {
 					row.data
 				)
 				if (row.acked) this.stmts.ackPeer!.run(inserted.lastInsertRowid)
-				existing.add(row.messageId)
+				existing.set(row.messageId, { ...row, id: String(inserted.lastInsertRowid) })
+				peerMessages++
 			}
 		})
 		tx.immediate(snapshot)
+		return { missingKeys, peerMessages }
 	}
 
 	async clear(): Promise<void> {

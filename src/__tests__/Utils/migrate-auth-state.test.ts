@@ -262,7 +262,12 @@ describe('migrateAuthState — multi-file → SQLite', () => {
 			expect.objectContaining({ messageId: 'migrate-peer-39', targetDeviceJid: '5511999999999:2@s.whatsapp.net' })
 		])
 
-		await migrateAuthState({ from: src.state, to: dst.state, verify: true })
+		const repeated = await migrateAuthState({ from: src.state, to: dst.state, verify: true })
+		expect(first.verified).toBe(true)
+		expect(first.warnings).toEqual([])
+		expect(repeated.appStateSyncKeys).toEqual({ missingKeys: 0, peerMessages: 0, copied: false })
+		expect(repeated.verified).toBe(true)
+		expect(repeated.warnings).toEqual([])
 		expect(await dst.state.appStateSyncKeys!.listPeerMessages(39)).toHaveLength(1)
 		dst.close()
 	})
@@ -313,6 +318,42 @@ describe('migrateAuthState — multi-file → SQLite', () => {
 
 		expect(result.verified).toBe(true)
 		expect(result.warnings).toEqual([])
+		dst.close()
+	})
+
+	it('advances an existing destination peer row when the source ACK arrives later', async () => {
+		const src = await useMultiFileAuthState(dir)
+		const peer = {
+			messageType: 39 as const,
+			remoteJid: '5511999999999@s.whatsapp.net',
+			targetDeviceJid: '5511999999999:2@s.whatsapp.net',
+			messageId: 'source-ack-after-partial-migration',
+			timestamp: 123,
+			data: encodeAppStateSyncKeyRequestData(['AAAAAEGV'])
+		}
+		const source = await src.state.appStateSyncKeys!.enqueuePeerMessage(peer)
+		await src.state.appStateSyncKeys!.markPeerMessageAcked(source.id)
+		const dst = await useSqliteAuthState({ dbPath: ':memory:' })
+		await dst.state.appStateSyncKeys!.enqueuePeerMessage(peer)
+
+		const result = await migrateAuthState({ from: src.state, to: dst.state, verify: true })
+
+		expect(result.appStateSyncKeys).toEqual({ missingKeys: 0, peerMessages: 1, copied: true })
+		expect(result.verified).toBe(true)
+		expect(result.warnings).toEqual([])
+		expect(await dst.state.appStateSyncKeys!.listUnackedPeerMessages()).toEqual([])
+		dst.close()
+	})
+
+	it('rejects a destination without durable app-state key recovery support', async () => {
+		const src = await useMultiFileAuthState(dir)
+		await src.state.appStateSyncKeys!.recordMissingKey('AAAAAEGV', 'regular')
+		const dst = await useSqliteAuthState({ dbPath: ':memory:' })
+		const unsupported = { ...dst.state, appStateSyncKeys: undefined }
+
+		await expect(migrateAuthState({ from: src.state, to: unsupported })).rejects.toThrow(
+			'destination does not support durable app-state key recovery state'
+		)
 		dst.close()
 	})
 

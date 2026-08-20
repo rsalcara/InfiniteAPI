@@ -169,11 +169,11 @@ export async function migrateAuthState({
 	}
 
 	if (appStateSnapshot && to.appStateSyncKeys) {
-		await to.appStateSyncKeys.importState(appStateSnapshot)
+		const applied = await to.appStateSyncKeys.importState(appStateSnapshot)
 		result.appStateSyncKeys = {
-			missingKeys: appStateSnapshot.missingKeys.length,
-			peerMessages: appStateSnapshot.peerMessages.length,
-			copied: appStateSnapshot.missingKeys.length > 0 || appStateSnapshot.peerMessages.length > 0
+			missingKeys: applied.missingKeys,
+			peerMessages: applied.peerMessages,
+			copied: applied.missingKeys > 0 || applied.peerMessages > 0
 		}
 		logger?.info(result.appStateSyncKeys, 'migrateAuthState: durable app-state key recovery copied')
 	}
@@ -359,7 +359,10 @@ async function verifyMigration(
 
 	if (appStateSnapshot) {
 		if (!to.appStateSyncKeys) {
-			if (appStateSnapshot.missingKeys.length || appStateSnapshot.peerMessages.length) ok = false
+			if (appStateSnapshot.missingKeys.length || appStateSnapshot.peerMessages.length) {
+				warnings.push('destination does not support durable app-state key recovery verification')
+				ok = false
+			}
 		} else {
 			const target = await to.appStateSyncKeys.exportState()
 			const targetMissing = new Set(target.missingKeys.map(row => `${row.keyId}\u0000${row.collectionName}`))

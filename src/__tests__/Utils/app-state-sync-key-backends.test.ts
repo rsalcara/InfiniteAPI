@@ -1,10 +1,10 @@
 import Database from 'better-sqlite3'
-import { mkdtemp, rm } from 'fs/promises'
+import { mkdtemp, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { AppStateSyncKeyStore, AuthenticationState } from '../../Types'
 import { encodeAppStateSyncKeyRequestData } from '../../Utils/app-state-sync-key-lifecycle'
-import { SqliteAppStateSyncKeyStore } from '../../Utils/app-state-sync-key-store'
+import { FileAppStateSyncKeyStore, SqliteAppStateSyncKeyStore } from '../../Utils/app-state-sync-key-store'
 import type { ILogger } from '../../Utils/logger'
 import { useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
 import { useMultiFileAuthState } from '../../Utils/use-multi-file-auth-state'
@@ -136,6 +136,21 @@ describe('durable App State key recovery — independent built-in auth backends'
 		})
 	})
 
+	it('recovers the newest complete temporary file before a stale primary', async () => {
+		const path = join(dir, 'app-state-sync-key-recovery.json')
+		const stale = new FileAppStateSyncKeyStore(path)
+		await stale.recordMissingKey(keyId, 'regular')
+		const newerKeyId = 'AAAAAEGW'
+		await writeFile(
+			`${path}.tmp`,
+			JSON.stringify({ nextPeerMessageId: 1, missingKeys: { [newerKeyId]: ['critical_block'] }, peerMessages: [] })
+		)
+
+		const recovered = new FileAppStateSyncKeyStore(path)
+		await expect(recovered.listMissingKeyIds()).resolves.toEqual([newerKeyId])
+		await expect(recovered.listMissingCollections()).resolves.toEqual(['critical_block'])
+	})
+
 	it('persists independently in monolithic sqlite', async () => {
 		const dbPath = join(dir, 'auth.db')
 		await exerciseDurableBackend(async () => {
@@ -175,6 +190,31 @@ describe('durable App State key recovery — independent built-in auth backends'
 			expect(db.prepare('SELECT message_type FROM peer_messages').all() as Array<{ message_type: number }>).toEqual([
 				{ message_type: 70 }
 			])
+		} finally {
+			db.close()
+		}
+	})
+
+	it('preserves unrelated peer rows when monolithic auth keys are cleared', async () => {
+		const db = new Database(':memory:')
+		try {
+			const auth = await useSqliteAuthState({ dbPath: ':memory:', database: db, logger: silentLogger() })
+			db.prepare(
+				'INSERT INTO peer_messages (message_type, key_remote_jid, key_from_me, key_id, device_id, timestamp, data, acked) VALUES (70, ?, 1, ?, ?, ?, ?, 0)'
+			).run('5511999999999@s.whatsapp.net', 'unrelated-clear', '5511999999999:2@s.whatsapp.net', 1, '{}')
+			await auth.state.appStateSyncKeys!.enqueuePeerMessage({
+				messageType: 39,
+				remoteJid: '5511999999999@s.whatsapp.net',
+				targetDeviceJid: '5511999999999:2@s.whatsapp.net',
+				messageId: 'app-state-clear',
+				timestamp: 1,
+				data: encodeAppStateSyncKeyRequestData([keyId])
+			})
+
+			await auth.state.keys.clear!()
+
+			expect(db.prepare('SELECT message_type FROM peer_messages').all()).toEqual([{ message_type: 70 }])
+			auth.close()
 		} finally {
 			db.close()
 		}
