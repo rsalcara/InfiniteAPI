@@ -383,6 +383,11 @@ export const useMultiFileAuthState = async (
 			creds,
 			historySync,
 			appStateSyncKeys,
+			storage: {
+				backend: 'multifile' as const,
+				historySyncDurable: true,
+				tcTokenDurable: true
+			},
 			keys: {
 				get: async (type, ids) => {
 					const data: { [_: string]: SignalDataTypeMap[typeof type] } = {}

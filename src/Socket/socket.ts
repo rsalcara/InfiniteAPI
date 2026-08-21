@@ -41,6 +41,7 @@ import {
 	getPairCodeCompanionIdentity,
 	getQrCodeCompanionIdentity,
 	incrementNativeAndroidConnectionLc,
+	inspectAuthStateCapabilities,
 	makeEventBuffer,
 	makeNoiseHandler,
 	obfuscateJid,
@@ -658,6 +659,32 @@ export const makeSocket = (config: SocketConfig) => {
 	// once here so `markConnectionActive` (on open) and `markConnectionInactive`
 	// (in end()) always reference the same id.
 	const connectionId = `sock:${randomBytes(8).toString('hex')}`
+	const accountJid = jidNormalizedUser(authState.creds.me?.id) || undefined
+	const authInstanceId = config.instanceId?.trim() || accountJid || connectionId
+	const authInspection = inspectAuthStateCapabilities(authState, authInstanceId, accountJid)
+	const authCapabilities = authInspection.capabilities
+	if (!authCapabilities.appStateSyncRecovery) {
+		const report =
+			authCapabilities.appStateSyncRecoveryReason === 'missing-store'
+				? logger.warn.bind(logger)
+				: logger.error.bind(logger)
+		report(
+			{
+				code: 'APP_STATE_SYNC_RECOVERY_UNAVAILABLE',
+				reason: authCapabilities.appStateSyncRecoveryReason,
+				backend: authCapabilities.backend,
+				instanceId: authCapabilities.instanceId,
+				accountJid: authCapabilities.accountJid,
+				issues: authCapabilities.issues
+			},
+			'app-state sync key recovery is unavailable for this auth state'
+		)
+	}
+
+	// Defer the public event by one microtask so callers can attach listeners
+	// immediately after makeWASocket() returns. It is emitted once per socket,
+	// independently of whether the transport reaches the open state.
+	queueMicrotask(() => ev.emit('auth-state.capabilities', authCapabilities))
 
 	// Callbacks run on socket close to release per-module resources (caches, timers) and prevent
 	// memory leaks on disconnect. Adapted from upstream #2191 — but we deliberately do NOT call
@@ -2215,7 +2242,7 @@ export const makeSocket = (config: SocketConfig) => {
 
 		// Emit connection:open immediately so the application layer begins processing
 		// incoming messages without waiting for any WA round-trips.
-		ev.emit('connection.update', { connection: 'open' })
+		ev.emit('connection.update', { connection: 'open', authCapabilities })
 
 		// ─── Background: sendPassiveIq + pre-key validation + key-bundle digest ──
 		// sendPassiveIq('active') tells the WA edge server to start routing live
@@ -2571,8 +2598,10 @@ export const makeSocket = (config: SocketConfig) => {
 			creds,
 			keys,
 			historySync: authState.historySync,
-			appStateSyncKeys: authState.appStateSyncKeys
+			appStateSyncKeys: authInspection.appStateSyncKeys,
+			storage: authState.storage
 		},
+		authCapabilities,
 		tcTokenBucketPolicy,
 		signalRepository,
 		sessionCleanup,

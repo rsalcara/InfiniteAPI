@@ -127,6 +127,10 @@ export class AppStateSyncKeyLifecycle {
 		this.stopped = false
 		try {
 			const missing = await this.deps.store.listMissingKeyIds()
+			this.deps.logger.info(
+				{ missingKeyCount: missing.length, phase: 'startup-recovery' },
+				'app-state sync key recovery started'
+			)
 			if (missing.length) {
 				const existing = await this.deps.keyStore.get('app-state-sync-key', missing)
 				const recovered = missing.filter(keyId => Boolean(existing[keyId]))
@@ -175,6 +179,10 @@ export class AppStateSyncKeyLifecycle {
 	async requestMissingKey(collectionName: string, keyId: string): Promise<void> {
 		parseAppStateSyncKeyId(keyId)
 		await this.deps.store.recordMissingKey(keyId, collectionName)
+		this.deps.logger.info(
+			{ collection: collectionName, keyId, phase: 'missing-key-persisted' },
+			'app-state sync missing key persisted for recovery'
+		)
 
 		// resyncAppState runs inside the auth-key transaction. The official job
 		// queue persists the peer row and only sends after that transaction can
@@ -211,7 +219,8 @@ export class AppStateSyncKeyLifecycle {
 					{
 						collections,
 						keyIds: unrequested,
-						state: 'MissingKeyOnAllClients'
+						state: 'MissingKeyOnAllClients',
+						phase: 'missing-key-on-all-clients'
 					},
 					'app-state sync key is missing on every registered client'
 				)
@@ -239,7 +248,14 @@ export class AppStateSyncKeyLifecycle {
 			}
 
 			if (persisted.length) {
-				this.deps.logger.info({ requests: persisted }, 'app-state sync missing-key requests persisted')
+				this.deps.logger.info(
+					{
+						messageType: APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE,
+						requests: persisted,
+						phase: 'type-39-persisted'
+					},
+					'app-state sync missing-key requests persisted'
+				)
 			}
 		})
 	}
@@ -250,7 +266,13 @@ export class AppStateSyncKeyLifecycle {
 		const completed = requests
 			.filter(row => decodeAppStateSyncKeyRequestData(row.data).every(keyId => !missing.has(keyId)))
 			.map(row => row.id)
-		if (completed.length) await this.deps.store.deletePeerMessages(completed)
+		if (completed.length) {
+			await this.deps.store.deletePeerMessages(completed)
+			this.deps.logger.debug(
+				{ peerMessageIds: completed, phase: 'satisfied-requests-removed' },
+				'app-state sync satisfied key requests removed'
+			)
+		}
 	}
 
 	private async isKnownOwnDevice(senderJid: string, acceptRequestedTarget = false): Promise<boolean> {
@@ -290,7 +312,7 @@ export class AppStateSyncKeyLifecycle {
 		}
 
 		await this.mutex.mutex(async () => {
-			await this.deps.store.enqueuePeerMessage({
+			const stored = await this.deps.store.enqueuePeerMessage({
 				messageType: APP_STATE_SYNC_KEY_SHARE_MESSAGE_TYPE,
 				remoteJid: this.deps.getOwnJid(),
 				targetDeviceJid: senderJid,
@@ -298,6 +320,16 @@ export class AppStateSyncKeyLifecycle {
 				timestamp: Date.now(),
 				data: encodeShareData(share)
 			})
+			this.deps.logger.info(
+				{
+					messageType: APP_STATE_SYNC_KEY_SHARE_MESSAGE_TYPE,
+					peerMessageId: stored.id,
+					targetDeviceJid: senderJid,
+					keyCount: keyIds.length,
+					phase: 'type-38-persisted'
+				},
+				'app-state sync key share persisted'
+			)
 		})
 		await this.drain()
 	}
@@ -324,12 +356,28 @@ export class AppStateSyncKeyLifecycle {
 		const exactResponseKeyIds = uniqueSorted(responseKeyIds)
 		if (!exactResponseKeyIds.length) return undefined
 		const suppliedKeyIds = Object.keys(supplied)
+		this.deps.logger.info(
+			{
+				senderJid,
+				responseKeyCount: exactResponseKeyIds.length,
+				suppliedKeyCount: suppliedKeyIds.length,
+				phase: 'type-38-received-validated'
+			},
+			'app-state sync key share received and validated'
+		)
 		const result = await this.mutex.mutex(async () => {
 			await this.deps.keyStore.transaction(async () => {
 				if (suppliedKeyIds.length) await this.deps.keyStore.set({ 'app-state-sync-key': supplied })
 			}, this.deps.getOwnJid())
 
 			const readyCollections = suppliedKeyIds.length ? await this.deps.store.resolveKeys(suppliedKeyIds) : []
+			if (suppliedKeyIds.length) {
+				this.deps.logger.info(
+					{ keyIds: suppliedKeyIds, readyCollections, phase: 'type-38-keys-stored' },
+					'app-state sync key share stored'
+				)
+			}
+
 			const allSupplied = suppliedKeyIds.length === exactResponseKeyIds.length
 			const requests = await this.deps.store.listPeerMessages(APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE)
 			const completed = requests
@@ -344,7 +392,12 @@ export class AppStateSyncKeyLifecycle {
 			const remainingRequests = await this.deps.store.listPeerMessages(APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE)
 			if (stillMissing.length && !remainingRequests.length) {
 				this.deps.logger.error(
-					{ collections: stillMissing, state: 'MissingKeyOnAllClients', keyIds: exactResponseKeyIds },
+					{
+						collections: stillMissing,
+						state: 'MissingKeyOnAllClients',
+						keyIds: exactResponseKeyIds,
+						phase: 'missing-key-on-all-clients'
+					},
 					'app-state sync key is missing on every registered client'
 				)
 			}
@@ -361,7 +414,14 @@ export class AppStateSyncKeyLifecycle {
 			return { activeCandidate, readyCollections }
 		})
 
-		if (result.readyCollections.length) await this.deps.retryCollections(result.readyCollections)
+		if (result.readyCollections.length) {
+			await this.deps.retryCollections(result.readyCollections)
+			this.deps.logger.info(
+				{ collections: result.readyCollections, phase: 'collections-retried' },
+				'app-state sync collections retried after key recovery'
+			)
+		}
+
 		return result.activeCandidate
 	}
 
@@ -391,7 +451,7 @@ export class AppStateSyncKeyLifecycle {
 
 		await this.deps.store.deletePeerMessages(completed)
 		this.deps.logger.debug(
-			{ senderJid, peerMessageIds: completed, messageIds: [...ids] },
+			{ senderJid, peerMessageIds: completed, messageIds: [...ids], phase: 'peer-receipt-cleanup' },
 			'app-state sync key shares completed by peer delivery receipt'
 		)
 	}
@@ -416,6 +476,16 @@ export class AppStateSyncKeyLifecycle {
 
 		await this.deps.sendPeerMessage(row.targetDeviceJid, { protocolMessage }, row.messageId)
 		await this.deps.store.markPeerMessageAcked(row.id)
+		this.deps.logger.info(
+			{
+				peerMessageId: row.id,
+				messageId: row.messageId,
+				messageType: row.messageType,
+				targetDeviceJid: row.targetDeviceJid,
+				phase: 'transport-ack'
+			},
+			'app-state sync peer message acknowledged by transport'
+		)
 	}
 
 	private scheduleRetry(): void {

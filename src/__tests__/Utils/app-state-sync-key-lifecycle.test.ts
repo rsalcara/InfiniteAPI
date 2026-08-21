@@ -89,6 +89,8 @@ const makeLifecycle = (store: AppStateSyncKeyStore, overrides: LifecycleOverride
 	)
 	const retryCollections = jest.fn(async () => {})
 	const logger = silentLogger()
+	logger.info = jest.fn()
+	logger.debug = jest.fn()
 	logger.error = jest.fn()
 	logger.warn = jest.fn()
 	const lifecycle = new AppStateSyncKeyLifecycle({
@@ -292,7 +294,7 @@ describe('AppStateSyncKeyLifecycle — official types 38/39 recovery', () => {
 			)
 			expect(collections).toEqual(['regular'])
 		})
-		const { lifecycle, keyStore, sendPeerMessage } = makeLifecycle(store, {
+		const { lifecycle, keyStore, sendPeerMessage, logger } = makeLifecycle(store, {
 			listOwnDevices: async () => [deviceOne],
 			retryCollections
 		})
@@ -341,6 +343,17 @@ describe('AppStateSyncKeyLifecycle — official types 38/39 recovery', () => {
 		expect(retryCollections).toHaveBeenCalledTimes(1)
 		expect(retriedMutation).toEqual(expect.objectContaining({ index: ['mute', 'chat@s.whatsapp.net'] }))
 		expect(await store.listMissingKeyIds()).toEqual([])
+		for (const phase of [
+			'missing-key-persisted',
+			'type-39-persisted',
+			'transport-ack',
+			'type-38-received-validated',
+			'type-38-keys-stored',
+			'collections-retried'
+		]) {
+			expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ phase }), expect.any(String))
+		}
+
 		lifecycle.stop()
 	})
 

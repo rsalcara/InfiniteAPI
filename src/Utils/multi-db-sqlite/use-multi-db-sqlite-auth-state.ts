@@ -704,6 +704,11 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		},
 		historySync,
 		appStateSyncKeys,
+		storage: {
+			backend: 'multidb-sqlite',
+			historySyncDurable: true,
+			tcTokenDurable: true
+		},
 		keys: {
 			prekeyUploads: sourceOfTruth
 				? {
