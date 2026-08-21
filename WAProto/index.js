@@ -81554,6 +81554,7 @@ export const proto = $root.proto = (() => {
         values[valuesById[93] = "CTWA_MESSAGE_RECEIVED_ACTION"] = 93;
         values[valuesById[94] = "SHARED_DEVICE_ALLOWLIST_ACTION"] = 94;
         values[valuesById[95] = "CONTACT_MANAGER_METADATA_ACTION"] = 95;
+        values[valuesById[96] = "BUSINESS_FOLDER_ACTIVATION_ACTION"] = 96;
         values[valuesById[10001] = "SHARE_OWN_PN"] = 10001;
         values[valuesById[10002] = "BUSINESS_BROADCAST_ACTION"] = 10002;
         values[valuesById[10003] = "AI_THREAD_DELETE_ACTION"] = 10003;
@@ -92382,6 +92383,7 @@ export const proto = $root.proto = (() => {
         SyncActionValue.prototype.ctwaMessageReceivedAction = null;
         SyncActionValue.prototype.sharedDeviceAllowlistAction = null;
         SyncActionValue.prototype.contactManagerMetadataAction = null;
+        SyncActionValue.prototype.businessFolderActivationAction = null;
 
         let $oneOfFields;
 
@@ -92901,6 +92903,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        Object.defineProperty(SyncActionValue.prototype, "_businessFolderActivationAction", {
+            get: $util.oneOfGetter($oneOfFields = ["businessFolderActivationAction"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         SyncActionValue.create = function create(properties) {
             return new SyncActionValue(properties);
         };
@@ -93080,6 +93088,8 @@ export const proto = $root.proto = (() => {
                 $root.proto.SyncActionValue.SharedDeviceAllowlistAction.encode(m.sharedDeviceAllowlistAction, w.uint32(754).fork()).ldelim();
             if (m.contactManagerMetadataAction != null && Object.hasOwnProperty.call(m, "contactManagerMetadataAction"))
                 $root.proto.SyncActionValue.ContactManagerMetadataAction.encode(m.contactManagerMetadataAction, w.uint32(762).fork()).ldelim();
+            if (m.businessFolderActivationAction != null && Object.hasOwnProperty.call(m, "businessFolderActivationAction"))
+                $root.proto.SyncActionValue.BusinessFolderActivationAction.encode(m.businessFolderActivationAction, w.uint32(770).fork()).ldelim();
             return w;
         };
 
@@ -93434,6 +93444,10 @@ export const proto = $root.proto = (() => {
                     }
                 case 95: {
                         m.contactManagerMetadataAction = $root.proto.SyncActionValue.ContactManagerMetadataAction.decode(r, r.uint32());
+                        break;
+                    }
+                case 96: {
+                        m.businessFolderActivationAction = $root.proto.SyncActionValue.BusinessFolderActivationAction.decode(r, r.uint32());
                         break;
                     }
                 default:
@@ -93883,6 +93897,11 @@ export const proto = $root.proto = (() => {
                     throw TypeError(".proto.SyncActionValue.contactManagerMetadataAction: object expected");
                 m.contactManagerMetadataAction = $root.proto.SyncActionValue.ContactManagerMetadataAction.fromObject(d.contactManagerMetadataAction);
             }
+            if (d.businessFolderActivationAction != null) {
+                if (typeof d.businessFolderActivationAction !== "object")
+                    throw TypeError(".proto.SyncActionValue.businessFolderActivationAction: object expected");
+                m.businessFolderActivationAction = $root.proto.SyncActionValue.BusinessFolderActivationAction.fromObject(d.businessFolderActivationAction);
+            }
             return m;
         };
 
@@ -94322,6 +94341,11 @@ export const proto = $root.proto = (() => {
                 d.contactManagerMetadataAction = $root.proto.SyncActionValue.ContactManagerMetadataAction.toObject(m.contactManagerMetadataAction, o);
                 if (o.oneofs)
                     d._contactManagerMetadataAction = "contactManagerMetadataAction";
+            }
+            if (m.businessFolderActivationAction != null && m.hasOwnProperty("businessFolderActivationAction")) {
+                d.businessFolderActivationAction = $root.proto.SyncActionValue.BusinessFolderActivationAction.toObject(m.businessFolderActivationAction, o);
+                if (o.oneofs)
+                    d._businessFolderActivationAction = "businessFolderActivationAction";
             }
             return d;
         };
@@ -96244,6 +96268,94 @@ export const proto = $root.proto = (() => {
             };
 
             return BusinessBroadcastListAction;
+        })();
+
+        SyncActionValue.BusinessFolderActivationAction = (function() {
+
+            function BusinessFolderActivationAction(p) {
+                if (p)
+                    for (var ks = Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null)
+                            this[ks[i]] = p[ks[i]];
+            }
+
+            BusinessFolderActivationAction.prototype.activated = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            Object.defineProperty(BusinessFolderActivationAction.prototype, "_activated", {
+                get: $util.oneOfGetter($oneOfFields = ["activated"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            BusinessFolderActivationAction.create = function create(properties) {
+                return new BusinessFolderActivationAction(properties);
+            };
+
+            BusinessFolderActivationAction.encode = function encode(m, w) {
+                if (!w)
+                    w = $Writer.create();
+                if (m.activated != null && Object.hasOwnProperty.call(m, "activated"))
+                    w.uint32(8).bool(m.activated);
+                return w;
+            };
+
+            BusinessFolderActivationAction.decode = function decode(r, l, e) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                var c = l === undefined ? r.len : r.pos + l, m = new $root.proto.SyncActionValue.BusinessFolderActivationAction();
+                while (r.pos < c) {
+                    var t = r.uint32();
+                    if (t === e)
+                        break;
+                    switch (t >>> 3) {
+                    case 1: {
+                            m.activated = r.bool();
+                            break;
+                        }
+                    default:
+                        r.skipType(t & 7);
+                        break;
+                    }
+                }
+                return m;
+            };
+
+            BusinessFolderActivationAction.fromObject = function fromObject(d) {
+                if (d instanceof $root.proto.SyncActionValue.BusinessFolderActivationAction)
+                    return d;
+                var m = new $root.proto.SyncActionValue.BusinessFolderActivationAction();
+                if (d.activated != null) {
+                    m.activated = Boolean(d.activated);
+                }
+                return m;
+            };
+
+            BusinessFolderActivationAction.toObject = function toObject(m, o) {
+                if (!o)
+                    o = {};
+                var d = {};
+                if (m.activated != null && m.hasOwnProperty("activated")) {
+                    d.activated = m.activated;
+                    if (o.oneofs)
+                        d._activated = "activated";
+                }
+                return d;
+            };
+
+            BusinessFolderActivationAction.prototype.toJSON = function toJSON() {
+                return this.constructor.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            BusinessFolderActivationAction.getTypeUrl = function getTypeUrl(typeUrlPrefix) {
+                if (typeUrlPrefix === undefined) {
+                    typeUrlPrefix = "type.googleapis.com";
+                }
+                return typeUrlPrefix + "/proto.SyncActionValue.BusinessFolderActivationAction";
+            };
+
+            return BusinessFolderActivationAction;
         })();
 
         SyncActionValue.CallLogAction = (function() {
