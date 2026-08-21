@@ -42,6 +42,8 @@ export type PossiblyExtendedCacheStore = CacheStore & {
 export type PatchedMessageWithRecipientJID = proto.IMessage & { recipientJid?: string }
 
 export type SocketConfig = {
+	/** Stable consumer instance identifier included in auth-state diagnostics. */
+	instanceId?: string
 	/** Transport profile. Web remains the stable default. */
 	transportProfile: ConnectionTransportProfile
 	/** Required only when transportProfile is native_android. */

@@ -397,6 +397,11 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 				},
 				historySync,
 				appStateSyncKeys,
+				storage: {
+					backend: 'sqlite' as const,
+					historySyncDurable: true,
+					tcTokenDurable: true
+				},
 				keys: {
 					get: async (type, ids) => {
 						const out: Record<string, SignalDataTypeMap[typeof type]> = {}

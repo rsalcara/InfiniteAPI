@@ -95,6 +95,7 @@ const samePeerPayload = (left: StoredAppStateSyncPeerMessage, right: StoredAppSt
 	left.data === right.data
 
 export class FileAppStateSyncKeyStore implements AppStateSyncKeyStore {
+	readonly durable = true as const
 	private readonly lockKey: string
 
 	constructor(private readonly path: string) {
@@ -353,6 +354,7 @@ const mapPeerRow = (row: PeerRow): StoredAppStateSyncPeerMessage => ({
 })
 
 export class SqliteAppStateSyncKeyStore implements AppStateSyncKeyStore {
+	readonly durable = true as const
 	private readonly stmts: Record<string, SqliteStatementLike>
 
 	constructor(private readonly db: SqliteDbLike) {

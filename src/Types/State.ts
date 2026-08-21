@@ -1,4 +1,5 @@
 import { Boom } from '@hapi/boom'
+import type { AuthStateCapabilities } from './AuthCapabilities'
 import type { Contact } from './Contact'
 
 export enum SyncState {
@@ -17,6 +18,8 @@ export type WAConnectionState = 'open' | 'connecting' | 'close'
 export type ConnectionState = {
 	/** connection is now open, connecting or closed */
 	connection: WAConnectionState
+	/** Durable auth-state capabilities active for this socket. */
+	authCapabilities?: AuthStateCapabilities
 
 	/** the error that caused the connection to close */
 	lastDisconnect?: {
