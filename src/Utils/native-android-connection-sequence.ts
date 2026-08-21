@@ -217,6 +217,7 @@ export async function* iterateNativeAndroidConnectionSequence({
 		} catch {
 			// The following hardcoded/fallback stages remain eligible.
 		}
+
 		return resolvedCandidates
 	}
 
@@ -274,6 +275,7 @@ export async function* iterateNativeAndroidConnectionSequence({
 		})
 		if (candidate) yield candidate
 	}
+
 	for (const address of hardcodedAddresses[PRIMARY_HOST] || []) {
 		const candidate = normalizeUnique(seen, {
 			host: PRIMARY_HOST,
@@ -332,6 +334,7 @@ const readHttpHeader = (socket: net.Socket, timeoutMs: number) =>
 			if (error) reject(error)
 			return true
 		}
+
 		const onError = (error: Error) => finish(error)
 		const onData = (chunk: Buffer) => {
 			buffered = Buffer.concat([buffered, chunk])
@@ -340,12 +343,14 @@ const readHttpHeader = (socket: net.Socket, timeoutMs: number) =>
 				if (buffered.length > 16 * 1024) finish(new Error('native_android: proxy response header is too large'))
 				return
 			}
+
 			const header = buffered.subarray(0, end + 4)
 			const remainder = buffered.subarray(end + 4)
 			if (!finish()) return
 			if (remainder.length) socket.unshift(remainder)
 			resolve(header)
 		}
+
 		socket.on('data', onData)
 		socket.once('error', onError)
 	})
@@ -358,10 +363,12 @@ const connectDirect = (host: string, port: number, timeoutMs: number) =>
 			clearTimeout(timer)
 			socket.off('error', onError)
 		}
+
 		const onError = (error: Error) => {
 			cleanup()
 			reject(error)
 		}
+
 		socket.once('error', onError)
 		socket.once('connect', () => {
 			cleanup()
@@ -377,10 +384,12 @@ const connectTlsProxy = (host: string, port: number, timeoutMs: number) =>
 			clearTimeout(timer)
 			socket.off('error', onError)
 		}
+
 		const onError = (error: Error) => {
 			cleanup()
 			reject(error)
 		}
+
 		socket.once('error', onError)
 		socket.once('secureConnect', () => {
 			cleanup()
@@ -412,6 +421,7 @@ const connectHttpProxy = async (
 		if (status !== '200') {
 			throw new Error(`native_android: HTTP CONNECT proxy rejected the tunnel (${status || 'invalid response'})`)
 		}
+
 		return socket
 	} catch (error) {
 		socket.destroy()

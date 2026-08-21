@@ -118,16 +118,20 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 				statusCode: 400
 			})
 		}
+
 		requiredString(config.proxy.host, 'proxy.host')
 		if (!Number.isInteger(config.proxy.port) || config.proxy.port < 1 || config.proxy.port > 65535) {
 			throw new Boom('native_android: proxy.port is invalid', { statusCode: 400 })
 		}
+
 		if (config.proxy.username !== undefined && typeof config.proxy.username !== 'string') {
 			throw new Boom('native_android: proxy.username must be a string', { statusCode: 400 })
 		}
+
 		if (config.proxy.password !== undefined && typeof config.proxy.password !== 'string') {
 			throw new Boom('native_android: proxy.password must be a string', { statusCode: 400 })
 		}
+
 		if (config.proxy.resolveDns !== undefined && typeof config.proxy.resolveDns !== 'boolean') {
 			throw new Boom('native_android: proxy.resolveDns must be boolean', { statusCode: 400 })
 		}
@@ -138,9 +142,11 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 		if (endpoint.address !== undefined && net.isIP(endpoint.address) === 0) {
 			throw new Boom('native_android: connection endpoint address must be an IP address', { statusCode: 400 })
 		}
+
 		if (!Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65535) {
 			throw new Boom('native_android: connection endpoint port is invalid', { statusCode: 400 })
 		}
+
 		if (
 			endpoint.sequenceStep !== undefined &&
 			(!Number.isInteger(endpoint.sequenceStep) || endpoint.sequenceStep < 1 || endpoint.sequenceStep > 15)
