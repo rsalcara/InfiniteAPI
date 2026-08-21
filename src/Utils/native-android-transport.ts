@@ -141,7 +141,10 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 		if (!Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65535) {
 			throw new Boom('native_android: connection endpoint port is invalid', { statusCode: 400 })
 		}
-		if (endpoint.sequenceStep !== undefined && (!Number.isInteger(endpoint.sequenceStep) || endpoint.sequenceStep < 1 || endpoint.sequenceStep > 15)) {
+		if (
+			endpoint.sequenceStep !== undefined &&
+			(!Number.isInteger(endpoint.sequenceStep) || endpoint.sequenceStep < 1 || endpoint.sequenceStep > 15)
+		) {
 			throw new Boom('native_android: connection endpoint sequenceStep must be in range 1..15', {
 				statusCode: 400
 			})
@@ -150,7 +153,10 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 
 	for (const [host, addresses] of Object.entries(config.hardcodedAddresses || {})) {
 		requiredString(host, 'hardcodedAddresses.host')
-		if (!Array.isArray(addresses) || addresses.some(address => typeof address !== 'string' || net.isIP(address) === 0)) {
+		if (
+			!Array.isArray(addresses) ||
+			addresses.some(address => typeof address !== 'string' || net.isIP(address) === 0)
+		) {
 			throw new Boom(`native_android: hardcodedAddresses.${host} must contain only IP addresses`, {
 				statusCode: 400
 			})

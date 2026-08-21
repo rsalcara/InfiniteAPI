@@ -747,7 +747,8 @@ describe('TcpSocketClient', () => {
 		const unavailable = net.createServer()
 		await new Promise<void>(resolve => unavailable.listen(0, '127.0.0.1', resolve))
 		const unavailableAddress = unavailable.address()
-		if (!unavailableAddress || typeof unavailableAddress === 'string') throw new Error('unavailable server did not bind')
+		if (!unavailableAddress || typeof unavailableAddress === 'string')
+			throw new Error('unavailable server did not bind')
 		await new Promise<void>(resolve => unavailable.close(() => resolve()))
 
 		const available = net.createServer()

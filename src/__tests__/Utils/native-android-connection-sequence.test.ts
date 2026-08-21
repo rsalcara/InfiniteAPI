@@ -30,13 +30,14 @@ const config = (overrides: Partial<NativeAndroidTransportConfig> = {}): NativeAn
 		...overrides
 	}) as NativeAndroidTransportConfig
 
-const persisted = (connectionEndpoint: PersistedNativeAndroidIdentity['connectionEndpoint']): PersistedNativeAndroidIdentity =>
-	({
-		schemaVersion: 1,
-		profile: 'native_android',
-		device: {} as PersistedNativeAndroidIdentity['device'],
-		connectionEndpoint
-	})
+const persisted = (
+	connectionEndpoint: PersistedNativeAndroidIdentity['connectionEndpoint']
+): PersistedNativeAndroidIdentity => ({
+	schemaVersion: 1,
+	profile: 'native_android',
+	device: {} as PersistedNativeAndroidIdentity['device'],
+	connectionEndpoint
+})
 
 describe('native Android connection sequence', () => {
 	afterEach(() => clearNativeAndroidDnsCache())

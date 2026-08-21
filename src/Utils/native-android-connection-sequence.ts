@@ -223,8 +223,7 @@ export async function* iterateNativeAndroidConnectionSequence({
 	for (const candidate of await resolveHostCandidates(PRIMARY_HOST, [officialPortForStep(5)], 'dns', 5)) yield candidate
 
 	for (const endpoint of serverEndpoints.filter(endpoint => endpoint.sequenceStep === 8)) {
-		for (const candidate of await expandEndpoint({ ...endpoint, source: 'server', sequenceStep: 8 }, 4))
-			yield candidate
+		for (const candidate of await expandEndpoint({ ...endpoint, source: 'server', sequenceStep: 8 }, 4)) yield candidate
 	}
 
 	for (const candidate of await resolveHostCandidates(PRIMARY_HOST, [80], 'fallback', 9)) yield candidate
@@ -242,8 +241,7 @@ export async function* iterateNativeAndroidConnectionSequence({
 	}
 
 	const fallbackPort = officialPortForStep(13)
-	for (const candidate of await resolveHostCandidates(FALLBACK_HOST, [fallbackPort], 'fallback', 13))
-		yield candidate
+	for (const candidate of await resolveHostCandidates(FALLBACK_HOST, [fallbackPort], 'fallback', 13)) yield candidate
 	for (const candidate of await resolveHostCandidates(FALLBACK_HOST, [80], 'fallback', 14)) yield candidate
 
 	for (const address of hardcodedAddresses[FALLBACK_HOST] || []) {
@@ -406,7 +404,9 @@ const connectHttpProxy = async (
 			proxy.username !== undefined
 				? `Proxy-Authorization: Basic ${Buffer.from(`${proxy.username}:${proxy.password || ''}`).toString('base64')}\r\n`
 				: ''
-		socket.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n${authorization}Connection: keep-alive\r\n\r\n`)
+		socket.write(
+			`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n${authorization}Connection: keep-alive\r\n\r\n`
+		)
 		const response = (await readHttpHeader(socket, timeoutMs)).toString('latin1')
 		const status = /^HTTP\/\d(?:\.\d)?\s+(\d{3})/.exec(response)?.[1]
 		if (status !== '200') {
