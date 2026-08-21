@@ -102,7 +102,8 @@ describe('auth-state recovery capabilities', () => {
 		const result = inspectAuthStateCapabilities(authState(invalid), 'throwing-store')
 		expect(result.capabilities.appStateSyncRecovery).toBe(false)
 		expect(result.capabilities.appStateSyncRecoveryReason).toBe('invalid-store')
-		expect(result.capabilities.issues).toContain('appStateSyncKeys.clear:missing')
+		expect(result.capabilities.issues).toContain('appStateSyncKeys.clear:unreadable')
+		expect(result.capabilities.issues).not.toContain('appStateSyncKeys.clear:missing')
 	})
 
 	it('fails closed when inspecting the durability marker throws', () => {
@@ -192,6 +193,19 @@ describe('auth-state recovery capabilities', () => {
 
 		expect(() => createAppStateSyncKeyStore(invalid as AppStateSyncKeyStore, { persistence: 'durable' })).toThrow(
 			'invalid app-state sync key store; missing methods: clear'
+		)
+	})
+
+	it('factory distinguishes an unreadable method from an absent method', () => {
+		const invalid = new CustomAppStateStore()
+		Object.defineProperty(invalid, 'clear', {
+			get: () => {
+				throw new Error('hostile getter')
+			}
+		})
+
+		expect(() => createAppStateSyncKeyStore(invalid, { persistence: 'durable' })).toThrow(
+			'invalid app-state sync key store; unreadable methods: clear'
 		)
 	})
 })

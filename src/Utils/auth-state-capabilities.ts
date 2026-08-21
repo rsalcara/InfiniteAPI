@@ -30,18 +30,29 @@ export type DurableAppStateSyncKeyStoreOptions = {
 	persistence: 'durable'
 }
 
-const missingStoreMethods = (store: unknown): string[] => {
-	if (!store || typeof store !== 'object') return [...REQUIRED_APP_STATE_SYNC_STORE_METHODS]
+type StoreMethodInspection = {
+	missing: string[]
+	unreadable: string[]
+}
+
+const inspectStoreMethods = (store: unknown): StoreMethodInspection => {
+	if (!store || typeof store !== 'object') {
+		return { missing: [...REQUIRED_APP_STATE_SYNC_STORE_METHODS], unreadable: [] }
+	}
+
 	const candidate = store as Record<string, unknown>
-	return REQUIRED_APP_STATE_SYNC_STORE_METHODS.filter(method => {
+	const result: StoreMethodInspection = { missing: [], unreadable: [] }
+	for (const method of REQUIRED_APP_STATE_SYNC_STORE_METHODS) {
 		try {
-			return typeof candidate[method] !== 'function'
+			if (typeof candidate[method] !== 'function') result.missing.push(method)
 		} catch {
 			// A hostile getter/proxy is an invalid store. Keep socket creation
 			// fail-closed instead of allowing adapter inspection to throw.
-			return true
+			result.unreadable.push(method)
 		}
-	})
+	}
+
+	return result
 }
 
 const bindValidatedStore = (store: AppStateSyncKeyStore): AppStateSyncKeyStore => ({
@@ -71,8 +82,12 @@ export const createAppStateSyncKeyStore = (
 	options: DurableAppStateSyncKeyStoreOptions
 ): AppStateSyncKeyStore => {
 	if (options.persistence !== 'durable') throw new Error('app-state sync key store persistence must be durable')
-	const missing = missingStoreMethods(store)
-	if (missing.length) throw new TypeError(`invalid app-state sync key store; missing methods: ${missing.join(', ')}`)
+	const methods = inspectStoreMethods(store)
+	const failures = [
+		methods.missing.length ? `missing methods: ${methods.missing.join(', ')}` : undefined,
+		methods.unreadable.length ? `unreadable methods: ${methods.unreadable.join(', ')}` : undefined
+	].filter((failure): failure is string => Boolean(failure))
+	if (failures.length) throw new TypeError(`invalid app-state sync key store; ${failures.join('; ')}`)
 	return bindValidatedStore(store)
 }
 
@@ -99,10 +114,11 @@ export const inspectAuthStateCapabilities = (
 		appStateSyncRecoveryReason = 'missing-store'
 		issues.push('appStateSyncKeys:missing')
 	} else {
-		const missing = missingStoreMethods(store)
-		if (missing.length) {
+		const methods = inspectStoreMethods(store)
+		if (methods.missing.length || methods.unreadable.length) {
 			appStateSyncRecoveryReason = 'invalid-store'
-			issues.push(...missing.map(method => `appStateSyncKeys.${method}:missing`))
+			issues.push(...methods.missing.map(method => `appStateSyncKeys.${method}:missing`))
+			issues.push(...methods.unreadable.map(method => `appStateSyncKeys.${method}:unreadable`))
 		} else {
 			try {
 				if (store.durable === true) {
