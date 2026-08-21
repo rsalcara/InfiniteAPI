@@ -123,11 +123,11 @@ export async function* iterateNativeAndroidConnectionSequence({
 			seen,
 			endpoint
 				? {
-				...endpoint,
-				connectHost: endpoint.address || endpoint.host,
-				addressSource,
-				dnsCached: false
-				}
+						...endpoint,
+						connectHost: endpoint.address || endpoint.host,
+						addressSource,
+						dnsCached: false
+					}
 				: undefined
 		)
 	const proxyUsesRemoteDns =
@@ -193,6 +193,7 @@ export async function* iterateNativeAndroidConnectionSequence({
 				})
 				if (candidate) resolvedCandidates.push(candidate)
 			}
+
 			return resolvedCandidates
 		}
 

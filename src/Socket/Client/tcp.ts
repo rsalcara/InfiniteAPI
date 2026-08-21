@@ -73,6 +73,7 @@ export class TcpSocketClient extends AbstractSocketClient {
 						socket.destroy()
 						return
 					}
+
 					this.connectAttemptCount = index
 					this.attachConnectedSocket(socket, candidate)
 					return
@@ -89,6 +90,7 @@ export class TcpSocketClient extends AbstractSocketClient {
 						'native_android: connection candidate failed'
 					)
 				}
+
 				index++
 			}
 		} catch (error) {

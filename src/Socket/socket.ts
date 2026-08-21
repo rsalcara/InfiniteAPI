@@ -2045,6 +2045,7 @@ export const makeSocket = (config: SocketConfig) => {
 					proxyDirectness: transportSession.nativeAndroid?.proxy ? 1 : 0
 				})
 			}
+
 			await validateConnection()
 		} catch (err: any) {
 			logger.error({ err }, 'error in validating connection')
@@ -2230,6 +2231,7 @@ export const makeSocket = (config: SocketConfig) => {
 			if (ws instanceof TcpSocketClient && ws.selectedEndpoint) {
 				authState.creds.nativeAndroidIdentity.connectionEndpoint = { ...ws.selectedEndpoint }
 			}
+
 			const connectionLc = incrementNativeAndroidConnectionLc(nativeClientPayloadContext.connectionLc)
 			authState.creds.nativeAndroidIdentity.connectionLc = connectionLc
 			ev.emit('creds.update', { nativeAndroidIdentity: authState.creds.nativeAndroidIdentity })
