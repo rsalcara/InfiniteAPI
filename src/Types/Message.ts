@@ -451,7 +451,10 @@ export type ButtonMessageOptions = {
 	headerImage?: WAMediaUpload
 	/** Header video (optional) */
 	headerVideo?: WAMediaUpload
-	/** Message version (default: 2) */
+	/**
+	 * @deprecated Retained for source compatibility. Native Flow buttons use
+	 * protocol version 1 because current companion clients reject version 2.
+	 */
 	messageVersion?: number
 }
 
@@ -787,7 +790,11 @@ export type AnyRegularMessageContent = (
 	| {
 			/**
 			 * Native Flow Buttons - Modern button message format
-			 * Works reliably on iOS and Android with viewOnceMessage wrapper
+			 * Reply-only sets with 1-16 options use the legacy reply envelope.
+			 * Sets with 17-30 reply options are represented as a single-select list.
+			 * Header media uses a direct interactiveMessage and supports up to 10 replies.
+			 * CTA-only sets continue to use a direct interactiveMessage. Combining
+			 * reply and CTA buttons is not interoperable with current Web clients.
 			 *
 			 * @example
 			 * ```typescript
@@ -796,7 +803,7 @@ export type AnyRegularMessageContent = (
 			 *   nativeButtons: [
 			 *     { type: 'url', text: 'Visit Site', url: 'https://example.com' },
 			 *     { type: 'copy', text: 'Copy Code', copyText: 'ABC123' },
-			 *     { type: 'reply', text: 'Contact Us', id: 'btn_contact' }
+			 *     { type: 'call', text: 'Contact Us', phoneNumber: '+5511999999999' }
 			 *   ],
 			 *   footer: 'Powered by InfiniteAPI'
 			 * })
@@ -968,6 +975,12 @@ type MinimalRelayOptions = {
 }
 
 export type MessageRelayOptions = MinimalRelayOptions & {
+	/** Notifies the caller of the public canonical identity used for this direct send. */
+	onResolvedRecipient?: (identity: {
+		requestedJid: string
+		canonicalJid: string
+		wireJid: string
+	}) => void | Promise<void>
 	/** only send to a specific participant; used when a message decryption fails for a single user */
 	participant?: { jid: string; count: number }
 	/** additional attributes to add to the WA binary node */

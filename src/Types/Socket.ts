@@ -13,6 +13,13 @@ import type { ConnectionTransportProfile, NativeAndroidTransportConfig } from '.
 export type WAVersion = [number, number, number]
 export type WABrowserDescription = [string, string, string]
 
+export type ProtocolWireCapture = {
+	kind: 'direct_retry' | 'legacy_group_create'
+	node: import('../WABinary').BinaryNode
+	encoded: Buffer
+	capturedAt: number
+}
+
 export type CacheStore = {
 	/** get a cached key and change the stats */
 	get<T>(key: string): Promise<T> | T | undefined
@@ -35,10 +42,28 @@ export type PossiblyExtendedCacheStore = CacheStore & {
 export type PatchedMessageWithRecipientJID = proto.IMessage & { recipientJid?: string }
 
 export type SocketConfig = {
+	/** Stable consumer instance identifier included in auth-state diagnostics. */
+	instanceId?: string
 	/** Transport profile. Web remains the stable default. */
 	transportProfile: ConnectionTransportProfile
 	/** Required only when transportProfile is native_android. */
 	nativeAndroid?: NativeAndroidTransportConfig
+	/** Server AB-prop overrides for trusted-contact token bucket policy. */
+	tcTokenAbProps?: Partial<{
+		tctoken_duration: number
+		tctoken_num_buckets: number
+		tctoken_duration_sender: number
+		tctoken_num_buckets_sender: number
+	}>
+	/** Mobile-compatible per-user token contribution for participant fanout. */
+	tcTokenFanout?: Partial<{
+		/** Mirrors the mobile AB gate (20605). Undefined follows the official disabled default. */
+		enabled: boolean
+		/** Mirrors the mobile per-stanza user cap (20606). Defaults to the captured 2000-user limit. */
+		maxUsers: number
+	}>
+	/** Opt-in pre-send capture for protocol forensics. Payloads may contain ciphertext or user metadata. */
+	protocolWireCapture?: (capture: ProtocolWireCapture) => void | Promise<void>
 	/** the WS url to connect to WA */
 	waWebSocketUrl: string | URL
 	/** Fails the connection if the socket times out in this interval */

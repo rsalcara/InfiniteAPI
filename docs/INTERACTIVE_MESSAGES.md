@@ -1,7 +1,8 @@
 # Interactive Messages Guide
 
 O InfiniteAPI envia mensagens interativas ricas — menus, botões, CTAs, listas,
-enquetes e carrosséis — que **renderizam em Android, iOS e WhatsApp Web**.
+enquetes e carrosséis. A apresentação pode variar conforme o cliente e a versão
+do WhatsApp; não dependa de um layout inline específico em todos os dispositivos.
 
 Os exemplos abaixo usam a interface REST em `POST /v1/messages/*`. Antes de
 rodar:
@@ -16,7 +17,7 @@ rodar:
 | # | Tipo | Endpoint | Limite |
 |---|------|----------|--------|
 | 1 | Menu de texto | `send_menu` | opções ilimitadas (lista numerada em texto) |
-| 2 | Botões Quick Reply | `send_buttons_helpers` | até **16** botões (via `native_flow`) |
+| 2 | Botões Quick Reply | `send_buttons_helpers` | **1–16** no envelope legado; **17–30** como lista |
 | 3 | CTA misto (URL / Copy / Call) | `send_interactive_helpers` | tipos `url`, `copy`, `call` (combináveis) |
 | 4 | Lista (dropdown) | `send_list_helpers` | até **10 seções × 3 rows = 30 rows** |
 | 5 | Enquete (Poll) | `send_poll` | **2 a 12** opções |
@@ -53,11 +54,17 @@ curl -X POST http://localhost:8787/v1/messages/send_menu \
 
 ## 2. Botões Quick Reply (`send_buttons_helpers`)
 
-Botões de resposta rápida. Usa `native_flow` (binary nodes) do InfiniteAPI, que
-supera o limite clássico de 3 botões do WhatsApp.
+Botões de resposta rápida. De 1 a 16 opções, usa o `buttonsMessage` legado
+validado em clientes móveis e vinculados. De 17 a 30 opções, converte o conjunto
+em uma única `listMessage`, dividida em seções tituladas de até 10 itens e
+mantendo os IDs de seleção. As seções tituladas reproduzem o mesmo caminho do
+envio `nativeList`, inclusive em smartphone e WhatsApp Web.
 
-**Campos:** `text`, `footer`, `buttons[{ id, text }]`.
-**Limite:** testado com **16 botões** renderizando em Android, iOS e Web.
+**Campos:** `text`, `footer`, `buttons[{ id, text }]`, `headerTitle`.
+Com `headerImage` ou `headerVideo`, até 10 opções usam `native_flow`; mídia de
+cabeçalho não é aceita acima desse limite. `id` e `text` são obrigatórios e não
+podem ser vazios. **Limite total:** até **30 opções**. Acima de 30, o envio é
+rejeitado com erro de validação.
 
 ```bash
 curl -X POST http://localhost:8787/v1/messages/send_buttons_helpers \
@@ -99,6 +106,11 @@ mensagem:
 - `url` — abre um link (`url`);
 - `copy` — copia um código para a área de transferência (`copyCode`);
 - `call` — inicia uma ligação (`phoneNumber`).
+
+Não combine `reply` com `url`, `copy` ou `call` na mesma mensagem quando o
+destinatário puder usar WhatsApp Web/Desktop. O cliente móvel aceita alguns
+conjuntos heterogêneos, mas o Web atual os classifica como recurso disponível
+somente no telefone. Envie replies e CTAs em mensagens separadas.
 
 **Campos:** `text`, `footer`, `buttons[{ type, text, url | copyCode | phoneNumber }]`.
 
@@ -476,10 +488,10 @@ consumidor (ver `getAggregateVotesInPollMessage`).
 
 ## Notas de renderização
 
-- Todos os tipos acima foram validados renderizando em **Android, iOS e
-  WhatsApp Web**.
-- Botões quick reply e CTAs usam `native_flow` (binary nodes), o que permite
-  mais botões que o limite clássico de 3.
+- A renderização depende da versão e do cliente. Homologue os fluxos nas
+  versões de Android, iOS e WhatsApp Web/Desktop usadas pelo seu público.
+- Quick replies sem mídia usam o envelope legado até 16 opções. De 17 a 30,
+  usam uma lista; CTAs continuam usando `native_flow`.
 - Carrossel: o protocolo suporta até **10 cards**; cada card precisa de imagem.
 - Respeite os limites de caracteres da lista (título ≤ 24, descrição ≤ 72,
   `buttonText` ≤ 20) — textos maiores podem ser truncados na renderização.

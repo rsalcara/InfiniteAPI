@@ -6,6 +6,7 @@ export class USyncUser {
 	usernameKey?: string
 	type?: string
 	personaId?: string
+	privacyToken?: { token: Buffer; timestamp?: string }
 
 	withId(id: string) {
 		this.id = id
@@ -39,6 +40,14 @@ export class USyncUser {
 
 	withPersonaId(personaId: string) {
 		this.personaId = personaId
+		return this
+	}
+
+	withPrivacyToken(token: Buffer, timestamp?: string | number) {
+		this.privacyToken = {
+			token: Buffer.from(token),
+			...(timestamp !== undefined ? { timestamp: String(timestamp) } : {})
+		}
 		return this
 	}
 }

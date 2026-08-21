@@ -636,10 +636,12 @@ export function makeLibSignalRepository(
 			const addr = jidToSignalProtocolAddress(jid)
 			const cipher = new libsignal.SessionCipher(storage, addr)
 
-			// WORKAROUND (Stage 2 #2572 regression — 2026-05-25): when caller
-			// sets `useLegacyLock` (interactive message sends — buttons / CTA /
-			// list / carousel), SKIP any inner transactional wrap and rely
-			// solely on the outer `transaction(meId)` from relayMessage.
+			// WORKAROUND (Stage 2 #2572 regression — 2026-05-25): direct legacy
+			// text-only buttons set `useLegacyLock` to preserve their proven
+			// companion fanout shape. Skip the record-scoped transactional wrap;
+			// relayMessage also bypasses its broad outer transaction for direct
+			// interactive sends, while the socket-level per-JID encryption mutex
+			// still serializes writes to each recipient session in this process.
 			//
 			// Why: master (pre-Stage-2) had the H0 bypass bug — nested
 			// `transaction(work, key)` calls ALWAYS reused the outer ctx
@@ -652,12 +654,11 @@ export function makeLibSignalRepository(
 			// meId tx), this lock acquisition correlates with WhatsApp Web
 			// failing to render the resulting message.
 			//
-			// Calling `cipher.encrypt(data)` directly (no inner wrap) mirrors
-			// what master's H0-bypass effectively did: the encrypt body runs
-			// inside the outer ctx's AsyncLocalStorage, all session reads /
-			// writes go into the outer ctx.mutations, and the outer tx
-			// commits them atomically. No inner lock → matches master's
-			// observed-working behavior for interactives.
+			// Calling `cipher.encrypt(data)` directly (no inner wrap) mirrors the
+			// legacy button behavior observed to render across phone and linked
+			// clients. This intentionally gives up the multi-record atomic commit
+			// for that narrow path; do not broaden it without wire and concurrency
+			// validation.
 			//
 			// Non-interactive paths (text / media / poll / peer) keep
 			// Stage 2's transactWith — they don't exhibit the rendering
@@ -666,7 +667,7 @@ export function makeLibSignalRepository(
 			if (useLegacyLock) {
 				logger.info(
 					{ jid },
-					'[encryptMessage] WORKAROUND ACTIVE: running without inner tx wrap (interactive send, mirrors master H0 bypass)'
+					'[encryptMessage] WORKAROUND ACTIVE: running without inner tx wrap for legacy reply buttons'
 				)
 				const { type: sigType, body } = await cipher.encrypt(data)
 				const type = sigType === 3 ? 'pkmsg' : 'msg'

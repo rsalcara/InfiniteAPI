@@ -1,5 +1,5 @@
 import type { USyncQueryProtocol } from '../Types/USync'
-import { type BinaryNode, getBinaryNodeChild } from '../WABinary'
+import { type BinaryNode, getBinaryNodeChild, isAnyLidUser, isAnyPnUser, jidNormalizedUser } from '../WABinary'
 import { USyncBotProfileProtocol } from './Protocols/UsyncBotProfileProtocol'
 import { USyncLIDProtocol } from './Protocols/UsyncLIDProtocol'
 import {
@@ -11,7 +11,64 @@ import {
 } from './Protocols'
 import { USyncUser } from './USyncUser'
 
-export type USyncQueryResultList = { [protocol: string]: unknown; id: string }
+export type USyncContactType = 'in' | 'out' | 'invalid'
+
+/**
+ * A USync row contains more than one identity. WhatsApp uses the PN (`jid`),
+ * the LID (`new_jid`/`lid`) and, for some rollout cohorts, an explicit
+ * `pn_jid` alias. Keep all of them: collapsing the row to `id` makes a cold
+ * recipient impossible to route reliably after the first lookup.
+ */
+export type USyncQueryResultList = {
+	[protocol: string]: unknown
+	/** Primary identity selected from the row; it is not guaranteed to be a PN. */
+	id: string
+	jid?: string
+	pnJid?: string
+	newJid?: string
+	lid?: string
+	contactType?: USyncContactType
+	username?: string
+}
+
+export const getUSyncPnIdentity = (row: USyncQueryResultList): string | undefined =>
+	[row.jid, row.pnJid, row.id]
+		.filter((candidate): candidate is string => typeof candidate === 'string')
+		.map(jidNormalizedUser)
+		.find(isAnyPnUser)
+
+export const getUSyncLidIdentity = (row: USyncQueryResultList): string | undefined =>
+	[row.newJid, row.lid, row.id, row.jid].find(isAnyLidUser)
+
+const getSingleFallbackPn = (
+	rows: readonly USyncQueryResultList[],
+	fallbackPns: readonly string[]
+): string | undefined => {
+	if (rows.length !== 1 || fallbackPns.length !== 1) return undefined
+	const normalized = jidNormalizedUser(fallbackPns[0])
+	return isAnyPnUser(normalized) ? normalized : undefined
+}
+
+export const mapUSyncResultToLIDMappings = (
+	rows: USyncQueryResultList[],
+	fallbackPns: readonly string[] = []
+): Array<{ pn: string; lid: string }> =>
+	rows.flatMap(row => {
+		const pn = getUSyncPnIdentity(row) ?? getSingleFallbackPn(rows, fallbackPns)
+		const lid = getUSyncLidIdentity(row)
+
+		return pn && isAnyPnUser(pn) && lid ? [{ pn, lid }] : []
+	})
+
+export const mapUSyncResultToOnWhatsApp = (
+	rows: USyncQueryResultList[],
+	fallbackPns: readonly string[] = []
+): Array<{ jid: string; exists: boolean }> =>
+	rows.flatMap(row => {
+		const jid = getUSyncPnIdentity(row) ?? getSingleFallbackPn(rows, fallbackPns)
+
+		return typeof row.contact === 'boolean' && jid && isAnyPnUser(jid) ? [{ jid, exists: row.contact }] : []
+	})
 
 export type USyncQueryResult = {
 	list: USyncQueryResultList[]
@@ -46,6 +103,19 @@ export class USyncQuery {
 		return this
 	}
 
+	buildUserNode(user: USyncUser): BinaryNode {
+		const content = this.protocols.map(protocol => protocol.getUserElement(user)).filter(node => node !== null)
+		if (user.privacyToken?.token.length) {
+			content.push({ tag: 'tctoken', attrs: {}, content: Buffer.from(user.privacyToken.token) })
+		}
+
+		return {
+			tag: 'user',
+			attrs: !user.phone && user.id ? { jid: user.id } : {},
+			content
+		}
+	}
+
 	parseUSyncQueryResult(result: BinaryNode | undefined): USyncQueryResult | undefined {
 		if (result?.attrs.type !== 'result') {
 			return
@@ -73,7 +143,11 @@ export class USyncQuery {
 
 		if (listNode?.content && Array.isArray(listNode.content)) {
 			queryResult.list = listNode.content.reduce((acc: USyncQueryResultList[], node) => {
-				const id = node?.attrs.jid
+				const jid = node?.attrs?.jid
+				const pnJid = node?.attrs?.pn_jid
+				const newJid = node?.attrs?.new_jid
+				const lid = node?.attrs?.lid
+				const id = jid || pnJid || newJid || lid
 				if (id) {
 					const data = Array.isArray(node?.content)
 						? Object.fromEntries(
@@ -90,7 +164,21 @@ export class USyncQuery {
 									.filter(([, b]) => b !== null) as [string, unknown][]
 							)
 						: {}
-					acc.push({ ...data, id })
+					const contactNode = Array.isArray(node?.content)
+						? node.content.find(content => content.tag === 'contact')
+						: undefined
+					const contactType = contactNode?.attrs?.type
+					const username = typeof data.username === 'string' ? data.username : undefined
+					acc.push({
+						...data,
+						id,
+						...(jid ? { jid } : {}),
+						...(pnJid ? { pnJid } : {}),
+						...(newJid ? { newJid } : {}),
+						...(lid ? { lid } : {}),
+						...(contactType === 'in' || contactType === 'out' || contactType === 'invalid' ? { contactType } : {}),
+						...(username ? { username } : {})
+					})
 				}
 
 				return acc

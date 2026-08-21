@@ -4,13 +4,15 @@ import {
 	MessageRetryManager,
 	parseRetryErrorCode,
 	RetryReason,
-	retryReasonFromDecryptionError
+	retryReasonFromDecryptionError,
+	transmitWithRetryPayload
 } from '../../Utils/message-retry-manager'
 import {
 	hasRetrySendBudget,
 	nextRetrySendAttempt,
 	persistRetrySendReservation,
 	resolveRetryReceiptRoute,
+	resolveRetryRelayDestination,
 	shouldIncludeRetryKeysForSession
 } from '../../Utils/retry-receipt'
 import {
@@ -26,6 +28,25 @@ import {
 const silent = P({ level: 'silent' })
 
 describe('retry receipt routing parity', () => {
+	it('upgrades an old PN retry route when a canonical LID is now known', () => {
+		expect(resolveRetryRelayDestination('5511000000001@s.whatsapp.net', '100000000000001@lid')).toBe(
+			'100000000000001@lid'
+		)
+	})
+
+	it('preserves the original LID route across a later mapping rotation', () => {
+		expect(resolveRetryRelayDestination('100000000000001@lid', '100000000000002@lid')).toBe('100000000000001@lid')
+	})
+
+	it('rejects malformed retry routes before they reach the relay', () => {
+		expect(resolveRetryRelayDestination('@lid', '100000000000001@lid')).toBe('100000000000001@lid')
+		expect(resolveRetryRelayDestination(undefined, '@lid')).toBeUndefined()
+		expect(resolveRetryRelayDestination('123@', '123@bogus')).toBeUndefined()
+		expect(resolveRetryRelayDestination('5511000000001@s.whatsapp.net', '100000000000001@hosted.lid.evil')).toBe(
+			'5511000000001@s.whatsapp.net'
+		)
+	})
+
 	it('restores the original destination for a fromMe LID receipt without recipient', () => {
 		expect(
 			resolveRetryReceiptRoute({
@@ -91,6 +112,17 @@ describe('retry receipt routing parity', () => {
 				isRetry: true
 			}).remoteJid
 		).toBe('5511000000002@s.whatsapp.net')
+
+		expect(
+			resolveRetryReceiptRoute({
+				stanzaFrom: '100000000000001@lid',
+				recipient: '5511000000002@s.whatsapp.net',
+				recentMessageTo: '5511000000003@s.whatsapp.net',
+				isNodeFromMe: true,
+				isGroup: false,
+				isRetry: true
+			})
+		).toEqual({ remoteJid: '5511000000002@s.whatsapp.net', source: 'recipient-attribute' })
 	})
 
 	it('keeps an interactive carousel payload unchanged in the recent-message fallback', () => {
@@ -109,6 +141,163 @@ describe('retry receipt routing parity', () => {
 		expect(cached?.to).toBe('5511000000002@s.whatsapp.net')
 	})
 
+	it('keeps one outbound payload available for retries from multiple linked devices', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const interactive = {
+			viewOnceMessage: {
+				message: {
+					interactiveMessage: {
+						nativeFlowMessage: {
+							buttons: [{ name: 'cta_url', buttonParamsJson: '{"url":"https://example.com"}' }]
+						}
+					}
+				}
+			}
+		} as proto.IMessage
+		manager.addRecentMessage('5511000000002@s.whatsapp.net', 'INTERACTIVE-1', interactive)
+
+		expect(manager.getRecentMessage('100000000000001:24@lid', 'INTERACTIVE-1')?.message).toBe(interactive)
+		manager.markOutboundRetrySuccess()
+		expect(manager.getRecentMessage('100000000000001:50@lid', 'INTERACTIVE-1')?.message).toBe(interactive)
+	})
+
+	it('stages before transmission and discards a new payload when transmission fails', async () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const message = { conversation: 'not transmitted' } as proto.IMessage
+
+		await expect(
+			transmitWithRetryPayload({
+				manager,
+				to: '5511000000002@s.whatsapp.net',
+				id: 'FAILED-1',
+				message,
+				isDirectRetry: false,
+				transmit: async () => {
+					expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'FAILED-1')?.message).toBe(message)
+					throw new Error('send failed')
+				}
+			})
+		).rejects.toThrow('send failed')
+
+		expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'FAILED-1')).toBeUndefined()
+	})
+
+	it('preserves a shared payload when a send-to-all retry transmission fails', async () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const original = { conversation: 'original outbound payload' } as proto.IMessage
+		const retry = { conversation: 'retry wrapper must not replace it' } as proto.IMessage
+
+		manager.addRecentMessage('5511000000002@s.whatsapp.net', 'SHARED-1', original)
+		await expect(
+			transmitWithRetryPayload({
+				manager,
+				to: '5511000000002@s.whatsapp.net',
+				id: 'SHARED-1',
+				message: retry,
+				isDirectRetry: false,
+				transmit: async () => {
+					throw new Error('retry broadcast failed')
+				}
+			})
+		).rejects.toThrow('retry broadcast failed')
+		expect(manager.getRecentMessage('100000000000001:50@lid', 'SHARED-1')?.message).toBe(original)
+	})
+
+	it('isolates reused custom message ids by destination and fails closed on an ambiguous fallback', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const first = { conversation: 'first chat' } as proto.IMessage
+		const second = { conversation: 'second chat' } as proto.IMessage
+
+		manager.addRecentMessage('5511000000001@s.whatsapp.net', 'REUSED-ID', first)
+		manager.addRecentMessage('5511000000002@s.whatsapp.net', 'REUSED-ID', second)
+
+		expect(manager.getRecentMessage('5511000000001@s.whatsapp.net', 'REUSED-ID')?.message).toBe(first)
+		expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'REUSED-ID')?.message).toBe(second)
+		expect(manager.getRecentMessage('100000000000001:24@lid', 'REUSED-ID')).toBeUndefined()
+	})
+
+	it('resolves an exact LID/PN alias before the unique-id fallback', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const first = { conversation: 'first chat' } as proto.IMessage
+		const second = { conversation: 'second chat' } as proto.IMessage
+
+		manager.addRecentMessage('100000000000001@lid', 'ALIAS-ID', first)
+		manager.addRecentMessage('100000000000002@lid', 'ALIAS-ID', second)
+
+		expect(
+			manager.getRecentMessageForJids(['5511000000001@s.whatsapp.net', '100000000000001@lid'], 'ALIAS-ID')?.message
+		).toBe(first)
+		expect(
+			manager.getRecentMessageForJids(['5511000000002@s.whatsapp.net', '100000000000002@lid'], 'ALIAS-ID')?.message
+		).toBe(second)
+		expect(manager.getExactRecentMessageForJids(['5511000000001@s.whatsapp.net'], 'ALIAS-ID')).toBeUndefined()
+	})
+
+	it('does not route a retry through a cache entry without a plaintext payload', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const staged = manager.stageRecentMessage('100000000000001@lid', 'EMPTY-ID', undefined as unknown as proto.IMessage)
+
+		expect(staged).toBe(false)
+		expect(
+			manager.getRecentMessageForJids(['5511000000001@s.whatsapp.net', '100000000000001@lid'], 'EMPTY-ID')
+		).toBeUndefined()
+	})
+
+	it('does not let an empty payload overwrite an exact retryable message', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const original = { conversation: 'retryable payload' } as proto.IMessage
+		manager.addRecentMessage('100000000000001@lid', 'PAYLOAD-ID', original)
+		manager.addRecentMessage('100000000000001@lid', 'PAYLOAD-ID', undefined as unknown as proto.IMessage)
+
+		expect(manager.getRecentMessage('100000000000001@lid', 'PAYLOAD-ID')?.message).toBe(original)
+	})
+
+	it('uses the unique-id fallback for a hosted-domain alias', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const original = { conversation: 'hosted retry payload' } as proto.IMessage
+		manager.addRecentMessage('100000000000001@lid', 'HOSTED-ID', original)
+
+		expect(manager.getRecentMessageForJids(['100000000000001@hosted.lid'], 'HOSTED-ID')?.message).toBe(original)
+	})
+
+	it('removes only the exhausted destination when a custom id is reused', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		manager.addRecentMessage('5511000000001@s.whatsapp.net', 'DUPLICATE-ID', { conversation: 'one' } as proto.IMessage)
+		manager.addRecentMessage('5511000000002@s.whatsapp.net', 'DUPLICATE-ID', { conversation: 'two' } as proto.IMessage)
+
+		manager.markRetryFailed('DUPLICATE-ID', ['5511000000001@s.whatsapp.net'])
+
+		expect(manager.getRecentMessage('5511000000001@s.whatsapp.net', 'DUPLICATE-ID')).toBeUndefined()
+		expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'DUPLICATE-ID')?.message).toEqual({
+			conversation: 'two'
+		})
+	})
+
+	it('rolls back only the failed destination when a custom message id is reused', async () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const first = { conversation: 'first chat' } as proto.IMessage
+		const second = { conversation: 'second chat failed' } as proto.IMessage
+
+		manager.addRecentMessage('5511000000001@s.whatsapp.net', 'REUSED-ID', first)
+		await expect(
+			transmitWithRetryPayload({
+				manager,
+				to: '5511000000002@s.whatsapp.net',
+				id: 'REUSED-ID',
+				message: second,
+				isDirectRetry: false,
+				transmit: async () => {
+					expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'REUSED-ID')?.message).toBe(second)
+					throw new Error('second send failed')
+				}
+			})
+		).rejects.toThrow('second send failed')
+
+		expect(manager.getRecentMessage('5511000000002@s.whatsapp.net', 'REUSED-ID')).toBeUndefined()
+		expect(manager.getRecentMessage('5511000000001@s.whatsapp.net', 'REUSED-ID')?.message).toBe(first)
+		expect(manager.getRecentMessage('100000000000001:24@lid', 'REUSED-ID')).toBeUndefined()
+	})
+
 	it('keeps live-location transport duration with the recent message', () => {
 		const manager = new MessageRetryManager(silent, 5)
 		const liveLocation = {
@@ -124,6 +313,20 @@ describe('retry receipt routing parity', () => {
 		const cached = manager.getRecentMessage('100000000000001@lid', 'LIVE-1')
 		expect(cached?.message).toBe(liveLocation)
 		expect(cached?.liveLocationDuration).toBe(1800)
+	})
+
+	it('keeps requested and canonical identities for later delivery states', () => {
+		const manager = new MessageRetryManager(silent, 5)
+		const message = { conversation: 'cold recipient' } as proto.IMessage
+		manager.addRecentMessage('127496221651050@lid', 'COLD-DELIVERY-1', message, {
+			requestedJid: '5543991910391@s.whatsapp.net',
+			canonicalJid: '554391910391@s.whatsapp.net'
+		})
+
+		expect(manager.getRecentMessage('127496221651050@lid', 'COLD-DELIVERY-1')).toMatchObject({
+			requestedJid: '5543991910391@s.whatsapp.net',
+			canonicalJid: '554391910391@s.whatsapp.net'
+		})
 	})
 })
 

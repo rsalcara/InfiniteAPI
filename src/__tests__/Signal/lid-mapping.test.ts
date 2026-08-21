@@ -49,6 +49,24 @@ describe('LIDMappingStore', () => {
 		})
 	})
 
+	describe('getKnownPNForLID', () => {
+		it('reads a stored reverse mapping without invoking the USync resolver', async () => {
+			const lid = '12345:99@hosted.lid'
+			// @ts-ignore
+			mockKeys.get.mockResolvedValue({ '12345_reverse': '54321' } as unknown as SignalDataTypeMap['lid-mapping'])
+
+			await expect(lidMappingStore.getKnownPNForLID(lid)).resolves.toBe('54321:99@hosted')
+			expect(mockPnToLIDFunc).not.toHaveBeenCalled()
+		})
+
+		it('returns null for an unknown reverse mapping', async () => {
+			// @ts-ignore
+			mockKeys.get.mockResolvedValue({} as unknown as SignalDataTypeMap['lid-mapping'])
+
+			await expect(lidMappingStore.getKnownPNForLID('12345@lid')).resolves.toBeNull()
+		})
+	})
+
 	describe('getLIDsForPNs', () => {
 		it('should resolve multiple PNs in a single batch', async () => {
 			const pnOne = '11111@s.whatsapp.net'

@@ -1,8 +1,10 @@
 import { proto } from '../../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDataTypeMap } from '../../Types'
+import { SqliteAppStateSyncKeyStore } from '../app-state-sync-key-store'
 import { initAuthCreds } from '../auth-utils'
 import { generateSignalPubKey } from '../crypto'
 import { BufferJSON } from '../generics'
+import { SqliteHistorySyncStore } from '../history-sync-store'
 import type { ILogger } from '../logger'
 import { makeMutex } from '../make-mutex'
 import { hasPrekeyDirectDistributionIntent } from '../prekey-direct-distribution'
@@ -159,6 +161,8 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	let appStateSyncKeyStmts: ReturnType<typeof prepareAppStateSyncKeyStatements>
 	let signalTypedBackend: SignalTypedBackend
 	let signalTypedSource: SignalTypedSourceStore
+	let historySync: SqliteHistorySyncStore
+	let appStateSyncKeys: SqliteAppStateSyncKeyStore
 	// Authoritative (PK-jid) store for TC / "privacy" tokens, in wa.db. When
 	// `sourceOfTruth` is on, `'tctoken'` reads/writes route here (signal_kv stays
 	// the superset fallback); replaces the signal_kv `__index` enumeration race.
@@ -190,6 +194,8 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		signalTypedSource = new SignalTypedSourceStore(signalTypedBackend, opts.logger)
 		rehydrateTypedIdentities(store, signalTypedSource, opts.logger)
 		trustedContactsBackend = new TrustedContactsBackend(store.handle('wa.db'))
+		historySync = new SqliteHistorySyncStore(store.handle('sync.db'))
+		appStateSyncKeys = new SqliteAppStateSyncKeyStore(store.handle('sync.db'))
 	} catch (err) {
 		// Only close the store if WE opened it — injected stores belong to
 		// the caller.
@@ -420,6 +426,11 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		}
 	}
 
+	const readLegacyTctoken = (id: string): SignalDataTypeMap['tctoken'] | undefined => {
+		const row = signalStmts.select.get('tctoken', id) as { value: string } | undefined
+		return row ? (JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap['tctoken']) : undefined
+	}
+
 	const applySetTx = store.handle('axolotl.db').transaction((data: SignalDataSet) => {
 		for (const category in data) {
 			const type = category as keyof SignalDataTypeMap
@@ -468,11 +479,11 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	// jittered-exponential-backoff against the `DELETE FROM jid_map` exec
 	// (which previously had no busy retry and would surface SQLITE_BUSY
 	// directly to the caller after the 5 s busy_timeout expired).
-	const runWithBusyRetry = async (label: string, work: () => void): Promise<void> => {
+	const runWithBusyRetry = async (label: string, work: () => void | Promise<void>): Promise<void> => {
 		let lastError: unknown
 		for (let attempt = 0; attempt < MAX_BUSY_ATTEMPTS; attempt++) {
 			try {
-				work()
+				await work()
 				return
 			} catch (err) {
 				const code = (err as { code?: string } | null)?.code
@@ -487,6 +498,62 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 
 		throw lastError ?? new Error(`runWithBusyRetry(${label}): no attempts were made (MAX_BUSY_ATTEMPTS=0?)`)
 	}
+
+	const cleanupTctokenHandoffTombstone = async (jid: string, label: string): Promise<void> => {
+		try {
+			await runWithBusyRetry(label, () => {
+				trustedContactsBackend.deleteIncoming(jid)
+			})
+		} catch (error) {
+			opts.logger?.warn?.(
+				{ error, jid, reason: 'handoff-tombstone-cleanup-failed', recovery: 'retry-on-next-prune' },
+				'multi-db-sqlite: trusted-contact handoff tombstone retained safely'
+			)
+		}
+	}
+
+	const recoverOrphanedTctokenHandoffTombstones = async (): Promise<void> => {
+		try {
+			const tombstones = store
+				.handle('wa.db')
+				.prepare(
+					'SELECT jid FROM wa_trusted_contacts WHERE length(incoming_tc_token) = 0 ' +
+						'AND jid NOT IN (SELECT jid FROM wa_trusted_contacts_send)'
+				)
+				.all() as Array<{ jid: string }>
+
+			for (const { jid } of tombstones) {
+				const legacy = signalStmts.select.get('tctoken', jid)
+				if (legacy) {
+					// A crash can leave the relational handoff tombstone and its
+					// legacy signal_kv copy together. The tombstone is authoritative,
+					// so remove the hidden fallback first; only then is it safe to
+					// remove the tombstone itself. If either operation fails, leave
+					// the tombstone in place for the next open.
+					try {
+						await runWithBusyRetry('tctoken startup legacy fallback cleanup', () => {
+							signalStmts.del.run('tctoken', jid)
+						})
+					} catch (error) {
+						opts.logger?.warn?.(
+							{ error, jid, reason: 'legacy-fallback-cleanup-failed', recovery: 'retry-on-next-open' },
+							'multi-db-sqlite: legacy tctoken fallback retained behind tombstone'
+						)
+						continue
+					}
+				}
+
+				await cleanupTctokenHandoffTombstone(jid, 'tctoken startup orphan tombstone cleanup')
+			}
+		} catch (error) {
+			opts.logger?.warn?.({ error }, 'multi-db-sqlite: tctoken tombstone recovery scan failed')
+		}
+	}
+
+	// Relational tombstones are authoritative only in typed-table mode. With
+	// the kill switch off, signal_kv is the source of truth and must never be
+	// deleted based on stale relational handoff state from an earlier run.
+	if (sourceOfTruth) await recoverOrphanedTctokenHandoffTombstones()
 
 	const msgstoreDb = store.handle('msgstore.db')
 	const axolotlDb = store.handle('axolotl.db')
@@ -507,6 +574,8 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			clearAxolotlTx()
 			appStateSyncKeyStmts.clear.run()
 		})
+		await historySync.clear()
+		await runWithBusyRetry(`${label}: app-state recovery`, () => appStateSyncKeys.clear())
 	}
 
 	const finishAuthKeysClear = (label: string): Promise<void> =>
@@ -522,7 +591,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				{
 					reason: 'interrupted-auth-keys-clear',
 					trigger,
-					recoveredStores: ['wa.db', 'msgstore.db', 'axolotl.db', 'creds.db'],
+					recoveredStores: ['wa.db', 'msgstore.db', 'axolotl.db', 'creds.db', 'sync.db'],
 					markerState: 'cleared'
 				},
 				'multi-db-sqlite: completed interrupted auth key clear across every participating database'
@@ -633,6 +702,13 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		set creds(value: AuthenticationCreds) {
 			credsRef.current = value
 		},
+		historySync,
+		appStateSyncKeys,
+		storage: {
+			backend: 'multidb-sqlite',
+			historySyncDurable: true,
+			tcTokenDurable: true
+		},
 		keys: {
 			prekeyUploads: sourceOfTruth
 				? {
@@ -653,16 +729,44 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 				? {
 						authoritative: true,
 						listIncoming: () => trustedContactsBackend.listIncoming(),
+						listSent: () =>
+							trustedContactsBackend.listSentJids().flatMap(jid => {
+								const sent = trustedContactsBackend.getSent(jid)
+								return sent ? [{ jid, timestamp: sent.sentTimestamp }] : []
+							}),
 						compareAndPrune: (jid, expectedTimestamp, expectedToken) =>
 							authKeysClearMutex.mutex(async () => {
 								await recoverPendingAuthKeysClearUnlocked('before-access')
 								let current = readTctokenRelational(jid)
+								let fromLegacyFallback = false
+								const deleteLegacyFallback = () =>
+									runWithBusyRetry('tctoken prune signal_kv', () => {
+										signalStmts.del.run('tctoken', jid)
+									})
+								if (current.kind === 'tombstone') {
+									const legacy = readLegacyTctoken(jid)
+									if (!legacy) {
+										await cleanupTctokenHandoffTombstone(jid, 'tctoken prune stale tombstone cleanup')
+										return false
+									}
+
+									if (
+										Number(legacy.timestamp ?? 0) !== expectedTimestamp ||
+										!Buffer.from(legacy.token).equals(Buffer.from(expectedToken))
+									)
+										return false
+									await deleteLegacyFallback()
+									await cleanupTctokenHandoffTombstone(jid, 'tctoken prune handoff tombstone cleanup')
+									return true
+								}
+
 								if (current.kind === 'miss') {
-									const row = signalStmts.select.get('tctoken', jid) as { value: string } | undefined
-									if (!row) return false
+									const legacy = readLegacyTctoken(jid)
+									if (!legacy) return false
+									fromLegacyFallback = true
 									current = {
 										kind: 'value',
-										value: JSON.parse(row.value, BufferJSON.reviver) as SignalDataTypeMap['tctoken']
+										value: legacy
 									}
 								}
 
@@ -672,25 +776,102 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 									!Buffer.from(current.value.token).equals(Buffer.from(expectedToken))
 								)
 									return false
-								// Cross-file safe ordering: remove the legacy fallback first,
-								// then physically delete the authoritative incoming row. If the
-								// process crashes between the two, wa.db still owns the token; the
-								// inverse order could expose a stale signal_kv token after a miss.
-								await runWithBusyRetry('tctoken prune signal_kv', () => {
-									signalStmts.del.run('tctoken', jid)
-								})
-								await runWithBusyRetry('tctoken prune relational', () => {
-									trustedContactsBackend.replace(jid, {
-										incoming: null,
-										sent:
-											current.value.senderTimestamp !== undefined
-												? {
-														sentTimestamp: finiteNumberOrZero(current.value.senderTimestamp),
-														realIssueTimestamp: finiteNumberOrNull(current.value.realIssueTimestamp)
-													}
-												: null
+								const replacement: TrustedContactReplacement = {
+									incoming: null,
+									sent:
+										current.value.senderTimestamp !== undefined
+											? {
+													sentTimestamp: finiteNumberOrZero(current.value.senderTimestamp),
+													realIssueTimestamp: finiteNumberOrNull(current.value.realIssueTimestamp)
+												}
+											: null
+								}
+								const needsHandoffTombstone = fromLegacyFallback && !replacement.incoming && !replacement.sent
+								const replaceRelational = () =>
+									runWithBusyRetry('tctoken prune relational', () => {
+										trustedContactsBackend.replace(jid, {
+											...replacement,
+											incoming: needsHandoffTombstone ? { token: Buffer.alloc(0), timestamp: 0 } : replacement.incoming
+										})
 									})
-								})
+								// A pre-relational row is still the only durable copy, so publish its
+								// replacement in wa.db before deleting signal_kv. Existing relational
+								// rows use the inverse order so a crash cannot expose a stale fallback.
+								if (fromLegacyFallback) {
+									await replaceRelational()
+									await deleteLegacyFallback()
+									if (needsHandoffTombstone) {
+										await cleanupTctokenHandoffTombstone(jid, 'tctoken prune handoff tombstone cleanup')
+									}
+								} else {
+									await deleteLegacyFallback()
+									await replaceRelational()
+								}
+
+								return true
+							}),
+						compareAndPruneSent: (jid, expectedTimestamp) =>
+							authKeysClearMutex.mutex(async () => {
+								await recoverPendingAuthKeysClearUnlocked('before-access')
+								let current = readTctokenRelational(jid)
+								let fromLegacyFallback = false
+								const deleteLegacyFallback = () =>
+									runWithBusyRetry('tctoken sent prune signal_kv', () => {
+										signalStmts.del.run('tctoken', jid)
+									})
+								if (current.kind === 'tombstone') {
+									const legacy = readLegacyTctoken(jid)
+									if (!legacy) {
+										await cleanupTctokenHandoffTombstone(jid, 'tctoken sent prune stale tombstone cleanup')
+										return false
+									}
+
+									if (Number(legacy.senderTimestamp ?? 0) !== expectedTimestamp) return false
+									await deleteLegacyFallback()
+									await cleanupTctokenHandoffTombstone(jid, 'tctoken sent prune handoff tombstone cleanup')
+									return true
+								}
+
+								if (current.kind === 'miss') {
+									const legacy = readLegacyTctoken(jid)
+									if (!legacy) return false
+									fromLegacyFallback = true
+									current = {
+										kind: 'value',
+										value: legacy
+									}
+								}
+
+								if (current.kind !== 'value' || Number(current.value.senderTimestamp ?? 0) !== expectedTimestamp)
+									return false
+								const replacement: TrustedContactReplacement = {
+									incoming: current.value.token?.length
+										? {
+												token: Buffer.from(current.value.token),
+												timestamp: finiteNumberOrZero(current.value.timestamp)
+											}
+										: null,
+									sent: null
+								}
+								const needsHandoffTombstone = fromLegacyFallback && !replacement.incoming && !replacement.sent
+								const replaceRelational = () =>
+									runWithBusyRetry('tctoken sent prune relational', () => {
+										trustedContactsBackend.replace(jid, {
+											...replacement,
+											incoming: needsHandoffTombstone ? { token: Buffer.alloc(0), timestamp: 0 } : replacement.incoming
+										})
+									})
+								if (fromLegacyFallback) {
+									await replaceRelational()
+									await deleteLegacyFallback()
+									if (needsHandoffTombstone) {
+										await cleanupTctokenHandoffTombstone(jid, 'tctoken sent prune handoff tombstone cleanup')
+									}
+								} else {
+									await deleteLegacyFallback()
+									await replaceRelational()
+								}
+
 								return true
 							})
 					}

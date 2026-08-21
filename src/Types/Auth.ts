@@ -1,7 +1,10 @@
 import type { proto } from '../../WAProto/index.js'
+import type { AppStateSyncDevice, AppStateSyncKeyStore } from './AppStateSync'
+import type { AuthStateStorageMetadata } from './AuthCapabilities'
 import type { Contact } from './Contact'
+import type { HistorySyncStore } from './HistorySync'
 import type { MinimalMessage } from './Message'
-import type { PersistedNativeAndroidIdentity } from './Transport'
+import type { PersistedNativeAndroidIdentity, PersistedWebTransportIdentity } from './Transport'
 
 export type KeyPair = { public: Uint8Array; private: Uint8Array }
 export type SignedKeyPair = {
@@ -75,6 +78,8 @@ export type AuthenticationCreds = SignalCreds & {
 	 * sessions. Absent means the established Web session format.
 	 */
 	nativeAndroidIdentity?: PersistedNativeAndroidIdentity
+	/** Durable Web preset/browser identity. Added lazily to legacy sessions. */
+	webTransportIdentity?: PersistedWebTransportIdentity
 }
 
 export type SignalDataTypeMap = {
@@ -86,7 +91,24 @@ export type SignalDataTypeMap = {
 	'app-state-sync-version': LTHashState
 	'lid-mapping': string
 	'device-list': string[]
+	/** Full App State peer-device identities; separate from libsignal's numeric device-list. */
+	'app-state-device-list': AppStateSyncDevice[]
 	tctoken: { token: Buffer; timestamp?: string; senderTimestamp?: number; realIssueTimestamp?: number | null }
+	'tctoken-job': {
+		canonicalJid: string
+		requestedJid: string
+		aliases: string[]
+		issueTimestamp: number
+		state: 'pending' | 'in_flight' | 'retry' | 'terminal'
+		attemptCount: number
+		nextRetryAt: number
+		leaseUntil: number
+		timeoutMs: number
+		createdAt: number
+		updatedAt: number
+		lastStatus?: number
+		lastError?: string
+	}
 	/** Identity key for Signal Protocol - used for detecting contact reinstalls */
 	'identity-key': Uint8Array
 	/**
@@ -123,7 +145,9 @@ export type RecordRef = {
 export type TrustedContactTokenStore = {
 	readonly authoritative: true
 	listIncoming(): Array<{ jid: string; timestamp: number }>
+	listSent(): Array<{ jid: string; timestamp: number }>
 	compareAndPrune(jid: string, expectedTimestamp: number, expectedToken: Uint8Array): Promise<boolean>
+	compareAndPruneSent(jid: string, expectedTimestamp: number): Promise<boolean>
 }
 
 /**
@@ -283,4 +307,10 @@ export type SignalAuthState = {
 export type AuthenticationState = {
 	creds: AuthenticationCreds
 	keys: SignalKeyStore
+	/** Durable history-sync work queue. Built-in auth adapters always provide it. */
+	historySync?: HistorySyncStore
+	/** Durable app-state missing-key/request lifecycle. Built-in auth adapters always provide it. */
+	appStateSyncKeys?: AppStateSyncKeyStore
+	/** Optional capability declaration supplied by auth-state adapters. */
+	storage?: AuthStateStorageMetadata
 }

@@ -51,9 +51,13 @@ import {
 	type ChatMutationMap,
 	decodePatches,
 	decodeSyncdSnapshot,
+	encodeSignedDeviceIdentity,
 	encodeSyncdPatch,
+	encodeWAMessage,
 	ensureLTHashStateVersion,
+	extractDeviceJids,
 	extractSyncdPatches,
+	generateMessageIDV2,
 	generateProfilePicture,
 	getHistoryMsg,
 	isAppStateSyncIrrecoverable,
@@ -61,18 +65,32 @@ import {
 	MAX_SYNC_ATTEMPTS,
 	newLTHashState,
 	OrphanQueue,
+	parseAndInjectE2ESessions,
 	processSyncAction,
 	type RawSyncdMutation,
 	resolveLidToPn
 } from '../Utils'
+import {
+	discoverOwnAppStateDevices,
+	encodeExplicitDeviceJid,
+	readTypedOwnAppStateDevices,
+	selectOtherOwnDevices
+} from '../Utils/app-state-sync-key-devices'
+import { AppStateSyncKeyLifecycle } from '../Utils/app-state-sync-key-lifecycle'
+import { buildAppStateSyncKeyPeerNode } from '../Utils/app-state-sync-key-peer'
+import {
+	AdaptiveHistoryBatchController,
+	DurableHistorySyncCoordinator,
+	markHistorySyncCheckpointComplete
+} from '../Utils/history-sync-coordinator'
 import type { ILogger } from '../Utils/logger'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
+import { encryptHistorySyncRetryRequest } from '../Utils/messages-media'
 import {
 	AppStateBackend,
 	ChatSettingsBackend,
 	type ChatSettingsRow,
 	CompanionDevicesBackend,
-	HistorySyncCompanionBackend,
 	JidMapBackend,
 	LocationBackend,
 	type LocationCacheRow,
@@ -90,10 +108,20 @@ import {
 } from '../Utils/multi-db-sqlite'
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
-import processMessage from '../Utils/process-message'
-import { buildTcTokenFromJid, buildTcTokenNode } from '../Utils/tc-token-utils'
+import processMessage, { applyProcessedHistorySync, emitProcessedHistorySync } from '../Utils/process-message'
+import { mapParticipantFanout } from '../Utils/relay-stanza'
+import {
+	buildTcTokenFromJid,
+	buildTcTokenNode,
+	isRegularUser,
+	resolveTcTokenAliases,
+	resolveTcTokenBucketPolicy,
+	resolveUsableTcTokenForAliases,
+	resolveUsableTcTokenForJid
+} from '../Utils/tc-token-utils'
 import {
 	type BinaryNode,
+	type FullJid,
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
 	isAnyLidUser,
@@ -105,7 +133,13 @@ import {
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { settleInitialSyncTasks } from './initial-sync-tasks'
-import { executeWMexQuery as genericExecuteWMexQuery } from './mex'
+import {
+	buildMexContactProfileVariables,
+	executeWMexQuery as genericExecuteWMexQuery,
+	MEX_CONTACT_PROFILE_BATCH_SIZE,
+	MEX_CONTACT_PROFILE_QUERY_ID,
+	type MexContactProfileQueryUser
+} from './mex'
 import { makeSocket } from './socket.js'
 
 /**
@@ -155,6 +189,7 @@ const recordRawMutation = (
 }
 
 export const makeChatsSocket = (config: SocketConfig) => {
+	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(config.transportProfile, config.tcTokenAbProps)
 	const {
 		logger,
 		markOnlineOnConnect,
@@ -176,7 +211,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		onUnexpectedError,
 		sendUnifiedSession,
 		skipOfflineBuffer: socketSkippedOfflineBuffer,
-		registerSocketEndHandler
+		registerSocketEndHandler,
+		registerSocketDrainHandler
 	} = sock
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
@@ -214,9 +250,22 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// In-memory history sync completion tracking (resets on reconnection)
 	const historySyncStatus = {
 		initialBootstrapComplete: false,
-		recentSyncComplete: false
+		recentSyncComplete: false,
+		recentSyncPaused: false,
+		fullSyncComplete: false
 	}
 	let historySyncPausedTimeout: NodeJS.Timeout | undefined
+	const markHistorySyncCommitted = (notification: proto.Message.IHistorySyncNotification): void => {
+		const syncType = notification.syncType as proto.HistorySync.HistorySyncType
+		if (markHistorySyncCheckpointComplete(historySyncStatus, notification)) {
+			if (syncType === proto.HistorySync.HistorySyncType.RECENT) {
+				clearTimeout(historySyncPausedTimeout)
+				historySyncPausedTimeout = undefined
+			}
+
+			ev.emit('messaging-history.status', { syncType, status: 'complete', explicit: true })
+		}
+	}
 
 	// Collections blocked on missing app state sync keys (mirrors WA Web's "Blocked" state).
 	// When a key arrives via APP_STATE_SYNC_KEY_SHARE, these are re-synced.
@@ -234,16 +283,170 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		() => new AppStateBackend((config.multiDbStore as any).handle('sync.db'))
 	)
 
-	// Mirrors companion history-sync chunk tracking into `history_sync_companion`
-	// (sync.db) when a multi-db-sqlite store is configured. Best-effort: the
-	// existing download/process flow stays authoritative; the table just tracks
-	// each chunk's lifecycle (insert on notification, mark on process, delete on
-	// consume). Same boundary-cast rationale as appStateBackend above.
-	const historySyncCompanionBackend = initOptionalMirror(
-		'sync.db.history_sync_companion',
-		'legacy_history_sync_flow',
-		() => new HistorySyncCompanionBackend((config.multiDbStore as any).handle('sync.db'))
-	)
+	const listOwnAppStateDevices = async (): Promise<string[]> => {
+		const meId = authState.creds.me?.id
+		if (!meId) throw new Boom('Not authenticated', { statusCode: 401 })
+		const me = jidDecode(meId)
+		if (!me) throw new Boom('Invalid own device identity', { statusCode: 401 })
+		const meLid = authState.creds.me?.lid
+		const meLidDecoded = jidDecode(meLid)
+		const cacheUsers = [...new Set([me.user, meLidDecoded?.user].filter(Boolean) as string[])]
+		const appStateDeviceCacheKey = jidNormalizedUser(meId)
+
+		const readCachedDevices = async (): Promise<FullJid[] | undefined> => {
+			const cached: FullJid[] = []
+			let found = false
+			const exact = await readTypedOwnAppStateDevices({
+				read: async () =>
+					(await authState.keys.get('app-state-device-list', [appStateDeviceCacheKey]))?.[appStateDeviceCacheKey],
+				ownJid: meId,
+				ownLid: meLid,
+				onReadError: error =>
+					logger.warn({ error }, 'failed to read typed own-device cache; trying legacy device caches')
+			})
+			if (exact !== undefined) return exact
+
+			if (config.userDevicesCache) {
+				for (const user of cacheUsers) {
+					const rows = await config.userDevicesCache.get<FullJid[]>(user)
+					if (Array.isArray(rows)) {
+						found = true
+						cached.push(...rows)
+					}
+				}
+			}
+
+			const stored = await authState.keys.get('device-list', cacheUsers)
+			for (const user of cacheUsers) {
+				const server = user === meLidDecoded?.user ? meLidDecoded.server : me.server
+				const storedDevices = stored[user]
+				if (Array.isArray(storedDevices)) found = true
+				for (const rawDevice of storedDevices ?? []) {
+					const device = Number(rawDevice)
+					if (Number.isInteger(device) && device >= 0) cached.push({ user, server, device })
+				}
+			}
+
+			return found ? selectOtherOwnDevices(cached, meId, meLid) : undefined
+		}
+
+		const devices = await discoverOwnAppStateDevices({
+			fetchDevices: async () => {
+				const usync = new USyncQuery().withContext('message').withDeviceProtocol().withLIDProtocol()
+				usync.withUser(new USyncUser().withId(jidNormalizedUser(meId)))
+				const result = await sock.executeUSyncQuery(usync)
+				const extracted = extractDeviceJids(result?.list ?? [], meId, meLidDecoded?.user ?? '', false)
+				return selectOtherOwnDevices(extracted, meId, meLid)
+			},
+			readCachedDevices,
+			writeCachedDevices: async fresh => {
+				const durableFresh = fresh.flatMap(device =>
+					device.device === undefined
+						? []
+						: [{ user: device.user, server: device.server, device: device.device, domainType: device.domainType }]
+				)
+				await authState.keys.set({
+					'app-state-device-list': { [appStateDeviceCacheKey]: durableFresh }
+				})
+			},
+			onFetchError: error =>
+				logger.warn({ error }, 'own-device USync failed; trying durable device-list for app-state key recovery'),
+			onCacheWriteError: error =>
+				logger.warn({ error }, 'failed to persist own-device list; continuing with fresh USync result')
+		})
+
+		return devices.map(encodeExplicitDeviceJid)
+	}
+
+	const ensurePeerDeviceSession = async (targetDeviceJid: string): Promise<void> => {
+		try {
+			if ((await signalRepository.validateSession(targetDeviceJid)).exists) return
+		} catch {
+			// Fetching the authoritative encrypt bundle below is the recovery path.
+		}
+
+		const result = await query({
+			tag: 'iq',
+			attrs: { xmlns: 'encrypt', type: 'get', to: S_WHATSAPP_NET },
+			content: [{ tag: 'key', attrs: {}, content: [{ tag: 'user', attrs: { jid: targetDeviceJid } }] }]
+		})
+		await parseAndInjectE2ESessions(result, signalRepository)
+	}
+
+	const sendAppStatePeerMessage = async (
+		targetDeviceJid: string,
+		message: proto.IMessage,
+		messageId: string
+	): Promise<void> => {
+		await ensurePeerDeviceSession(targetDeviceJid)
+		const encrypted = await signalRepository.encryptMessage({
+			jid: targetDeviceJid,
+			data: encodeWAMessage(message)
+		})
+		let deviceIdentity: Uint8Array | undefined
+		if (encrypted.type === 'pkmsg') {
+			const account = authState.creds.account
+			if (account) deviceIdentity = encodeSignedDeviceIdentity(account, true)
+		}
+
+		// SendPeerMessageJob marks peer_messages.acked only after the transport
+		// future completes. query() registers the ACK listener before writing and
+		// converts a late/missing ACK into a retryable timeout.
+		await query(buildAppStateSyncKeyPeerNode({ targetDeviceJid, messageId, encrypted, deviceIdentity }))
+	}
+
+	const appStateSyncRecoveryLogger = logger.child({
+		subsystem: 'app-state-sync-key-recovery',
+		instanceId: sock.authCapabilities.instanceId,
+		accountJid: sock.authCapabilities.accountJid,
+		backend: sock.authCapabilities.backend
+	})
+	const appStateSyncKeyLifecycle = authState.appStateSyncKeys
+		? new AppStateSyncKeyLifecycle({
+				store: authState.appStateSyncKeys,
+				keyStore: authState.keys,
+				logger: appStateSyncRecoveryLogger,
+				getOwnJid: () => jidNormalizedUser(authState.creds.me?.id),
+				getOwnLid: () => authState.creds.me?.lid,
+				getActiveKeyId: () => authState.creds.myAppStateKeyId,
+				listOwnDevices: listOwnAppStateDevices,
+				sendPeerMessage: sendAppStatePeerMessage,
+				retryCollections: async collections => {
+					const valid = collections.filter((name): name is WAPatchName =>
+						(ALL_WA_PATCH_NAMES as readonly string[]).includes(name)
+					)
+					for (const name of valid) blockedCollections.delete(name)
+					if (valid.length) await resyncAppState(valid, false)
+				},
+				generateMessageId: () => generateMessageIDV2(authState.creds.me?.id)
+			})
+		: undefined
+	const handleAppStateSyncKeyPeerReceipt = appStateSyncKeyLifecycle
+		? (senderJid: string, messageIds: string[]) =>
+				appStateSyncKeyLifecycle.handlePeerDeliveryReceipt(senderJid, messageIds)
+		: undefined
+
+	const queueMissingAppStateKeyRecovery = async (name: WAPatchName, error: unknown): Promise<boolean> => {
+		const keyId = (error as { data?: { keyId?: unknown } })?.data?.keyId
+		if (!isMissingKeyError(error) || typeof keyId !== 'string') {
+			return false
+		}
+
+		if (!appStateSyncKeyLifecycle) return false
+
+		appStateSyncRecoveryLogger.warn({ collection: name, keyId }, 'app-state sync missing key detected')
+
+		try {
+			await appStateSyncKeyLifecycle.requestMissingKey(name, keyId)
+			return true
+		} catch (recoveryError) {
+			appStateSyncRecoveryLogger.error(
+				{ recoveryError, name, keyId },
+				'failed to persist app-state missing-key recovery; retaining compatibility retry'
+			)
+			return false
+		}
+	}
 
 	// Mirrors contact events into `wa_contacts` (wa.db) — the canonical mobile
 	// central contact table. Persistent (no socket-close wipe). Populated from
@@ -359,6 +562,56 @@ export const makeChatsSocket = (config: SocketConfig) => {
 						messageStoreBackend
 					)
 			)
+		: undefined
+	const historyBatchController = new AdaptiveHistoryBatchController()
+	const hadProcessedHistory = !!authState.creds.processedHistoryMessages?.length
+	const historySyncCoordinator = authState.historySync
+		? new DurableHistorySyncCoordinator({
+				store: authState.historySync,
+				requestOptions: config.options,
+				logger,
+				initialHistorySyncComplete: hadProcessedHistory,
+				recentHistorySyncComplete: hadProcessedHistory,
+				allowMissingHistoryCheckpoint: hadProcessedHistory,
+				apply: async (job, data, signal) => {
+					const notification = proto.Message.HistorySyncNotification.decode(job.notification)
+					await applyProcessedHistorySync(
+						data,
+						{ signalRepository, keyStore: authState.keys, logger, messageStoreBackend },
+						historyBatchController,
+						true,
+						signal
+					)
+					emitProcessedHistorySync(data, ev, {
+						isLatest: !authState.creds.processedHistoryMessages?.length,
+						chunkOrder: notification.chunkOrder,
+						peerDataRequestSessionId: notification.peerDataRequestSessionId
+					})
+				},
+				requestReupload: async (job, mediaKey) => {
+					const meId = authState.creds.me?.id
+					if (!meId) throw new Error('cannot request history sync reupload before authentication')
+					await sendNode(encryptHistorySyncRetryRequest(job.messageId, mediaKey, meId))
+				},
+				onCommitted: async (job, { recovered }) => {
+					const notification = proto.Message.HistorySyncNotification.decode(job.notification)
+					if (notification.syncType !== proto.HistorySync.HistorySyncType.ON_DEMAND) {
+						const alreadyRecorded = authState.creds.processedHistoryMessages?.some(
+							entry => entry.key.id === job.messageKey.id
+						)
+						if (!alreadyRecorded) {
+							ev.emit('creds.update', {
+								processedHistoryMessages: [
+									...(authState.creds.processedHistoryMessages || []),
+									{ key: job.messageKey, messageTimestamp: job.messageTimestamp }
+								]
+							})
+						}
+					}
+
+					if (!recovered) markHistorySyncCommitted(notification)
+				}
+			})
 		: undefined
 	const mirrorAppStateVersion = (name: WAPatchName, state: LTHashState, source: 'snapshot' | 'patch'): void => {
 		try {
@@ -586,12 +839,29 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		return botList
 	}
 
+	const buildTcTokenUsers = (jids: string[]) =>
+		mapParticipantFanout(
+			jids,
+			async jid => {
+				const user = new USyncUser().withId(jid)
+				const privacyToken = await resolveUsableTcTokenForJid({
+					authState,
+					jid,
+					getLIDForPN,
+					getPNForLID,
+					bucketPolicy: tcTokenBucketPolicy
+				})
+				if (privacyToken.buffer) user.withPrivacyToken(privacyToken.buffer, privacyToken.timestamp)
+				return user
+			},
+			// These public queries historically accepted the complete variadic input.
+			// Bound concurrency without imposing the message-fanout safety ceiling.
+			{ max: jids.length }
+		)
+
 	const fetchStatus = async (...jids: string[]) => {
 		const usyncQuery = new USyncQuery().withStatusProtocol()
-
-		for (const jid of jids) {
-			usyncQuery.withUser(new USyncUser().withId(jid))
-		}
+		for (const user of await buildTcTokenUsers(jids)) usyncQuery.withUser(user)
 
 		const result = await sock.executeUSyncQuery(usyncQuery)
 		if (result) {
@@ -601,10 +871,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	const fetchDisappearingDuration = async (...jids: string[]) => {
 		const usyncQuery = new USyncQuery().withDisappearingModeProtocol()
-
-		for (const jid of jids) {
-			usyncQuery.withUser(new USyncUser().withId(jid))
-		}
+		for (const user of await buildTcTokenUsers(jids)) usyncQuery.withUser(user)
 
 		const result = await sock.executeUSyncQuery(usyncQuery)
 		if (result) {
@@ -722,6 +989,58 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	const executeWMexQuery = <T>(variables: Record<string, unknown>, queryId: string, dataPath: string): Promise<T> => {
 		return genericExecuteWMexQuery<T>(variables, queryId, dataPath, query, generateMessageTag)
+	}
+
+	/**
+	 * Explicit Android-compatible MEX profile enrichment. It is intentionally
+	 * opt-in: unrelated username/newsletter MEX operations have different
+	 * variable contracts and must not receive a privacy token globally.
+	 */
+	const fetchContactProfiles = async (jids: string[]): Promise<Record<string, unknown>[]> => {
+		const users = new Map<string, MexContactProfileQueryUser>()
+		for (const requestedJid of jids) {
+			const normalized = jidNormalizedUser(requestedJid)
+			if (!isRegularUser(normalized)) continue
+
+			let aliases = [normalized]
+			try {
+				aliases = await resolveTcTokenAliases(normalized, { getLIDForPN, getPNForLID })
+			} catch (error) {
+				logger.debug({ error, requestedJid }, 'MEX profile LID canonicalization skipped')
+			}
+
+			const canonicalJid = aliases[0] ?? normalized
+
+			if (users.has(canonicalJid)) continue
+
+			const token = await resolveUsableTcTokenForAliases({
+				authState,
+				aliases,
+				bucketPolicy: tcTokenBucketPolicy
+			})
+			users.set(canonicalJid, {
+				jid: canonicalJid,
+				...(token.buffer ? { privacyToken: { token: token.buffer, timestamp: token.timestamp } } : {})
+			})
+		}
+
+		const entries = [...users.values()]
+		const results: Record<string, unknown>[] = []
+		for (let offset = 0; offset < entries.length; offset += MEX_CONTACT_PROFILE_BATCH_SIZE) {
+			const variables = buildMexContactProfileVariables(entries.slice(offset, offset + MEX_CONTACT_PROFILE_BATCH_SIZE))
+			results.push(
+				await genericExecuteWMexQuery<Record<string, unknown>>(
+					variables,
+					MEX_CONTACT_PROFILE_QUERY_ID,
+					'',
+					query,
+					generateMessageTag,
+					{ includeQueryId: true, includeTrace: true }
+				)
+			)
+		}
+
+		return results
 	}
 
 	const newMexSessionId = () => randomBytes(8).toString('hex')
@@ -1146,7 +1465,16 @@ export const makeChatsSocket = (config: SocketConfig) => {
 								error: error.stack
 							}
 
-							if (isMissingKeyError(error) && attemptsMap[name] >= MAX_SYNC_ATTEMPTS) {
+							const durableRecoveryQueued = await queueMissingAppStateKeyRecovery(name, error)
+
+							if (durableRecoveryQueued) {
+								logger.warn(
+									{ ...logData, keyId: error.data.keyId },
+									`${name} blocked on missing key; durable syncd-key-request queued`
+								)
+								blockedCollections.add(name)
+								collectionsToHandle.delete(name)
+							} else if (isMissingKeyError(error) && attemptsMap[name] >= MAX_SYNC_ATTEMPTS) {
 								// WA Web treats missing keys as "Blocked" — park the collection
 								// until the key arrives via APP_STATE_SYNC_KEY_SHARE.
 								logger.warn(
@@ -1262,7 +1590,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				// tctoken and let the server tell us (vs. doing a USync round trip
 				// that fingerprints us as non-WA-Web).
 				getLIDForPN: getKnownLIDForPN,
-				getPNForLID
+				getPNForLID,
+				bucketPolicy: tcTokenBucketPolicy
 			})
 			if (tctokenNode) {
 				pictureNode.content = [tctokenNode]
@@ -1374,7 +1703,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		const normalizedToJid = jidNormalizedUser(toJid)
 		const isUserJid = isAnyPnUser(normalizedToJid) || isAnyLidUser(normalizedToJid)
 		const tcTokenContent = isUserJid
-			? await buildTcTokenFromJid({ authState, jid: normalizedToJid, getLIDForPN, getPNForLID })
+			? await buildTcTokenFromJid({
+					authState,
+					jid: normalizedToJid,
+					getLIDForPN,
+					getPNForLID,
+					bucketPolicy: tcTokenBucketPolicy
+				})
 			: undefined
 
 		return sendNode({
@@ -1769,41 +2104,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		if (historyMsg && shouldProcessHistoryMsg) {
 			const syncType = historyMsg.syncType as proto.HistorySync.HistorySyncType
 
-			// INITIAL_BOOTSTRAP — fire immediately, no progress check (same as WA Web K function)
-			if (
-				syncType === proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP &&
-				!historySyncStatus.initialBootstrapComplete
-			) {
-				historySyncStatus.initialBootstrapComplete = true
-				ev.emit('messaging-history.status', {
-					syncType,
-					status: 'complete',
-					explicit: true
-				})
-			}
-
-			// RECENT with progress === 100 — explicit completion
-			if (
-				syncType === proto.HistorySync.HistorySyncType.RECENT &&
-				historyMsg.progress === 100 &&
-				!historySyncStatus.recentSyncComplete
-			) {
-				historySyncStatus.recentSyncComplete = true
-				clearTimeout(historySyncPausedTimeout)
-				historySyncPausedTimeout = undefined
-				ev.emit('messaging-history.status', {
-					syncType,
-					status: 'complete',
-					explicit: true
-				})
-			}
-
 			// Reset 120s paused timeout on any RECENT chunk (like WA Web's handleChunkProgress)
 			if (syncType === proto.HistorySync.HistorySyncType.RECENT && !historySyncStatus.recentSyncComplete) {
+				historySyncStatus.recentSyncPaused = false
 				clearTimeout(historySyncPausedTimeout)
 				historySyncPausedTimeout = setTimeout(() => {
-					if (!historySyncStatus.recentSyncComplete) {
-						historySyncStatus.recentSyncComplete = true
+					if (!historySyncStatus.recentSyncComplete && !historySyncStatus.recentSyncPaused) {
+						historySyncStatus.recentSyncPaused = true
 						ev.emit('messaging-history.status', {
 							syncType: proto.HistorySync.HistorySyncType.RECENT,
 							status: 'paused',
@@ -1880,7 +2187,14 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					messageStoreBackend,
 					mediaBackend,
 					addOnBackend,
-					historySyncCompanionBackend,
+					historySyncCoordinator,
+					onHistorySyncCommitted: markHistorySyncCommitted,
+					onAppStateSyncKeyRequest: appStateSyncKeyLifecycle
+						? (senderJid, request) => appStateSyncKeyLifecycle.handleKeyRequest(senderJid, request)
+						: undefined,
+					onAppStateSyncKeyShare: appStateSyncKeyLifecycle
+						? (senderJid, share) => appStateSyncKeyLifecycle.handleKeyShare(senderJid, share)
+						: undefined,
 					receiptBackend: receiptReplayBackend
 				})
 			],
@@ -2015,6 +2329,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	ev.on('connection.update', ({ connection, receivedPendingNotifications }) => {
 		if (connection === 'open') {
 			mirrorOwnDevice()
+			historySyncCoordinator?.startRecovery().catch(error => onUnexpectedError(error, 'durable history sync recovery'))
+			appStateSyncKeyLifecycle
+				?.startRecovery()
+				.catch(error => onUnexpectedError(error, 'durable app-state sync key recovery'))
 
 			if (fireInitQueries) {
 				executeInitQueries().catch(error => onUnexpectedError(error, 'init queries'))
@@ -2027,6 +2345,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		// Clean up app state sync key cache on connection close
 		if (connection === 'close') {
+			appStateSyncKeyLifecycle?.stop()
 			blockedCollections.clear()
 			clearTimeout(historySyncPausedTimeout)
 			historySyncPausedTimeout = undefined
@@ -2040,6 +2359,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		historySyncStatus.initialBootstrapComplete = false
 		historySyncStatus.recentSyncComplete = false
+		historySyncStatus.recentSyncPaused = false
+		historySyncStatus.fullSyncComplete = false
 		clearTimeout(historySyncPausedTimeout)
 		historySyncPausedTimeout = undefined
 
@@ -2131,6 +2452,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// collections blocked on a missing key, trigger a re-sync for just those collections.
 	// This mirrors WA Web's Blocked → retry-on-key-arrival behavior.
 	ev.on('creds.update', ({ myAppStateKeyId }) => {
+		// The durable lifecycle correlates exact key sets and retries only the
+		// collections whose missing-key dependencies are now resolved. Running
+		// the legacy listener as well would retry every blocked collection and
+		// duplicate the lifecycle's resync.
+		if (appStateSyncKeyLifecycle) return
 		if (!myAppStateKeyId || blockedCollections.size === 0) {
 			return
 		}
@@ -2306,6 +2632,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	})
 
+	if (historySyncCoordinator) {
+		registerSocketDrainHandler(() => historySyncCoordinator.stop())
+	}
+
 	registerSocketEndHandler(() => {
 		if (awaitingSyncTimeout) {
 			clearTimeout(awaitingSyncTimeout)
@@ -2333,15 +2663,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 
 		orphanQueue.clear()
-		// Wipe any straggler history-sync chunk rows. In normal operation the
-		// `finally` in process-message deletes each row after its download, but a
-		// swallowed delete error (best-effort) could leave one behind — this
-		// closes that gap on teardown, mirroring the retry manager's own clear().
-		try {
-			historySyncCompanionBackend?.clear()
-		} catch (err) {
-			logger.debug({ err }, 'history_sync_companion clear on socket-end failed (non-fatal)')
-		}
 	})
 
 	/**
@@ -2509,6 +2830,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	return {
 		...sock,
+		handleAppStateSyncKeyPeerReceipt,
 		createCallLink,
 		getBotListV2,
 		getStoredContact,
@@ -2538,6 +2860,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		removeProfilePicture,
 		updateProfileStatus,
 		updateProfileName,
+		fetchContactProfiles,
 		getMyUsername,
 		setMyUsername,
 		deleteMyUsername,

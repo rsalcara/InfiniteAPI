@@ -10,6 +10,7 @@ import {
 	isPnUser,
 	jidNormalizedUser
 } from '../WABinary'
+import type { HistoryTcToken } from './history'
 
 // Same phone-number pattern as WABinary's isJidBot, applied against the user
 // part so the check is invariant to @c.us ↔ @s.whatsapp.net normalization.
@@ -35,6 +36,38 @@ export function isRegularUser(jid: string | undefined): boolean {
 const TC_TOKEN_BUCKET_DURATION = 604800
 /** 4 buckets → ~28-day rolling window — matches WA Web AB prop tctoken_num_buckets */
 const TC_TOKEN_NUM_BUCKETS = 4
+/** Android's absolute lower-bound fallback: 182 days. */
+export const TC_TOKEN_MAX_AGE_SECONDS = 15_724_800
+
+export type TcTokenAbProps = NonNullable<import('../Types').SocketConfig['tcTokenAbProps']>
+/** Shared fallback lock for stores without record-scoped transactions. */
+export const TC_TOKEN_LEGACY_TRANSACTION_KEY = 'tctoken-records'
+export type TcTokenBucketPolicy = {
+	profile: 'web' | 'native_android'
+	incoming: { durationSeconds: number; numBuckets: number }
+	sent: { durationSeconds: number; numBuckets: number }
+}
+
+const positiveInteger = (value: number | undefined, fallback: number): number =>
+	Number.isSafeInteger(value) && Number(value) > 0 ? Number(value) : fallback
+
+/** Resolves captured profile defaults and applies server AB props independently per direction. */
+export function resolveTcTokenBucketPolicy(
+	profile: TcTokenBucketPolicy['profile'],
+	abProps: TcTokenAbProps = {}
+): TcTokenBucketPolicy {
+	return {
+		profile,
+		incoming: {
+			durationSeconds: positiveInteger(abProps.tctoken_duration, TC_TOKEN_BUCKET_DURATION),
+			numBuckets: positiveInteger(abProps.tctoken_num_buckets, TC_TOKEN_NUM_BUCKETS)
+		},
+		sent: {
+			durationSeconds: positiveInteger(abProps.tctoken_duration_sender, TC_TOKEN_BUCKET_DURATION),
+			numBuckets: positiveInteger(abProps.tctoken_num_buckets_sender, TC_TOKEN_NUM_BUCKETS)
+		}
+	}
+}
 
 /**
  * Check if a received token is expired using WA Web's rolling bucket algorithm.
@@ -46,14 +79,19 @@ const TC_TOKEN_NUM_BUCKETS = 4
  * use identical values (604800 / 4), so we use a single function for both.
  * If WA ever diverges these, add a `mode` parameter here.
  */
-export function isTcTokenExpired(timestamp: number | string | null | undefined): boolean {
+export function isTcTokenExpired(
+	timestamp: number | string | null | undefined,
+	policy = resolveTcTokenBucketPolicy('web'),
+	mode: 'incoming' | 'sent' = 'incoming',
+	nowSeconds = Math.floor(Date.now() / 1000)
+): boolean {
 	if (timestamp === null || timestamp === undefined) return true
 	const ts = typeof timestamp === 'string' ? Number(timestamp) : timestamp
 	if (isNaN(ts)) return true
-	const now = Math.floor(Date.now() / 1000)
-	const currentBucket = Math.floor(now / TC_TOKEN_BUCKET_DURATION)
-	const cutoffBucket = currentBucket - (TC_TOKEN_NUM_BUCKETS - 1)
-	const cutoffTimestamp = cutoffBucket * TC_TOKEN_BUCKET_DURATION
+	const { durationSeconds, numBuckets } = policy[mode]
+	const currentBucket = Math.floor(nowSeconds / durationSeconds)
+	const cutoffBucket = currentBucket - (numBuckets - 1)
+	const cutoffTimestamp = Math.max(cutoffBucket * durationSeconds, nowSeconds - TC_TOKEN_MAX_AGE_SECONDS)
 	return ts < cutoffTimestamp
 }
 
@@ -62,18 +100,29 @@ export type TcTokenUsability = {
 	reason?: 'missing-token' | 'empty-token' | 'expired-token'
 }
 
+/** Official incoming-token conflict rule: only a strictly newer timestamp wins. */
+export function isStrictlyNewerTcTokenTimestamp(
+	incoming: number | string | null | undefined,
+	existing: number | string | null | undefined
+): boolean {
+	const incomingTimestamp = Number(incoming ?? 0)
+	const existingTimestamp = Number(existing ?? 0)
+	return Number.isFinite(incomingTimestamp) && incomingTimestamp > 0 && incomingTimestamp > existingTimestamp
+}
+
 /**
  * Evaluates every alias independently and accepts the first usable token.
  * A stale/empty LID row must not mask a valid PN row (or the inverse).
  */
 export function selectUsableTcToken(
-	candidates: Array<SignalDataTypeMap['tctoken'] | null | undefined>
+	candidates: Array<SignalDataTypeMap['tctoken'] | null | undefined>,
+	policy = resolveTcTokenBucketPolicy('web')
 ): TcTokenUsability {
 	const present = candidates.filter((entry): entry is SignalDataTypeMap['tctoken'] => !!entry)
 	if (present.length === 0) return { usable: false, reason: 'missing-token' }
 	const nonEmpty = present.filter(entry => !!entry.token?.length)
 	if (nonEmpty.length === 0) return { usable: false, reason: 'empty-token' }
-	if (nonEmpty.some(entry => !isTcTokenExpired(entry.timestamp))) return { usable: true }
+	if (nonEmpty.some(entry => !isTcTokenExpired(entry.timestamp, policy))) return { usable: true }
 	return { usable: false, reason: 'expired-token' }
 }
 
@@ -83,12 +132,43 @@ export function selectUsableTcToken(
  *
  * Returns true if senderTimestamp is null/undefined or in a previous bucket.
  */
-export function shouldSendNewTcToken(senderTimestamp: number | undefined): boolean {
+export function shouldSendNewTcToken(
+	senderTimestamp: number | undefined,
+	policy = resolveTcTokenBucketPolicy('web'),
+	nowSeconds = Math.floor(Date.now() / 1000)
+): boolean {
 	if (senderTimestamp === undefined) return true
-	const now = Math.floor(Date.now() / 1000)
-	const currentBucket = Math.floor(now / TC_TOKEN_BUCKET_DURATION)
-	const senderBucket = Math.floor(senderTimestamp / TC_TOKEN_BUCKET_DURATION)
+	const currentBucket = Math.floor(nowSeconds / policy.sent.durationSeconds)
+	const senderBucket = Math.floor(senderTimestamp / policy.sent.durationSeconds)
 	return currentBucket > senderBucket
+}
+
+export type PrunedTcToken = {
+	next: SignalDataTypeMap['tctoken'] | null
+	incomingPruned: boolean
+	sentPruned: boolean
+}
+
+/** Prunes incoming and sent halves independently; neither half can delete a still-live peer. */
+export function pruneTcTokenHalves(
+	entry: SignalDataTypeMap['tctoken'],
+	policy = resolveTcTokenBucketPolicy('web')
+): PrunedTcToken {
+	const incomingPruned = !!entry.token?.length && isTcTokenExpired(entry.timestamp, policy, 'incoming')
+	const sentPruned = entry.senderTimestamp !== undefined && isTcTokenExpired(entry.senderTimestamp, policy, 'sent')
+	const hasIncoming = !!entry.token?.length && !incomingPruned
+	const hasSent = entry.senderTimestamp !== undefined && !sentPruned
+	if (!hasIncoming && !hasSent) return { next: null, incomingPruned, sentPruned }
+
+	return {
+		next: {
+			token: hasIncoming ? Buffer.from(entry.token) : Buffer.alloc(0),
+			...(hasIncoming && entry.timestamp !== undefined ? { timestamp: entry.timestamp } : {}),
+			...(hasSent ? { senderTimestamp: entry.senderTimestamp, realIssueTimestamp: entry.realIssueTimestamp } : {})
+		},
+		incomingPruned,
+		sentPruned
+	}
 }
 
 export type TcTokenAliasResolvers = {
@@ -129,7 +209,8 @@ export type SelectedTcToken = TcTokenUsability & {
 
 /** Selects the newest non-empty, non-expired incoming token across PN/LID aliases. */
 export function selectNewestUsableTcToken(
-	candidates: ReadonlyArray<readonly [jid: string, entry: SignalDataTypeMap['tctoken'] | null | undefined]>
+	candidates: ReadonlyArray<readonly [jid: string, entry: SignalDataTypeMap['tctoken'] | null | undefined]>,
+	policy = resolveTcTokenBucketPolicy('web')
 ): SelectedTcToken {
 	const present = candidates.filter(
 		(candidate): candidate is readonly [string, SignalDataTypeMap['tctoken']] => !!candidate[1]
@@ -138,7 +219,7 @@ export function selectNewestUsableTcToken(
 	const nonEmpty = present.filter(([, entry]) => !!entry.token?.length)
 	if (nonEmpty.length === 0) return { usable: false, reason: 'empty-token' }
 	const usable = nonEmpty
-		.filter(([, entry]) => !isTcTokenExpired(entry.timestamp))
+		.filter(([, entry]) => !isTcTokenExpired(entry.timestamp, policy))
 		.sort(([, left], [, right]) => Number(right.timestamp ?? 0) - Number(left.timestamp ?? 0))[0]
 	if (!usable) return { usable: false, reason: 'expired-token' }
 
@@ -148,6 +229,91 @@ export function selectNewestUsableTcToken(
 export type TcTokenIssueAliasGroup = {
 	requestedJid: string
 	aliases: string[]
+}
+
+export type RestoreHistoryTcTokensResult = {
+	restored: number
+	skipped: number
+}
+
+/**
+ * Restores the two independent trusted-contact token halves carried by a
+ * history conversation. Mappings are expected to be committed before this
+ * runs, allowing a PN row to be canonicalized under its LID in the same
+ * durable history apply that owns the checkpoint.
+ */
+export async function restoreTcTokensFromHistory({
+	entries,
+	keys,
+	resolvers
+}: {
+	entries: readonly HistoryTcToken[]
+	keys: SignalKeyStoreWithTransaction
+	resolvers: TcTokenAliasResolvers
+}): Promise<RestoreHistoryTcTokensResult> {
+	let restored = 0
+	let skipped = 0
+
+	for (const entry of entries) {
+		if (!isRegularUser(entry.jid)) {
+			skipped++
+			continue
+		}
+
+		const aliases = await resolveTcTokenAliases(entry.jid, resolvers)
+		const canonicalJid = aliases[0]!
+		const records = aliases.map(id => ({ type: 'tctoken' as const, id }))
+		let applied = false
+		const work = async () => {
+			const current = await keys.get('tctoken', aliases)
+			const existingIncoming = aliases
+				.map(alias => current[alias])
+				.filter(
+					(candidate): candidate is SignalDataTypeMap['tctoken'] =>
+						!!candidate?.token?.length && Number(candidate.timestamp ?? 0) > 0
+				)
+				.sort((left, right) => Number(right.timestamp) - Number(left.timestamp))[0]
+			const existingSent = aliases
+				.map(alias => current[alias])
+				.filter(
+					(candidate): candidate is SignalDataTypeMap['tctoken'] =>
+						candidate?.senderTimestamp !== undefined && Number(candidate.senderTimestamp) > 0
+				)
+				.sort((left, right) => Number(right.senderTimestamp) - Number(left.senderTimestamp))[0]
+
+			const historyIncomingIsNewer =
+				!!entry.token?.length && isStrictlyNewerTcTokenTimestamp(entry.timestamp, existingIncoming?.timestamp)
+			const historySentIsNewer =
+				Number(entry.senderTimestamp ?? 0) > 0 &&
+				Number(entry.senderTimestamp) > Number(existingSent?.senderTimestamp ?? 0)
+			const hasLegacyAliasState = aliases.slice(1).some(alias => current[alias] !== undefined)
+			if (!historyIncomingIsNewer && !historySentIsNewer && !hasLegacyAliasState) return
+
+			const incoming = historyIncomingIsNewer
+				? { token: Buffer.from(entry.token!), timestamp: String(entry.timestamp) }
+				: existingIncoming
+			const sent = historySentIsNewer
+				? { senderTimestamp: entry.senderTimestamp, realIssueTimestamp: null as number | null }
+				: existingSent
+			const canonical: SignalDataTypeMap['tctoken'] = {
+				token: incoming?.token ? Buffer.from(incoming.token) : Buffer.alloc(0),
+				...(incoming?.timestamp !== undefined ? { timestamp: String(incoming.timestamp) } : {}),
+				...(sent?.senderTimestamp !== undefined ? { senderTimestamp: Number(sent.senderTimestamp) } : {}),
+				...(sent?.realIssueTimestamp !== undefined ? { realIssueTimestamp: sent.realIssueTimestamp } : {})
+			}
+			const bucket: Record<string, SignalDataTypeMap['tctoken'] | null> = { [canonicalJid]: canonical }
+			for (const alias of aliases.slice(1)) bucket[alias] = null
+			await keys.set({ tctoken: bucket })
+			applied = true
+		}
+
+		if (keys.transactWith) await keys.transactWith({ records }, work)
+		else await keys.transaction(work, TC_TOKEN_LEGACY_TRANSACTION_KEY)
+		if (applied) restored++
+		else skipped++
+	}
+
+	return { restored, skipped }
 }
 
 /**
@@ -254,7 +420,7 @@ export async function updateTcTokenIssueState({
 	if (keys.transactWith) {
 		await keys.transactWith({ records }, work)
 	} else {
-		await keys.transaction(work, `privacy-token-issue:${records.map(record => record.id).join(',')}`)
+		await keys.transaction(work, TC_TOKEN_LEGACY_TRANSACTION_KEY)
 	}
 
 	return applied
@@ -289,6 +455,7 @@ type TcTokenParams = {
 	}
 	getLIDForPN?: (pn: string) => Promise<string | null>
 	getPNForLID?: (lid: string) => Promise<string | null>
+	bucketPolicy?: TcTokenBucketPolicy
 }
 
 /**
@@ -301,7 +468,36 @@ type TcTokenParams = {
  * The helper is also responsible for the opportunistic expired-token wipe
  * documented inline. Callers must NOT re-do that bookkeeping.
  */
-type ResolvedTcToken = { buffer?: Buffer }
+export type ResolvedTcToken = { buffer?: Buffer; timestamp?: string }
+
+const clearExpiredTcTokenAliases = async (
+	authState: TcTokenParams['authState'],
+	aliases: string[],
+	policy?: TcTokenBucketPolicy
+): Promise<void> => {
+	const records = aliases.map(id => ({ type: 'tctoken' as const, id }))
+	const work = async () => {
+		const current = await authState.keys.get('tctoken', aliases)
+		const expired: Record<string, SignalDataTypeMap['tctoken'] | null> = {}
+		for (const alias of aliases) {
+			const candidate = current[alias]
+			if (!candidate?.token?.length || !isTcTokenExpired(candidate.timestamp, policy)) continue
+			expired[alias] =
+				candidate.senderTimestamp !== undefined
+					? {
+							token: Buffer.alloc(0),
+							senderTimestamp: candidate.senderTimestamp,
+							realIssueTimestamp: candidate.realIssueTimestamp
+						}
+					: null
+		}
+
+		if (Object.keys(expired).length) await authState.keys.set({ tctoken: expired })
+	}
+
+	if (authState.keys.transactWith) await authState.keys.transactWith({ records }, work)
+	else await authState.keys.transaction(work, TC_TOKEN_LEGACY_TRANSACTION_KEY)
+}
 
 /**
  * Shared retrieval + expiry + opportunistic-cleanup pipeline used by both
@@ -332,49 +528,60 @@ async function resolveTcTokenForJid({
 	authState,
 	jid,
 	getLIDForPN,
-	getPNForLID
-}: Pick<TcTokenParams, 'authState' | 'jid' | 'getLIDForPN' | 'getPNForLID'>): Promise<ResolvedTcToken> {
+	getPNForLID,
+	bucketPolicy
+}: Pick<
+	TcTokenParams,
+	'authState' | 'jid' | 'getLIDForPN' | 'getPNForLID' | 'bucketPolicy'
+>): Promise<ResolvedTcToken> {
 	try {
 		const aliases = getLIDForPN
 			? await resolveTcTokenAliases(jid, { getLIDForPN, getPNForLID })
 			: [jidNormalizedUser(jid)]
-		const tcTokenData = await authState.keys.get('tctoken', aliases)
-		const selected = selectNewestUsableTcToken(aliases.map(alias => [alias, tcTokenData?.[alias]] as const))
+		return resolveUsableTcTokenForAliases({ authState, aliases, bucketPolicy })
+	} catch {
+		return {}
+	}
+}
+
+/** Resolves a token from aliases already canonicalized by the call site. */
+export async function resolveUsableTcTokenForAliases({
+	authState,
+	aliases,
+	bucketPolicy
+}: {
+	authState: TcTokenParams['authState']
+	aliases: string[]
+	bucketPolicy?: TcTokenBucketPolicy
+}): Promise<ResolvedTcToken> {
+	try {
+		const normalizedAliases = [...new Set(aliases.map(jidNormalizedUser))]
+		if (!normalizedAliases.length) return {}
+		const tcTokenData = await authState.keys.get('tctoken', normalizedAliases)
+		const selected = selectNewestUsableTcToken(
+			normalizedAliases.map(alias => [alias, tcTokenData?.[alias]] as const),
+			bucketPolicy
+		)
 		const entry = selected.entry
-		const tcTokenBuffer = entry?.token
 
-		if (!selected.usable || !tcTokenBuffer?.length) {
-			if (selected.reason === 'expired-token') {
-				const expired: Record<string, SignalDataTypeMap['tctoken'] | null> = {}
-				const expiredAliases = aliases.filter(alias => {
-					const candidate = tcTokenData?.[alias]
-
-					return !!candidate?.token?.length && isTcTokenExpired(candidate.timestamp)
-				})
-
-				for (const alias of expiredAliases) {
-					const candidate = tcTokenData[alias]!
-
-					expired[alias] =
-						candidate.senderTimestamp !== undefined
-							? {
-									token: Buffer.alloc(0),
-									senderTimestamp: candidate.senderTimestamp,
-									realIssueTimestamp: candidate.realIssueTimestamp
-								}
-							: null
-				}
-
-				if (Object.keys(expired).length) await authState.keys.set({ tctoken: expired })
-			}
+		if (!selected.usable || !entry?.token?.length) {
+			if (selected.reason === 'expired-token')
+				await clearExpiredTcTokenAliases(authState, normalizedAliases, bucketPolicy)
 
 			return {}
 		}
 
-		return { buffer: tcTokenBuffer }
+		return { buffer: entry.token, timestamp: entry.timestamp }
 	} catch {
 		return {}
 	}
+}
+
+/** Returns the current incoming privacy token for an explicitly selected protocol call site. */
+export async function resolveUsableTcTokenForJid(
+	params: Pick<TcTokenParams, 'authState' | 'jid' | 'getLIDForPN' | 'getPNForLID' | 'bucketPolicy'>
+): Promise<ResolvedTcToken> {
+	return resolveTcTokenForJid(params)
 }
 
 /**
@@ -393,9 +600,10 @@ export async function buildTcTokenFromJid({
 	jid,
 	baseContent = [],
 	getLIDForPN,
-	getPNForLID
+	getPNForLID,
+	bucketPolicy
 }: TcTokenParams): Promise<BinaryNode[] | undefined> {
-	const { buffer } = await resolveTcTokenForJid({ authState, jid, getLIDForPN, getPNForLID })
+	const { buffer } = await resolveTcTokenForJid({ authState, jid, getLIDForPN, getPNForLID, bucketPolicy })
 
 	if (!buffer) {
 		return baseContent.length > 0 ? baseContent : undefined
@@ -420,9 +628,10 @@ export async function buildTcTokenNode({
 	authState,
 	jid,
 	getLIDForPN,
-	getPNForLID
+	getPNForLID,
+	bucketPolicy
 }: Omit<TcTokenParams, 'baseContent'>): Promise<BinaryNode | undefined> {
-	const { buffer } = await resolveTcTokenForJid({ authState, jid, getLIDForPN, getPNForLID })
+	const { buffer } = await resolveTcTokenForJid({ authState, jid, getLIDForPN, getPNForLID, bucketPolicy })
 
 	return buffer ? { tag: 'tctoken', attrs: {}, content: buffer } : undefined
 }
@@ -513,17 +722,12 @@ export async function storeTcTokensFromIqResult({
 		const existingTcData = await keys.get('tctoken', [storageJid])
 		const existingEntry = existingTcData[storageJid]
 
-		// Timestamp monotonicity guard — only store if incoming timestamp >= existing
+		// Timestamp monotonicity guard — only a strictly newer token may replace
+		// the accepted value. Equal timestamps are replays even if bytes differ.
 		// Matches WA Web handleIncomingTcToken
 		const existingTs = existingEntry?.timestamp ? Number(existingEntry.timestamp) : 0
 		const incomingTs = tokenNode.attrs.t ? Number(tokenNode.attrs.t) : 0
-		if (existingTs > 0 && incomingTs > 0 && existingTs > incomingTs) {
-			continue
-		}
-
-		// Don't store timestamp-less tokens at all — isTcTokenExpired treats them
-		// as immediately expired regardless of whether an existing entry is present
-		if (!incomingTs) {
+		if (!isStrictlyNewerTcTokenTimestamp(incomingTs, existingTs)) {
 			continue
 		}
 

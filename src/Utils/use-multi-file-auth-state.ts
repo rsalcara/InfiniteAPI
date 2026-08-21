@@ -3,8 +3,10 @@ import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'fs/pr
 import { join } from 'path'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap } from '../Types'
+import { FileAppStateSyncKeyStore } from './app-state-sync-key-store'
 import { initAuthCreds } from './auth-utils'
 import { BufferJSON } from './generics'
+import { FileHistorySyncStore } from './history-sync-store'
 
 /**
  * Error thrown by {@link useMultiFileAuthState} when a JSON file on disk is
@@ -269,6 +271,8 @@ export const useMultiFileAuthState = async (
 	}
 
 	const creds: AuthenticationCreds = ((await readData('creds.json')) as AuthenticationCreds | null) || initAuthCreds()
+	const historySync = new FileHistorySyncStore(join(folder, 'history-sync-state.json'))
+	const appStateSyncKeys = new FileAppStateSyncKeyStore(join(folder, 'app-state-sync-state.json'))
 
 	/**
 	 * Reverse `fixFileName` for the only id spaces that actually use the two
@@ -342,15 +346,19 @@ export const useMultiFileAuthState = async (
 		const prefix = `${fixFileName(type)}-`
 		// Codex P1 fix: prevent `sender-key` enumeration from absorbing
 		// `sender-key-memory-*` files.
-		const collidingPrefix =
-			type === 'sender-key' ? `${fixFileName('sender-key-memory' as keyof SignalDataTypeMap)}-` : null
+		const collidingPrefixes =
+			type === 'sender-key'
+				? [`${fixFileName('sender-key-memory' as keyof SignalDataTypeMap)}-`]
+				: type === 'tctoken'
+					? [`${fixFileName('tctoken-job' as keyof SignalDataTypeMap)}-`]
+					: []
 
 		const seenEncodedIds = new Set<string>()
 
 		// Pass 1 — primary `*.json` files.
 		for (const filename of entries) {
 			if (!filename.startsWith(prefix) || !filename.endsWith('.json')) continue
-			if (collidingPrefix && filename.startsWith(collidingPrefix)) continue
+			if (collidingPrefixes.some(prefix => filename.startsWith(prefix))) continue
 			const encodedId = filename.slice(prefix.length, -'.json'.length)
 			seenEncodedIds.add(encodedId)
 			yield { id: decodeIdForType(type, encodedId), filename }
@@ -362,7 +370,7 @@ export const useMultiFileAuthState = async (
 		const BAK_SUFFIX = '.json.bak'
 		for (const filename of entries) {
 			if (!filename.startsWith(prefix) || !filename.endsWith(BAK_SUFFIX)) continue
-			if (collidingPrefix && filename.startsWith(collidingPrefix)) continue
+			if (collidingPrefixes.some(prefix => filename.startsWith(prefix))) continue
 			const encodedId = filename.slice(prefix.length, -BAK_SUFFIX.length)
 			if (seenEncodedIds.has(encodedId)) continue
 			seenEncodedIds.add(encodedId)
@@ -373,6 +381,13 @@ export const useMultiFileAuthState = async (
 	return {
 		state: {
 			creds,
+			historySync,
+			appStateSyncKeys,
+			storage: {
+				backend: 'multifile' as const,
+				historySyncDurable: true,
+				tcTokenDurable: true
+			},
 			keys: {
 				get: async (type, ids) => {
 					const data: { [_: string]: SignalDataTypeMap[typeof type] } = {}
@@ -469,10 +484,16 @@ export const useMultiFileAuthState = async (
 					await Promise.all(
 						entries
 							.filter(
-								f => f !== 'creds.json' && (f.endsWith('.json') || f.endsWith('.json.tmp') || f.endsWith('.json.bak'))
+								f =>
+									f !== 'creds.json' &&
+									!f.startsWith('history-sync-state.json') &&
+									!f.startsWith('app-state-sync-state.json') &&
+									(f.endsWith('.json') || f.endsWith('.json.tmp') || f.endsWith('.json.bak'))
 							)
 							.map(f => unlinkIgnoreMissing(join(folder, f)))
 					)
+					await historySync.clear()
+					await appStateSyncKeys.clear()
 				},
 				list: async function* <T extends keyof SignalDataTypeMap>(
 					type: T

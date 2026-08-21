@@ -454,23 +454,46 @@ export const hasNonNullishProperty = <K extends PropertyKey>(
 /**
  * Validates that a string is not empty or whitespace-only
  */
-const validateNonEmptyString = (value: string | undefined, fieldName: string): void => {
-	if (!value || value.trim().length === 0) {
+const validateNonEmptyString = (value: unknown, fieldName: string): void => {
+	if (typeof value !== 'string' || value.trim().length === 0) {
 		throw new Boom(`Button ${fieldName} is required and cannot be empty`, { statusCode: 400 })
 	}
 }
 
 /**
- * Converts a NativeButton to the WhatsApp Native Flow format
- * Includes validation for required fields
+ * Validates the fields required by each native button type.
  */
-export const formatNativeFlowButton = (button: NativeButton): NativeFlowButton => {
-	// Validate common field
+const validateNativeButton = (button: NativeButton): void => {
+	if (!button || typeof button !== 'object') {
+		throw new Boom('Invalid native button', { statusCode: 400 })
+	}
+
 	validateNonEmptyString(button.text, 'text')
 
 	switch (button.type) {
 		case 'url':
 			validateNonEmptyString(button.url, 'url')
+			return
+		case 'copy':
+			validateNonEmptyString(button.copyText, 'copyText')
+			return
+		case 'reply':
+			validateNonEmptyString(button.id, 'id')
+			return
+		case 'call':
+			validateNonEmptyString(button.phoneNumber, 'phoneNumber')
+			return
+		default:
+			throw new Boom('Invalid button type', { statusCode: 400 })
+	}
+}
+
+/** Converts a validated NativeButton to the WhatsApp Native Flow format. */
+export const formatNativeFlowButton = (button: NativeButton): NativeFlowButton => {
+	validateNativeButton(button)
+
+	switch (button.type) {
+		case 'url':
 			return {
 				name: 'cta_url',
 				buttonParamsJson: JSON.stringify({
@@ -480,40 +503,57 @@ export const formatNativeFlowButton = (button: NativeButton): NativeFlowButton =
 				})
 			}
 		case 'copy':
-			validateNonEmptyString(button.copyText, 'copyText')
 			return {
 				name: 'cta_copy',
-				buttonParamsJson: JSON.stringify({
-					display_text: button.text,
-					copy_code: button.copyText
-				})
+				buttonParamsJson: JSON.stringify({ display_text: button.text, copy_code: button.copyText })
 			}
 		case 'reply':
-			validateNonEmptyString(button.id, 'id')
 			return {
 				name: 'quick_reply',
-				buttonParamsJson: JSON.stringify({
-					display_text: button.text,
-					id: button.id
-				})
+				buttonParamsJson: JSON.stringify({ display_text: button.text, id: button.id })
 			}
 		case 'call':
-			validateNonEmptyString(button.phoneNumber, 'phoneNumber')
 			return {
 				name: 'cta_call',
-				buttonParamsJson: JSON.stringify({
-					display_text: button.text,
-					phone_number: button.phoneNumber
-				})
+				buttonParamsJson: JSON.stringify({ display_text: button.text, phone_number: button.phoneNumber })
 			}
-		default:
-			throw new Boom('Invalid button type', { statusCode: 400 })
 	}
 }
 
+const prepareNativeButtonHeader = async (
+	{ headerTitle, headerImage, headerVideo }: Pick<ButtonMessageOptions, 'headerTitle' | 'headerImage' | 'headerVideo'>,
+	mediaOptions?: MessageContentGenerationOptions
+): Promise<proto.Message.InteractiveMessage.IHeader> => {
+	if (headerImage && headerVideo) {
+		throw new Boom('Cannot have both headerImage and headerVideo. Choose one.', { statusCode: 400 })
+	}
+
+	const hasMedia = !!(headerImage || headerVideo)
+	const header: proto.Message.InteractiveMessage.IHeader = {
+		title: hasMedia ? '' : headerTitle || '',
+		hasMediaAttachment: hasMedia
+	}
+
+	if (hasMedia) {
+		if (!mediaOptions) {
+			throw new Boom('mediaOptions required for processing header media', { statusCode: 400 })
+		}
+
+		if (headerImage) {
+			const { imageMessage } = await prepareWAMessageMedia({ image: headerImage }, mediaOptions)
+			header.imageMessage = imageMessage
+		} else if (headerVideo) {
+			const { videoMessage } = await prepareWAMessageMedia({ video: headerVideo }, mediaOptions)
+			header.videoMessage = videoMessage
+		}
+	}
+
+	return header
+}
+
 /**
- * Generates a button message using Native Flow format wrapped in viewOnceMessage
- * This is the modern approach for button messages that works on iOS and Android
+ * Generates a button message using Native Flow at the protobuf root.
+ * The direct interactiveMessage envelope is understood by current companion clients.
  *
  * @example
  * ```typescript
@@ -543,33 +583,9 @@ export const generateButtonMessage = async (
 		throw new Boom('Maximum 3 buttons allowed', { statusCode: 400 })
 	}
 
-	// Validate mutual exclusivity of media types
-	if (headerImage && headerVideo) {
-		throw new Boom('Cannot have both headerImage and headerVideo. Choose one.', { statusCode: 400 })
-	}
-
 	// Format buttons to Native Flow format
 	const formattedButtons = buttons.map(formatNativeFlowButton)
-
-	// Determine header configuration
-	const hasMedia = !!(headerImage || headerVideo)
-	const header: proto.Message.InteractiveMessage.IHeader = {
-		title: hasMedia ? '' : headerTitle || '',
-		hasMediaAttachment: hasMedia
-	}
-
-	// Process media if present
-	if (hasMedia && mediaOptions) {
-		if (headerImage) {
-			const { imageMessage } = await prepareWAMessageMedia({ image: headerImage }, mediaOptions)
-			header.imageMessage = imageMessage
-		} else if (headerVideo) {
-			const { videoMessage } = await prepareWAMessageMedia({ video: headerVideo }, mediaOptions)
-			header.videoMessage = videoMessage
-		}
-	} else if (hasMedia && !mediaOptions) {
-		throw new Boom('mediaOptions required for processing header media', { statusCode: 400 })
-	}
+	const header = await prepareNativeButtonHeader({ headerTitle, headerImage, headerVideo }, mediaOptions)
 
 	// Build the interactive message (used for CTA buttons: url, copy, call)
 	const interactiveMessage: proto.Message.IInteractiveMessage = {
@@ -579,18 +595,12 @@ export const generateButtonMessage = async (
 		nativeFlowMessage: {
 			buttons: formattedButtons,
 			messageParamsJson: JSON.stringify({}),
-			messageVersion: 2
+			messageVersion: 1
 		}
 	}
 
-	// Wrap in viewOnceMessage for Web/Android compatibility
-	// NOTE: messageContextInfo removed - breaks iOS delivery
 	return {
-		viewOnceMessage: {
-			message: {
-				interactiveMessage
-			}
-		}
+		interactiveMessage
 	}
 }
 
@@ -855,6 +865,22 @@ const LIST_LIMITS = {
 	MAX_ROW_ID: 200,
 	MAX_BUTTON_TEXT: 20
 } as const
+
+const MAX_MEDIA_QUICK_REPLY_BUTTONS = 10
+const MAX_LEGACY_QUICK_REPLY_BUTTONS = 16
+const MAX_QUICK_REPLY_OPTIONS = LIST_LIMITS.MAX_TOTAL_ROWS
+
+const truncateUtf16 = (value: string, maxLength: number): string => {
+	if (value.length <= maxLength) return value
+
+	let truncated = value.slice(0, maxLength)
+	const lastCodeUnit = truncated.charCodeAt(truncated.length - 1)
+	if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) {
+		truncated = truncated.slice(0, -1)
+	}
+
+	return truncated
+}
 
 /**
  * Validates and sanitizes list message sections according to WhatsApp limits.
@@ -1282,33 +1308,115 @@ export const generateWAMessageContent = async (
 	// Check for nativeButtons first - this is the recommended modern approach
 	if (hasNonNullishProperty(message, 'nativeButtons')) {
 		const nativeMsg = message as any
-		const buttons = nativeMsg.nativeButtons as any[]
+		const nativeButtons = nativeMsg.nativeButtons
+		if (!Array.isArray(nativeButtons)) {
+			throw new Boom('nativeButtons must be an array', { statusCode: 400 })
+		}
 
-		if (!buttons || buttons.length === 0) {
+		if (nativeButtons.length === 0) {
 			throw new Boom('nativeButtons requires at least one button', { statusCode: 400 })
 		}
 
-		// Check if ALL buttons are quick_reply (type: 'reply')
-		const allQuickReply = buttons.every((btn: any) => btn.type === 'reply')
+		for (const button of nativeButtons) validateNativeButton(button)
+		const buttons = nativeButtons as NativeButton[]
+
+		// Standard reply sets use the legacy envelope validated across mobile and
+		// companion clients. Sets beyond that envelope's limit become a list.
+		const allQuickReply = buttons.every(btn => btn.type === 'reply')
 
 		if (allQuickReply) {
-			// Use legacy buttonsMessage format — works on iOS + Android + Web
-			const hasHeaderTitle = !!nativeMsg.headerTitle
-			const buttonsMessage: proto.Message.IButtonsMessage = {
-				contentText: nativeMsg.text || '',
-				footerText: nativeMsg.footer || undefined,
-				headerType: hasHeaderTitle
-					? proto.Message.ButtonsMessage.HeaderType.TEXT
-					: proto.Message.ButtonsMessage.HeaderType.EMPTY,
-				...(hasHeaderTitle ? { text: nativeMsg.headerTitle } : {})
+			const hasHeaderMedia = Boolean(nativeMsg.headerImage || nativeMsg.headerVideo)
+
+			if (buttons.length > MAX_QUICK_REPLY_OPTIONS) {
+				throw new Boom(`Maximum ${MAX_QUICK_REPLY_OPTIONS} reply options allowed`, { statusCode: 400 })
 			}
-			buttonsMessage.buttons = buttons.map((btn: any, idx: number) => ({
-				buttonId: btn.id || `btn_${idx}`,
-				buttonText: { displayText: btn.text || `Button ${idx + 1}` },
-				type: proto.Message.ButtonsMessage.Button.Type.RESPONSE
-			}))
-			m.buttonsMessage = buttonsMessage
-			options.logger?.info('Sending quick_reply as legacy buttonsMessage (iOS compatible)')
+
+			if (hasHeaderMedia && buttons.length > MAX_MEDIA_QUICK_REPLY_BUTTONS) {
+				throw new Boom(`Header media is supported for up to ${MAX_MEDIA_QUICK_REPLY_BUTTONS} reply buttons`, {
+					statusCode: 400
+				})
+			}
+
+			if (buttons.length > MAX_LEGACY_QUICK_REPLY_BUTTONS) {
+				const sections = Array.from(
+					{ length: Math.ceil(buttons.length / LIST_LIMITS.MAX_ROWS_PER_SECTION) },
+					(_, sectionIndex) => {
+						const firstOption = sectionIndex * LIST_LIMITS.MAX_ROWS_PER_SECTION + 1
+						const lastOption = Math.min(firstOption + LIST_LIMITS.MAX_ROWS_PER_SECTION - 1, buttons.length)
+
+						return {
+							// Mobile clients discard multi-section lists whose section titles
+							// are empty. Match the proven nativeList path with a stable title.
+							title: `Options ${firstOption}-${lastOption}`,
+							rows: buttons
+								.slice(
+									sectionIndex * LIST_LIMITS.MAX_ROWS_PER_SECTION,
+									(sectionIndex + 1) * LIST_LIMITS.MAX_ROWS_PER_SECTION
+								)
+								.map((btn: any) => {
+									const displayText = String(btn.text)
+									const title = truncateUtf16(displayText, LIST_LIMITS.MAX_ROW_TITLE)
+
+									return {
+										id: btn.id,
+										title,
+										description:
+											title === displayText ? undefined : truncateUtf16(displayText, LIST_LIMITS.MAX_ROW_DESCRIPTION)
+									}
+								})
+						}
+					}
+				)
+				const generated = generateListMessageLegacy(
+					{ sections },
+					String(nativeMsg.headerTitle || ''),
+					String(nativeMsg.text || ''),
+					'View options',
+					nativeMsg.footer ? String(nativeMsg.footer) : undefined
+				)
+				m.listMessage = generated.listMessage
+				options.logger?.info(
+					{ quickReplyCount: buttons.length, sectionCount: sections.length },
+					'Sending reply options beyond the legacy button limit as listMessage'
+				)
+			} else if (hasHeaderMedia) {
+				const header = await prepareNativeButtonHeader(
+					{
+						headerTitle: nativeMsg.headerTitle,
+						headerImage: nativeMsg.headerImage,
+						headerVideo: nativeMsg.headerVideo
+					},
+					options
+				)
+
+				m.interactiveMessage = {
+					body: { text: nativeMsg.text || '' },
+					footer: nativeMsg.footer ? { text: nativeMsg.footer } : undefined,
+					header,
+					nativeFlowMessage: {
+						buttons: buttons.map(formatNativeFlowButton),
+						messageParamsJson: JSON.stringify({}),
+						messageVersion: 1
+					}
+				}
+				options.logger?.info('Sending media quick_reply as direct nativeFlowMessage')
+			} else {
+				const hasHeaderTitle = Boolean(nativeMsg.headerTitle)
+				m.buttonsMessage = {
+					contentText: nativeMsg.text || '',
+					footerText: nativeMsg.footer || undefined,
+					headerType: hasHeaderTitle
+						? proto.Message.ButtonsMessage.HeaderType.TEXT
+						: proto.Message.ButtonsMessage.HeaderType.EMPTY,
+					...(hasHeaderTitle ? { text: nativeMsg.headerTitle } : {}),
+					buttons: buttons.map((btn: any) => ({
+						buttonId: btn.id,
+						buttonText: { displayText: btn.text },
+						type: proto.Message.ButtonsMessage.Button.Type.RESPONSE
+					}))
+				}
+				options.logger?.info({ quickReplyCount: buttons.length }, 'Sending quick_reply set as legacy buttonsMessage')
+			}
 		} else {
 			// CTA buttons (url, copy, call) — use nativeFlowMessage
 			const buttonOptions: ButtonMessageOptions = {
@@ -1320,8 +1428,8 @@ export const generateWAMessageContent = async (
 				headerVideo: nativeMsg.headerVideo
 			}
 			const generated = await generateButtonMessage(buttonOptions, options)
-			m.viewOnceMessage = generated.viewOnceMessage
-			options.logger?.info('Sending CTA buttons as nativeFlowMessage with viewOnceMessage wrapper')
+			m.interactiveMessage = generated.interactiveMessage
+			options.logger?.info('Sending CTA buttons as direct nativeFlowMessage')
 		}
 	}
 	// Check for nativeCarousel

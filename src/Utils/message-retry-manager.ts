@@ -104,6 +104,10 @@ export interface RecentMessage {
 	to: string
 	message: proto.IMessage
 	timestamp: number
+	/** JID originally supplied by the consumer for delivery-state correlation. */
+	requestedJid?: string
+	/** Public canonical conversation identity resolved before transmission. */
+	canonicalJid?: string
 	/**
 	 * Transport metadata carried by the encrypted child rather than IMessage.
 	 * It must survive an immediate retry so a live-location resend retains the
@@ -130,6 +134,20 @@ export interface RetryStatistics {
 	sessionRecreations: number
 	phoneRequests: number
 }
+
+export interface RetryPayloadTransmissionOptions<T> {
+	manager: MessageRetryManager | null
+	to: string
+	id: string
+	message: proto.IMessage
+	isDirectRetry: boolean
+	liveLocationDuration?: number
+	requestedJid?: string
+	canonicalJid?: string
+	transmit: () => Promise<T>
+}
+
+export type RecentMessageMetadata = Pick<RecentMessage, 'liveLocationDuration' | 'requestedJid' | 'canonicalJid'>
 
 /**
  * Minimal structural mirror for the `message_base_key` typed table. Satisfied
@@ -170,11 +188,11 @@ export class MessageRetryManager {
 			const separatorIndex = key.lastIndexOf(MESSAGE_KEY_SEPARATOR)
 			if (separatorIndex > -1) {
 				const messageId = key.slice(separatorIndex + MESSAGE_KEY_SEPARATOR.length)
-				this.messageKeyIndex.delete(messageId)
+				this.removeMessageKeyIndexEntry(messageId, key)
 			}
 		}
 	})
-	private messageKeyIndex = new Map<string, string>()
+	private messageKeyIndex = new Map<string, { keys: Set<string>; fallbackAmbiguous: boolean }>()
 	private sessionRecreateHistory = new LRUCache<string, number>({
 		// M12 (upstream #2576): bound the cache. Without a max, a server that
 		// targets us with a stream of unique-jid identity changes could grow
@@ -277,12 +295,12 @@ export class MessageRetryManager {
 	/**
 	 * Add a recent message to the cache for retry handling
 	 */
-	addRecentMessage(
-		to: string,
-		id: string,
-		message: proto.IMessage,
-		metadata?: { liveLocationDuration?: number }
-	): void {
+	addRecentMessage(to: string, id: string, message: proto.IMessage, metadata?: RecentMessageMetadata): void {
+		if (!message) {
+			this.logger.debug(`Skipped retry-cache entry without payload: ${to}/${id}`)
+			return
+		}
+
 		const key: RecentMessageKey = { to, id }
 		const keyStr = this.keyToString(key)
 
@@ -291,11 +309,32 @@ export class MessageRetryManager {
 			to,
 			message,
 			timestamp: Date.now(),
-			liveLocationDuration: metadata?.liveLocationDuration
+			liveLocationDuration: metadata?.liveLocationDuration,
+			requestedJid: metadata?.requestedJid,
+			canonicalJid: metadata?.canonicalJid
 		})
-		this.messageKeyIndex.set(id, keyStr)
+		const indexEntry = this.messageKeyIndex.get(id) || { keys: new Set<string>(), fallbackAmbiguous: false }
+		if ([...indexEntry.keys].some(indexedKey => indexedKey !== keyStr)) {
+			indexEntry.fallbackAmbiguous = true
+		}
+
+		indexEntry.keys.add(keyStr)
+		this.messageKeyIndex.set(id, indexEntry)
 
 		this.logger.debug(`Added message to retry cache: ${to}/${id}`)
+	}
+
+	/**
+	 * Stages an outbound payload only when that exact destination and message id
+	 * are not already retained. Returns true when this call created the entry,
+	 * allowing its caller to roll back only its own failed transmission attempt.
+	 */
+	stageRecentMessage(to: string, id: string, message: proto.IMessage, metadata?: RecentMessageMetadata): boolean {
+		if (!message) return false
+		if (this.recentMessagesMap.has(this.keyToString({ to, id }))) return false
+
+		this.addRecentMessage(to, id, message, metadata)
+		return true
 	}
 
 	/**
@@ -304,27 +343,38 @@ export class MessageRetryManager {
 	 * First attempts an exact `to+id` key lookup. If that misses — which happens when
 	 * the retry receipt arrives from a device-specific JID (e.g. `55123:82@s.whatsapp.net`)
 	 * while the message was stored under the normalised base JID (`55123@s.whatsapp.net`),
-	 * or when the JID domain flipped between LID and PN — falls back to the `messageKeyIndex`
-	 * which maps bare message IDs to stored keys regardless of the `to` format.
+	 * or when the JID domain flipped between LID and PN — falls back to the `messageKeyIndex`.
+	 * The fallback is used only when the bare ID identifies exactly one live entry;
+	 * reusing a custom ID across chats must never expose another chat's plaintext.
 	 */
 	getRecentMessage(to: string, id: string): RecentMessage | undefined {
-		const key: RecentMessageKey = { to, id }
-		const keyStr = this.keyToString(key)
-		const exact = this.recentMessagesMap.get(keyStr)
+		return this.getRecentMessageForJids([to], id)
+	}
+
+	/**
+	 * Resolve a retry payload through all known wire aliases before using the
+	 * unique-ID fallback. A send can be staged under LID while the receipt key
+	 * is normalized to PN; exact alias lookup keeps that path deterministic even
+	 * when the same custom message ID exists in another chat.
+	 */
+	getRecentMessageForJids(toJids: readonly string[], id: string): RecentMessage | undefined {
+		const exact = this.getExactRecentMessageForJids(toJids, id)
 		if (exact) return exact
 
-		// Fallback: look up by message ID only to handle JID format mismatches
-		// (device suffix present/absent, LID vs PN, etc.)
-		const indexedKeyStr = this.messageKeyIndex.get(id)
+		const indexedKeyStr = this.getUniqueRecentMessageKey(id)
 		if (indexedKeyStr) {
-			const message = this.recentMessagesMap.get(indexedKeyStr)
-			if (!message) {
-				// The LRU cache evicted this entry; clean up the stale index reference
-				// to prevent repeated futile lookups on subsequent retry receipts.
-				this.messageKeyIndex.delete(id)
-			}
+			const fallback = this.recentMessagesMap.get(indexedKeyStr)
+			if (fallback?.message) return fallback
+		}
 
-			return message
+		return undefined
+	}
+
+	/** Resolve only an explicit destination/alias key; never fall back by message id. */
+	getExactRecentMessageForJids(toJids: readonly string[], id: string): RecentMessage | undefined {
+		for (const to of [...new Set(toJids.filter(Boolean))]) {
+			const exact = this.recentMessagesMap.get(this.keyToString({ to, id }))
+			if (exact?.message) return exact
 		}
 
 		return undefined
@@ -443,25 +493,44 @@ export class MessageRetryManager {
 		return { proceed: true, count: next }
 	}
 
-	/**
-	 * Mark retry as successful
-	 */
-	markRetrySuccess(messageId: string): void {
-		this.statistics.successfulRetries++
-		// Clean up retry counter for successful message
-		this.retryCounters.delete(messageId)
+	/** Completes state held for an inbound message that now decrypts. */
+	markInboundRetrySuccess(messageId: string): boolean {
 		this.cancelPendingPhoneRequest(messageId)
-		this.removeRecentMessage(messageId)
+		if (!this.retryCounters.has(messageId)) return false
+
+		this.statistics.successfulRetries++
+		this.retryCounters.delete(messageId)
+		return true
 	}
 
 	/**
-	 * Mark retry as failed
+	 * Records a successful outbound resend without removing the shared payload.
+	 * A single message is encrypted independently for every companion device, so
+	 * another device can still request its own retry after the first resend.
+	 * The recent-message LRU/TTL remains responsible for eventual cleanup.
 	 */
-	markRetryFailed(messageId: string): void {
+	markOutboundRetrySuccess(): void {
+		this.statistics.successfulRetries++
+	}
+
+	/**
+	 * Discards a payload that was staged before transmission when the stanza
+	 * itself could not be sent. Successful sends remain in the TTL-bounded cache
+	 * so every companion device can independently request a retry.
+	 */
+	discardRecentMessage(to: string, messageId: string): void {
+		this.removeRecentMessage(to, messageId)
+	}
+
+	/**
+	 * Mark an inbound retry as failed and remove only payload aliases belonging
+	 * to that conversation. A custom id reused elsewhere must remain retryable.
+	 */
+	markRetryFailed(messageId: string, toJids: readonly string[] = []): void {
 		this.statistics.failedRetries++
 		this.retryCounters.delete(messageId)
 		this.cancelPendingPhoneRequest(messageId)
-		this.removeRecentMessage(messageId)
+		for (const to of new Set(toJids.filter(Boolean))) this.removeRecentMessage(to, messageId)
 	}
 
 	/**
@@ -537,14 +606,26 @@ export class MessageRetryManager {
 		return `${key.to}${MESSAGE_KEY_SEPARATOR}${key.id}`
 	}
 
-	private removeRecentMessage(messageId: string): void {
-		const keyStr = this.messageKeyIndex.get(messageId)
-		if (!keyStr) {
-			return
-		}
+	private removeMessageKeyIndexEntry(messageId: string, keyStr: string): void {
+		const indexEntry = this.messageKeyIndex.get(messageId)
+		if (!indexEntry) return
 
-		this.recentMessagesMap.delete(keyStr)
-		this.messageKeyIndex.delete(messageId)
+		indexEntry.keys.delete(keyStr)
+		if (indexEntry.keys.size === 0) this.messageKeyIndex.delete(messageId)
+	}
+
+	private getUniqueRecentMessageKey(messageId: string): string | undefined {
+		const indexEntry = this.messageKeyIndex.get(messageId)
+		if (!indexEntry || indexEntry.fallbackAmbiguous) return undefined
+
+		const liveKeys = [...indexEntry.keys].filter(keyStr => this.recentMessagesMap.has(keyStr))
+		if (liveKeys.length !== 1) return undefined
+
+		return liveKeys[0]
+	}
+
+	private removeRecentMessage(to: string, messageId: string): void {
+		this.recentMessagesMap.delete(this.keyToString({ to, id: messageId }))
 	}
 
 	/** Release all caches and cancel pending phone-request timers (called on socket close). */
@@ -574,5 +655,34 @@ export class MessageRetryManager {
 		} catch (err) {
 			this.logger.debug({ err }, 'multi-db-sqlite: unordered_stanza_queue mirror (clear) failed (non-fatal)')
 		}
+	}
+}
+
+/**
+ * Makes an outbound payload retryable before it reaches the wire and rolls
+ * back only the cache entry created by this transmission attempt.
+ */
+export const transmitWithRetryPayload = async <T>({
+	manager,
+	to,
+	id,
+	message,
+	isDirectRetry,
+	liveLocationDuration,
+	requestedJid,
+	canonicalJid,
+	transmit
+}: RetryPayloadTransmissionOptions<T>): Promise<T> => {
+	const staged = Boolean(
+		manager &&
+		!isDirectRetry &&
+		manager.stageRecentMessage(to, id, message, { liveLocationDuration, requestedJid, canonicalJid })
+	)
+
+	try {
+		return await transmit()
+	} catch (error) {
+		if (staged) manager?.discardRecentMessage(to, id)
+		throw error
 	}
 }

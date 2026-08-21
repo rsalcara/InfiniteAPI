@@ -41,6 +41,7 @@ import {
 	getPairCodeCompanionIdentity,
 	getQrCodeCompanionIdentity,
 	incrementNativeAndroidConnectionLc,
+	inspectAuthStateCapabilities,
 	makeEventBuffer,
 	makeNoiseHandler,
 	obfuscateJid,
@@ -64,6 +65,7 @@ import {
 	recordConnectionRestart
 } from '../Utils/prometheus-metrics'
 import { createExpectedSocketTeardownError, isExpectedSocketTeardownError } from '../Utils/socket-teardown'
+import { isRegularUser, resolveTcTokenBucketPolicy, selectNewestUsableTcToken } from '../Utils/tc-token-utils'
 import {
 	createUnifiedSessionManager,
 	extractServerTime,
@@ -78,13 +80,15 @@ import {
 	getAllBinaryNodeChildren,
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
+	isAnyPnUser,
 	isLidUser,
 	jidDecode,
 	jidEncode,
+	jidNormalizedUser,
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { BinaryInfo } from '../WAM/BinaryInfo.js'
-import { USyncQuery, USyncUser } from '../WAUSync/'
+import { mapUSyncResultToLIDMappings, mapUSyncResultToOnWhatsApp, USyncQuery, USyncUser } from '../WAUSync/'
 import { getAuthStoreDrainBarrier, registerAuthStoreDrainBarrier } from './auth-store-drain-barrier'
 import { TcpSocketClient, WebSocketClient } from './Client'
 import { executeWMexQuery } from './mex'
@@ -105,7 +109,6 @@ export const makeSocket = (config: SocketConfig) => {
 		connectTimeoutMs,
 		logger,
 		keepAliveIntervalMs,
-		browser,
 		auth: authState,
 		printQRInTerminal,
 		defaultQueryTimeoutMs,
@@ -119,13 +122,21 @@ export const makeSocket = (config: SocketConfig) => {
 	} = config
 	const transportSession = resolveTransportSession(config, authState.creds)
 	const isNativeAndroid = transportSession.profile === 'native_android'
+	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(transportSession.profile, config.tcTokenAbProps)
 	let closed = false
 	const pairingCodeMutex = makeMutex()
 	// ClientPayload must use the resolved, persisted native identity rather than
 	// the caller's current environment values. This keeps reconnects immutable.
 	const payloadConfig: SocketConfig = isNativeAndroid
 		? { ...config, nativeAndroid: transportSession.nativeAndroid }
-		: config
+		: transportSession.webIdentity
+			? {
+					...config,
+					browser: [...transportSession.webIdentity.browser],
+					syncFullHistory: transportSession.webIdentity.syncFullHistory
+				}
+			: config
+	const browser = payloadConfig.browser
 
 	// Resolve enableUnifiedSession: explicit config > env var > default (true)
 	const enableUnifiedSession =
@@ -430,15 +441,7 @@ export const makeSocket = (config: SocketConfig) => {
 		// variable below has only validated users
 		const validUsers = usyncQuery.users
 
-		const userNodes = validUsers.map(user => {
-			return {
-				tag: 'user',
-				attrs: {
-					jid: !user.phone ? user.id : undefined
-				},
-				content: usyncQuery.protocols.map(a => a.getUserElement(user)).filter(a => a !== null)
-			} as BinaryNode
-		})
+		const userNodes = validUsers.map(user => usyncQuery.buildUserNode(user))
 
 		const listNode: BinaryNode = {
 			tag: 'list',
@@ -504,19 +507,54 @@ export const makeSocket = (config: SocketConfig) => {
 		const results = await executeUSyncQuery(usyncQuery)
 
 		if (results) {
-			return results.list.filter(a => !!a.contact).map(({ contact, id }) => ({ jid: id, exists: contact as boolean }))
+			const requestedPns = phoneNumber
+				.map(jid => jidNormalizedUser(jid))
+				.filter((jid): jid is string => isAnyPnUser(jid))
+			return mapUSyncResultToOnWhatsApp(results.list, requestedPns)
 		}
 	}
 
 	const pnFromLIDUSync = async (jids: string[]): Promise<LIDMapping[] | undefined> => {
 		const usyncQuery = new USyncQuery().withLIDProtocol().withContext('background')
+		const regularJids = jids.filter(jid => !isLidUser(jid) && isRegularUser(jid))
+		const aliasGroups = await Promise.all(
+			regularJids.map(async jid => {
+				const knownLid = await signalRepository?.lidMapping.getKnownLIDForPN(jid).catch(() => null)
+				return [knownLid, jid].filter((value): value is string => Boolean(value))
+			})
+		)
+		const tokenIds = [...new Set(aliasGroups.flat())]
+		let tcTokenData: Awaited<ReturnType<typeof keys.get<'tctoken'>>> = {}
+		if (tokenIds.length) {
+			try {
+				tcTokenData = await keys.get('tctoken', tokenIds)
+			} catch (error) {
+				// A token enriches USync but is not required to resolve the mapping.
+				// Preserve the base lookup when a custom auth store is temporarily unavailable.
+				logger.debug({ error, count: tokenIds.length }, 'PN-to-LID USync continuing without optional TcToken state')
+			}
+		}
+
+		let regularIndex = 0
 
 		for (const jid of jids) {
 			if (isLidUser(jid)) {
 				logger?.warn('LID user found in LID fetch call')
 				continue
 			} else {
-				usyncQuery.withUser(new USyncUser().withId(jid))
+				const user = new USyncUser().withId(jid)
+				if (isRegularUser(jid)) {
+					const aliases = aliasGroups[regularIndex++] ?? [jid]
+					const privacyToken = selectNewestUsableTcToken(
+						aliases.map(alias => [alias, tcTokenData[alias]] as const),
+						tcTokenBucketPolicy
+					)
+					if (privacyToken.entry?.token.length) {
+						user.withPrivacyToken(privacyToken.entry.token, privacyToken.entry.timestamp)
+					}
+				}
+
+				usyncQuery.withUser(user)
 			}
 		}
 
@@ -527,7 +565,7 @@ export const makeSocket = (config: SocketConfig) => {
 		const results = await executeUSyncQuery(usyncQuery)
 
 		if (results) {
-			return results.list.filter(a => !!a.lid).map(({ lid, id }) => ({ pn: id, lid: lid as string }))
+			return mapUSyncResultToLIDMappings(results.list, regularJids)
 		}
 
 		return []
@@ -546,18 +584,32 @@ export const makeSocket = (config: SocketConfig) => {
 		// Consumers attach `creds.update` after makeWASocket returns. Emitting
 		// synchronously here loses the first durable transport identity and a QR
 		// refresh can then select a different catalog entry.
-		setTimeout(
-			() =>
-				ev.emit('creds.update', {
+		const identityUpdate = isNativeAndroid
+			? {
 					nativeAndroidIdentity: authState.creds.nativeAndroidIdentity,
 					registered: authState.creds.registered
-				}),
-			0
-		)
-		logger.info(
-			{ transportProfile: 'native_android', selectedProfileId: transportSession.nativeAndroid!.device.profileId },
-			'native_android identity selected and persisted for this session'
-		)
+				}
+			: {
+					webTransportIdentity: authState.creds.webTransportIdentity,
+					registered: authState.creds.registered
+				}
+		setTimeout(() => ev.emit('creds.update', identityUpdate), 0)
+		if (isNativeAndroid) {
+			logger.info(
+				{ transportProfile: 'native_android', selectedProfileId: transportSession.nativeAndroid!.device.profileId },
+				'native_android identity selected and persisted for this session'
+			)
+		} else {
+			logger.info(
+				{
+					transportProfile: 'web',
+					connectionPreset: transportSession.webIdentity!.preset,
+					browser: transportSession.webIdentity!.browser,
+					syncFullHistory: transportSession.webIdentity!.syncFullHistory
+				},
+				'Web identity selected and persisted for this session'
+			)
+		}
 	}
 
 	const { creds } = authState
@@ -607,6 +659,32 @@ export const makeSocket = (config: SocketConfig) => {
 	// once here so `markConnectionActive` (on open) and `markConnectionInactive`
 	// (in end()) always reference the same id.
 	const connectionId = `sock:${randomBytes(8).toString('hex')}`
+	const accountJid = jidNormalizedUser(authState.creds.me?.id) || undefined
+	const authInstanceId = config.instanceId?.trim() || accountJid || connectionId
+	const authInspection = inspectAuthStateCapabilities(authState, authInstanceId, accountJid)
+	const authCapabilities = authInspection.capabilities
+	if (!authCapabilities.appStateSyncRecovery) {
+		const report =
+			authCapabilities.appStateSyncRecoveryReason === 'missing-store'
+				? logger.warn.bind(logger)
+				: logger.error.bind(logger)
+		report(
+			{
+				code: 'APP_STATE_SYNC_RECOVERY_UNAVAILABLE',
+				reason: authCapabilities.appStateSyncRecoveryReason,
+				backend: authCapabilities.backend,
+				instanceId: authCapabilities.instanceId,
+				accountJid: authCapabilities.accountJid,
+				issues: authCapabilities.issues
+			},
+			'app-state sync key recovery is unavailable for this auth state'
+		)
+	}
+
+	// Defer the public event by one microtask so callers can attach listeners
+	// immediately after makeWASocket() returns. It is emitted once per socket,
+	// independently of whether the transport reaches the open state.
+	queueMicrotask(() => ev.emit('auth-state.capabilities', authCapabilities))
 
 	// Callbacks run on socket close to release per-module resources (caches, timers) and prevent
 	// memory leaks on disconnect. Adapted from upstream #2191 — but we deliberately do NOT call
@@ -2083,6 +2161,8 @@ export const makeSocket = (config: SocketConfig) => {
 				// with account/me so reconnects cannot rotate the device profile.
 				updatedCreds.registered = true
 				updatedCreds.nativeAndroidIdentity = authState.creds.nativeAndroidIdentity
+			} else {
+				updatedCreds.webTransportIdentity = authState.creds.webTransportIdentity
 			}
 
 			logger.info(
@@ -2162,7 +2242,7 @@ export const makeSocket = (config: SocketConfig) => {
 
 		// Emit connection:open immediately so the application layer begins processing
 		// incoming messages without waiting for any WA round-trips.
-		ev.emit('connection.update', { connection: 'open' })
+		ev.emit('connection.update', { connection: 'open', authCapabilities })
 
 		// ─── Background: sendPassiveIq + pre-key validation + key-bundle digest ──
 		// sendPassiveIq('active') tells the WA edge server to start routing live
@@ -2514,7 +2594,15 @@ export const makeSocket = (config: SocketConfig) => {
 		type: 'md' as 'md',
 		ws,
 		ev,
-		authState: { creds, keys },
+		authState: {
+			creds,
+			keys,
+			historySync: authState.historySync,
+			appStateSyncKeys: authInspection.appStateSyncKeys,
+			storage: authState.storage
+		},
+		authCapabilities,
+		tcTokenBucketPolicy,
 		signalRepository,
 		sessionCleanup,
 		sessionActivityTracker,

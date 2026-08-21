@@ -1,6 +1,7 @@
 import { DEFAULT_CONNECTION_CONFIG } from '../Defaults'
 import type { SocketConfig, UserFacingSocketConfig, WAVersion } from '../Types'
 import { attachAdminAbuseDetector } from '../Utils/admin-abuse-detector'
+import { resolveUnmarkedLegacyWebBrowser, shouldPreserveUnmarkedLegacyWebIdentity } from '../Utils/connection-presets'
 import { attachMeUsernameSync } from '../Utils/me-username-sync'
 import {
 	createMessageQuarantineRecorder,
@@ -62,13 +63,34 @@ const isCriticalVersionChange = (oldVersion: WAVersion, newVersion: WAVersion): 
 	return oldVersion[0] !== newVersion[0] || oldVersion[1] !== newVersion[1]
 }
 
-// export the last socket layer
-const makeWASocket = (config: UserFacingSocketConfig) => {
-	const newConfig = {
+const mergeSocketConfig = (config: UserFacingSocketConfig): SocketConfig => {
+	const mergedConfig: SocketConfig = {
 		...DEFAULT_CONNECTION_CONFIG,
 		...config
 	}
+	const creds = config.auth.creds
+	const transportProfile = config.transportProfile ?? DEFAULT_CONNECTION_CONFIG.transportProfile
+	const isLegacyUnmarkedWebSession = shouldPreserveUnmarkedLegacyWebIdentity(
+		creds,
+		transportProfile,
+		config.browser !== undefined
+	)
 
+	// Before Web identities were persisted the library defaulted to the Android
+	// browser tuple. Preserve it only for registered, unmarked sessions whose
+	// consumer did not provide a browser explicitly. New sessions use the
+	// official Windows hybrid default.
+	if (isLegacyUnmarkedWebSession && config.browser === undefined) {
+		mergedConfig.browser = resolveUnmarkedLegacyWebBrowser(
+			mergedConfig.browser ?? DEFAULT_CONNECTION_CONFIG.browser,
+			process.env.BAILEYS_BROWSER
+		)
+	}
+
+	return mergedConfig
+}
+
+const makeWASocketFromConfig = (newConfig: SocketConfig) => {
 	wireRemainingMsgstoreAdapters(newConfig)
 
 	const sock = makeCommunitiesSocket(newConfig)
@@ -88,6 +110,9 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 
 	return sock
 }
+
+// export the last socket layer
+const makeWASocket = (config: UserFacingSocketConfig) => makeWASocketFromConfig(mergeSocketConfig(config))
 
 /**
  * Creates a WhatsApp socket connection with automatic version fetching
@@ -117,10 +142,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
  * ```
  */
 export const makeWASocketAutoVersion = async (config: UserFacingSocketConfig) => {
-	const mergedConfig = {
-		...DEFAULT_CONNECTION_CONFIG,
-		...config
-	}
+	const mergedConfig = mergeSocketConfig(config)
 
 	const logger = mergedConfig.logger
 	const cacheLogger = createCacheLogger(logger)
@@ -166,7 +188,7 @@ export const makeWASocketAutoVersion = async (config: UserFacingSocketConfig) =>
 	}
 
 	// Create the socket
-	const sock = makeWASocket(mergedConfig)
+	const sock = makeWASocketFromConfig(mergedConfig)
 
 	// Listen for connection close to cleanup interval (Fix #1, #6)
 	// This handles both explicit sock.end() and internal disconnections
