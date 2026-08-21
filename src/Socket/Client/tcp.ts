@@ -1,4 +1,10 @@
 import net from 'net'
+import type { NativeAndroidConnectionEndpoint } from '../../Types'
+import {
+	connectNativeAndroidCandidate,
+	iterateNativeAndroidConnectionSequence,
+	type NativeConnectionCandidate
+} from '../../Utils/native-android-connection-sequence'
 import { AbstractSocketClient } from './types'
 
 type TcpState = 'idle' | 'connecting' | 'open' | 'closing' | 'closed'
@@ -7,7 +13,10 @@ type TcpState = 'idle' | 'connecting' | 'open' | 'closing' | 'closed'
 export class TcpSocketClient extends AbstractSocketClient {
 	protected socket: net.Socket | null = null
 	private state: TcpState = 'idle'
-	private connectTimer?: ReturnType<typeof setTimeout>
+	selectedEndpoint?: NativeAndroidConnectionEndpoint
+	connectAttemptCount = 0
+	dnsAppCached = false
+	addressSource = 1
 
 	get isOpen(): boolean {
 		return this.state === 'open' && Boolean(this.socket && !this.socket.destroyed)
@@ -27,36 +36,89 @@ export class TcpSocketClient extends AbstractSocketClient {
 
 	connect() {
 		if (this.socket || this.state === 'connecting' || this.state === 'open') return
+		this.state = 'connecting'
+		void this.connectSequence()
+	}
 
-		const port = this.url.port ? Number.parseInt(this.url.port, 10) : 443
-		if (!Number.isInteger(port) || port < 1 || port > 65535) {
-			throw new Error(`native_android: invalid TCP port ${this.url.port}`)
+	private async connectSequence() {
+		const native = this.config.nativeAndroid
+		if (!native) {
+			this.state = 'closed'
+			this.emit('error', new Error('native_android: transport configuration is missing'))
+			return
 		}
 
-		this.state = 'connecting'
-		this.socket = net.createConnection({ host: this.url.hostname, port })
-		this.connectTimer = setTimeout(() => {
-			const error = new Error(`native_android: TCP connect timed out after ${this.config.connectTimeoutMs}ms`)
+		let candidates: AsyncGenerator<NativeConnectionCandidate>
+		try {
+			const urlPort = this.url.port ? Number.parseInt(this.url.port, 10) : 443
+			const hasExplicitUrlOverride = this.url.hostname !== 'g.whatsapp.net' || urlPort !== 443
+			candidates = iterateNativeAndroidConnectionSequence({
+				config: hasExplicitUrlOverride ? { ...native, host: this.url.hostname, port: urlPort } : native,
+				persisted: this.config.auth?.creds?.nativeAndroidIdentity
+			})
+		} catch (error) {
+			this.state = 'closed'
 			this.emit('error', error)
-			this.socket?.destroy(error)
-		}, this.config.connectTimeoutMs)
+			return
+		}
 
-		this.socket.once('connect', () => {
-			if (this.connectTimer) clearTimeout(this.connectTimer)
-			this.connectTimer = undefined
-			if (this.state !== 'connecting') return
-			this.state = 'open'
-			this.emit('open')
-		})
-		this.socket.on('data', data => this.emit('message', data))
-		this.socket.on('error', error => this.emit('error', error))
-		this.socket.once('close', hadError => {
-			if (this.connectTimer) clearTimeout(this.connectTimer)
-			this.connectTimer = undefined
+		let lastError: Error | undefined
+		try {
+			let index = 0
+			for await (const candidate of candidates) {
+				if (this.state !== 'connecting') return
+				try {
+					const socket = await connectNativeAndroidCandidate(candidate, native.proxy, this.config.connectTimeoutMs)
+					if (this.state !== 'connecting') {
+						socket.destroy()
+						return
+					}
+					this.connectAttemptCount = index
+					this.attachConnectedSocket(socket, candidate)
+					return
+				} catch (error) {
+					lastError = error instanceof Error ? error : new Error(String(error))
+					this.config.logger.debug(
+						{
+							host: candidate.host,
+							port: candidate.port,
+							source: candidate.source,
+							proxied: Boolean(native.proxy),
+							error: lastError.message
+						},
+						'native_android: connection candidate failed'
+					)
+				}
+				index++
+			}
+		} catch (error) {
+			lastError = error instanceof Error ? error : new Error(String(error))
+		}
+
+		this.state = 'closed'
+		this.emit('error', lastError || new Error('native_android: no connection candidates are available'))
+	}
+
+	private attachConnectedSocket(socket: net.Socket, candidate: NativeConnectionCandidate) {
+		this.socket = socket
+		this.selectedEndpoint = {
+			host: candidate.host,
+			address: candidate.address,
+			port: candidate.port,
+			source: candidate.source,
+			sequenceStep: candidate.sequenceStep
+		}
+		this.dnsAppCached = candidate.dnsCached
+		this.addressSource = candidate.addressSource
+		this.state = 'open'
+		socket.on('data', data => this.emit('message', data))
+		socket.on('error', error => this.emit('error', error))
+		socket.once('close', hadError => {
 			this.state = 'closed'
 			this.socket = null
 			this.emit('close', hadError)
 		})
+		this.emit('open')
 	}
 
 	async close(timeoutMs = 5000) {

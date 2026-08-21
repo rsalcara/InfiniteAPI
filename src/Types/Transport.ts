@@ -86,6 +86,29 @@ export type NativeAndroidHistorySyncProfile = {
 	supportedBotChannelFbids: string[]
 }
 
+export type NativeAndroidProxyConfig = {
+	/** The proxy is an egress boundary for the native transport. */
+	type: 'http-connect' | 'https-connect' | 'socks4' | 'socks5'
+	host: string
+	port: number
+	username?: string
+	password?: string
+	/** SOCKS5 resolves WhatsApp hostnames remotely by default. */
+	resolveDns?: boolean
+}
+
+export type NativeAndroidConnectionEndpoint = {
+	host: string
+	port: number
+	address?: string
+	source?: 'configured' | 'history' | 'server' | 'dns' | 'hardcoded' | 'edge' | 'fallback'
+	/**
+	 * Official ConnectionSequence state that produced this endpoint. Server
+	 * endpoints use state 2 (primary) or 8 (secondary).
+	 */
+	sequenceStep?: number
+}
+
 export type NativeAndroidAttestationProvider = (context: {
 	stanza: BinaryNode
 	profileId: string
@@ -129,6 +152,12 @@ export type NativeAndroidTransportConfig = {
 	 * built-in persistent Node X.509 compatibility provider.
 	 */
 	attestationProvider?: NativeAndroidAttestationProvider
+	/** Optional server-provided endpoints, tried before the built-in sequence. */
+	connectionEndpoints?: NativeAndroidConnectionEndpoint[]
+	/** Explicit egress proxy for native TCP. This is independent from SocketConfig.agent. */
+	proxy?: NativeAndroidProxyConfig
+	/** Optional official IP table supplied by the embedding application. No IPs are invented by the library. */
+	hardcodedAddresses?: Record<string, string[]>
 }
 
 export type PersistedNativeAndroidIdentity = {
@@ -154,4 +183,6 @@ export type PersistedNativeAndroidIdentity = {
 	 * logged.
 	 */
 	serverStaticPublicKey?: Uint8Array
+	/** Last successful native connection candidate, used by the history step. */
+	connectionEndpoint?: NativeAndroidConnectionEndpoint
 }

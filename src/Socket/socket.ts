@@ -164,7 +164,7 @@ export const makeSocket = (config: SocketConfig) => {
 			? new URL(waWebSocketUrl)
 			: waWebSocketUrl
 
-	const nativeClientPayloadContext = isNativeAndroid
+	let nativeClientPayloadContext = isNativeAndroid
 		? createNativeAndroidClientPayloadContext({
 				phase: resolveNativeAndroidClientPayloadPhase({
 					hasRegisteredIdentity: Boolean(authState.creds.me),
@@ -2032,6 +2032,19 @@ export const makeSocket = (config: SocketConfig) => {
 
 	ws.on('open', async () => {
 		try {
+			if (isNativeAndroid && ws instanceof TcpSocketClient && ws.selectedEndpoint && nativeClientPayloadContext) {
+				nativeClientPayloadContext = createNativeAndroidClientPayloadContext({
+					phase: nativeClientPayloadContext.phase,
+					connectionLc: nativeClientPayloadContext.connectionLc,
+					sessionId: nativeClientPayloadContext.sessionId,
+					port: ws.selectedEndpoint.port,
+					sequenceStep: ws.selectedEndpoint.sequenceStep ?? 1,
+					dnsAppCached: ws.dnsAppCached,
+					connectAttemptCount: ws.connectAttemptCount,
+					addressSource: ws.addressSource,
+					proxyDirectness: transportSession.nativeAndroid?.proxy ? 1 : 0
+				})
+			}
 			await validateConnection()
 		} catch (err: any) {
 			logger.error({ err }, 'error in validating connection')
@@ -2214,6 +2227,9 @@ export const makeSocket = (config: SocketConfig) => {
 		ev.emit('creds.update', { me: { ...authState.creds.me!, lid: node.attrs.lid } })
 
 		if (isNativeAndroid && authState.creds.nativeAndroidIdentity && nativeClientPayloadContext) {
+			if (ws instanceof TcpSocketClient && ws.selectedEndpoint) {
+				authState.creds.nativeAndroidIdentity.connectionEndpoint = { ...ws.selectedEndpoint }
+			}
 			const connectionLc = incrementNativeAndroidConnectionLc(nativeClientPayloadContext.connectionLc)
 			authState.creds.nativeAndroidIdentity.connectionLc = connectionLc
 			ev.emit('creds.update', { nativeAndroidIdentity: authState.creds.nativeAndroidIdentity })

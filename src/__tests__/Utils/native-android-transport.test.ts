@@ -485,6 +485,12 @@ describe('native_android transport contract', () => {
 				initialRoutingInfo: 'not-bytes' as unknown as Uint8Array
 			})
 		).toThrow('initialRoutingInfo must be bytes')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
+				connectionEndpoints: [{ host: 'server.example', address: 'not-an-ip', port: 443 }]
+			})
+		).toThrow('connection endpoint address must be an IP address')
 
 		const creds = initAuthCreds()
 		resolveTransportSession(nativeConfig(), creds)
@@ -735,5 +741,75 @@ describe('TcpSocketClient', () => {
 			await client.close()
 			await new Promise<void>(resolve => server.close(() => resolve()))
 		}
+	})
+
+	it('advances to the next connection candidate only after a TCP failure', async () => {
+		const unavailable = net.createServer()
+		await new Promise<void>(resolve => unavailable.listen(0, '127.0.0.1', resolve))
+		const unavailableAddress = unavailable.address()
+		if (!unavailableAddress || typeof unavailableAddress === 'string') throw new Error('unavailable server did not bind')
+		await new Promise<void>(resolve => unavailable.close(() => resolve()))
+
+		const available = net.createServer()
+		await new Promise<void>(resolve => available.listen(0, '127.0.0.1', resolve))
+		const availableAddress = available.address()
+		if (!availableAddress || typeof availableAddress === 'string') throw new Error('available server did not bind')
+
+		const config = nativeConfig()
+		config.nativeAndroid = {
+			...config.nativeAndroid!,
+			connectionEndpoints: [
+				{ host: '127.0.0.1', port: unavailableAddress.port, sequenceStep: 2 },
+				{ host: '127.0.0.1', port: availableAddress.port, sequenceStep: 2 }
+			]
+		}
+		const client = new TcpSocketClient(new URL('tcp://g.whatsapp.net:443'), config)
+		try {
+			await new Promise<void>((resolve, reject) => {
+				client.once('open', resolve)
+				client.once('error', reject)
+				client.connect()
+			})
+			expect(client.connectAttemptCount).toBe(1)
+			expect(client.selectedEndpoint).toMatchObject({
+				host: '127.0.0.1',
+				port: availableAddress.port,
+				sequenceStep: 2
+			})
+		} finally {
+			await client.close()
+			await new Promise<void>(resolve => available.close(() => resolve()))
+		}
+	})
+
+	it('never includes proxy credentials in connection diagnostics', async () => {
+		const unavailable = net.createServer()
+		await new Promise<void>(resolve => unavailable.listen(0, '127.0.0.1', resolve))
+		const address = unavailable.address()
+		if (!address || typeof address === 'string') throw new Error('unavailable proxy did not bind')
+		await new Promise<void>(resolve => unavailable.close(() => resolve()))
+
+		const debug = jest.fn()
+		const config = nativeConfig()
+		config.logger = { ...config.logger, debug } as SocketConfig['logger']
+		config.nativeAndroid = {
+			...config.nativeAndroid!,
+			proxy: {
+				type: 'http-connect',
+				host: '127.0.0.1',
+				port: address.port,
+				username: 'sensitive-user',
+				password: 'sensitive-password'
+			}
+		}
+		const client = new TcpSocketClient(new URL('tcp://127.0.0.1:443'), config)
+		await new Promise<void>(resolve => {
+			client.once('error', () => resolve())
+			client.connect()
+		})
+
+		const diagnostics = JSON.stringify(debug.mock.calls)
+		expect(diagnostics).not.toContain('sensitive-user')
+		expect(diagnostics).not.toContain('sensitive-password')
 	})
 })
