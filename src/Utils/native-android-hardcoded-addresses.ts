@@ -65,7 +65,13 @@ export const OFFICIAL_NATIVE_ANDROID_HARDCODED_ADDRESSES: Readonly<Record<string
 	...Object.fromEntries(Array.from({ length: 16 }, (_, index) => [`e${index + 1}.whatsapp.net`, EDGE_ADDRESSES]))
 }
 
-export const resolveNativeAndroidHardcodedAddresses = (overrides?: Record<string, string[]>) => ({
-	...OFFICIAL_NATIVE_ANDROID_HARDCODED_ADDRESSES,
-	...overrides
-})
+export const resolveNativeAndroidHardcodedAddresses = (overrides?: Record<string, string[]>) => {
+	const normalizedOverrides = Object.fromEntries(
+		Object.entries(overrides || {}).map(([host, addresses]) => [
+			host.trim().replace(/\.$/, '').toLowerCase(),
+			addresses
+		])
+	)
+
+	return { ...OFFICIAL_NATIVE_ANDROID_HARDCODED_ADDRESSES, ...normalizedOverrides }
+}

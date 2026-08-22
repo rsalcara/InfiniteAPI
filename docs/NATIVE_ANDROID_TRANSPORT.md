@@ -98,6 +98,13 @@ minutes or sixteen per-candidate connect timeouts. HTTP CONNECT uses one deadlin
 for the proxy TCP/TLS handshake and CONNECT response; it does not receive a
 second full timeout after the proxy connection opens.
 
+Server-provided `connectionEndpoints` may identify only state 2 (primary) or
+state 8 (secondary), matching the Android state machine. Invalid hostnames,
+ports, endpoint states and hardcoded address tables are rejected before any
+network I/O. Empty or malformed DNS answers are not cached. Closing a socket
+while DNS/TCP/TLS is pending cancels the active attempt, and the losing side of
+an IPv4/IPv6 Happy Eyeballs race is also cancelled.
+
 The product proxy is intentionally an egress overlay rather than Android's
 internal single user-proxy state: all sequence candidates remain available,
 but every one is forced through the configured geographic proxy. This preserves

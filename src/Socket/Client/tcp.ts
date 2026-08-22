@@ -16,6 +16,7 @@ const MAX_NODE_TIMER_MS = 2_147_483_647
 export class TcpSocketClient extends AbstractSocketClient {
 	protected socket: net.Socket | null = null
 	private state: TcpState = 'idle'
+	private connectAbortController?: AbortController
 	selectedEndpoint?: NativeAndroidConnectionEndpoint
 	connectAttemptCount = 0
 	dnsAppCached = false
@@ -50,6 +51,9 @@ export class TcpSocketClient extends AbstractSocketClient {
 			return
 		}
 
+		const abortController = new AbortController()
+		this.connectAbortController = abortController
+		const isCurrentAttempt = () => this.state === 'connecting' && this.connectAbortController === abortController
 		const defaultSequenceTimeoutMs = Math.min(
 			Math.max(Number.isFinite(this.config.connectTimeoutMs) ? this.config.connectTimeoutMs * 16 : 0, 120_000),
 			MAX_NODE_TIMER_MS
@@ -63,7 +67,8 @@ export class TcpSocketClient extends AbstractSocketClient {
 				config: hasExplicitUrlOverride ? { ...native, host: this.url.hostname, port: urlPort } : native,
 				persisted: this.config.auth?.creds?.nativeAndroidIdentity,
 				dnsTimeoutMs: native.dnsTimeoutMs ?? this.config.connectTimeoutMs,
-				sequenceDeadline
+				sequenceDeadline,
+				signal: abortController.signal
 			})
 		} catch (error) {
 			this.emitTerminalFailure(error)
@@ -74,7 +79,7 @@ export class TcpSocketClient extends AbstractSocketClient {
 		try {
 			let index = 0
 			for await (const candidate of candidates) {
-				if (this.state !== 'connecting') return
+				if (!isCurrentAttempt()) return
 				const remainingSequenceMs = sequenceDeadline - Date.now()
 				if (remainingSequenceMs <= 0) {
 					lastError = new Error('native_android: connection sequence timed out')
@@ -85,17 +90,20 @@ export class TcpSocketClient extends AbstractSocketClient {
 					const socket = await connectNativeAndroidCandidate(
 						candidate,
 						native.proxy,
-						Math.min(this.config.connectTimeoutMs, remainingSequenceMs)
+						Math.min(this.config.connectTimeoutMs, remainingSequenceMs),
+						abortController.signal
 					)
-					if (this.state !== 'connecting') {
+					if (!isCurrentAttempt()) {
 						socket.destroy()
 						return
 					}
 
 					this.connectAttemptCount = index
+					if (this.connectAbortController === abortController) this.connectAbortController = undefined
 					this.attachConnectedSocket(socket, candidate)
 					return
 				} catch (error) {
+					if (!isCurrentAttempt()) return
 					lastError = error instanceof Error ? error : new Error(String(error))
 					this.config.logger.debug(
 						{
@@ -115,6 +123,8 @@ export class TcpSocketClient extends AbstractSocketClient {
 			lastError = error instanceof Error ? error : new Error(String(error))
 		}
 
+		if (!isCurrentAttempt()) return
+		this.connectAbortController = undefined
 		this.emitTerminalFailure(lastError || new Error('native_android: no connection candidates are available'))
 	}
 
@@ -152,6 +162,8 @@ export class TcpSocketClient extends AbstractSocketClient {
 	}
 
 	async close(timeoutMs = 5000) {
+		this.connectAbortController?.abort()
+		this.connectAbortController = undefined
 		const socket = this.socket
 		if (!socket) {
 			this.state = 'closed'

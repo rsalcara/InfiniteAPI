@@ -1,6 +1,8 @@
 import { jest } from '@jest/globals'
 import { createHash } from 'crypto'
 import net from 'net'
+import { Duplex } from 'stream'
+import tls from 'tls'
 import { proto } from '../../../WAProto/index.js'
 import {
 	DEFAULT_CONNECTION_CONFIG,
@@ -512,6 +514,30 @@ describe('native_android transport contract', () => {
 		expect(() =>
 			validateNativeAndroidConfig({
 				...nativeAndroid,
+				host: 'invalid host name'
+			})
+		).toThrow('host must be a valid IP address or DNS name')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
+				port: 0
+			})
+		).toThrow('port is invalid')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
+				connectionEndpoints: [{ host: 'server.example', port: 443, sequenceStep: 7 }]
+			})
+		).toThrow('sequenceStep must be 2 or 8')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
+				hardcodedAddresses: null as unknown as Record<string, string[]>
+			})
+		).toThrow('hardcodedAddresses must be an object')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
 				dnsTimeoutMs: 0
 			})
 		).toThrow('dnsTimeoutMs must be a positive integer')
@@ -878,5 +904,99 @@ describe('TcpSocketClient', () => {
 		expect(errors.length).toBeGreaterThan(0)
 		expect(closeCount).toBe(1)
 		expect(client.isClosed).toBe(true)
+	})
+
+	it('cancels an in-flight native connection when closed', async () => {
+		class PendingTlsSocket extends Duplex {
+			_write(_chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void) {
+				callback()
+			}
+			_read() {}
+		}
+		const tunnel = new PendingTlsSocket()
+		const connect = jest.spyOn(tls, 'connect').mockReturnValue(tunnel as unknown as tls.TLSSocket)
+		const config = nativeConfig()
+		config.nativeAndroid = {
+			...config.nativeAndroid!,
+			proxy: { type: 'https-connect', host: 'secure-proxy.example', port: 443 }
+		}
+		const client = new TcpSocketClient(new URL('tcp://g.whatsapp.net:443'), config)
+		const errors: Error[] = []
+		client.on('error', error => errors.push(error))
+
+		try {
+			client.connect()
+			await new Promise<void>(resolve => setImmediate(resolve))
+			await client.close()
+			await new Promise<void>(resolve => setImmediate(resolve))
+
+			expect(client.isClosed).toBe(true)
+			expect(tunnel.destroyed).toBe(true)
+			expect(errors).toHaveLength(0)
+		} finally {
+			connect.mockRestore()
+			tunnel.destroy()
+		}
+	})
+
+	it('does not let an aborted generation close an immediate reconnect', async () => {
+		const sockets = new Set<net.Socket>()
+		let connectionCount = 0
+		let markFirstStarted!: () => void
+		const firstStarted = new Promise<void>(resolve => {
+			markFirstStarted = resolve
+		})
+		const proxy = net.createServer(socket => {
+			sockets.add(socket)
+			socket.once('close', () => sockets.delete(socket))
+			connectionCount++
+			if (connectionCount === 1) {
+				markFirstStarted()
+				return
+			}
+
+			socket.once('data', () => socket.write('HTTP/1.1 200 Connection Established\r\n\r\n'))
+		})
+		await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve))
+		const proxyAddress = proxy.address()
+		if (!proxyAddress || typeof proxyAddress === 'string') throw new Error('proxy did not expose a TCP port')
+		const config = nativeConfig()
+		config.nativeAndroid = {
+			...config.nativeAndroid!,
+			proxy: { type: 'http-connect', host: '127.0.0.1', port: proxyAddress.port }
+		}
+		const client = new TcpSocketClient(new URL('tcp://g.whatsapp.net:443'), config)
+		const errors: Error[] = []
+		client.on('error', error => errors.push(error))
+
+		try {
+			client.connect()
+			await firstStarted
+			await client.close()
+			const opened = new Promise<void>(resolve => client.once('open', resolve))
+			client.connect()
+			await Promise.race([
+				opened,
+				new Promise<never>((_resolve, reject) =>
+					setTimeout(
+						() =>
+							reject(
+								new Error(
+									`immediate reconnect did not open (connections=${connectionCount}, connecting=${client.isConnecting}, closed=${client.isClosed})`
+								)
+							),
+						1000
+					)
+				)
+			])
+
+			expect(client.isOpen).toBe(true)
+			expect(connectionCount).toBe(2)
+			expect(errors).toHaveLength(0)
+		} finally {
+			await client.close()
+			for (const socket of sockets) socket.destroy()
+			await new Promise<void>(resolve => proxy.close(() => resolve()))
+		}
 	})
 })

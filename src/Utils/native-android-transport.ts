@@ -51,6 +51,21 @@ const requiredString = (value: unknown, field: string) => {
 	}
 }
 
+const requiredHost = (value: unknown, field: string) => {
+	requiredString(value, field)
+	const host = (value as string).trim()
+	const socketHost = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+	if (net.isIP(socketHost)) return
+
+	const normalized = socketHost.endsWith('.') ? socketHost.slice(0, -1) : socketHost
+	const validDnsName =
+		normalized.length <= 253 &&
+		normalized.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label))
+	if (!validDnsName) {
+		throw new Boom(`native_android: ${field} must be a valid IP address or DNS name`, { statusCode: 400 })
+	}
+}
+
 export const getNativeAndroidAppIdentity = (variant: NativeAndroidAppVariant) => NATIVE_ANDROID_APP_IDENTITIES[variant]
 
 export const detectNativeAndroidAppVariant = (
@@ -114,6 +129,11 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 		throw new Boom('native_android: initialRoutingInfo exceeds the ED header limit', { statusCode: 400 })
 	}
 
+	if (config.host !== undefined) requiredHost(config.host, 'host')
+	if (config.port !== undefined && (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535)) {
+		throw new Boom('native_android: port is invalid', { statusCode: 400 })
+	}
+
 	if (
 		config.proxy !== undefined &&
 		(typeof config.proxy !== 'object' || config.proxy === null || Array.isArray(config.proxy))
@@ -128,7 +148,7 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 			})
 		}
 
-		requiredString(config.proxy.host, 'proxy.host')
+		requiredHost(config.proxy.host, 'proxy.host')
 		if (!Number.isInteger(config.proxy.port) || config.proxy.port < 1 || config.proxy.port > 65535) {
 			throw new Boom('native_android: proxy.port is invalid', { statusCode: 400 })
 		}
@@ -176,7 +196,7 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 			throw new Boom('native_android: connection endpoint must be an object', { statusCode: 400 })
 		}
 
-		requiredString(endpoint.host, 'connectionEndpoints.host')
+		requiredHost(endpoint.host, 'connectionEndpoints.host')
 		if (endpoint.address !== undefined && net.isIP(endpoint.address) === 0) {
 			throw new Boom('native_android: connection endpoint address must be an IP address', { statusCode: 400 })
 		}
@@ -185,18 +205,24 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 			throw new Boom('native_android: connection endpoint port is invalid', { statusCode: 400 })
 		}
 
-		if (
-			endpoint.sequenceStep !== undefined &&
-			(!Number.isInteger(endpoint.sequenceStep) || endpoint.sequenceStep < 1 || endpoint.sequenceStep > 15)
-		) {
-			throw new Boom('native_android: connection endpoint sequenceStep must be in range 1..15', {
+		if (endpoint.sequenceStep !== undefined && endpoint.sequenceStep !== 2 && endpoint.sequenceStep !== 8) {
+			throw new Boom('native_android: server connection endpoint sequenceStep must be 2 or 8', {
 				statusCode: 400
 			})
 		}
 	}
 
+	if (
+		config.hardcodedAddresses !== undefined &&
+		(typeof config.hardcodedAddresses !== 'object' ||
+			config.hardcodedAddresses === null ||
+			Array.isArray(config.hardcodedAddresses))
+	) {
+		throw new Boom('native_android: hardcodedAddresses must be an object', { statusCode: 400 })
+	}
+
 	for (const [host, addresses] of Object.entries(config.hardcodedAddresses || {})) {
-		requiredString(host, 'hardcodedAddresses.host')
+		requiredHost(host, 'hardcodedAddresses.host')
 		if (
 			!Array.isArray(addresses) ||
 			addresses.some(address => typeof address !== 'string' || net.isIP(address) === 0)

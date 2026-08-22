@@ -17,6 +17,7 @@ const DNS_CACHE_MAX_ENTRIES = 64
 const DEFAULT_DNS_TIMEOUT_MS = 20_000
 const HAPPY_EYEBALLS_DELAY_MS = 250
 const MAX_NODE_TIMER_MS = 2_147_483_647
+const MAX_HTTP_PROXY_HEADER_BYTES = 16 * 1024
 
 type CachedAddresses = { expiresAt: number; addresses: string[] }
 const dnsCache = new Map<string, CachedAddresses>()
@@ -63,8 +64,8 @@ export type NativeConnectionCandidate = NativeAndroidConnectionEndpoint & {
 
 const validPort = (port: number) => Number.isInteger(port) && port >= 1 && port <= 65535
 
-const normalizeHost = (host: string) => host.trim().replace(/\.$/, '').toLowerCase()
 const normalizeSocketHost = (host: string) => (host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host)
+const normalizeHost = (host: string) => normalizeSocketHost(host.trim().replace(/\.$/, '').toLowerCase())
 
 const endpointKey = (endpoint: NativeConnectionCandidate) =>
 	`${endpoint.sequenceStep || 0}|${endpoint.source || 'configured'}|${(endpoint.connectHosts || [endpoint.connectHost]).join(',').toLowerCase()}|${endpoint.host.toLowerCase()}|${endpoint.port}`
@@ -74,8 +75,8 @@ const normalizeUnique = (seen: Set<string>, endpoint: NativeConnectionCandidate 
 	const normalized = {
 		...endpoint,
 		host: normalizeHost(endpoint.host),
-		connectHost: endpoint.connectHost.trim(),
-		connectHosts: endpoint.connectHosts?.map(host => host.trim()),
+		connectHost: normalizeSocketHost(endpoint.connectHost.trim()),
+		connectHosts: endpoint.connectHosts?.map(host => normalizeSocketHost(host.trim())),
 		source: endpoint.source || 'configured',
 		addressSource: endpoint.addressSource ?? 1,
 		dnsCached: endpoint.dnsCached ?? false
@@ -89,18 +90,37 @@ const normalizeUnique = (seen: Set<string>, endpoint: NativeConnectionCandidate 
 
 type NativeAndroidDnsLookup = (host: string) => Promise<string[]>
 
-const timeoutAfter = <T>(promise: Promise<T>, timeoutMs: number, message: string) =>
+const abortError = () => {
+	const error = new Error('native_android: connection attempt aborted')
+	error.name = 'AbortError'
+	return error
+}
+
+const throwIfAborted = (signal?: AbortSignal) => {
+	if (signal?.aborted) throw abortError()
+}
+
+const timeoutAfter = <T>(promise: Promise<T>, timeoutMs: number, message: string, signal?: AbortSignal) =>
 	new Promise<T>((resolve, reject) => {
-		const timer = setTimeout(() => reject(new Error(message)), Math.min(Math.max(1, timeoutMs), MAX_NODE_TIMER_MS))
+		let settled = false
+		const finish = (error?: unknown, value?: T) => {
+			if (settled) return
+			settled = true
+			clearTimeout(timer)
+			signal?.removeEventListener('abort', onAbort)
+			if (error !== undefined) reject(error)
+			else resolve(value as T)
+		}
+		const onAbort = () => finish(abortError())
+		const timer = setTimeout(() => finish(new Error(message)), Math.min(Math.max(1, timeoutMs), MAX_NODE_TIMER_MS))
+		if (signal?.aborted) {
+			finish(abortError())
+			return
+		}
+		signal?.addEventListener('abort', onAbort, { once: true })
 		promise.then(
-			value => {
-				clearTimeout(timer)
-				resolve(value)
-			},
-			error => {
-				clearTimeout(timer)
-				reject(error)
-			}
+			value => finish(undefined, value),
+			error => finish(error)
 		)
 	})
 
@@ -112,8 +132,10 @@ const systemLookup: NativeAndroidDnsLookup = async host => {
 const resolveAll = async (
 	host: string,
 	lookup: NativeAndroidDnsLookup,
-	timeoutMs: number
+	timeoutMs: number,
+	signal?: AbortSignal
 ): Promise<{ addresses: string[]; cached: boolean }> => {
+	throwIfAborted(signal)
 	const normalized = normalizeHost(host)
 	const cached = dnsCache.get(normalized)
 	if (cached && cached.expiresAt > Date.now()) return { addresses: [...cached.addresses], cached: true }
@@ -121,9 +143,17 @@ const resolveAll = async (
 
 	const addresses = [
 		...new Set(
-			await timeoutAfter(lookup(normalized), timeoutMs, `native_android: DNS lookup timed out for ${normalized}`)
+			(
+				await timeoutAfter(
+					lookup(normalized),
+					timeoutMs,
+					`native_android: DNS lookup timed out for ${normalized}`,
+					signal
+				)
+			).filter((address): address is string => typeof address === 'string' && net.isIP(address) !== 0)
 		)
 	]
+	if (addresses.length === 0) return { addresses: [], cached: false }
 
 	for (const [cachedHost, entry] of dnsCache) {
 		if (entry.expiresAt <= Date.now()) dnsCache.delete(cachedHost)
@@ -158,6 +188,7 @@ type NativeAndroidConnectionSequenceOptions = {
 	lookup?: NativeAndroidDnsLookup
 	dnsTimeoutMs?: number
 	sequenceDeadline?: number
+	signal?: AbortSignal
 }
 
 class NativeAndroidSequenceTimeoutError extends Error {}
@@ -168,8 +199,10 @@ export async function* iterateNativeAndroidConnectionSequence({
 	random = Math.random,
 	lookup = systemLookup,
 	dnsTimeoutMs = DEFAULT_DNS_TIMEOUT_MS,
-	sequenceDeadline
+	sequenceDeadline,
+	signal
 }: NativeAndroidConnectionSequenceOptions): AsyncGenerator<NativeConnectionCandidate> {
+	throwIfAborted(signal)
 	const seen = new Set<string>()
 	const configuredHost = normalizeHost(config.host || PRIMARY_HOST)
 	const hardcodedAddresses = resolveNativeAndroidHardcodedAddresses(config.hardcodedAddresses)
@@ -216,13 +249,13 @@ export async function* iterateNativeAndroidConnectionSequence({
 		}
 
 		try {
-			const resolved = await resolveAll(endpoint.host, lookup, currentDnsTimeout())
+			const resolved = await resolveAll(endpoint.host, lookup, currentDnsTimeout(), signal)
 			const selected = selectOfficialAddresses(resolved.addresses, random)
 			if (selected.length === 0) return []
 			const candidate = addEndpoint({ ...endpoint, address: selected[0] }, addressSource, selected, resolved.cached)
 			return candidate ? [candidate] : []
 		} catch (error) {
-			if (error instanceof NativeAndroidSequenceTimeoutError) throw error
+			if (error instanceof NativeAndroidSequenceTimeoutError || (error as Error)?.name === 'AbortError') throw error
 			return []
 		}
 	}
@@ -263,7 +296,7 @@ export async function* iterateNativeAndroidConnectionSequence({
 		try {
 			const resolved = addresses
 				? { addresses: [...addresses], cached: false }
-				: await resolveAll(host, lookup, currentDnsTimeout())
+				: await resolveAll(host, lookup, currentDnsTimeout(), signal)
 			const selected = selectOfficialAddresses(resolved.addresses, random)
 			if (selected.length === 0) return []
 			const candidate = addEndpoint(
@@ -274,7 +307,7 @@ export async function* iterateNativeAndroidConnectionSequence({
 			)
 			return candidate ? [candidate] : []
 		} catch (error) {
-			if (error instanceof NativeAndroidSequenceTimeoutError) throw error
+			if (error instanceof NativeAndroidSequenceTimeoutError || (error as Error)?.name === 'AbortError') throw error
 			// The following hardcoded/fallback stages remain eligible.
 			return []
 		}
@@ -359,7 +392,7 @@ export const buildNativeAndroidConnectionSequence = async (options: NativeAndroi
 
 const remainingTime = (deadline: number) => Math.min(Math.max(1, deadline - Date.now()), MAX_NODE_TIMER_MS)
 
-const readHttpHeader = (socket: net.Socket, deadline: number) =>
+const readHttpHeader = (socket: net.Socket, deadline: number, signal?: AbortSignal) =>
 	new Promise<Buffer>((resolve, reject) => {
 		let buffered = Buffer.alloc(0)
 		let settled = false
@@ -373,16 +406,23 @@ const readHttpHeader = (socket: net.Socket, deadline: number) =>
 			clearTimeout(timer)
 			socket.off('data', onData)
 			socket.off('error', onError)
+			signal?.removeEventListener('abort', onAbort)
 			if (error) reject(error)
 			return true
 		}
 
 		const onError = (error: Error) => finish(error)
+		const onAbort = () => finish(abortError())
 		const onData = (chunk: Buffer) => {
 			buffered = Buffer.concat([buffered, chunk])
 			const end = buffered.indexOf('\r\n\r\n')
 			if (end < 0) {
-				if (buffered.length > 16 * 1024) finish(new Error('native_android: proxy response header is too large'))
+				if (buffered.length > MAX_HTTP_PROXY_HEADER_BYTES)
+					finish(new Error('native_android: proxy response header is too large'))
+				return
+			}
+			if (end + 4 > MAX_HTTP_PROXY_HEADER_BYTES) {
+				finish(new Error('native_android: proxy response header is too large'))
 				return
 			}
 
@@ -395,9 +435,11 @@ const readHttpHeader = (socket: net.Socket, deadline: number) =>
 
 		socket.on('data', onData)
 		socket.once('error', onError)
+		if (signal?.aborted) finish(abortError())
+		else signal?.addEventListener('abort', onAbort, { once: true })
 	})
 
-const connectDirect = (host: string, port: number, deadline: number) =>
+const connectDirect = (host: string, port: number, deadline: number, signal?: AbortSignal) =>
 	new Promise<net.Socket>((resolve, reject) => {
 		const socket = net.createConnection({ host, port })
 		const timer = setTimeout(
@@ -407,21 +449,25 @@ const connectDirect = (host: string, port: number, deadline: number) =>
 		const cleanup = () => {
 			clearTimeout(timer)
 			socket.off('error', onError)
+			signal?.removeEventListener('abort', onAbort)
 		}
 
 		const onError = (error: Error) => {
 			cleanup()
 			reject(error)
 		}
+		const onAbort = () => socket.destroy(abortError())
 
 		socket.once('error', onError)
+		if (signal?.aborted) onAbort()
+		else signal?.addEventListener('abort', onAbort, { once: true })
 		socket.once('connect', () => {
 			cleanup()
 			resolve(socket)
 		})
 	})
 
-const connectTlsProxy = (host: string, port: number, deadline: number) =>
+const connectTlsProxy = (host: string, port: number, deadline: number, signal?: AbortSignal) =>
 	new Promise<tls.TLSSocket>((resolve, reject) => {
 		const socket = tls.connect({ host, port, servername: net.isIP(host) ? undefined : host })
 		const timer = setTimeout(
@@ -431,14 +477,18 @@ const connectTlsProxy = (host: string, port: number, deadline: number) =>
 		const cleanup = () => {
 			clearTimeout(timer)
 			socket.off('error', onError)
+			signal?.removeEventListener('abort', onAbort)
 		}
 
 		const onError = (error: Error) => {
 			cleanup()
 			reject(error)
 		}
+		const onAbort = () => socket.destroy(abortError())
 
 		socket.once('error', onError)
+		if (signal?.aborted) onAbort()
+		else signal?.addEventListener('abort', onAbort, { once: true })
 		socket.once('secureConnect', () => {
 			cleanup()
 			resolve(socket)
@@ -448,12 +498,13 @@ const connectTlsProxy = (host: string, port: number, deadline: number) =>
 const connectHttpProxy = async (
 	proxy: NativeAndroidProxyConfig,
 	candidate: NativeConnectionCandidate,
-	deadline: number
+	deadline: number,
+	signal?: AbortSignal
 ) => {
 	const socket =
 		proxy.type === 'https-connect'
-			? await connectTlsProxy(normalizeSocketHost(proxy.host), proxy.port, deadline)
-			: await connectDirect(normalizeSocketHost(proxy.host), proxy.port, deadline)
+			? await connectTlsProxy(normalizeSocketHost(proxy.host), proxy.port, deadline, signal)
+			: await connectDirect(normalizeSocketHost(proxy.host), proxy.port, deadline, signal)
 	try {
 		const authorityHost = net.isIPv6(candidate.connectHost) ? `[${candidate.connectHost}]` : candidate.connectHost
 		const authority = `${authorityHost}:${candidate.port}`
@@ -464,7 +515,7 @@ const connectHttpProxy = async (
 		socket.write(
 			`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n${authorization}Connection: keep-alive\r\n\r\n`
 		)
-		const response = (await readHttpHeader(socket, deadline)).toString('latin1')
+		const response = (await readHttpHeader(socket, deadline, signal)).toString('latin1')
 		const status = /^HTTP\/\d(?:\.\d)?\s+(\d{3})/.exec(response)?.[1]
 		if (status !== '200') {
 			throw new Error(`native_android: HTTP CONNECT proxy rejected the tunnel (${status || 'invalid response'})`)
@@ -480,12 +531,16 @@ const connectHttpProxy = async (
 const connectSocksProxy = async (
 	proxy: NativeAndroidProxyConfig,
 	candidate: NativeConnectionCandidate,
-	deadline: number
+	deadline: number,
+	signal?: AbortSignal
 ) => {
+	throwIfAborted(signal)
 	const { SocksClient } = await import('socks')
-	const result = await SocksClient.createConnection({
+	const proxySocket = await connectDirect(normalizeSocketHost(proxy.host), proxy.port, deadline, signal)
+	const connection = SocksClient.createConnection({
 		command: 'connect',
 		timeout: remainingTime(deadline),
+		existing_socket: proxySocket,
 		proxy: {
 			host: normalizeSocketHost(proxy.host),
 			port: proxy.port,
@@ -495,27 +550,73 @@ const connectSocksProxy = async (
 		},
 		destination: { host: candidate.connectHost, port: candidate.port }
 	})
-	return result.socket
+	if (!signal) return (await connection).socket
+
+	return new Promise<net.Socket>((resolve, reject) => {
+		let settled = false
+		const onAbort = () => {
+			if (settled) return
+			settled = true
+			proxySocket.destroy(abortError())
+			reject(abortError())
+		}
+		signal.addEventListener('abort', onAbort, { once: true })
+		if (signal.aborted) onAbort()
+		connection.then(
+			result => {
+				signal.removeEventListener('abort', onAbort)
+				if (settled || signal.aborted) {
+					result.socket.destroy()
+					if (!settled) reject(abortError())
+					return
+				}
+				settled = true
+				resolve(result.socket)
+			},
+			error => {
+				signal.removeEventListener('abort', onAbort)
+				if (settled) return
+				settled = true
+				if (!proxySocket.destroyed) proxySocket.destroy()
+				reject(error)
+			}
+		)
+	})
 }
 
 const connectHappyEyeballs = (
 	hosts: string[],
-	connect: (host: string) => Promise<net.Socket>
+	connect: (host: string, signal: AbortSignal) => Promise<net.Socket>,
+	signal?: AbortSignal
 ): Promise<{ socket: net.Socket; host: string }> => {
 	const uniqueHosts = [...new Set(hosts)]
-	if (uniqueHosts.length === 1) return connect(uniqueHosts[0]!).then(socket => ({ socket, host: uniqueHosts[0]! }))
 
 	return new Promise((resolve, reject) => {
 		let nextIndex = 0
 		let failures = 0
 		let settled = false
 		let lastError: Error | undefined
+		let staggerTimer: NodeJS.Timeout | undefined
+		const controllers = new Set<AbortController>()
+		const abortAll = (except?: AbortController) => {
+			for (const controller of controllers) if (controller !== except) controller.abort()
+		}
+		const onAbort = () => {
+			if (settled) return
+			settled = true
+			if (staggerTimer) clearTimeout(staggerTimer)
+			abortAll()
+			reject(abortError())
+		}
 
 		const startNext = () => {
-			if (nextIndex >= uniqueHosts.length) return
+			if (settled || nextIndex >= uniqueHosts.length) return
 			const host = uniqueHosts[nextIndex++]!
-			void connect(host).then(
+			const controller = new AbortController()
+			controllers.add(controller)
+			void connect(host, controller.signal).then(
 				socket => {
+					controllers.delete(controller)
 					if (settled) {
 						socket.destroy()
 						return
@@ -523,9 +624,13 @@ const connectHappyEyeballs = (
 
 					settled = true
 					if (staggerTimer) clearTimeout(staggerTimer)
+					signal?.removeEventListener('abort', onAbort)
+					abortAll(controller)
 					resolve({ socket, host })
 				},
 				error => {
+					controllers.delete(controller)
+					if (settled) return
 					failures++
 					lastError = error instanceof Error ? error : new Error(String(error))
 					if (nextIndex < uniqueHosts.length) {
@@ -533,14 +638,20 @@ const connectHappyEyeballs = (
 						startNext()
 					} else if (!settled && failures === uniqueHosts.length) {
 						settled = true
+						signal?.removeEventListener('abort', onAbort)
 						reject(lastError)
 					}
 				}
 			)
 		}
 
+		if (signal?.aborted) {
+			onAbort()
+			return
+		}
+		signal?.addEventListener('abort', onAbort, { once: true })
 		startNext()
-		const staggerTimer = setTimeout(startNext, HAPPY_EYEBALLS_DELAY_MS)
+		if (uniqueHosts.length > 1) staggerTimer = setTimeout(startNext, HAPPY_EYEBALLS_DELAY_MS)
 	})
 }
 
@@ -549,17 +660,23 @@ const connectedHostBySocket = new WeakMap<net.Socket, string>()
 export const connectNativeAndroidCandidate = (
 	candidate: NativeConnectionCandidate,
 	proxy: NativeAndroidProxyConfig | undefined,
-	timeoutMs: number
+	timeoutMs: number,
+	signal?: AbortSignal
 ) => {
+	throwIfAborted(signal)
 	const deadline = Date.now() + timeoutMs
 	const hosts = candidate.connectHosts?.length ? candidate.connectHosts : [candidate.connectHost]
-	return connectHappyEyeballs(hosts, host => {
-		const selected = { ...candidate, connectHost: host, connectHosts: undefined }
-		if (!proxy) return connectDirect(host, selected.port, deadline)
-		return proxy.type === 'socks4' || proxy.type === 'socks5'
-			? connectSocksProxy(proxy, selected, deadline)
-			: connectHttpProxy(proxy, selected, deadline)
-	}).then(({ socket, host }) => {
+	return connectHappyEyeballs(
+		hosts,
+		(host, attemptSignal) => {
+			const selected = { ...candidate, connectHost: host, connectHosts: undefined }
+			if (!proxy) return connectDirect(host, selected.port, deadline, attemptSignal)
+			return proxy.type === 'socks4' || proxy.type === 'socks5'
+				? connectSocksProxy(proxy, selected, deadline, attemptSignal)
+				: connectHttpProxy(proxy, selected, deadline, attemptSignal)
+		},
+		signal
+	).then(({ socket, host }) => {
 		connectedHostBySocket.set(socket, host)
 		return socket
 	})
