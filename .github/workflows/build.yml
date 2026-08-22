@@ -7,6 +7,21 @@ on:
   pull_request:
 
 jobs:
+  npm-lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Validate npm lockfile
+        run: npm ci --ignore-scripts --dry-run --no-audit --no-fund
+
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -46,9 +61,6 @@ jobs:
           key: ${{ runner.os }}-yarn-${{ hashFiles('yarn.lock', 'package.json') }}
           restore-keys: |
             ${{ runner.os }}-yarn-${{ hashFiles('package.json') }}-
-
-      - name: Validate npm lockfile
-        run: npm ci --ignore-scripts --dry-run --no-audit --no-fund
 
       - name: Install dependencies
         env:
