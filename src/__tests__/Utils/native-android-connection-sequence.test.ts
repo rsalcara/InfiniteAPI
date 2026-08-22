@@ -374,6 +374,38 @@ describe('native Android connection sequence', () => {
 		}
 	})
 
+	it('preserves the original socket error when an HTTP CONNECT proxy resets before responding', async () => {
+		const proxy = net.createServer(socket => {
+			socket.once('data', () => socket.resetAndDestroy())
+		})
+		await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', () => resolve()))
+		const address = proxy.address()
+		if (!address || typeof address === 'string') throw new Error('proxy did not bind')
+
+		try {
+			await expect(
+				connectNativeAndroidCandidate(
+					{
+						host: 'g.whatsapp.net',
+						port: 443,
+						source: 'dns',
+						connectHost: 'g.whatsapp.net',
+						addressSource: 1,
+						dnsCached: false
+					},
+					{ type: 'http-connect', host: '127.0.0.1', port: address.port },
+					1000
+				)
+			).rejects.toMatchObject({
+				message: 'native_android: proxy closed the connection before the CONNECT response',
+				code: expect.stringMatching(/^(?:ECONNRESET|EPIPE)$/),
+				cause: expect.objectContaining({ code: expect.stringMatching(/^(?:ECONNRESET|EPIPE)$/) })
+			})
+		} finally {
+			await closeServer(proxy)
+		}
+	})
+
 	it('uses one deadline across the HTTPS proxy handshake and CONNECT response', async () => {
 		class SilentTlsSocket extends Duplex {
 			_write(_chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void) {

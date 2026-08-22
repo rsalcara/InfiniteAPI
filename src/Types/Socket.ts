@@ -12,6 +12,8 @@ import type { ConnectionTransportProfile, NativeAndroidTransportConfig } from '.
 
 export type WAVersion = [number, number, number]
 export type WABrowserDescription = [string, string, string]
+export type FetchDispatcher = { dispatch: (...args: never[]) => unknown }
+export type HttpRequestAgent = Agent | FetchDispatcher
 
 export type ProtocolWireCapture = {
 	kind: 'direct_retry' | 'legacy_group_create'
@@ -41,9 +43,34 @@ export type PossiblyExtendedCacheStore = CacheStore & {
 
 export type PatchedMessageWithRecipientJID = proto.IMessage & { recipientJid?: string }
 
+/**
+ * Declares that one instance expects every WhatsApp egress path to use the
+ * same externally managed proxy route. This object contains observability
+ * metadata only; credentials remain in the concrete agents/proxy config.
+ */
+export type ProxyRoutePolicy = {
+	mode: 'full'
+	/** Public egress IP measured by the consumer's proxy health check. */
+	expectedEgressIp?: string
+	/** Non-secret provider label used in diagnostics. */
+	provider?: string
+	/** Non-secret sticky-session/route identifier used in diagnostics. */
+	routeId?: string
+	/** ISO-8601 timestamp of the external egress verification. */
+	verifiedAt?: string
+}
+
+export type SocketConnectionTrigger = 'instance_create' | 'new_pairing' | 'restart' | 'reconnect'
+
 export type SocketConfig = {
 	/** Stable consumer instance identifier included in auth-state diagnostics. */
 	instanceId?: string
+	/** Optional tenant/organization identifier included in structured diagnostics. */
+	organizationId?: string
+	/** Fail-closed full-route proxy policy and non-secret audit metadata. */
+	proxyRoute?: ProxyRoutePolicy
+	/** Consumer-declared reason for creating this socket, used only in structured diagnostics. */
+	connectionTrigger?: SocketConnectionTrigger
 	/** Transport profile. Web remains the stable default. */
 	transportProfile: ConnectionTransportProfile
 	/** Required only when transportProfile is native_android. */
@@ -106,8 +133,11 @@ export type SocketConfig = {
 	 * Upstream #2432.
 	 */
 	pushName?: string
-	/** agent used for fetch requests -- uploading/downloading media */
-	fetchAgent?: Agent
+	/**
+	 * Agent used for WhatsApp HTTP traffic, media uploads and internal media,
+	 * history-sync and app-state downloads. It is propagated into `options`.
+	 */
+	fetchAgent?: HttpRequestAgent
 	/** should the QR be printed in the terminal
 	 * @deprecated This feature has been removed
 	 */

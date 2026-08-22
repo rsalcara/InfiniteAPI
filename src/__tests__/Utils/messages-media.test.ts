@@ -6,7 +6,13 @@ import * as path from 'path'
 import { Readable } from 'stream'
 import type { MediaConnInfo, SocketConfig } from '../../Types'
 import type { ILogger } from '../../Utils/logger'
-import { encryptedStream, getWAUploadToServer, type UploadParams, uploadWithNodeHttp } from '../../Utils/messages-media'
+import {
+	encryptedStream,
+	getHttpStream,
+	getWAUploadToServer,
+	type UploadParams,
+	uploadWithNodeHttp
+} from '../../Utils/messages-media'
 
 const createTempFile = async (content: string): Promise<string> => {
 	const filePath = path.join(os.tmpdir(), `test-upload-${Date.now()}.txt`)
@@ -266,6 +272,52 @@ describe('uploadWithNodeHttp', () => {
 		expect(capturedHeaders?.['authorization']).toBe('Bearer token123')
 	})
 
+	it('should strip credentials on a cross-origin upload redirect', async () => {
+		let capturedHeaders: http.IncomingHttpHeaders | undefined
+		const targetServer = http.createServer((req, res) => {
+			capturedHeaders = req.headers
+			req.resume()
+			req.on('end', () => {
+				res.writeHead(200, { 'Content-Type': 'application/json' })
+				res.end(JSON.stringify({ success: true }))
+			})
+		})
+		await new Promise<void>(resolve => targetServer.listen(0, '127.0.0.1', resolve))
+		const targetAddress = targetServer.address()
+		if (!targetAddress || typeof targetAddress === 'string') throw new Error('target server did not bind')
+
+		try {
+			await startServer((req, res) => {
+				req.resume()
+				req.on('end', () => {
+					res.writeHead(302, { Location: `http://127.0.0.1:${targetAddress.port}/final` })
+					res.end()
+				})
+			})
+
+			const result = await uploadWithNodeHttp({
+				url: `http://127.0.0.1:${serverPort}/upload`,
+				filePath: tempFilePath,
+				headers: {
+					Authorization: 'Bearer secret',
+					'Proxy-Authorization': 'Basic secret',
+					Cookie: 'session=secret',
+					Host: 'source.example',
+					'X-Custom-Header': 'kept'
+				}
+			})
+
+			expect(result).toEqual({ success: true })
+			expect(capturedHeaders?.authorization).toBeUndefined()
+			expect(capturedHeaders?.['proxy-authorization']).toBeUndefined()
+			expect(capturedHeaders?.cookie).toBeUndefined()
+			expect(capturedHeaders?.host).toBe(`127.0.0.1:${targetAddress.port}`)
+			expect(capturedHeaders?.['x-custom-header']).toBe('kept')
+		} finally {
+			await new Promise<void>((resolve, reject) => targetServer.close(error => (error ? reject(error) : resolve())))
+		}
+	})
+
 	it('should re-stream file content on redirect', async () => {
 		const expectedResponse = { success: true }
 		let finalReceivedBody = ''
@@ -298,6 +350,224 @@ describe('uploadWithNodeHttp', () => {
 
 		expect(result).toEqual(expectedResponse)
 		expect(finalReceivedBody).toBe(testFileContent)
+	})
+})
+
+describe('getHttpStream', () => {
+	let server: http.Server
+
+	afterEach(() => {
+		server?.close()
+	})
+
+	it('uses the configured Node agent for downloads and redirects', async () => {
+		server = http.createServer((req, res) => {
+			if (req.url === '/redirect') {
+				res.writeHead(302, { Location: '/media' })
+				res.end()
+				return
+			}
+
+			res.writeHead(200, { 'Content-Type': 'application/octet-stream' })
+			res.end('proxied-download')
+		})
+		const port = await new Promise<number>(resolve => {
+			server.listen(0, () => resolve((server.address() as { port: number }).port))
+		})
+		const agent = new http.Agent()
+		const instrumentedAgent = agent as unknown as {
+			addRequest: (...args: never[]) => void
+		}
+		const originalAddRequest = instrumentedAgent.addRequest.bind(agent)
+		let requestCount = 0
+		instrumentedAgent.addRequest = (...args: never[]) => {
+			requestCount += 1
+			originalAddRequest(...args)
+		}
+
+		const stream = await getHttpStream(`http://127.0.0.1:${port}/redirect`, { agent })
+		const chunks: Buffer[] = []
+		for await (const chunk of stream) chunks.push(Buffer.from(chunk))
+
+		expect(Buffer.concat(chunks).toString()).toBe('proxied-download')
+		expect(requestCount).toBe(2)
+	})
+
+	it('rejects malformed redirect locations as typed fetch errors', async () => {
+		server = http.createServer((_req, res) => {
+			res.writeHead(302, { Location: 'http://[invalid' })
+			res.end()
+		})
+		const port = await new Promise<number>(resolve => {
+			server.listen(0, () => resolve((server.address() as { port: number }).port))
+		})
+
+		await expect(getHttpStream(`http://127.0.0.1:${port}/redirect`, { agent: new http.Agent() })).rejects.toMatchObject(
+			{
+				message: expect.stringContaining('Invalid redirect URL'),
+				output: { statusCode: 502 }
+			}
+		)
+	})
+
+	it('fails closed with a clear error when a Node agent cannot handle the target protocol', async () => {
+		await expect(getHttpStream('http://127.0.0.1:1/media', { agent: new Agent() })).rejects.toMatchObject({
+			message: 'Configured Node HTTP agent does not support http: URLs',
+			output: { statusCode: 502 }
+		})
+	})
+
+	it('routes a dispatcher supplied in agent through fetch instead of Node HTTP', async () => {
+		const originalFetch = globalThis.fetch
+		const dispatcher = { dispatch: () => undefined }
+		let fetchInit: RequestInit | undefined
+		globalThis.fetch = (async (_input, init) => {
+			fetchInit = init
+			return new Response('dispatcher-download')
+		}) as typeof fetch
+
+		try {
+			const stream = await getHttpStream('https://download.example/media', {
+				agent: dispatcher
+			} as unknown as RequestInit)
+			const chunks: Buffer[] = []
+			for await (const chunk of stream) chunks.push(Buffer.from(chunk))
+
+			expect(Buffer.concat(chunks).toString()).toBe('dispatcher-download')
+			expect(fetchInit?.dispatcher).toBe(dispatcher)
+		} finally {
+			globalThis.fetch = originalFetch
+		}
+	})
+
+	it('does not let the response-header timeout truncate a slow response body', async () => {
+		server = http.createServer((_req, res) => {
+			res.writeHead(200, { 'Content-Type': 'application/octet-stream' })
+			res.flushHeaders()
+			setTimeout(() => res.end('slow-body'), 50)
+		})
+		const port = await new Promise<number>(resolve => {
+			server.listen(0, () => resolve((server.address() as { port: number }).port))
+		})
+
+		const stream = await getHttpStream(`http://127.0.0.1:${port}/media`, {
+			agent: new http.Agent(),
+			timeout: 10
+		})
+		const chunks: Buffer[] = []
+		for await (const chunk of stream) chunks.push(Buffer.from(chunk))
+
+		expect(Buffer.concat(chunks).toString()).toBe('slow-body')
+	})
+
+	it.each([
+		['Headers', new Headers({ 'x-from-headers': 'headers-value' })],
+		['tuple array', [['x-from-tuples', 'tuple-value']] as [string, string][]]
+	])('normalizes %s request headers for the Node HTTP path', async (_label, headers) => {
+		let receivedHeaders: http.IncomingHttpHeaders | undefined
+		server = http.createServer((req, res) => {
+			receivedHeaders = req.headers
+			res.writeHead(200)
+			res.end('headers-ok')
+		})
+		const port = await new Promise<number>(resolve => {
+			server.listen(0, () => resolve((server.address() as { port: number }).port))
+		})
+
+		const stream = await getHttpStream(`http://127.0.0.1:${port}/media`, {
+			agent: new http.Agent(),
+			headers
+		})
+		const chunks: Buffer[] = []
+		for await (const chunk of stream) chunks.push(Buffer.from(chunk))
+
+		const expectedName = _label === 'Headers' ? 'x-from-headers' : 'x-from-tuples'
+		const expectedValue = _label === 'Headers' ? 'headers-value' : 'tuple-value'
+		expect(receivedHeaders?.[expectedName]).toBe(expectedValue)
+	})
+
+	it('strips credentials but preserves ordinary headers on cross-origin redirects', async () => {
+		const originalFetch = globalThis.fetch
+		const calls: Array<{ url: string; headers: Headers }> = []
+		globalThis.fetch = (async (input, init) => {
+			calls.push({ url: input.toString(), headers: new Headers(init?.headers) })
+			if (calls.length === 1) {
+				return new Response(null, {
+					status: 302,
+					headers: { Location: 'https://media.example/final' }
+				})
+			}
+
+			return new Response('redirected-media')
+		}) as typeof fetch
+
+		try {
+			const stream = await getHttpStream('https://download.example/start', {
+				dispatcher: { dispatch: () => undefined },
+				headers: {
+					Authorization: 'Bearer secret',
+					'Proxy-Authorization': 'Basic secret',
+					Cookie: 'session=secret',
+					Host: 'download.example',
+					Origin: 'https://web.whatsapp.com',
+					Range: 'bytes=0-99',
+					'X-Custom': 'kept'
+				}
+			})
+			const chunks: Buffer[] = []
+			for await (const chunk of stream) chunks.push(Buffer.from(chunk))
+
+			expect(calls).toHaveLength(2)
+			const redirectedHeaders = calls[1]!.headers
+			expect(redirectedHeaders.has('authorization')).toBe(false)
+			expect(redirectedHeaders.has('proxy-authorization')).toBe(false)
+			expect(redirectedHeaders.has('cookie')).toBe(false)
+			expect(redirectedHeaders.has('host')).toBe(false)
+			expect(redirectedHeaders.get('origin')).toBe('https://web.whatsapp.com')
+			expect(redirectedHeaders.get('range')).toBe('bytes=0-99')
+			expect(redirectedHeaders.get('x-custom')).toBe('kept')
+		} finally {
+			globalThis.fetch = originalFetch
+		}
+	})
+
+	it('enforces the same five-redirect limit on the fetch dispatcher path', async () => {
+		const originalFetch = globalThis.fetch
+		let calls = 0
+		globalThis.fetch = (async () => {
+			calls += 1
+			return new Response(null, { status: 302, headers: { Location: `/redirect-${calls}` } })
+		}) as typeof fetch
+
+		try {
+			await expect(
+				getHttpStream('https://download.example/redirect-0', {
+					dispatcher: { dispatch: () => undefined }
+				})
+			).rejects.toThrow('Too many redirects')
+			expect(calls).toBe(6)
+		} finally {
+			globalThis.fetch = originalFetch
+		}
+	})
+
+	it('applies download timeouts on the fetch dispatcher path', async () => {
+		const originalFetch = globalThis.fetch
+		globalThis.fetch = ((_input, init) =>
+			new Promise((_resolve, reject) => {
+				init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+			})) as typeof fetch
+
+		try {
+			await expect(
+				getHttpStream('https://download.example/slow', {
+					dispatcher: { dispatch: () => undefined },
+					timeout: 10
+				})
+			).rejects.toThrow('Timed out fetching stream')
+		} finally {
+			globalThis.fetch = originalFetch
+		}
 	})
 })
 
@@ -365,6 +635,37 @@ describe('getWAUploadToServer', () => {
 			ts: undefined
 		})
 		expect((fetchInit as (RequestInit & { dispatcher?: unknown }) | undefined)?.dispatcher).toBeUndefined()
+	})
+
+	it('uses an Undici dispatcher for uploads in the Node runtime', async () => {
+		Object.defineProperty(process.versions, 'bun', { value: undefined, configurable: true })
+		const dispatcher = { dispatch: () => undefined }
+		let fetchInit: RequestInit | undefined
+		globalThis.fetch = (async (_input, init) => {
+			fetchInit = init
+			return new Response(JSON.stringify({ url: 'https://example.com/media', direct_path: '/media' }), {
+				headers: { 'Content-Type': 'application/json' }
+			})
+		}) as typeof fetch
+
+		const mediaConn: MediaConnInfo = {
+			auth: 'auth-token',
+			ttl: 60,
+			hosts: [{ hostname: 'upload.example.com', maxContentLengthBytes: 1024 }],
+			fetchDate: new Date()
+		}
+		const upload = getWAUploadToServer(
+			{
+				customUploadHosts: [],
+				fetchAgent: dispatcher,
+				logger: createLogger(),
+				options: {}
+			} as Partial<SocketConfig> as SocketConfig,
+			async () => mediaConn
+		)
+
+		await expect(upload(tempFilePath, { fileEncSha256B64: 'abc123', mediaType: 'image' })).resolves.toBeDefined()
+		expect(fetchInit?.dispatcher).toBe(dispatcher)
 	})
 })
 
