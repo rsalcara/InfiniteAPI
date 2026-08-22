@@ -148,6 +148,23 @@ describe('uploadWithNodeHttp', () => {
 		}
 	})
 
+	it('delegates custom HTTPS upload agents to Node even when they report the proxy protocol', async () => {
+		class ProxyStyleAgent extends Agent {}
+		const proxyAgent = new ProxyStyleAgent()
+		Object.defineProperty(proxyAgent, 'protocol', { value: 'http:', configurable: true })
+
+		await expect(
+			uploadWithNodeHttp({
+				url: 'https://127.0.0.1:1/upload',
+				filePath: tempFilePath,
+				headers: { 'Content-Type': 'application/octet-stream' },
+				agent: proxyAgent
+			})
+		).rejects.toMatchObject({
+			code: 'ERR_INVALID_PROTOCOL'
+		})
+	})
+
 	it('should follow a single redirect (302)', async () => {
 		const expectedResponse = { url: 'https://example.com/media/456', direct_path: '/media/456' }
 		let requestCount = 0
@@ -464,6 +481,16 @@ describe('getHttpStream', () => {
 		await expect(getHttpStream('http://127.0.0.1:1/media', { agent: new Agent() })).rejects.toMatchObject({
 			message: 'Configured Node HTTP agent does not support http: URLs',
 			output: { statusCode: 502 }
+		})
+	})
+
+	it('delegates custom download agents to Node even when they report the proxy protocol', async () => {
+		class ProxyStyleAgent extends Agent {}
+		const proxyAgent = new ProxyStyleAgent()
+		Object.defineProperty(proxyAgent, 'protocol', { value: 'http:', configurable: true })
+
+		await expect(getHttpStream('https://127.0.0.1:1/media', { agent: proxyAgent })).rejects.toMatchObject({
+			code: 'ERR_INVALID_PROTOCOL'
 		})
 	})
 
