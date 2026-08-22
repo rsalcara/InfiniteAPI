@@ -537,6 +537,7 @@ describe('native_android transport contract', () => {
 				})
 			).toThrow('proxy.username is required when proxy.password is configured')
 		}
+
 		expect(() =>
 			validateNativeAndroidConfig({
 				...nativeAndroid,
