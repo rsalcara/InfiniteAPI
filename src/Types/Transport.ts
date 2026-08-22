@@ -154,6 +154,10 @@ export type NativeAndroidTransportConfig = {
 	attestationProvider?: NativeAndroidAttestationProvider
 	/** Optional server-provided endpoints, tried before the built-in sequence. */
 	connectionEndpoints?: NativeAndroidConnectionEndpoint[]
+	/** Maximum time allowed for one native DNS resolution before fallback advances. */
+	dnsTimeoutMs?: number
+	/** Safety ceiling for one native connection sequence; it never falls back to direct I/O. */
+	sequenceTimeoutMs?: number
 	/** Explicit egress proxy for native TCP. This is independent from SocketConfig.agent. */
 	proxy?: NativeAndroidProxyConfig
 	/** Optional official IP table supplied by the embedding application. No IPs are invented by the library. */

@@ -112,6 +112,13 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 		throw new Boom('native_android: initialRoutingInfo exceeds the ED header limit', { statusCode: 400 })
 	}
 
+	if (
+		config.proxy !== undefined &&
+		(typeof config.proxy !== 'object' || config.proxy === null || Array.isArray(config.proxy))
+	) {
+		throw new Boom('native_android: proxy must be an object', { statusCode: 400 })
+	}
+
 	if (config.proxy !== undefined) {
 		if (!['http-connect', 'https-connect', 'socks4', 'socks5'].includes(config.proxy.type)) {
 			throw new Boom('native_android: proxy.type must be http-connect, https-connect, socks4 or socks5', {
@@ -137,7 +144,24 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 		}
 	}
 
+	if (config.connectionEndpoints !== undefined && !Array.isArray(config.connectionEndpoints)) {
+		throw new Boom('native_android: connectionEndpoints must be an array', { statusCode: 400 })
+	}
+	if (config.dnsTimeoutMs !== undefined && (!Number.isInteger(config.dnsTimeoutMs) || config.dnsTimeoutMs < 1)) {
+		throw new Boom('native_android: dnsTimeoutMs must be a positive integer', { statusCode: 400 })
+	}
+	if (
+		config.sequenceTimeoutMs !== undefined &&
+		(!Number.isInteger(config.sequenceTimeoutMs) || config.sequenceTimeoutMs < 1)
+	) {
+		throw new Boom('native_android: sequenceTimeoutMs must be a positive integer', { statusCode: 400 })
+	}
+
 	for (const endpoint of config.connectionEndpoints || []) {
+		if (!endpoint || typeof endpoint !== 'object' || Array.isArray(endpoint)) {
+			throw new Boom('native_android: connection endpoint must be an object', { statusCode: 400 })
+		}
+
 		requiredString(endpoint.host, 'connectionEndpoints.host')
 		if (endpoint.address !== undefined && net.isIP(endpoint.address) === 0) {
 			throw new Boom('native_android: connection endpoint address must be an IP address', { statusCode: 400 })

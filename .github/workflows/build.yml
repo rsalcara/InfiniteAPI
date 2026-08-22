@@ -53,5 +53,8 @@ jobs:
           GIT_TERMINAL_PROMPT: 0
         run: yarn install --immutable
 
+      - name: Validate npm lockfile
+        run: npm ci --ignore-scripts --dry-run --no-audit --no-fund
+
       - name: Build project
         run: yarn build

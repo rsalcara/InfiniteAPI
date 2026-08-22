@@ -60,6 +60,14 @@ uses that tunnel. A proxy failure is fail-closed: the transport never retries
 the same WhatsApp endpoint directly. When it is omitted, the direct official
 sequence is used.
 
+The TCP path and DNS path are separate concerns. HTTP/HTTPS CONNECT,
+`socks4a://`, `socks5h://` and the default `socks5://` configuration send the
+WhatsApp hostname to the proxy for remote resolution. Plain `socks4://` and
+SOCKS5 with `resolveDns: false` must resolve A/AAAA records locally before
+opening the tunnel. That local DNS traffic does not traverse the proxy even
+though the resulting WhatsApp TCP connection still does. Use a remote-DNS
+form when the proxy must also be the DNS egress boundary.
+
 The Web transport keeps its established split because `ws` and Node fetch use
 different agent interfaces:
 
@@ -76,10 +84,19 @@ The native sequence follows the Android 2.26.27.83 state machine and advances
 only after a failed TCP/tunnel attempt: an explicit endpoint when configured,
 server primary endpoints, `g.whatsapp.net`, server secondary endpoints, port
 80, eligible connection history, `g-fallback.whatsapp.net`, the APK hardcoded
-table and the `e1`-`e16` edge pool. Ports 443 and 5222, IPv4/IPv6 DNS results
-and the one-hour DNS cache are retained. A successful endpoint is persisted
-with its original sequence step and reused only in the history states accepted
-by the Android client.
+table and one randomly selected `e1`-`e16` host for each edge state. It does not
+walk all 16 edge hosts. When both address families exist, one random IPv4 and
+one random IPv6 are raced with Happy Eyeballs instead of trying every A/AAAA
+record serially. Ports 443 and 5222 and the bounded one-hour DNS cache are
+retained. A successful endpoint is persisted with its original sequence step
+and reused only in the history states accepted by the Android client.
+
+DNS resolution is bounded by `nativeAndroid.dnsTimeoutMs` (the socket connect
+timeout by default). The whole fallback sequence also has a safety ceiling:
+`nativeAndroid.sequenceTimeoutMs` when supplied, otherwise the greater of two
+minutes or sixteen per-candidate connect timeouts. HTTP CONNECT uses one deadline
+for the proxy TCP/TLS handshake and CONNECT response; it does not receive a
+second full timeout after the proxy connection opens.
 
 The product proxy is intentionally an egress overlay rather than Android's
 internal single user-proxy state: all sequence candidates remain available,

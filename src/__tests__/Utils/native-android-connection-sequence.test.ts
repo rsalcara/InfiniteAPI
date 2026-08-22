@@ -7,8 +7,10 @@ import {
 	buildNativeAndroidConnectionSequence,
 	clearNativeAndroidDnsCache,
 	connectNativeAndroidCandidate,
+	getNativeAndroidConnectedHost,
 	iterateNativeAndroidConnectionSequence,
-	parseNativeAndroidProxyUrl
+	parseNativeAndroidProxyUrl,
+	type NativeConnectionCandidate
 } from '../../Utils/native-android-connection-sequence'
 import { OFFICIAL_NATIVE_ANDROID_HARDCODED_ADDRESSES } from '../../Utils/native-android-hardcoded-addresses'
 
@@ -72,10 +74,17 @@ describe('native Android connection sequence', () => {
 		})
 
 		const sources = candidates.map(candidate => `${candidate.host}:${candidate.sequenceStep}`)
+		const indexOf = (source: NativeConnectionCandidate['source'], step: number) =>
+			candidates.findIndex(candidate => candidate.source === source && candidate.sequenceStep === step)
 		expect(sources[0]).toBe('primary-server.example:2')
 		expect(sources.indexOf('secondary-server.example:8')).toBeGreaterThan(sources.indexOf('g.whatsapp.net:5'))
 		expect(sources.indexOf('history.example:7')).toBeGreaterThan(sources.indexOf('g.whatsapp.net:9'))
 		expect(sources.indexOf('history.example:7')).toBeLessThan(sources.indexOf('g-fallback.whatsapp.net:13'))
+		expect(indexOf('fallback', 13)).toBeLessThan(indexOf('fallback', 14))
+		expect(indexOf('fallback', 14)).toBeLessThan(indexOf('hardcoded', 6))
+		expect(indexOf('hardcoded', 6)).toBeLessThan(indexOf('hardcoded', 10))
+		expect(indexOf('hardcoded', 10)).toBeLessThan(indexOf('edge', 7))
+		expect(indexOf('edge', 7)).toBeLessThan(indexOf('edge', 11))
 	})
 
 	it('does not resolve fallback DNS before an earlier server endpoint is attempted', async () => {
@@ -116,7 +125,8 @@ describe('native Android connection sequence', () => {
 		})
 		expect(sequence.some(candidate => candidate.host === 'g.whatsapp.net' && candidate.sequenceStep === 5)).toBe(true)
 		expect(sequence.some(candidate => candidate.host === 'g-fallback.whatsapp.net')).toBe(true)
-		expect(sequence.some(candidate => candidate.host === 'e16.whatsapp.net')).toBe(true)
+		expect(sequence.some(candidate => candidate.host === 'e1.whatsapp.net')).toBe(true)
+		expect(sequence.some(candidate => candidate.host === 'e16.whatsapp.net')).toBe(false)
 	})
 
 	it('resolves SOCKS4 targets locally but keeps SOCKS4a targets on the proxy', async () => {
@@ -145,7 +155,7 @@ describe('native Android connection sequence', () => {
 		await remoteSequence.return(undefined)
 	})
 
-	it('keeps DNS on the proxy and includes all observed edge and fallback stages', async () => {
+	it('keeps DNS on the proxy and selects one official edge host per edge state', async () => {
 		const directPortCandidates = await buildNativeAndroidConnectionSequence({
 			config: config({ proxy: { type: 'socks5', host: 'proxy.example', port: 1080 } }),
 			random: () => 0
@@ -162,7 +172,17 @@ describe('native Android connection sequence', () => {
 			alternatePortCandidates.some(candidate => candidate.host === 'g.whatsapp.net' && candidate.port === 5222)
 		).toBe(true)
 		expect(directPortCandidates.some(candidate => candidate.host === 'e1.whatsapp.net')).toBe(true)
-		expect(directPortCandidates.some(candidate => candidate.host === 'e16.whatsapp.net')).toBe(true)
+		expect(directPortCandidates.some(candidate => candidate.host === 'e16.whatsapp.net')).toBe(false)
+		expect(alternatePortCandidates.some(candidate => candidate.host === 'e16.whatsapp.net')).toBe(true)
+		expect(alternatePortCandidates.some(candidate => candidate.host === 'e1.whatsapp.net')).toBe(false)
+		expect(
+			new Set(directPortCandidates.filter(candidate => candidate.sequenceStep === 7).map(candidate => candidate.host))
+				.size
+		).toBe(1)
+		expect(
+			new Set(directPortCandidates.filter(candidate => candidate.sequenceStep === 11).map(candidate => candidate.host))
+				.size
+		).toBe(1)
 		expect(
 			directPortCandidates.some(candidate => candidate.host === 'g-fallback.whatsapp.net' && candidate.port === 80)
 		).toBe(true)
@@ -179,9 +199,64 @@ describe('native Android connection sequence', () => {
 		const first = await buildNativeAndroidConnectionSequence(options)
 		const second = await buildNativeAndroidConnectionSequence(options)
 
-		expect(first.some(candidate => candidate.address === '::1' && candidate.dnsCached === false)).toBe(true)
-		expect(second.some(candidate => candidate.address === '::1' && candidate.dnsCached === true)).toBe(true)
-		expect(lookup).toHaveBeenCalledTimes(18)
+		expect(first.some(candidate => candidate.connectHosts?.includes('::1') && candidate.dnsCached === false)).toBe(true)
+		expect(second.some(candidate => candidate.connectHosts?.includes('::1') && candidate.dnsCached === true)).toBe(true)
+		expect(lookup).toHaveBeenCalledTimes(3)
+	})
+
+	it('bounds a stalled DNS lookup before advancing to the next server endpoint', async () => {
+		const lookup = jest.fn((host: string) =>
+			host === 'stalled.example' ? new Promise<string[]>(() => {}) : Promise.resolve(['127.0.0.1'])
+		)
+		const sequence = iterateNativeAndroidConnectionSequence({
+			config: config({
+				connectionEndpoints: [
+					{ host: 'stalled.example', port: 443 },
+					{ host: '127.0.0.1', port: 5222 }
+				]
+			}),
+			lookup,
+			dnsTimeoutMs: 20
+		})
+
+		const startedAt = Date.now()
+		expect((await sequence.next()).value).toMatchObject({ host: '127.0.0.1', port: 5222 })
+		expect(Date.now() - startedAt).toBeLessThan(500)
+		await sequence.return(undefined)
+	})
+
+	it('does not reintroduce an unresolved hostname when DNS returns no usable address', async () => {
+		const lookup = jest.fn(async () => ['not-an-ip'])
+		const sequence = await buildNativeAndroidConnectionSequence({
+			config: config({ host: 'empty-dns.example', port: 443 }),
+			lookup,
+			random: () => 0
+		})
+
+		expect(
+			sequence.some(candidate => candidate.host === 'empty-dns.example' && candidate.source === 'configured')
+		).toBe(false)
+		expect(sequence.some(candidate => candidate.source === 'hardcoded')).toBe(true)
+	})
+
+	it('caps the shared DNS cache and evicts the oldest arbitrary endpoint', async () => {
+		const lookup = jest.fn(async () => ['127.0.0.1'])
+		for (let index = 0; index < 65; index++) {
+			const sequence = iterateNativeAndroidConnectionSequence({
+				config: config({ host: `cache-${index}.example`, port: 443 }),
+				lookup
+			})
+			await sequence.next()
+			await sequence.return(undefined)
+		}
+
+		const firstAgain = iterateNativeAndroidConnectionSequence({
+			config: config({ host: 'cache-0.example', port: 443 }),
+			lookup
+		})
+		await firstAgain.next()
+		await firstAgain.return(undefined)
+		expect(lookup).toHaveBeenCalledTimes(66)
 	})
 
 	it.each([
@@ -193,6 +268,10 @@ describe('native Android connection sequence', () => {
 		['socks5h://proxy.example', 'socks5', 1080, true]
 	])('parses supported proxy URL %s', (url, type, port, resolveDns) => {
 		expect(parseNativeAndroidProxyUrl(url)).toMatchObject({ type, port, resolveDns })
+	})
+
+	it('normalizes bracketed IPv6 proxy hosts for Node socket APIs', () => {
+		expect(parseNativeAndroidProxyUrl('socks5://[::1]:1080')).toMatchObject({ host: '::1', port: 1080 })
 	})
 
 	it('rejects unsupported proxy protocols instead of silently connecting directly', () => {
@@ -225,6 +304,70 @@ describe('native Android connection sequence', () => {
 		expect(socket.destroyed).toBe(false)
 		socket.destroy()
 		await new Promise<void>(resolve => proxy.close(() => resolve()))
+	})
+
+	it('uses one deadline across the HTTPS proxy handshake and CONNECT response', async () => {
+		class SilentTlsSocket extends Duplex {
+			_write(_chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void) {
+				callback()
+			}
+			_read() {}
+		}
+		const tunnel = new SilentTlsSocket()
+		const connect = jest.spyOn(tls, 'connect').mockImplementation((() => {
+			setTimeout(() => tunnel.emit('secureConnect'), 150)
+			return tunnel as unknown as tls.TLSSocket
+		}) as typeof tls.connect)
+		const startedAt = Date.now()
+
+		try {
+			await expect(
+				connectNativeAndroidCandidate(
+					{
+						host: 'g.whatsapp.net',
+						port: 443,
+						source: 'dns',
+						connectHost: 'g.whatsapp.net',
+						addressSource: 1,
+						dnsCached: false
+					},
+					{ type: 'https-connect', host: 'secure-proxy.example', port: 443 },
+					200
+				)
+			).rejects.toThrow('timed out')
+			expect(Date.now() - startedAt).toBeLessThan(300)
+		} finally {
+			connect.mockRestore()
+			tunnel.destroy()
+		}
+	})
+
+	it('connects through the selected IPv4/IPv6 pair without serial address fanout', async () => {
+		const server = net.createServer()
+		await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+		const address = server.address()
+		if (!address || typeof address === 'string') throw new Error('server did not bind')
+
+		try {
+			const socket = await connectNativeAndroidCandidate(
+				{
+					host: 'dual-stack.example',
+					address: '127.0.0.2',
+					port: address.port,
+					source: 'dns',
+					connectHost: '127.0.0.2',
+					connectHosts: ['127.0.0.2', '127.0.0.1'],
+					addressSource: 1,
+					dnsCached: false
+				},
+				undefined,
+				1000
+			)
+			expect(getNativeAndroidConnectedHost(socket)).toBe('127.0.0.1')
+			socket.destroy()
+		} finally {
+			await new Promise<void>(resolve => server.close(() => resolve()))
+		}
 	})
 
 	it('uses a TLS tunnel for HTTPS CONNECT proxies', async () => {

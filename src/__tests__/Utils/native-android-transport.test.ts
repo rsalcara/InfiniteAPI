@@ -491,6 +491,36 @@ describe('native_android transport contract', () => {
 				connectionEndpoints: [{ host: 'server.example', address: 'not-an-ip', port: 443 }]
 			})
 		).toThrow('connection endpoint address must be an IP address')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
+				proxy: null as unknown as NativeAndroidTransportConfig['proxy']
+			})
+		).toThrow('proxy must be an object')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
+				connectionEndpoints: null as unknown as NativeAndroidTransportConfig['connectionEndpoints']
+			})
+		).toThrow('connectionEndpoints must be an array')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
+				connectionEndpoints: [null] as unknown as NativeAndroidTransportConfig['connectionEndpoints']
+			})
+		).toThrow('connection endpoint must be an object')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
+				dnsTimeoutMs: 0
+			})
+		).toThrow('dnsTimeoutMs must be a positive integer')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
+				sequenceTimeoutMs: 0
+			})
+		).toThrow('sequenceTimeoutMs must be a positive integer')
 
 		const creds = initAuthCreds()
 		resolveTransportSession(nativeConfig(), creds)
@@ -812,5 +842,29 @@ describe('TcpSocketClient', () => {
 		const diagnostics = JSON.stringify(debug.mock.calls)
 		expect(diagnostics).not.toContain('sensitive-user')
 		expect(diagnostics).not.toContain('sensitive-password')
+	})
+
+	it('emits one terminal close after all candidates fail', async () => {
+		const config = nativeConfig()
+		config.connectTimeoutMs = 50
+		config.nativeAndroid = {
+			...config.nativeAndroid!,
+			proxy: { type: 'http-connect', host: '127.0.0.1', port: 1 },
+			sequenceTimeoutMs: 1000
+		}
+		const client = new TcpSocketClient(new URL('tcp://g.whatsapp.net:443'), config)
+		const errors: Error[] = []
+		let closeCount = 0
+		client.on('error', error => errors.push(error))
+		client.on('close', () => closeCount++)
+
+		client.connect()
+		await new Promise<void>(resolve => {
+			client.once('close', () => resolve())
+		})
+
+		expect(errors.length).toBeGreaterThan(0)
+		expect(closeCount).toBe(1)
+		expect(client.isClosed).toBe(true)
 	})
 })
