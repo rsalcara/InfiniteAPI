@@ -47,14 +47,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-yarn-${{ hashFiles('package.json') }}-
 
+      - name: Validate npm lockfile
+        run: npm ci --ignore-scripts --dry-run --no-audit --no-fund
+
       - name: Install dependencies
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GIT_TERMINAL_PROMPT: 0
         run: yarn install --immutable
-
-      - name: Validate npm lockfile
-        run: npm ci --ignore-scripts --dry-run --no-audit --no-fund
 
       - name: Build project
         run: yarn build

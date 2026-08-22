@@ -123,14 +123,17 @@ const resolveAll = async (
 			await timeoutAfter(lookup(normalized), timeoutMs, `native_android: DNS lookup timed out for ${normalized}`)
 		)
 	]
+
 	for (const [cachedHost, entry] of dnsCache) {
 		if (entry.expiresAt <= Date.now()) dnsCache.delete(cachedHost)
 	}
+
 	while (dnsCache.size >= DNS_CACHE_MAX_ENTRIES) {
 		const oldest = dnsCache.keys().next().value
 		if (oldest === undefined) break
 		dnsCache.delete(oldest)
 	}
+
 	dnsCache.set(normalized, { expiresAt: Date.now() + DNS_TTL_MS, addresses })
 	return { addresses, cached: false }
 }
@@ -175,6 +178,7 @@ export async function* iterateNativeAndroidConnectionSequence({
 		if (remaining <= 0) throw new NativeAndroidSequenceTimeoutError('native_android: connection sequence timed out')
 		return Math.min(dnsTimeoutMs, remaining)
 	}
+
 	const officialPortForStep = (sequenceStep: number) => {
 		const history = persisted?.connectionEndpoint
 		if (history?.sequenceStep === sequenceStep && history.port !== 80 && validPort(history.port)) return history.port
@@ -504,7 +508,6 @@ const connectHappyEyeballs = (
 		let nextIndex = 0
 		let failures = 0
 		let settled = false
-		let staggerTimer: ReturnType<typeof setTimeout> | undefined
 		let lastError: Error | undefined
 
 		const startNext = () => {
@@ -536,7 +539,7 @@ const connectHappyEyeballs = (
 		}
 
 		startNext()
-		staggerTimer = setTimeout(startNext, HAPPY_EYEBALLS_DELAY_MS)
+		const staggerTimer = setTimeout(startNext, HAPPY_EYEBALLS_DELAY_MS)
 	})
 }
 

@@ -147,9 +147,11 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 	if (config.connectionEndpoints !== undefined && !Array.isArray(config.connectionEndpoints)) {
 		throw new Boom('native_android: connectionEndpoints must be an array', { statusCode: 400 })
 	}
+
 	if (config.dnsTimeoutMs !== undefined && (!Number.isInteger(config.dnsTimeoutMs) || config.dnsTimeoutMs < 1)) {
 		throw new Boom('native_android: dnsTimeoutMs must be a positive integer', { statusCode: 400 })
 	}
+
 	if (
 		config.sequenceTimeoutMs !== undefined &&
 		(!Number.isInteger(config.sequenceTimeoutMs) || config.sequenceTimeoutMs < 1)

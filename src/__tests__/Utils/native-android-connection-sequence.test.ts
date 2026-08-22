@@ -9,8 +9,8 @@ import {
 	connectNativeAndroidCandidate,
 	getNativeAndroidConnectedHost,
 	iterateNativeAndroidConnectionSequence,
-	parseNativeAndroidProxyUrl,
-	type NativeConnectionCandidate
+	type NativeConnectionCandidate,
+	parseNativeAndroidProxyUrl
 } from '../../Utils/native-android-connection-sequence'
 import { OFFICIAL_NATIVE_ANDROID_HARDCODED_ADDRESSES } from '../../Utils/native-android-hardcoded-addresses'
 

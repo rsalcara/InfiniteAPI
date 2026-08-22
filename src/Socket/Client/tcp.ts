@@ -75,6 +75,7 @@ export class TcpSocketClient extends AbstractSocketClient {
 					lastError = new Error('native_android: connection sequence timed out')
 					break
 				}
+
 				try {
 					const socket = await connectNativeAndroidCandidate(
 						candidate,
