@@ -899,7 +899,10 @@ describe('TcpSocketClient', () => {
 				client.connect()
 			})
 
-			const diagnostics = JSON.stringify(debug.mock.calls)
+			expect(debug).toHaveBeenCalled()
+			const diagnostics = JSON.stringify(debug.mock.calls, (_key, value) =>
+				value instanceof Error ? { name: value.name, message: value.message, stack: value.stack } : value
+			)
 			expect(diagnostics).not.toContain('sensitive-user')
 			expect(diagnostics).not.toContain('sensitive-password')
 		} finally {
