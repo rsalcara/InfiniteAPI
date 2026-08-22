@@ -173,6 +173,15 @@ describe('full proxy route policy', () => {
 		config.proxyRoute = { mode: 'full', verifiedAt: 'August 22, 2026' }
 		expect(() => resolveProxyRouteAudit(config, 'native_android')).toThrow('ISO-8601')
 
+		config.proxyRoute = { mode: 'full', verifiedAt: '2026-02-30T10:00:00.000Z' }
+		expect(() => resolveProxyRouteAudit(config, 'native_android')).toThrow('ISO-8601')
+
+		config.proxyRoute = { mode: 'full', verifiedAt: '2024-02-29T10:00:00.000+03:00' }
+		expect(resolveProxyRouteAudit(config, 'native_android').proxyVerifiedAt).toBe('2024-02-29T10:00:00.000+03:00')
+
+		config.proxyRoute = { mode: 'full', verifiedAt: '2026-02-28T24:00:00.000Z' }
+		expect(resolveProxyRouteAudit(config, 'native_android').proxyVerifiedAt).toBe('2026-02-28T24:00:00.000Z')
+
 		config.proxyRoute = { mode: 'full', provider: '   ' }
 		expect(() => resolveProxyRouteAudit(config, 'native_android')).toThrow('provider must be a non-empty string')
 	})
