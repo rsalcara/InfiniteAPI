@@ -3,7 +3,8 @@ import { execFile } from 'child_process'
 import * as Crypto from 'crypto'
 import { once } from 'events'
 import { createReadStream, createWriteStream, promises as fs, WriteStream } from 'fs'
-import type { Agent } from 'https'
+import * as http from 'http'
+import * as https from 'https'
 import type { IAudioMetadata } from 'music-metadata'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -20,6 +21,7 @@ import {
 import type {
 	BaileysEventMap,
 	DownloadableMessage,
+	HttpRequestAgent,
 	MediaConnInfo,
 	MediaDecryptionKeyInfo,
 	MessageType,
@@ -34,6 +36,7 @@ import { type BinaryNode, getBinaryNodeChild, getBinaryNodeChildBuffer, jidNorma
 import { aesDecryptGCM, aesEncryptGCM, hkdf } from './crypto'
 import { generateMessageIDV2 } from './generics'
 import type { ILogger } from './logger'
+import { isFetchDispatcher } from './proxy-route'
 
 const getTmpFilesDirectory = () => tmpdir()
 
@@ -376,18 +379,233 @@ export async function generateThumbnail(
 	}
 }
 
-export const getHttpStream = async (url: string | URL, options: RequestInit & { isStream?: true } = {}) => {
-	const response = await fetch(url.toString(), {
-		dispatcher: options.dispatcher,
-		method: 'GET',
-		headers: options.headers as HeadersInit
+const MAX_HTTP_REDIRECTS = 5
+const SENSITIVE_REDIRECT_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie', 'cookie2', 'host'])
+
+export const normalizeRequestHeaders = (headers?: HeadersInit): Record<string, string> => {
+	if (!headers) return {}
+
+	const normalized: Record<string, string> = {}
+	new Headers(headers).forEach((value, key) => {
+		normalized[key] = value
 	})
+	return normalized
+}
+
+const headersForRedirect = (
+	headers: HeadersInit | undefined,
+	currentUrl: URL,
+	redirectUrl: URL
+): Record<string, string> => {
+	const normalized = normalizeRequestHeaders(headers)
+	if (currentUrl.origin === redirectUrl.origin) return normalized
+
+	for (const name of Object.keys(normalized)) {
+		if (SENSITIVE_REDIRECT_HEADERS.has(name.toLowerCase())) delete normalized[name]
+	}
+
+	return normalized
+}
+
+const parseRedirectUrl = (location: string, currentUrl: URL): URL => {
+	try {
+		return new URL(location, currentUrl)
+	} catch (error) {
+		throw Object.assign(
+			new Boom(`Invalid redirect URL from ${currentUrl}`, { statusCode: 502, data: { url: currentUrl } }),
+			{ cause: error }
+		)
+	}
+}
+
+const assertNodeAgentProtocol = (agent: http.Agent, targetUrl: URL) => {
+	const protocol = (agent as http.Agent & { protocol?: unknown }).protocol
+	if (typeof protocol === 'string' && protocol !== targetUrl.protocol) {
+		throw new Boom(`Configured Node HTTP agent does not support ${targetUrl.protocol} URLs`, {
+			statusCode: 502,
+			data: { url: targetUrl }
+		})
+	}
+}
+
+const requestSignal = (
+	signal: AbortSignal | null | undefined,
+	timeout?: number
+): { signal?: AbortSignal; clearTimeout: () => void; cleanup: () => void } => {
+	if (!timeout) return { signal: signal ?? undefined, clearTimeout: () => {}, cleanup: () => {} }
+
+	const controller = new AbortController()
+	const onSignalAbort = () => controller.abort(signal?.reason)
+	if (signal?.aborted) onSignalAbort()
+	else signal?.addEventListener('abort', onSignalAbort, { once: true })
+	const timer = setTimeout(
+		() => controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError')),
+		timeout
+	)
+	let cleaned = false
+	const clearRequestTimeout = () => clearTimeout(timer)
+	return {
+		signal: controller.signal,
+		clearTimeout: clearRequestTimeout,
+		cleanup: () => {
+			if (cleaned) return
+			cleaned = true
+			clearRequestTimeout()
+			signal?.removeEventListener('abort', onSignalAbort)
+		}
+	}
+}
+
+const getHttpStreamWithNodeAgent = async (
+	url: string | URL,
+	options: RequestInit & { isStream?: true; timeout?: number },
+	redirectCount = 0
+): Promise<Readable> => {
+	if (redirectCount > MAX_HTTP_REDIRECTS) {
+		throw new Boom(`Too many redirects fetching stream from ${url}`, { statusCode: 508, data: { url } })
+	}
+
+	const parsedUrl = new URL(url.toString())
+	const requestModule = parsedUrl.protocol === 'https:' ? https : http
+	assertNodeAgentProtocol(options.agent!, parsedUrl)
+
+	return new Promise((resolve, reject) => {
+		const request = requestModule.request(
+			parsedUrl,
+			{
+				method: 'GET',
+				headers: normalizeRequestHeaders(options.headers),
+				agent: options.agent,
+				signal: options.signal ?? undefined
+			},
+			response => {
+				request.setTimeout(0)
+				const statusCode = response.statusCode ?? 0
+				const location = response.headers.location
+				if (statusCode >= 300 && statusCode < 400 && location) {
+					response.resume()
+					let redirectUrl: URL
+					try {
+						redirectUrl = parseRedirectUrl(location, parsedUrl)
+					} catch (error) {
+						reject(error)
+						return
+					}
+
+					void getHttpStreamWithNodeAgent(
+						redirectUrl,
+						{ ...options, headers: headersForRedirect(options.headers, parsedUrl, redirectUrl) },
+						redirectCount + 1
+					).then(resolve, reject)
+					return
+				}
+
+				if (statusCode < 200 || statusCode >= 300) {
+					response.resume()
+					reject(
+						new Boom(`Failed to fetch stream from ${url}`, {
+							statusCode,
+							data: { url, responseStatus: statusCode }
+						})
+					)
+					return
+				}
+
+				resolve(response)
+			}
+		)
+
+		request.once('error', reject)
+		if (options.timeout !== undefined) {
+			request.setTimeout(options.timeout, () => {
+				request.destroy(new Error(`Timed out fetching stream from ${url}`))
+			})
+		}
+
+		request.end()
+	})
+}
+
+const getHttpStreamWithFetch = async (
+	url: string | URL,
+	options: RequestInit & { isStream?: true; timeout?: number },
+	redirectCount = 0
+): Promise<Readable> => {
+	if (redirectCount > MAX_HTTP_REDIRECTS) {
+		throw new Boom(`Too many redirects fetching stream from ${url}`, { statusCode: 508, data: { url } })
+	}
+
+	const parsedUrl = new URL(url.toString())
+	let response: Response
+	const requestAbort = requestSignal(options.signal, options.timeout)
+	try {
+		response = await fetch(parsedUrl, {
+			dispatcher: options.dispatcher,
+			method: 'GET',
+			headers: normalizeRequestHeaders(options.headers),
+			redirect: 'manual',
+			signal: requestAbort.signal
+		})
+	} catch (error) {
+		requestAbort.cleanup()
+		if ((error as { name?: unknown } | undefined)?.name === 'TimeoutError') {
+			throw Object.assign(new Error(`Timed out fetching stream from ${url}`), { cause: error })
+		}
+
+		throw error
+	} finally {
+		requestAbort.clearTimeout()
+	}
+
+	const location = response.headers.get('location')
+	if (response.status >= 300 && response.status < 400 && location) {
+		await response.body?.cancel()
+		requestAbort.cleanup()
+		const redirectUrl = parseRedirectUrl(location, parsedUrl)
+		return getHttpStreamWithFetch(
+			redirectUrl,
+			{ ...options, headers: headersForRedirect(options.headers, parsedUrl, redirectUrl) },
+			redirectCount + 1
+		)
+	}
+
 	if (!response.ok) {
-		throw new Boom(`Failed to fetch stream from ${url}`, { statusCode: response.status, data: { url } })
+		await response.body?.cancel()
+		requestAbort.cleanup()
+		throw new Boom(`Failed to fetch stream from ${url}`, {
+			statusCode: response.status,
+			data: { url, responseStatus: response.status }
+		})
+	}
+
+	if (!response.body) {
+		requestAbort.cleanup()
+		throw new Boom(`Failed to fetch stream from ${url}: empty response body`, {
+			statusCode: 502,
+			data: { url }
+		})
 	}
 
 	// @ts-ignore Node18+ Readable.fromWeb exists
-	return response.body instanceof Readable ? response.body : Readable.fromWeb(response.body as any)
+	const readable = response.body instanceof Readable ? response.body : Readable.fromWeb(response.body as any)
+	readable.once('close', requestAbort.cleanup)
+	return readable
+}
+
+export const getHttpStream = async (
+	url: string | URL,
+	options: RequestInit & { isStream?: true; timeout?: number } = {}
+) => {
+	if (isFetchDispatcher(options.agent)) {
+		const { agent, ...fetchOptions } = options
+		return getHttpStreamWithFetch(url, { ...fetchOptions, dispatcher: agent })
+	}
+
+	if (options.agent) {
+		return getHttpStreamWithNodeAgent(url, options)
+	}
+
+	return getHttpStreamWithFetch(url, options)
 }
 
 type EncryptedStreamOptions = {
@@ -669,13 +887,8 @@ export const downloadEncryptedContent = async (
 
 	const endChunk = endByte ? toSmallestChunkSize(endByte || 0) + AES_CHUNK_SIZE : undefined
 
-	const headersInit = options?.headers ? options.headers : undefined
 	const headers: Record<string, string> = {
-		...(headersInit
-			? Array.isArray(headersInit)
-				? Object.fromEntries(headersInit)
-				: (headersInit as Record<string, string>)
-			: {}),
+		...normalizeRequestHeaders(options?.headers),
 		Origin: DEFAULT_ORIGIN
 	}
 	if (startChunk || endChunk) {
@@ -855,19 +1068,20 @@ export type UploadParams = {
 	filePath: string
 	headers: Record<string, string>
 	timeoutMs?: number
-	agent?: Agent
+	agent?: HttpRequestAgent
 }
 
 export const uploadWithNodeHttp = async (
 	{ url, filePath, headers, timeoutMs, agent }: UploadParams,
 	redirectCount = 0
 ): Promise<MediaUploadResult | undefined> => {
-	if (redirectCount > 5) {
+	if (redirectCount > MAX_HTTP_REDIRECTS) {
 		throw new Error('Too many redirects')
 	}
 
 	const parsedUrl = new URL(url)
 	const httpModule = parsedUrl.protocol === 'https:' ? await import('https') : await import('http')
+	if (agent && !isFetchDispatcher(agent)) assertNodeAgentProtocol(agent, parsedUrl)
 
 	// Get file size for Content-Length header (required for Node.js streaming)
 	const fileStats = await fs.stat(filePath)
@@ -884,20 +1098,27 @@ export const uploadWithNodeHttp = async (
 					...headers,
 					'Content-Length': fileSize
 				},
-				agent,
+				agent: agent as http.Agent | undefined,
 				timeout: timeoutMs
 			},
 			res => {
 				// Handle redirects (3xx)
 				if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
 					res.resume() // Consume response to free resources
-					const newUrl = new URL(res.headers.location, url).toString()
+					let redirectUrl: URL
+					try {
+						redirectUrl = parseRedirectUrl(res.headers.location, parsedUrl)
+					} catch (error) {
+						reject(error)
+						return
+					}
+
 					resolve(
 						uploadWithNodeHttp(
 							{
-								url: newUrl,
+								url: redirectUrl.toString(),
 								filePath,
-								headers,
+								headers: headersForRedirect(headers, parsedUrl, redirectUrl),
 								timeoutMs,
 								agent
 							},
@@ -934,18 +1155,19 @@ export const uploadWithNodeHttp = async (
 	})
 }
 
-const uploadWithFetch = async ({
-	url,
-	filePath,
-	headers,
-	timeoutMs,
-	agent
-}: UploadParams): Promise<MediaUploadResult | undefined> => {
+const uploadWithFetch = async (
+	{ url, filePath, headers, timeoutMs, agent }: UploadParams,
+	redirectCount = 0
+): Promise<MediaUploadResult | undefined> => {
+	if (redirectCount > MAX_HTTP_REDIRECTS) {
+		throw new Error('Too many redirects')
+	}
+
 	// Convert Node.js Readable to Web ReadableStream
 	const nodeStream = createReadStream(filePath)
 	const webStream = Readable.toWeb(nodeStream) as ReadableStream
 	// Native fetch only accepts Undici-style dispatchers, not generic https Agents.
-	const dispatcher = typeof (agent as { dispatch?: unknown } | undefined)?.dispatch === 'function' ? agent : undefined
+	const dispatcher = isFetchDispatcher(agent) ? agent : undefined
 
 	const response = await fetch(url, {
 		...(dispatcher ? { dispatcher } : {}),
@@ -953,8 +1175,25 @@ const uploadWithFetch = async ({
 		body: webStream,
 		headers,
 		duplex: 'half',
+		redirect: 'manual',
 		signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined
 	})
+	const location = response.headers.get('location')
+	if (response.status >= 300 && response.status < 400 && location) {
+		await response.body?.cancel()
+		const parsedUrl = new URL(url)
+		const redirectUrl = parseRedirectUrl(location, parsedUrl)
+		return uploadWithFetch(
+			{
+				url: redirectUrl.toString(),
+				filePath,
+				headers: headersForRedirect(headers, parsedUrl, redirectUrl),
+				timeoutMs,
+				agent
+			},
+			redirectCount + 1
+		)
+	}
 
 	try {
 		return (await response.json()) as MediaUploadResult
@@ -981,7 +1220,7 @@ const uploadWithFetch = async ({
  * across all runtimes. Monitor the GitHub issue for updates.
  */
 const uploadMedia = async (params: UploadParams, logger?: ILogger): Promise<MediaUploadResult | undefined> => {
-	if (isNodeRuntime()) {
+	if (isNodeRuntime() && !isFetchDispatcher(params.agent)) {
 		logger?.debug('Using Node.js https module for upload (avoids undici buffering bug)')
 		return uploadWithNodeHttp(params)
 	} else {
@@ -1004,11 +1243,7 @@ export const getWAUploadToServer = (
 		fileEncSha256B64 = encodeBase64EncodedStringForUpload(fileEncSha256B64)
 
 		// Prepare common headers
-		const customHeaders = (() => {
-			const hdrs = options?.headers
-			if (!hdrs) return {}
-			return Array.isArray(hdrs) ? Object.fromEntries(hdrs) : (hdrs as Record<string, string>)
-		})()
+		const customHeaders = normalizeRequestHeaders(options?.headers)
 
 		const headers = {
 			...customHeaders,

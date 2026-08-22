@@ -82,6 +82,50 @@ record. InfiniteAPI intentionally does not inspect an opaque `Agent` to derive
 hostnames or credentials. Proxy usernames and passwords are never included in
 candidate diagnostics or transport logs.
 
+Consumers that require fail-closed coverage can declare the route policy when
+creating the socket:
+
+```ts
+makeWASocket({
+	instanceId: 'instance-15981907008-device-8',
+	organizationId: 'tenant-id',
+	connectionTrigger: 'restart',
+	proxyRoute: {
+		mode: 'full',
+		expectedEgressIp: '198.51.100.42',
+		provider: 'residential-provider',
+		routeId: 'non-secret-sticky-route-id',
+		verifiedAt: '2026-08-22T13:51:59.000Z'
+	},
+	agent, // required for Web; omit for native_android
+	fetchAgent,
+	nativeAndroid: {
+		// ...required identity fields
+		proxy
+	}
+})
+```
+
+For `native_android`, `mode: 'full'` requires both `nativeAndroid.proxy` and
+`fetchAgent`. For Web it requires both `agent` and `fetchAgent`. Invalid or
+partial full-route configurations fail before WhatsApp network I/O. The
+`fetchAgent` is also propagated to the request options used by media,
+history-sync and app-state downloads; a Node HTTP agent is used by
+`http.request`, while an Undici dispatcher is used by `fetch`.
+
+The structured events `whatsapp_proxy_route_policy` and
+`whatsapp_transport_route_established` identify the instance, connection
+phase, transport, direct/proxy mode and the selected endpoint. Proxy
+credentials are never logged. `expectedEgressIp` records the result of the
+consumer's external proxy health check; it is audit metadata, not an IP probe
+performed by InfiniteAPI and therefore is not, by itself, proof of the public
+IP observed by Meta.
+
+`connectionPhase` is inferred from the persisted WhatsApp credentials.
+`connectionTrigger` is supplied by the orchestrator and can distinguish
+`instance_create`, `new_pairing`, `restart` and `reconnect`; when omitted it is
+logged as `unspecified` rather than guessing.
+
 The native sequence follows the Android 2.26.27.83 state machine and advances
 only after a failed TCP/tunnel attempt: an explicit endpoint when configured,
 server primary endpoints, `g.whatsapp.net`, server secondary endpoints, port

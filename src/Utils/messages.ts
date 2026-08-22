@@ -45,9 +45,11 @@ import {
 	generateThumbnail,
 	getAudioDuration,
 	getAudioWaveform,
+	getHttpStream,
 	getRawMediaUploadData,
 	getStream,
-	type MediaDownloadOptions
+	type MediaDownloadOptions,
+	toBuffer
 } from './messages-media'
 import { shouldIncludeReportingToken } from './reporting-utils'
 import { prepareStickerPackMessage } from './sticker-pack.js'
@@ -1703,10 +1705,12 @@ export const generateWAMessageContent = async (
 		if (options.getProfilePicUrl) {
 			const pfpUrl = await options.getProfilePicUrl(message.groupInvite.jid, 'preview')
 			if (pfpUrl) {
-				const resp = await fetch(pfpUrl, { method: 'GET', dispatcher: options?.options?.dispatcher })
-				if (resp.ok) {
-					const buf = Buffer.from(await resp.arrayBuffer())
-					m.groupInviteMessage.jpegThumbnail = buf
+				try {
+					const stream = await getHttpStream(pfpUrl, options.options)
+					m.groupInviteMessage.jpegThumbnail = await toBuffer(stream)
+				} catch (error) {
+					const responseStatus = (error as { data?: { responseStatus?: unknown } } | undefined)?.data?.responseStatus
+					if (typeof responseStatus !== 'number') throw error
 				}
 			}
 		}

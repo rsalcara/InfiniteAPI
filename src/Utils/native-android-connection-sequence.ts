@@ -415,7 +415,15 @@ const readHttpHeader = (socket: net.Socket, deadline: number, signal?: AbortSign
 			return true
 		}
 
-		const onError = (error: Error) => finish(error)
+		const onError = (error: NodeJS.ErrnoException) =>
+			finish(
+				buffered.length === 0 && (error.code === 'ECONNRESET' || error.code === 'EPIPE')
+					? Object.assign(new Error('native_android: proxy closed the connection before the CONNECT response'), {
+							cause: error,
+							code: error.code
+						})
+					: error
+			)
 		const onEnd = () => finish(new Error('native_android: proxy ended the connection before the CONNECT response'))
 		const onClose = () => finish(new Error('native_android: proxy closed the connection before the CONNECT response'))
 		const onAbort = () => finish(abortError())
