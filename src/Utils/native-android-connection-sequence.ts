@@ -111,12 +111,14 @@ const timeoutAfter = <T>(promise: Promise<T>, timeoutMs: number, message: string
 			if (error !== undefined) reject(error)
 			else resolve(value as T)
 		}
+
 		const onAbort = () => finish(abortError())
 		const timer = setTimeout(() => finish(new Error(message)), Math.min(Math.max(1, timeoutMs), MAX_NODE_TIMER_MS))
 		if (signal?.aborted) {
 			finish(abortError())
 			return
 		}
+
 		signal?.addEventListener('abort', onAbort, { once: true })
 		promise.then(
 			value => finish(undefined, value),
@@ -421,6 +423,7 @@ const readHttpHeader = (socket: net.Socket, deadline: number, signal?: AbortSign
 					finish(new Error('native_android: proxy response header is too large'))
 				return
 			}
+
 			if (end + 4 > MAX_HTTP_PROXY_HEADER_BYTES) {
 				finish(new Error('native_android: proxy response header is too large'))
 				return
@@ -456,6 +459,7 @@ const connectDirect = (host: string, port: number, deadline: number, signal?: Ab
 			cleanup()
 			reject(error)
 		}
+
 		const onAbort = () => socket.destroy(abortError())
 
 		socket.once('error', onError)
@@ -484,6 +488,7 @@ const connectTlsProxy = (host: string, port: number, deadline: number, signal?: 
 			cleanup()
 			reject(error)
 		}
+
 		const onAbort = () => socket.destroy(abortError())
 
 		socket.once('error', onError)
@@ -560,6 +565,7 @@ const connectSocksProxy = async (
 			proxySocket.destroy(abortError())
 			reject(abortError())
 		}
+
 		signal.addEventListener('abort', onAbort, { once: true })
 		if (signal.aborted) onAbort()
 		connection.then(
@@ -570,6 +576,7 @@ const connectSocksProxy = async (
 					if (!settled) reject(abortError())
 					return
 				}
+
 				settled = true
 				resolve(result.socket)
 			},
@@ -601,6 +608,7 @@ const connectHappyEyeballs = (
 		const abortAll = (except?: AbortController) => {
 			for (const controller of controllers) if (controller !== except) controller.abort()
 		}
+
 		const onAbort = () => {
 			if (settled) return
 			settled = true
@@ -649,6 +657,7 @@ const connectHappyEyeballs = (
 			onAbort()
 			return
 		}
+
 		signal?.addEventListener('abort', onAbort, { once: true })
 		startNext()
 		if (uniqueHosts.length > 1) staggerTimer = setTimeout(startNext, HAPPY_EYEBALLS_DELAY_MS)

@@ -503,6 +503,7 @@ describe('native Android connection sequence', () => {
 					socket.once('close', closeLosingSocket)
 					return
 				}
+
 				socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
 			})
 		})
