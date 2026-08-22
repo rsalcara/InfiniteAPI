@@ -115,8 +115,30 @@ export const resolveProxyRouteAudit = (config: SocketConfig, profile: Connection
 	}
 
 	const verifiedAt = optionalNonBlank(policy.verifiedAt, 'proxyRoute.verifiedAt')
-	const isoTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/
-	if (verifiedAt !== undefined && (!isoTimestamp.test(verifiedAt) || Number.isNaN(Date.parse(verifiedAt)))) {
+	const isoTimestamp = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/
+	const timestampParts = verifiedAt?.match(isoTimestamp)
+	const parsedTimestamp = verifiedAt === undefined ? Number.NaN : Date.parse(verifiedAt)
+	let validVerifiedAt = timestampParts !== null && timestampParts !== undefined && !Number.isNaN(parsedTimestamp)
+	if (validVerifiedAt && timestampParts) {
+		const [, year, month, day, hour, minute, second] = timestampParts
+		const calendarDate = new Date(0)
+		calendarDate.setUTCFullYear(Number(year), Number(month) - 1, Number(day))
+		calendarDate.setUTCHours(0, 0, 0, 0)
+		const hourValue = Number(hour)
+		const isEndOfDay = hourValue === 24 && Number(minute) === 0 && Number(second) === 0
+		const validHour = (hourValue >= 0 && hourValue <= 23) || isEndOfDay
+		validVerifiedAt =
+			calendarDate.getUTCFullYear() === Number(year) &&
+			calendarDate.getUTCMonth() === Number(month) - 1 &&
+			calendarDate.getUTCDate() === Number(day) &&
+			validHour &&
+			Number(minute) >= 0 &&
+			Number(minute) <= 59 &&
+			Number(second) >= 0 &&
+			Number(second) <= 59
+	}
+
+	if (verifiedAt !== undefined && !validVerifiedAt) {
 		throw new Boom('proxyRoute.verifiedAt must be an ISO-8601 timestamp', { statusCode: 400 })
 	}
 

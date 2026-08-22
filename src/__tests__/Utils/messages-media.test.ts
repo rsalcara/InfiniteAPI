@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals'
 import * as fs from 'fs'
 import * as http from 'http'
 import { Agent } from 'https'
@@ -96,6 +97,55 @@ describe('uploadWithNodeHttp', () => {
 
 		expect(result).toEqual(expectedResponse)
 		expect(receivedBody).toBe(testFileContent)
+	})
+
+	it('routes a dispatcher supplied directly to the exported helper through fetch', async () => {
+		const originalFetch = globalThis.fetch
+		const dispatcher = { dispatch: () => undefined }
+		let fetchInit: RequestInit | undefined
+		globalThis.fetch = (async (_input, init) => {
+			fetchInit = init
+			return new Response(JSON.stringify({ success: true }), {
+				headers: { 'Content-Type': 'application/json' }
+			})
+		}) as typeof fetch
+
+		try {
+			await expect(
+				uploadWithNodeHttp({
+					url: 'https://upload.example/media',
+					filePath: tempFilePath,
+					headers: { 'Content-Type': 'application/octet-stream' },
+					agent: dispatcher
+				})
+			).resolves.toEqual({ success: true })
+			expect(fetchInit?.dispatcher).toBe(dispatcher)
+		} finally {
+			globalThis.fetch = originalFetch
+		}
+	})
+
+	it('destroys the upload stream when fetch rejects', async () => {
+		const originalFetch = globalThis.fetch
+		const destroySpy = jest.spyOn(fs.ReadStream.prototype, 'destroy')
+		globalThis.fetch = (async () => {
+			throw new Error('fetch failed')
+		}) as typeof fetch
+
+		try {
+			await expect(
+				uploadWithNodeHttp({
+					url: 'https://upload.example/media',
+					filePath: tempFilePath,
+					headers: { 'Content-Type': 'application/octet-stream' },
+					agent: { dispatch: () => undefined }
+				})
+			).rejects.toThrow('fetch failed')
+			expect(destroySpy).toHaveBeenCalled()
+		} finally {
+			destroySpy.mockRestore()
+			globalThis.fetch = originalFetch
+		}
 	})
 
 	it('should follow a single redirect (302)', async () => {

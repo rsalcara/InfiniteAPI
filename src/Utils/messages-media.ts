@@ -1079,9 +1079,15 @@ export const uploadWithNodeHttp = async (
 		throw new Error('Too many redirects')
 	}
 
+	// A dispatcher is valid for Fetch, but not for Node's http.request agent slot.
+	// Keep the exported helper safe for direct consumers as well as internal callers.
+	if (isFetchDispatcher(agent)) {
+		return uploadWithFetch({ url, filePath, headers, timeoutMs, agent }, redirectCount)
+	}
+
 	const parsedUrl = new URL(url)
 	const httpModule = parsedUrl.protocol === 'https:' ? await import('https') : await import('http')
-	if (agent && !isFetchDispatcher(agent)) assertNodeAgentProtocol(agent, parsedUrl)
+	if (agent) assertNodeAgentProtocol(agent, parsedUrl)
 
 	// Get file size for Content-Length header (required for Node.js streaming)
 	const fileStats = await fs.stat(filePath)
@@ -1098,7 +1104,7 @@ export const uploadWithNodeHttp = async (
 					...headers,
 					'Content-Length': fileSize
 				},
-				agent: agent as http.Agent | undefined,
+				agent,
 				timeout: timeoutMs
 			},
 			res => {
@@ -1169,18 +1175,30 @@ const uploadWithFetch = async (
 	// Native fetch only accepts Undici-style dispatchers, not generic https Agents.
 	const dispatcher = isFetchDispatcher(agent) ? agent : undefined
 
-	const response = await fetch(url, {
-		...(dispatcher ? { dispatcher } : {}),
-		method: 'POST',
-		body: webStream,
-		headers,
-		duplex: 'half',
-		redirect: 'manual',
-		signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined
-	})
+	let response: Response
+	try {
+		response = await fetch(url, {
+			...(dispatcher ? { dispatcher } : {}),
+			method: 'POST',
+			body: webStream,
+			headers,
+			duplex: 'half',
+			redirect: 'manual',
+			signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined
+		})
+	} catch (error) {
+		nodeStream.destroy()
+		throw error
+	}
+
 	const location = response.headers.get('location')
 	if (response.status >= 300 && response.status < 400 && location) {
-		await response.body?.cancel()
+		try {
+			await response.body?.cancel()
+		} finally {
+			nodeStream.destroy()
+		}
+
 		const parsedUrl = new URL(url)
 		const redirectUrl = parseRedirectUrl(location, parsedUrl)
 		return uploadWithFetch(

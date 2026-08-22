@@ -59,7 +59,7 @@ export class WebSocketClient extends AbstractSocketClient {
 					physicalRemoteAddress: physicalSocket?.remoteAddress,
 					physicalRemotePort: physicalSocket?.remotePort,
 					whatsappTargetHost: this.url.hostname,
-					whatsappTargetPort: Number.parseInt(this.url.port || '443', 10)
+					whatsappTargetPort: Number.parseInt(this.url.port || (this.url.protocol === 'ws:' ? '80' : '443'), 10)
 				},
 				'web: WhatsApp transport route established'
 			)
