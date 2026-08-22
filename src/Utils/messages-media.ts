@@ -418,9 +418,17 @@ const parseRedirectUrl = (location: string, currentUrl: URL): URL => {
 	}
 }
 
+/**
+ * Third-party agents may report the proxy transport in `protocol` while
+ * tunnelling a different target protocol through CONNECT, SOCKS or PAC. Only
+ * reject a known built-in Node agent here; custom agents negotiate their own
+ * transport and Node remains the final protocol guard.
+ */
 const assertNodeAgentProtocol = (agent: http.Agent, targetUrl: URL) => {
 	const protocol = (agent as http.Agent & { protocol?: unknown }).protocol
-	if (typeof protocol === 'string' && protocol !== targetUrl.protocol) {
+	const prototype = Object.getPrototypeOf(agent)
+	const isBuiltInNodeAgent = prototype === http.Agent.prototype || prototype === https.Agent.prototype
+	if (isBuiltInNodeAgent && typeof protocol === 'string' && protocol !== targetUrl.protocol) {
 		throw new Boom(`Configured Node HTTP agent does not support ${targetUrl.protocol} URLs`, {
 			statusCode: 502,
 			data: { url: targetUrl }
