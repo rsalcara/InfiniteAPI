@@ -13,6 +13,7 @@ import type {
 } from '../Types'
 import type { BinaryNode } from '../WABinary'
 import { makePersistedWebTransportIdentity, validatePersistedWebTransportIdentity } from './connection-presets'
+import { MAX_NODE_TIMER_MS } from './native-android-constants'
 import {
 	GENERIC_NATIVE_ANDROID_FALLBACK_PROFILE_ID,
 	isNativeAndroidCatalogProfile
@@ -43,8 +44,6 @@ const PROFILE_FIELDS: ReadonlyArray<keyof NativeAndroidDeviceProfile> = [
 	'oc'
 ]
 
-const MAX_NODE_TIMER_MS = 2_147_483_647
-
 const requiredString = (value: unknown, field: string) => {
 	if (typeof value !== 'string' || value.trim().length === 0) {
 		throw new Boom(`native_android: device profile field ${field} is required`, { statusCode: 400 })
@@ -52,8 +51,11 @@ const requiredString = (value: unknown, field: string) => {
 }
 
 const requiredHost = (value: unknown, field: string) => {
-	requiredString(value, field)
-	const host = (value as string).trim()
+	if (typeof value !== 'string' || value.trim().length === 0) {
+		throw new Boom(`native_android: ${field} is required`, { statusCode: 400 })
+	}
+
+	const host = value.trim()
 	const socketHost = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
 	if (net.isIP(socketHost)) return
 
@@ -159,6 +161,12 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 
 		if (config.proxy.password !== undefined && typeof config.proxy.password !== 'string') {
 			throw new Boom('native_android: proxy.password must be a string', { statusCode: 400 })
+		}
+
+		if (config.proxy.password !== undefined && config.proxy.username === undefined) {
+			throw new Boom('native_android: proxy.username is required when proxy.password is configured', {
+				statusCode: 400
+			})
 		}
 
 		if (config.proxy.resolveDns !== undefined && typeof config.proxy.resolveDns !== 'boolean') {

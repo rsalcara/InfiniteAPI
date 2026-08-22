@@ -6,11 +6,10 @@ import {
 	iterateNativeAndroidConnectionSequence,
 	type NativeConnectionCandidate
 } from '../../Utils/native-android-connection-sequence'
+import { MAX_NODE_TIMER_MS } from '../../Utils/native-android-constants'
 import { AbstractSocketClient } from './types'
 
 type TcpState = 'idle' | 'connecting' | 'open' | 'closing' | 'closed'
-
-const MAX_NODE_TIMER_MS = 2_147_483_647
 
 /** Raw TCP client used only by the opt-in native_android transport. */
 export class TcpSocketClient extends AbstractSocketClient {

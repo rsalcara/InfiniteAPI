@@ -514,9 +514,21 @@ describe('native_android transport contract', () => {
 		expect(() =>
 			validateNativeAndroidConfig({
 				...nativeAndroid,
+				host: ''
+			})
+		).toThrow('native_android: host is required')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
 				host: 'invalid host name'
 			})
 		).toThrow('host must be a valid IP address or DNS name')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
+				proxy: { type: 'http-connect', host: 'proxy.example', port: 3128, password: 'secret' }
+			})
+		).toThrow('proxy.username is required when proxy.password is configured')
 		expect(() =>
 			validateNativeAndroidConfig({
 				...nativeAndroid,
@@ -872,14 +884,18 @@ describe('TcpSocketClient', () => {
 			}
 		}
 		const client = new TcpSocketClient(new URL('tcp://127.0.0.1:443'), config)
-		await new Promise<void>(resolve => {
-			client.once('error', () => resolve())
-			client.connect()
-		})
+		try {
+			await new Promise<void>(resolve => {
+				client.once('error', () => resolve())
+				client.connect()
+			})
 
-		const diagnostics = JSON.stringify(debug.mock.calls)
-		expect(diagnostics).not.toContain('sensitive-user')
-		expect(diagnostics).not.toContain('sensitive-password')
+			const diagnostics = JSON.stringify(debug.mock.calls)
+			expect(diagnostics).not.toContain('sensitive-user')
+			expect(diagnostics).not.toContain('sensitive-password')
+		} finally {
+			await client.close()
+		}
 	})
 
 	it('emits one terminal close after all candidates fail', async () => {

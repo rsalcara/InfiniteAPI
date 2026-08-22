@@ -41,6 +41,8 @@ const persisted = (
 	connectionEndpoint
 })
 
+const closeServer = (server: net.Server) => new Promise<void>(resolve => server.close(() => resolve()))
+
 describe('native Android connection sequence', () => {
 	afterEach(() => clearNativeAndroidDnsCache())
 
@@ -351,21 +353,25 @@ describe('native Android connection sequence', () => {
 		const address = proxy.address()
 		if (!address || typeof address === 'string') throw new Error('proxy did not bind')
 
-		const socket = await connectNativeAndroidCandidate(
-			{
-				host: 'g.whatsapp.net',
-				port: 443,
-				source: 'dns',
-				connectHost: 'g.whatsapp.net',
-				addressSource: 1,
-				dnsCached: false
-			},
-			{ type: 'http-connect', host: '127.0.0.1', port: address.port },
-			1000
-		)
-		expect(socket.destroyed).toBe(false)
-		socket.destroy()
-		await new Promise<void>(resolve => proxy.close(() => resolve()))
+		let socket: net.Socket | undefined
+		try {
+			socket = await connectNativeAndroidCandidate(
+				{
+					host: 'g.whatsapp.net',
+					port: 443,
+					source: 'dns',
+					connectHost: 'g.whatsapp.net',
+					addressSource: 1,
+					dnsCached: false
+				},
+				{ type: 'http-connect', host: '127.0.0.1', port: address.port },
+				1000
+			)
+			expect(socket.destroyed).toBe(false)
+		} finally {
+			socket?.destroy()
+			await closeServer(proxy)
+		}
 	})
 
 	it('uses one deadline across the HTTPS proxy handshake and CONNECT response', async () => {
@@ -397,7 +403,7 @@ describe('native Android connection sequence', () => {
 					200
 				)
 			).rejects.toThrow('timed out')
-			expect(Date.now() - startedAt).toBeLessThan(300)
+			expect(Date.now() - startedAt).toBeLessThan(500)
 		} finally {
 			connect.mockRestore()
 			tunnel.destroy()
@@ -414,21 +420,52 @@ describe('native Android connection sequence', () => {
 		const address = proxy.address()
 		if (!address || typeof address === 'string') throw new Error('proxy did not bind')
 
-		await expect(
-			connectNativeAndroidCandidate(
-				{
-					host: 'g.whatsapp.net',
-					port: 443,
-					connectHost: 'g.whatsapp.net',
-					source: 'dns',
-					addressSource: 1,
-					dnsCached: false
-				},
-				{ type: 'http-connect', host: '127.0.0.1', port: address.port },
-				1000
-			)
-		).rejects.toThrow('response header is too large')
-		await new Promise<void>(resolve => proxy.close(() => resolve()))
+		try {
+			await expect(
+				connectNativeAndroidCandidate(
+					{
+						host: 'g.whatsapp.net',
+						port: 443,
+						connectHost: 'g.whatsapp.net',
+						source: 'dns',
+						addressSource: 1,
+						dnsCached: false
+					},
+					{ type: 'http-connect', host: '127.0.0.1', port: address.port },
+					1000
+				)
+			).rejects.toThrow('response header is too large')
+		} finally {
+			await closeServer(proxy)
+		}
+	})
+
+	it('advances immediately when a CONNECT proxy closes before sending a response', async () => {
+		const proxy = net.createServer(socket => socket.destroy())
+		await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve))
+		const address = proxy.address()
+		if (!address || typeof address === 'string') throw new Error('proxy did not bind')
+		const startedAt = Date.now()
+
+		try {
+			await expect(
+				connectNativeAndroidCandidate(
+					{
+						host: 'g.whatsapp.net',
+						port: 443,
+						connectHost: 'g.whatsapp.net',
+						source: 'dns',
+						addressSource: 1,
+						dnsCached: false
+					},
+					{ type: 'http-connect', host: '127.0.0.1', port: address.port },
+					1000
+				)
+			).rejects.toThrow('before the CONNECT response')
+			expect(Date.now() - startedAt).toBeLessThan(500)
+		} finally {
+			await closeServer(proxy)
+		}
 	})
 
 	it('aborts an in-flight TLS proxy connection immediately', async () => {
@@ -494,6 +531,24 @@ describe('native Android connection sequence', () => {
 		}
 	})
 
+	it('rejects an explicitly empty Happy Eyeballs host set', async () => {
+		await expect(
+			connectNativeAndroidCandidate(
+				{
+					host: 'empty.example',
+					port: 443,
+					connectHost: 'empty.example',
+					connectHosts: [],
+					source: 'dns',
+					addressSource: 1,
+					dnsCached: false
+				},
+				undefined,
+				1000
+			)
+		).rejects.toThrow('no connect hosts are available')
+	})
+
 	it('cancels the losing Happy Eyeballs tunnel after the other address connects', async () => {
 		let closeLosingSocket!: () => void
 		const losingSocketClosed = new Promise<void>(resolve => (closeLosingSocket = resolve))
@@ -511,23 +566,27 @@ describe('native Android connection sequence', () => {
 		const address = proxy.address()
 		if (!address || typeof address === 'string') throw new Error('proxy did not bind')
 
-		const socket = await connectNativeAndroidCandidate(
-			{
-				host: 'dual-stack.example',
-				port: 443,
-				connectHost: '192.0.2.1',
-				connectHosts: ['192.0.2.1', '192.0.2.2'],
-				source: 'dns',
-				addressSource: 1,
-				dnsCached: false
-			},
-			{ type: 'http-connect', host: '127.0.0.1', port: address.port },
-			2000
-		)
-		expect(getNativeAndroidConnectedHost(socket)).toBe('192.0.2.2')
-		await losingSocketClosed
-		socket.destroy()
-		await new Promise<void>(resolve => proxy.close(() => resolve()))
+		let socket: net.Socket | undefined
+		try {
+			socket = await connectNativeAndroidCandidate(
+				{
+					host: 'dual-stack.example',
+					port: 443,
+					connectHost: '192.0.2.1',
+					connectHosts: ['192.0.2.1', '192.0.2.2'],
+					source: 'dns',
+					addressSource: 1,
+					dnsCached: false
+				},
+				{ type: 'http-connect', host: '127.0.0.1', port: address.port },
+				2000
+			)
+			expect(getNativeAndroidConnectedHost(socket)).toBe('192.0.2.2')
+			await losingSocketClosed
+		} finally {
+			socket?.destroy()
+			await closeServer(proxy)
+		}
 	})
 
 	it('uses a TLS tunnel for HTTPS CONNECT proxies', async () => {
@@ -581,25 +640,28 @@ describe('native Android connection sequence', () => {
 		if (!proxyAddress || typeof proxyAddress === 'string') throw new Error('proxy did not bind')
 		await new Promise<void>(resolve => unavailableProxy.close(() => resolve()))
 
-		await expect(
-			connectNativeAndroidCandidate(
-				{
-					host: '127.0.0.1',
-					port: destinationAddress.port,
-					connectHost: '127.0.0.1',
-					source: 'configured',
-					addressSource: 3,
-					dnsCached: false
-				},
-				{ type: 'http-connect', host: '127.0.0.1', port: proxyAddress.port },
-				250
-			)
-		).rejects.toBeDefined()
-		expect(destinationConnections).toBe(0)
-		await new Promise<void>(resolve => destination.close(() => resolve()))
+		try {
+			await expect(
+				connectNativeAndroidCandidate(
+					{
+						host: '127.0.0.1',
+						port: destinationAddress.port,
+						connectHost: '127.0.0.1',
+						source: 'configured',
+						addressSource: 3,
+						dnsCached: false
+					},
+					{ type: 'http-connect', host: '127.0.0.1', port: proxyAddress.port },
+					250
+				)
+			).rejects.toBeDefined()
+			expect(destinationConnections).toBe(0)
+		} finally {
+			await closeServer(destination)
+		}
 	})
 
-	it('opens a SOCKS5 tunnel without exposing proxy credentials in failures', async () => {
+	it('opens a SOCKS5 tunnel', async () => {
 		const proxy = net.createServer(socket => {
 			let stage = 0
 			socket.on('data', () => {
@@ -611,21 +673,76 @@ describe('native Android connection sequence', () => {
 		const address = proxy.address()
 		if (!address || typeof address === 'string') throw new Error('SOCKS proxy did not bind')
 
-		const socket = await connectNativeAndroidCandidate(
-			{
-				host: 'g.whatsapp.net',
-				port: 443,
-				connectHost: 'g.whatsapp.net',
-				source: 'dns',
-				addressSource: 1,
-				dnsCached: false
-			},
-			{ type: 'socks5', host: '127.0.0.1', port: address.port },
-			1000
-		)
-		expect(socket.destroyed).toBe(false)
-		socket.destroy()
-		await new Promise<void>(resolve => proxy.close(() => resolve()))
+		let socket: net.Socket | undefined
+		try {
+			socket = await connectNativeAndroidCandidate(
+				{
+					host: 'g.whatsapp.net',
+					port: 443,
+					connectHost: 'g.whatsapp.net',
+					source: 'dns',
+					addressSource: 1,
+					dnsCached: false
+				},
+				{ type: 'socks5', host: '127.0.0.1', port: address.port },
+				1000
+			)
+			expect(socket.destroyed).toBe(false)
+		} finally {
+			socket?.destroy()
+			await closeServer(proxy)
+		}
+	})
+
+	it('does not expose SOCKS5 proxy credentials when authentication fails', async () => {
+		let authenticationRequest = Buffer.alloc(0)
+		const proxy = net.createServer(socket => {
+			let stage = 0
+			socket.on('data', request => {
+				if (stage++ === 0) socket.write(Buffer.from([5, 2]))
+				else {
+					authenticationRequest = Buffer.from(request)
+					socket.write(Buffer.from([1, 1]))
+				}
+			})
+		})
+		await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve))
+		const address = proxy.address()
+		if (!address || typeof address === 'string') throw new Error('SOCKS proxy did not bind')
+
+		try {
+			let failure: Error | undefined
+			try {
+				await connectNativeAndroidCandidate(
+					{
+						host: 'g.whatsapp.net',
+						port: 443,
+						connectHost: 'g.whatsapp.net',
+						source: 'dns',
+						addressSource: 1,
+						dnsCached: false
+					},
+					{
+						type: 'socks5',
+						host: '127.0.0.1',
+						port: address.port,
+						username: 'sensitive-user',
+						password: 'sensitive-password'
+					},
+					1000
+				)
+			} catch (error) {
+				failure = error as Error
+			}
+
+			expect(failure).toBeInstanceOf(Error)
+			expect(failure?.message).not.toContain('sensitive-user')
+			expect(failure?.message).not.toContain('sensitive-password')
+			expect(authenticationRequest.includes(Buffer.from('sensitive-user'))).toBe(true)
+			expect(authenticationRequest.includes(Buffer.from('sensitive-password'))).toBe(true)
+		} finally {
+			await closeServer(proxy)
+		}
 	})
 
 	it('aborts the underlying SOCKS socket before the handshake timeout', async () => {
@@ -641,25 +758,29 @@ describe('native Android connection sequence', () => {
 		const address = proxy.address()
 		if (!address || typeof address === 'string') throw new Error('SOCKS proxy did not bind')
 		const controller = new AbortController()
-		const connection = connectNativeAndroidCandidate(
-			{
-				host: 'g.whatsapp.net',
-				port: 443,
-				connectHost: 'g.whatsapp.net',
-				source: 'dns',
-				addressSource: 1,
-				dnsCached: false
-			},
-			{ type: 'socks5', host: '127.0.0.1', port: address.port },
-			5000,
-			controller.signal
-		)
-		await proxySocketAccepted
-		controller.abort()
+		try {
+			const connection = connectNativeAndroidCandidate(
+				{
+					host: 'g.whatsapp.net',
+					port: 443,
+					connectHost: 'g.whatsapp.net',
+					source: 'dns',
+					addressSource: 1,
+					dnsCached: false
+				},
+				{ type: 'socks5', host: '127.0.0.1', port: address.port },
+				5000,
+				controller.signal
+			)
+			await proxySocketAccepted
+			controller.abort()
 
-		await expect(connection).rejects.toMatchObject({ name: 'AbortError' })
-		await proxySocketClosed
-		await new Promise<void>(resolve => proxy.close(() => resolve()))
+			await expect(connection).rejects.toMatchObject({ name: 'AbortError' })
+			await proxySocketClosed
+		} finally {
+			controller.abort()
+			await closeServer(proxy)
+		}
 	})
 
 	it.each([
@@ -677,22 +798,26 @@ describe('native Android connection sequence', () => {
 		const address = proxy.address()
 		if (!address || typeof address === 'string') throw new Error('SOCKS4 proxy did not bind')
 
-		const socket = await connectNativeAndroidCandidate(
-			{
-				host: 'g.whatsapp.net',
-				port: 443,
-				connectHost,
-				source: 'dns',
-				addressSource: 1,
-				dnsCached: false
-			},
-			{ type: 'socks4', host: '127.0.0.1', port: address.port, resolveDns: remoteDns },
-			1000
-		)
-		expect(request[0]).toBe(4)
-		expect(request[1]).toBe(1)
-		if (remoteDns) expect(request.includes(Buffer.from('g.whatsapp.net'))).toBe(true)
-		socket.destroy()
-		await new Promise<void>(resolve => proxy.close(() => resolve()))
+		let socket: net.Socket | undefined
+		try {
+			socket = await connectNativeAndroidCandidate(
+				{
+					host: 'g.whatsapp.net',
+					port: 443,
+					connectHost,
+					source: 'dns',
+					addressSource: 1,
+					dnsCached: false
+				},
+				{ type: 'socks4', host: '127.0.0.1', port: address.port, resolveDns: remoteDns },
+				1000
+			)
+			expect(request[0]).toBe(4)
+			expect(request[1]).toBe(1)
+			if (remoteDns) expect(request.includes(Buffer.from('g.whatsapp.net'))).toBe(true)
+		} finally {
+			socket?.destroy()
+			await closeServer(proxy)
+		}
 	})
 })

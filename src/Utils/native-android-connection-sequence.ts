@@ -7,6 +7,7 @@ import type {
 	NativeAndroidTransportConfig,
 	PersistedNativeAndroidIdentity
 } from '../Types'
+import { MAX_NODE_TIMER_MS } from './native-android-constants'
 import { resolveNativeAndroidHardcodedAddresses } from './native-android-hardcoded-addresses'
 
 const PRIMARY_HOST = 'g.whatsapp.net'
@@ -16,7 +17,6 @@ const DNS_TTL_MS = 60 * 60 * 1000
 const DNS_CACHE_MAX_ENTRIES = 64
 const DEFAULT_DNS_TIMEOUT_MS = 20_000
 const HAPPY_EYEBALLS_DELAY_MS = 250
-const MAX_NODE_TIMER_MS = 2_147_483_647
 const MAX_HTTP_PROXY_HEADER_BYTES = 16 * 1024
 
 type CachedAddresses = { expiresAt: number; addresses: string[] }
@@ -254,7 +254,7 @@ export async function* iterateNativeAndroidConnectionSequence({
 			const resolved = await resolveAll(endpoint.host, lookup, currentDnsTimeout(), signal)
 			const selected = selectOfficialAddresses(resolved.addresses, random)
 			if (selected.length === 0) return []
-			const candidate = addEndpoint({ ...endpoint, address: selected[0] }, addressSource, selected, resolved.cached)
+			const candidate = addEndpoint(endpoint, addressSource, selected, resolved.cached)
 			return candidate ? [candidate] : []
 		} catch (error) {
 			if (error instanceof NativeAndroidSequenceTimeoutError || (error as Error)?.name === 'AbortError') throw error
@@ -302,7 +302,7 @@ export async function* iterateNativeAndroidConnectionSequence({
 			const selected = selectOfficialAddresses(resolved.addresses, random)
 			if (selected.length === 0) return []
 			const candidate = addEndpoint(
-				{ host, address: selected[0], port, source, sequenceStep },
+				{ host, ...(addresses ? { address: selected[0] } : {}), port, source, sequenceStep },
 				addresses ? 2 : 1,
 				selected,
 				resolved.cached
@@ -408,12 +408,16 @@ const readHttpHeader = (socket: net.Socket, deadline: number, signal?: AbortSign
 			clearTimeout(timer)
 			socket.off('data', onData)
 			socket.off('error', onError)
+			socket.off('end', onEnd)
+			socket.off('close', onClose)
 			signal?.removeEventListener('abort', onAbort)
 			if (error) reject(error)
 			return true
 		}
 
 		const onError = (error: Error) => finish(error)
+		const onEnd = () => finish(new Error('native_android: proxy ended the connection before the CONNECT response'))
+		const onClose = () => finish(new Error('native_android: proxy closed the connection before the CONNECT response'))
 		const onAbort = () => finish(abortError())
 		const onData = (chunk: Buffer) => {
 			buffered = Buffer.concat([buffered, chunk])
@@ -438,7 +442,12 @@ const readHttpHeader = (socket: net.Socket, deadline: number, signal?: AbortSign
 
 		socket.on('data', onData)
 		socket.once('error', onError)
-		if (signal?.aborted) finish(abortError())
+		socket.once('end', onEnd)
+		socket.once('close', onClose)
+		if (socket.destroyed) finish(new Error('native_android: proxy closed the connection before the CONNECT response'))
+		else if (socket.readableEnded)
+			finish(new Error('native_android: proxy ended the connection before the CONNECT response'))
+		else if (signal?.aborted) finish(abortError())
 		else signal?.addEventListener('abort', onAbort, { once: true })
 	})
 
@@ -517,10 +526,11 @@ const connectHttpProxy = async (
 			proxy.username !== undefined
 				? `Proxy-Authorization: Basic ${Buffer.from(`${proxy.username}:${proxy.password || ''}`).toString('base64')}\r\n`
 				: ''
+		const responsePromise = readHttpHeader(socket, deadline, signal)
 		socket.write(
 			`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n${authorization}Connection: keep-alive\r\n\r\n`
 		)
-		const response = (await readHttpHeader(socket, deadline, signal)).toString('latin1')
+		const response = (await responsePromise).toString('latin1')
 		const status = /^HTTP\/\d(?:\.\d)?\s+(\d{3})/.exec(response)?.[1]
 		if (status !== '200') {
 			throw new Error(`native_android: HTTP CONNECT proxy rejected the tunnel (${status || 'invalid response'})`)
@@ -599,6 +609,11 @@ const connectHappyEyeballs = (
 	const uniqueHosts = [...new Set(hosts)]
 
 	return new Promise((resolve, reject) => {
+		if (uniqueHosts.length === 0) {
+			reject(new Error('native_android: no connect hosts are available'))
+			return
+		}
+
 		let nextIndex = 0
 		let failures = 0
 		let settled = false
@@ -674,7 +689,7 @@ export const connectNativeAndroidCandidate = (
 ) => {
 	throwIfAborted(signal)
 	const deadline = Date.now() + timeoutMs
-	const hosts = candidate.connectHosts?.length ? candidate.connectHosts : [candidate.connectHost]
+	const hosts = candidate.connectHosts ?? [candidate.connectHost]
 	return connectHappyEyeballs(
 		hosts,
 		(host, attemptSignal) => {

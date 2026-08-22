@@ -152,7 +152,7 @@ export type NativeAndroidTransportConfig = {
 	 * built-in persistent Node X.509 compatibility provider.
 	 */
 	attestationProvider?: NativeAndroidAttestationProvider
-	/** Optional server-provided endpoints, tried before the built-in sequence. */
+	/** Optional server-provided endpoints, inserted at their official sequence state. */
 	connectionEndpoints?: NativeAndroidConnectionEndpoint[]
 	/** Maximum time allowed for one native DNS resolution before fallback advances. */
 	dnsTimeoutMs?: number

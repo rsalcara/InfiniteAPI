@@ -45,6 +45,8 @@ For the native Android TCP transport, configure the proxy before opening the
 socket:
 
 ```ts
+import makeWASocket, { parseNativeAndroidProxyUrl } from '@whiskeysockets/baileys'
+
 makeWASocket({
 	transportProfile: 'native_android',
 	nativeAndroid: {
@@ -94,9 +96,9 @@ and reused only in the history states accepted by the Android client.
 DNS resolution is bounded by `nativeAndroid.dnsTimeoutMs` (the socket connect
 timeout by default). The whole fallback sequence also has a safety ceiling:
 `nativeAndroid.sequenceTimeoutMs` when supplied, otherwise the greater of two
-minutes or sixteen per-candidate connect timeouts. HTTP CONNECT uses one deadline
-for the proxy TCP/TLS handshake and CONNECT response; it does not receive a
-second full timeout after the proxy connection opens.
+minutes or sixteen per-candidate connect timeouts. HTTP/HTTPS CONNECT uses one
+deadline for the proxy TCP/TLS handshake and CONNECT response; it does not
+receive a second full timeout after the proxy connection opens.
 
 Server-provided `connectionEndpoints` may identify only state 2 (primary) or
 state 8 (secondary), matching the Android state machine. Invalid hostnames,
