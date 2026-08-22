@@ -69,6 +69,7 @@ export * from './native-android-hardcoded-addresses'
 export * from './native-android-device-catalog'
 export * from './native-android-node-attestation'
 export * from './runtime-profile'
+export * from './proxy-route'
 
 // Health monitoring
 export * from './health-status'

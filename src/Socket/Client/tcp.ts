@@ -7,6 +7,7 @@ import {
 	type NativeConnectionCandidate
 } from '../../Utils/native-android-connection-sequence'
 import { MAX_NODE_TIMER_MS } from '../../Utils/native-android-constants'
+import { resolveProxyConnectionPhase, resolveProxyRouteAudit } from '../../Utils/proxy-route'
 import { AbstractSocketClient } from './types'
 
 type TcpState = 'idle' | 'connecting' | 'open' | 'closing' | 'closed'
@@ -16,6 +17,8 @@ export class TcpSocketClient extends AbstractSocketClient {
 	protected socket: net.Socket | null = null
 	private state: TcpState = 'idle'
 	private connectAbortController?: AbortController
+	private readonly proxyRouteAudit = resolveProxyRouteAudit(this.config, 'native_android')
+	private readonly connectionPhase = resolveProxyConnectionPhase(this.config)
 	selectedEndpoint?: NativeAndroidConnectionEndpoint
 	connectAttemptCount = 0
 	dnsAppCached = false
@@ -139,6 +142,8 @@ export class TcpSocketClient extends AbstractSocketClient {
 
 	private attachConnectedSocket(socket: net.Socket, candidate: NativeConnectionCandidate) {
 		const connectedHost = getNativeAndroidConnectedHost(socket)
+		const native = this.config.nativeAndroid!
+		const proxy = native.proxy
 		this.socket = socket
 		this.selectedEndpoint = {
 			host: candidate.host,
@@ -150,6 +155,39 @@ export class TcpSocketClient extends AbstractSocketClient {
 		this.dnsAppCached = candidate.dnsCached
 		this.addressSource = candidate.addressSource
 		this.state = 'open'
+		this.config.logger.info(
+			{
+				event: 'whatsapp_transport_route_established',
+				transportProfile: 'native_android',
+				connectionPhase: this.connectionPhase,
+				connectionTrigger: this.config.connectionTrigger ?? 'unspecified',
+				routeMode: proxy ? 'proxy' : 'direct',
+				...this.proxyRouteAudit,
+				proxyType: proxy?.type,
+				proxyEndpointHost: proxy?.host,
+				proxyEndpointPort: proxy?.port,
+				proxyDnsMode: proxy
+					? proxy.type === 'http-connect' ||
+						proxy.type === 'https-connect' ||
+						(proxy.resolveDns ?? proxy.type === 'socks5')
+						? 'remote'
+						: 'local'
+					: undefined,
+				// This is the TCP tunnel property; proxyPolicyEnforced covers the aggregate TCP/WS/HTTP policy.
+				proxyFailClosed: Boolean(proxy),
+				physicalRemoteAddress: socket.remoteAddress,
+				physicalRemotePort: socket.remotePort,
+				whatsappTargetHost: candidate.host,
+				whatsappTargetPort: candidate.port,
+				whatsappConnectAddress: connectedHost,
+				candidateSource: candidate.source,
+				sequenceStep: candidate.sequenceStep,
+				connectAttempt: this.connectAttemptCount + 1,
+				dnsAppCached: candidate.dnsCached,
+				addressSource: candidate.addressSource
+			},
+			'native_android: WhatsApp transport route established'
+		)
 		socket.on('data', data => this.emit('message', data))
 		socket.on('error', error => this.emit('error', error))
 		socket.once('close', hadError => {

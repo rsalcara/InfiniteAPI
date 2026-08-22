@@ -1,9 +1,12 @@
 import WebSocket from 'ws'
 import { DEFAULT_ORIGIN } from '../../Defaults'
+import { resolveProxyConnectionPhase, resolveProxyRouteAudit } from '../../Utils/proxy-route'
 import { AbstractSocketClient } from './types'
 
 export class WebSocketClient extends AbstractSocketClient {
 	protected socket: WebSocket | null = null
+	private readonly proxyRouteAudit = resolveProxyRouteAudit(this.config, 'web')
+	private readonly connectionPhase = resolveProxyConnectionPhase(this.config)
 
 	get isOpen(): boolean {
 		return this.socket?.readyState === WebSocket.OPEN
@@ -39,6 +42,28 @@ export class WebSocketClient extends AbstractSocketClient {
 		}
 
 		this.socket.setMaxListeners(maxListeners)
+		this.socket.once('open', () => {
+			const physicalSocket = (
+				this.socket as WebSocket & {
+					_socket?: { remoteAddress?: string; remotePort?: number }
+				}
+			)._socket
+			this.config.logger.info(
+				{
+					event: 'whatsapp_transport_route_established',
+					transportProfile: 'web',
+					connectionPhase: this.connectionPhase,
+					connectionTrigger: this.config.connectionTrigger ?? 'unspecified',
+					routeMode: this.config.agent ? 'proxy' : 'direct',
+					...this.proxyRouteAudit,
+					physicalRemoteAddress: physicalSocket?.remoteAddress,
+					physicalRemotePort: physicalSocket?.remotePort,
+					whatsappTargetHost: this.url.hostname,
+					whatsappTargetPort: Number.parseInt(this.url.port || (this.url.protocol === 'ws:' ? '80' : '443'), 10)
+				},
+				'web: WhatsApp transport route established'
+			)
+		})
 
 		const events = ['close', 'error', 'upgrade', 'message', 'open', 'ping', 'pong', 'unexpected-response']
 

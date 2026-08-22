@@ -48,6 +48,8 @@ import {
 	promiseTimeout,
 	resolveNativeAndroidClientPayloadPhase,
 	resolveNativeAndroidPairingAppVariant,
+	resolveProxyConnectionPhase,
+	resolveProxyRouteAudit,
 	resolveTransportSession,
 	shouldFallbackNativeAndroidProfile,
 	signedKeyPair,
@@ -104,6 +106,12 @@ import { makeReachoutTimelockRemediation, type RemoveReachoutTimelockServerResul
  */
 
 export const makeSocket = (config: SocketConfig) => {
+	const logContext = {
+		...(config.instanceId?.trim() ? { instanceId: config.instanceId.trim() } : {}),
+		...(config.organizationId?.trim() ? { organizationId: config.organizationId.trim() } : {})
+	}
+	const runtimeConfig =
+		Object.keys(logContext).length > 0 ? { ...config, logger: config.logger.child(logContext) } : config
 	const {
 		waWebSocketUrl,
 		connectTimeoutMs,
@@ -119,23 +127,35 @@ export const makeSocket = (config: SocketConfig) => {
 		// If enableUnifiedSession is explicitly set (true/false), use it
 		// Otherwise (undefined), check env var, then default to true
 		enableUnifiedSession: enableUnifiedSessionConfig
-	} = config
-	const transportSession = resolveTransportSession(config, authState.creds)
+	} = runtimeConfig
+	const transportSession = resolveTransportSession(runtimeConfig, authState.creds)
 	const isNativeAndroid = transportSession.profile === 'native_android'
+	const proxyRouteAudit = resolveProxyRouteAudit(runtimeConfig, transportSession.profile)
+	const routeConnectionPhase = resolveProxyConnectionPhase(runtimeConfig)
+	logger.info(
+		{
+			event: 'whatsapp_proxy_route_policy',
+			transportProfile: transportSession.profile,
+			connectionPhase: routeConnectionPhase,
+			connectionTrigger: runtimeConfig.connectionTrigger ?? 'unspecified',
+			...proxyRouteAudit
+		},
+		'WhatsApp proxy route policy resolved'
+	)
 	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(transportSession.profile, config.tcTokenAbProps)
 	let closed = false
 	const pairingCodeMutex = makeMutex()
 	// ClientPayload must use the resolved, persisted native identity rather than
 	// the caller's current environment values. This keeps reconnects immutable.
 	const payloadConfig: SocketConfig = isNativeAndroid
-		? { ...config, nativeAndroid: transportSession.nativeAndroid }
+		? { ...runtimeConfig, nativeAndroid: transportSession.nativeAndroid }
 		: transportSession.webIdentity
 			? {
-					...config,
+					...runtimeConfig,
 					browser: [...transportSession.webIdentity.browser],
 					syncFullHistory: transportSession.webIdentity.syncFullHistory
 				}
-			: config
+			: runtimeConfig
 	const browser = payloadConfig.browser
 
 	// Resolve enableUnifiedSession: explicit config > env var > default (true)
@@ -240,7 +260,7 @@ export const makeSocket = (config: SocketConfig) => {
 			: undefined
 	})
 
-	const ws = isNativeAndroid ? new TcpSocketClient(url, config) : new WebSocketClient(url, config)
+	const ws = isNativeAndroid ? new TcpSocketClient(url, runtimeConfig) : new WebSocketClient(url, runtimeConfig)
 
 	const previousAuthStoreDrain = getAuthStoreDrainBarrier(authState.keys)
 	if (previousAuthStoreDrain) {

@@ -9,6 +9,7 @@ import {
 	type MultiDbSqliteStore,
 	UserDeviceCacheSqliteAdapter
 } from '../Utils/multi-db-sqlite'
+import { applyFetchAgentToRequestOptions } from '../Utils/proxy-route'
 import type { VersionCacheLogger } from '../Utils/version-cache'
 import { clearVersionCache, getCachedVersion, getVersionCacheStatus, refreshVersionCache } from '../Utils/version-cache'
 import { makeCommunitiesSocket } from './communities'
@@ -68,6 +69,7 @@ const mergeSocketConfig = (config: UserFacingSocketConfig): SocketConfig => {
 		...DEFAULT_CONNECTION_CONFIG,
 		...config
 	}
+	mergedConfig.options = applyFetchAgentToRequestOptions(mergedConfig.options ?? {}, mergedConfig.fetchAgent)
 	const creds = config.auth.creds
 	const transportProfile = config.transportProfile ?? DEFAULT_CONNECTION_CONFIG.transportProfile
 	const isLegacyUnmarkedWebSession = shouldPreserveUnmarkedLegacyWebIdentity(
