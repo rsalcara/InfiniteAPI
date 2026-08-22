@@ -24,7 +24,14 @@ const identity: PersistedNativeAndroidIdentity = {
 		localeCountryIso31661Alpha2: 'BR'
 	},
 	connectionLc: 17,
-	serverStaticPublicKey: Buffer.alloc(32, 0x5a)
+	serverStaticPublicKey: Buffer.alloc(32, 0x5a),
+	connectionEndpoint: {
+		host: 'g.whatsapp.net',
+		address: '31.13.65.50',
+		port: 443,
+		source: 'hardcoded',
+		sequenceStep: 6
+	}
 }
 
 const webIdentity: PersistedWebTransportIdentity = {

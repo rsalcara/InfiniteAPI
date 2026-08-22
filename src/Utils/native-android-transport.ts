@@ -1,4 +1,5 @@
 import { Boom } from '@hapi/boom'
+import net from 'net'
 import { NATIVE_ANDROID_APP_IDENTITIES, WABA_CLIENT_APP_ID } from '../Defaults'
 import type {
 	AuthenticationCreds,
@@ -42,9 +43,26 @@ const PROFILE_FIELDS: ReadonlyArray<keyof NativeAndroidDeviceProfile> = [
 	'oc'
 ]
 
+const MAX_NODE_TIMER_MS = 2_147_483_647
+
 const requiredString = (value: unknown, field: string) => {
 	if (typeof value !== 'string' || value.trim().length === 0) {
 		throw new Boom(`native_android: device profile field ${field} is required`, { statusCode: 400 })
+	}
+}
+
+const requiredHost = (value: unknown, field: string) => {
+	requiredString(value, field)
+	const host = (value as string).trim()
+	const socketHost = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+	if (net.isIP(socketHost)) return
+
+	const normalized = socketHost.endsWith('.') ? socketHost.slice(0, -1) : socketHost
+	const validDnsName =
+		normalized.length <= 253 &&
+		normalized.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label))
+	if (!validDnsName) {
+		throw new Boom(`native_android: ${field} must be a valid IP address or DNS name`, { statusCode: 400 })
 	}
 }
 
@@ -109,6 +127,110 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 
 	if (config.initialRoutingInfo && config.initialRoutingInfo.byteLength > 0xffffff) {
 		throw new Boom('native_android: initialRoutingInfo exceeds the ED header limit', { statusCode: 400 })
+	}
+
+	if (config.host !== undefined) requiredHost(config.host, 'host')
+	if (config.port !== undefined && (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535)) {
+		throw new Boom('native_android: port is invalid', { statusCode: 400 })
+	}
+
+	if (
+		config.proxy !== undefined &&
+		(typeof config.proxy !== 'object' || config.proxy === null || Array.isArray(config.proxy))
+	) {
+		throw new Boom('native_android: proxy must be an object', { statusCode: 400 })
+	}
+
+	if (config.proxy !== undefined) {
+		if (!['http-connect', 'https-connect', 'socks4', 'socks5'].includes(config.proxy.type)) {
+			throw new Boom('native_android: proxy.type must be http-connect, https-connect, socks4 or socks5', {
+				statusCode: 400
+			})
+		}
+
+		requiredHost(config.proxy.host, 'proxy.host')
+		if (!Number.isInteger(config.proxy.port) || config.proxy.port < 1 || config.proxy.port > 65535) {
+			throw new Boom('native_android: proxy.port is invalid', { statusCode: 400 })
+		}
+
+		if (config.proxy.username !== undefined && typeof config.proxy.username !== 'string') {
+			throw new Boom('native_android: proxy.username must be a string', { statusCode: 400 })
+		}
+
+		if (config.proxy.password !== undefined && typeof config.proxy.password !== 'string') {
+			throw new Boom('native_android: proxy.password must be a string', { statusCode: 400 })
+		}
+
+		if (config.proxy.resolveDns !== undefined && typeof config.proxy.resolveDns !== 'boolean') {
+			throw new Boom('native_android: proxy.resolveDns must be boolean', { statusCode: 400 })
+		}
+	}
+
+	if (config.connectionEndpoints !== undefined && !Array.isArray(config.connectionEndpoints)) {
+		throw new Boom('native_android: connectionEndpoints must be an array', { statusCode: 400 })
+	}
+
+	if (
+		config.dnsTimeoutMs !== undefined &&
+		(!Number.isSafeInteger(config.dnsTimeoutMs) || config.dnsTimeoutMs < 1 || config.dnsTimeoutMs > MAX_NODE_TIMER_MS)
+	) {
+		throw new Boom(`native_android: dnsTimeoutMs must be a positive integer no greater than ${MAX_NODE_TIMER_MS}`, {
+			statusCode: 400
+		})
+	}
+
+	if (
+		config.sequenceTimeoutMs !== undefined &&
+		(!Number.isSafeInteger(config.sequenceTimeoutMs) ||
+			config.sequenceTimeoutMs < 1 ||
+			config.sequenceTimeoutMs > MAX_NODE_TIMER_MS)
+	) {
+		throw new Boom(
+			`native_android: sequenceTimeoutMs must be a positive integer no greater than ${MAX_NODE_TIMER_MS}`,
+			{ statusCode: 400 }
+		)
+	}
+
+	for (const endpoint of config.connectionEndpoints || []) {
+		if (!endpoint || typeof endpoint !== 'object' || Array.isArray(endpoint)) {
+			throw new Boom('native_android: connection endpoint must be an object', { statusCode: 400 })
+		}
+
+		requiredHost(endpoint.host, 'connectionEndpoints.host')
+		if (endpoint.address !== undefined && net.isIP(endpoint.address) === 0) {
+			throw new Boom('native_android: connection endpoint address must be an IP address', { statusCode: 400 })
+		}
+
+		if (!Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65535) {
+			throw new Boom('native_android: connection endpoint port is invalid', { statusCode: 400 })
+		}
+
+		if (endpoint.sequenceStep !== undefined && endpoint.sequenceStep !== 2 && endpoint.sequenceStep !== 8) {
+			throw new Boom('native_android: server connection endpoint sequenceStep must be 2 or 8', {
+				statusCode: 400
+			})
+		}
+	}
+
+	if (
+		config.hardcodedAddresses !== undefined &&
+		(typeof config.hardcodedAddresses !== 'object' ||
+			config.hardcodedAddresses === null ||
+			Array.isArray(config.hardcodedAddresses))
+	) {
+		throw new Boom('native_android: hardcodedAddresses must be an object', { statusCode: 400 })
+	}
+
+	for (const [host, addresses] of Object.entries(config.hardcodedAddresses || {})) {
+		requiredHost(host, 'hardcodedAddresses.host')
+		if (
+			!Array.isArray(addresses) ||
+			addresses.some(address => typeof address !== 'string' || net.isIP(address) === 0)
+		) {
+			throw new Boom(`native_android: hardcodedAddresses.${host} must contain only IP addresses`, {
+				statusCode: 400
+			})
+		}
 	}
 
 	if (!config.historySync || typeof config.historySync !== 'object') {
