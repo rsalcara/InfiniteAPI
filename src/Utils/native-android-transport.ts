@@ -163,7 +163,10 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 			throw new Boom('native_android: proxy.password must be a string', { statusCode: 400 })
 		}
 
-		if (config.proxy.password !== undefined && config.proxy.username === undefined) {
+		if (
+			config.proxy.password !== undefined &&
+			(config.proxy.username === undefined || config.proxy.username.trim().length === 0)
+		) {
 			throw new Boom('native_android: proxy.username is required when proxy.password is configured', {
 				statusCode: 400
 			})

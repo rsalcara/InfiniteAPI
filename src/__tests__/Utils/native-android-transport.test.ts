@@ -529,6 +529,14 @@ describe('native_android transport contract', () => {
 				proxy: { type: 'http-connect', host: 'proxy.example', port: 3128, password: 'secret' }
 			})
 		).toThrow('proxy.username is required when proxy.password is configured')
+		for (const username of ['', '   ']) {
+			expect(() =>
+				validateNativeAndroidConfig({
+					...nativeAndroid,
+					proxy: { type: 'http-connect', host: 'proxy.example', port: 3128, username, password: 'secret' }
+				})
+			).toThrow('proxy.username is required when proxy.password is configured')
+		}
 		expect(() =>
 			validateNativeAndroidConfig({
 				...nativeAndroid,
