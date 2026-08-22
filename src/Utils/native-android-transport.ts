@@ -43,6 +43,8 @@ const PROFILE_FIELDS: ReadonlyArray<keyof NativeAndroidDeviceProfile> = [
 	'oc'
 ]
 
+const MAX_NODE_TIMER_MS = 2_147_483_647
+
 const requiredString = (value: unknown, field: string) => {
 	if (typeof value !== 'string' || value.trim().length === 0) {
 		throw new Boom(`native_android: device profile field ${field} is required`, { statusCode: 400 })
@@ -148,15 +150,25 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 		throw new Boom('native_android: connectionEndpoints must be an array', { statusCode: 400 })
 	}
 
-	if (config.dnsTimeoutMs !== undefined && (!Number.isInteger(config.dnsTimeoutMs) || config.dnsTimeoutMs < 1)) {
-		throw new Boom('native_android: dnsTimeoutMs must be a positive integer', { statusCode: 400 })
+	if (
+		config.dnsTimeoutMs !== undefined &&
+		(!Number.isSafeInteger(config.dnsTimeoutMs) || config.dnsTimeoutMs < 1 || config.dnsTimeoutMs > MAX_NODE_TIMER_MS)
+	) {
+		throw new Boom(`native_android: dnsTimeoutMs must be a positive integer no greater than ${MAX_NODE_TIMER_MS}`, {
+			statusCode: 400
+		})
 	}
 
 	if (
 		config.sequenceTimeoutMs !== undefined &&
-		(!Number.isInteger(config.sequenceTimeoutMs) || config.sequenceTimeoutMs < 1)
+		(!Number.isSafeInteger(config.sequenceTimeoutMs) ||
+			config.sequenceTimeoutMs < 1 ||
+			config.sequenceTimeoutMs > MAX_NODE_TIMER_MS)
 	) {
-		throw new Boom('native_android: sequenceTimeoutMs must be a positive integer', { statusCode: 400 })
+		throw new Boom(
+			`native_android: sequenceTimeoutMs must be a positive integer no greater than ${MAX_NODE_TIMER_MS}`,
+			{ statusCode: 400 }
+		)
 	}
 
 	for (const endpoint of config.connectionEndpoints || []) {

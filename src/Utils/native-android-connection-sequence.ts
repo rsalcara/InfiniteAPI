@@ -16,6 +16,7 @@ const DNS_TTL_MS = 60 * 60 * 1000
 const DNS_CACHE_MAX_ENTRIES = 64
 const DEFAULT_DNS_TIMEOUT_MS = 20_000
 const HAPPY_EYEBALLS_DELAY_MS = 250
+const MAX_NODE_TIMER_MS = 2_147_483_647
 
 type CachedAddresses = { expiresAt: number; addresses: string[] }
 const dnsCache = new Map<string, CachedAddresses>()
@@ -90,7 +91,7 @@ type NativeAndroidDnsLookup = (host: string) => Promise<string[]>
 
 const timeoutAfter = <T>(promise: Promise<T>, timeoutMs: number, message: string) =>
 	new Promise<T>((resolve, reject) => {
-		const timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+		const timer = setTimeout(() => reject(new Error(message)), Math.min(Math.max(1, timeoutMs), MAX_NODE_TIMER_MS))
 		promise.then(
 			value => {
 				clearTimeout(timer)
@@ -356,7 +357,7 @@ export const buildNativeAndroidConnectionSequence = async (options: NativeAndroi
 	return candidates
 }
 
-const remainingTime = (deadline: number) => Math.max(1, deadline - Date.now())
+const remainingTime = (deadline: number) => Math.min(Math.max(1, deadline - Date.now()), MAX_NODE_TIMER_MS)
 
 const readHttpHeader = (socket: net.Socket, deadline: number) =>
 	new Promise<Buffer>((resolve, reject) => {

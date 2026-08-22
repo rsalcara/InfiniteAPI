@@ -521,6 +521,18 @@ describe('native_android transport contract', () => {
 				sequenceTimeoutMs: 0
 			})
 		).toThrow('sequenceTimeoutMs must be a positive integer')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
+				dnsTimeoutMs: 2_147_483_648
+			})
+		).toThrow('dnsTimeoutMs must be a positive integer')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
+				sequenceTimeoutMs: Number.MAX_SAFE_INTEGER
+			})
+		).toThrow('sequenceTimeoutMs must be a positive integer')
 
 		const creds = initAuthCreds()
 		resolveTransportSession(nativeConfig(), creds)

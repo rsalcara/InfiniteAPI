@@ -10,6 +10,8 @@ import { AbstractSocketClient } from './types'
 
 type TcpState = 'idle' | 'connecting' | 'open' | 'closing' | 'closed'
 
+const MAX_NODE_TIMER_MS = 2_147_483_647
+
 /** Raw TCP client used only by the opt-in native_android transport. */
 export class TcpSocketClient extends AbstractSocketClient {
 	protected socket: net.Socket | null = null
@@ -48,8 +50,11 @@ export class TcpSocketClient extends AbstractSocketClient {
 			return
 		}
 
-		const sequenceDeadline =
-			Date.now() + (native.sequenceTimeoutMs ?? Math.max(this.config.connectTimeoutMs * 16, 120_000))
+		const defaultSequenceTimeoutMs = Math.min(
+			Math.max(Number.isFinite(this.config.connectTimeoutMs) ? this.config.connectTimeoutMs * 16 : 0, 120_000),
+			MAX_NODE_TIMER_MS
+		)
+		const sequenceDeadline = Date.now() + (native.sequenceTimeoutMs ?? defaultSequenceTimeoutMs)
 		let candidates: AsyncGenerator<NativeConnectionCandidate>
 		try {
 			const urlPort = this.url.port ? Number.parseInt(this.url.port, 10) : 443
