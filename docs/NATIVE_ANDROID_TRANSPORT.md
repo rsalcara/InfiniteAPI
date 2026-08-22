@@ -34,6 +34,85 @@ makeWASocket({
 })
 ```
 
+## Proxy and egress boundary
+
+Proxy configuration belongs to the InfiniteAPI consumer and is independent of
+the authentication backend. It is available to any application embedding the
+library; Astra, Z-PRO and other orchestrators do not need transport-specific
+code beyond passing the public configuration.
+
+For the native Android TCP transport, configure the proxy before opening the
+socket:
+
+```ts
+import makeWASocket, { parseNativeAndroidProxyUrl } from '@whiskeysockets/baileys'
+
+makeWASocket({
+	transportProfile: 'native_android',
+	nativeAndroid: {
+		// ...the required native Android identity fields
+		proxy: parseNativeAndroidProxyUrl('socks5h://user:password@proxy.example:1080')
+	}
+})
+```
+
+Supported native proxy types are HTTP CONNECT, HTTPS CONNECT, SOCKS4/4a and
+SOCKS5/5h. When `proxy` is present, every native connection-sequence candidate
+uses that tunnel. A proxy failure is fail-closed: the transport never retries
+the same WhatsApp endpoint directly. When it is omitted, the direct official
+sequence is used.
+
+The TCP path and DNS path are separate concerns. HTTP/HTTPS CONNECT,
+`socks4a://`, `socks5h://` and the default `socks5://` configuration send the
+WhatsApp hostname to the proxy for remote resolution. Plain `socks4://` and
+SOCKS5 with `resolveDns: false` must resolve A/AAAA records locally before
+opening the tunnel. That local DNS traffic does not traverse the proxy even
+though the resulting WhatsApp TCP connection still does. Use a remote-DNS
+form when the proxy must also be the DNS egress boundary.
+
+The Web transport keeps its established split because `ws` and Node fetch use
+different agent interfaces:
+
+- `agent` proxies the WebSocket connection;
+- `fetchAgent` proxies HTTP requests, including media upload/download;
+- `nativeAndroid.proxy` proxies the raw TCP transport.
+
+Consumers should construct all three from the same instance-level proxy
+record. InfiniteAPI intentionally does not inspect an opaque `Agent` to derive
+hostnames or credentials. Proxy usernames and passwords are never included in
+candidate diagnostics or transport logs.
+
+The native sequence follows the Android 2.26.27.83 state machine and advances
+only after a failed TCP/tunnel attempt: an explicit endpoint when configured,
+server primary endpoints, `g.whatsapp.net`, server secondary endpoints, port
+80, eligible connection history, `g-fallback.whatsapp.net`, the APK hardcoded
+table and one randomly selected `e1`-`e16` host for each edge state. It does not
+walk all 16 edge hosts. When both address families exist, one random IPv4 and
+one random IPv6 are raced with Happy Eyeballs instead of trying every A/AAAA
+record serially. Ports 443 and 5222 and the bounded one-hour DNS cache are
+retained. A successful endpoint is persisted with its original sequence step
+and reused only in the history states accepted by the Android client.
+
+DNS resolution is bounded by `nativeAndroid.dnsTimeoutMs` (the socket connect
+timeout by default). The whole fallback sequence also has a safety ceiling:
+`nativeAndroid.sequenceTimeoutMs` when supplied, otherwise the greater of two
+minutes or sixteen per-candidate connect timeouts. HTTP/HTTPS CONNECT uses one
+deadline for the proxy TCP/TLS handshake and CONNECT response; it does not
+receive a second full timeout after the proxy connection opens.
+
+Server-provided `connectionEndpoints` may identify only state 2 (primary) or
+state 8 (secondary), matching the Android state machine. Invalid hostnames,
+ports, endpoint states and hardcoded address tables are rejected before any
+network I/O. Empty or malformed DNS answers are not cached. Closing a socket
+while DNS/TCP/TLS is pending cancels the active attempt, and the losing side of
+an IPv4/IPv6 Happy Eyeballs race is also cancelled.
+
+The product proxy is intentionally an egress overlay rather than Android's
+internal single user-proxy state: all sequence candidates remain available,
+but every one is forced through the configured geographic proxy. This preserves
+the official recovery sequence without leaking a failed proxy attempt to the
+server's direct network path.
+
 `appVariant` is mandatory. InfiniteAPI does not guess between the two primary
 applications:
 

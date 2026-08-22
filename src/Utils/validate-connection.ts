@@ -41,6 +41,8 @@ type NativeAndroidClientPayloadContextOptions = {
 	dnsMethod?: proto.ClientPayload.DNSSource.DNSResolutionMethod
 	dnsAppCached?: boolean
 	connectAttemptCount?: number
+	addressSource?: number
+	proxyDirectness?: 0 | 1
 }
 
 export const resolveNativeAndroidClientPayloadPhase = ({
@@ -131,7 +133,12 @@ export const createNativeAndroidClientPayloadContext = (
 				: proto.ClientPayload.DNSSource.DNSResolutionMethod.SYSTEM),
 		dnsAppCached: options.dnsAppCached ?? !isReconnect,
 		connectAttemptCount: options.connectAttemptCount ?? 0,
-		connectionSequenceInfo: encodeNativeAndroidConnectionSequenceInfo({ port, sequenceStep }),
+		connectionSequenceInfo: encodeNativeAndroidConnectionSequenceInfo({
+			port,
+			sequenceStep,
+			addressSource: options.addressSource,
+			proxyDirectness: options.proxyDirectness
+		}),
 		connectionLc,
 		trafficAnonymization: proto.ClientPayload.TrafficAnonymization.OFF,
 		lidDbMigrated: isReconnect ? true : undefined,
