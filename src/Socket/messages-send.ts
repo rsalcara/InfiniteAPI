@@ -147,7 +147,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		groupMetadata,
 		groupToggleEphemeral,
 		registerSocketDrainHandler,
-		registerSocketEndHandler
+		registerSocketEndHandler,
+		runWithSocketOperation
 	} = sock
 
 	/**
@@ -1407,7 +1408,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return false
 	}
 
-	const relayMessage = async (
+	const relayMessageUnsafe = async (
 		jid: string,
 		message: proto.IMessage,
 		{
@@ -2691,6 +2692,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		return msgId
 	}
+
+	const relayMessage = (...args: Parameters<typeof relayMessageUnsafe>) =>
+		runWithSocketOperation(() => relayMessageUnsafe(...args))
 
 	const getMessageType = (message: proto.IMessage) => {
 		const normalizedMessage = normalizeMessageContent(message)
