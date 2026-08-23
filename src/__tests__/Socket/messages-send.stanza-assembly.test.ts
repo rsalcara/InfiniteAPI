@@ -2,6 +2,7 @@
 import { jest } from '@jest/globals'
 import { EventEmitter } from 'events'
 import { proto } from '../../../WAProto/index.js'
+import { makeSocketOperationGate } from '../../Socket/socket-operation-gate'
 import type { SignalKeyStore, SocketConfig, WAMessage } from '../../Types'
 import { unpadRandomMax16 } from '../../Utils/generics'
 import { normalizeMessageJids } from '../../Utils/process-message'
@@ -65,12 +66,16 @@ const makeFakeSocket = ({
 	ownMapping = true,
 	corruptRemoteReverse = false,
 	returnPnDevicesForLidQueries = false,
-	coldRecipient = false
+	coldRecipient = false,
+	socketOperationGate,
+	onSendNode
 }: {
 	ownMapping?: boolean
 	corruptRemoteReverse?: boolean
 	returnPnDevicesForLidQueries?: boolean
 	coldRecipient?: boolean
+	socketOperationGate?: ReturnType<typeof makeSocketOperationGate>
+	onSendNode?: (node: any, sendIndex: number) => void | Promise<void>
 } = {}) => {
 	const sent: any[] = []
 	const encryptions: CapturedEncryption[] = []
@@ -161,7 +166,8 @@ const makeFakeSocket = ({
 		groupToggleEphemeral: async () => undefined,
 		registerSocketDrainHandler: (handler: () => void | Promise<void>) => drainHandlers.push(handler),
 		registerSocketEndHandler: (handler: () => void | Promise<void>) => endHandlers.push(handler),
-		runWithSocketOperation: jest.fn(async <T>(operation: () => Promise<T> | T) => operation()),
+		runWithSocketOperation:
+			socketOperationGate?.run || jest.fn(async <T>(operation: () => Promise<T> | T) => operation()),
 		executeUSyncQuery: async (query: any) => ({
 			list: query.users.flatMap((user: any) => {
 				if (coldRecipient && (user as any).phone) {
@@ -187,9 +193,11 @@ const makeFakeSocket = ({
 		}),
 		sendNode: async (node: any) => {
 			sent.push(node)
+			await onSendNode?.(node, sent.length)
 		},
 		generateMessageTag: () => 'tag-1',
-		end: async () => {
+		end: async (error?: Error) => {
+			await socketOperationGate?.closeAdmission(error)
 			for (const handler of [...drainHandlers, ...endHandlers]) await handler()
 		}
 	}
@@ -280,6 +288,51 @@ describe('messages-send stanza assembly', () => {
 		} finally {
 			await socket.end(new Error('test completed'))
 		}
+	})
+
+	it('keeps teardown waiting through live-location sender-key distribution', async () => {
+		const socketOperationGate = makeSocketOperationGate()
+		let releaseDistribution!: () => void
+		let markDistributionStarted!: () => void
+		const distributionBlocker = new Promise<void>(resolve => {
+			releaseDistribution = resolve
+		})
+		const distributionStarted = new Promise<void>(resolve => {
+			markDistributionStarted = resolve
+		})
+		const fake = makeFakeSocket({
+			socketOperationGate,
+			onSendNode: async node => {
+				if (node.tag === 'notification' && node.attrs.type === 'location') {
+					markDistributionStarted()
+					await distributionBlocker
+				}
+			}
+		})
+		// Live-location initiation is an official-primary-only operation.
+		fake.sock.authState.creds.me.id = ownPn
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		let endSettled = false
+
+		const send = socket.sendLiveLocation(remotePn, {
+			degreesLatitude: -23.5505,
+			degreesLongitude: -46.6333
+		})
+		await distributionStarted
+		expect(socketOperationGate.activeCount()).toBe(1)
+
+		const end = socket.end(new Error('transport replaced')).then(() => {
+			endSettled = true
+		})
+		await Promise.resolve()
+		expect(endSettled).toBe(false)
+
+		releaseDistribution()
+		await expect(send).resolves.toMatchObject({ message: { liveLocationMessage: expect.any(Object) } })
+		await end
+		expect(endSettled).toBe(true)
+		expect(socketOperationGate.activeCount()).toBe(0)
 	})
 
 	it('keeps a remote legacy reply-button envelope and fanout on PN', async () => {

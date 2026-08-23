@@ -228,9 +228,19 @@ jobs:
       - name: Auto-merge PR
         if: steps.create_pr.outputs.pr_number != ''
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          HAS_GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           PR_NUMBER="${{ steps.create_pr.outputs.pr_number }}"
+
+          # Pull requests authored with GITHUB_TOKEN intentionally do not trigger
+          # pull_request workflows. In that mode, leave the PR open instead of
+          # enabling an auto-merge that can never observe the required checks.
+          if [ -z "$HAS_GH_PAT" ]; then
+            echo "::warning::GH_PAT is not configured; PR #$PR_NUMBER remains open for manual review"
+            exit 0
+          fi
+
           echo "🔀 Attempting to merge PR #$PR_NUMBER via squash..."
           
           # Check PR status

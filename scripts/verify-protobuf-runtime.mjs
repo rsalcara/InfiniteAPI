@@ -13,6 +13,8 @@ const decoded = proto.WebMessageInfo.decode(wire)
 
 if (
 	json.message?.imageMessage?.fileLength !== '1234567890123456789' ||
+	decoded.key?.remoteJid !== input.key.remoteJid ||
+	decoded.key?.fromMe !== input.key.fromMe ||
 	decoded.key?.id !== input.key.id ||
 	decoded.message?.imageMessage?.caption !== input.message.imageMessage.caption
 ) {
