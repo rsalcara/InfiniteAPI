@@ -71,7 +71,7 @@ try {
     content = content.replace(longToNumberRegex, longToNumberHelper)
   }
 
-  const longPattern = /([ \t]+d\.(\w+) = )o\.longs === String \? \$util\.Long\.prototype\.toString\.call\(m\.\2\) : o\.longs === Number \? new \$util\.LongBits\(m\.\2\.low >>> 0, m\.\2\.high >>> 0\)\.toNumber\((true)?\) : m\.\2;/g
+  const longPattern = /([ \t]+d\.(\w+) = )o\.longs === \$?String \? \$util\.Long\.prototype\.toString\.call\(m\.\2\) : o\.longs === \$?Number \? new \$util\.LongBits\(m\.\2\.low >>> 0, m\.\2\.high >>> 0\)\.toNumber\((true)?\) : m\.\2;/g
   content = content.replace(longPattern, (_match, prefix, field, unsignedFlag) => {
     const unsignedArg = unsignedFlag ? ', true' : ''
     return `${prefix}o.longs === String ? longToString(m.${field}${unsignedArg}) : o.longs === Number ? longToNumber(m.${field}${unsignedArg}) : m.${field};`

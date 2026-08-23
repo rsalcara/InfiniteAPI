@@ -93,6 +93,9 @@ jobs:
       - name: GenerateStatics
         run: yarn gen:protobuf
 
+      - name: Verify generated protobuf runtime
+        run: yarn verify:protobuf
+
       # audit CI-03: `wa_version` comes from a regex over output produced by
       # an external proto-extract run that fetches `web.whatsapp.com`. Pass
       # it through an env var AND a numeric-only filter (`tr -cd '0-9.'`)
@@ -124,6 +127,7 @@ jobs:
         id: create_pr
         uses: peter-evans/create-pull-request@v5
         with:
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           commit-message: 'chore: update proto/version to v${{steps.wa_proto_info.outputs.wa_version}}'
           title: 'chore: update WhatsApp proto to v${{steps.wa_proto_info.outputs.wa_version}}'
           branch: 'update-proto/stable'
@@ -154,12 +158,20 @@ jobs:
         # through env vars + filter so a hostile WhatsApp source response
         # can't escape into command execution.
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          HAS_GH_PAT: ${{ secrets.GH_PAT }}
           PR_NUMBER_INPUT: ${{ steps.create_pr.outputs.pull-request-number }}
           WA_VERSION_RAW: ${{ steps.wa_proto_info.outputs.wa_version }}
         run: |
           PR_NUMBER=$(printf '%s' "$PR_NUMBER_INPUT" | tr -cd '0-9')
           WA_VERSION=$(printf '%s' "$WA_VERSION_RAW" | tr -cd '0-9.')
+
+          # A PR created with GITHUB_TOKEN cannot trigger pull_request workflows.
+          # Without a PAT, keep it open for a human instead of bypassing checks.
+          if [ -z "$HAS_GH_PAT" ]; then
+            echo "::warning::GH_PAT is not configured; PR #$PR_NUMBER remains open for manual review"
+            exit 0
+          fi
 
           echo "🔀 Enabling auto-merge for PR #$PR_NUMBER (v$WA_VERSION)..."
           
@@ -182,97 +194,7 @@ jobs:
             echo "::group::Auto-merge Error Output"
             echo "$AUTO_MERGE_OUTPUT"
             echo "::endgroup::"
-            
-            # Fall back to waiting for checks and then merging
-            echo "🔄 Falling back to wait-and-merge strategy..."
-            
-            # Wait for checks to start
-            echo "⏳ Waiting 30 seconds for checks to start..."
-            sleep 30
-            
-            # Wait for checks to complete (max 5 minutes)
-            echo "⏳ Waiting for checks to complete..."
-            WAIT_COUNT=0
-            MAX_WAIT=60  # 60 * 5 seconds = 5 minutes
-            
-            while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
-              set +e
-              CHECK_STATUS=$(gh pr checks "$PR_NUMBER" --repo "${{ github.repository }}" 2>&1)
-              CHECK_EXIT=$?
-              set -e
-              
-              if [ $CHECK_EXIT -eq 0 ]; then
-                echo "📊 Current check status:"
-                echo "$CHECK_STATUS"
-                
-                # Check if all checks passed
-                if echo "$CHECK_STATUS" | grep -q "All checks have passed"; then
-                  echo "✅ All checks passed!"
-                  break
-                fi
-                
-                # Check if any check failed
-                if echo "$CHECK_STATUS" | grep -qE "(fail|failure|error)"; then
-                  echo "❌ Some checks failed, aborting merge"
-                  exit 1
-                fi
-              fi
-              
-              WAIT_COUNT=$((WAIT_COUNT + 1))
-              echo "⏳ Waiting... ($WAIT_COUNT/$MAX_WAIT)"
-              sleep 5
-            done
-            
-            if [ $WAIT_COUNT -ge $MAX_WAIT ]; then
-              echo "::warning::Timeout waiting for checks to complete"
-              echo "::warning::PR #$PR_NUMBER requires manual merge: https://github.com/${{ github.repository }}/pull/$PR_NUMBER"
-              exit 0
-            fi
-            
-            # Try to merge now that checks passed
-            echo "🔀 Attempting to merge PR #$PR_NUMBER..."
-            set +e
-            MERGE_OUTPUT=$(gh pr merge "$PR_NUMBER" \
-              --repo "${{ github.repository }}" \
-              --squash \
-              --delete-branch \
-              --yes 2>&1)
-            MERGE_EXIT=$?
-            set -e
-            
-            if [ $MERGE_EXIT -eq 0 ]; then
-              echo "✅ PR #$PR_NUMBER (v$WA_VERSION) merged successfully"
-              echo "$MERGE_OUTPUT"
-            else
-              echo "::error::Failed to merge PR #$PR_NUMBER (v$WA_VERSION)"
-              echo "::group::Merge Error Output"
-              echo "$MERGE_OUTPUT"
-              echo "::endgroup::"
-              
-              # Try with admin flag
-              echo "🔧 Attempting merge with admin override..."
-              set +e
-              ADMIN_OUTPUT=$(gh pr merge "$PR_NUMBER" \
-                --repo "${{ github.repository }}" \
-                --squash \
-                --delete-branch \
-                --admin 2>&1)
-              ADMIN_EXIT=$?
-              set -e
-              
-              if [ $ADMIN_EXIT -eq 0 ]; then
-                echo "✅ PR #$PR_NUMBER (v$WA_VERSION) merged with admin override"
-                echo "$ADMIN_OUTPUT"
-              else
-                echo "::error::Failed to merge even with admin override"
-                echo "::group::Admin Merge Error Output"
-                echo "$ADMIN_OUTPUT"
-                echo "::endgroup::"
-                echo "::warning::Consider configuring a Personal Access Token (PAT) with full repo permissions as GH_PAT secret"
-                echo "::warning::PR #$PR_NUMBER requires manual merge: https://github.com/${{ github.repository }}/pull/$PR_NUMBER"
-                exit 0
-              fi
-            fi
+            echo "::warning::PR #$PR_NUMBER remains open for manual review: https://github.com/${{ github.repository }}/pull/$PR_NUMBER"
           fi
 
       - name: Summary
@@ -301,7 +223,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           
           if [ -n "$PR_NUMBER" ]; then
-            echo "✅ **PR #$PR_NUMBER created with auto-merge enabled**" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **PR #$PR_NUMBER created**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Changes:**" >> $GITHUB_STEP_SUMMARY
             echo "- 📦 Updated WAProto/* (protobuf definitions)" >> $GITHUB_STEP_SUMMARY
@@ -309,7 +231,7 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Source:** [$WA_JS_URL]($WA_JS_URL)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "🔀 PR will merge automatically once checks pass" >> $GITHUB_STEP_SUMMARY
+            echo "🔀 Auto-merge is enabled only when GH_PAT is configured; otherwise the PR remains open" >> $GITHUB_STEP_SUMMARY
           else
             echo "ℹ️ No changes detected - already up to date" >> $GITHUB_STEP_SUMMARY
           fi

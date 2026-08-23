@@ -147,7 +147,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		groupMetadata,
 		groupToggleEphemeral,
 		registerSocketDrainHandler,
-		registerSocketEndHandler
+		registerSocketEndHandler,
+		runWithSocketOperation
 	} = sock
 
 	/**
@@ -1407,7 +1408,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return false
 	}
 
-	const relayMessage = async (
+	const relayMessageUnsafe = async (
 		jid: string,
 		message: proto.IMessage,
 		{
@@ -2692,6 +2693,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return msgId
 	}
 
+	const relayMessage = (...args: Parameters<typeof relayMessageUnsafe>) =>
+		runWithSocketOperation(() => relayMessageUnsafe(...args))
+
 	const getMessageType = (message: proto.IMessage) => {
 		const normalizedMessage = normalizeMessageContent(message)
 		if (!normalizedMessage) return 'text'
@@ -3386,123 +3390,120 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		 * revisions omitted that transport attribute, so the server acknowledged
 		 * the bare protobuf without establishing a usable live-location share.
 		 */
-		sendLiveLocation: async (
-			jid: string,
-			location: LiveLocationSendOptions,
-			options: MiscMessageGenerationOptions = {}
-		) => {
-			const userJid = assertMeId(authState.creds)
-			assertCanStartLiveLocation(jidDecode(userJid)?.device)
-			const durationSecs = validateLiveLocationSendOptions(location)
+		sendLiveLocation: (jid: string, location: LiveLocationSendOptions, options: MiscMessageGenerationOptions = {}) =>
+			runWithSocketOperation(async () => {
+				const userJid = assertMeId(authState.creds)
+				assertCanStartLiveLocation(jidDecode(userJid)?.device)
+				const durationSecs = validateLiveLocationSendOptions(location)
 
-			const messageTimestampMs = options.timestamp?.getTime() ?? Date.now()
-			const content: proto.IMessage = {
-				liveLocationMessage: {
-					degreesLatitude: location.degreesLatitude,
-					degreesLongitude: location.degreesLongitude,
-					caption: location.comment ?? location.caption,
-					// Android's FMessageLiveLocationSerializer writes only
-					// latitude, longitude, thumbnail, caption and the allocated
-					// sequence into the initial message. Accuracy/speed/bearing
-					// belong to encrypted update notifications.
-					sequenceNumber: location.sequenceNumber ?? nextLiveLocationSequenceNumber(),
-					jpegThumbnail: location.jpegThumbnail
+				const messageTimestampMs = options.timestamp?.getTime() ?? Date.now()
+				const content: proto.IMessage = {
+					liveLocationMessage: {
+						degreesLatitude: location.degreesLatitude,
+						degreesLongitude: location.degreesLongitude,
+						caption: location.comment ?? location.caption,
+						// Android's FMessageLiveLocationSerializer writes only
+						// latitude, longitude, thumbnail, caption and the allocated
+						// sequence into the initial message. Accuracy/speed/bearing
+						// belong to encrypted update notifications.
+						sequenceNumber: location.sequenceNumber ?? nextLiveLocationSequenceNumber(),
+						jpegThumbnail: location.jpegThumbnail
+					}
 				}
-			}
 
-			const fullMsg = generateWAMessageFromContent(jid, content, {
-				userJid,
-				messageId: generateMessageIDV2(sock.user?.id),
-				...options
-			})
-			fullMsg.duration = durationSecs
-			// Store adapters commonly persist IMessage as JSON. This gateway-only
-			// property survives restart/getMessage while protobuf encoding ignores
-			// unknown fields, allowing retry receipts to restore the <enc duration>.
-			;(fullMsg.message as proto.IMessage & { liveLocationDuration?: number }).liveLocationDuration = durationSecs
+				const fullMsg = generateWAMessageFromContent(jid, content, {
+					userJid,
+					messageId: generateMessageIDV2(sock.user?.id),
+					...options
+				})
+				fullMsg.duration = durationSecs
+				// Store adapters commonly persist IMessage as JSON. This gateway-only
+				// property survives restart/getMessage while protobuf encoding ignores
+				// unknown fields, allowing retry receipts to restore the <enc duration>.
+				;(fullMsg.message as proto.IMessage & { liveLocationDuration?: number }).liveLocationDuration = durationSecs
 
-			// Keep the initial message addressed to the conversation. Android
-			// canonicalizes PN to LID only inside SendLiveLocationKeyJob.
-			await relayMessage(jidNormalizedUser(jid), fullMsg.message!, {
-				messageId: fullMsg.key.id!,
-				useCachedGroupMetadata: options.useCachedGroupMetadata,
-				statusJidList: options.statusJidList,
-				liveLocationDuration: durationSecs,
-				onResolvedRecipient: ({ canonicalJid, wireJid }) => {
-					fullMsg.key.remoteJid = canonicalJid
-					if (isAnyLidUser(wireJid)) fullMsg.key.remoteJidAlt = wireJid
-				}
-			})
+				// Keep the initial message addressed to the conversation. Android
+				// canonicalizes PN to LID only inside SendLiveLocationKeyJob.
+				await relayMessage(jidNormalizedUser(jid), fullMsg.message!, {
+					messageId: fullMsg.key.id!,
+					useCachedGroupMetadata: options.useCachedGroupMetadata,
+					statusJidList: options.statusJidList,
+					liveLocationDuration: durationSecs,
+					onResolvedRecipient: ({ canonicalJid, wireJid }) => {
+						fullMsg.key.remoteJid = canonicalJid
+						if (isAnyLidUser(wireJid)) fullMsg.key.remoteJidAlt = wireJid
+					}
+				})
 
-			// Match the Android job order: enqueue the initial live-location
-			// message first, then distribute the durable location@broadcast
-			// fast-ratchet sender key to the recipient primary devices.
-			try {
-				await sendLiveLocationKeyDistribution(jid)
-			} catch (err) {
-				// The conversation message was already accepted by relayMessage.
-				// Do not report a total send failure (which invites callers to
-				// duplicate it); surface the precise partial failure and return
-				// the accepted message just like the other post-relay mirrors.
-				logger.warn(
-					{ err, jid, msgId: fullMsg.key.id, stage: 'post-relay-key-distribution' },
-					'live location message was relayed, but sender-key distribution failed'
-				)
-			}
-
-			// Best-effort from_me=1 mirror — never blocks the send. Android stores
-			// one location_sharer row per recipient/resource.
-			if (sendLocationBackend) {
+				// Match the Android job order: enqueue the initial live-location
+				// message first, then distribute the durable location@broadcast
+				// fast-ratchet sender key to the recipient primary devices.
 				try {
-					sendLocationBackend.upsertLocationCache({
-						jid: jidNormalizedUser(userJid),
-						latitude: location.degreesLatitude,
-						longitude: location.degreesLongitude,
-						accuracy: location.accuracyInMeters ?? 0,
-						speed: location.speedInMps ?? 0,
-						bearing: location.degreesClockwiseFromMagneticNorth ?? 0,
-						locationTs: messageTimestampMs
-					})
-
-					let remoteResources: string[]
-					if (isJidGroup(jid)) {
-						const metadata = await groupMetadata(jid)
-						remoteResources = metadata.participants
-							.map(participant => jidNormalizedUser(participant.id))
-							.filter(resource => !areJidsSameUser(resource, userJid))
-					} else {
-						remoteResources = [jidNormalizedUser(jid)]
-					}
-
-					for (const remoteResource of [...new Set(remoteResources)]) {
-						if (!remoteResource) continue
-						sendLocationBackend.upsertLocationSharer({
-							remoteJid: jidNormalizedUser(jid),
-							fromMe: 1,
-							remoteResource,
-							expires: messageTimestampMs + durationSecs * 1000,
-							messageId: fullMsg.key.id!
-						})
-					}
+					await sendLiveLocationKeyDistribution(jid)
 				} catch (err) {
-					logger.debug({ err, jid }, 'location.db sent-live-location mirror failed (best-effort)')
-				}
-			}
-
-			if (config.emitOwnEvents) {
-				process.nextTick(() =>
-					runDetached(
-						() =>
-							messageMutex.mutex(fullMsg.key.remoteJid || fullMsg.key.id || 'unknown', () =>
-								upsertMessage(fullMsg, 'append')
-							),
-						logger,
-						{ op: 'emitOwnEvents.upsertMessage.liveLocation', msgId: fullMsg.key.id }
+					// The conversation message was already accepted by relayMessage.
+					// Do not report a total send failure (which invites callers to
+					// duplicate it); surface the precise partial failure and return
+					// the accepted message just like the other post-relay mirrors.
+					logger.warn(
+						{ err, jid, msgId: fullMsg.key.id, stage: 'post-relay-key-distribution' },
+						'live location message was relayed, but sender-key distribution failed'
 					)
-				)
-			}
+				}
 
-			return fullMsg
-		}
+				// Best-effort from_me=1 mirror — never blocks the send. Android stores
+				// one location_sharer row per recipient/resource.
+				if (sendLocationBackend) {
+					try {
+						sendLocationBackend.upsertLocationCache({
+							jid: jidNormalizedUser(userJid),
+							latitude: location.degreesLatitude,
+							longitude: location.degreesLongitude,
+							accuracy: location.accuracyInMeters ?? 0,
+							speed: location.speedInMps ?? 0,
+							bearing: location.degreesClockwiseFromMagneticNorth ?? 0,
+							locationTs: messageTimestampMs
+						})
+
+						let remoteResources: string[]
+						if (isJidGroup(jid)) {
+							const metadata = await groupMetadata(jid)
+							remoteResources = metadata.participants
+								.map(participant => jidNormalizedUser(participant.id))
+								.filter(resource => !areJidsSameUser(resource, userJid))
+						} else {
+							remoteResources = [jidNormalizedUser(jid)]
+						}
+
+						for (const remoteResource of [...new Set(remoteResources)]) {
+							if (!remoteResource) continue
+							sendLocationBackend.upsertLocationSharer({
+								remoteJid: jidNormalizedUser(jid),
+								fromMe: 1,
+								remoteResource,
+								expires: messageTimestampMs + durationSecs * 1000,
+								messageId: fullMsg.key.id!
+							})
+						}
+					} catch (err) {
+						logger.debug({ err, jid }, 'location.db sent-live-location mirror failed (best-effort)')
+					}
+				}
+
+				if (config.emitOwnEvents) {
+					process.nextTick(() =>
+						runDetached(
+							() =>
+								messageMutex.mutex(fullMsg.key.remoteJid || fullMsg.key.id || 'unknown', () =>
+									upsertMessage(fullMsg, 'append')
+								),
+							logger,
+							{ op: 'emitOwnEvents.upsertMessage.liveLocation', msgId: fullMsg.key.id }
+						)
+					)
+				}
+
+				return fullMsg
+			})
 	}
 }

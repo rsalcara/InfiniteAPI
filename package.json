@@ -39,6 +39,7 @@
 		"release": "release-it",
 		"test": "node --experimental-vm-modules ./node_modules/.bin/jest --testMatch '**/*.test.ts'",
 		"test:e2e": "node --experimental-vm-modules ./node_modules/.bin/jest --testMatch '**/*.test-e2e.ts'",
+		"verify:protobuf": "node scripts/verify-protobuf-runtime.mjs",
 		"update:version": "tsx ./scripts/update-version.ts"
 	},
 	"dependencies": {
@@ -83,7 +84,7 @@
 		"open": "^11.0.0",
 		"pino-pretty": "^13.1.1",
 		"prettier": "^3.8.1",
-		"protobufjs-cli": "^2.0.0",
+		"protobufjs-cli": "^2.6.2",
 		"release-it": "^19.2.4",
 		"ts-jest": "^29.4.0",
 		"tsc-esm-fix": "^3.1.2",

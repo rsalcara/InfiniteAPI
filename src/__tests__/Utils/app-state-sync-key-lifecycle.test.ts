@@ -237,7 +237,7 @@ describe('AppStateSyncKeyLifecycle — official types 38/39 recovery', () => {
 		const { lifecycle, sendPeerMessage } = makeLifecycle(store, { listOwnDevices })
 
 		await expect(lifecycle.startRecovery()).rejects.toThrow('USync unavailable')
-		await flushTimers(30)
+		await waitFor(() => sendPeerMessage.mock.calls.length === 1)
 
 		expect(listOwnDevices).toHaveBeenCalledTimes(2)
 		expect(sendPeerMessage).toHaveBeenCalledTimes(1)
