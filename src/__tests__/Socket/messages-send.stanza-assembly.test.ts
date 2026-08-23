@@ -161,6 +161,7 @@ const makeFakeSocket = ({
 		groupToggleEphemeral: async () => undefined,
 		registerSocketDrainHandler: (handler: () => void | Promise<void>) => drainHandlers.push(handler),
 		registerSocketEndHandler: (handler: () => void | Promise<void>) => endHandlers.push(handler),
+		runWithSocketOperation: jest.fn(async <T>(operation: () => Promise<T> | T) => operation()),
 		executeUSyncQuery: async (query: any) => ({
 			list: query.users.flatMap((user: any) => {
 				if (coldRecipient && (user as any).phone) {
@@ -262,6 +263,7 @@ describe('messages-send stanza assembly', () => {
 			await socket.relayMessage(remotePn, proto.Message.fromObject({ conversation: 'remote' }), {
 				messageId: 'REMOTE-1'
 			})
+			expect(fake.sock.runWithSocketOperation).toHaveBeenCalledTimes(1)
 
 			const stanza = fake.sent.at(-1)
 			expect(stanza.attrs.to).toBe(remoteLid)
