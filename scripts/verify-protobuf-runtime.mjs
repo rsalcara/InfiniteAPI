@@ -10,9 +10,11 @@ message.message.imageMessage.fileLength = '1234567890123456789'
 const json = proto.WebMessageInfo.toObject(message, { longs: String })
 const wire = proto.WebMessageInfo.encode(message).finish()
 const decoded = proto.WebMessageInfo.decode(wire)
+const decodedJson = proto.WebMessageInfo.toObject(decoded, { longs: String })
 
 if (
 	json.message?.imageMessage?.fileLength !== '1234567890123456789' ||
+	decodedJson.message?.imageMessage?.fileLength !== '1234567890123456789' ||
 	decoded.key?.remoteJid !== input.key.remoteJid ||
 	decoded.key?.fromMe !== input.key.fromMe ||
 	decoded.key?.id !== input.key.id ||
