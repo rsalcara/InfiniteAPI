@@ -1,5 +1,5 @@
-import { isExpectedSocketTeardownError } from '../../Utils/socket-teardown'
 import { makeSocketOperationGate } from '../../Socket/socket-operation-gate'
+import { isExpectedSocketTeardownError } from '../../Utils/socket-teardown'
 
 describe('socket operation gate', () => {
 	it('drains admitted work and rejects work from the closing generation', async () => {
