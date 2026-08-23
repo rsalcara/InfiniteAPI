@@ -97,6 +97,7 @@ import { executeWMexQuery } from './mex'
 import { createOfflineBufferState } from './offline-buffer-state'
 import { createPushNameAnnouncementTracker, getPushNameForAnnouncement } from './push-name-announcement'
 import { makeReachoutTimelockRemediation, type RemoveReachoutTimelockServerResult } from './reachout-remediation'
+import { makeSocketOperationGate } from './socket-operation-gate'
 
 /**
  * Connects to WA servers and performs:
@@ -144,6 +145,7 @@ export const makeSocket = (config: SocketConfig) => {
 	)
 	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(transportSession.profile, config.tcTokenAbProps)
 	let closed = false
+	const socketOperationGate = makeSocketOperationGate()
 	const pairingCodeMutex = makeMutex()
 	// ClientPayload must use the resolved, persisted native identity rather than
 	// the caller's current environment values. This keeps reconnects immutable.
@@ -1559,6 +1561,7 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 
 		closed = true // ← Set IMMEDIATELY to close race window
+		const admittedOperationsDrain = socketOperationGate.closeAdmission(error)
 
 		// Close admission before the first await in teardown. Each async drain
 		// handler executes its synchronous prefix immediately, preventing new
@@ -1571,6 +1574,7 @@ export const makeSocket = (config: SocketConfig) => {
 				logger.error({ err, connectionId }, 'error draining socket processing')
 			}
 		})
+		drainPromises.push(admittedOperationsDrain)
 
 		const statusCode = error ? (error as Boom)?.output?.statusCode || 0 : 0
 		const restartRequired = statusCode === DisconnectReason.restartRequired
@@ -2657,6 +2661,9 @@ export const makeSocket = (config: SocketConfig) => {
 		end,
 		registerSocketEndHandler,
 		registerSocketDrainHandler,
+		// Internal generation gate used by composed send paths. It closes
+		// synchronously with end() and drains before Signal/LID teardown.
+		runWithSocketOperation: socketOperationGate.run,
 		// Internal lifecycle probe used by receive-path guards. It is exposed on
 		// the composed socket object for local modules, not as a consumer API.
 		isSocketClosed: () => closed,

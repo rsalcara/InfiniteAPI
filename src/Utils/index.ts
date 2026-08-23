@@ -35,6 +35,7 @@ export * from './direct-recipient'
 export * from './outbound-policy'
 export * from './message-delivery-state'
 export * from './message-ack-error'
+export { isExpectedSocketTeardownError } from './socket-teardown'
 
 // === Identity and Session Management ===
 export * from './contact-picture-identity'
