@@ -93,6 +93,9 @@ jobs:
       - name: GenerateStatics
         run: yarn gen:protobuf
 
+      - name: Verify generated protobuf runtime
+        run: yarn verify:protobuf
+
       # audit CI-03: `wa_version` comes from a regex over output produced by
       # an external proto-extract run that fetches `web.whatsapp.com`. Pass
       # it through an env var AND a numeric-only filter (`tr -cd '0-9.'`)

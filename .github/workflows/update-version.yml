@@ -69,6 +69,11 @@ jobs:
       - name: Install packages
         run: yarn install --immutable
 
+      # Refuse to publish a version bump on top of a malformed generated
+      # WAProto runtime.
+      - name: Verify generated protobuf runtime
+        run: yarn verify:protobuf
+
       - name: Update WhatsApp Web Version
         id: update_version
         run: |
@@ -253,49 +258,27 @@ jobs:
           set -e
           echo "📊 Mergeable: $MERGEABLE"
           
-          # Attempt merge with error handling
+          # Enable auto-merge. GitHub performs the squash only after required
+          # checks pass; never bypass them with an admin merge.
           set +e
           MERGE_OUTPUT=$(gh pr merge "$PR_NUMBER" \
             --repo "${{ github.repository }}" \
             --squash \
+            --auto \
             --delete-branch \
-            --yes 2>&1)
+            2>&1)
           MERGE_EXIT=$?
           set -e
           
           if [ $MERGE_EXIT -eq 0 ]; then
-            echo "✅ PR #$PR_NUMBER merged successfully"
+            echo "✅ Check-gated auto-merge enabled for PR #$PR_NUMBER"
             echo "$MERGE_OUTPUT"
           else
-            echo "::warning::Standard merge failed for PR #$PR_NUMBER"
-            echo "::group::Merge Error Output"
+            echo "::warning::Could not enable check-gated auto-merge for PR #$PR_NUMBER"
+            echo "::group::Auto-merge Error Output"
             echo "$MERGE_OUTPUT"
             echo "::endgroup::"
-            
-            # Try with admin flag (bypasses branch protection if user has admin rights)
-            echo "🔧 Attempting merge with admin override..."
-            set +e
-            ADMIN_OUTPUT=$(gh pr merge "$PR_NUMBER" \
-              --repo "${{ github.repository }}" \
-              --squash \
-              --delete-branch \
-              --admin 2>&1)
-            ADMIN_EXIT=$?
-            set -e
-            
-            if [ $ADMIN_EXIT -eq 0 ]; then
-              echo "✅ PR #$PR_NUMBER merged successfully with admin override"
-              echo "$ADMIN_OUTPUT"
-            else
-              echo "::error::Failed to merge PR #$PR_NUMBER even with admin override"
-              echo "::group::Admin Merge Error Output"
-              echo "$ADMIN_OUTPUT"
-              echo "::endgroup::"
-              echo "::warning::Consider configuring a Personal Access Token (PAT) with full repo permissions as GH_PAT secret"
-              echo "::warning::PR #$PR_NUMBER was created but requires manual merge: https://github.com/${{ github.repository }}/pull/$PR_NUMBER"
-              # Don't exit with error to avoid blocking the workflow
-              exit 0
-            fi
+            echo "::warning::PR #$PR_NUMBER remains open for manual review: https://github.com/${{ github.repository }}/pull/$PR_NUMBER"
           fi
 
       - name: Summary
