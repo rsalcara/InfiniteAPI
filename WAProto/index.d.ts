@@ -4719,6 +4719,7 @@ export namespace proto {
         posterStatusId?: (string|null);
         instagramThreadLink?: (proto.ContextInfo.InstagramThreadLink.$Properties|null);
         aiProvenance?: (proto.AIProvenance.$Properties|null);
+        experienceIds: number[];
         static create(properties: proto.ContextInfo.$Shape): proto.ContextInfo & proto.ContextInfo.$Shape;
         static create(properties?: proto.ContextInfo.$Properties): proto.ContextInfo;
         static encode(m: proto.ContextInfo.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -4795,6 +4796,7 @@ export namespace proto {
             posterStatusId?: (string|null);
             instagramThreadLink?: (proto.ContextInfo.InstagramThreadLink.$Properties|null);
             aiProvenance?: (proto.AIProvenance.$Properties|null);
+            experienceIds?: (number[]|null);
             $unknowns?: Uint8Array[];
         }
         type $Shape = {
@@ -4862,6 +4864,7 @@ export namespace proto {
           posterStatusId?: string|null;
           instagramThreadLink?: proto.ContextInfo.InstagramThreadLink.$Shape|null;
           aiProvenance?: proto.AIProvenance.$Shape|null;
+          experienceIds?: number[]|null;
           $unknowns?: Uint8Array[];
         };
 
@@ -8161,6 +8164,7 @@ export namespace proto {
         musicMessage?: (proto.Message.MusicMessage.$Properties|null);
         statusLinkPreviewMetadata?: (proto.Message.StatusLinkPreviewMetadata.$Properties|null);
         botPlatformRegistrationSuccessMessage?: (proto.Message.FutureProofMessage.$Properties|null);
+        newsletterScheduledMessage?: (proto.Message.FutureProofMessage.$Properties|null);
         static create(properties: proto.Message.$Shape): proto.Message & proto.Message.$Shape;
         static create(properties?: proto.Message.$Properties): proto.Message;
         static encode(m: proto.Message.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -8283,6 +8287,7 @@ export namespace proto {
             musicMessage?: (proto.Message.MusicMessage.$Properties|null);
             statusLinkPreviewMetadata?: (proto.Message.StatusLinkPreviewMetadata.$Properties|null);
             botPlatformRegistrationSuccessMessage?: (proto.Message.FutureProofMessage.$Properties|null);
+            newsletterScheduledMessage?: (proto.Message.FutureProofMessage.$Properties|null);
             $unknowns?: Uint8Array[];
         }
         type $Shape = {
@@ -8396,6 +8401,7 @@ export namespace proto {
           musicMessage?: proto.Message.MusicMessage.$Shape|null;
           statusLinkPreviewMetadata?: proto.Message.StatusLinkPreviewMetadata.$Shape|null;
           botPlatformRegistrationSuccessMessage?: proto.Message.FutureProofMessage.$Shape|null;
+          newsletterScheduledMessage?: proto.Message.FutureProofMessage.$Shape|null;
           $unknowns?: Uint8Array[];
         };
 
