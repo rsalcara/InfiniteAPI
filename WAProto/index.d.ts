@@ -875,6 +875,7 @@ export namespace proto {
         submessages: proto.AIRichResponseSubMessage.$Properties[];
         unifiedResponse?: (proto.AIRichResponseUnifiedResponse.$Properties|null);
         contextInfo?: (proto.ContextInfo.$Properties|null);
+        originalRecipientMetadata?: (proto.AIRichResponseUnifiedResponse.$Properties|null);
         static create(properties: proto.AIRichResponseMessage.$Shape): proto.AIRichResponseMessage & proto.AIRichResponseMessage.$Shape;
         static create(properties?: proto.AIRichResponseMessage.$Properties): proto.AIRichResponseMessage;
         static encode(m: proto.AIRichResponseMessage.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -891,6 +892,7 @@ export namespace proto {
             submessages?: (proto.AIRichResponseSubMessage.$Properties[]|null);
             unifiedResponse?: (proto.AIRichResponseUnifiedResponse.$Properties|null);
             contextInfo?: (proto.ContextInfo.$Properties|null);
+            originalRecipientMetadata?: (proto.AIRichResponseUnifiedResponse.$Properties|null);
             $unknowns?: Uint8Array[];
         }
         type $Shape = {
@@ -898,6 +900,7 @@ export namespace proto {
           submessages?: proto.AIRichResponseSubMessage.$Shape[]|null;
           unifiedResponse?: proto.AIRichResponseUnifiedResponse.$Shape|null;
           contextInfo?: proto.ContextInfo.$Shape|null;
+          originalRecipientMetadata?: proto.AIRichResponseUnifiedResponse.$Shape|null;
           $unknowns?: Uint8Array[];
         };
     }
@@ -1592,7 +1595,8 @@ export namespace proto {
             RICH_RESPONSE_SPORTS_WIDGET_ENABLED = 66,
             AI_RICH_RESPONSE_ARTIFACTS_ENABLED = 67,
             AI_RICH_RESPONSE_EMAIL_CALENDAR_ENABLED = 68,
-            AI_RICH_RESPONSE_REMINDERS_ENABLED = 69
+            AI_RICH_RESPONSE_REMINDERS_ENABLED = 69,
+            AI_STOP_GENERATION_ENABLED = 70
         }
     }
 
@@ -2424,6 +2428,7 @@ export namespace proto {
         subscriptionUpsellMetadata?: (proto.AISubscriptionUpsellMetadata.$Properties|null);
         pttPromptMetadata?: (proto.BotPttPromptMetadata.$Properties|null);
         botHistoryShareMetadata?: (proto.BotHistoryShareMetadata.$Properties|null);
+        responseStoppedByUser?: (boolean|null);
         internalMetadata?: (Uint8Array|null);
         static create(properties: proto.BotMetadata.$Shape): proto.BotMetadata & proto.BotMetadata.$Shape;
         static create(properties?: proto.BotMetadata.$Properties): proto.BotMetadata;
@@ -2479,6 +2484,7 @@ export namespace proto {
             subscriptionUpsellMetadata?: (proto.AISubscriptionUpsellMetadata.$Properties|null);
             pttPromptMetadata?: (proto.BotPttPromptMetadata.$Properties|null);
             botHistoryShareMetadata?: (proto.BotHistoryShareMetadata.$Properties|null);
+            responseStoppedByUser?: (boolean|null);
             internalMetadata?: (Uint8Array|null);
             $unknowns?: Uint8Array[];
         }
@@ -2534,7 +2540,8 @@ export namespace proto {
         GROUP_MEMBER = 54,
         CHATLIST_SEARCH = 55,
         NEW_CHAT_LIST = 56,
-        CONTACTS_TAB = 57
+        CONTACTS_TAB = 57,
+        NEW_3P_AGENT_CREATION = 58
     }
 
     interface IBotMetricsMetadata extends proto.BotMetricsMetadata.$Properties {
@@ -5871,6 +5878,7 @@ export namespace proto {
             campaignSyncEnabled?: (boolean|null);
             insightsSyncEnabled?: (boolean|null);
             recipientLimit?: (number|null);
+            proCompanionSupportEnabled?: (boolean|null);
             static create(properties: proto.DeviceCapabilities.BusinessBroadcast.$Shape): proto.DeviceCapabilities.BusinessBroadcast & proto.DeviceCapabilities.BusinessBroadcast.$Shape;
             static create(properties?: proto.DeviceCapabilities.BusinessBroadcast.$Properties): proto.DeviceCapabilities.BusinessBroadcast;
             static encode(m: proto.DeviceCapabilities.BusinessBroadcast.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -5888,6 +5896,7 @@ export namespace proto {
                 campaignSyncEnabled?: (boolean|null);
                 insightsSyncEnabled?: (boolean|null);
                 recipientLimit?: (number|null);
+                proCompanionSupportEnabled?: (boolean|null);
                 $unknowns?: Uint8Array[];
             }
             type $Shape = proto.DeviceCapabilities.BusinessBroadcast.$Properties;
@@ -15104,6 +15113,7 @@ export namespace proto {
             motionPhotoPresentationOffsetMs?: (number|Long|null);
             metadataUrl?: (string|null);
             videoSourceType?: (proto.Message.VideoMessage.VideoSourceType|null);
+            dashManifestUrl?: (string|null);
             static create(properties: proto.Message.VideoMessage.$Shape): proto.Message.VideoMessage & proto.Message.VideoMessage.$Shape;
             static create(properties?: proto.Message.VideoMessage.$Properties): proto.Message.VideoMessage;
             static encode(m: proto.Message.VideoMessage.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -15146,6 +15156,7 @@ export namespace proto {
                 motionPhotoPresentationOffsetMs?: (number|Long|null);
                 metadataUrl?: (string|null);
                 videoSourceType?: (proto.Message.VideoMessage.VideoSourceType|null);
+                dashManifestUrl?: (string|null);
                 $unknowns?: Uint8Array[];
             }
             type $Shape = {
@@ -15179,6 +15190,7 @@ export namespace proto {
               motionPhotoPresentationOffsetMs?: number|Long|null;
               metadataUrl?: string|null;
               videoSourceType?: proto.Message.VideoMessage.VideoSourceType|null;
+              dashManifestUrl?: string|null;
               $unknowns?: Uint8Array[];
             };
 

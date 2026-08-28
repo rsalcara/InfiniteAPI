@@ -5060,6 +5060,7 @@ export const proto = $root.proto = (() => {
         AIRichResponseMessage.prototype.submessages = $util.emptyArray;
         AIRichResponseMessage.prototype.unifiedResponse = null;
         AIRichResponseMessage.prototype.contextInfo = null;
+        AIRichResponseMessage.prototype.originalRecipientMetadata = null;
 
         let $oneOfFields;
 
@@ -5078,6 +5079,12 @@ export const proto = $root.proto = (() => {
         // Virtual OneOf for proto3 optional field
         $Object.defineProperty(AIRichResponseMessage.prototype, "_contextInfo", {
             get: $util.oneOfGetter($oneOfFields = ["contextInfo"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        $Object.defineProperty(AIRichResponseMessage.prototype, "_originalRecipientMetadata", {
+            get: $util.oneOfGetter($oneOfFields = ["originalRecipientMetadata"]),
             set: $util.oneOfSetter($oneOfFields)
         });
 
@@ -5102,6 +5109,8 @@ export const proto = $root.proto = (() => {
                 $root.proto.AIRichResponseUnifiedResponse.encode(m.unifiedResponse, w.uint32(26).fork(), q + 1).ldelim();
             if (m.contextInfo != null && $Object.hasOwnProperty.call(m, "contextInfo"))
                 $root.proto.ContextInfo.encode(m.contextInfo, w.uint32(34).fork(), q + 1).ldelim();
+            if (m.originalRecipientMetadata != null && $Object.hasOwnProperty.call(m, "originalRecipientMetadata"))
+                $root.proto.AIRichResponseUnifiedResponse.encode(m.originalRecipientMetadata, w.uint32(42).fork(), q + 1).ldelim();
             if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
                 for (var i = 0; i < m.$unknowns.length; ++i)
                     w.raw(m.$unknowns[i]);
@@ -5152,6 +5161,13 @@ export const proto = $root.proto = (() => {
                             break;
                         m.contextInfo = $root.proto.ContextInfo.decode(r, r.uint32(), $undefined, q + 1, m.contextInfo);
                         m._contextInfo = "contextInfo";
+                        continue;
+                    }
+                case 5: {
+                        if (u !== 2)
+                            break;
+                        m.originalRecipientMetadata = $root.proto.AIRichResponseUnifiedResponse.decode(r, r.uint32(), $undefined, q + 1, m.originalRecipientMetadata);
+                        m._originalRecipientMetadata = "originalRecipientMetadata";
                         continue;
                     }
                 }
@@ -5209,6 +5225,11 @@ export const proto = $root.proto = (() => {
                     throw $TypeError(".proto.AIRichResponseMessage.contextInfo: object expected");
                 m.contextInfo = $root.proto.ContextInfo.fromObject(d.contextInfo, q + 1);
             }
+            if (d.originalRecipientMetadata != null) {
+                if (!$util.isObject(d.originalRecipientMetadata))
+                    throw $TypeError(".proto.AIRichResponseMessage.originalRecipientMetadata: object expected");
+                m.originalRecipientMetadata = $root.proto.AIRichResponseUnifiedResponse.fromObject(d.originalRecipientMetadata, q + 1);
+            }
             return m;
         };
 
@@ -5237,6 +5258,9 @@ export const proto = $root.proto = (() => {
             }
             if (m.contextInfo != null && $Object.hasOwnProperty.call(m, "contextInfo")) {
                 d.contextInfo = $root.proto.ContextInfo.toObject(m.contextInfo, o, q + 1);
+            }
+            if (m.originalRecipientMetadata != null && $Object.hasOwnProperty.call(m, "originalRecipientMetadata")) {
+                d.originalRecipientMetadata = $root.proto.AIRichResponseUnifiedResponse.toObject(m.originalRecipientMetadata, o, q + 1);
             }
             return d;
         };
@@ -8846,6 +8870,10 @@ export const proto = $root.proto = (() => {
                     case 69:
                         m.capabilities[m.capabilities.length] = 69;
                         break;
+                    case "AI_STOP_GENERATION_ENABLED":
+                    case 70:
+                        m.capabilities[m.capabilities.length] = 70;
+                        break;
                     default:
                         if (typeof d.capabilities[i] === "number" && (d.capabilities[i] | 0) === d.capabilities[i])
                             m.capabilities[m.capabilities.length] = d.capabilities[i];
@@ -8957,6 +8985,7 @@ export const proto = $root.proto = (() => {
             values[valuesById[67] = "AI_RICH_RESPONSE_ARTIFACTS_ENABLED"] = 67;
             values[valuesById[68] = "AI_RICH_RESPONSE_EMAIL_CALENDAR_ENABLED"] = 68;
             values[valuesById[69] = "AI_RICH_RESPONSE_REMINDERS_ENABLED"] = 69;
+            values[valuesById[70] = "AI_STOP_GENERATION_ENABLED"] = 70;
             return values;
         })();
 
@@ -13320,6 +13349,10 @@ export const proto = $root.proto = (() => {
             case 57:
                 m.botEntryPointOrigin = 57;
                 break;
+            case "NEW_3P_AGENT_CREATION":
+            case 58:
+                m.botEntryPointOrigin = 58;
+                break;
             default:
                 if (typeof d.botEntryPointOrigin === "number" && (d.botEntryPointOrigin | 0) === d.botEntryPointOrigin)
                     m.botEntryPointOrigin = d.botEntryPointOrigin;
@@ -13411,6 +13444,7 @@ export const proto = $root.proto = (() => {
         BotMetadata.prototype.subscriptionUpsellMetadata = null;
         BotMetadata.prototype.pttPromptMetadata = null;
         BotMetadata.prototype.botHistoryShareMetadata = null;
+        BotMetadata.prototype.responseStoppedByUser = null;
         BotMetadata.prototype.internalMetadata = null;
 
         let $oneOfFields;
@@ -13668,6 +13702,12 @@ export const proto = $root.proto = (() => {
         });
 
         // Virtual OneOf for proto3 optional field
+        $Object.defineProperty(BotMetadata.prototype, "_responseStoppedByUser", {
+            get: $util.oneOfGetter($oneOfFields = ["responseStoppedByUser"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
         $Object.defineProperty(BotMetadata.prototype, "_internalMetadata", {
             get: $util.oneOfGetter($oneOfFields = ["internalMetadata"]),
             set: $util.oneOfSetter($oneOfFields)
@@ -13768,6 +13808,8 @@ export const proto = $root.proto = (() => {
                 $root.proto.BotPttPromptMetadata.encode(m.pttPromptMetadata, w.uint32(338).fork(), q + 1).ldelim();
             if (m.botHistoryShareMetadata != null && $Object.hasOwnProperty.call(m, "botHistoryShareMetadata"))
                 $root.proto.BotHistoryShareMetadata.encode(m.botHistoryShareMetadata, w.uint32(346).fork(), q + 1).ldelim();
+            if (m.responseStoppedByUser != null && $Object.hasOwnProperty.call(m, "responseStoppedByUser"))
+                w.uint32(352).bool(m.responseStoppedByUser);
             if (m.internalMetadata != null && $Object.hasOwnProperty.call(m, "internalMetadata"))
                 w.uint32(7994).bytes(m.internalMetadata);
             if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
@@ -14087,6 +14129,13 @@ export const proto = $root.proto = (() => {
                         m._botHistoryShareMetadata = "botHistoryShareMetadata";
                         continue;
                     }
+                case 44: {
+                        if (u !== 0)
+                            break;
+                        m.responseStoppedByUser = r.bool();
+                        m._responseStoppedByUser = "responseStoppedByUser";
+                        continue;
+                    }
                 case 999: {
                         if (u !== 2)
                             break;
@@ -14315,6 +14364,9 @@ export const proto = $root.proto = (() => {
                     throw $TypeError(".proto.BotMetadata.botHistoryShareMetadata: object expected");
                 m.botHistoryShareMetadata = $root.proto.BotHistoryShareMetadata.fromObject(d.botHistoryShareMetadata, q + 1);
             }
+            if (d.responseStoppedByUser != null) {
+                m.responseStoppedByUser = $Boolean(d.responseStoppedByUser);
+            }
             if (d.internalMetadata != null) {
                 if (typeof d.internalMetadata === "string")
                     $util.base64.decode(d.internalMetadata, m.internalMetadata = $util.newBuffer($util.base64.length(d.internalMetadata)), 0);
@@ -14458,6 +14510,9 @@ export const proto = $root.proto = (() => {
             if (m.botHistoryShareMetadata != null && $Object.hasOwnProperty.call(m, "botHistoryShareMetadata")) {
                 d.botHistoryShareMetadata = $root.proto.BotHistoryShareMetadata.toObject(m.botHistoryShareMetadata, o, q + 1);
             }
+            if (m.responseStoppedByUser != null && $Object.hasOwnProperty.call(m, "responseStoppedByUser")) {
+                d.responseStoppedByUser = m.responseStoppedByUser;
+            }
             if (m.internalMetadata != null && $Object.hasOwnProperty.call(m, "internalMetadata")) {
                 d.internalMetadata = o.bytes === $String ? $util.base64.encode(m.internalMetadata, 0, m.internalMetadata.length) : o.bytes === $Array ? $Array.prototype.slice.call(m.internalMetadata) : m.internalMetadata;
             }
@@ -14528,6 +14583,7 @@ export const proto = $root.proto = (() => {
         values[valuesById[55] = "CHATLIST_SEARCH"] = 55;
         values[valuesById[56] = "NEW_CHAT_LIST"] = 56;
         values[valuesById[57] = "CONTACTS_TAB"] = 57;
+        values[valuesById[58] = "NEW_3P_AGENT_CREATION"] = 58;
         return values;
     })();
 
@@ -14846,6 +14902,10 @@ export const proto = $root.proto = (() => {
             case "CONTACTS_TAB":
             case 57:
                 m.destinationEntryPoint = 57;
+                break;
+            case "NEW_3P_AGENT_CREATION":
+            case 58:
+                m.destinationEntryPoint = 58;
                 break;
             default:
                 if (typeof d.destinationEntryPoint === "number" && (d.destinationEntryPoint | 0) === d.destinationEntryPoint)
@@ -35476,6 +35536,7 @@ export const proto = $root.proto = (() => {
             BusinessBroadcast.prototype.campaignSyncEnabled = null;
             BusinessBroadcast.prototype.insightsSyncEnabled = null;
             BusinessBroadcast.prototype.recipientLimit = null;
+            BusinessBroadcast.prototype.proCompanionSupportEnabled = null;
 
             let $oneOfFields;
 
@@ -35509,6 +35570,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            $Object.defineProperty(BusinessBroadcast.prototype, "_proCompanionSupportEnabled", {
+                get: $util.oneOfGetter($oneOfFields = ["proCompanionSupportEnabled"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             BusinessBroadcast.create = function(properties) {
                 return new BusinessBroadcast(properties);
             };
@@ -35530,6 +35597,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(32).bool(m.insightsSyncEnabled);
                 if (m.recipientLimit != null && $Object.hasOwnProperty.call(m, "recipientLimit"))
                     w.uint32(40).int32(m.recipientLimit);
+                if (m.proCompanionSupportEnabled != null && $Object.hasOwnProperty.call(m, "proCompanionSupportEnabled"))
+                    w.uint32(48).bool(m.proCompanionSupportEnabled);
                 if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
                     for (var i = 0; i < m.$unknowns.length; ++i)
                         w.raw(m.$unknowns[i]);
@@ -35588,6 +35657,13 @@ export const proto = $root.proto = (() => {
                             m._recipientLimit = "recipientLimit";
                             continue;
                         }
+                    case 6: {
+                            if (u !== 0)
+                                break;
+                            m.proCompanionSupportEnabled = r.bool();
+                            m._proCompanionSupportEnabled = "proCompanionSupportEnabled";
+                            continue;
+                        }
                     }
                     r.skipType(u, q, t);
                     if (!r.discardUnknown) {
@@ -35625,6 +35701,9 @@ export const proto = $root.proto = (() => {
                 if (d.recipientLimit != null) {
                     m.recipientLimit = d.recipientLimit | 0;
                 }
+                if (d.proCompanionSupportEnabled != null) {
+                    m.proCompanionSupportEnabled = $Boolean(d.proCompanionSupportEnabled);
+                }
                 return m;
             };
 
@@ -35650,6 +35729,9 @@ export const proto = $root.proto = (() => {
                 }
                 if (m.recipientLimit != null && $Object.hasOwnProperty.call(m, "recipientLimit")) {
                     d.recipientLimit = m.recipientLimit;
+                }
+                if (m.proCompanionSupportEnabled != null && $Object.hasOwnProperty.call(m, "proCompanionSupportEnabled")) {
+                    d.proCompanionSupportEnabled = m.proCompanionSupportEnabled;
                 }
                 return d;
             };
@@ -89801,6 +89883,7 @@ export const proto = $root.proto = (() => {
             VideoMessage.prototype.motionPhotoPresentationOffsetMs = null;
             VideoMessage.prototype.metadataUrl = null;
             VideoMessage.prototype.videoSourceType = null;
+            VideoMessage.prototype.dashManifestUrl = null;
 
             let $oneOfFields;
 
@@ -89966,6 +90049,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            $Object.defineProperty(VideoMessage.prototype, "_dashManifestUrl", {
+                get: $util.oneOfGetter($oneOfFields = ["dashManifestUrl"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             VideoMessage.create = function(properties) {
                 return new VideoMessage(properties);
             };
@@ -90043,6 +90132,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(242).string(m.metadataUrl);
                 if (m.videoSourceType != null && $Object.hasOwnProperty.call(m, "videoSourceType"))
                     w.uint32(248).int32(m.videoSourceType);
+                if (m.dashManifestUrl != null && $Object.hasOwnProperty.call(m, "dashManifestUrl"))
+                    w.uint32(266).string(m.dashManifestUrl);
                 if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
                     for (var i = 0; i < m.$unknowns.length; ++i)
                         w.raw(m.$unknowns[i]);
@@ -90279,6 +90370,13 @@ export const proto = $root.proto = (() => {
                             m._videoSourceType = "videoSourceType";
                             continue;
                         }
+                    case 33: {
+                            if (u !== 2)
+                                break;
+                            m.dashManifestUrl = r.stringVerify();
+                            m._dashManifestUrl = "dashManifestUrl";
+                            continue;
+                        }
                     }
                     r.skipType(u, q, t);
                     if (!r.discardUnknown) {
@@ -90484,6 +90582,9 @@ export const proto = $root.proto = (() => {
                     if (typeof d.videoSourceType === "number" && (d.videoSourceType | 0) === d.videoSourceType)
                         m.videoSourceType = d.videoSourceType;
                 }
+                if (d.dashManifestUrl != null) {
+                    m.dashManifestUrl = $String(d.dashManifestUrl);
+                }
                 return m;
             };
 
@@ -90613,6 +90714,9 @@ export const proto = $root.proto = (() => {
                 }
                 if (m.videoSourceType != null && $Object.hasOwnProperty.call(m, "videoSourceType")) {
                     d.videoSourceType = o.enums === $String ? $root.proto.Message.VideoMessage.VideoSourceType[m.videoSourceType] === $undefined ? m.videoSourceType : $root.proto.Message.VideoMessage.VideoSourceType[m.videoSourceType] : m.videoSourceType;
+                }
+                if (m.dashManifestUrl != null && $Object.hasOwnProperty.call(m, "dashManifestUrl")) {
+                    d.dashManifestUrl = m.dashManifestUrl;
                 }
                 return d;
             };
