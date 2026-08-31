@@ -90,14 +90,14 @@ export const createNativeAndroidBridgeProvider = (
 				throw new Error(`native_android bridge returned HTTP ${response.status}`)
 			}
 
-			const contentLength = Number(response.headers?.get('content-length') ?? 0)
-			if (contentLength > MAX_BRIDGE_RESPONSE_BYTES) {
-				throw new Error('native_android bridge response exceeds size limit')
-			}
-
-			const data = (await response.json()) as { jws?: unknown }
-			if (typeof data.jws === 'string' && data.jws.length > MAX_BRIDGE_RESPONSE_BYTES) {
-				throw new Error('native_android bridge response exceeds size limit')
+			// Read with an enforced byte cap. This limits during streaming,
+			// regardless of chunked encoding or missing content-length headers.
+			const text = await readBodyWithLimit(response, MAX_BRIDGE_RESPONSE_BYTES)
+			let data: { jws?: unknown }
+			try {
+				data = JSON.parse(text) as { jws?: unknown }
+			} catch {
+				throw new Error('native_android bridge returned invalid JSON')
 			}
 
 			if (typeof data.jws !== 'string' || data.jws.length === 0) {
@@ -118,4 +118,37 @@ export const createNativeAndroidBridgeProvider = (
 			challenge.signal.removeEventListener('abort', onAbort)
 		}
 	}
+}
+
+const readBodyWithLimit = async (response: Response, limit: number): Promise<string> => {
+	// Fast path: honor declared content-length when present
+	const declaredLength = Number(response.headers?.get('content-length') ?? 0)
+	if (Number.isFinite(declaredLength) && declaredLength > limit) {
+		throw new Error('native_android bridge response exceeds size limit')
+	}
+
+	const reader = response.body?.getReader()
+	if (!reader) {
+		// Fallback for non-streaming Response objects (tests, older runtimes)
+		const text = await response.text()
+		if (text.length > limit) throw new Error('native_android bridge response exceeds size limit')
+		return text
+	}
+
+	const chunks: Uint8Array[] = []
+	let total = 0
+	for (;;) {
+		const { done, value } = await reader.read()
+		if (done) break
+		total += value.byteLength
+		if (total > limit) {
+			await reader.cancel().catch(() => undefined)
+			throw new Error('native_android bridge response exceeds size limit')
+		}
+
+		chunks.push(value)
+	}
+
+	const decoder = new TextDecoder()
+	return chunks.map(chunk => decoder.decode(chunk, { stream: true })).join('') + decoder.decode()
 }

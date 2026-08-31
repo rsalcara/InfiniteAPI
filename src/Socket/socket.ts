@@ -102,7 +102,6 @@ import {
 	getNativeAndroidIntegrityGatedEgress,
 	getNativeAndroidIntegrityNonce,
 	isNativeAndroidIntegrityCleared,
-	markNativeAndroidIntegrityCleared,
 	NATIVE_ANDROID_INTEGRITY_DEFAULT_PROVIDER_TIMEOUT_MS
 } from './native-android-integrity-state'
 import { createOfflineBufferState } from './offline-buffer-state'
@@ -2883,7 +2882,6 @@ export const makeSocket = (config: SocketConfig) => {
 		// Internal user-message gate. Protocol ACKs/queries remain available so
 		// an unsatisfied challenge can be diagnosed without damaging the session.
 		assertNativeAndroidIntegrityReady: nativeAndroidIntegrity.assertUserMessageEgressReady,
-		markNativeAndroidIntegrityCleared,
 		getNativeAndroidIntegrityState: nativeAndroidIntegrity.snapshot,
 		onUnexpectedError,
 		uploadPreKeys,

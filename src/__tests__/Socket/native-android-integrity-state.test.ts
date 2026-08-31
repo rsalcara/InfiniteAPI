@@ -45,6 +45,68 @@ describe('native_android integrity lifecycle', () => {
 		expect(persisted?.gpia).toMatchObject({ status: 'pending', observedAt: 100, policyApplied: 'audit' })
 	})
 
+	it('never retains nonce material across the full enforce lifecycle', () => {
+		const nonce = 'leak-test-nonce-abc123-def456'
+		const persistedSnapshots: string[] = []
+
+		const state = createNativeAndroidIntegrityState({
+			enabled: true,
+			policy: 'enforce',
+			now: () => 100,
+			onPersist: value => {
+				persistedSnapshots.push(JSON.stringify(value))
+			}
+		})
+
+		// Simulate the full lifecycle: challenge observed → provider invoked → response sent
+		expect(getNativeAndroidIntegrityNonce('gpia', challengeNode('gpia', nonce))).toBe(nonce)
+		const { observedAt } = state.begin('gpia', 'pending')
+		state.transition('gpia', 'response_sent', { observedAt })
+
+		// Simulate failure path with a new challenge
+		state.begin('gpia', 'pending')
+		state.transition('gpia', 'failed', { observedAt: 200 })
+
+		// Simulate unavailable path (no provider configured)
+		state.begin('gpia', 'unavailable')
+
+		// Simulate unsupported path (safetynet wire not proven)
+		state.begin('safetynet', 'unsupported')
+
+		// Every persisted snapshot across every transition must not contain
+		// the nonce material, its fragments, or the word "nonce" as a value
+		expect(persistedSnapshots.length).toBeGreaterThan(0)
+		for (const snapshot of persistedSnapshots) {
+			expect(snapshot).not.toContain(nonce)
+			expect(snapshot).not.toContain('leak-test')
+			expect(snapshot).not.toContain('abc123')
+			expect(snapshot).not.toContain('def456')
+		}
+
+		// The live snapshot must also be free of nonce material
+		expect(JSON.stringify(state.snapshot())).not.toContain(nonce)
+		expect(JSON.stringify(state.snapshot())).not.toContain('leak-test')
+
+		// The persisted schema is structurally incapable of storing a nonce:
+		// it only has status, timestamps, policy, and schemaVersion
+		for (const snapshot of persistedSnapshots) {
+			const parsed = JSON.parse(snapshot) as PersistedNativeAndroidIntegrityState
+			const allowedKeys = ['schemaVersion', 'gpia', 'safetynet']
+			const challengeKeys = ['status', 'observedAt', 'updatedAt', 'responseSentAt', 'policyApplied']
+			for (const key of Object.keys(parsed)) {
+				expect(allowedKeys).toContain(key)
+			}
+
+			for (const kind of ['gpia', 'safetynet'] as const) {
+				if (parsed[kind]) {
+					for (const key of Object.keys(parsed[kind])) {
+						expect(challengeKeys).toContain(key)
+					}
+				}
+			}
+		}
+	})
+
 	it('builds only the APK-proven ib/gpia/jws response wire', () => {
 		const jws = 'header.payload.signature'
 		const node = buildNativeAndroidGpiaResponseNode(jws)
