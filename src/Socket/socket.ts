@@ -101,6 +101,8 @@ import {
 	createNativeAndroidIntegrityState,
 	getNativeAndroidIntegrityGatedEgress,
 	getNativeAndroidIntegrityNonce,
+	isNativeAndroidIntegrityCleared,
+	markNativeAndroidIntegrityCleared,
 	NATIVE_ANDROID_INTEGRITY_DEFAULT_PROVIDER_TIMEOUT_MS
 } from './native-android-integrity-state'
 import { createOfflineBufferState } from './offline-buffer-state'
@@ -196,7 +198,7 @@ export const makeSocket = (config: SocketConfig) => {
 					status: challenge.status as Exclude<typeof challenge.status, 'not_requested'>,
 					policy: nativeAndroidIntegrityPolicy,
 					timestamp,
-					action: 'user-message-egress-blocked'
+					action: egress === 'call' ? 'call-offer-egress-blocked' : 'user-message-egress-blocked'
 				})
 			}
 
@@ -364,9 +366,14 @@ export const makeSocket = (config: SocketConfig) => {
 	/** send a binary node */
 	const sendNode = (frame: BinaryNode) => {
 		// Central raw-wire guard covers direct sendNode consumers and the VoIP
-		// bridge. Retry/peer/ACK/accept/reject/terminate remain available.
+		// bridge. Nodes marked cleared by the relay path (retry/peer recovery)
+		// are not re-evaluated: a 1:1 retry stanza is wire-identical to a new
+		// user message and must rely on the relay-level classification.
 		const gatedEgress = getNativeAndroidIntegrityGatedEgress(frame)
-		if (gatedEgress) nativeAndroidIntegrity.assertUserMessageEgressReady(gatedEgress)
+		if (gatedEgress && !isNativeAndroidIntegrityCleared(frame)) {
+			nativeAndroidIntegrity.assertUserMessageEgressReady(gatedEgress)
+		}
+
 		if (logger.level === 'trace') {
 			if (containsNativeAndroidIntegrityMaterial(frame)) {
 				logger.trace({ tag: frame.tag, redacted: 'native-android-integrity', msg: 'xml send' })
@@ -2876,6 +2883,7 @@ export const makeSocket = (config: SocketConfig) => {
 		// Internal user-message gate. Protocol ACKs/queries remain available so
 		// an unsatisfied challenge can be diagnosed without damaging the session.
 		assertNativeAndroidIntegrityReady: nativeAndroidIntegrity.assertUserMessageEgressReady,
+		markNativeAndroidIntegrityCleared,
 		getNativeAndroidIntegrityState: nativeAndroidIntegrity.snapshot,
 		onUnexpectedError,
 		uploadPreKeys,

@@ -1,4 +1,6 @@
+import { Boom } from '@hapi/boom'
 import type { NativeAndroidGpiaChallenge, NativeAndroidGpiaResponse } from '../Types'
+import { DisconnectReason } from '../Types'
 
 export type NativeAndroidBridgeProviderConfig = {
 	/**
@@ -13,6 +15,8 @@ export type NativeAndroidBridgeProviderConfig = {
 	/** Optional custom fetch implementation for testing. */
 	fetch?: typeof fetch
 }
+
+const MAX_BRIDGE_RESPONSE_BYTES = 1_048_576
 
 /**
  * Connects the InfiniteAPI GPIA lifecycle to an external bridge service that
@@ -35,6 +39,16 @@ export const createNativeAndroidBridgeProvider = (
 		throw new Error('native_android bridge provider timeoutMs must be a positive number')
 	}
 
+	if (config.timeoutMs !== undefined && config.timeoutMs > 2_147_483_647) {
+		throw new Error('native_android bridge provider timeoutMs exceeds the Node timer range')
+	}
+
+	try {
+		new URL(config.url)
+	} catch {
+		throw new Error('native_android bridge provider url is not a valid URL')
+	}
+
 	const fetchImpl = config.fetch ?? fetch
 	const timeoutMs = config.timeoutMs ?? 25_000
 
@@ -46,7 +60,11 @@ export const createNativeAndroidBridgeProvider = (
 		const controller = new AbortController()
 		const onAbort = () => controller.abort()
 		challenge.signal.addEventListener('abort', onAbort, { once: true })
-		const timeout = setTimeout(() => controller.abort(), timeoutMs)
+		let timedOut = false
+		const timeout = setTimeout(() => {
+			timedOut = true
+			controller.abort()
+		}, timeoutMs)
 
 		try {
 			const response = await fetchImpl(`${config.url.replace(/\/$/, '')}/integrity/gpia`, {
@@ -72,12 +90,29 @@ export const createNativeAndroidBridgeProvider = (
 				throw new Error(`native_android bridge returned HTTP ${response.status}`)
 			}
 
+			const contentLength = Number(response.headers?.get('content-length') ?? 0)
+			if (contentLength > MAX_BRIDGE_RESPONSE_BYTES) {
+				throw new Error('native_android bridge response exceeds size limit')
+			}
+
 			const data = (await response.json()) as { jws?: unknown }
+			if (typeof data.jws === 'string' && data.jws.length > MAX_BRIDGE_RESPONSE_BYTES) {
+				throw new Error('native_android bridge response exceeds size limit')
+			}
+
 			if (typeof data.jws !== 'string' || data.jws.length === 0) {
 				throw new Error('native_android bridge returned an invalid jws')
 			}
 
 			return { jws: data.jws }
+		} catch (error) {
+			if (timedOut && error instanceof Error && error.name === 'AbortError') {
+				throw new Boom('native_android bridge provider timed out', {
+					statusCode: DisconnectReason.timedOut
+				})
+			}
+
+			throw error
 		} finally {
 			clearTimeout(timeout)
 			challenge.signal.removeEventListener('abort', onAbort)

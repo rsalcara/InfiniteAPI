@@ -274,6 +274,21 @@ export const containsNativeAndroidIntegrityMaterial = (node: BinaryNode): boolea
 	(Array.isArray(node.content) && node.content.some(containsNativeAndroidIntegrityMaterial))
 
 /**
+ * Tracks BinaryNode objects already classified by the relay-level guard. The
+ * wire-level guard must not re-block retry or peer-recovery messages that the
+ * relay path explicitly exempted; without this marker a 1:1 retry stanza looks
+ * identical to a fresh user message at the raw wire level.
+ */
+const nativeAndroidIntegrityClearedNodes = new WeakSet<object>()
+
+export const markNativeAndroidIntegrityCleared = (node: BinaryNode): void => {
+	nativeAndroidIntegrityClearedNodes.add(node)
+}
+
+export const isNativeAndroidIntegrityCleared = (node: BinaryNode): boolean =>
+	nativeAndroidIntegrityClearedNodes.has(node)
+
+/**
  * Classifies only fresh user egress. Protocol repair and already-active call
  * signaling must remain available while an integrity challenge is pending.
  */

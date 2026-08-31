@@ -5,6 +5,8 @@ import {
 	createNativeAndroidIntegrityState,
 	getNativeAndroidIntegrityGatedEgress,
 	getNativeAndroidIntegrityNonce,
+	isNativeAndroidIntegrityCleared,
+	markNativeAndroidIntegrityCleared,
 	NATIVE_ANDROID_INTEGRITY_MAX_TOKEN_BYTES,
 	NATIVE_ANDROID_INTEGRITY_REQUIRED_STATUS
 } from '../../Socket/native-android-integrity-state'
@@ -115,6 +117,28 @@ describe('native_android integrity lifecycle', () => {
 		}
 
 		expect(getNativeAndroidIntegrityGatedEgress(buildNativeAndroidGpiaResponseNode('token'))).toBeUndefined()
+	})
+
+	it('does not re-block a 1:1 retry stanza marked as cleared by the relay guard', () => {
+		const stanza = {
+			tag: 'message',
+			attrs: { to: '5511999999999:0@s.whatsapp.net' },
+			content: [{ tag: 'enc', attrs: {}, content: new Uint8Array([1, 2, 3]) }]
+		}
+
+		// Before marking: the wire classifier sees it as fresh user egress
+		expect(getNativeAndroidIntegrityGatedEgress(stanza)).toBe('message')
+		expect(isNativeAndroidIntegrityCleared(stanza)).toBe(false)
+
+		// After the relay path marks it as cleared (retry/peer recovery):
+		markNativeAndroidIntegrityCleared(stanza)
+		expect(isNativeAndroidIntegrityCleared(stanza)).toBe(true)
+
+		// The sendNode caller must consult the cleared marker in addition to
+		// the classifier; a 1:1 retry is wire-identical to a fresh message.
+		const gatedEgress = getNativeAndroidIntegrityGatedEgress(stanza)
+		const shouldBlock = Boolean(gatedEgress) && !isNativeAndroidIntegrityCleared(stanza)
+		expect(shouldBlock).toBe(false)
 	})
 
 	it('restores unsatisfied state across reconnects and never trusts malformed persistence', () => {

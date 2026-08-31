@@ -49,7 +49,12 @@ export type NativeAndroidIntegrityUpdate = {
 	policy: NativeAndroidIntegrityPolicy
 	/** Epoch milliseconds observed locally. No nonce or token is exposed. */
 	timestamp: number
-	action: 'provider-invoked' | 'response-sent' | 'challenge-observed' | 'user-message-egress-blocked'
+	action:
+		| 'provider-invoked'
+		| 'response-sent'
+		| 'challenge-observed'
+		| 'user-message-egress-blocked'
+		| 'call-offer-egress-blocked'
 	reason?: 'missing-nonce' | 'provider-not-configured' | 'provider-failed' | 'provider-timeout' | 'wire-not-proven'
 }
 

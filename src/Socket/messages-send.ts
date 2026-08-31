@@ -153,6 +153,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const assertNativeAndroidIntegrityReady = (
 		sock as typeof sock & { assertNativeAndroidIntegrityReady?: (egress?: 'message' | 'call') => void }
 	).assertNativeAndroidIntegrityReady
+	const markNativeAndroidIntegrityCleared = (
+		sock as typeof sock & { markNativeAndroidIntegrityCleared?: (node: BinaryNode) => void }
+	).markNativeAndroidIntegrityCleared
 
 	/**
 	 * Newsletter (channel) link upgrade.
@@ -2595,6 +2598,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			if (isRetryResend) {
 				await captureProtocolWire(config.protocolWireCapture, 'direct_retry', stanza, logger)
 			}
+
+			// Mark retry and peer-recovery stanzas before the wire guard sees
+			// them. A 1:1 retry has the same wire shape as a fresh message and
+			// must not be re-classified by the central sendNode guard.
+			if (isRetryResend || isPeerMessage) markNativeAndroidIntegrityCleared?.(stanza)
 
 			await transmitWithRetryPayload({
 				manager: messageRetryManager,
