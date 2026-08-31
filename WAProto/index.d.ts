@@ -3938,6 +3938,7 @@ export namespace proto {
         isSyncdSnapshotRecoveryEnabled?: (boolean|null);
         isHsThumbnailSyncEnabled?: (boolean|null);
         subscriptionSyncPayload?: (Uint8Array|null);
+        isBotJidDbMigrated?: (boolean|null);
         static create(properties: proto.ClientPairingProps.$Shape): proto.ClientPairingProps & proto.ClientPairingProps.$Shape;
         static create(properties?: proto.ClientPairingProps.$Properties): proto.ClientPairingProps;
         static encode(m: proto.ClientPairingProps.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -3955,6 +3956,7 @@ export namespace proto {
             isSyncdSnapshotRecoveryEnabled?: (boolean|null);
             isHsThumbnailSyncEnabled?: (boolean|null);
             subscriptionSyncPayload?: (Uint8Array|null);
+            isBotJidDbMigrated?: (boolean|null);
             $unknowns?: Uint8Array[];
         }
         type $Shape = proto.ClientPairingProps.$Properties;
@@ -5793,6 +5795,7 @@ export namespace proto {
             constructor(p?: proto.DeviceCapabilities.AiFbidMigration.$Properties);
             $unknowns?: Uint8Array[];
             chatDbMigrationTimestamp?: (number|Long|null);
+            supportVersion?: (number|null);
             static create(properties: proto.DeviceCapabilities.AiFbidMigration.$Shape): proto.DeviceCapabilities.AiFbidMigration & proto.DeviceCapabilities.AiFbidMigration.$Shape;
             static create(properties?: proto.DeviceCapabilities.AiFbidMigration.$Properties): proto.DeviceCapabilities.AiFbidMigration;
             static encode(m: proto.DeviceCapabilities.AiFbidMigration.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -5806,6 +5809,7 @@ export namespace proto {
         namespace AiFbidMigration {
             interface $Properties {
                 chatDbMigrationTimestamp?: (number|Long|null);
+                supportVersion?: (number|null);
                 $unknowns?: Uint8Array[];
             }
             type $Shape = proto.DeviceCapabilities.AiFbidMigration.$Properties;
