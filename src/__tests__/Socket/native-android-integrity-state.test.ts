@@ -27,9 +27,7 @@ describe('native_android integrity lifecycle', () => {
 		const gpiaNonce = 'gpia-secret-nonce'
 		const safetynetNonce = 'safetynet-secret-nonce'
 		expect(getNativeAndroidIntegrityNonce('gpia', challengeNode('gpia', gpiaNonce))).toBe(gpiaNonce)
-		expect(getNativeAndroidIntegrityNonce('safetynet', challengeNode('safetynet', safetynetNonce))).toBe(
-			safetynetNonce
-		)
+		expect(getNativeAndroidIntegrityNonce('safetynet', challengeNode('safetynet', safetynetNonce))).toBe(safetynetNonce)
 
 		let persisted: PersistedNativeAndroidIntegrityState | undefined
 		const state = createNativeAndroidIntegrityState({
@@ -115,6 +113,7 @@ describe('native_android integrity lifecycle', () => {
 				})
 			).toBeUndefined()
 		}
+
 		expect(getNativeAndroidIntegrityGatedEgress(buildNativeAndroidGpiaResponseNode('token'))).toBeUndefined()
 	})
 

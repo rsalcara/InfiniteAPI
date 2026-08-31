@@ -1,5 +1,5 @@
-import { createNativeAndroidBridgeProvider } from '../../Utils/native-android-bridge-provider'
 import type { NativeAndroidGpiaChallenge } from '../../Types'
+import { createNativeAndroidBridgeProvider } from '../../Utils/native-android-bridge-provider'
 
 describe('native_android bridge provider', () => {
 	const makeChallenge = (signal = new AbortController().signal): NativeAndroidGpiaChallenge => ({
@@ -15,19 +15,17 @@ describe('native_android bridge provider', () => {
 	})
 
 	it('rejects invalid configuration', () => {
-		expect(() => createNativeAndroidBridgeProvider({ url: 'ftp://invalid' })).toThrow(
-			'requires a valid http(s) url'
+		expect(() => createNativeAndroidBridgeProvider({ url: 'ftp://invalid' })).toThrow('requires a valid http(s) url')
+		expect(() => createNativeAndroidBridgeProvider({ url: 'http://bridge', token: 123 as unknown as string })).toThrow(
+			'token must be a string'
 		)
-		expect(() =>
-			createNativeAndroidBridgeProvider({ url: 'http://bridge', token: 123 as unknown as string })
-		).toThrow('token must be a string')
-		expect(() =>
-			createNativeAndroidBridgeProvider({ url: 'http://bridge', timeoutMs: -1 })
-		).toThrow('timeoutMs must be a positive number')
+		expect(() => createNativeAndroidBridgeProvider({ url: 'http://bridge', timeoutMs: -1 })).toThrow(
+			'timeoutMs must be a positive number'
+		)
 	})
 
 	it('sends the challenge without leaking credentials in error messages', async () => {
-	const calls: Array<{ url: string; init: RequestInit }> = []
+		const calls: Array<{ url: string; init: RequestInit }> = []
 		const provider = createNativeAndroidBridgeProvider({
 			url: 'http://bridge.local:9876/',
 			token: 'secret-token',

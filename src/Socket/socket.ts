@@ -35,9 +35,9 @@ import {
 	generateLoginNode,
 	generateMdTagPrefix,
 	generateRegistrationNode,
-	getNativeAndroidAppIdentity,
 	getCodeFromWSError,
 	getErrorCodeFromStreamError,
+	getNativeAndroidAppIdentity,
 	getNextPreKeysNode,
 	getPairCodeCompanionIdentity,
 	getQrCodeCompanionIdentity,
@@ -95,7 +95,6 @@ import { mapUSyncResultToLIDMappings, mapUSyncResultToOnWhatsApp, USyncQuery, US
 import { getAuthStoreDrainBarrier, registerAuthStoreDrainBarrier } from './auth-store-drain-barrier'
 import { TcpSocketClient, WebSocketClient } from './Client'
 import { executeWMexQuery } from './mex'
-import { createOfflineBufferState } from './offline-buffer-state'
 import {
 	buildNativeAndroidGpiaResponseNode,
 	containsNativeAndroidIntegrityMaterial,
@@ -104,6 +103,7 @@ import {
 	getNativeAndroidIntegrityNonce,
 	NATIVE_ANDROID_INTEGRITY_DEFAULT_PROVIDER_TIMEOUT_MS
 } from './native-android-integrity-state'
+import { createOfflineBufferState } from './offline-buffer-state'
 import { createPushNameAnnouncementTracker, getPushNameForAnnouncement } from './push-name-announcement'
 import { makeReachoutTimelockRemediation, type RemoveReachoutTimelockServerResult } from './reachout-remediation'
 import { makeSocketOperationGate } from './socket-operation-gate'
@@ -176,6 +176,7 @@ export const makeSocket = (config: SocketConfig) => {
 
 				return { ...(incoming.updatedAt >= stored.updatedAt ? incoming : stored) }
 			}
+
 			const gpia = keepNewest('gpia')
 			const safetynet = keepNewest('safetynet')
 			identity.integrity = {
@@ -198,6 +199,7 @@ export const makeSocket = (config: SocketConfig) => {
 					action: 'user-message-egress-blocked'
 				})
 			}
+
 			logger.warn(
 				{
 					policy: nativeAndroidIntegrityPolicy,
@@ -2532,12 +2534,7 @@ export const makeSocket = (config: SocketConfig) => {
 		kind: 'gpia' | 'safetynet',
 		status: 'pending' | 'response_sent' | 'unavailable' | 'failed' | 'unsupported',
 		action: 'provider-invoked' | 'response-sent' | 'challenge-observed' | 'user-message-egress-blocked',
-		reason?:
-			| 'missing-nonce'
-			| 'provider-not-configured'
-			| 'provider-failed'
-			| 'provider-timeout'
-			| 'wire-not-proven'
+		reason?: 'missing-nonce' | 'provider-not-configured' | 'provider-failed' | 'provider-timeout' | 'wire-not-proven'
 	) => {
 		ev.emit('native-android.integrity', {
 			kind,
@@ -2627,7 +2624,12 @@ export const makeSocket = (config: SocketConfig) => {
 			controller.abort()
 			const timedOut = error instanceof Boom && error.output.statusCode === DisconnectReason.timedOut
 			nativeAndroidIntegrity.transition(kind, 'failed', { observedAt })
-			emitNativeAndroidIntegrity(kind, 'failed', 'challenge-observed', timedOut ? 'provider-timeout' : 'provider-failed')
+			emitNativeAndroidIntegrity(
+				kind,
+				'failed',
+				'challenge-observed',
+				timedOut ? 'provider-timeout' : 'provider-failed'
+			)
 			logger.error(
 				{
 					kind,

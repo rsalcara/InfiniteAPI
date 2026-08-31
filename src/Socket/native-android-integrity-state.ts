@@ -75,7 +75,8 @@ const normalizePersistedChallenge = (
 		observedAt: record.observedAt,
 		updatedAt: record.updatedAt,
 		...(record.responseSentAt !== undefined ? { responseSentAt: record.responseSentAt } : {}),
-		policyApplied: record.policyApplied === 'audit' || record.policyApplied === 'enforce' ? record.policyApplied : policy
+		policyApplied:
+			record.policyApplied === 'audit' || record.policyApplied === 'enforce' ? record.policyApplied : policy
 	}
 }
 
@@ -102,9 +103,7 @@ export const createNativeAndroidIntegrityState = ({
 }: NativeAndroidIntegrityStateOptions) => {
 	const initialNow = now()
 	const malformedPersistedState = Boolean(persisted && persisted.schemaVersion !== 1)
-	const records: Partial<
-		Record<NativeAndroidIntegrityChallengeKind, PersistedNativeAndroidIntegrityChallenge>
-	> = {}
+	const records: Partial<Record<NativeAndroidIntegrityChallengeKind, PersistedNativeAndroidIntegrityChallenge>> = {}
 
 	for (const kind of CHALLENGE_KINDS) {
 		const raw = malformedPersistedState ? undefined : persisted?.[kind]
@@ -131,7 +130,7 @@ export const createNativeAndroidIntegrityState = ({
 		records[kind]?.status ?? 'not_requested'
 	const refreshFromPersisted = (kind: NativeAndroidIntegrityChallengeKind) => {
 		const current = getPersisted?.()
-		if (!current || current.schemaVersion !== 1) return
+		if (current?.schemaVersion !== 1) return
 		const external = normalizePersistedChallenge(current[kind], policy)
 		const local = records[kind]
 		if (
@@ -157,9 +156,7 @@ export const createNativeAndroidIntegrityState = ({
 			status,
 			observedAt: options.observedAt ?? previous?.observedAt ?? timestamp,
 			updatedAt: timestamp,
-			...(status === 'response_sent'
-				? { responseSentAt: options.responseSentAt ?? timestamp }
-				: {}),
+			...(status === 'response_sent' ? { responseSentAt: options.responseSentAt ?? timestamp } : {}),
 			policyApplied: policy
 		}
 		persist()
@@ -286,11 +283,7 @@ export const getNativeAndroidIntegrityGatedEgress = (node: BinaryNode): 'message
 		return 'message'
 	}
 
-	if (
-		node.tag === 'call' &&
-		Array.isArray(node.content) &&
-		node.content.some(child => child.tag === 'offer')
-	) {
+	if (node.tag === 'call' && Array.isArray(node.content) && node.content.some(child => child.tag === 'offer')) {
 		return 'call'
 	}
 

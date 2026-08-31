@@ -174,7 +174,7 @@ const makeFakeSocket = ({
 		assertNativeAndroidIntegrityReady,
 		executeUSyncQuery: async (query: any) => ({
 			list: query.users.flatMap((user: any) => {
-				if (coldRecipient && (user as any).phone) {
+				if (coldRecipient && user.phone) {
 					return [
 						{
 							id: coldCanonicalPn,
