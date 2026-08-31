@@ -35,6 +35,7 @@ import {
 	generateLoginNode,
 	generateMdTagPrefix,
 	generateRegistrationNode,
+	getNativeAndroidAppIdentity,
 	getCodeFromWSError,
 	getErrorCodeFromStreamError,
 	getNextPreKeysNode,
@@ -95,6 +96,14 @@ import { getAuthStoreDrainBarrier, registerAuthStoreDrainBarrier } from './auth-
 import { TcpSocketClient, WebSocketClient } from './Client'
 import { executeWMexQuery } from './mex'
 import { createOfflineBufferState } from './offline-buffer-state'
+import {
+	buildNativeAndroidGpiaResponseNode,
+	containsNativeAndroidIntegrityMaterial,
+	createNativeAndroidIntegrityState,
+	getNativeAndroidIntegrityGatedEgress,
+	getNativeAndroidIntegrityNonce,
+	NATIVE_ANDROID_INTEGRITY_DEFAULT_PROVIDER_TIMEOUT_MS
+} from './native-android-integrity-state'
 import { createPushNameAnnouncementTracker, getPushNameForAnnouncement } from './push-name-announcement'
 import { makeReachoutTimelockRemediation, type RemoveReachoutTimelockServerResult } from './reachout-remediation'
 import { makeSocketOperationGate } from './socket-operation-gate'
@@ -131,6 +140,7 @@ export const makeSocket = (config: SocketConfig) => {
 	} = runtimeConfig
 	const transportSession = resolveTransportSession(runtimeConfig, authState.creds)
 	const isNativeAndroid = transportSession.profile === 'native_android'
+	const nativeAndroidIntegrityPolicy = transportSession.nativeAndroid?.integrityPolicy ?? 'audit'
 	const proxyRouteAudit = resolveProxyRouteAudit(runtimeConfig, transportSession.profile)
 	const routeConnectionPhase = resolveProxyConnectionPhase(runtimeConfig)
 	logger.info(
@@ -145,6 +155,59 @@ export const makeSocket = (config: SocketConfig) => {
 	)
 	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(transportSession.profile, config.tcTokenAbProps)
 	let closed = false
+	const ev = makeEventBuffer(logger)
+	const nativeAndroidIntegrity = createNativeAndroidIntegrityState({
+		enabled: isNativeAndroid,
+		policy: nativeAndroidIntegrityPolicy,
+		persisted: authState.creds.nativeAndroidIdentity?.integrity,
+		getPersisted: () => authState.creds.nativeAndroidIdentity?.integrity,
+		onPersist: integrity => {
+			const identity = authState.creds.nativeAndroidIdentity
+			if (!identity) return
+			const current = identity.integrity
+			const keepNewest = (kind: 'gpia' | 'safetynet') => {
+				const incoming = integrity[kind]
+				const stored = current?.[kind]
+				if (!incoming) return stored ? { ...stored } : undefined
+				if (!stored) return { ...incoming }
+				if (incoming.observedAt !== stored.observedAt) {
+					return { ...(incoming.observedAt > stored.observedAt ? incoming : stored) }
+				}
+
+				return { ...(incoming.updatedAt >= stored.updatedAt ? incoming : stored) }
+			}
+			const gpia = keepNewest('gpia')
+			const safetynet = keepNewest('safetynet')
+			identity.integrity = {
+				schemaVersion: 1,
+				...(gpia ? { gpia } : {}),
+				...(safetynet ? { safetynet } : {})
+			}
+			// The auth adapter persists this ordinary creds update. The state object
+			// cannot retain nonce/token material by construction.
+			ev.emit('creds.update', { nativeAndroidIdentity: identity })
+		},
+		onBlocked: (blocked, egress) => {
+			const timestamp = Date.now()
+			for (const challenge of blocked) {
+				ev.emit('native-android.integrity', {
+					kind: challenge.kind,
+					status: challenge.status as Exclude<typeof challenge.status, 'not_requested'>,
+					policy: nativeAndroidIntegrityPolicy,
+					timestamp,
+					action: 'user-message-egress-blocked'
+				})
+			}
+			logger.warn(
+				{
+					policy: nativeAndroidIntegrityPolicy,
+					challenges: blocked,
+					action: `${egress}-egress-blocked`
+				},
+				'native_android integrity policy blocked new user egress'
+			)
+		}
+	})
 	const socketOperationGate = makeSocketOperationGate()
 	const pairingCodeMutex = makeMutex()
 	// ClientPayload must use the resolved, persisted native identity rather than
@@ -298,8 +361,16 @@ export const makeSocket = (config: SocketConfig) => {
 
 	/** send a binary node */
 	const sendNode = (frame: BinaryNode) => {
+		// Central raw-wire guard covers direct sendNode consumers and the VoIP
+		// bridge. Retry/peer/ACK/accept/reject/terminate remain available.
+		const gatedEgress = getNativeAndroidIntegrityGatedEgress(frame)
+		if (gatedEgress) nativeAndroidIntegrity.assertUserMessageEgressReady(gatedEgress)
 		if (logger.level === 'trace') {
-			logger.trace({ xml: binaryNodeToString(frame), msg: 'xml send' })
+			if (containsNativeAndroidIntegrityMaterial(frame)) {
+				logger.trace({ tag: frame.tag, redacted: 'native-android-integrity', msg: 'xml send' })
+			} else {
+				logger.trace({ xml: binaryNodeToString(frame), msg: 'xml send' })
+			}
 		}
 
 		const buff = encodeBinaryNode(frame)
@@ -592,8 +663,6 @@ export const makeSocket = (config: SocketConfig) => {
 
 		return []
 	}
-
-	const ev = makeEventBuffer(logger)
 
 	// Persist the routingInfo clearing so the consumer's saveCreds() writes the clean state to disk.
 	// This ensures that if the process restarts again before the server assigns new routingInfo,
@@ -1495,7 +1564,11 @@ export const makeSocket = (config: SocketConfig) => {
 						}
 
 						if (logger.level === 'trace') {
-							logger.trace({ xml: binaryNodeToString(frame), msg: 'recv xml' })
+							if (containsNativeAndroidIntegrityMaterial(frame)) {
+								logger.trace({ tag: frame.tag, redacted: 'native-android-integrity', msg: 'recv xml' })
+							} else {
+								logger.trace({ xml: binaryNodeToString(frame), msg: 'recv xml' })
+							}
 						}
 
 						/* Check if this is a response to a message we sent */
@@ -2447,6 +2520,137 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 	})
 
+	const activeNativeAndroidIntegrityChallenges = new Map<'gpia' | 'safetynet', AbortController>()
+	registerSocketEndHandler(() => {
+		for (const controller of activeNativeAndroidIntegrityChallenges.values()) controller.abort()
+		activeNativeAndroidIntegrityChallenges.clear()
+		nativeAndroidIntegrity.invalidate('gpia')
+		nativeAndroidIntegrity.invalidate('safetynet')
+	})
+
+	const emitNativeAndroidIntegrity = (
+		kind: 'gpia' | 'safetynet',
+		status: 'pending' | 'response_sent' | 'unavailable' | 'failed' | 'unsupported',
+		action: 'provider-invoked' | 'response-sent' | 'challenge-observed' | 'user-message-egress-blocked',
+		reason?:
+			| 'missing-nonce'
+			| 'provider-not-configured'
+			| 'provider-failed'
+			| 'provider-timeout'
+			| 'wire-not-proven'
+	) => {
+		ev.emit('native-android.integrity', {
+			kind,
+			status,
+			policy: nativeAndroidIntegrityPolicy,
+			timestamp: Date.now(),
+			action,
+			...(reason ? { reason } : {})
+		})
+	}
+
+	const handleNativeAndroidIntegrityChallenge = async (kind: 'gpia' | 'safetynet', node: BinaryNode) => {
+		if (!isNativeAndroid || closed) return
+
+		activeNativeAndroidIntegrityChallenges.get(kind)?.abort()
+		activeNativeAndroidIntegrityChallenges.delete(kind)
+		const nonce = getNativeAndroidIntegrityNonce(kind, node)
+		if (!nonce) {
+			nativeAndroidIntegrity.begin(kind, 'failed')
+			emitNativeAndroidIntegrity(kind, 'failed', 'challenge-observed', 'missing-nonce')
+			logger.warn(
+				{ kind, policy: nativeAndroidIntegrityPolicy, status: 'failed' },
+				'native_android integrity challenge was malformed'
+			)
+			return
+		}
+
+		// The safetynet request path is proven, but its outbound stanza is still
+		// hidden in libwhatsapp.so. Never guess a wire or treat it as satisfied.
+		if (kind === 'safetynet') {
+			nativeAndroidIntegrity.begin(kind, 'unsupported')
+			emitNativeAndroidIntegrity(kind, 'unsupported', 'challenge-observed', 'wire-not-proven')
+			logger.warn(
+				{ kind, policy: nativeAndroidIntegrityPolicy, status: 'unsupported' },
+				'native_android safetynet challenge observed; response wire is not independently proven'
+			)
+			return
+		}
+
+		const provider = transportSession.nativeAndroid!.integrityProvider
+		const { generation, observedAt } = nativeAndroidIntegrity.begin(kind, provider ? 'pending' : 'unavailable')
+		if (!provider) {
+			emitNativeAndroidIntegrity(kind, 'unavailable', 'challenge-observed', 'provider-not-configured')
+			logger.warn(
+				{ kind, policy: nativeAndroidIntegrityPolicy, status: 'unavailable' },
+				'native_android GPIA challenge received without a genuine Android provider'
+			)
+			return
+		}
+
+		const controller = new AbortController()
+		activeNativeAndroidIntegrityChallenges.set(kind, controller)
+		emitNativeAndroidIntegrity(kind, 'pending', 'provider-invoked')
+		try {
+			const appVariant = transportSession.nativeAndroid!.appVariant
+			const appIdentity = getNativeAndroidAppIdentity(appVariant)
+			const response = await promiseTimeout<Awaited<ReturnType<typeof provider>>>(
+				NATIVE_ANDROID_INTEGRITY_DEFAULT_PROVIDER_TIMEOUT_MS,
+				(resolve, reject) => {
+					provider({
+						kind,
+						nonce,
+						requestHash: nonce,
+						cloudProjectNumber: 293955441834,
+						profileId: transportSession.nativeAndroid!.device.profileId,
+						appVariant,
+						clientAppId: appIdentity.clientAppId,
+						packageName: appIdentity.packageName,
+						signal: controller.signal
+					}).then(resolve, reject)
+				}
+			)
+
+			if (closed || controller.signal.aborted || !nativeAndroidIntegrity.isCurrent(kind, generation)) return
+			const responseNode = buildNativeAndroidGpiaResponseNode(response?.jws)
+			await sendNode(responseNode)
+			if (closed || controller.signal.aborted || !nativeAndroidIntegrity.isCurrent(kind, generation)) return
+
+			const timestamp = nativeAndroidIntegrity.transition(kind, 'response_sent', { observedAt })
+			emitNativeAndroidIntegrity(kind, 'response_sent', 'response-sent')
+			logger.info(
+				{ kind, policy: nativeAndroidIntegrityPolicy, status: 'response_sent', timestamp },
+				'native_android integrity response transmitted'
+			)
+		} catch (error) {
+			if (closed || controller.signal.aborted || !nativeAndroidIntegrity.isCurrent(kind, generation)) return
+			controller.abort()
+			const timedOut = error instanceof Boom && error.output.statusCode === DisconnectReason.timedOut
+			nativeAndroidIntegrity.transition(kind, 'failed', { observedAt })
+			emitNativeAndroidIntegrity(kind, 'failed', 'challenge-observed', timedOut ? 'provider-timeout' : 'provider-failed')
+			logger.error(
+				{
+					kind,
+					policy: nativeAndroidIntegrityPolicy,
+					status: 'failed',
+					reason: timedOut ? 'provider-timeout' : 'provider-failed'
+				},
+				'native_android integrity provider failed'
+			)
+		} finally {
+			if (activeNativeAndroidIntegrityChallenges.get(kind) === controller) {
+				activeNativeAndroidIntegrityChallenges.delete(kind)
+			}
+		}
+	}
+
+	ws.on('CB:ib,,gpia', (node: BinaryNode) => {
+		void handleNativeAndroidIntegrityChallenge('gpia', node)
+	})
+	ws.on('CB:ib,,safetynet', (node: BinaryNode) => {
+		void handleNativeAndroidIntegrityChallenge('safetynet', node)
+	})
+
 	// perf(inbound-latency): safety timer that caps how long the offline-phase buffer may
 	// block live message delivery. The server sends CB:ib,,offline only after transmitting
 	// ALL queued offline messages; on busy accounts this can take 10-30+ seconds, holding
@@ -2667,6 +2871,10 @@ export const makeSocket = (config: SocketConfig) => {
 		// Internal lifecycle probe used by receive-path guards. It is exposed on
 		// the composed socket object for local modules, not as a consumer API.
 		isSocketClosed: () => closed,
+		// Internal user-message gate. Protocol ACKs/queries remain available so
+		// an unsatisfied challenge can be diagnosed without damaging the session.
+		assertNativeAndroidIntegrityReady: nativeAndroidIntegrity.assertUserMessageEgressReady,
+		getNativeAndroidIntegrityState: nativeAndroidIntegrity.snapshot,
 		onUnexpectedError,
 		uploadPreKeys,
 		uploadPreKeysToServerIfRequired,

@@ -150,6 +150,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		registerSocketEndHandler,
 		runWithSocketOperation
 	} = sock
+	const assertNativeAndroidIntegrityReady = (
+		sock as typeof sock & { assertNativeAndroidIntegrityReady?: (egress?: 'message' | 'call') => void }
+	).assertNativeAndroidIntegrityReady
 
 	/**
 	 * Newsletter (channel) link upgrade.
@@ -1428,6 +1431,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const meLid = authState.creds.me?.lid
 		const isRetryResend = Boolean(participant?.jid)
 		const isPeerMessage = additionalAttributes?.['category'] === 'peer'
+		// Retry and peer protocol messages are required to keep the encrypted
+		// session recoverable. Only new user-message egress is fail-closed.
+		if (!isRetryResend && !isPeerMessage) assertNativeAndroidIntegrityReady?.()
 		let shouldIncludeDeviceIdentity = isRetryResend
 		const statusJid = 'status@broadcast'
 
@@ -2926,6 +2932,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			album: AlbumMessageOptions,
 			options: MiscMessageGenerationOptions = {}
 		): Promise<AlbumSendResult> => {
+			// Run before generating/uploading any album media. relayMessage keeps
+			// the second guard immediately before encryption/transmission.
+			assertNativeAndroidIntegrityReady?.('message')
 			const startTime = Date.now()
 			const userJid = authState.creds.me!.id
 
@@ -3241,6 +3250,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				)
 			}
 
+			// Fail before link fetches, media upload or message generation. The
+			// relay guard remains authoritative for races after this preflight.
+			assertNativeAndroidIntegrityReady?.('message')
+
 			const userJid = authState.creds.me!.id
 
 			// Best-effort upgrade: plain text + URL → imageMessage + caption
@@ -3392,6 +3405,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		 */
 		sendLiveLocation: (jid: string, location: LiveLocationSendOptions, options: MiscMessageGenerationOptions = {}) =>
 			runWithSocketOperation(async () => {
+				assertNativeAndroidIntegrityReady?.('message')
 				const userJid = assertMeId(authState.creds)
 				assertCanStartLiveLocation(jidDecode(userJid)?.device)
 				const durationSecs = validateLiveLocationSendOptions(location)

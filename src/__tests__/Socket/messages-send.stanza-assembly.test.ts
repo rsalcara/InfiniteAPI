@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { Boom } from '@hapi/boom'
 import { jest } from '@jest/globals'
 import { EventEmitter } from 'events'
 import { proto } from '../../../WAProto/index.js'
@@ -68,7 +69,8 @@ const makeFakeSocket = ({
 	returnPnDevicesForLidQueries = false,
 	coldRecipient = false,
 	socketOperationGate,
-	onSendNode
+	onSendNode,
+	assertNativeAndroidIntegrityReady
 }: {
 	ownMapping?: boolean
 	corruptRemoteReverse?: boolean
@@ -76,6 +78,7 @@ const makeFakeSocket = ({
 	coldRecipient?: boolean
 	socketOperationGate?: ReturnType<typeof makeSocketOperationGate>
 	onSendNode?: (node: any, sendIndex: number) => void | Promise<void>
+	assertNativeAndroidIntegrityReady?: (egress?: 'message' | 'call') => void
 } = {}) => {
 	const sent: any[] = []
 	const encryptions: CapturedEncryption[] = []
@@ -168,6 +171,7 @@ const makeFakeSocket = ({
 		registerSocketEndHandler: (handler: () => void | Promise<void>) => endHandlers.push(handler),
 		runWithSocketOperation:
 			socketOperationGate?.run || jest.fn(async <T>(operation: () => Promise<T> | T) => operation()),
+		assertNativeAndroidIntegrityReady,
 		executeUSyncQuery: async (query: any) => ({
 			list: query.users.flatMap((user: any) => {
 				if (coldRecipient && (user as any).phone) {
@@ -262,6 +266,38 @@ describe('messages-send stanza assembly', () => {
 				}))
 			}
 		})
+
+	it('blocks new user egress before encryption while keeping retry and peer recovery available', async () => {
+		const guard = jest.fn<() => void>(() => {
+			throw new Boom('integrity pending', { statusCode: 428 })
+		})
+		const fake = makeFakeSocket({ assertNativeAndroidIntegrityReady: guard })
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			await expect(
+				socket.relayMessage(remotePn, proto.Message.fromObject({ conversation: 'blocked' }), {
+					messageId: 'BLOCKED-1'
+				})
+			).rejects.toMatchObject({ output: { statusCode: 428 } })
+			expect(fake.encryptions).toHaveLength(0)
+			expect(fake.sent).toHaveLength(0)
+
+			guard.mockImplementation(() => undefined)
+			await socket.relayMessage(remotePn, proto.Message.fromObject({ conversation: 'retry' }), {
+				messageId: 'RETRY-1',
+				participant: { jid: `${remotePn.split('@')[0]}:2@s.whatsapp.net`, count: 1 }
+			})
+			await socket.relayMessage(ownPn, proto.Message.fromObject({ conversation: 'peer recovery' }), {
+				messageId: 'PEER-1',
+				additionalAttributes: { category: 'peer' }
+			})
+			expect(guard).toHaveBeenCalledTimes(1)
+			expect(fake.sent.length).toBeGreaterThanOrEqual(2)
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
 
 	it('keeps remote envelope, participant fanout and DSM destination in the same LID route', async () => {
 		const fake = makeFakeSocket()

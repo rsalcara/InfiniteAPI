@@ -18,6 +18,8 @@ import {
 	GENERIC_NATIVE_ANDROID_FALLBACK_PROFILE_ID,
 	isNativeAndroidCatalogProfile
 } from './native-android-device-catalog'
+export { createNativeAndroidBridgeProvider } from './native-android-bridge-provider'
+export type { NativeAndroidBridgeProviderConfig } from './native-android-bridge-provider'
 import { makeNativeAndroidNodeAttestationProvider } from './native-android-node-attestation'
 
 const PROFILE_FIELDS: ReadonlyArray<keyof NativeAndroidDeviceProfile> = [
@@ -88,6 +90,18 @@ export const detectNativeAndroidAppVariant = (
 export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig) => {
 	if (config.enabled !== true) {
 		throw new Boom('native_android: explicit enabled=true gate is required', { statusCode: 400 })
+	}
+
+	if (
+		config.integrityPolicy !== undefined &&
+		config.integrityPolicy !== 'audit' &&
+		config.integrityPolicy !== 'enforce'
+	) {
+		throw new Boom('native_android: integrityPolicy must be audit or enforce', { statusCode: 400 })
+	}
+
+	if (config.integrityProvider !== undefined && typeof config.integrityProvider !== 'function') {
+		throw new Boom('native_android: integrityProvider must be a function', { statusCode: 400 })
 	}
 
 	if (!Array.isArray(config.appVersion) || config.appVersion.length !== 4) {
