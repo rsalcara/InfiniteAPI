@@ -22870,6 +22870,7 @@ export const proto = $root.proto = (() => {
         ClientPairingProps.prototype.isSyncdSnapshotRecoveryEnabled = null;
         ClientPairingProps.prototype.isHsThumbnailSyncEnabled = null;
         ClientPairingProps.prototype.subscriptionSyncPayload = null;
+        ClientPairingProps.prototype.isBotJidDbMigrated = null;
 
         let $oneOfFields;
 
@@ -22903,6 +22904,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        $Object.defineProperty(ClientPairingProps.prototype, "_isBotJidDbMigrated", {
+            get: $util.oneOfGetter($oneOfFields = ["isBotJidDbMigrated"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         ClientPairingProps.create = function(properties) {
             return new ClientPairingProps(properties);
         };
@@ -22924,6 +22931,8 @@ export const proto = $root.proto = (() => {
                 w.uint32(32).bool(m.isHsThumbnailSyncEnabled);
             if (m.subscriptionSyncPayload != null && $Object.hasOwnProperty.call(m, "subscriptionSyncPayload"))
                 w.uint32(42).bytes(m.subscriptionSyncPayload);
+            if (m.isBotJidDbMigrated != null && $Object.hasOwnProperty.call(m, "isBotJidDbMigrated"))
+                w.uint32(48).bool(m.isBotJidDbMigrated);
             if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
                 for (var i = 0; i < m.$unknowns.length; ++i)
                     w.raw(m.$unknowns[i]);
@@ -22982,6 +22991,13 @@ export const proto = $root.proto = (() => {
                         m._subscriptionSyncPayload = "subscriptionSyncPayload";
                         continue;
                     }
+                case 6: {
+                        if (u !== 0)
+                            break;
+                        m.isBotJidDbMigrated = r.bool();
+                        m._isBotJidDbMigrated = "isBotJidDbMigrated";
+                        continue;
+                    }
                 }
                 r.skipType(u, q, t);
                 if (!r.discardUnknown) {
@@ -23022,6 +23038,9 @@ export const proto = $root.proto = (() => {
                 else if (d.subscriptionSyncPayload.length >= 0)
                     m.subscriptionSyncPayload = d.subscriptionSyncPayload;
             }
+            if (d.isBotJidDbMigrated != null) {
+                m.isBotJidDbMigrated = $Boolean(d.isBotJidDbMigrated);
+            }
             return m;
         };
 
@@ -23047,6 +23066,9 @@ export const proto = $root.proto = (() => {
             }
             if (m.subscriptionSyncPayload != null && $Object.hasOwnProperty.call(m, "subscriptionSyncPayload")) {
                 d.subscriptionSyncPayload = o.bytes === $String ? $util.base64.encode(m.subscriptionSyncPayload, 0, m.subscriptionSyncPayload.length) : o.bytes === $Array ? $Array.prototype.slice.call(m.subscriptionSyncPayload) : m.subscriptionSyncPayload;
+            }
+            if (m.isBotJidDbMigrated != null && $Object.hasOwnProperty.call(m, "isBotJidDbMigrated")) {
+                d.isBotJidDbMigrated = m.isBotJidDbMigrated;
             }
             return d;
         };
@@ -35147,12 +35169,19 @@ export const proto = $root.proto = (() => {
             };
 
             AiFbidMigration.prototype.chatDbMigrationTimestamp = null;
+            AiFbidMigration.prototype.supportVersion = null;
 
             let $oneOfFields;
 
             // Virtual OneOf for proto3 optional field
             $Object.defineProperty(AiFbidMigration.prototype, "_chatDbMigrationTimestamp", {
                 get: $util.oneOfGetter($oneOfFields = ["chatDbMigrationTimestamp"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            $Object.defineProperty(AiFbidMigration.prototype, "_supportVersion", {
+                get: $util.oneOfGetter($oneOfFields = ["supportVersion"]),
                 set: $util.oneOfSetter($oneOfFields)
             });
 
@@ -35169,6 +35198,8 @@ export const proto = $root.proto = (() => {
                     throw $Error("max depth exceeded");
                 if (m.chatDbMigrationTimestamp != null && $Object.hasOwnProperty.call(m, "chatDbMigrationTimestamp"))
                     w.uint32(8).uint64(m.chatDbMigrationTimestamp);
+                if (m.supportVersion != null && $Object.hasOwnProperty.call(m, "supportVersion"))
+                    w.uint32(16).uint32(m.supportVersion);
                 if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
                     for (var i = 0; i < m.$unknowns.length; ++i)
                         w.raw(m.$unknowns[i]);
@@ -35197,6 +35228,13 @@ export const proto = $root.proto = (() => {
                                 break;
                             m.chatDbMigrationTimestamp = r.uint64();
                             m._chatDbMigrationTimestamp = "chatDbMigrationTimestamp";
+                            continue;
+                        }
+                    case 2: {
+                            if (u !== 0)
+                                break;
+                            m.supportVersion = r.uint32();
+                            m._supportVersion = "supportVersion";
                             continue;
                         }
                     }
@@ -35231,6 +35269,9 @@ export const proto = $root.proto = (() => {
                     else if (typeof d.chatDbMigrationTimestamp === "object")
                         m.chatDbMigrationTimestamp = new $util.LongBits(d.chatDbMigrationTimestamp.low >>> 0, d.chatDbMigrationTimestamp.high >>> 0).toNumber(true);
                 }
+                if (d.supportVersion != null) {
+                    m.supportVersion = d.supportVersion >>> 0;
+                }
                 return m;
             };
 
@@ -35249,6 +35290,9 @@ export const proto = $root.proto = (() => {
                         d.chatDbMigrationTimestamp = o.longs === $String ? $String(m.chatDbMigrationTimestamp) : m.chatDbMigrationTimestamp;
                     else
                         d.chatDbMigrationTimestamp = o.longs === String ? longToString(m.chatDbMigrationTimestamp, true) : o.longs === Number ? longToNumber(m.chatDbMigrationTimestamp, true) : m.chatDbMigrationTimestamp;
+                }
+                if (m.supportVersion != null && $Object.hasOwnProperty.call(m, "supportVersion")) {
+                    d.supportVersion = m.supportVersion;
                 }
                 return d;
             };
