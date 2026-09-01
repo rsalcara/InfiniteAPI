@@ -16,6 +16,11 @@ import type { Label } from './Label'
 import type { LabelAssociation } from './LabelAssociation'
 import type { MessageUpsertType, MessageUserReceiptUpdate, WAMessage, WAMessageKey, WAMessageUpdate } from './Message'
 import type { ConnectionState, NewChatMessageCapInfo } from './State'
+import type {
+	NativeAndroidIntegrityChallengeKind,
+	NativeAndroidIntegrityChallengeStatus,
+	NativeAndroidIntegrityPolicy
+} from './Transport'
 
 export type MessageDeliveryState = 'accepted' | 'server_ack' | 'delivered' | 'failed'
 
@@ -38,12 +43,29 @@ export type MessageDeliveryStateUpdate = {
 	action?: 'none' | 'blocked-no-retry' | 'retry-suppressed'
 }
 
+export type NativeAndroidIntegrityUpdate = {
+	kind: NativeAndroidIntegrityChallengeKind
+	status: Exclude<NativeAndroidIntegrityChallengeStatus, 'not_requested'>
+	policy: NativeAndroidIntegrityPolicy
+	/** Epoch milliseconds observed locally. No nonce or token is exposed. */
+	timestamp: number
+	action:
+		| 'provider-invoked'
+		| 'response-sent'
+		| 'challenge-observed'
+		| 'user-message-egress-blocked'
+		| 'call-offer-egress-blocked'
+	reason?: 'missing-nonce' | 'provider-not-configured' | 'provider-failed' | 'provider-timeout' | 'wire-not-proven'
+}
+
 // TODO: refactor this mess
 export type BaileysEventMap = {
 	/** connection state has been updated -- WS closed, opened, connecting etc. */
 	'connection.update': Partial<ConnectionState>
 	/** Emitted once shortly after makeWASocket() returns, independently of connection state. */
 	'auth-state.capabilities': AuthStateCapabilities
+	/** Post-login Android integrity lifecycle; never contains nonce or token material. */
+	'native-android.integrity': NativeAndroidIntegrityUpdate
 	/** credentials updated -- some metadata, keys or something */
 	'creds.update': Partial<AuthenticationCreds>
 	/** set chats (history sync), everything is reverse chronologically sorted */

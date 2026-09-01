@@ -243,6 +243,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		fetchAccountReachoutTimelock,
 		fetchNewChatMessageCap
 	} = sock
+	const assertNativeAndroidIntegrityReady = (
+		sock as typeof sock & { assertNativeAndroidIntegrityReady?: (egress?: 'message' | 'call') => void }
+	).assertNativeAndroidIntegrityReady
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
@@ -1371,6 +1374,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const offerCall = async (jid: string, isVideo?: boolean) => {
 		const meId = authState.creds.me?.id
 		if (!meId) throw new Boom('Not authenticated', { statusCode: 401 })
+		assertNativeAndroidIntegrityReady?.('call')
 
 		const callId = randomBytes(16).toString('hex').toUpperCase()
 		const stanzaId = randomBytes(16).toString('hex').toUpperCase()
