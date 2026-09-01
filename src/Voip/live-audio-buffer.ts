@@ -54,6 +54,13 @@ export class LiveAudioBuffer {
 	push(frame: { data: Float32Array; sampleRate: number; channels: number }): boolean {
 		if (!this.#started) return false
 
+		// Reject unsupported channel counts — passing raw 6-channel audio into
+		// a mono/stereo buffer would produce garbage, not intelligible speech.
+		if (frame.channels !== 1 && frame.channels !== 2) return false
+
+		// Reject empty frames — nothing to buffer.
+		if (frame.data.length === 0) return false
+
 		let samples = frame.data
 
 		if (frame.channels === 2 && this.#channels === 1) {
@@ -81,12 +88,29 @@ export class LiveAudioBuffer {
 		}
 
 		const incoming = samples.length
-		if (this.bufferedSamples + incoming > this.#maxSamples) {
-			const overflow = this.bufferedSamples + incoming - this.#maxSamples
+
+		// Backpressure: when the buffer is full and incoming data would
+		// overflow, signal the consumer to discard the frame rather than
+		// silently dropping it. This allows the platform layer to react
+		// (e.g. skip encoding, reduce source bitrate, or log a warning).
+		if (this.bufferedSamples + incoming > this.#maxSamples && this.bufferedSamples >= this.#maxSamples) {
+			return false
+		}
+
+		// Truncate frames larger than the logical buffer limit to the most
+		// recent samples. Without this, a 16k-sample push into a 1.6k-slot
+		// ring wraps and corrupts the read pointer.
+		if (incoming > this.#maxSamples) {
+			samples = samples.slice(incoming - this.#maxSamples)
+		}
+
+		const truncated = samples.length
+		if (this.bufferedSamples + truncated > this.#maxSamples) {
+			const overflow = this.bufferedSamples + truncated - this.#maxSamples
 			this.#discardOldest(overflow)
 		}
 
-		for (let i = 0; i < incoming; i++) {
+		for (let i = 0; i < truncated; i++) {
 			this.#pcm[this.#writeIndex] = samples[i]!
 			this.#writeIndex = (this.#writeIndex + 1) % this.#pcm.length
 		}
@@ -99,7 +123,10 @@ export class LiveAudioBuffer {
 		this.#started = true
 
 		const chunkMs = (this.#framesPerChunk / this.#sampleRate) * 1000
-		const intervalMs = Math.max(1, Math.floor(chunkMs * 0.9))
+		// Drain at the exact chunk duration. A faster drain creates a
+		// structural deficit (silence injection); the safety margin lives
+		// in the buffer capacity, not in the drain rate.
+		const intervalMs = Math.max(1, Math.round(chunkMs))
 
 		this.#timer = setInterval(() => {
 			this.#drainChunk()
