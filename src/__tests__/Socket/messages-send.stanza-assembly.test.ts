@@ -3,6 +3,7 @@ import { Boom } from '@hapi/boom'
 import { jest } from '@jest/globals'
 import { EventEmitter } from 'events'
 import { proto } from '../../../WAProto/index.js'
+import { isNativeAndroidIntegrityCleared } from '../../Socket/native-android-integrity-state'
 import { makeSocketOperationGate } from '../../Socket/socket-operation-gate'
 import type { SignalKeyStore, SocketConfig, WAMessage } from '../../Types'
 import { unpadRandomMax16 } from '../../Utils/generics'
@@ -294,6 +295,12 @@ describe('messages-send stanza assembly', () => {
 			})
 			expect(guard).toHaveBeenCalledTimes(1)
 			expect(fake.sent.length).toBeGreaterThanOrEqual(2)
+			// The retry and peer stanzas must arrive at sendNode with the same
+			// object identity the relay guard marked as cleared. If a refactor
+			// clones the stanza between mark and send, this fails and prevents
+			// silent reintroduction of the retry-blocking bug.
+			expect(isNativeAndroidIntegrityCleared(fake.sent[0])).toBe(true)
+			expect(isNativeAndroidIntegrityCleared(fake.sent[1])).toBe(true)
 		} finally {
 			await socket.end(new Error('test completed'))
 		}
