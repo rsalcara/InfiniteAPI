@@ -203,6 +203,38 @@ describe('native_android integrity lifecycle', () => {
 		expect(shouldBlock).toBe(false)
 	})
 
+	it('requires reference identity between the marked stanza and the sent stanza', () => {
+		const original = {
+			tag: 'message',
+			attrs: { to: '5511999999999:0@s.whatsapp.net' },
+			content: [{ tag: 'enc', attrs: {}, content: new Uint8Array([1, 2, 3]) }]
+		}
+
+		markNativeAndroidIntegrityCleared(original)
+		expect(isNativeAndroidIntegrityCleared(original)).toBe(true)
+
+		// A wire-identical clone is NOT cleared — the marker is reference-based.
+		// This is intentional: only the object classified by the relay guard is
+		// exempt, not any stanza that happens to look like a retry.
+		const clone = {
+			tag: original.tag,
+			attrs: { ...original.attrs },
+			content: original.content.map(child => ({ ...child, attrs: { ...child.attrs } }))
+		}
+		expect(clone).toEqual(original)
+		expect(isNativeAndroidIntegrityCleared(clone)).toBe(false)
+
+		// The relay-to-wire contract requires the same reference to survive
+		// from mark to sendNode. If a refactor clones the stanza between
+		// markNativeAndroidIntegrityCleared and sendNode, the wire guard
+		// correctly blocks the clone as fresh user egress. This test pins
+		// that invariant: a refactor must either preserve reference identity
+		// or propagate the classification explicitly.
+		const gatedEgress = getNativeAndroidIntegrityGatedEgress(clone)
+		const shouldBlock = Boolean(gatedEgress) && !isNativeAndroidIntegrityCleared(clone)
+		expect(shouldBlock).toBe(true)
+	})
+
 	it('restores unsatisfied state across reconnects and never trusts malformed persistence', () => {
 		const persisted: PersistedNativeAndroidIntegrityState = {
 			schemaVersion: 1,
