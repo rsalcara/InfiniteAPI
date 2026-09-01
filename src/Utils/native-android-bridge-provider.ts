@@ -1,4 +1,5 @@
 import { Boom } from '@hapi/boom'
+import { Buffer } from 'node:buffer'
 import type { NativeAndroidGpiaChallenge, NativeAndroidGpiaResponse } from '../Types'
 import { DisconnectReason } from '../Types'
 
@@ -131,7 +132,12 @@ const readBodyWithLimit = async (response: Response, limit: number): Promise<str
 	if (!reader) {
 		// Fallback for non-streaming Response objects (tests, older runtimes)
 		const text = await response.text()
-		if (text.length > limit) throw new Error('native_android bridge response exceeds size limit')
+		// UTF-8 byte count, not UTF-16 code units: a 3-byte CJK character
+		// occupies one .length unit but three bytes on the wire.
+		if (Buffer.byteLength(text, 'utf8') > limit) {
+			throw new Error('native_android bridge response exceeds size limit')
+		}
+
 		return text
 	}
 
