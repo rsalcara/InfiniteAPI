@@ -11,12 +11,51 @@ export type AudioConfig = {
 	framesPerChunk: number
 }
 
+/** Live audio source — consumer pushes PCM frames in real time. */
+export type LiveAudioSource = {
+	kind: 'live'
+	/** Circular buffer limit in milliseconds. Default 400, max 2000. */
+	maxBufferedMs?: number
+}
+
+/** Live video source — consumer pushes encoded/decoded frames in real time. */
+export type LiveVideoSource = {
+	kind: 'live'
+	format: 'i420' | 'rgba'
+	/** Frame rate cap. Default 15, max 30. */
+	maxFps?: number
+}
+
+/** A single PCM audio frame pushed by the consumer for uplink. */
+export type AudioInputFrame = {
+	/** Interleaved PCM samples. */
+	data: Float32Array
+	/** Sample rate of the provided data (e.g. 48000 from WebRTC). */
+	sampleRate: number
+	/** Channel count of the provided data (1 = mono, 2 = stereo). */
+	channels: number
+	/** Optional capture timestamp for diagnostics. */
+	timestamp?: number
+}
+
+/** A single video frame pushed by the consumer for uplink. */
+export type VideoInputFrame = {
+	data: Uint8Array
+	format: 'i420' | 'rgba'
+	width: number
+	height: number
+	/** Microseconds since stream start. */
+	timestamp: number
+}
+
 /** Options for placing a call. */
 export type CallOptions = {
 	/** Phone number, digits only (e.g. `"12345678901"`). */
 	to: string
-	/** Audio source: file path to MP3/WAV, or `"silence"` for an empty uplink. */
-	audioSource?: string
+	/** Audio source: file path to MP3/WAV, `"silence"`, or `{kind:"live"}` for real-time push. */
+	audioSource?: string | LiveAudioSource
+	/** Live video capture configuration for the uplink camera. */
+	videoSource?: LiveVideoSource
 	/** Auto-hangup after N ms (default: 120000). */
 	durationMs?: number
 }
@@ -64,6 +103,8 @@ export type VideoConfig = {
 export type CallEvents = {
 	ringing: () => void
 	connected: () => void
+	/** Fired once before the first audio frame; declares the negotiated PCM format. */
+	'audio-config': (config: AudioConfig) => void
 	/** 16 kHz mono Float32 PCM frame from the remote peer. */
 	audio: (pcm: Float32Array) => void
 	/** Video frame from the remote peer. Only fires when `VideoConfig` was set on the call. */
@@ -118,7 +159,9 @@ export interface IncomingCallHandle {
 /** Options for accepting an incoming call. */
 export type AcceptOptions = {
 	/** Audio source for the uplink. Defaults to `'silence'`. */
-	audioSource?: string
+	audioSource?: string | LiveAudioSource
+	/** Live video capture configuration for the uplink camera. */
+	videoSource?: LiveVideoSource
 	/** Video stream configuration. Omit to skip video frame delivery. */
 	video?: VideoConfig
 	/** Auto-hangup after N ms. 0 = no cap. */
@@ -132,6 +175,19 @@ export type AcceptOptions = {
  */
 export interface ActiveCallHandle {
 	readonly callId: string
+	/**
+	 * Push a PCM audio frame for uplink. Returns false when the internal
+	 * buffer is saturated (backpressure) — the caller should discard the
+	 * frame rather than retry to avoid unbounded memory growth.
+	 */
+	pushAudio(frame: AudioInputFrame): boolean
+	/**
+	 * Push a video frame for uplink. Returns false when the frame was
+	 * rejected (wrong format, backpressure, or video not enabled).
+	 */
+	pushVideo(frame: VideoInputFrame): boolean
+	/** Enable or disable the local camera without ending the audio call. */
+	setVideoEnabled(enabled: boolean): void
 	on<E extends keyof CallEvents>(event: E, listener: CallEvents[E]): this
 	/** Hang up locally. Synchronous — wait on `waitForEnd()` for the actual
 	 *  teardown to complete. (Public type was `Promise<void>` in earlier
