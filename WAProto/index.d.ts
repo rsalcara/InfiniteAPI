@@ -304,6 +304,7 @@ export namespace proto {
         constructor(p?: proto.AIMetadataOperation.$Properties);
         $unknowns?: Uint8Array[];
         hatchMetadataSync?: (proto.HatchMetadataSync.$Properties|null);
+        bizAiMetadataSync?: (proto.BizAIMetadataSync.$Properties|null);
         static create(properties: proto.AIMetadataOperation.$Shape): proto.AIMetadataOperation & proto.AIMetadataOperation.$Shape;
         static create(properties?: proto.AIMetadataOperation.$Properties): proto.AIMetadataOperation;
         static encode(m: proto.AIMetadataOperation.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -317,9 +318,14 @@ export namespace proto {
     namespace AIMetadataOperation {
         interface $Properties {
             hatchMetadataSync?: (proto.HatchMetadataSync.$Properties|null);
+            bizAiMetadataSync?: (proto.BizAIMetadataSync.$Properties|null);
             $unknowns?: Uint8Array[];
         }
-        type $Shape = proto.AIMetadataOperation.$Properties;
+        type $Shape = {
+          hatchMetadataSync?: proto.HatchMetadataSync.$Shape|null;
+          bizAiMetadataSync?: proto.BizAIMetadataSync.$Shape|null;
+          $unknowns?: Uint8Array[];
+        };
     }
 
     interface IAIProvenance extends proto.AIProvenance.$Properties {
@@ -1289,6 +1295,103 @@ export namespace proto {
             $unknowns?: Uint8Array[];
         }
         type $Shape = proto.AvatarUserSettings.$Properties;
+    }
+
+    interface IBizAIMetadataSync extends proto.BizAIMetadataSync.$Properties {
+    }
+
+    class BizAIMetadataSync {
+        constructor(p?: proto.BizAIMetadataSync.$Properties);
+        $unknowns?: Uint8Array[];
+        serverEvent?: (proto.BizAIMetadataSync.ServerEvent.$Properties|null);
+        operation?: "serverEvent";
+        static create(properties: proto.BizAIMetadataSync.$Shape): proto.BizAIMetadataSync & proto.BizAIMetadataSync.$Shape;
+        static create(properties?: proto.BizAIMetadataSync.$Properties): proto.BizAIMetadataSync;
+        static encode(m: proto.BizAIMetadataSync.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
+        static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.BizAIMetadataSync & proto.BizAIMetadataSync.$Shape;
+        static fromObject(d: { [k: string]: any }): proto.BizAIMetadataSync;
+        static toObject(m: proto.BizAIMetadataSync, o?: $protobuf.IConversionOptions): { [k: string]: any };
+        toJSON(): { [k: string]: any };
+        static getTypeUrl(prefix?: string): string;
+    }
+
+    namespace BizAIMetadataSync {
+        interface $Properties {
+            serverEvent?: (proto.BizAIMetadataSync.ServerEvent.$Properties|null);
+            operation?: "serverEvent";
+            $unknowns?: Uint8Array[];
+        }
+        type $Shape = {
+          serverEvent?: proto.BizAIMetadataSync.ServerEvent.$Shape|null;
+          $unknowns?: Uint8Array[];
+        } & (
+          ({ operation?: undefined; serverEvent?: null }|{ operation?: "serverEvent"; serverEvent: proto.BizAIMetadataSync.ServerEvent.$Shape })
+        );
+
+        interface IServerEvent extends proto.BizAIMetadataSync.ServerEvent.$Properties {
+        }
+
+        class ServerEvent {
+            constructor(p?: proto.BizAIMetadataSync.ServerEvent.$Properties);
+            $unknowns?: Uint8Array[];
+            protocolEvent?: (proto.BizAIMetadataSync.ServerEvent.ProtocolEvent|null);
+            agentOnboardingStarted?: (proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted.$Properties|null);
+            event?: ("protocolEvent"|"agentOnboardingStarted");
+            static create(properties: proto.BizAIMetadataSync.ServerEvent.$Shape): proto.BizAIMetadataSync.ServerEvent & proto.BizAIMetadataSync.ServerEvent.$Shape;
+            static create(properties?: proto.BizAIMetadataSync.ServerEvent.$Properties): proto.BizAIMetadataSync.ServerEvent;
+            static encode(m: proto.BizAIMetadataSync.ServerEvent.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
+            static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.BizAIMetadataSync.ServerEvent & proto.BizAIMetadataSync.ServerEvent.$Shape;
+            static fromObject(d: { [k: string]: any }): proto.BizAIMetadataSync.ServerEvent;
+            static toObject(m: proto.BizAIMetadataSync.ServerEvent, o?: $protobuf.IConversionOptions): { [k: string]: any };
+            toJSON(): { [k: string]: any };
+            static getTypeUrl(prefix?: string): string;
+        }
+
+        namespace ServerEvent {
+            interface $Properties {
+                protocolEvent?: (proto.BizAIMetadataSync.ServerEvent.ProtocolEvent|null);
+                agentOnboardingStarted?: (proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted.$Properties|null);
+                event?: ("protocolEvent"|"agentOnboardingStarted");
+                $unknowns?: Uint8Array[];
+            }
+            type $Shape = {
+              protocolEvent?: proto.BizAIMetadataSync.ServerEvent.ProtocolEvent|null;
+              agentOnboardingStarted?: proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted.$Shape|null;
+              $unknowns?: Uint8Array[];
+            } & (
+              ({ event?: undefined; protocolEvent?: null; agentOnboardingStarted?: null }|{ event?: "protocolEvent"; protocolEvent: proto.BizAIMetadataSync.ServerEvent.ProtocolEvent; agentOnboardingStarted?: null }|{ event?: "agentOnboardingStarted"; protocolEvent?: null; agentOnboardingStarted: proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted.$Shape })
+            );
+
+            interface IAgentOnboardingStarted extends proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted.$Properties {
+            }
+
+            class AgentOnboardingStarted {
+                constructor(p?: proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted.$Properties);
+                $unknowns?: Uint8Array[];
+                composerBlockDurationSecs?: (number|Long|null);
+                static create(properties: proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted.$Shape): proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted & proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted.$Shape;
+                static create(properties?: proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted.$Properties): proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted;
+                static encode(m: proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
+                static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted & proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted.$Shape;
+                static fromObject(d: { [k: string]: any }): proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted;
+                static toObject(m: proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted, o?: $protobuf.IConversionOptions): { [k: string]: any };
+                toJSON(): { [k: string]: any };
+                static getTypeUrl(prefix?: string): string;
+            }
+
+            namespace AgentOnboardingStarted {
+                interface $Properties {
+                    composerBlockDurationSecs?: (number|Long|null);
+                    $unknowns?: Uint8Array[];
+                }
+                type $Shape = proto.BizAIMetadataSync.ServerEvent.AgentOnboardingStarted.$Properties;
+            }
+
+            enum ProtocolEvent {
+                UNSPECIFIED = 0,
+                AGENT_CHAT_READY = 1
+            }
+        }
     }
 
     interface IBizAccountLinkInfo extends proto.BizAccountLinkInfo.$Properties {
@@ -15374,6 +15477,7 @@ export namespace proto {
         teeBotMetadata?: (Uint8Array|null);
         accountEncryptionAttestation?: (proto.NonE2EEAttestation.$Properties|null);
         associatedPrimaryIdentityKey?: (Uint8Array|null);
+        teeContextAnchorMessageId?: (string|null);
         static create(properties: proto.MessageContextInfo.$Shape): proto.MessageContextInfo & proto.MessageContextInfo.$Shape;
         static create(properties?: proto.MessageContextInfo.$Properties): proto.MessageContextInfo;
         static encode(m: proto.MessageContextInfo.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -15405,6 +15509,7 @@ export namespace proto {
             teeBotMetadata?: (Uint8Array|null);
             accountEncryptionAttestation?: (proto.NonE2EEAttestation.$Properties|null);
             associatedPrimaryIdentityKey?: (Uint8Array|null);
+            teeContextAnchorMessageId?: (string|null);
             $unknowns?: Uint8Array[];
         }
         type $Shape = proto.MessageContextInfo.$Properties;
