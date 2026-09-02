@@ -97,6 +97,7 @@ describe('live audio buffer', () => {
 		return new Promise(resolve => {
 			setTimeout(() => {
 				buffer.stop()
+
 				expect(chunks.length).toBeGreaterThan(0)
 				// Average of 0.2 and 0.8 = 0.5
 				expect(chunks[0]!.some(v => Math.abs(v - 0.5) < 0.01)).toBe(true)
@@ -212,9 +213,10 @@ describe('live audio buffer', () => {
 
 		expect(accepted).toBe(true)
 
-		// Buffer should be at or below max, not corrupted with a bogus count
-		expect(buffer.bufferedSamples).toBeLessThanOrEqual(1600)
-		expect(buffer.bufferedSamples).toBeGreaterThan(0)
+		// Exact count proves truncation worked: 16000 incoming truncated to
+		// the most recent 1600. Without truncation, the write pointer wraps
+		// and bufferedSamples reports 640 (the corrupted residue) instead.
+		expect(buffer.bufferedSamples).toBe(1600)
 
 		// Verify we can still drain without errors
 		return new Promise(resolve => {
@@ -226,15 +228,12 @@ describe('live audio buffer', () => {
 	})
 
 	it('returns false on backpressure when buffer is full', () => {
-		let chunkCount = 0
 		const buffer = new LiveAudioBuffer({
 			targetSampleRate: 16000,
 			targetChannels: 1,
 			framesPerChunk: 320,
 			maxBufferedMs: 100, // 1600 samples
-			onChunk: () => {
-				chunkCount++
-			}
+			onChunk: () => {}
 		})
 
 		buffer.start()
