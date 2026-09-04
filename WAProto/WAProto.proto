@@ -1,7 +1,7 @@
 syntax = "proto3";
 package proto;
 
-/// WhatsApp Version: 2.3000.1046691727
+/// WhatsApp Version: 2.3000.1046792031
 
 message ADVDeviceIdentity {
     optional uint32 rawId = 1;
@@ -477,6 +477,7 @@ message BotCapabilityMetadata {
         AI_RICH_RESPONSE_EMAIL_CALENDAR_ENABLED = 68;
         AI_RICH_RESPONSE_REMINDERS_ENABLED = 69;
         AI_STOP_GENERATION_ENABLED = 70;
+        AI_RICH_RESPONSE_3P_LINKING_CARD_ENABLED = 71;
     }
 }
 

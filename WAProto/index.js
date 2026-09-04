@@ -9302,6 +9302,10 @@ export const proto = $root.proto = (() => {
                     case 70:
                         m.capabilities[m.capabilities.length] = 70;
                         break;
+                    case "AI_RICH_RESPONSE_3P_LINKING_CARD_ENABLED":
+                    case 71:
+                        m.capabilities[m.capabilities.length] = 71;
+                        break;
                     default:
                         if (typeof d.capabilities[i] === "number" && (d.capabilities[i] | 0) === d.capabilities[i])
                             m.capabilities[m.capabilities.length] = d.capabilities[i];
@@ -9414,6 +9418,7 @@ export const proto = $root.proto = (() => {
             values[valuesById[68] = "AI_RICH_RESPONSE_EMAIL_CALENDAR_ENABLED"] = 68;
             values[valuesById[69] = "AI_RICH_RESPONSE_REMINDERS_ENABLED"] = 69;
             values[valuesById[70] = "AI_STOP_GENERATION_ENABLED"] = 70;
+            values[valuesById[71] = "AI_RICH_RESPONSE_3P_LINKING_CARD_ENABLED"] = 71;
             return values;
         })();
 
