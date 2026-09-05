@@ -93213,6 +93213,8 @@ export const proto = $root.proto = (() => {
         MsgOpaqueData.prototype.sharableEventInviteIsCanceled = null;
         MsgOpaqueData.prototype.sharableEventInviteJpegThumbnail = null;
         MsgOpaqueData.prototype.sharableEventInviteCallLink = null;
+        MsgOpaqueData.prototype.mediaPngThumbnail = null;
+        MsgOpaqueData.prototype.qrUrl = null;
 
         let $oneOfFields;
 
@@ -93540,6 +93542,18 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        $Object.defineProperty(MsgOpaqueData.prototype, "_mediaPngThumbnail", {
+            get: $util.oneOfGetter($oneOfFields = ["mediaPngThumbnail"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
+        // Virtual OneOf for proto3 optional field
+        $Object.defineProperty(MsgOpaqueData.prototype, "_qrUrl", {
+            get: $util.oneOfGetter($oneOfFields = ["qrUrl"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         MsgOpaqueData.create = function(properties) {
             return new MsgOpaqueData(properties);
         };
@@ -93663,6 +93677,10 @@ export const proto = $root.proto = (() => {
                 w.uint32(474).bytes(m.sharableEventInviteJpegThumbnail);
             if (m.sharableEventInviteCallLink != null && $Object.hasOwnProperty.call(m, "sharableEventInviteCallLink"))
                 w.uint32(482).string(m.sharableEventInviteCallLink);
+            if (m.mediaPngThumbnail != null && $Object.hasOwnProperty.call(m, "mediaPngThumbnail"))
+                w.uint32(490).string(m.mediaPngThumbnail);
+            if (m.qrUrl != null && $Object.hasOwnProperty.call(m, "qrUrl"))
+                w.uint32(498).string(m.qrUrl);
             if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
                 for (var i = 0; i < m.$unknowns.length; ++i)
                     w.raw(m.$unknowns[i]);
@@ -94072,6 +94090,20 @@ export const proto = $root.proto = (() => {
                         m._sharableEventInviteCallLink = "sharableEventInviteCallLink";
                         continue;
                     }
+                case 61: {
+                        if (u !== 2)
+                            break;
+                        m.mediaPngThumbnail = r.stringVerify();
+                        m._mediaPngThumbnail = "mediaPngThumbnail";
+                        continue;
+                    }
+                case 62: {
+                        if (u !== 2)
+                            break;
+                        m.qrUrl = r.stringVerify();
+                        m._qrUrl = "qrUrl";
+                        continue;
+                    }
                 }
                 r.skipType(u, q, t);
                 if (!r.discardUnknown) {
@@ -94365,6 +94397,12 @@ export const proto = $root.proto = (() => {
             if (d.sharableEventInviteCallLink != null) {
                 m.sharableEventInviteCallLink = $String(d.sharableEventInviteCallLink);
             }
+            if (d.mediaPngThumbnail != null) {
+                m.mediaPngThumbnail = $String(d.mediaPngThumbnail);
+            }
+            if (d.qrUrl != null) {
+                m.qrUrl = $String(d.qrUrl);
+            }
             return m;
         };
 
@@ -94576,6 +94614,12 @@ export const proto = $root.proto = (() => {
             }
             if (m.sharableEventInviteCallLink != null && $Object.hasOwnProperty.call(m, "sharableEventInviteCallLink")) {
                 d.sharableEventInviteCallLink = m.sharableEventInviteCallLink;
+            }
+            if (m.mediaPngThumbnail != null && $Object.hasOwnProperty.call(m, "mediaPngThumbnail")) {
+                d.mediaPngThumbnail = m.mediaPngThumbnail;
+            }
+            if (m.qrUrl != null && $Object.hasOwnProperty.call(m, "qrUrl")) {
+                d.qrUrl = m.qrUrl;
             }
             return d;
         };
