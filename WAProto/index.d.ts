@@ -15673,6 +15673,8 @@ export namespace proto {
         sharableEventInviteIsCanceled?: (boolean|null);
         sharableEventInviteJpegThumbnail?: (Uint8Array|null);
         sharableEventInviteCallLink?: (string|null);
+        mediaPngThumbnail?: (string|null);
+        qrUrl?: (string|null);
         static create(properties: proto.MsgOpaqueData.$Shape): proto.MsgOpaqueData & proto.MsgOpaqueData.$Shape;
         static create(properties?: proto.MsgOpaqueData.$Properties): proto.MsgOpaqueData;
         static encode(m: proto.MsgOpaqueData.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -15740,6 +15742,8 @@ export namespace proto {
             sharableEventInviteIsCanceled?: (boolean|null);
             sharableEventInviteJpegThumbnail?: (Uint8Array|null);
             sharableEventInviteCallLink?: (string|null);
+            mediaPngThumbnail?: (string|null);
+            qrUrl?: (string|null);
             $unknowns?: Uint8Array[];
         }
         type $Shape = proto.MsgOpaqueData.$Properties;
