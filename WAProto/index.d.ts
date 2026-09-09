@@ -3,6 +3,37 @@ import Long = require("long");
 
 export namespace proto {
 
+    interface IACP2Setting extends proto.ACP2Setting.$Properties {
+    }
+
+    class ACP2Setting {
+        constructor(p?: proto.ACP2Setting.$Properties);
+        $unknowns?: Uint8Array[];
+        enabled?: (boolean|null);
+        trigger?: (proto.LimitSharing.TriggerType|null);
+        settingTimestamp?: (number|Long|null);
+        initiatedByMe?: (boolean|null);
+        static create(properties: proto.ACP2Setting.$Shape): proto.ACP2Setting & proto.ACP2Setting.$Shape;
+        static create(properties?: proto.ACP2Setting.$Properties): proto.ACP2Setting;
+        static encode(m: proto.ACP2Setting.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
+        static decode(r: ($protobuf.Reader|Uint8Array), l?: number): proto.ACP2Setting & proto.ACP2Setting.$Shape;
+        static fromObject(d: { [k: string]: any }): proto.ACP2Setting;
+        static toObject(m: proto.ACP2Setting, o?: $protobuf.IConversionOptions): { [k: string]: any };
+        toJSON(): { [k: string]: any };
+        static getTypeUrl(prefix?: string): string;
+    }
+
+    namespace ACP2Setting {
+        interface $Properties {
+            enabled?: (boolean|null);
+            trigger?: (proto.LimitSharing.TriggerType|null);
+            settingTimestamp?: (number|Long|null);
+            initiatedByMe?: (boolean|null);
+            $unknowns?: Uint8Array[];
+        }
+        type $Shape = proto.ACP2Setting.$Properties;
+    }
+
     interface IADVDeviceIdentity extends proto.ADVDeviceIdentity.$Properties {
     }
 
@@ -8284,6 +8315,7 @@ export namespace proto {
         statusLinkPreviewMetadata?: (proto.Message.StatusLinkPreviewMetadata.$Properties|null);
         botPlatformRegistrationSuccessMessage?: (proto.Message.FutureProofMessage.$Properties|null);
         newsletterScheduledMessage?: (proto.Message.FutureProofMessage.$Properties|null);
+        acp2SettingMessage?: (proto.Message.FutureProofMessage.$Properties|null);
         static create(properties: proto.Message.$Shape): proto.Message & proto.Message.$Shape;
         static create(properties?: proto.Message.$Properties): proto.Message;
         static encode(m: proto.Message.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -8407,6 +8439,7 @@ export namespace proto {
             statusLinkPreviewMetadata?: (proto.Message.StatusLinkPreviewMetadata.$Properties|null);
             botPlatformRegistrationSuccessMessage?: (proto.Message.FutureProofMessage.$Properties|null);
             newsletterScheduledMessage?: (proto.Message.FutureProofMessage.$Properties|null);
+            acp2SettingMessage?: (proto.Message.FutureProofMessage.$Properties|null);
             $unknowns?: Uint8Array[];
         }
         type $Shape = {
@@ -8521,6 +8554,7 @@ export namespace proto {
           statusLinkPreviewMetadata?: proto.Message.StatusLinkPreviewMetadata.$Shape|null;
           botPlatformRegistrationSuccessMessage?: proto.Message.FutureProofMessage.$Shape|null;
           newsletterScheduledMessage?: proto.Message.FutureProofMessage.$Shape|null;
+          acp2SettingMessage?: proto.Message.FutureProofMessage.$Shape|null;
           $unknowns?: Uint8Array[];
         };
 
@@ -13923,6 +13957,7 @@ export namespace proto {
             aiMetadataOperation?: (proto.AIMetadataOperation.$Properties|null);
             markAsVerifiedAction?: (proto.Message.MarkAsVerifiedAction.$Properties|null);
             coexStateSync?: (proto.CoexStateSync.$Properties|null);
+            acp2Setting?: (proto.ACP2Setting.$Properties|null);
             static create(properties: proto.Message.ProtocolMessage.$Shape): proto.Message.ProtocolMessage & proto.Message.ProtocolMessage.$Shape;
             static create(properties?: proto.Message.ProtocolMessage.$Properties): proto.Message.ProtocolMessage;
             static encode(m: proto.Message.ProtocolMessage.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -13965,6 +14000,7 @@ export namespace proto {
                 aiMetadataOperation?: (proto.AIMetadataOperation.$Properties|null);
                 markAsVerifiedAction?: (proto.Message.MarkAsVerifiedAction.$Properties|null);
                 coexStateSync?: (proto.CoexStateSync.$Properties|null);
+                acp2Setting?: (proto.ACP2Setting.$Properties|null);
                 $unknowns?: Uint8Array[];
             }
             type $Shape = {
@@ -13998,6 +14034,7 @@ export namespace proto {
               aiMetadataOperation?: proto.AIMetadataOperation.$Shape|null;
               markAsVerifiedAction?: proto.Message.MarkAsVerifiedAction.$Shape|null;
               coexStateSync?: proto.CoexStateSync.$Shape|null;
+              acp2Setting?: proto.ACP2Setting.$Shape|null;
               $unknowns?: Uint8Array[];
             };
 
@@ -14033,7 +14070,8 @@ export namespace proto {
                 CHAT_THEME_SETTING = 34,
                 AI_METADATA_OPERATION = 35,
                 MARK_AS_VERIFIED_ACTION = 36,
-                COEX_STATE_SYNC = 37
+                COEX_STATE_SYNC = 37,
+                ACP2_SETTING = 39
             }
         }
 
@@ -15481,6 +15519,7 @@ export namespace proto {
         accountEncryptionAttestation?: (proto.NonE2EEAttestation.$Properties|null);
         associatedPrimaryIdentityKey?: (Uint8Array|null);
         teeContextAnchorMessageId?: (string|null);
+        acp2Setting?: (proto.ACP2Setting.$Properties|null);
         static create(properties: proto.MessageContextInfo.$Shape): proto.MessageContextInfo & proto.MessageContextInfo.$Shape;
         static create(properties?: proto.MessageContextInfo.$Properties): proto.MessageContextInfo;
         static encode(m: proto.MessageContextInfo.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -15513,6 +15552,7 @@ export namespace proto {
             accountEncryptionAttestation?: (proto.NonE2EEAttestation.$Properties|null);
             associatedPrimaryIdentityKey?: (Uint8Array|null);
             teeContextAnchorMessageId?: (string|null);
+            acp2Setting?: (proto.ACP2Setting.$Properties|null);
             $unknowns?: Uint8Array[];
         }
         type $Shape = proto.MessageContextInfo.$Properties;
