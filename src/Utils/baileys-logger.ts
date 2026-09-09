@@ -976,6 +976,8 @@ export function logTcToken(
 		| 'error_463'
 		| 'error_479'
 		| 'attached'
+		| 'reissue_ack'
+		| 'reissue_ack_fail'
 		| 'retry_463_ok',
 	data?: Record<string, unknown>,
 	sessionName?: string
@@ -1024,6 +1026,12 @@ export function logTcToken(
 			break
 		case 'retry_463_ok':
 			console.log(`${prefix} 🔄 TcToken retry 463 OK${jid}${extraStr}`)
+			break
+		case 'reissue_ack':
+			console.log(`${prefix} 🔑 TcToken queued after server ACK${jid}${extraStr}`)
+			break
+		case 'reissue_ack_fail':
+			console.log(`${prefix} ⚠️ TcToken queue after server ACK failed${jid}${extraStr}`)
 			break
 	}
 }

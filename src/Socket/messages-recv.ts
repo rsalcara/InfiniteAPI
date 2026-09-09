@@ -236,6 +236,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		handleAppStateSyncKeyPeerReceipt,
 		messageRetryManager,
 		issuePrivacyTokens,
+		enqueuePrivacyTokens,
+		consumeTcTokenAckEligibility,
+		claimTcTokenAckEligibility,
+		releaseTcTokenAckEligibility,
 		registerSocketEndHandler,
 		registerSocketDrainHandler,
 		isSocketClosed,
@@ -396,6 +400,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	 * pre-key error recovery logic depends on that broader serialization.
 	 */
 	const retryLocks = makeLockManager()
+	const tcTokenAckLocks = makeLockManager()
 	// PR #462 review (Copilot): double-underscore prefix on the namespace
 	// avoids future collisions with any real `SignalDataType` value.
 	// LockManager docs (lock-manager.ts:9) require this convention for
@@ -4631,6 +4636,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		await normalizeKeyLidToPn(key, signalRepository.lidMapping, logger)
 		if (!attrs.error) {
 			if (attrs.id) {
+				const ackId = attrs.id
 				emitMessageDeliveryState(
 					ev,
 					{
@@ -4643,6 +4649,45 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					},
 					logger
 				)
+
+				// Android schedules GeneratePrivacyTokenJob only after the
+				// server confirms a normal 1:1 message. The outbound payload is
+				// explicitly marked at staging time; this avoids treating
+				// retries, edits, deletes, pins, groups, status or newsletters
+				// as a fresh trusted-contact event.
+				const tcTokenAckAliases = [
+					recentMessage?.to ?? outboundJid,
+					attrs.from ?? outboundJid,
+					recentMessage?.canonicalJid ?? outboundJid
+				]
+				if (!attrs.participant) {
+					await tcTokenAckLocks.withLock({ namespace: '__tc_token_ack__', id: ackId }, async () => {
+						const eligibleJid = claimTcTokenAckEligibility(tcTokenAckAliases, ackId)
+						if (!eligibleJid || !isRegularUser(eligibleJid)) return
+						const tokenJid = jidNormalizedUser(eligibleJid)
+						const issueTimestamp = unixTimestampSeconds()
+						try {
+							await enqueuePrivacyTokens([tokenJid], issueTimestamp)
+							consumeTcTokenAckEligibility(tcTokenAckAliases, ackId)
+							logTcToken('reissue_ack', {
+								jid: tokenJid,
+								messageId: ackId,
+								state: 'durably-queued'
+							})
+						} catch (error: any) {
+							// The message is already server-acknowledged. A local
+							// queue failure must not turn it into a delivery error.
+							// Release the claim so a queued duplicate ACK can retry.
+							releaseTcTokenAckEligibility(tcTokenAckAliases, ackId)
+							logTcToken('reissue_ack_fail', {
+								jid: tokenJid,
+								messageId: ackId,
+								error: error?.message,
+								state: 'enqueue-failed-claim-released'
+							})
+						}
+					})
+				}
 			}
 
 			return
