@@ -28122,6 +28122,14 @@ export const proto = $root.proto = (() => {
             case 25:
                 m.deviceType = 25;
                 break;
+            case "WASS":
+            case 26:
+                m.deviceType = 26;
+                break;
+            case "BUSINESS_BACK_OFFICE":
+            case 27:
+                m.deviceType = 27;
+                break;
             default:
                 if (typeof d.deviceType === "number" && (d.deviceType | 0) === d.deviceType)
                     m.deviceType = d.deviceType;
@@ -31736,6 +31744,7 @@ export const proto = $root.proto = (() => {
             ExternalAdReplyInfo.prototype.agmTitleStrategy = null;
             ExternalAdReplyInfo.prototype.agmSubtitleStrategy = null;
             ExternalAdReplyInfo.prototype.agmHeaderInteractionStrategy = null;
+            ExternalAdReplyInfo.prototype.containsCtwaFlowsAutoLabel = null;
 
             let $oneOfFields;
 
@@ -31931,6 +31940,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            $Object.defineProperty(ExternalAdReplyInfo.prototype, "_containsCtwaFlowsAutoLabel", {
+                get: $util.oneOfGetter($oneOfFields = ["containsCtwaFlowsAutoLabel"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             ExternalAdReplyInfo.create = function(properties) {
                 return new ExternalAdReplyInfo(properties);
             };
@@ -32006,6 +32021,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(248).int32(m.agmSubtitleStrategy);
                 if (m.agmHeaderInteractionStrategy != null && $Object.hasOwnProperty.call(m, "agmHeaderInteractionStrategy"))
                     w.uint32(256).int32(m.agmHeaderInteractionStrategy);
+                if (m.containsCtwaFlowsAutoLabel != null && $Object.hasOwnProperty.call(m, "containsCtwaFlowsAutoLabel"))
+                    w.uint32(264).bool(m.containsCtwaFlowsAutoLabel);
                 if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
                     for (var i = 0; i < m.$unknowns.length; ++i)
                         w.raw(m.$unknowns[i]);
@@ -32253,6 +32270,13 @@ export const proto = $root.proto = (() => {
                             m._agmHeaderInteractionStrategy = "agmHeaderInteractionStrategy";
                             continue;
                         }
+                    case 33: {
+                            if (u !== 0)
+                                break;
+                            m.containsCtwaFlowsAutoLabel = r.bool();
+                            m._containsCtwaFlowsAutoLabel = "containsCtwaFlowsAutoLabel";
+                            continue;
+                        }
                     }
                     r.skipType(u, q, t);
                     if (!r.discardUnknown) {
@@ -32398,6 +32422,9 @@ export const proto = $root.proto = (() => {
                 if (d.agmHeaderInteractionStrategy != null) {
                     m.agmHeaderInteractionStrategy = d.agmHeaderInteractionStrategy | 0;
                 }
+                if (d.containsCtwaFlowsAutoLabel != null) {
+                    m.containsCtwaFlowsAutoLabel = $Boolean(d.containsCtwaFlowsAutoLabel);
+                }
                 return m;
             };
 
@@ -32504,6 +32531,9 @@ export const proto = $root.proto = (() => {
                 }
                 if (m.agmHeaderInteractionStrategy != null && $Object.hasOwnProperty.call(m, "agmHeaderInteractionStrategy")) {
                     d.agmHeaderInteractionStrategy = m.agmHeaderInteractionStrategy;
+                }
+                if (m.containsCtwaFlowsAutoLabel != null && $Object.hasOwnProperty.call(m, "containsCtwaFlowsAutoLabel")) {
+                    d.containsCtwaFlowsAutoLabel = m.containsCtwaFlowsAutoLabel;
                 }
                 return d;
             };
@@ -33836,6 +33866,7 @@ export const proto = $root.proto = (() => {
         Conversation.prototype.authAgentParentCompanyName = null;
         Conversation.prototype.authAgentObaPhoneNumber = null;
         Conversation.prototype.identityVerification = null;
+        Conversation.prototype.acp2Setting = null;
 
         let $oneOfFields;
 
@@ -34205,6 +34236,12 @@ export const proto = $root.proto = (() => {
             set: $util.oneOfSetter($oneOfFields)
         });
 
+        // Virtual OneOf for proto3 optional field
+        $Object.defineProperty(Conversation.prototype, "_acp2Setting", {
+            get: $util.oneOfGetter($oneOfFields = ["acp2Setting"]),
+            set: $util.oneOfSetter($oneOfFields)
+        });
+
         Conversation.create = function(properties) {
             return new Conversation(properties);
         };
@@ -34346,6 +34383,8 @@ export const proto = $root.proto = (() => {
                 w.uint32(498).string(m.authAgentObaPhoneNumber);
             if (m.identityVerification != null && $Object.hasOwnProperty.call(m, "identityVerification"))
                 $root.proto.IdentityVerificationState.encode(m.identityVerification, w.uint32(506).fork(), q + 1).ldelim();
+            if (m.acp2Setting != null && $Object.hasOwnProperty.call(m, "acp2Setting"))
+                $root.proto.ACP2Setting.encode(m.acp2Setting, w.uint32(514).fork(), q + 1).ldelim();
             if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
                 for (var i = 0; i < m.$unknowns.length; ++i)
                     w.raw(m.$unknowns[i]);
@@ -34812,6 +34851,13 @@ export const proto = $root.proto = (() => {
                         m._identityVerification = "identityVerification";
                         continue;
                     }
+                case 64: {
+                        if (u !== 2)
+                            break;
+                        m.acp2Setting = $root.proto.ACP2Setting.decode(r, r.uint32(), $undefined, q + 1, m.acp2Setting);
+                        m._acp2Setting = "acp2Setting";
+                        continue;
+                    }
                 }
                 r.skipType(u, q, t);
                 if (!r.discardUnknown) {
@@ -35194,6 +35240,11 @@ export const proto = $root.proto = (() => {
                     throw $TypeError(".proto.Conversation.identityVerification: object expected");
                 m.identityVerification = $root.proto.IdentityVerificationState.fromObject(d.identityVerification, q + 1);
             }
+            if (d.acp2Setting != null) {
+                if (!$util.isObject(d.acp2Setting))
+                    throw $TypeError(".proto.Conversation.acp2Setting: object expected");
+                m.acp2Setting = $root.proto.ACP2Setting.fromObject(d.acp2Setting, q + 1);
+            }
             return m;
         };
 
@@ -35448,6 +35499,9 @@ export const proto = $root.proto = (() => {
             }
             if (m.identityVerification != null && $Object.hasOwnProperty.call(m, "identityVerification")) {
                 d.identityVerification = $root.proto.IdentityVerificationState.toObject(m.identityVerification, o, q + 1);
+            }
+            if (m.acp2Setting != null && $Object.hasOwnProperty.call(m, "acp2Setting")) {
+                d.acp2Setting = $root.proto.ACP2Setting.toObject(m.acp2Setting, o, q + 1);
             }
             return d;
         };
@@ -37589,6 +37643,14 @@ export const proto = $root.proto = (() => {
             case 25:
                 m.platformType = 25;
                 break;
+            case "WASS":
+            case 26:
+                m.platformType = 26;
+                break;
+            case "BUSINESS_BACK_OFFICE":
+            case 27:
+                m.platformType = 27;
+                break;
             default:
                 if (typeof d.platformType === "number" && (d.platformType | 0) === d.platformType)
                     m.platformType = d.platformType;
@@ -38527,6 +38589,8 @@ export const proto = $root.proto = (() => {
             values[valuesById[23] = "CLOUD_API"] = 23;
             values[valuesById[24] = "SMARTGLASSES"] = 24;
             values[valuesById[25] = "WAIL"] = 25;
+            values[valuesById[26] = "WASS"] = 26;
+            values[valuesById[27] = "BUSINESS_BACK_OFFICE"] = 27;
             return values;
         })();
 
@@ -56340,6 +56404,145 @@ export const proto = $root.proto = (() => {
             return Chat;
         })();
 
+        Message.ChatAnimatedWallpaper = (function() {
+
+            const ChatAnimatedWallpaper = function (p) {
+                if (p)
+                    for (var ks = $Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null && ks[i] !== "__proto__")
+                            this[ks[i]] = p[ks[i]];
+            };
+
+            ChatAnimatedWallpaper.prototype.animatedWallpaperId = null;
+            ChatAnimatedWallpaper.prototype.dimLevel = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            $Object.defineProperty(ChatAnimatedWallpaper.prototype, "_animatedWallpaperId", {
+                get: $util.oneOfGetter($oneOfFields = ["animatedWallpaperId"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            $Object.defineProperty(ChatAnimatedWallpaper.prototype, "_dimLevel", {
+                get: $util.oneOfGetter($oneOfFields = ["dimLevel"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            ChatAnimatedWallpaper.create = function(properties) {
+                return new ChatAnimatedWallpaper(properties);
+            };
+
+            ChatAnimatedWallpaper.encode = function (m, w, q) {
+                if (!w)
+                    w = $Writer.create();
+                if (q === $undefined)
+                    q = 0;
+                if (q > $util.recursionLimit)
+                    throw $Error("max depth exceeded");
+                if (m.animatedWallpaperId != null && $Object.hasOwnProperty.call(m, "animatedWallpaperId"))
+                    w.uint32(10).string(m.animatedWallpaperId);
+                if (m.dimLevel != null && $Object.hasOwnProperty.call(m, "dimLevel"))
+                    w.uint32(21).float(m.dimLevel);
+                if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
+                    for (var i = 0; i < m.$unknowns.length; ++i)
+                        w.raw(m.$unknowns[i]);
+                return w;
+            };
+
+            ChatAnimatedWallpaper.decode = function (r, l, z, q, g) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                if (q === $undefined)
+                    q = 0;
+                if (q > $Reader.recursionLimit)
+                    throw $Error("max depth exceeded");
+                var c = l === $undefined ? r.len : r.pos + l, m = g || new $root.proto.Message.ChatAnimatedWallpaper();
+                while (r.pos < c) {
+                    var s = r.pos;
+                    var t = r.tag();
+                    if (t === z) {
+                        z = $undefined;
+                        break;
+                    }
+                    var u = t & 7;
+                    switch (t >>>= 3) {
+                    case 1: {
+                            if (u !== 2)
+                                break;
+                            m.animatedWallpaperId = r.stringVerify();
+                            m._animatedWallpaperId = "animatedWallpaperId";
+                            continue;
+                        }
+                    case 2: {
+                            if (u !== 5)
+                                break;
+                            m.dimLevel = r.float();
+                            m._dimLevel = "dimLevel";
+                            continue;
+                        }
+                    }
+                    r.skipType(u, q, t);
+                    if (!r.discardUnknown) {
+                        $util.makeProp(m, "$unknowns", false);
+                        (m.$unknowns || (m.$unknowns = [])).push(r.raw(s, r.pos));
+                    }
+                }
+                if (z !== $undefined)
+                    throw $Error("missing end group");
+                return m;
+            };
+
+            ChatAnimatedWallpaper.fromObject = function (d, q) {
+                if (d instanceof $root.proto.Message.ChatAnimatedWallpaper)
+                    return d;
+                if (!$util.isObject(d))
+                    throw $TypeError(".proto.Message.ChatAnimatedWallpaper: object expected");
+                if (q === $undefined)
+                    q = 0;
+                if (q > $util.recursionLimit)
+                    throw $Error("max depth exceeded");
+                var m = new $root.proto.Message.ChatAnimatedWallpaper();
+                if (d.animatedWallpaperId != null) {
+                    m.animatedWallpaperId = $String(d.animatedWallpaperId);
+                }
+                if (d.dimLevel != null) {
+                    m.dimLevel = $Number(d.dimLevel);
+                }
+                return m;
+            };
+
+            ChatAnimatedWallpaper.toObject = function (m, o, q) {
+                if (!o)
+                    o = {};
+                if (q === $undefined)
+                    q = 0;
+                if (q > $util.recursionLimit)
+                    throw $Error("max depth exceeded");
+                var d = {};
+                if (m.animatedWallpaperId != null && $Object.hasOwnProperty.call(m, "animatedWallpaperId")) {
+                    d.animatedWallpaperId = m.animatedWallpaperId;
+                }
+                if (m.dimLevel != null && $Object.hasOwnProperty.call(m, "dimLevel")) {
+                    d.dimLevel = o.json && !$isFinite(m.dimLevel) ? $String(m.dimLevel) : m.dimLevel;
+                }
+                return d;
+            };
+
+            ChatAnimatedWallpaper.prototype.toJSON = function() {
+                return ChatAnimatedWallpaper.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            ChatAnimatedWallpaper.getTypeUrl = function(prefix) {
+                if (prefix === $undefined)
+                    prefix = "type.googleapis.com";
+                return prefix + "/proto.Message.ChatAnimatedWallpaper";
+            };
+
+            return ChatAnimatedWallpaper;
+        })();
+
         Message.ChatCustomImageWallpaper = (function() {
 
             const ChatCustomImageWallpaper = function (p) {
@@ -56987,6 +57190,7 @@ export const proto = $root.proto = (() => {
             ChatThemeSetting.prototype.solidColor = null;
             ChatThemeSetting.prototype.stockImage = null;
             ChatThemeSetting.prototype.customImage = null;
+            ChatThemeSetting.prototype.animatedWallpaper = null;
 
             let $oneOfFields;
 
@@ -57009,7 +57213,7 @@ export const proto = $root.proto = (() => {
             });
 
             $Object.defineProperty(ChatThemeSetting.prototype, "wallpaper", {
-                get: $util.oneOfGetter($oneOfFields = ["defaultWallpaper", "solidColor", "stockImage", "customImage"]),
+                get: $util.oneOfGetter($oneOfFields = ["defaultWallpaper", "solidColor", "stockImage", "customImage", "animatedWallpaper"]),
                 set: $util.oneOfSetter($oneOfFields)
             });
 
@@ -57038,6 +57242,8 @@ export const proto = $root.proto = (() => {
                     $root.proto.Message.ChatStockImageWallpaper.encode(m.stockImage, w.uint32(98).fork(), q + 1).ldelim();
                 if (m.customImage != null && $Object.hasOwnProperty.call(m, "customImage"))
                     $root.proto.Message.ChatCustomImageWallpaper.encode(m.customImage, w.uint32(106).fork(), q + 1).ldelim();
+                if (m.animatedWallpaper != null && $Object.hasOwnProperty.call(m, "animatedWallpaper"))
+                    $root.proto.Message.ChatAnimatedWallpaper.encode(m.animatedWallpaper, w.uint32(114).fork(), q + 1).ldelim();
                 if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
                     for (var i = 0; i < m.$unknowns.length; ++i)
                         w.raw(m.$unknowns[i]);
@@ -57110,6 +57316,13 @@ export const proto = $root.proto = (() => {
                             m.wallpaper = "customImage";
                             continue;
                         }
+                    case 14: {
+                            if (u !== 2)
+                                break;
+                            m.animatedWallpaper = $root.proto.Message.ChatAnimatedWallpaper.decode(r, r.uint32(), $undefined, q + 1, m.animatedWallpaper);
+                            m.wallpaper = "animatedWallpaper";
+                            continue;
+                        }
                     }
                     r.skipType(u, q, t);
                     if (!r.discardUnknown) {
@@ -57168,6 +57381,11 @@ export const proto = $root.proto = (() => {
                         throw $TypeError(".proto.Message.ChatThemeSetting.customImage: object expected");
                     m.customImage = $root.proto.Message.ChatCustomImageWallpaper.fromObject(d.customImage, q + 1);
                 }
+                if (d.animatedWallpaper != null) {
+                    if (!$util.isObject(d.animatedWallpaper))
+                        throw $TypeError(".proto.Message.ChatThemeSetting.animatedWallpaper: object expected");
+                    m.animatedWallpaper = $root.proto.Message.ChatAnimatedWallpaper.fromObject(d.animatedWallpaper, q + 1);
+                }
                 return m;
             };
 
@@ -57212,6 +57430,11 @@ export const proto = $root.proto = (() => {
                     d.customImage = $root.proto.Message.ChatCustomImageWallpaper.toObject(m.customImage, o, q + 1);
                     if (o.oneofs)
                         d.wallpaper = "customImage";
+                }
+                if (m.animatedWallpaper != null && $Object.hasOwnProperty.call(m, "animatedWallpaper")) {
+                    d.animatedWallpaper = $root.proto.Message.ChatAnimatedWallpaper.toObject(m.animatedWallpaper, o, q + 1);
+                    if (o.oneofs)
+                        d.wallpaper = "animatedWallpaper";
                 }
                 return d;
             };
@@ -83095,6 +83318,8 @@ export const proto = $root.proto = (() => {
             ProtocolMessage.prototype.markAsVerifiedAction = null;
             ProtocolMessage.prototype.coexStateSync = null;
             ProtocolMessage.prototype.acp2Setting = null;
+            ProtocolMessage.prototype.sharedDeviceContactHashKeyShare = null;
+            ProtocolMessage.prototype.sharedDeviceContactHashKeyRequest = null;
 
             let $oneOfFields;
 
@@ -83284,6 +83509,18 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            $Object.defineProperty(ProtocolMessage.prototype, "_sharedDeviceContactHashKeyShare", {
+                get: $util.oneOfGetter($oneOfFields = ["sharedDeviceContactHashKeyShare"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            $Object.defineProperty(ProtocolMessage.prototype, "_sharedDeviceContactHashKeyRequest", {
+                get: $util.oneOfGetter($oneOfFields = ["sharedDeviceContactHashKeyRequest"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             ProtocolMessage.create = function(properties) {
                 return new ProtocolMessage(properties);
             };
@@ -83357,6 +83594,10 @@ export const proto = $root.proto = (() => {
                     $root.proto.CoexStateSync.encode(m.coexStateSync, w.uint32(266).fork(), q + 1).ldelim();
                 if (m.acp2Setting != null && $Object.hasOwnProperty.call(m, "acp2Setting"))
                     $root.proto.ACP2Setting.encode(m.acp2Setting, w.uint32(282).fork(), q + 1).ldelim();
+                if (m.sharedDeviceContactHashKeyShare != null && $Object.hasOwnProperty.call(m, "sharedDeviceContactHashKeyShare"))
+                    $root.proto.Message.SharedDeviceContactHashKeyShare.encode(m.sharedDeviceContactHashKeyShare, w.uint32(290).fork(), q + 1).ldelim();
+                if (m.sharedDeviceContactHashKeyRequest != null && $Object.hasOwnProperty.call(m, "sharedDeviceContactHashKeyRequest"))
+                    $root.proto.Message.SharedDeviceContactHashKeyRequest.encode(m.sharedDeviceContactHashKeyRequest, w.uint32(298).fork(), q + 1).ldelim();
                 if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
                     for (var i = 0; i < m.$unknowns.length; ++i)
                         w.raw(m.$unknowns[i]);
@@ -83597,6 +83838,20 @@ export const proto = $root.proto = (() => {
                             m._acp2Setting = "acp2Setting";
                             continue;
                         }
+                    case 36: {
+                            if (u !== 2)
+                                break;
+                            m.sharedDeviceContactHashKeyShare = $root.proto.Message.SharedDeviceContactHashKeyShare.decode(r, r.uint32(), $undefined, q + 1, m.sharedDeviceContactHashKeyShare);
+                            m._sharedDeviceContactHashKeyShare = "sharedDeviceContactHashKeyShare";
+                            continue;
+                        }
+                    case 37: {
+                            if (u !== 2)
+                                break;
+                            m.sharedDeviceContactHashKeyRequest = $root.proto.Message.SharedDeviceContactHashKeyRequest.decode(r, r.uint32(), $undefined, q + 1, m.sharedDeviceContactHashKeyRequest);
+                            m._sharedDeviceContactHashKeyRequest = "sharedDeviceContactHashKeyRequest";
+                            continue;
+                        }
                     }
                     r.skipType(u, q, t);
                     if (!r.discardUnknown) {
@@ -83757,6 +84012,14 @@ export const proto = $root.proto = (() => {
                 case 39:
                     m.type = 39;
                     break;
+                case "SHARED_DEVICE_CONTACT_HASH_KEY_SHARE":
+                case 40:
+                    m.type = 40;
+                    break;
+                case "SHARED_DEVICE_CONTACT_HASH_KEY_REQUEST":
+                case 41:
+                    m.type = 41;
+                    break;
                 default:
                     if (typeof d.type === "number" && (d.type | 0) === d.type)
                         m.type = d.type;
@@ -83911,6 +84174,16 @@ export const proto = $root.proto = (() => {
                         throw $TypeError(".proto.Message.ProtocolMessage.acp2Setting: object expected");
                     m.acp2Setting = $root.proto.ACP2Setting.fromObject(d.acp2Setting, q + 1);
                 }
+                if (d.sharedDeviceContactHashKeyShare != null) {
+                    if (!$util.isObject(d.sharedDeviceContactHashKeyShare))
+                        throw $TypeError(".proto.Message.ProtocolMessage.sharedDeviceContactHashKeyShare: object expected");
+                    m.sharedDeviceContactHashKeyShare = $root.proto.Message.SharedDeviceContactHashKeyShare.fromObject(d.sharedDeviceContactHashKeyShare, q + 1);
+                }
+                if (d.sharedDeviceContactHashKeyRequest != null) {
+                    if (!$util.isObject(d.sharedDeviceContactHashKeyRequest))
+                        throw $TypeError(".proto.Message.ProtocolMessage.sharedDeviceContactHashKeyRequest: object expected");
+                    m.sharedDeviceContactHashKeyRequest = $root.proto.Message.SharedDeviceContactHashKeyRequest.fromObject(d.sharedDeviceContactHashKeyRequest, q + 1);
+                }
                 return m;
             };
 
@@ -84025,6 +84298,12 @@ export const proto = $root.proto = (() => {
                 if (m.acp2Setting != null && $Object.hasOwnProperty.call(m, "acp2Setting")) {
                     d.acp2Setting = $root.proto.ACP2Setting.toObject(m.acp2Setting, o, q + 1);
                 }
+                if (m.sharedDeviceContactHashKeyShare != null && $Object.hasOwnProperty.call(m, "sharedDeviceContactHashKeyShare")) {
+                    d.sharedDeviceContactHashKeyShare = $root.proto.Message.SharedDeviceContactHashKeyShare.toObject(m.sharedDeviceContactHashKeyShare, o, q + 1);
+                }
+                if (m.sharedDeviceContactHashKeyRequest != null && $Object.hasOwnProperty.call(m, "sharedDeviceContactHashKeyRequest")) {
+                    d.sharedDeviceContactHashKeyRequest = $root.proto.Message.SharedDeviceContactHashKeyRequest.toObject(m.sharedDeviceContactHashKeyRequest, o, q + 1);
+                }
                 return d;
             };
 
@@ -84073,6 +84352,8 @@ export const proto = $root.proto = (() => {
                 values[valuesById[36] = "MARK_AS_VERIFIED_ACTION"] = 36;
                 values[valuesById[37] = "COEX_STATE_SYNC"] = 37;
                 values[valuesById[39] = "ACP2_SETTING"] = 39;
+                values[valuesById[40] = "SHARED_DEVICE_CONTACT_HASH_KEY_SHARE"] = 40;
+                values[valuesById[41] = "SHARED_DEVICE_CONTACT_HASH_KEY_REQUEST"] = 41;
                 return values;
             })();
 
@@ -86061,6 +86342,435 @@ export const proto = $root.proto = (() => {
             };
 
             return SenderKeyDistributionMessage;
+        })();
+
+        Message.SharedDeviceContactHashKey = (function() {
+
+            const SharedDeviceContactHashKey = function (p) {
+                if (p)
+                    for (var ks = $Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null && ks[i] !== "__proto__")
+                            this[ks[i]] = p[ks[i]];
+            };
+
+            SharedDeviceContactHashKey.prototype.epoch = null;
+            SharedDeviceContactHashKey.prototype.kind = null;
+            SharedDeviceContactHashKey.prototype.keyData = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            $Object.defineProperty(SharedDeviceContactHashKey.prototype, "_epoch", {
+                get: $util.oneOfGetter($oneOfFields = ["epoch"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            $Object.defineProperty(SharedDeviceContactHashKey.prototype, "_kind", {
+                get: $util.oneOfGetter($oneOfFields = ["kind"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            $Object.defineProperty(SharedDeviceContactHashKey.prototype, "_keyData", {
+                get: $util.oneOfGetter($oneOfFields = ["keyData"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            SharedDeviceContactHashKey.create = function(properties) {
+                return new SharedDeviceContactHashKey(properties);
+            };
+
+            SharedDeviceContactHashKey.encode = function (m, w, q) {
+                if (!w)
+                    w = $Writer.create();
+                if (q === $undefined)
+                    q = 0;
+                if (q > $util.recursionLimit)
+                    throw $Error("max depth exceeded");
+                if (m.epoch != null && $Object.hasOwnProperty.call(m, "epoch"))
+                    w.uint32(8).uint32(m.epoch);
+                if (m.kind != null && $Object.hasOwnProperty.call(m, "kind"))
+                    w.uint32(16).int32(m.kind);
+                if (m.keyData != null && $Object.hasOwnProperty.call(m, "keyData"))
+                    w.uint32(26).bytes(m.keyData);
+                if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
+                    for (var i = 0; i < m.$unknowns.length; ++i)
+                        w.raw(m.$unknowns[i]);
+                return w;
+            };
+
+            SharedDeviceContactHashKey.decode = function (r, l, z, q, g) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                if (q === $undefined)
+                    q = 0;
+                if (q > $Reader.recursionLimit)
+                    throw $Error("max depth exceeded");
+                var c = l === $undefined ? r.len : r.pos + l, m = g || new $root.proto.Message.SharedDeviceContactHashKey(), v;
+                while (r.pos < c) {
+                    var s = r.pos;
+                    var t = r.tag();
+                    if (t === z) {
+                        z = $undefined;
+                        break;
+                    }
+                    var u = t & 7;
+                    switch (t >>>= 3) {
+                    case 1: {
+                            if (u !== 0)
+                                break;
+                            m.epoch = r.uint32();
+                            m._epoch = "epoch";
+                            continue;
+                        }
+                    case 2: {
+                            if (u !== 0)
+                                break;
+                            m.kind = r.int32();
+                            m._kind = "kind";
+                            continue;
+                        }
+                    case 3: {
+                            if (u !== 2)
+                                break;
+                            m.keyData = r.bytes();
+                            m._keyData = "keyData";
+                            continue;
+                        }
+                    }
+                    r.skipType(u, q, t);
+                    if (!r.discardUnknown) {
+                        $util.makeProp(m, "$unknowns", false);
+                        (m.$unknowns || (m.$unknowns = [])).push(r.raw(s, r.pos));
+                    }
+                }
+                if (z !== $undefined)
+                    throw $Error("missing end group");
+                return m;
+            };
+
+            SharedDeviceContactHashKey.fromObject = function (d, q) {
+                if (d instanceof $root.proto.Message.SharedDeviceContactHashKey)
+                    return d;
+                if (!$util.isObject(d))
+                    throw $TypeError(".proto.Message.SharedDeviceContactHashKey: object expected");
+                if (q === $undefined)
+                    q = 0;
+                if (q > $util.recursionLimit)
+                    throw $Error("max depth exceeded");
+                var m = new $root.proto.Message.SharedDeviceContactHashKey();
+                if (d.epoch != null) {
+                    m.epoch = d.epoch >>> 0;
+                }
+                switch (d.kind) {
+                case "UNKNOWN":
+                case 0:
+                    m.kind = 0;
+                    break;
+                case "LID":
+                case 1:
+                    m.kind = 1;
+                    break;
+                case "PHONE_NUMBER":
+                case 2:
+                    m.kind = 2;
+                    break;
+                default:
+                    if (typeof d.kind === "number" && (d.kind | 0) === d.kind)
+                        m.kind = d.kind;
+                }
+                if (d.keyData != null) {
+                    if (typeof d.keyData === "string")
+                        $util.base64.decode(d.keyData, m.keyData = $util.newBuffer($util.base64.length(d.keyData)), 0);
+                    else if (d.keyData.length >= 0)
+                        m.keyData = d.keyData;
+                }
+                return m;
+            };
+
+            SharedDeviceContactHashKey.toObject = function (m, o, q) {
+                if (!o)
+                    o = {};
+                if (q === $undefined)
+                    q = 0;
+                if (q > $util.recursionLimit)
+                    throw $Error("max depth exceeded");
+                var d = {};
+                if (m.epoch != null && $Object.hasOwnProperty.call(m, "epoch")) {
+                    d.epoch = m.epoch;
+                }
+                if (m.kind != null && $Object.hasOwnProperty.call(m, "kind")) {
+                    d.kind = o.enums === $String ? $root.proto.Message.SharedDeviceContactHashKey.Kind[m.kind] === $undefined ? m.kind : $root.proto.Message.SharedDeviceContactHashKey.Kind[m.kind] : m.kind;
+                }
+                if (m.keyData != null && $Object.hasOwnProperty.call(m, "keyData")) {
+                    d.keyData = o.bytes === $String ? $util.base64.encode(m.keyData, 0, m.keyData.length) : o.bytes === $Array ? $Array.prototype.slice.call(m.keyData) : m.keyData;
+                }
+                return d;
+            };
+
+            SharedDeviceContactHashKey.prototype.toJSON = function() {
+                return SharedDeviceContactHashKey.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            SharedDeviceContactHashKey.getTypeUrl = function(prefix) {
+                if (prefix === $undefined)
+                    prefix = "type.googleapis.com";
+                return prefix + "/proto.Message.SharedDeviceContactHashKey";
+            };
+
+            SharedDeviceContactHashKey.Kind = (function() {
+                const valuesById = $Object.create(null), values = $Object.create(valuesById);
+                values[valuesById[0] = "UNKNOWN"] = 0;
+                values[valuesById[1] = "LID"] = 1;
+                values[valuesById[2] = "PHONE_NUMBER"] = 2;
+                return values;
+            })();
+
+            return SharedDeviceContactHashKey;
+        })();
+
+        Message.SharedDeviceContactHashKeyRequest = (function() {
+
+            const SharedDeviceContactHashKeyRequest = function (p) {
+                if (p)
+                    for (var ks = $Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null && ks[i] !== "__proto__")
+                            this[ks[i]] = p[ks[i]];
+            };
+
+            SharedDeviceContactHashKeyRequest.prototype.knownEpoch = null;
+
+            let $oneOfFields;
+
+            // Virtual OneOf for proto3 optional field
+            $Object.defineProperty(SharedDeviceContactHashKeyRequest.prototype, "_knownEpoch", {
+                get: $util.oneOfGetter($oneOfFields = ["knownEpoch"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            SharedDeviceContactHashKeyRequest.create = function(properties) {
+                return new SharedDeviceContactHashKeyRequest(properties);
+            };
+
+            SharedDeviceContactHashKeyRequest.encode = function (m, w, q) {
+                if (!w)
+                    w = $Writer.create();
+                if (q === $undefined)
+                    q = 0;
+                if (q > $util.recursionLimit)
+                    throw $Error("max depth exceeded");
+                if (m.knownEpoch != null && $Object.hasOwnProperty.call(m, "knownEpoch"))
+                    w.uint32(8).uint32(m.knownEpoch);
+                if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
+                    for (var i = 0; i < m.$unknowns.length; ++i)
+                        w.raw(m.$unknowns[i]);
+                return w;
+            };
+
+            SharedDeviceContactHashKeyRequest.decode = function (r, l, z, q, g) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                if (q === $undefined)
+                    q = 0;
+                if (q > $Reader.recursionLimit)
+                    throw $Error("max depth exceeded");
+                var c = l === $undefined ? r.len : r.pos + l, m = g || new $root.proto.Message.SharedDeviceContactHashKeyRequest();
+                while (r.pos < c) {
+                    var s = r.pos;
+                    var t = r.tag();
+                    if (t === z) {
+                        z = $undefined;
+                        break;
+                    }
+                    var u = t & 7;
+                    switch (t >>>= 3) {
+                    case 1: {
+                            if (u !== 0)
+                                break;
+                            m.knownEpoch = r.uint32();
+                            m._knownEpoch = "knownEpoch";
+                            continue;
+                        }
+                    }
+                    r.skipType(u, q, t);
+                    if (!r.discardUnknown) {
+                        $util.makeProp(m, "$unknowns", false);
+                        (m.$unknowns || (m.$unknowns = [])).push(r.raw(s, r.pos));
+                    }
+                }
+                if (z !== $undefined)
+                    throw $Error("missing end group");
+                return m;
+            };
+
+            SharedDeviceContactHashKeyRequest.fromObject = function (d, q) {
+                if (d instanceof $root.proto.Message.SharedDeviceContactHashKeyRequest)
+                    return d;
+                if (!$util.isObject(d))
+                    throw $TypeError(".proto.Message.SharedDeviceContactHashKeyRequest: object expected");
+                if (q === $undefined)
+                    q = 0;
+                if (q > $util.recursionLimit)
+                    throw $Error("max depth exceeded");
+                var m = new $root.proto.Message.SharedDeviceContactHashKeyRequest();
+                if (d.knownEpoch != null) {
+                    m.knownEpoch = d.knownEpoch >>> 0;
+                }
+                return m;
+            };
+
+            SharedDeviceContactHashKeyRequest.toObject = function (m, o, q) {
+                if (!o)
+                    o = {};
+                if (q === $undefined)
+                    q = 0;
+                if (q > $util.recursionLimit)
+                    throw $Error("max depth exceeded");
+                var d = {};
+                if (m.knownEpoch != null && $Object.hasOwnProperty.call(m, "knownEpoch")) {
+                    d.knownEpoch = m.knownEpoch;
+                }
+                return d;
+            };
+
+            SharedDeviceContactHashKeyRequest.prototype.toJSON = function() {
+                return SharedDeviceContactHashKeyRequest.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            SharedDeviceContactHashKeyRequest.getTypeUrl = function(prefix) {
+                if (prefix === $undefined)
+                    prefix = "type.googleapis.com";
+                return prefix + "/proto.Message.SharedDeviceContactHashKeyRequest";
+            };
+
+            return SharedDeviceContactHashKeyRequest;
+        })();
+
+        Message.SharedDeviceContactHashKeyShare = (function() {
+
+            const SharedDeviceContactHashKeyShare = function (p) {
+                this.keys = [];
+                if (p)
+                    for (var ks = $Object.keys(p), i = 0; i < ks.length; ++i)
+                        if (p[ks[i]] != null && ks[i] !== "__proto__")
+                            this[ks[i]] = p[ks[i]];
+            };
+
+            SharedDeviceContactHashKeyShare.prototype.keys = $util.emptyArray;
+
+            SharedDeviceContactHashKeyShare.create = function(properties) {
+                return new SharedDeviceContactHashKeyShare(properties);
+            };
+
+            SharedDeviceContactHashKeyShare.encode = function (m, w, q) {
+                if (!w)
+                    w = $Writer.create();
+                if (q === $undefined)
+                    q = 0;
+                if (q > $util.recursionLimit)
+                    throw $Error("max depth exceeded");
+                if (m.keys != null && m.keys.length) {
+                    for (var i = 0; i < m.keys.length; ++i)
+                        $root.proto.Message.SharedDeviceContactHashKey.encode(m.keys[i], w.uint32(10).fork(), q + 1).ldelim();
+                }
+                if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
+                    for (var i = 0; i < m.$unknowns.length; ++i)
+                        w.raw(m.$unknowns[i]);
+                return w;
+            };
+
+            SharedDeviceContactHashKeyShare.decode = function (r, l, z, q, g) {
+                if (!(r instanceof $Reader))
+                    r = $Reader.create(r);
+                if (q === $undefined)
+                    q = 0;
+                if (q > $Reader.recursionLimit)
+                    throw $Error("max depth exceeded");
+                var c = l === $undefined ? r.len : r.pos + l, m = g || new $root.proto.Message.SharedDeviceContactHashKeyShare();
+                while (r.pos < c) {
+                    var s = r.pos;
+                    var t = r.tag();
+                    if (t === z) {
+                        z = $undefined;
+                        break;
+                    }
+                    var u = t & 7;
+                    switch (t >>>= 3) {
+                    case 1: {
+                            if (u !== 2)
+                                break;
+                            if (!(m.keys && m.keys.length))
+                                m.keys = [];
+                            m.keys.push($root.proto.Message.SharedDeviceContactHashKey.decode(r, r.uint32(), $undefined, q + 1));
+                            continue;
+                        }
+                    }
+                    r.skipType(u, q, t);
+                    if (!r.discardUnknown) {
+                        $util.makeProp(m, "$unknowns", false);
+                        (m.$unknowns || (m.$unknowns = [])).push(r.raw(s, r.pos));
+                    }
+                }
+                if (z !== $undefined)
+                    throw $Error("missing end group");
+                return m;
+            };
+
+            SharedDeviceContactHashKeyShare.fromObject = function (d, q) {
+                if (d instanceof $root.proto.Message.SharedDeviceContactHashKeyShare)
+                    return d;
+                if (!$util.isObject(d))
+                    throw $TypeError(".proto.Message.SharedDeviceContactHashKeyShare: object expected");
+                if (q === $undefined)
+                    q = 0;
+                if (q > $util.recursionLimit)
+                    throw $Error("max depth exceeded");
+                var m = new $root.proto.Message.SharedDeviceContactHashKeyShare();
+                if (d.keys) {
+                    if (!$Array.isArray(d.keys))
+                        throw $TypeError(".proto.Message.SharedDeviceContactHashKeyShare.keys: array expected");
+                    m.keys = $Array(d.keys.length);
+                    for (var i = 0; i < d.keys.length; ++i) {
+                        if (!$util.isObject(d.keys[i]))
+                            throw $TypeError(".proto.Message.SharedDeviceContactHashKeyShare.keys: object expected");
+                        m.keys[i] = $root.proto.Message.SharedDeviceContactHashKey.fromObject(d.keys[i], q + 1);
+                    }
+                }
+                return m;
+            };
+
+            SharedDeviceContactHashKeyShare.toObject = function (m, o, q) {
+                if (!o)
+                    o = {};
+                if (q === $undefined)
+                    q = 0;
+                if (q > $util.recursionLimit)
+                    throw $Error("max depth exceeded");
+                var d = {};
+                if (o.arrays || o.defaults) {
+                    d.keys = [];
+                }
+                if (m.keys && m.keys.length) {
+                    d.keys = $Array(m.keys.length);
+                    for (var j = 0; j < m.keys.length; ++j) {
+                        d.keys[j] = $root.proto.Message.SharedDeviceContactHashKey.toObject(m.keys[j], o, q + 1);
+                    }
+                }
+                return d;
+            };
+
+            SharedDeviceContactHashKeyShare.prototype.toJSON = function() {
+                return SharedDeviceContactHashKeyShare.toObject(this, $protobuf.util.toJSONOptions);
+            };
+
+            SharedDeviceContactHashKeyShare.getTypeUrl = function(prefix) {
+                if (prefix === $undefined)
+                    prefix = "type.googleapis.com";
+                return prefix + "/proto.Message.SharedDeviceContactHashKeyShare";
+            };
+
+            return SharedDeviceContactHashKeyShare;
         })();
 
         Message.SplitPaymentMessage = (function() {
@@ -112328,6 +113038,8 @@ export const proto = $root.proto = (() => {
             BusinessBroadcastCampaignAction.prototype.scheduledTimestamp = null;
             BusinessBroadcastCampaignAction.prototype.createTimestamp = null;
             BusinessBroadcastCampaignAction.prototype.status = null;
+            BusinessBroadcastCampaignAction.prototype.bbProStatus = null;
+            BusinessBroadcastCampaignAction.prototype.customAudienceFbid = null;
 
             let $oneOfFields;
 
@@ -112385,6 +113097,18 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            $Object.defineProperty(BusinessBroadcastCampaignAction.prototype, "_bbProStatus", {
+                get: $util.oneOfGetter($oneOfFields = ["bbProStatus"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            $Object.defineProperty(BusinessBroadcastCampaignAction.prototype, "_customAudienceFbid", {
+                get: $util.oneOfGetter($oneOfFields = ["customAudienceFbid"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             BusinessBroadcastCampaignAction.create = function(properties) {
                 return new BusinessBroadcastCampaignAction(properties);
             };
@@ -112414,6 +113138,10 @@ export const proto = $root.proto = (() => {
                     w.uint32(64).int64(m.createTimestamp);
                 if (m.status != null && $Object.hasOwnProperty.call(m, "status"))
                     w.uint32(72).int32(m.status);
+                if (m.bbProStatus != null && $Object.hasOwnProperty.call(m, "bbProStatus"))
+                    w.uint32(80).int32(m.bbProStatus);
+                if (m.customAudienceFbid != null && $Object.hasOwnProperty.call(m, "customAudienceFbid"))
+                    w.uint32(90).string(m.customAudienceFbid);
                 if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
                     for (var i = 0; i < m.$unknowns.length; ++i)
                         w.raw(m.$unknowns[i]);
@@ -112498,6 +113226,20 @@ export const proto = $root.proto = (() => {
                                 break;
                             m.status = r.int32();
                             m._status = "status";
+                            continue;
+                        }
+                    case 10: {
+                            if (u !== 0)
+                                break;
+                            m.bbProStatus = r.int32();
+                            m._bbProStatus = "bbProStatus";
+                            continue;
+                        }
+                    case 11: {
+                            if (u !== 2)
+                                break;
+                            m.customAudienceFbid = r.stringVerify();
+                            m._customAudienceFbid = "customAudienceFbid";
                             continue;
                         }
                     }
@@ -112585,6 +113327,54 @@ export const proto = $root.proto = (() => {
                     if (typeof d.status === "number" && (d.status | 0) === d.status)
                         m.status = d.status;
                 }
+                switch (d.bbProStatus) {
+                case "BB_PRO_ACTIVE":
+                case 1:
+                    m.bbProStatus = 1;
+                    break;
+                case "BB_PRO_COMPLETED":
+                case 2:
+                    m.bbProStatus = 2;
+                    break;
+                case "BB_PRO_IN_DRAFT":
+                case 3:
+                    m.bbProStatus = 3;
+                    break;
+                case "BB_PRO_IN_REVIEW":
+                case 4:
+                    m.bbProStatus = 4;
+                    break;
+                case "BB_PRO_NOT_SENDING":
+                case 5:
+                    m.bbProStatus = 5;
+                    break;
+                case "BB_PRO_OFF":
+                case 6:
+                    m.bbProStatus = 6;
+                    break;
+                case "BB_PRO_REJECTED":
+                case 7:
+                    m.bbProStatus = 7;
+                    break;
+                case "BB_PRO_SCHEDULED":
+                case 8:
+                    m.bbProStatus = 8;
+                    break;
+                case "BB_PRO_SENDING_LIMITED":
+                case 9:
+                    m.bbProStatus = 9;
+                    break;
+                case "BB_PRO_PROCESSING":
+                case 10:
+                    m.bbProStatus = 10;
+                    break;
+                default:
+                    if (typeof d.bbProStatus === "number" && (d.bbProStatus | 0) === d.bbProStatus)
+                        m.bbProStatus = d.bbProStatus;
+                }
+                if (d.customAudienceFbid != null) {
+                    m.customAudienceFbid = $String(d.customAudienceFbid);
+                }
                 return m;
             };
 
@@ -112633,6 +113423,12 @@ export const proto = $root.proto = (() => {
                 if (m.status != null && $Object.hasOwnProperty.call(m, "status")) {
                     d.status = o.enums === $String ? $root.proto.SyncActionValue.BusinessBroadcastCampaignStatus[m.status] === $undefined ? m.status : $root.proto.SyncActionValue.BusinessBroadcastCampaignStatus[m.status] : m.status;
                 }
+                if (m.bbProStatus != null && $Object.hasOwnProperty.call(m, "bbProStatus")) {
+                    d.bbProStatus = o.enums === $String ? $root.proto.SyncActionValue.BusinessBroadcastCampaignBBProStatus[m.bbProStatus] === $undefined ? m.bbProStatus : $root.proto.SyncActionValue.BusinessBroadcastCampaignBBProStatus[m.bbProStatus] : m.bbProStatus;
+                }
+                if (m.customAudienceFbid != null && $Object.hasOwnProperty.call(m, "customAudienceFbid")) {
+                    d.customAudienceFbid = m.customAudienceFbid;
+                }
                 return d;
             };
 
@@ -112647,6 +113443,21 @@ export const proto = $root.proto = (() => {
             };
 
             return BusinessBroadcastCampaignAction;
+        })();
+
+        SyncActionValue.BusinessBroadcastCampaignBBProStatus = (function() {
+            const valuesById = $Object.create(null), values = $Object.create(valuesById);
+            values[valuesById[1] = "BB_PRO_ACTIVE"] = 1;
+            values[valuesById[2] = "BB_PRO_COMPLETED"] = 2;
+            values[valuesById[3] = "BB_PRO_IN_DRAFT"] = 3;
+            values[valuesById[4] = "BB_PRO_IN_REVIEW"] = 4;
+            values[valuesById[5] = "BB_PRO_NOT_SENDING"] = 5;
+            values[valuesById[6] = "BB_PRO_OFF"] = 6;
+            values[valuesById[7] = "BB_PRO_REJECTED"] = 7;
+            values[valuesById[8] = "BB_PRO_SCHEDULED"] = 8;
+            values[valuesById[9] = "BB_PRO_SENDING_LIMITED"] = 9;
+            values[valuesById[10] = "BB_PRO_PROCESSING"] = 10;
+            return values;
         })();
 
         SyncActionValue.BusinessBroadcastCampaignStatus = (function() {
@@ -134400,6 +135211,14 @@ export const proto = $root.proto = (() => {
             case 230:
                 m.messageStubType = 230;
                 break;
+            case "CHANGE_ACP2_SETTING":
+            case 240:
+                m.messageStubType = 240;
+                break;
+            case "EPHEMERAL_CHANGED_FOR_COEX":
+            case 248:
+                m.messageStubType = 248;
+                break;
             default:
                 if (typeof d.messageStubType === "number" && (d.messageStubType | 0) === d.messageStubType)
                     m.messageStubType = d.messageStubType;
@@ -135304,6 +136123,8 @@ export const proto = $root.proto = (() => {
             values[valuesById[227] = "IDENTITY_TRUST_UNMARKED"] = 227;
             values[valuesById[228] = "IDENTITY_TRUST_REVOKED"] = 228;
             values[valuesById[230] = "CTWA_CONSUMER_DISCLOSURE"] = 230;
+            values[valuesById[240] = "CHANGE_ACP2_SETTING"] = 240;
+            values[valuesById[248] = "EPHEMERAL_CHANGED_FOR_COEX"] = 248;
             return values;
         })();
 
