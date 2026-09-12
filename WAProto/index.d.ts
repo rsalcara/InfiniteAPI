@@ -8323,6 +8323,7 @@ export namespace proto {
         botPlatformRegistrationSuccessMessage?: (proto.Message.FutureProofMessage.$Properties|null);
         newsletterScheduledMessage?: (proto.Message.FutureProofMessage.$Properties|null);
         acp2SettingMessage?: (proto.Message.FutureProofMessage.$Properties|null);
+        audioStickerMessage?: (proto.Message.FutureProofMessage.$Properties|null);
         static create(properties: proto.Message.$Shape): proto.Message & proto.Message.$Shape;
         static create(properties?: proto.Message.$Properties): proto.Message;
         static encode(m: proto.Message.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -8447,6 +8448,7 @@ export namespace proto {
             botPlatformRegistrationSuccessMessage?: (proto.Message.FutureProofMessage.$Properties|null);
             newsletterScheduledMessage?: (proto.Message.FutureProofMessage.$Properties|null);
             acp2SettingMessage?: (proto.Message.FutureProofMessage.$Properties|null);
+            audioStickerMessage?: (proto.Message.FutureProofMessage.$Properties|null);
             $unknowns?: Uint8Array[];
         }
         type $Shape = {
@@ -8562,6 +8564,7 @@ export namespace proto {
           botPlatformRegistrationSuccessMessage?: proto.Message.FutureProofMessage.$Shape|null;
           newsletterScheduledMessage?: proto.Message.FutureProofMessage.$Shape|null;
           acp2SettingMessage?: proto.Message.FutureProofMessage.$Shape|null;
+          audioStickerMessage?: proto.Message.FutureProofMessage.$Shape|null;
           $unknowns?: Uint8Array[];
         };
 
@@ -14874,6 +14877,8 @@ export namespace proto {
             accessibilityLabel?: (string|null);
             premium?: (number|null);
             emojis?: (string|null);
+            audioMessage?: (proto.Message.AudioMessage.$Properties|null);
+            audio?: "audioMessage";
             static create(properties: proto.Message.StickerMessage.$Shape): proto.Message.StickerMessage & proto.Message.StickerMessage.$Shape;
             static create(properties?: proto.Message.StickerMessage.$Properties): proto.Message.StickerMessage;
             static encode(m: proto.Message.StickerMessage.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -14908,6 +14913,8 @@ export namespace proto {
                 accessibilityLabel?: (string|null);
                 premium?: (number|null);
                 emojis?: (string|null);
+                audioMessage?: (proto.Message.AudioMessage.$Properties|null);
+                audio?: "audioMessage";
                 $unknowns?: Uint8Array[];
             }
             type $Shape = {
@@ -14933,8 +14940,11 @@ export namespace proto {
               accessibilityLabel?: string|null;
               premium?: number|null;
               emojis?: string|null;
+              audioMessage?: proto.Message.AudioMessage.$Shape|null;
               $unknowns?: Uint8Array[];
-            };
+            } & (
+              ({ audio?: undefined; audioMessage?: null }|{ audio?: "audioMessage"; audioMessage: proto.Message.AudioMessage.$Shape })
+            );
         }
 
         interface IStickerPackMessage extends proto.Message.StickerPackMessage.$Properties {
@@ -19742,7 +19752,8 @@ export namespace proto {
                 INVITES = 14,
                 THIRD_PARTY = 15,
                 LEAD = 16,
-                MENTIONS_AND_REPLIES = 17
+                MENTIONS_AND_REPLIES = 17,
+                REQUESTS = 18
             }
         }
 
