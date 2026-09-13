@@ -15977,6 +15977,7 @@ export namespace proto {
             $unknowns?: Uint8Array[];
             name?: (string|null);
             hash?: (string|null);
+            addOptionMsgKey?: (string|null);
             static create(properties: proto.MsgOpaqueData.PollOption.$Shape): proto.MsgOpaqueData.PollOption & proto.MsgOpaqueData.PollOption.$Shape;
             static create(properties?: proto.MsgOpaqueData.PollOption.$Properties): proto.MsgOpaqueData.PollOption;
             static encode(m: proto.MsgOpaqueData.PollOption.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -15991,6 +15992,7 @@ export namespace proto {
             interface $Properties {
                 name?: (string|null);
                 hash?: (string|null);
+                addOptionMsgKey?: (string|null);
                 $unknowns?: Uint8Array[];
             }
             type $Shape = proto.MsgOpaqueData.PollOption.$Properties;
