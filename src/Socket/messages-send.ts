@@ -145,6 +145,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		fetchPrivacySettings,
 		fetchAccountReachoutTimelock,
 		fetchNewChatMessageCap,
+		fetchStartChatTrustSignals,
 		sendNode,
 		groupMetadata,
 		groupToggleEphemeral,
@@ -773,6 +774,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				getKnownLIDForPN,
 				fetchReachout: () => fetchAccountReachoutTimelock(false),
 				fetchCapping: fetchNewChatMessageCap,
+				fetchStartChatTrustSignals,
+				startChatTrustSignalsPolicy: config.startChatTrustSignalsPolicy ?? 'observe',
 				resolveUSync: async phoneUser => {
 					const query = new USyncQuery()
 						.withContext('message')

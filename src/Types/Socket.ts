@@ -62,6 +62,34 @@ export type ProxyRoutePolicy = {
 
 export type SocketConnectionTrigger = 'instance_create' | 'new_pairing' | 'restart' | 'reconnect'
 
+/**
+ * Result of the official-client start-chat trust lookup.
+ *
+ * The provider is intentionally opaque to the socket: it must obtain these
+ * values from an eligible first-party client/bridge. InfiniteAPI never
+ * derives an integrity signal, creates a privacy token, or treats a local
+ * contact row as proof of trust.
+ */
+export type StartChatTrustSignals = {
+	isSenderSuspicious?: boolean
+	isSenderNewAccount?: boolean
+	createdTs?: number
+}
+
+export type StartChatTrustSignalsState = {
+	jid: string
+	useCase: 'CHAT_FMX'
+	status: 'known' | 'unknown' | 'unavailable'
+	observedAt: number
+	signals?: StartChatTrustSignals
+	error?: string
+}
+
+export type StartChatTrustSignalsProvider = (request: {
+	jid: string
+	useCase: 'CHAT_FMX'
+}) => Promise<StartChatTrustSignals>
+
 export type SocketConfig = {
 	/** Stable consumer instance identifier included in auth-state diagnostics. */
 	instanceId?: string
@@ -71,6 +99,20 @@ export type SocketConfig = {
 	proxyRoute?: ProxyRoutePolicy
 	/** Consumer-declared reason for creating this socket, used only in structured diagnostics. */
 	connectionTrigger?: SocketConnectionTrigger
+	/**
+	 * Optional first-party provider for the Android start-chat trust lookup.
+	 * The callback must obtain genuine values; it must not synthesize
+	 * `integrity_signals`, privacy tokens, or attestation material.
+	 */
+	startChatTrustSignalsProvider?: StartChatTrustSignalsProvider
+	/**
+	 * Controls what happens when the optional start-chat lookup is unavailable.
+	 * `observe` preserves existing send behavior; `require-known` is intended
+	 * for controlled validation environments only.
+	 */
+	startChatTrustSignalsPolicy?: 'observe' | 'require-known'
+	/** Receives redacted start-chat state for durable application telemetry. */
+	onStartChatTrustSignals?: (state: StartChatTrustSignalsState) => void | Promise<void>
 	/** Transport profile. Web remains the stable default. */
 	transportProfile: ConnectionTransportProfile
 	/** Required only when transportProfile is native_android. */
