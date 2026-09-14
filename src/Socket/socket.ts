@@ -22,6 +22,7 @@ import type {
 	ReachoutTimelockState,
 	SocketConfig,
 	StartChatTrustSignals,
+	StartChatTrustSignalsError,
 	StartChatTrustSignalsState
 } from '../Types'
 import { DisconnectReason, QueryIds, ReachoutTimelockEnforcementType, XWAPaths } from '../Types'
@@ -150,6 +151,12 @@ export const makeSocket = (config: SocketConfig) => {
 	const transportSession = resolveTransportSession(runtimeConfig, authState.creds)
 	const isNativeAndroid = transportSession.profile === 'native_android'
 	const nativeAndroidIntegrityPolicy = transportSession.nativeAndroid?.integrityPolicy ?? 'audit'
+	if (runtimeConfig.startChatTrustSignalsPolicy === 'require-known' && process.env.NODE_ENV === 'production') {
+		throw new Boom('require-known start-chat trust signals policy is disabled in production', {
+			statusCode: 400,
+			data: { category: 'start-chat-trust-signals', reason: 'laboratory-only-policy' }
+		})
+	}
 	const proxyRouteAudit = resolveProxyRouteAudit(runtimeConfig, transportSession.profile)
 	const routeConnectionPhase = resolveProxyConnectionPhase(runtimeConfig)
 	logger.info(
@@ -2864,10 +2871,17 @@ export const makeSocket = (config: SocketConfig) => {
 		const base = { jid, useCase: 'CHAT_FMX' as const, observedAt }
 		const notify = async (state: StartChatTrustSignalsState) => {
 			ev.emit('start-chat.trust-signals', state)
+			const observer = runtimeConfig.onStartChatTrustSignals
+			if (!observer) return
+
 			try {
-				await runtimeConfig.onStartChatTrustSignals?.(state)
-			} catch (error) {
-				logger.warn({ error, jid }, 'start-chat trust signal observer failed')
+				await promiseTimeout<void>(2_000, (resolve, reject) =>
+					Promise.resolve(observer(state))
+						.then(() => resolve())
+						.catch(reject)
+				)
+			} catch {
+				logger.warn({ jid, reason: 'observer-timeout-or-error' }, 'start-chat trust signal observer failed')
 			}
 		}
 
@@ -2896,7 +2910,14 @@ export const makeSocket = (config: SocketConfig) => {
 			await notify(state)
 			return state
 		} catch (error) {
-			const reason = error instanceof Error ? error.message : 'provider failed'
+			const reason: StartChatTrustSignalsError =
+				error instanceof Boom && error.output.statusCode === DisconnectReason.timedOut
+					? 'provider-timeout'
+					: error instanceof Error && error.name === 'AbortError'
+						? 'provider-timeout'
+						: error instanceof Error && error.message.includes('no valid')
+							? 'provider-invalid-response'
+							: 'provider-unavailable'
 			const state: StartChatTrustSignalsState = { ...base, status: 'unknown', error: reason }
 			logger.warn({ jid, useCase: 'CHAT_FMX', reason }, 'start-chat trust signal lookup unavailable')
 			await notify(state)

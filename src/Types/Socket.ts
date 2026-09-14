@@ -76,13 +76,19 @@ export type StartChatTrustSignals = {
 	createdTs?: number
 }
 
+export type StartChatTrustSignalsError =
+	| 'provider-timeout'
+	| 'provider-invalid-response'
+	| 'provider-unavailable'
+	| 'observer-timeout-or-error'
+
 export type StartChatTrustSignalsState = {
 	jid: string
 	useCase: 'CHAT_FMX'
 	status: 'known' | 'unknown' | 'unavailable'
 	observedAt: number
 	signals?: StartChatTrustSignals
-	error?: string
+	error?: StartChatTrustSignalsError
 }
 
 export type StartChatTrustSignalsProvider = (request: {
@@ -103,12 +109,16 @@ export type SocketConfig = {
 	 * Optional first-party provider for the Android start-chat trust lookup.
 	 * The callback must obtain genuine values; it must not synthesize
 	 * `integrity_signals`, privacy tokens, or attestation material.
+	 * When configured, a cold-recipient send may wait up to 10 seconds and the
+	 * recipient JID is sent to this consumer-controlled service. This lookup
+	 * is advisory and does not guarantee acceptance by WhatsApp/Meta.
 	 */
 	startChatTrustSignalsProvider?: StartChatTrustSignalsProvider
 	/**
 	 * Controls what happens when the optional start-chat lookup is unavailable.
 	 * `observe` preserves existing send behavior; `require-known` is intended
-	 * for controlled validation environments only.
+	 * for controlled validation environments only and is rejected when
+	 * `NODE_ENV=production`.
 	 */
 	startChatTrustSignalsPolicy?: 'observe' | 'require-known'
 	/** Receives redacted start-chat state for durable application telemetry. */

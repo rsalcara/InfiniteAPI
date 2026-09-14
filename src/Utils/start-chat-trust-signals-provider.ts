@@ -35,8 +35,11 @@ export const createStartChatTrustSignalsBridgeProvider = (
 		throw new Error('start-chat trust-signals provider token must be a string')
 	}
 
-	if (config.timeoutMs !== undefined && (!Number.isFinite(config.timeoutMs) || config.timeoutMs <= 0)) {
-		throw new Error('start-chat trust-signals provider timeoutMs must be positive')
+	if (
+		config.timeoutMs !== undefined &&
+		(!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs <= 0 || config.timeoutMs > 2_147_483_647)
+	) {
+		throw new Error('start-chat trust-signals provider timeoutMs must be an integer between 1 and 2147483647')
 	}
 
 	const timeoutMs = config.timeoutMs ?? 10_000

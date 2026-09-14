@@ -2,6 +2,15 @@ import { jest } from '@jest/globals'
 import { createStartChatTrustSignalsBridgeProvider } from '../../Utils/start-chat-trust-signals-provider'
 
 describe('start-chat trust-signals bridge provider', () => {
+	it('rejects timer values outside the Node timer range', () => {
+		expect(() =>
+			createStartChatTrustSignalsBridgeProvider({ url: 'http://android-bridge.test', timeoutMs: 2_147_483_648 })
+		).toThrow('timeoutMs must be an integer')
+		expect(() =>
+			createStartChatTrustSignalsBridgeProvider({ url: 'http://android-bridge.test', timeoutMs: 1.5 })
+		).toThrow('timeoutMs must be an integer')
+	})
+
 	it('sends only the CHAT_FMX request and returns parsed non-sensitive fields', async () => {
 		const fetchImpl = jest.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
 			expect(init?.method).toBe('POST')

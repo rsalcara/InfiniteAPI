@@ -317,7 +317,7 @@ describe('cold-recipient preflight orchestration', () => {
 		expect(resolveUSync).not.toHaveBeenCalled()
 	})
 
-	it('records provider-backed CHAT_FMX signals without creating a privacy token', async () => {
+	it('records provider-backed CHAT_FMX signals without altering token state', async () => {
 		const fetchStartChatTrustSignals = jest.fn(async () => ({
 			jid: pn,
 			useCase: 'CHAT_FMX' as const,
@@ -340,7 +340,7 @@ describe('cold-recipient preflight orchestration', () => {
 		expect(fetchStartChatTrustSignals).toHaveBeenCalledTimes(1)
 	})
 
-	it('fails closed only when explicitly requiring known CHAT_FMX signals', async () => {
+	it('fails closed when explicitly requiring known CHAT_FMX signals', async () => {
 		const resolveUSync = jest.fn(async () => [])
 		await expect(
 			runDirectRecipientPreflight(
@@ -350,7 +350,7 @@ describe('cold-recipient preflight orchestration', () => {
 						useCase: 'CHAT_FMX',
 						status: 'unknown',
 						observedAt: Date.now(),
-						error: 'provider timeout'
+						error: 'provider-timeout'
 					}),
 					startChatTrustSignalsPolicy: 'require-known',
 					resolveUSync
@@ -358,6 +358,27 @@ describe('cold-recipient preflight orchestration', () => {
 			)
 		).rejects.toMatchObject({ output: { statusCode: 503 }, data: { category: 'start-chat-trust-signals' } })
 		expect(resolveUSync).not.toHaveBeenCalled()
+	})
+
+	it('continues in observe mode when CHAT_FMX signals are unknown', async () => {
+		const resolveUSync = jest.fn(async () => [{ id: pn, jid: pn, newJid: lid, contactType: 'in' as const }])
+
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					fetchStartChatTrustSignals: async () => ({
+						jid: pn,
+						useCase: 'CHAT_FMX',
+						status: 'unknown',
+						observedAt: Date.now(),
+						error: 'provider-timeout'
+					}),
+					startChatTrustSignalsPolicy: 'observe',
+					resolveUSync
+				})
+			)
+		).resolves.toMatchObject({ startChatTrustSignals: { status: 'unknown' }, lidJid: lid })
+		expect(resolveUSync).toHaveBeenCalledTimes(1)
 	})
 
 	it.each([
