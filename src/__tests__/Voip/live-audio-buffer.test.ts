@@ -179,6 +179,7 @@ describe('live audio buffer', () => {
 			for (let i = 0; i < frame.length; i += 1) frame[i] = push * 10 + i + 1
 			expect(buffer.push({ data: frame, sampleRate: 48000, channels: 1 })).toBe(true)
 		}
+
 		jest.advanceTimersByTime(40)
 		buffer.stop()
 
