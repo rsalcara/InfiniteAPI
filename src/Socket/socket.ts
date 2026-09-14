@@ -157,6 +157,7 @@ export const makeSocket = (config: SocketConfig) => {
 			data: { category: 'start-chat-trust-signals', reason: 'laboratory-only-policy' }
 		})
 	}
+
 	const proxyRouteAudit = resolveProxyRouteAudit(runtimeConfig, transportSession.profile)
 	const routeConnectionPhase = resolveProxyConnectionPhase(runtimeConfig)
 	logger.info(
