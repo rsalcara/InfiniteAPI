@@ -28,6 +28,7 @@ export const createStartChatTrustSignalsBridgeProvider = (
 	if (!config || typeof config.url !== 'string' || !config.url.startsWith('http')) {
 		throw new Error('start-chat trust-signals provider requires a valid http(s) url')
 	}
+
 	new URL(config.url)
 
 	if (config.token !== undefined && typeof config.token !== 'string') {
@@ -91,6 +92,7 @@ const readLimitedBody = async (response: Response): Promise<string> => {
 	if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
 		throw new Error('start-chat trust-signals bridge response exceeds size limit')
 	}
+
 	const reader = response.body?.getReader()
 	if (!reader) {
 		const text = await response.text()
@@ -101,6 +103,7 @@ const readLimitedBody = async (response: Response): Promise<string> => {
 
 		return text
 	}
+
 	const chunks: Uint8Array[] = []
 	let total = 0
 	for (;;) {
@@ -115,6 +118,7 @@ const readLimitedBody = async (response: Response): Promise<string> => {
 
 		chunks.push(value)
 	}
+
 	const decoder = new TextDecoder()
 	return chunks.map(chunk => decoder.decode(chunk, { stream: true })).join('') + decoder.decode()
 }
