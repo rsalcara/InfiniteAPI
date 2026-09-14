@@ -15,7 +15,16 @@ import {
 } from '../Defaults'
 import { makeSessionActivityTracker } from '../Signal/session-activity-tracker'
 import { makeSessionCleanup } from '../Signal/session-cleanup'
-import type { ConnectionState, LIDMapping, NewChatMessageCapInfo, ReachoutTimelockState, SocketConfig } from '../Types'
+import type {
+	ConnectionState,
+	LIDMapping,
+	NewChatMessageCapInfo,
+	ReachoutTimelockState,
+	SocketConfig,
+	StartChatTrustSignals,
+	StartChatTrustSignalsError,
+	StartChatTrustSignalsState
+} from '../Types'
 import { DisconnectReason, QueryIds, ReachoutTimelockEnforcementType, XWAPaths } from '../Types'
 import {
 	addTransactionCapability,
@@ -142,6 +151,13 @@ export const makeSocket = (config: SocketConfig) => {
 	const transportSession = resolveTransportSession(runtimeConfig, authState.creds)
 	const isNativeAndroid = transportSession.profile === 'native_android'
 	const nativeAndroidIntegrityPolicy = transportSession.nativeAndroid?.integrityPolicy ?? 'audit'
+	if (runtimeConfig.startChatTrustSignalsPolicy === 'require-known' && process.env.NODE_ENV === 'production') {
+		throw new Boom('require-known start-chat trust signals policy is disabled in production', {
+			statusCode: 400,
+			data: { category: 'start-chat-trust-signals', reason: 'laboratory-only-policy' }
+		})
+	}
+
 	const proxyRouteAudit = resolveProxyRouteAudit(runtimeConfig, transportSession.profile)
 	const routeConnectionPhase = resolveProxyConnectionPhase(runtimeConfig)
 	logger.info(
@@ -2844,6 +2860,70 @@ export const makeSocket = (config: SocketConfig) => {
 		)
 	}
 
+	/**
+	 * Runs the optional first-party start-chat lookup.  The exact GraphQL
+	 * operation and integrity payload belong to the Android provider; keeping
+	 * them behind this boundary prevents the Web/Node client from fabricating
+	 * attestation or trusted-contact material.
+	 */
+	const fetchStartChatTrustSignals = async (jid: string): Promise<StartChatTrustSignalsState> => {
+		const observedAt = Date.now()
+		const provider = runtimeConfig.startChatTrustSignalsProvider
+		const base = { jid, useCase: 'CHAT_FMX' as const, observedAt }
+		const notify = (state: StartChatTrustSignalsState) => {
+			ev.emit('start-chat.trust-signals', state)
+			const observer = runtimeConfig.onStartChatTrustSignals
+			if (!observer) return
+
+			void promiseTimeout<void>(2_000, (resolve, reject) =>
+				Promise.resolve(observer(state))
+					.then(() => resolve())
+					.catch(reject)
+			).catch(() => {
+				logger.warn({ jid, reason: 'observer-timeout-or-error' }, 'start-chat trust signal observer failed')
+			})
+		}
+
+		if (!provider) {
+			const state: StartChatTrustSignalsState = { ...base, status: 'unavailable' }
+			notify(state)
+			return state
+		}
+
+		try {
+			const raw = await promiseTimeout<StartChatTrustSignals>(10_000, (resolve, reject) =>
+				provider({ jid, useCase: 'CHAT_FMX' }).then(resolve).catch(reject)
+			)
+			const signals: StartChatTrustSignals = {}
+			if (typeof raw?.isSenderSuspicious === 'boolean') signals.isSenderSuspicious = raw.isSenderSuspicious
+			if (typeof raw?.isSenderNewAccount === 'boolean') signals.isSenderNewAccount = raw.isSenderNewAccount
+			if (raw?.createdTs !== undefined && Number.isSafeInteger(raw.createdTs) && raw.createdTs > 0) {
+				signals.createdTs = raw.createdTs
+			}
+
+			if (Object.keys(signals).length === 0) {
+				throw new Error('provider returned no valid start-chat trust fields')
+			}
+
+			const state: StartChatTrustSignalsState = { ...base, status: 'known', signals }
+			notify(state)
+			return state
+		} catch (error) {
+			const reason: StartChatTrustSignalsError =
+				error instanceof Boom && error.output.statusCode === DisconnectReason.timedOut
+					? 'provider-timeout'
+					: error instanceof Error && error.name === 'AbortError'
+						? 'provider-timeout'
+						: error instanceof Error && error.message.includes('no valid')
+							? 'provider-invalid-response'
+							: 'provider-unavailable'
+			const state: StartChatTrustSignalsState = { ...base, status: 'unknown', error: reason }
+			logger.warn({ jid, useCase: 'CHAT_FMX', reason }, 'start-chat trust signal lookup unavailable')
+			notify(state)
+			return state
+		}
+	}
+
 	return {
 		type: 'md' as 'md',
 		ws,
@@ -2902,6 +2982,7 @@ export const makeSocket = (config: SocketConfig) => {
 		/** Explicitly attempts the opt-in BIZ_QUALITY remediation and verifies the server state afterwards. */
 		removeAccountReachoutTimelock: reachoutTimelockRemediation.remove,
 		fetchNewChatMessageCap,
+		fetchStartChatTrustSignals,
 		// Unified Session Telemetry
 		/** Send unified_session telemetry manually */
 		sendUnifiedSession,

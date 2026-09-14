@@ -15,6 +15,7 @@ import type {
 import type { Label } from './Label'
 import type { LabelAssociation } from './LabelAssociation'
 import type { MessageUpsertType, MessageUserReceiptUpdate, WAMessage, WAMessageKey, WAMessageUpdate } from './Message'
+import type { StartChatTrustSignalsState } from './Socket'
 import type { ConnectionState, NewChatMessageCapInfo } from './State'
 import type {
 	NativeAndroidIntegrityChallengeKind,
@@ -66,6 +67,8 @@ export type BaileysEventMap = {
 	'auth-state.capabilities': AuthStateCapabilities
 	/** Post-login Android integrity lifecycle; never contains nonce or token material. */
 	'native-android.integrity': NativeAndroidIntegrityUpdate
+	/** Redacted result of the optional Android start-chat trust lookup. */
+	'start-chat.trust-signals': StartChatTrustSignalsState
 	/** credentials updated -- some metadata, keys or something */
 	'creds.update': Partial<AuthenticationCreds>
 	/** set chats (history sync), everything is reverse chronologically sorted */
