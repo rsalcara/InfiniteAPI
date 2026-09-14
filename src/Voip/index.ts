@@ -189,13 +189,10 @@ export class ActiveCall extends EventEmitter {
 		this.#liveAudioBuffer = null
 	}
 
-	pushVideo = (_frame: import('./types.js').VideoInputFrame): boolean => {
+	pushVideo = (frame: import('./types.js').VideoInputFrame): boolean => {
 		if (this.#ended || !this._liveVideoSource || !this.#videoEnabled) return false
-		// Video uplink path requires WASM encoder integration that is not
-		// yet exposed by the WhatsApp WASM binary. The API surface is ready
-		// for the platform to call; the engine bridge will connect it when
-		// the WASM exposes a public video-input binding.
-		return false
+		if (frame.format !== this._liveVideoSource.format) return false
+		return this.engine.pushVideoFrame(frame, this._liveVideoSource.maxFps ?? 15)
 	}
 
 	setVideoEnabled = (enabled: boolean): void => {
@@ -704,7 +701,7 @@ export class VoipClient extends EventEmitter {
 				peerPn: targetPnJid,
 				peerList: deviceList,
 				callId,
-				isVideo: !!opts.video,
+				isVideo: Boolean(opts.video || opts.videoSource),
 				isLidCall: true,
 				isFromDialer: false,
 				extraData: tcToken
@@ -881,7 +878,7 @@ export class VoipClient extends EventEmitter {
 			this.#engine.startGroupCall({
 				callId,
 				participants: resolved,
-				isVideo: !!opts.video,
+				isVideo: Boolean(opts.video || opts.videoSource),
 				callCreator: selfJid,
 				linkToken: opts.linkToken
 			})

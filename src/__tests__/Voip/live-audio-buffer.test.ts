@@ -1,6 +1,15 @@
+import { jest } from '@jest/globals'
 import { LiveAudioBuffer } from '../../Voip/live-audio-buffer'
 
 describe('live audio buffer', () => {
+	beforeEach(() => {
+		jest.useFakeTimers()
+	})
+
+	afterEach(() => {
+		jest.useRealTimers()
+	})
+
 	it('buffers and drains PCM frames in exact chunks', () => {
 		const chunks: Float32Array[] = []
 		const buffer = new LiveAudioBuffer({
@@ -34,17 +43,12 @@ describe('live audio buffer', () => {
 		})
 
 		buffer.start()
-		// Wait for at least one timer tick
-		return new Promise(resolve => {
-			setTimeout(() => {
-				buffer.stop()
-				expect(chunks.length).toBeGreaterThan(0)
-				expect(chunks[0]).toHaveLength(320)
-				// All zeros = silence
-				expect(chunks[0]!.every(v => v === 0)).toBe(true)
-				resolve(undefined)
-			}, 50)
-		})
+		jest.advanceTimersByTime(50)
+		buffer.stop()
+		expect(chunks.length).toBeGreaterThan(0)
+		expect(chunks[0]).toHaveLength(320)
+		// All zeros = silence
+		expect(chunks[0]!.every(v => v === 0)).toBe(true)
 	})
 
 	it('resamples from 48kHz to 16kHz', () => {
@@ -63,15 +67,11 @@ describe('live audio buffer', () => {
 		const samples = new Float32Array(960).fill(0.25)
 		buffer.push({ data: samples, sampleRate: 48000, channels: 1 })
 
-		return new Promise(resolve => {
-			setTimeout(() => {
-				buffer.stop()
-				expect(chunks.length).toBeGreaterThan(0)
-				// Should have real audio (not all silence)
-				expect(chunks[0]!.some(v => v !== 0)).toBe(true)
-				resolve(undefined)
-			}, 50)
-		})
+		jest.advanceTimersByTime(50)
+		buffer.stop()
+		expect(chunks.length).toBeGreaterThan(0)
+		// Should have real audio (not all silence)
+		expect(chunks[0]!.some(v => v !== 0)).toBe(true)
 	})
 
 	it('downmixes stereo to mono', () => {
@@ -92,18 +92,75 @@ describe('live audio buffer', () => {
 			stereo[i] = 0.2
 			stereo[i + 1] = 0.8
 		}
+
 		buffer.push({ data: stereo, sampleRate: 16000, channels: 2 })
 
-		return new Promise(resolve => {
-			setTimeout(() => {
-				buffer.stop()
+		jest.advanceTimersByTime(50)
+		buffer.stop()
 
-				expect(chunks.length).toBeGreaterThan(0)
-				// Average of 0.2 and 0.8 = 0.5
-				expect(chunks[0]!.some(v => Math.abs(v - 0.5) < 0.01)).toBe(true)
-				resolve(undefined)
-			}, 50)
+		expect(chunks.length).toBeGreaterThan(0)
+		// Average of 0.2 and 0.8 = 0.5
+		expect(chunks[0]!.some(v => Math.abs(v - 0.5) < 0.01)).toBe(true)
+	})
+
+	it('upmixes mono to stereo', () => {
+		const chunks: Float32Array[] = []
+		const buffer = new LiveAudioBuffer({
+			targetSampleRate: 16000,
+			targetChannels: 2,
+			framesPerChunk: 2,
+			maxBufferedMs: 100,
+			onChunk: chunk => chunks.push(chunk)
 		})
+
+		buffer.start()
+		expect(buffer.push({ data: new Float32Array([0.2, 0.8]), sampleRate: 16000, channels: 1 })).toBe(true)
+		jest.advanceTimersByTime(1)
+		buffer.stop()
+
+		expect(chunks[0]).toEqual(new Float32Array([0.2, 0.2, 0.8, 0.8]))
+	})
+
+	it('drains a partial frame and pads only the remainder with silence', () => {
+		const chunks: Float32Array[] = []
+		const buffer = new LiveAudioBuffer({
+			targetSampleRate: 16000,
+			targetChannels: 1,
+			framesPerChunk: 4,
+			maxBufferedMs: 100,
+			onChunk: chunk => chunks.push(chunk)
+		})
+
+		buffer.start()
+		expect(buffer.push({ data: new Float32Array([0.1, 0.2]), sampleRate: 16000, channels: 1 })).toBe(true)
+		jest.advanceTimersByTime(1)
+		buffer.stop()
+
+		expect(chunks[0]).toEqual(new Float32Array([0.1, 0.2, 0, 0]))
+		expect(buffer.bufferedSamples).toBe(0)
+	})
+
+	it('preserves resampler phase across successive pushes', () => {
+		const chunks: Float32Array[] = []
+		const buffer = new LiveAudioBuffer({
+			targetSampleRate: 16000,
+			targetChannels: 1,
+			framesPerChunk: 160,
+			maxBufferedMs: 400,
+			onChunk: chunk => chunks.push(chunk)
+		})
+
+		buffer.start()
+		for (let i = 0; i < 10; i += 1) {
+			expect(buffer.push({ data: new Float32Array(480).fill(0.25), sampleRate: 48000, channels: 1 })).toBe(true)
+		}
+
+		expect(buffer.bufferedSamples).toBe(1600)
+		jest.advanceTimersByTime(100)
+		buffer.stop()
+
+		expect(chunks).toHaveLength(10)
+		expect(chunks.flatMap(chunk => [...chunk]).every(sample => Math.abs(sample - 0.25) < 1e-6)).toBe(true)
 	})
 
 	it('drops oldest samples on overflow', () => {
@@ -155,12 +212,8 @@ describe('live audio buffer', () => {
 		buffer.start()
 		buffer.stop()
 
-		return new Promise(resolve => {
-			setTimeout(() => {
-				expect(chunkCount).toBe(0)
-				resolve(undefined)
-			}, 30)
-		})
+		jest.advanceTimersByTime(30)
+		expect(chunkCount).toBe(0)
 	})
 
 	it('drains at the exact chunk rate without structural deficit', () => {
@@ -181,19 +234,12 @@ describe('live audio buffer', () => {
 			buffer.push({ data: new Float32Array(320).fill(0.5), sampleRate: 16000, channels: 1 })
 		}
 
-		// Wait 1000ms for the timer to fire
-		return new Promise(resolve => {
-			setTimeout(() => {
-				buffer.stop()
-				// At 20ms intervals over 1000ms, we expect ~50 chunks.
-				// With the 0.9 factor bug we got ~56 (11% too many = silence gaps).
-				// With the fix, we expect 48-52 (some jitter is normal).
-				expect(chunks.length).toBeGreaterThanOrEqual(45)
-				expect(chunks.length).toBeLessThanOrEqual(55)
-				resolve(undefined)
-			}, 1050)
-		})
-	}, 15000)
+		// Advance deterministically; wall-clock sleeps made this test flaky in CI.
+		jest.advanceTimersByTime(1000)
+		buffer.stop()
+		// At 20ms intervals over 1000ms, we expect exactly 50 chunks.
+		expect(chunks.length).toBe(50)
+	})
 
 	it('truncates large pushes to the most recent samples without corrupting the ring', () => {
 		const buffer = new LiveAudioBuffer({
@@ -218,13 +264,9 @@ describe('live audio buffer', () => {
 		// and bufferedSamples reports 640 (the corrupted residue) instead.
 		expect(buffer.bufferedSamples).toBe(1600)
 
-		// Verify we can still drain without errors
-		return new Promise(resolve => {
-			setTimeout(() => {
-				buffer.stop()
-				resolve(undefined)
-			}, 30)
-		})
+		// Verify we can still drain without errors.
+		jest.advanceTimersByTime(30)
+		buffer.stop()
 	})
 
 	it('returns false on backpressure when buffer is full', () => {

@@ -21,6 +21,9 @@ export class LiveAudioBuffer {
 	#timer: NodeJS.Timeout | null = null
 	#onChunk: (chunk: Float32Array) => void
 	#started = false
+	#resampleSourceRate = 0
+	#resamplePosition = 0
+	#resampleInput = new Float32Array(0)
 
 	constructor(config: {
 		targetSampleRate: number
@@ -57,35 +60,22 @@ export class LiveAudioBuffer {
 		// Reject unsupported channel counts — passing raw 6-channel audio into
 		// a mono/stereo buffer would produce garbage, not intelligible speech.
 		if (frame.channels !== 1 && frame.channels !== 2) return false
+		if (this.#channels !== 1 && this.#channels !== 2) return false
+		if (!Number.isFinite(frame.sampleRate) || frame.sampleRate <= 0) return false
 
 		// Reject empty frames — nothing to buffer.
 		if (frame.data.length === 0) return false
 
-		let samples = frame.data
-
-		if (frame.channels === 2 && this.#channels === 1) {
-			const mono = new Float32Array(Math.floor(samples.length / 2))
-			for (let i = 0, j = 0; i < samples.length - 1; i += 2, j++) {
-				mono[j] = (samples[i]! + samples[i + 1]!) / 2
-			}
-
-			samples = mono
-		}
+		let samples = this.#convertChannels(frame.data, frame.channels)
+		if (samples.length === 0) return false
 
 		if (frame.sampleRate !== this.#sampleRate) {
-			const ratio = this.#sampleRate / frame.sampleRate
-			const outLength = Math.floor(samples.length * ratio)
-			const resampled = new Float32Array(outLength)
-			for (let i = 0; i < outLength; i++) {
-				const srcIdx = i / ratio
-				const idx0 = Math.floor(srcIdx)
-				const idx1 = Math.min(idx0 + 1, samples.length - 1)
-				const frac = srcIdx - idx0
-				resampled[i] = samples[idx0]! * (1 - frac) + samples[idx1]! * frac
-			}
-
-			samples = resampled
+			samples = this.#resample(samples, frame.sampleRate)
+		} else {
+			this.#resetResampler()
 		}
+
+		if (samples.length === 0) return false
 
 		const incoming = samples.length
 
@@ -141,6 +131,8 @@ export class LiveAudioBuffer {
 			clearInterval(this.#timer)
 			this.#timer = null
 		}
+
+		this.#resetResampler()
 	}
 
 	#drainChunk(): void {
@@ -149,13 +141,12 @@ export class LiveAudioBuffer {
 		const chunkSamples = this.#framesPerChunk * this.#channels
 		const chunk = new Float32Array(chunkSamples)
 
-		if (this.bufferedSamples >= chunkSamples) {
-			for (let i = 0; i < chunkSamples; i++) {
+		const samplesToCopy = Math.min(this.bufferedSamples, chunkSamples)
+		if (samplesToCopy > 0) {
+			for (let i = 0; i < samplesToCopy; i++) {
 				chunk[i] = this.#pcm[this.#readIndex]!
 				this.#readIndex = (this.#readIndex + 1) % this.#pcm.length
 			}
-		} else {
-			chunk.fill(0)
 		}
 
 		this.#onChunk(chunk)
@@ -164,5 +155,85 @@ export class LiveAudioBuffer {
 	#discardOldest(count: number): void {
 		const toDiscard = Math.min(count, this.bufferedSamples)
 		this.#readIndex = (this.#readIndex + toDiscard) % this.#pcm.length
+	}
+
+	#convertChannels(samples: Float32Array, inputChannels: 1 | 2): Float32Array {
+		if (inputChannels === this.#channels) return samples
+
+		if (inputChannels === 2 && this.#channels === 1) {
+			const frames = Math.floor(samples.length / 2)
+			const mono = new Float32Array(frames)
+			for (let i = 0, j = 0; j < frames; i += 2, j += 1) {
+				mono[j] = (samples[i]! + samples[i + 1]!) / 2
+			}
+
+			return mono
+		}
+
+		if (inputChannels === 1 && this.#channels === 2) {
+			const stereo = new Float32Array(samples.length * 2)
+			for (let i = 0, j = 0; i < samples.length; i += 1, j += 2) {
+				const sample = samples[i]!
+				stereo[j] = sample
+				stereo[j + 1] = sample
+			}
+
+			return stereo
+		}
+
+		return new Float32Array(0)
+	}
+
+	#resample(samples: Float32Array, sourceRate: number): Float32Array {
+		if (this.#resampleSourceRate !== sourceRate) {
+			this.#resampleSourceRate = sourceRate
+			this.#resamplePosition = 0
+			this.#resampleInput = new Float32Array(0)
+		}
+
+		const completeSamples = Math.floor(samples.length / this.#channels) * this.#channels
+		if (completeSamples <= 0) return new Float32Array(0)
+
+		const combined = new Float32Array(this.#resampleInput.length + completeSamples)
+		combined.set(this.#resampleInput, 0)
+		combined.set(samples.subarray(0, completeSamples), this.#resampleInput.length)
+
+		const inputFrames = Math.floor(combined.length / this.#channels)
+		if (inputFrames < 2) {
+			this.#resampleInput = combined
+			return new Float32Array(0)
+		}
+
+		const step = sourceRate / this.#sampleRate
+		const output: number[] = []
+		let position = this.#resamplePosition
+
+		while (position < inputFrames - 1) {
+			const frame0 = Math.floor(position)
+			const frame1 = Math.min(frame0 + 1, inputFrames - 1)
+			const frac = position - frame0
+
+			for (let channel = 0; channel < this.#channels; channel += 1) {
+				const sample0 = combined[frame0 * this.#channels + channel]!
+				const sample1 = combined[frame1 * this.#channels + channel]!
+				output.push(sample0 * (1 - frac) + sample1 * frac)
+			}
+
+			position += step
+		}
+
+		// Keep the interpolation base for the next push. Retaining one frame
+		// too early shifts the phase and drops samples at every chunk boundary.
+		const keepStartFrame = Math.max(0, Math.floor(position))
+		this.#resampleInput = combined.slice(keepStartFrame * this.#channels)
+		this.#resamplePosition = position - keepStartFrame
+
+		return Float32Array.from(output)
+	}
+
+	#resetResampler(): void {
+		this.#resampleSourceRate = 0
+		this.#resamplePosition = 0
+		this.#resampleInput = new Float32Array(0)
 	}
 }

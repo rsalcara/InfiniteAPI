@@ -33,7 +33,7 @@ export type AudioInputFrame = {
 	/** Sample rate of the provided data (e.g. 48000 from WebRTC). */
 	sampleRate: number
 	/** Channel count of the provided data (1 = mono, 2 = stereo). */
-	channels: number
+	channels: 1 | 2
 	/** Optional capture timestamp for diagnostics. */
 	timestamp?: number
 }

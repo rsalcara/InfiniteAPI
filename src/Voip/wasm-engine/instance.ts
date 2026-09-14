@@ -59,6 +59,8 @@ export type WasmEngineCallbacks = {
 	onAudioPlaybackStart?: () => void
 	onAudioPlaybackStop?: () => void
 	onAudioPlaybackData?: (audioData: Float32Array) => void
+	onVideoCaptureStart?: (config?: unknown) => void
+	onVideoCaptureStop?: () => void
 	cryptoHkdf?: (key: Uint8Array, salt: Uint8Array | null, info: Uint8Array, length: number) => Uint8Array
 	hmacSha256?: (data: Uint8Array, key: Uint8Array) => Uint8Array
 }
@@ -925,6 +927,65 @@ export class WasmEngine {
 		} catch {}
 	}
 
+	/**
+	 * Submit a raw video frame when the loaded Web/WASM build exposes its
+	 * capture binding. Android's JNI camera pipeline is a separate transport
+	 * and is intentionally not emulated by this Node wrapper.
+	 */
+	pushVideoFrame = (frame: import('../types.js').VideoInputFrame, maxFps = 30): boolean => {
+		this.#ensureInitialized()
+		if (!frame || !(frame.data instanceof Uint8Array) || frame.data.byteLength === 0) return false
+		if (!Number.isInteger(frame.width) || !Number.isInteger(frame.height) || frame.width <= 0 || frame.height <= 0)
+			return false
+		if (!Number.isFinite(frame.timestamp) || frame.timestamp < 0) return false
+
+		const sendFrame = (this.#instance as Record<string, unknown>).onVideoDataFromJs
+		if (typeof sendFrame !== 'function') return false
+
+		const fps = Math.max(1, Math.min(30, Math.trunc(maxFps) || 30))
+		const format = frame.format === 'rgba' ? 1 : 0
+		const ptr = this.#instance._malloc(frame.data.byteLength)
+		if (!ptr) return false
+
+		try {
+			const heapU8 = this.#instance.GROWABLE_HEAP_U8?.() ?? this.#instance.HEAPU8
+			if (!heapU8 || ptr + frame.data.byteLength > heapU8.length) return false
+			heapU8.set(frame.data, ptr)
+
+			try {
+				;(sendFrame as (...args: unknown[]) => unknown).call(
+					this.#instance,
+					ptr,
+					frame.data.byteLength,
+					frame.width,
+					frame.height,
+					fps,
+					format,
+					0
+				)
+			} catch (error: any) {
+				if (error?.name !== 'BindingError') throw error
+				;(sendFrame as (...args: unknown[]) => unknown).call(
+					this.#instance,
+					ptr,
+					frame.data.byteLength,
+					frame.width,
+					frame.height,
+					fps,
+					format
+				)
+			}
+
+			return true
+		} catch {
+			return false
+		} finally {
+			try {
+				this.#instance._free(ptr)
+			} catch {}
+		}
+	}
+
 	malloc = (size: number): number => {
 		this.#ensureInitialized()
 		return this.#instance._malloc(size)
@@ -1222,6 +1283,8 @@ export class WasmEngine {
 
 		WasmEngine.registerGlobalCallbackListener('startCaptureJS', () => callbacks.onAudioCaptureStart?.())
 		WasmEngine.registerGlobalCallbackListener('stopCaptureJS', () => callbacks.onAudioCaptureStop?.())
+		WasmEngine.registerGlobalCallbackListener('startVideoCaptureJS', data => callbacks.onVideoCaptureStart?.(data))
+		WasmEngine.registerGlobalCallbackListener('stopVideoCaptureJS', () => callbacks.onVideoCaptureStop?.())
 
 		if (callbacks.onAudioPlaybackInit) {
 			WasmEngine.registerGlobalCallbackListener('initPlaybackDriverJS', data => {
@@ -1468,8 +1531,14 @@ export class WasmEngine {
 				callbacks.onAudioPlaybackStop?.()
 				return 0
 			},
-			startVideoCaptureJS: () => 0,
-			stopVideoCaptureJS: () => 0,
+			startVideoCaptureJS: (data: unknown) => {
+				callbacks.onVideoCaptureStart?.(data)
+				return 0
+			},
+			stopVideoCaptureJS: () => {
+				callbacks.onVideoCaptureStop?.()
+				return 0
+			},
 			startDesktopCaptureJS: () => 0,
 			stopDesktopCaptureJS: () => 0,
 			dataChannelStateCallback: () => 0,
