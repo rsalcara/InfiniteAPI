@@ -29,15 +29,20 @@ export const createStartChatTrustSignalsBridgeProvider = (
 		throw new Error('start-chat trust-signals provider requires a valid http(s) url')
 	}
 	new URL(config.url)
+
 	if (config.token !== undefined && typeof config.token !== 'string') {
 		throw new Error('start-chat trust-signals provider token must be a string')
 	}
+
 	if (config.timeoutMs !== undefined && (!Number.isFinite(config.timeoutMs) || config.timeoutMs <= 0)) {
 		throw new Error('start-chat trust-signals provider timeoutMs must be positive')
 	}
+
 	const timeoutMs = config.timeoutMs ?? 10_000
 	const path = config.path ?? '/start-chat/trust-signals'
+
 	if (!path.startsWith('/')) throw new Error('start-chat trust-signals provider path must start with "/"')
+
 	const fetchImpl = config.fetch ?? fetch
 
 	return async ({ jid, useCase }) => {
@@ -57,18 +62,23 @@ export const createStartChatTrustSignalsBridgeProvider = (
 			const body = await readLimitedBody(response)
 			const parsed = JSON.parse(body) as Record<string, unknown>
 			const result: StartChatTrustSignals = {}
+
 			if (typeof parsed.is_sender_suspicious === 'boolean') {
 				result.isSenderSuspicious = parsed.is_sender_suspicious
 			}
+
 			if (typeof parsed.is_sender_new_account === 'boolean') {
 				result.isSenderNewAccount = parsed.is_sender_new_account
 			}
+
 			if (typeof parsed.created_ts === 'number' && Number.isSafeInteger(parsed.created_ts) && parsed.created_ts > 0) {
 				result.createdTs = parsed.created_ts
 			}
+
 			if (Object.keys(result).length === 0) {
 				throw new Error('start-chat trust-signals bridge returned no valid fields')
 			}
+
 			return result
 		} finally {
 			clearTimeout(timeout)
@@ -84,9 +94,11 @@ const readLimitedBody = async (response: Response): Promise<string> => {
 	const reader = response.body?.getReader()
 	if (!reader) {
 		const text = await response.text()
+
 		if (new TextEncoder().encode(text).byteLength > MAX_RESPONSE_BYTES) {
 			throw new Error('start-chat trust-signals bridge response exceeds size limit')
 		}
+
 		return text
 	}
 	const chunks: Uint8Array[] = []
@@ -95,10 +107,12 @@ const readLimitedBody = async (response: Response): Promise<string> => {
 		const { done, value } = await reader.read()
 		if (done) break
 		total += value.byteLength
+
 		if (total > MAX_RESPONSE_BYTES) {
 			await reader.cancel().catch(() => undefined)
 			throw new Error('start-chat trust-signals bridge response exceeds size limit')
 		}
+
 		chunks.push(value)
 	}
 	const decoder = new TextDecoder()

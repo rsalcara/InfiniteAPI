@@ -15,8 +15,8 @@ import type {
 import type { Label } from './Label'
 import type { LabelAssociation } from './LabelAssociation'
 import type { MessageUpsertType, MessageUserReceiptUpdate, WAMessage, WAMessageKey, WAMessageUpdate } from './Message'
-import type { ConnectionState, NewChatMessageCapInfo } from './State'
 import type { StartChatTrustSignalsState } from './Socket'
+import type { ConnectionState, NewChatMessageCapInfo } from './State'
 import type {
 	NativeAndroidIntegrityChallengeKind,
 	NativeAndroidIntegrityChallengeStatus,

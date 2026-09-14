@@ -2870,6 +2870,7 @@ export const makeSocket = (config: SocketConfig) => {
 				logger.warn({ error, jid }, 'start-chat trust signal observer failed')
 			}
 		}
+
 		if (!provider) {
 			const state: StartChatTrustSignalsState = { ...base, status: 'unavailable' }
 			await notify(state)
@@ -2886,6 +2887,7 @@ export const makeSocket = (config: SocketConfig) => {
 			if (raw?.createdTs !== undefined && Number.isSafeInteger(raw.createdTs) && raw.createdTs > 0) {
 				signals.createdTs = raw.createdTs
 			}
+
 			if (Object.keys(signals).length === 0) {
 				throw new Error('provider returned no valid start-chat trust fields')
 			}
