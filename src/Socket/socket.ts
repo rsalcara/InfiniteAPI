@@ -2870,25 +2870,23 @@ export const makeSocket = (config: SocketConfig) => {
 		const observedAt = Date.now()
 		const provider = runtimeConfig.startChatTrustSignalsProvider
 		const base = { jid, useCase: 'CHAT_FMX' as const, observedAt }
-		const notify = async (state: StartChatTrustSignalsState) => {
+		const notify = (state: StartChatTrustSignalsState) => {
 			ev.emit('start-chat.trust-signals', state)
 			const observer = runtimeConfig.onStartChatTrustSignals
 			if (!observer) return
 
-			try {
-				await promiseTimeout<void>(2_000, (resolve, reject) =>
-					Promise.resolve(observer(state))
-						.then(() => resolve())
-						.catch(reject)
-				)
-			} catch {
+			void promiseTimeout<void>(2_000, (resolve, reject) =>
+				Promise.resolve(observer(state))
+					.then(() => resolve())
+					.catch(reject)
+			).catch(() => {
 				logger.warn({ jid, reason: 'observer-timeout-or-error' }, 'start-chat trust signal observer failed')
-			}
+			})
 		}
 
 		if (!provider) {
 			const state: StartChatTrustSignalsState = { ...base, status: 'unavailable' }
-			await notify(state)
+			notify(state)
 			return state
 		}
 
@@ -2908,7 +2906,7 @@ export const makeSocket = (config: SocketConfig) => {
 			}
 
 			const state: StartChatTrustSignalsState = { ...base, status: 'known', signals }
-			await notify(state)
+			notify(state)
 			return state
 		} catch (error) {
 			const reason: StartChatTrustSignalsError =
@@ -2921,7 +2919,7 @@ export const makeSocket = (config: SocketConfig) => {
 							: 'provider-unavailable'
 			const state: StartChatTrustSignalsState = { ...base, status: 'unknown', error: reason }
 			logger.warn({ jid, useCase: 'CHAT_FMX', reason }, 'start-chat trust signal lookup unavailable')
-			await notify(state)
+			notify(state)
 			return state
 		}
 	}
