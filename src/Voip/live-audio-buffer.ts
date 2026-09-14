@@ -224,7 +224,10 @@ export class LiveAudioBuffer {
 
 		// Keep the interpolation base for the next push. Retaining one frame
 		// too early shifts the phase and drops samples at every chunk boundary.
-		const keepStartFrame = Math.max(0, Math.floor(position))
+		// Keep at least the final interpolation frame. When the phase advances
+		// past the current input window, retaining a frame beyond the window
+		// would make `slice()` return an empty buffer and silently reset phase.
+		const keepStartFrame = Math.min(Math.max(0, Math.floor(position)), inputFrames - 1)
 		this.#resampleInput = combined.slice(keepStartFrame * this.#channels)
 		this.#resamplePosition = position - keepStartFrame
 

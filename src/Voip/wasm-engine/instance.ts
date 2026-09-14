@@ -933,21 +933,23 @@ export class WasmEngine {
 	 * and is intentionally not emulated by this Node wrapper.
 	 */
 	pushVideoFrame = (frame: import('../types.js').VideoInputFrame, maxFps = 30): boolean => {
-		this.#ensureInitialized()
-		if (!frame || !(frame.data instanceof Uint8Array) || frame.data.byteLength === 0) return false
-		if (!Number.isInteger(frame.width) || !Number.isInteger(frame.height) || frame.width <= 0 || frame.height <= 0)
-			return false
-		if (!Number.isFinite(frame.timestamp) || frame.timestamp < 0) return false
-
-		const sendFrame = (this.#instance as Record<string, unknown>).onVideoDataFromJs
-		if (typeof sendFrame !== 'function') return false
-
-		const fps = Math.max(1, Math.min(30, Math.trunc(maxFps) || 30))
-		const format = frame.format === 'rgba' ? 1 : 0
-		const ptr = this.#instance._malloc(frame.data.byteLength)
-		if (!ptr) return false
-
+		let ptr = 0
 		try {
+			this.#ensureInitialized()
+			if (!frame || !(frame.data instanceof Uint8Array) || frame.data.byteLength === 0) return false
+			if (!Number.isInteger(frame.width) || !Number.isInteger(frame.height) || frame.width <= 0 || frame.height <= 0)
+				return false
+			if (!Number.isFinite(frame.timestamp) || frame.timestamp < 0) return false
+
+			const sendFrame = (this.#instance as Record<string, unknown>).onVideoDataFromJs
+			if (typeof sendFrame !== 'function') return false
+
+			const fps = Math.max(1, Math.min(30, Math.trunc(maxFps) || 30))
+			const format = frame.format === 'rgba' ? 1 : 0
+			const orientation = Number.isFinite(frame.orientation) ? Math.trunc(frame.orientation!) : 0
+			ptr = this.#instance._malloc(frame.data.byteLength)
+			if (!ptr) return false
+
 			const heapU8 = this.#instance.GROWABLE_HEAP_U8?.() ?? this.#instance.HEAPU8
 			if (!heapU8 || ptr + frame.data.byteLength > heapU8.length) return false
 			heapU8.set(frame.data, ptr)
@@ -961,28 +963,44 @@ export class WasmEngine {
 					frame.height,
 					fps,
 					format,
-					0
+					orientation
 				)
 			} catch (error: any) {
-				if (error?.name !== 'BindingError') throw error
-				;(sendFrame as (...args: unknown[]) => unknown).call(
-					this.#instance,
-					ptr,
-					frame.data.byteLength,
-					frame.width,
-					frame.height,
-					fps,
-					format
-				)
+				if (error?.name !== 'BindingError') return false
+				try {
+					;(sendFrame as (...args: unknown[]) => unknown).call(
+						this.#instance,
+						ptr,
+						frame.data.byteLength,
+						frame.width,
+						frame.height,
+						fps,
+						format
+					)
+				} catch (legacyError: any) {
+					if (legacyError?.name !== 'BindingError') return false
+					;(sendFrame as (...args: unknown[]) => unknown).call(
+						this.#instance,
+						ptr,
+						frame.data.byteLength,
+						frame.width,
+						frame.height,
+						orientation,
+						format,
+						frame.timestamp
+					)
+				}
 			}
 
 			return true
 		} catch {
 			return false
 		} finally {
-			try {
-				this.#instance._free(ptr)
-			} catch {}
+			if (ptr) {
+				try {
+					this.#instance._free(ptr)
+				} catch {}
+			}
 		}
 	}
 

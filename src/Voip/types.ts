@@ -44,6 +44,8 @@ export type VideoInputFrame = {
 	format: 'i420' | 'rgba'
 	width: number
 	height: number
+	/** Clockwise rotation in degrees, when supplied by the capture source. */
+	orientation?: number
 	/** Microseconds since stream start. */
 	timestamp: number
 }

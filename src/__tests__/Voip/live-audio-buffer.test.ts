@@ -163,6 +163,30 @@ describe('live audio buffer', () => {
 		expect(chunks.flatMap(chunk => [...chunk]).every(sample => Math.abs(sample - 0.25) < 1e-6)).toBe(true)
 	})
 
+	it('does not skip or duplicate samples at resampler push boundaries', () => {
+		const chunks: Float32Array[] = []
+		const buffer = new LiveAudioBuffer({
+			targetSampleRate: 16000,
+			targetChannels: 1,
+			framesPerChunk: 1,
+			maxBufferedMs: 100,
+			onChunk: chunk => chunks.push(chunk)
+		})
+
+		buffer.start()
+		for (let push = 0; push < 12; push += 1) {
+			const frame = new Float32Array(10)
+			for (let i = 0; i < frame.length; i += 1) frame[i] = push * 10 + i + 1
+			expect(buffer.push({ data: frame, sampleRate: 48000, channels: 1 })).toBe(true)
+		}
+		jest.advanceTimersByTime(40)
+		buffer.stop()
+
+		const output = chunks.map(chunk => chunk[0]!).slice(0, 40)
+		expect(output).toHaveLength(40)
+		expect(output).toEqual(Array.from({ length: 40 }, (_, i) => 1 + i * 3))
+	})
+
 	it('drops oldest samples on overflow', () => {
 		const buffer = new LiveAudioBuffer({
 			targetSampleRate: 16000,
