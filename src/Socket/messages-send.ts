@@ -27,6 +27,7 @@ import {
 	bindWaitForEvent,
 	buildDirectRecipientChatMerges,
 	captureProtocolWire,
+	classifyCurrentClientMessageSenderSource,
 	decryptMediaRetryData,
 	DEF_MEDIA_HOST,
 	emitMessageDeliveryState,
@@ -156,6 +157,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const assertNativeAndroidIntegrityReady = (
 		sock as typeof sock & { assertNativeAndroidIntegrityReady?: (egress?: 'message' | 'call') => void }
 	).assertNativeAndroidIntegrityReady
+	const currentClientSenderSource = () =>
+		classifyCurrentClientMessageSenderSource(config.transportProfile, authState.creds.me?.id)
 
 	/**
 	 * Newsletter (channel) link upgrade.
@@ -2985,6 +2988,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			)
 
 			const albumKey = albumRootMsg.key
+			albumRootMsg.senderSource = currentClientSenderSource()
 
 			// CRITICAL: Relay album root message to server first
 			// Without this, child media items reference a non-existent album key
@@ -3093,6 +3097,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							ephemeralExpiration: options.ephemeralExpiration,
 							mediaUploadTimeoutMs: options.mediaUploadTimeoutMs
 						})
+						mediaMsg.senderSource = currentClientSenderSource()
 
 						// Attach to parent album via messageAssociation (correct proto structure)
 						// Uses AssociationType.MEDIA_ALBUM and parentMessageKey as per WhatsApp protocol
@@ -3299,6 +3304,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					messageId: generateMessageIDV2(sock.user?.id),
 					...options
 				})
+				fullMsg.senderSource = currentClientSenderSource()
 				const isEventMsg = 'event' in content && !!content.event
 				const isDeleteMsg = 'delete' in content && !!content.delete
 				const isEditMsg = 'edit' in content && !!content.edit
@@ -3429,6 +3435,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					messageId: generateMessageIDV2(sock.user?.id),
 					...options
 				})
+				fullMsg.senderSource = currentClientSenderSource()
 				fullMsg.duration = durationSecs
 				// Store adapters commonly persist IMessage as JSON. This gateway-only
 				// property survives restart/getMessage while protobuf encoding ignores
