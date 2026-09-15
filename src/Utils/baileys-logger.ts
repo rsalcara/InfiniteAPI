@@ -12,6 +12,7 @@
  * @module Utils/baileys-logger
  */
 
+import type { MessageSenderSource } from '../Types/Message.js'
 import { obfuscateJid, sanitizeLogRecord, sanitizeLogString, sanitizeLogValue } from './log-redaction.js'
 import type { ILogger } from './logger.js'
 import { createStructuredLogger, type LogEntry, type LogLevel, StructuredLogger } from './structured-logger.js'
@@ -779,6 +780,38 @@ export function logMessageReceived(
 	const prefix = sessionName ? `[BAILEYS] [${sessionName}]` : '[BAILEYS]'
 	const type = formatMessageTypeTag(messageType)
 	console.log(`${prefix} 📥 Message received${type}: ${messageId} ← ${senderJid}`)
+}
+
+/**
+ * Log the protocol-level device attribution for a message.
+ *
+ * This logs the classification, its evidence and the raw protocol author JID.
+ * The line follows the existing TcToken/message console-log convention.
+ */
+export function logMessageSenderSource(
+	messageId: string,
+	conversationJid: string | null | undefined,
+	source: MessageSenderSource,
+	sessionName?: string
+): void {
+	if (!isBaileysLogEnabled()) return
+
+	const prefix = sessionName ? `[BAILEYS] [${sessionName}]` : '[BAILEYS]'
+	// Keep complete JIDs for operational correlation, but prevent malformed
+	// values from creating extra lines or terminal control sequences.
+	const safe = (value: string) =>
+		value.replace(/[\u0000-\u001f\u007f-\u009f]/g, char => `\\x${char.charCodeAt(0).toString(16).padStart(2, '0')}`)
+	const fields = [
+		...(source.authorDeviceJid === undefined ? [] : [`authorDeviceJid: ${safe(source.authorDeviceJid)}`]),
+		`msgId: ${safe(messageId)}`,
+		`source: ${safe(source.type)}`,
+		...(source.deviceId === undefined ? [] : [`deviceId: ${source.deviceId}`]),
+		`confidence: ${safe(source.confidence)}`,
+		`evidence: ${safe(source.evidence)}`,
+		...(source.platform === undefined ? [] : [`platform: ${safe(source.platform)}`])
+	]
+	const target = conversationJid ? ` → ${safe(conversationJid)}` : ''
+	console.log(`${prefix} 🧭 Sender source${target} { ${fields.join(', ')} }`)
 }
 
 /**

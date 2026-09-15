@@ -64,6 +64,7 @@ import {
 	getHistoryMsg,
 	isAppStateSyncIrrecoverable,
 	isMissingKeyError,
+	logMessageSenderSource,
 	MAX_SYNC_ATTEMPTS,
 	messageSenderSourceLogFields,
 	newLTHashState,
@@ -131,6 +132,7 @@ import {
 	isAnyPnUser,
 	jidDecode,
 	jidNormalizedUser,
+	jidWithoutExplicitZeroDevice,
 	reduceBinaryNodeToDictionary,
 	S_WHATSAPP_NET
 } from '../WABinary'
@@ -1730,12 +1732,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		let presence: PresenceData | undefined
 		const rawJid = attrs.from
 		const rawParticipant = attrs.participant || attrs.from
+		const canonicalJid = jidWithoutExplicitZeroDevice(rawJid)
 		if (!rawJid) {
 			logger.warn({ attrs }, 'handlePresenceUpdate: jid (attrs.from) is missing, skipping')
 			return
 		}
 
-		if (shouldIgnoreJid(rawJid) && rawJid !== S_WHATSAPP_NET) {
+		if (shouldIgnoreJid(canonicalJid!) && canonicalJid !== S_WHATSAPP_NET) {
 			return
 		}
 
@@ -2085,7 +2088,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		msg.senderSource ??= msg.key.fromMe
 			? classifyCurrentClientMessageSenderSource(config.transportProfile, authState.creds.me?.id)
 			: classifyMessageWithoutAuthorDevice()
-		logger.debug(messageSenderSourceLogFields(msg), 'message sender source classified')
+		// Keep device attribution in the normal operational log. The payload is
+		// redacted to identifiers and classification fields; message content is
+		// never included.
+		logger.info(messageSenderSourceLogFields(msg), 'message sender source classified')
+		logMessageSenderSource(msg.key.id || 'unknown', msg.key.remoteJid, msg.senderSource)
 		ev.emit('messages.upsert', { messages: [msg], type })
 
 		if (!!msg.pushName) {
