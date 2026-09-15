@@ -11,6 +11,8 @@
  *   - throws roll back the entire outer transaction (no commit);
  *   - sealed contexts reject detached-async writes (M5 hardening).
  */
+import { jest } from '@jest/globals'
+import { AsyncLocalStorage } from 'async_hooks'
 import type { SignalDataSet, SignalKeyStore } from '../../Types'
 import { addTransactionCapability } from '../../Utils/auth-utils'
 import type { ILogger } from '../../Utils/logger'
@@ -292,6 +294,255 @@ describe('addTransactionCapability — transactWith', () => {
 
 			expect(setCalls).toHaveLength(1)
 			expect(Buffer.from((setCalls[0] as any).session.deferred)).toEqual(Buffer.from([7]))
+		})
+	})
+
+	describe('lifecycle cleanup', () => {
+		it('disables its transaction async context when destroyed', async () => {
+			const disable = jest.spyOn(AsyncLocalStorage.prototype, 'disable')
+			try {
+				const { store } = makeStore()
+				const keys = addTransactionCapability(store, silentLogger(), {
+					maxCommitRetries: 1,
+					delayBetweenTriesMs: 1
+				})
+				await keys.destroy?.()
+				await keys.destroy?.()
+				expect(disable).toHaveBeenCalledTimes(1)
+			} finally {
+				disable.mockRestore()
+			}
+		})
+
+		it('waits for an in-flight transaction before destroying the capability', async () => {
+			const { store } = makeStore()
+			const keys = addTransactionCapability(store, silentLogger(), {
+				maxCommitRetries: 1,
+				delayBetweenTriesMs: 1
+			})
+			let release!: () => void
+			let started!: () => void
+			const startedPromise = new Promise<void>(resolve => {
+				started = resolve
+			})
+			const releasePromise = new Promise<void>(resolve => {
+				release = resolve
+			})
+
+			const transaction = keys.transactWith({ records: [{ type: 'session', id: 'lifecycle' }] }, async () => {
+				started()
+				await releasePromise
+			})
+			await startedPromise
+
+			let destroySettled = false
+			const destroy = (async () => {
+				await keys.destroy?.()
+				destroySettled = true
+			})()
+			await delay(10)
+			expect(destroySettled).toBe(false)
+
+			release()
+			await Promise.all([transaction, destroy])
+			expect(destroySettled).toBe(true)
+			await expect(
+				keys.transactWith({ records: [{ type: 'session', id: 'after-destroy' }] }, async () => {})
+			).rejects.toThrow('Transaction capability destroyed')
+		})
+
+		it('drops detached writes after destroy instead of bypassing the lifecycle guard', async () => {
+			const { store, setCalls } = makeStore()
+			const keys = addTransactionCapability(store, silentLogger(), {
+				maxCommitRetries: 1,
+				delayBetweenTriesMs: 1
+			})
+
+			await keys.destroy?.()
+			await keys.set({ session: { detached: Buffer.from([1]) as any } })
+
+			expect(setCalls).toHaveLength(0)
+		})
+
+		it('waits for an admitted direct write before completing destroy', async () => {
+			const { store } = makeStore()
+			let releaseWrite!: () => void
+			let writeStarted!: () => void
+			const writeStartedPromise = new Promise<void>(resolve => {
+				writeStarted = resolve
+			})
+			const writeRelease = new Promise<void>(resolve => {
+				releaseWrite = resolve
+			})
+
+			const originalSet = store.set
+			let blocked = true
+			store.set = async data => {
+				if (blocked) {
+					blocked = false
+					writeStarted()
+					await writeRelease
+				}
+
+				await originalSet(data)
+			}
+
+			const keys = addTransactionCapability(store, silentLogger(), {
+				maxCommitRetries: 1,
+				delayBetweenTriesMs: 1
+			})
+			const write = keys.set({ session: { direct: Buffer.from([1]) as any } })
+			await writeStartedPromise
+
+			let destroySettled = false
+			const destroy = (async () => {
+				await keys.destroy?.()
+				destroySettled = true
+			})()
+			await delay(10)
+			expect(destroySettled).toBe(false)
+
+			releaseWrite()
+			await Promise.all([write, destroy])
+			expect(destroySettled).toBe(true)
+		})
+
+		it('does not drop queued buckets from an admitted multi-type write during destroy', async () => {
+			const { store, data } = makeStore()
+			let releaseBlocker!: () => void
+			let blockerStarted!: () => void
+			let sessionWritten!: () => void
+			const blockerStartedPromise = new Promise<void>(resolve => {
+				blockerStarted = resolve
+			})
+			const blockerRelease = new Promise<void>(resolve => {
+				releaseBlocker = resolve
+			})
+			const sessionWrittenPromise = new Promise<void>(resolve => {
+				sessionWritten = resolve
+			})
+
+			const originalSet = store.set
+			store.set = async value => {
+				const senderKeys = (value as any)['sender-key']
+				if (senderKeys?.blocker) {
+					blockerStarted()
+					await blockerRelease
+				}
+
+				await originalSet(value)
+				if ((value as any).session?.candidate) sessionWritten()
+			}
+
+			const keys = addTransactionCapability(store, silentLogger(), {
+				maxCommitRetries: 1,
+				delayBetweenTriesMs: 1
+			})
+
+			// Hold the sender-key lock so the second call writes its session
+			// bucket first and queues its sender-key bucket behind this write.
+			const blocker = keys.set({ 'sender-key': { blocker: Buffer.from([1]) as any } })
+			await blockerStartedPromise
+
+			const admitted = keys.set({
+				session: { candidate: Buffer.from([2]) as any },
+				'sender-key': { candidate: Buffer.from([3]) as any }
+			})
+			await sessionWrittenPromise
+
+			let destroySettled = false
+			const destroy = (async () => {
+				await keys.destroy?.()
+				destroySettled = true
+			})()
+			await delay(10)
+			expect(destroySettled).toBe(false)
+
+			releaseBlocker()
+			await Promise.all([blocker, admitted, destroy])
+
+			expect(data.session?.candidate).toEqual(Buffer.from([2]))
+			expect(data['sender-key']?.candidate).toEqual(Buffer.from([3]))
+			expect(destroySettled).toBe(true)
+		})
+
+		it('keeps its async context enabled after a drain timeout while a transaction is active', async () => {
+			jest.useFakeTimers()
+			const disable = jest.spyOn(AsyncLocalStorage.prototype, 'disable')
+			try {
+				const { store } = makeStore()
+				const keys = addTransactionCapability(store, silentLogger(), {
+					maxCommitRetries: 1,
+					delayBetweenTriesMs: 1
+				})
+				let release!: () => void
+				let started!: () => void
+				const startedPromise = new Promise<void>(resolve => {
+					started = resolve
+				})
+				const releasePromise = new Promise<void>(resolve => {
+					release = resolve
+				})
+
+				const transaction = keys.transactWith({ records: [{ type: 'session', id: 'timeout' }] }, async () => {
+					started()
+					await releasePromise
+				})
+				await startedPromise
+
+				const destroy = keys.destroy?.()
+				await jest.advanceTimersByTimeAsync(5_000)
+				await destroy
+				expect(disable).not.toHaveBeenCalled()
+
+				release()
+				await transaction
+				expect(disable).toHaveBeenCalledTimes(1)
+			} finally {
+				disable.mockRestore()
+				jest.useRealTimers()
+			}
+		})
+
+		it('keeps its async context enabled after a drain timeout while a direct write is active', async () => {
+			jest.useFakeTimers()
+			const disable = jest.spyOn(AsyncLocalStorage.prototype, 'disable')
+			try {
+				const { store } = makeStore()
+				let releaseWrite!: () => void
+				let writeStarted!: () => void
+				const writeStartedPromise = new Promise<void>(resolve => {
+					writeStarted = resolve
+				})
+				const writeRelease = new Promise<void>(resolve => {
+					releaseWrite = resolve
+				})
+				const originalSet = store.set
+				store.set = async value => {
+					writeStarted()
+					await writeRelease
+					await originalSet(value)
+				}
+
+				const keys = addTransactionCapability(store, silentLogger(), {
+					maxCommitRetries: 1,
+					delayBetweenTriesMs: 1
+				})
+				const write = keys.set({ session: { timeout: Buffer.from([1]) as any } })
+				await writeStartedPromise
+
+				const destroy = keys.destroy?.()
+				await jest.advanceTimersByTimeAsync(5_000)
+				await destroy
+				expect(disable).not.toHaveBeenCalled()
+
+				releaseWrite()
+				await write
+				expect(disable).toHaveBeenCalledTimes(1)
+			} finally {
+				disable.mockRestore()
+				jest.useRealTimers()
+			}
 		})
 	})
 

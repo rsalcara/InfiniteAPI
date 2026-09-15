@@ -1,3 +1,5 @@
+import { jest } from '@jest/globals'
+import { AsyncLocalStorage } from 'async_hooks'
 import { createInboundTaskAdmission } from '../../Socket/inbound-task-admission'
 
 const deferred = () => {
@@ -11,6 +13,19 @@ const deferred = () => {
 const flushAsyncWork = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 
 describe('inbound task admission', () => {
+	it('disables its per-socket async context exactly once after drain', async () => {
+		const disable = jest.spyOn(AsyncLocalStorage.prototype, 'disable')
+		try {
+			const admission = createInboundTaskAdmission(() => {})
+			admission.close()
+			await admission.drain()
+			await admission.drain()
+			expect(disable).toHaveBeenCalledTimes(1)
+		} finally {
+			disable.mockRestore()
+		}
+	})
+
 	it('rejects new top-level work after close and drains admitted parent and derived work', async () => {
 		const errors: Array<{ error: Error; identifier: string }> = []
 		const admission = createInboundTaskAdmission((error, identifier) => errors.push({ error, identifier }))
