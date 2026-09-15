@@ -2085,7 +2085,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		msg.senderSource ??= msg.key.fromMe
 			? classifyCurrentClientMessageSenderSource(config.transportProfile, authState.creds.me?.id)
 			: classifyMessageWithoutAuthorDevice()
-		logger.info(messageSenderSourceLogFields(msg), 'message sender source classified')
+		logger.debug(messageSenderSourceLogFields(msg), 'message sender source classified')
 		ev.emit('messages.upsert', { messages: [msg], type })
 
 		if (!!msg.pushName) {

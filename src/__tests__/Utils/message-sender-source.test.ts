@@ -15,6 +15,14 @@ describe('message sender source classification', () => {
 		})
 	})
 
+	it('does not treat a bare user JID as device zero evidence', () => {
+		expect(classifyProtocolMessageSenderSource({ authorJid: '5511000000000@s.whatsapp.net' })).toEqual({
+			type: 'unknown',
+			confidence: 'unknown',
+			evidence: 'missing_author_device'
+		})
+	})
+
 	it('classifies a positive device suffix as a linked device', () => {
 		expect(classifyProtocolMessageSenderSource({ authorJid: '5511000000000:7@s.whatsapp.net' })).toEqual({
 			type: 'linked_device',
@@ -28,6 +36,21 @@ describe('message sender source classification', () => {
 		expect(
 			classifyProtocolMessageSenderSource({
 				authorJid: '5511000000000:7@s.whatsapp.net',
+				currentDeviceJids: ['5511000000000:7@s.whatsapp.net'],
+				currentTransportProfile: 'web'
+			})
+		).toMatchObject({
+			type: 'web',
+			deviceId: 7,
+			platform: 'WEB',
+			evidence: 'current_client_transport'
+		})
+	})
+
+	it('matches equivalent c.us and s.whatsapp.net own-device forms', () => {
+		expect(
+			classifyProtocolMessageSenderSource({
+				authorJid: '5511000000000:7@c.us',
 				currentDeviceJids: ['5511000000000:7@s.whatsapp.net'],
 				currentTransportProfile: 'web'
 			})
@@ -63,7 +86,7 @@ describe('message sender source classification', () => {
 		expect(classifyProtocolMessageSenderSource({ authorJid: 'status@broadcast' }).type).toBe('unknown')
 	})
 
-	it('is content agnostic across representative message payloads', () => {
+	it('exposes redacted attribution log fields for representative payloads', () => {
 		const source = classifyProtocolMessageSenderSource({ authorJid: '5511000000000:7@s.whatsapp.net' })
 		const messages = [
 			{ key: { id: 'txt', fromMe: false }, message: { conversation: 'redacted' }, senderSource: source },
@@ -112,6 +135,15 @@ describe('message sender source classification', () => {
 		expect(classifyCurrentClientMessageSenderSource('native_android', '5511000000000:3@s.whatsapp.net')).toMatchObject({
 			type: 'linked_device',
 			deviceId: 3,
+			platform: 'ANDROID',
+			evidence: 'current_client_transport'
+		})
+	})
+
+	it('keeps an explicit current-client device zero as primary', () => {
+		expect(classifyCurrentClientMessageSenderSource('native_android', '5511000000000:0@s.whatsapp.net')).toMatchObject({
+			type: 'primary_device',
+			deviceId: 0,
 			platform: 'ANDROID',
 			evidence: 'current_client_transport'
 		})

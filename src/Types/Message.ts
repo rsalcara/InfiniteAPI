@@ -10,11 +10,7 @@ import type { CacheStore } from './Socket'
 export { proto as WAProto }
 export type MessageSenderSourceType = 'primary_device' | 'linked_device' | 'web' | 'unknown'
 export type MessageSenderSourceConfidence = 'high' | 'unknown'
-export type MessageSenderSourceEvidence =
-	| 'author_device_jid'
-	| 'author_device_jid_and_platform'
-	| 'current_client_transport'
-	| 'missing_author_device'
+export type MessageSenderSourceEvidence = 'author_device_jid' | 'current_client_transport' | 'missing_author_device'
 
 /**
  * Protocol-level attribution of the device that authored a message.

@@ -1,7 +1,8 @@
 # Message sender source attribution
 
 InfiniteAPI now exposes `message.senderSource` on `messages.upsert` messages and
-writes a redacted structured log entry named `message sender source classified`.
+writes a redacted debug-level structured log entry named
+`message sender source classified`.
 
 ## Evidence model
 
@@ -17,9 +18,9 @@ InfiniteAPI captures the stanza's `from`/`participant` author before
 - `deviceId: 0` is classified as `primary_device`;
 - `deviceId > 0` is classified as `linked_device`;
 - `web` is emitted only when the current configured client is the author and
-  its transport profile is `web`, or a trusted platform value explicitly says
-  Web;
-- missing or lossy historical author data is `unknown`.
+  its transport profile is `web`;
+- missing/lossy author data, including bare user JIDs without an explicit device
+  suffix, is `unknown`.
 
 The protocol does not reliably disclose whether an unrelated linked device is
 Chrome, Desktop, Android or another companion. The implementation deliberately

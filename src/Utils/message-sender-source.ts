@@ -2,13 +2,11 @@ import type { ConnectionTransportProfile, MessageSenderSource, WAMessage } from 
 import { jidDecode } from '../WABinary'
 
 const USER_JID_SERVERS = new Set(['c.us', 's.whatsapp.net', 'lid', 'hosted', 'hosted.lid'])
-const WEB_PLATFORM_TYPES = new Set(['CHROME', 'FIREFOX', 'IE', 'OPERA', 'SAFARI', 'EDGE', 'DESKTOP', 'UWP'])
 
 type ClassifyProtocolSenderOptions = {
 	authorJid?: string
 	currentDeviceJids?: readonly (string | undefined)[]
 	currentTransportProfile?: ConnectionTransportProfile
-	knownPlatform?: string
 }
 
 const unknownSenderSource = (): MessageSenderSource => ({
@@ -17,17 +15,38 @@ const unknownSenderSource = (): MessageSenderSource => ({
 	evidence: 'missing_author_device'
 })
 
+const explicitDeviceId = (jid: string | undefined): number | undefined => {
+	if (typeof jid !== 'string') return undefined
+
+	const atIndex = jid.indexOf('@')
+	if (atIndex <= 0) return undefined
+
+	const user = jid.slice(0, atIndex)
+	const deviceIndex = user.lastIndexOf(':')
+	if (deviceIndex < 0) return undefined
+
+	const deviceText = user.slice(deviceIndex + 1)
+	if (!/^\d+$/.test(deviceText)) return undefined
+
+	const device = Number(deviceText)
+	return Number.isSafeInteger(device) ? device : undefined
+}
+
+const canonicalUserServer = (server: string) => (server === 'c.us' || server === 's.whatsapp.net' ? 'pn' : server)
+
 const isCurrentDevice = (
 	author: NonNullable<ReturnType<typeof jidDecode>>,
+	authorDeviceId: number,
 	currentDeviceJids: readonly (string | undefined)[]
 ) =>
 	currentDeviceJids.some(currentJid => {
 		const current = jidDecode(currentJid)
+		const currentDeviceId = explicitDeviceId(currentJid)
 		return (
 			!!current &&
 			current.user === author.user &&
-			current.server === author.server &&
-			(current.device ?? 0) === (author.device ?? 0)
+			canonicalUserServer(current.server) === canonicalUserServer(author.server) &&
+			currentDeviceId === authorDeviceId
 		)
 	})
 
@@ -39,32 +58,21 @@ const isCurrentDevice = (
 export const classifyProtocolMessageSenderSource = ({
 	authorJid,
 	currentDeviceJids = [],
-	currentTransportProfile,
-	knownPlatform
+	currentTransportProfile
 }: ClassifyProtocolSenderOptions): MessageSenderSource => {
 	const author = jidDecode(authorJid)
 	if (!author || !author.user || !USER_JID_SERVERS.has(author.server)) return unknownSenderSource()
 	if (author.user === 'server' || author.user === '0') return unknownSenderSource()
 
-	const deviceId = author.device ?? 0
+	const deviceId = explicitDeviceId(authorJid)
+	if (deviceId === undefined) return unknownSenderSource()
 	if (!Number.isInteger(deviceId) || deviceId < 0) return unknownSenderSource()
 
 	if (deviceId === 0) {
 		return { type: 'primary_device', deviceId, confidence: 'high', evidence: 'author_device_jid' }
 	}
 
-	const platform = knownPlatform?.trim().toUpperCase()
-	if (platform) {
-		return {
-			type: WEB_PLATFORM_TYPES.has(platform) ? 'web' : 'linked_device',
-			deviceId,
-			platform,
-			confidence: 'high',
-			evidence: 'author_device_jid_and_platform'
-		}
-	}
-
-	if (currentTransportProfile && isCurrentDevice(author, currentDeviceJids)) {
+	if (currentTransportProfile && isCurrentDevice(author, deviceId, currentDeviceJids)) {
 		return {
 			type: currentTransportProfile === 'web' ? 'web' : 'linked_device',
 			deviceId,
@@ -81,11 +89,22 @@ export const classifyCurrentClientMessageSenderSource = (
 	transportProfile: ConnectionTransportProfile,
 	currentDeviceJid?: string
 ): MessageSenderSource => {
-	const deviceId = jidDecode(currentDeviceJid)?.device
+	const deviceId = explicitDeviceId(currentDeviceJid)
+	const platform = transportProfile === 'web' ? 'WEB' : 'ANDROID'
+	if (deviceId === 0) {
+		return {
+			type: 'primary_device',
+			deviceId,
+			platform,
+			confidence: 'high',
+			evidence: 'current_client_transport'
+		}
+	}
+
 	return {
 		type: transportProfile === 'web' ? 'web' : 'linked_device',
 		...(deviceId === undefined ? {} : { deviceId }),
-		platform: transportProfile === 'web' ? 'WEB' : 'ANDROID',
+		platform,
 		confidence: 'high',
 		evidence: 'current_client_transport'
 	}

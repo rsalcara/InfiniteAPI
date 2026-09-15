@@ -1262,7 +1262,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								messageTimestamp: +child.attrs.t!
 							}).toJSON() as WAMessage
 							fullMessage.senderSource = classifyProtocolMessageSenderSource({
-								authorJid: from,
+								authorJid: author,
 								currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],
 								currentTransportProfile: config.transportProfile
 							})
@@ -4589,7 +4589,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			// use existing call info to populate this event
 			if (existingCall) {
-				if (call.senderSource?.type === 'unknown' && existingCall.senderSource) {
+				if (existingCall.senderSource) {
 					call.senderSource = existingCall.senderSource
 				}
 
