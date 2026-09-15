@@ -1044,7 +1044,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					return
 				}
 
-				ev.emit('text-status-side-sub.update', { from: node.attrs.from, hash: update.hash })
+				ev.emit('text-status-side-sub.update', {
+					from: jidWithoutExplicitZeroDevice(node.attrs.from),
+					hash: update.hash
+				})
 				logger.debug({ opName }, 'received text-status side-sub notification')
 			} catch (err) {
 				logger.error({ err, opName }, 'failed to parse text-status side-sub notification')
@@ -1066,7 +1069,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					return
 				}
 
-				ev.emit('text-status.update', { from: node.attrs.from, ...update })
+				ev.emit('text-status.update', {
+					from: jidWithoutExplicitZeroDevice(node.attrs.from),
+					...update,
+					jid: jidWithoutExplicitZeroDevice(update.jid)!
+				})
 				logger.debug({ opName, jid: update.jid }, 'received text-status notification')
 			} catch (err) {
 				logger.error({ err, opName }, 'failed to parse text-status notification')
@@ -4472,7 +4479,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const userNodes = getBinaryNodeChildren(parentNode, 'user')
 		if (!userNodes.length) return undefined
 		return userNodes.map(u => ({
-			jid: u.attrs.jid,
+			jid: jidWithoutExplicitZeroDevice(u.attrs.jid),
 			state: u.attrs.state,
 			userPn: u.attrs.user_pn,
 			type: u.attrs.type
@@ -4493,17 +4500,18 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const status = getCallStatusFromNode(infoChild)
 
 			const callId = infoChild.attrs['call-id']!
-			const from = infoChild.attrs.from! || infoChild.attrs['call-creator']!
+			const rawFrom = infoChild.attrs.from || infoChild.attrs['call-creator']!
+			const from = jidWithoutExplicitZeroDevice(rawFrom)!
 
 			const call: WACallEvent = {
-				chatId: attrs.from!,
+				chatId: jidWithoutExplicitZeroDevice(attrs.from)!,
 				from,
 				id: callId,
 				date: new Date(+attrs.t! * 1000),
 				offline: !!attrs.offline,
 				status,
 				senderSource: classifyProtocolMessageSenderSource({
-					authorJid: from,
+					authorJid: rawFrom,
 					currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],
 					currentTransportProfile: config.transportProfile
 				})
@@ -4520,7 +4528,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			if (status === 'offer') {
 				call.isVideo = !!getBinaryNodeChild(infoChild, 'video')
 				call.isGroup = infoChild.attrs.type === 'group' || !!infoChild.attrs['group-jid']
-				call.groupJid = infoChild.attrs['group-jid']
+				call.groupJid = jidWithoutExplicitZeroDevice(infoChild.attrs['group-jid'])
 				// Extract and sanitize caller phone number
 				call.callerPn = sanitizeCallerPn(infoChild.attrs['caller_pn'])
 
@@ -4539,7 +4547,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				// Extract link_info (who created the link)
 				const linkInfo = getBinaryNodeChild(infoChild, 'link_info')
 				if (linkInfo) {
-					call.linkCreator = linkInfo.attrs.link_creator
+					call.linkCreator = jidWithoutExplicitZeroDevice(linkInfo.attrs.link_creator)
 					call.linkCreatorPn = linkInfo.attrs.link_creator_pn
 				}
 
@@ -4622,16 +4630,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				resolveLidToPn(call.from, callLidMapping, logger),
 				resolveLidToPn(call.linkCreator, callLidMapping, logger)
 			])
-			if (resolvedChatId) call.chatId = resolvedChatId
-			if (resolvedFrom) call.from = resolvedFrom
-			if (resolvedLinkCreator) call.linkCreator = resolvedLinkCreator
+			if (resolvedChatId) call.chatId = jidWithoutExplicitZeroDevice(resolvedChatId)!
+			if (resolvedFrom) call.from = jidWithoutExplicitZeroDevice(resolvedFrom)!
+			if (resolvedLinkCreator) call.linkCreator = jidWithoutExplicitZeroDevice(resolvedLinkCreator)
 			// Resolve participant JIDs in parallel
 			if (call.participants) {
 				await Promise.all(
 					call.participants.map(async p => {
 						if (p.jid) {
 							const resolved = p.userPn || (await resolveLidToPn(p.jid, callLidMapping, logger))
-							if (resolved) p.jid = resolved
+							if (resolved) p.jid = jidWithoutExplicitZeroDevice(resolved)
 						}
 					})
 				)
@@ -4995,8 +5003,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// (call link relays may arrive without these attrs — just log them)
 			if (callId && rawCallCreator) {
 				// Resolve LID→PN for call creator
-				const callCreator =
+				const callCreator = jidWithoutExplicitZeroDevice(
 					(await resolveLidToPn(rawCallCreator, signalRepository.lidMapping, logger)) || rawCallCreator
+				)!
 				const senderSource = classifyProtocolMessageSenderSource({
 					authorJid: rawCallCreator,
 					currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],

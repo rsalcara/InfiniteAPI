@@ -43,5 +43,6 @@ messages can be `unknown` when the original device JID was not preserved.
 
 The public field is additive and optional, so consumers that ignore it retain
 the existing event shape and behavior. The decoder preserves device-zero only
-in the author-attribution path; it does not change the established
-conversation-key contract or the values passed to `shouldIgnoreJid`.
+in the author-attribution path; downstream public event boundaries restore the
+established conversation-key contract before calling `shouldIgnoreJid` or
+emitting a consumer event.
