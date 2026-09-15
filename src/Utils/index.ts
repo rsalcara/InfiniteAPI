@@ -36,6 +36,7 @@ export * from './outbound-policy'
 export * from './start-chat-trust-signals-provider'
 export * from './message-delivery-state'
 export * from './message-ack-error'
+export * from './message-sender-source'
 export { isExpectedSocketTeardownError } from './socket-teardown'
 
 // === Identity and Session Management ===

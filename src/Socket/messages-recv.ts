@@ -37,6 +37,7 @@ import {
 	aesEncryptGCM,
 	buildMessageAccountRestrictionDiagnostic,
 	canonicalizeReceiptChatJid,
+	classifyProtocolMessageSenderSource,
 	cleanMessage,
 	cleanupCorruptedSession,
 	compactError,
@@ -1260,6 +1261,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								message: messageProto,
 								messageTimestamp: +child.attrs.t!
 							}).toJSON() as WAMessage
+							fullMessage.senderSource = classifyProtocolMessageSenderSource({
+								authorJid: from,
+								currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],
+								currentTransportProfile: config.transportProfile
+							})
 							await upsertMessage(fullMessage, 'append')
 							logger.debug('Processed plaintext newsletter message')
 						} catch (error) {
@@ -3871,6 +3877,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						// remoteJidUsername, etc.). Reattach the full key after conversion.
 						const fullMsg = proto.WebMessageInfo.fromObject(msg) as WAMessage
 						fullMsg.key = { ...fullMsg.key, ...extendedKey }
+						fullMsg.senderSource = classifyProtocolMessageSenderSource({
+							authorJid: node.attrs.participant || remoteJid,
+							currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],
+							currentTransportProfile: config.transportProfile
+						})
 						await upsertMessage(fullMsg, 'append')
 					}
 				})
@@ -3925,6 +3936,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				config.onMessageQuarantine
 			)
 			rememberRawProtocolSender(msg, author)
+			msg.senderSource = classifyProtocolMessageSenderSource({
+				authorJid: author,
+				currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],
+				currentTransportProfile: config.transportProfile
+			})
 
 			const alt = msg.key.participantAlt || msg.key.remoteJidAlt
 			// Handle LID/PN mappings with hybrid approach:
@@ -4481,7 +4497,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				id: callId,
 				date: new Date(+attrs.t! * 1000),
 				offline: !!attrs.offline,
-				status
+				status,
+				senderSource: classifyProtocolMessageSenderSource({
+					authorJid: from,
+					currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],
+					currentTransportProfile: config.transportProfile
+				})
 			}
 
 			if (status === 'relaylatency') {
@@ -4568,6 +4589,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			// use existing call info to populate this event
 			if (existingCall) {
+				if (call.senderSource?.type === 'unknown' && existingCall.senderSource) {
+					call.senderSource = existingCall.senderSource
+				}
+
 				call.isVideo = call.isVideo ?? existingCall.isVideo
 				call.isGroup = call.isGroup ?? existingCall.isGroup
 				call.groupJid = call.groupJid ?? existingCall.groupJid
@@ -4607,6 +4632,19 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					})
 				)
 			}
+
+			logger.info(
+				{
+					callId: call.id,
+					callStatus: call.status,
+					senderSource: call.senderSource?.type ?? 'unknown',
+					senderDeviceId: call.senderSource?.deviceId,
+					senderPlatform: call.senderSource?.platform,
+					senderSourceConfidence: call.senderSource?.confidence ?? 'unknown',
+					senderSourceEvidence: call.senderSource?.evidence ?? 'missing_author_device'
+				},
+				'call sender source classified'
+			)
 
 			ev.emit('call', [call])
 		}
@@ -4954,7 +4992,24 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				// Resolve LID→PN for call creator
 				const callCreator =
 					(await resolveLidToPn(rawCallCreator, signalRepository.lidMapping, logger)) || rawCallCreator
+				const senderSource = classifyProtocolMessageSenderSource({
+					authorJid: rawCallCreator,
+					currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],
+					currentTransportProfile: config.transportProfile
+				})
 				logger.debug({ callId, callCreator, uuid: node.attrs.uuid }, 'received relay info')
+				logger.info(
+					{
+						callId,
+						callStatus: 'relay',
+						senderSource: senderSource.type,
+						senderDeviceId: senderSource.deviceId,
+						senderPlatform: senderSource.platform,
+						senderSourceConfidence: senderSource.confidence,
+						senderSourceEvidence: senderSource.evidence
+					},
+					'call sender source classified'
+				)
 				ev.emit('call', [
 					{
 						chatId: callCreator,
@@ -4962,7 +5017,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						id: callId,
 						date: new Date(),
 						offline: false,
-						status: 'relay' as WACallUpdateType
+						status: 'relay' as WACallUpdateType,
+						senderSource
 					}
 				])
 			} else {
@@ -5015,6 +5071,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 
 				const protoMsg = proto.WebMessageInfo.fromObject(msg) as WAMessage
+				protoMsg.senderSource =
+					call.senderSource ??
+					classifyProtocolMessageSenderSource({
+						authorJid: call.from,
+						currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],
+						currentTransportProfile: config.transportProfile
+					})
 				await upsertMessage(protoMsg, call.offline ? 'append' : 'notify')
 			}
 		})

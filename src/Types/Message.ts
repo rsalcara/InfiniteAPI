@@ -8,11 +8,33 @@ import type { CacheStore } from './Socket'
 
 // export the WAMessage Prototypes
 export { proto as WAProto }
+export type MessageSenderSourceType = 'primary_device' | 'linked_device' | 'web' | 'unknown'
+export type MessageSenderSourceConfidence = 'high' | 'unknown'
+export type MessageSenderSourceEvidence =
+	| 'author_device_jid'
+	| 'author_device_jid_and_platform'
+	| 'current_client_transport'
+	| 'missing_author_device'
+
+/**
+ * Protocol-level attribution of the device that authored a message.
+ * This does not claim that a person manually typed the message.
+ */
+export type MessageSenderSource = {
+	type: MessageSenderSourceType
+	deviceId?: number
+	platform?: string
+	confidence: MessageSenderSourceConfidence
+	evidence: MessageSenderSourceEvidence
+}
+
 export type WAMessage = proto.IWebMessageInfo & {
 	key: WAMessageKey
 	messageStubParameters?: any
 	category?: string
 	retryCount?: number
+	/** Captured before public JID normalization removes the device suffix. */
+	senderSource?: MessageSenderSource
 }
 export type WAMessageContent = proto.IMessage
 export type WAContactMessage = proto.Message.IContactMessage

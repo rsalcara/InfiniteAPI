@@ -49,6 +49,8 @@ import {
 	buildCompanionDeviceProps,
 	chatModificationToAppPatch,
 	type ChatMutationMap,
+	classifyCurrentClientMessageSenderSource,
+	classifyMessageWithoutAuthorDevice,
 	decodePatches,
 	decodeSyncdSnapshot,
 	encodeSignedDeviceIdentity,
@@ -63,6 +65,7 @@ import {
 	isAppStateSyncIrrecoverable,
 	isMissingKeyError,
 	MAX_SYNC_ATTEMPTS,
+	messageSenderSourceLogFields,
 	newLTHashState,
 	OrphanQueue,
 	parseAndInjectE2ESessions,
@@ -2079,6 +2082,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	const upsertMessage = ev.createBufferedFunction(async (msg: WAMessage, type: MessageUpsertType) => {
+		msg.senderSource ??= msg.key.fromMe
+			? classifyCurrentClientMessageSenderSource(config.transportProfile, authState.creds.me?.id)
+			: classifyMessageWithoutAuthorDevice()
+		logger.info(messageSenderSourceLogFields(msg), 'message sender source classified')
 		ev.emit('messages.upsert', { messages: [msg], type })
 
 		if (!!msg.pushName) {
