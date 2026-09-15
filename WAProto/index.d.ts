@@ -4866,6 +4866,7 @@ export namespace proto {
         instagramThreadLink?: (proto.ContextInfo.InstagramThreadLink.$Properties|null);
         aiProvenance?: (proto.AIProvenance.$Properties|null);
         experienceIds: number[];
+        partnerDeepLinkToken?: (string|null);
         static create(properties: proto.ContextInfo.$Shape): proto.ContextInfo & proto.ContextInfo.$Shape;
         static create(properties?: proto.ContextInfo.$Properties): proto.ContextInfo;
         static encode(m: proto.ContextInfo.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -4943,6 +4944,7 @@ export namespace proto {
             instagramThreadLink?: (proto.ContextInfo.InstagramThreadLink.$Properties|null);
             aiProvenance?: (proto.AIProvenance.$Properties|null);
             experienceIds?: (number[]|null);
+            partnerDeepLinkToken?: (string|null);
             $unknowns?: Uint8Array[];
         }
         type $Shape = {
@@ -5011,6 +5013,7 @@ export namespace proto {
           instagramThreadLink?: proto.ContextInfo.InstagramThreadLink.$Shape|null;
           aiProvenance?: proto.AIProvenance.$Shape|null;
           experienceIds?: number[]|null;
+          partnerDeepLinkToken?: string|null;
           $unknowns?: Uint8Array[];
         };
 
