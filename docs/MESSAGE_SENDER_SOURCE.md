@@ -1,8 +1,10 @@
 # Message sender source attribution
 
-InfiniteAPI now exposes `message.senderSource` on `messages.upsert` messages and
-writes a redacted debug-level structured log entry named
-`message sender source classified`.
+InfiniteAPI now exposes `message.senderSource` on `messages.upsert` messages,
+writes an info-level structured log entry named
+`message sender source classified`, and emits a `[BAILEYS] Sender source`
+operator line with the complete author-device JID. Message content is never
+included in either log.
 
 ## Evidence model
 
@@ -17,6 +19,8 @@ InfiniteAPI captures the stanza's `from`/`participant` author before
 
 - `deviceId: 0` is classified as `primary_device`;
 - `deviceId > 0` is classified as `linked_device`;
+- `authorDeviceJid` retains the raw protocol author JID, including its device
+  suffix, for audit logs and downstream consumers;
 - `web` is emitted only when the current configured client is the author and
   its transport profile is `web`;
 - missing/lossy author data, including bare user JIDs without an explicit device

@@ -13,6 +13,7 @@ import {
 	logInfo,
 	logLidMapping,
 	logMessageReceived,
+	logMessageSenderSource,
 	logMessageSent,
 	logRetry,
 	logTcToken,
@@ -183,6 +184,23 @@ describe('Baileys Console Logging Functions', () => {
 		it('should include session name for messages', () => {
 			logMessageSent('MSG789', 'user@lid', 'session-abc')
 			expect(consoleSpy).toHaveBeenCalledWith('[BAILEYS] [session-abc] 📤 Message sent: MSG789 → user@lid')
+		})
+	})
+
+	describe('logMessageSenderSource', () => {
+		it('logs complete device attribution at the operational console level', () => {
+			logMessageSenderSource('MSG-PRIMARY', '5515991426667@s.whatsapp.net', {
+				type: 'primary_device',
+				authorDeviceJid: '46802258641027:0@lid',
+				deviceId: 0,
+				confidence: 'high',
+				evidence: 'author_device_jid',
+				platform: 'ANDROID'
+			})
+
+			expect(consoleSpy).toHaveBeenCalledWith(
+				'[BAILEYS] 🧭 Sender source → 5515991426667@s.whatsapp.net { authorDeviceJid: 46802258641027:0@lid, msgId: MSG-PRIMARY, source: primary_device, deviceId: 0, confidence: high, evidence: author_device_jid, platform: ANDROID }'
+			)
 		})
 	})
 

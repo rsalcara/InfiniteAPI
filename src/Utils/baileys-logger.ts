@@ -12,6 +12,7 @@
  * @module Utils/baileys-logger
  */
 
+import type { MessageSenderSource } from '../Types/Message.js'
 import { obfuscateJid, sanitizeLogRecord, sanitizeLogString, sanitizeLogValue } from './log-redaction.js'
 import type { ILogger } from './logger.js'
 import { createStructuredLogger, type LogEntry, type LogLevel, StructuredLogger } from './structured-logger.js'
@@ -779,6 +780,34 @@ export function logMessageReceived(
 	const prefix = sessionName ? `[BAILEYS] [${sessionName}]` : '[BAILEYS]'
 	const type = formatMessageTypeTag(messageType)
 	console.log(`${prefix} 📥 Message received${type}: ${messageId} ← ${senderJid}`)
+}
+
+/**
+ * Log the protocol-level device attribution for a message.
+ *
+ * This logs the classification, its evidence and the raw protocol author JID.
+ * The line follows the existing TcToken/message console-log convention.
+ */
+export function logMessageSenderSource(
+	messageId: string,
+	conversationJid: string | null | undefined,
+	source: MessageSenderSource,
+	sessionName?: string
+): void {
+	if (!isBaileysLogEnabled()) return
+
+	const prefix = sessionName ? `[BAILEYS] [${sessionName}]` : '[BAILEYS]'
+	const fields = [
+		...(source.authorDeviceJid === undefined ? [] : [`authorDeviceJid: ${source.authorDeviceJid}`]),
+		`msgId: ${messageId}`,
+		`source: ${source.type}`,
+		...(source.deviceId === undefined ? [] : [`deviceId: ${source.deviceId}`]),
+		`confidence: ${source.confidence}`,
+		`evidence: ${source.evidence}`,
+		...(source.platform === undefined ? [] : [`platform: ${source.platform}`])
+	]
+	const target = conversationJid ? ` → ${conversationJid}` : ''
+	console.log(`${prefix} 🧭 Sender source${target} { ${fields.join(', ')} }`)
 }
 
 /**

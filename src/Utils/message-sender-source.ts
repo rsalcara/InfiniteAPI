@@ -69,12 +69,19 @@ export const classifyProtocolMessageSenderSource = ({
 	if (!Number.isInteger(deviceId) || deviceId < 0) return unknownSenderSource()
 
 	if (deviceId === 0) {
-		return { type: 'primary_device', deviceId, confidence: 'high', evidence: 'author_device_jid' }
+		return {
+			type: 'primary_device',
+			authorDeviceJid: authorJid,
+			deviceId,
+			confidence: 'high',
+			evidence: 'author_device_jid'
+		}
 	}
 
 	if (currentTransportProfile && isCurrentDevice(author, deviceId, currentDeviceJids)) {
 		return {
 			type: currentTransportProfile === 'web' ? 'web' : 'linked_device',
+			authorDeviceJid: authorJid,
 			deviceId,
 			platform: currentTransportProfile === 'web' ? 'WEB' : 'ANDROID',
 			confidence: 'high',
@@ -82,7 +89,13 @@ export const classifyProtocolMessageSenderSource = ({
 		}
 	}
 
-	return { type: 'linked_device', deviceId, confidence: 'high', evidence: 'author_device_jid' }
+	return {
+		type: 'linked_device',
+		authorDeviceJid: authorJid,
+		deviceId,
+		confidence: 'high',
+		evidence: 'author_device_jid'
+	}
 }
 
 export const classifyCurrentClientMessageSenderSource = (
@@ -94,6 +107,7 @@ export const classifyCurrentClientMessageSenderSource = (
 	if (deviceId === 0) {
 		return {
 			type: 'primary_device',
+			...(currentDeviceJid === undefined ? {} : { authorDeviceJid: currentDeviceJid }),
 			deviceId,
 			platform,
 			confidence: 'high',
@@ -103,6 +117,7 @@ export const classifyCurrentClientMessageSenderSource = (
 
 	return {
 		type: transportProfile === 'web' ? 'web' : 'linked_device',
+		...(currentDeviceJid === undefined ? {} : { authorDeviceJid: currentDeviceJid }),
 		...(deviceId === undefined ? {} : { deviceId }),
 		platform,
 		confidence: 'high',

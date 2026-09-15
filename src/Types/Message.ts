@@ -18,6 +18,8 @@ export type MessageSenderSourceEvidence = 'author_device_jid' | 'current_client_
  */
 export type MessageSenderSource = {
 	type: MessageSenderSourceType
+	/** Raw author JID captured before public JID normalization. */
+	authorDeviceJid?: string
 	deviceId?: number
 	platform?: string
 	confidence: MessageSenderSourceConfidence

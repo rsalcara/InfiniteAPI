@@ -9,6 +9,7 @@ describe('message sender source classification', () => {
 	it('classifies a device-zero author as the primary phone', () => {
 		expect(classifyProtocolMessageSenderSource({ authorJid: '5511000000000:0@s.whatsapp.net' })).toEqual({
 			type: 'primary_device',
+			authorDeviceJid: '5511000000000:0@s.whatsapp.net',
 			deviceId: 0,
 			confidence: 'high',
 			evidence: 'author_device_jid'
@@ -26,6 +27,7 @@ describe('message sender source classification', () => {
 	it('classifies a positive device suffix as a linked device', () => {
 		expect(classifyProtocolMessageSenderSource({ authorJid: '5511000000000:7@s.whatsapp.net' })).toEqual({
 			type: 'linked_device',
+			authorDeviceJid: '5511000000000:7@s.whatsapp.net',
 			deviceId: 7,
 			confidence: 'high',
 			evidence: 'author_device_jid'
@@ -114,6 +116,7 @@ describe('message sender source classification', () => {
 			key: { id: 'msg-1', fromMe: false },
 			senderSource: {
 				type: 'primary_device',
+				authorDeviceJid: '5511000000000:0@lid',
 				deviceId: 0,
 				confidence: 'high',
 				evidence: 'author_device_jid'
@@ -143,6 +146,7 @@ describe('message sender source classification', () => {
 	it('keeps an explicit current-client device zero as primary', () => {
 		expect(classifyCurrentClientMessageSenderSource('native_android', '5511000000000:0@s.whatsapp.net')).toMatchObject({
 			type: 'primary_device',
+			authorDeviceJid: '5511000000000:0@s.whatsapp.net',
 			deviceId: 0,
 			platform: 'ANDROID',
 			evidence: 'current_client_transport'
