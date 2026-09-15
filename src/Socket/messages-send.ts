@@ -27,6 +27,7 @@ import {
 	bindWaitForEvent,
 	buildDirectRecipientChatMerges,
 	captureProtocolWire,
+	classifyCurrentClientMessageSenderSource,
 	decryptMediaRetryData,
 	DEF_MEDIA_HOST,
 	emitMessageDeliveryState,
@@ -85,11 +86,12 @@ import {
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
 import { resolveSessionFetchJids } from '../Utils/session-fetch-addressing'
 import {
+	isRegularUser,
 	resolveTcTokenAliases,
 	resolveTcTokenBucketPolicy,
 	resolveUsableTcTokenForJid,
 	selectNewestUsableTcToken,
-	shouldSendNewTcToken
+	TcTokenAckEligibilityIndex
 } from '../Utils/tc-token-utils'
 import {
 	areJidsSameUser,
@@ -114,6 +116,7 @@ import {
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { mapUSyncResultToLIDMappings, USyncQuery, USyncUser } from '../WAUSync'
+import { markNativeAndroidIntegrityCleared } from './native-android-integrity-state'
 import { makeNewsletterSocket } from './newsletter'
 
 export const makeMessagesSocket = (config: SocketConfig) => {
@@ -143,6 +146,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		fetchPrivacySettings,
 		fetchAccountReachoutTimelock,
 		fetchNewChatMessageCap,
+		fetchStartChatTrustSignals,
 		sendNode,
 		groupMetadata,
 		groupToggleEphemeral,
@@ -150,6 +154,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		registerSocketEndHandler,
 		runWithSocketOperation
 	} = sock
+	const assertNativeAndroidIntegrityReady = (
+		sock as typeof sock & { assertNativeAndroidIntegrityReady?: (egress?: 'message' | 'call') => void }
+	).assertNativeAndroidIntegrityReady
+	const currentClientSenderSource = () =>
+		classifyCurrentClientMessageSenderSource(config.transportProfile, authState.creds.me?.id)
 
 	/**
 	 * Newsletter (channel) link upgrade.
@@ -276,6 +285,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const messageRetryManager = enableRecentMessageCache
 		? new MessageRetryManager(logger, maxMsgRetryCount, retryTypedBackend, retryTypedBackend)
 		: null
+	/**
+	 * ACK correlation must not depend on the optional retry cache. Consumers may
+	 * disable that cache, while Android still schedules the trusted-contact job
+	 * after a positive server ACK. Keep a short-lived, payload-free eligibility
+	 * index keyed by the wire and canonical JIDs; it contains no message bytes
+	 * or token material.
+	 */
+	const tcTokenAckEligibility = new TcTokenAckEligibilityIndex()
 
 	// Send-side location.db mirror. Duration is also attached to every
 	// encrypted child by relayMessage, matching Android's live-location
@@ -760,6 +777,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				getKnownLIDForPN,
 				fetchReachout: () => fetchAccountReachoutTimelock(false),
 				fetchCapping: fetchNewChatMessageCap,
+				fetchStartChatTrustSignals,
+				startChatTrustSignalsPolicy: config.startChatTrustSignalsPolicy ?? 'observe',
 				resolveUSync: async phoneUser => {
 					const query = new USyncQuery()
 						.withContext('message')
@@ -1428,6 +1447,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const meLid = authState.creds.me?.lid
 		const isRetryResend = Boolean(participant?.jid)
 		const isPeerMessage = additionalAttributes?.['category'] === 'peer'
+		// Retry and peer protocol messages are required to keep the encrypted
+		// session recoverable. Only new user-message egress is fail-closed.
+		if (!isRetryResend && !isPeerMessage) assertNativeAndroidIntegrityReady?.()
 		let shouldIncludeDeviceIdentity = isRetryResend
 		const statusJid = 'status@broadcast'
 
@@ -1485,15 +1507,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		msgId = msgId || generateMessageIDV2(meId)
 		useUserDevicesCache = useUserDevicesCache !== false
 		useCachedGroupMetadata = useCachedGroupMetadata !== false && !isStatus
-
-		// Stage 2 (PR #457) M5 guard fix: a tctoken issue chain registered
-		// *inside* the outer authState.keys.transaction(...) below would inherit the
-		// transaction's AsyncLocalStorage ctx via .then()/promise continuations. When
-		// the tx returns, ctx.sealed=true → set({ tctoken }) becomes a no-op, breaking
-		// durable sent-state mirror. We collect the kick-off here and invoke it AFTER the
-		// transaction completes — the .then() callbacks then register under the OUTER
-		// ALS ctx (no tx ctx → set() commits directly).
-		let deferredTcTokenReissue: { jid: string; issueTimestamp: number } | null = null
 
 		// Convert nativeFlowMessage with single_select to direct listMessage (legacy format)
 		// This is required because WhatsApp expects listMessage format with biz > list node
@@ -2413,10 +2426,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				tcTokenAliases.map(alias => [alias, contactTcTokenData[alias]] as const),
 				tcTokenBucketPolicy
 			)
-			const existingTokenEntry = tcTokenAliases
-				.map(alias => contactTcTokenData[alias])
-				.filter(entry => entry?.senderTimestamp !== undefined)
-				.sort((left, right) => Number(right!.senderTimestamp) - Number(left!.senderTimestamp))[0]
 			const tcTokenBuffer = selectedToken.entry?.token
 			if (!selectedToken.usable && selectedToken.reason !== 'missing-token') {
 				logger.debug(
@@ -2590,17 +2599,39 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				await captureProtocolWire(config.protocolWireCapture, 'direct_retry', stanza, logger)
 			}
 
-			await transmitWithRetryPayload({
-				manager: messageRetryManager,
-				to: jidNormalizedUser(destinationJid),
-				id: msgId,
-				message,
-				isDirectRetry: Boolean(participant),
-				liveLocationDuration,
-				requestedJid,
-				canonicalJid: publicCanonicalJid,
-				transmit: () => sendNode(stanza)
-			})
+			// Mark retry and peer-recovery stanzas before the wire guard sees
+			// them. A 1:1 retry has the same wire shape as a fresh message and
+			// must not be re-classified by the central sendNode guard.
+			if (isRetryResend || isPeerMessage) markNativeAndroidIntegrityCleared(stanza)
+
+			if (is1on1Send && isRegularUser(destinationJid) && !additionalAttributes?.edit) {
+				tcTokenAckEligibility.remember(
+					[...tcTokenAliases, destinationJid, publicCanonicalJid],
+					msgId,
+					publicCanonicalJid
+				)
+			}
+
+			try {
+				await transmitWithRetryPayload({
+					manager: messageRetryManager,
+					to: jidNormalizedUser(destinationJid),
+					id: msgId,
+					message,
+					isDirectRetry: Boolean(participant),
+					liveLocationDuration,
+					requestedJid,
+					canonicalJid: publicCanonicalJid,
+					transmit: () => sendNode(stanza)
+				})
+			} catch (error) {
+				if (is1on1Send && isRegularUser(destinationJid) && !additionalAttributes?.edit) {
+					tcTokenAckEligibility.discard([...tcTokenAliases, destinationJid, publicCanonicalJid], msgId)
+				}
+
+				throw error
+			}
+
 			if (!isRetryResend) {
 				emitMessageDeliveryState(
 					ev,
@@ -2618,26 +2649,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					},
 					logger
 				)
-			}
-
-			// Fire-and-forget: issue our token to the contact (like WA Web's sendTcToken).
-			// Gated only by shouldSendNewTcToken — removed tcTokenBuffer?.length guard so
-			// issuance fires even when we don't yet hold a token (bucket boundary crossed).
-			// IMPORTANT: must run AFTER sendNode — issuing before the message causes error 463.
-			//
-			// DEFERRED to run after the outer transaction returns (Stage 2 M5 guard fix).
-			// Registering the .then() chain inside the tx attaches it to the tx's sealed
-			// ALS ctx → keys.set({ tctoken }) silently no-ops → senderTimestamp never
-			// persists → shouldSendNewTcToken stays true forever → infinite reissue loop
-			// and Web cannot render interactive messages (no persisted token).
-			if (
-				is1on1Send &&
-				(shouldSendNewTcToken(existingTokenEntry?.senderTimestamp, tcTokenBucketPolicy) ||
-					existingTokenEntry?.realIssueTimestamp === 0)
-			) {
-				const issueTimestamp = unixTimestampSeconds()
-				logTcToken('reissue', { jid: destinationJid })
-				deferredTcTokenReissue = { jid: destinationJid, issueTimestamp }
 			}
 
 			const msgType = getMessageTypeLabel(message)
@@ -2676,18 +2687,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			await runSendBody()
 		} else {
 			await authState.keys.transaction(runSendBody, meId)
-		}
-
-		if (deferredTcTokenReissue) {
-			const { jid: reissueJid, issueTimestamp } = deferredTcTokenReissue
-			try {
-				await tcTokenLifecycle.enqueue([reissueJid], issueTimestamp)
-				logTcToken('reissue_ok', { jid: reissueJid, state: 'durably-queued' })
-			} catch (err: any) {
-				// The user message was already accepted by the server. A local job
-				// persistence failure must not become a false delivery failure.
-				logTcToken('reissue_fail', { jid: reissueJid, error: err?.message, state: 'enqueue-failed' })
-			}
 		}
 
 		return msgId
@@ -2730,6 +2729,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 	const issuePrivacyTokens = async (jids: string[], timestamp?: number, timeoutMs?: number): Promise<BinaryNode> => {
 		return tcTokenLifecycle.issue(jids, timestamp, timeoutMs)
+	}
+
+	const enqueuePrivacyTokens = async (jids: string[], timestamp?: number, timeoutMs?: number): Promise<void> => {
+		return tcTokenLifecycle.enqueue(jids, timestamp, timeoutMs)
 	}
 
 	/** @deprecated This IQ issues our token; use `issuePrivacyTokens`. */
@@ -2790,6 +2793,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 
 		messageRetryManager?.clear()
+		tcTokenAckEligibility.clear()
 
 		// media_job is transient (INSERT before an upload, DELETE in `finally`).
 		// If the socket dies between those — a crash mid-transfer — the row is
@@ -2807,6 +2811,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		userDevicesCache,
 		devicesMutex,
 		issuePrivacyTokens,
+		enqueuePrivacyTokens,
+		consumeTcTokenAckEligibility: tcTokenAckEligibility.consume.bind(tcTokenAckEligibility),
+		claimTcTokenAckEligibility: tcTokenAckEligibility.claim.bind(tcTokenAckEligibility),
+		releaseTcTokenAckEligibility: tcTokenAckEligibility.release.bind(tcTokenAckEligibility),
 		getPrivacyTokens,
 		assertSessions,
 		relayMessage,
@@ -2926,6 +2934,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			album: AlbumMessageOptions,
 			options: MiscMessageGenerationOptions = {}
 		): Promise<AlbumSendResult> => {
+			// Run before generating/uploading any album media. relayMessage keeps
+			// the second guard immediately before encryption/transmission.
+			assertNativeAndroidIntegrityReady?.('message')
 			const startTime = Date.now()
 			const userJid = authState.creds.me!.id
 
@@ -2977,6 +2988,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			)
 
 			const albumKey = albumRootMsg.key
+			albumRootMsg.senderSource = currentClientSenderSource()
 
 			// CRITICAL: Relay album root message to server first
 			// Without this, child media items reference a non-existent album key
@@ -3085,6 +3097,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							ephemeralExpiration: options.ephemeralExpiration,
 							mediaUploadTimeoutMs: options.mediaUploadTimeoutMs
 						})
+						mediaMsg.senderSource = currentClientSenderSource()
 
 						// Attach to parent album via messageAssociation (correct proto structure)
 						// Uses AssociationType.MEDIA_ALBUM and parentMessageKey as per WhatsApp protocol
@@ -3241,6 +3254,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				)
 			}
 
+			// Fail before link fetches, media upload or message generation. The
+			// relay guard remains authoritative for races after this preflight.
+			assertNativeAndroidIntegrityReady?.('message')
+
 			const userJid = authState.creds.me!.id
 
 			// Best-effort upgrade: plain text + URL → imageMessage + caption
@@ -3287,6 +3304,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					messageId: generateMessageIDV2(sock.user?.id),
 					...options
 				})
+				fullMsg.senderSource = currentClientSenderSource()
 				const isEventMsg = 'event' in content && !!content.event
 				const isDeleteMsg = 'delete' in content && !!content.delete
 				const isEditMsg = 'edit' in content && !!content.edit
@@ -3392,6 +3410,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		 */
 		sendLiveLocation: (jid: string, location: LiveLocationSendOptions, options: MiscMessageGenerationOptions = {}) =>
 			runWithSocketOperation(async () => {
+				assertNativeAndroidIntegrityReady?.('message')
 				const userJid = assertMeId(authState.creds)
 				assertCanStartLiveLocation(jidDecode(userJid)?.device)
 				const durationSecs = validateLiveLocationSendOptions(location)
@@ -3416,6 +3435,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					messageId: generateMessageIDV2(sock.user?.id),
 					...options
 				})
+				fullMsg.senderSource = currentClientSenderSource()
 				fullMsg.duration = durationSecs
 				// Store adapters commonly persist IMessage as JSON. This gateway-only
 				// property survives restart/getMessage while protobuf encoding ignores

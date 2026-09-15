@@ -23,10 +23,12 @@ import { resolve } from 'node:path'
 import { SignalingBridge } from './signaling/index.js'
 import { WasmEngine } from './wasm-engine/index.js'
 import { AudioFeeder } from './audio-feeder.js'
+import { LiveAudioBuffer } from './live-audio-buffer.js'
 import { type RelayListUpdatePayload, RelayRtcTransport } from './relay-transport.js'
 import { CallState, type VoipSdkConfig } from './types.js'
 
 export type { VoipSdkConfig, CallOptions, CallEvents, AudioConfig, VoipConnectionUpdate } from './types.js'
+export type { LiveAudioSource, LiveVideoSource, AudioInputFrame, VideoInputFrame, AcceptOptions } from './types.js'
 export { CallState } from './types.js'
 
 // Direct imports from our own InfiniteAPI codebase — the third-party
@@ -94,6 +96,18 @@ export class ActiveCall extends EventEmitter {
 	/** @internal mirrors the source path for the audio feeder */
 	_audioSource = 'silence'
 
+	/** @internal live audio source config when kind === 'live' */
+	_liveAudioSource: import('./types.js').LiveAudioSource | null = null
+
+	/** @internal live video source config when kind === 'live' */
+	_liveVideoSource: import('./types.js').LiveVideoSource | null = null
+
+	/** @internal circular buffer for live audio uplink */
+	#liveAudioBuffer: LiveAudioBuffer | null = null
+
+	/** @internal whether the local camera is enabled */
+	#videoEnabled = true
+
 	/** @internal — optional video stream configuration. When set, the engine
 	 *  routes inbound video frames through `_emitVideoFrame` so the caller's
 	 *  `'video-frame'` listener fires. */
@@ -158,6 +172,33 @@ export class ActiveCall extends EventEmitter {
 		} catch {}
 	}
 
+	pushAudio = (frame: import('./types.js').AudioInputFrame): boolean => {
+		if (!this.#liveAudioBuffer || this.#ended) return false
+		return this.#liveAudioBuffer.push(frame)
+	}
+
+	/** @internal — called by VoipClient when the WASM engine starts audio capture in live mode */
+	_startLiveAudio = (buffer: LiveAudioBuffer): void => {
+		this.#liveAudioBuffer = buffer
+		buffer.start()
+	}
+
+	/** @internal — called by VoipClient when audio capture stops */
+	_stopLiveAudio = (): void => {
+		this.#liveAudioBuffer?.stop()
+		this.#liveAudioBuffer = null
+	}
+
+	pushVideo = (frame: import('./types.js').VideoInputFrame): boolean => {
+		if (this.#ended || !this._liveVideoSource || !this.#videoEnabled) return false
+		if (frame.format !== this._liveVideoSource.format) return false
+		return this.engine.pushVideoFrame(frame, this._liveVideoSource.maxFps ?? 15)
+	}
+
+	setVideoEnabled = (enabled: boolean): void => {
+		this.#videoEnabled = enabled
+	}
+
 	waitForEnd = (): Promise<string> => this.#endPromise
 
 	/** @internal — called by VoipClient on WASM call-state change */
@@ -194,6 +235,7 @@ export class ActiveCall extends EventEmitter {
 	_forceEnd = (reason: string): void => {
 		if (this.#ended) return
 		this.#ended = true
+		this._stopLiveAudio()
 		if (this.#endTimer) {
 			clearTimeout(this.#endTimer)
 			this.#endTimer = null
@@ -540,8 +582,15 @@ export class VoipClient extends EventEmitter {
 				// so audio playback / video frame dispatch routes through it.
 				const active = new ActiveCall(callId, self.#engine!, opts?.durationMs ?? 0)
 				// mark the source so AudioFeeder can attach later if requested
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				;(active as any)._audioSource = opts?.audioSource ?? 'silence'
+				const audioSource = opts?.audioSource ?? 'silence'
+				if (typeof audioSource === 'string') {
+					active._audioSource = audioSource
+				} else {
+					active._audioSource = 'live'
+					active._liveAudioSource = audioSource
+				}
+
+				if (opts?.videoSource) active._liveVideoSource = opts.videoSource
 				// F3: opt into video frame delivery on accept.
 				if (opts?.video) {
 					active._videoConfig = opts.video
@@ -589,7 +638,8 @@ export class VoipClient extends EventEmitter {
 	call = async (
 		phoneNumber: string,
 		opts: {
-			audioSource?: string
+			audioSource?: string | import('./types.js').LiveAudioSource
+			videoSource?: import('./types.js').LiveVideoSource
 			durationMs?: number
 			video?: import('./types.js').VideoConfig
 		} = {}
@@ -624,7 +674,14 @@ export class VoipClient extends EventEmitter {
 		const callId = ('00' + randomBytes(16).toString('hex').slice(2)).toUpperCase()
 
 		const call = new ActiveCall(callId, this.#engine, durationMs)
-		call._audioSource = audioSource
+		if (typeof audioSource === 'string') {
+			call._audioSource = audioSource
+		} else {
+			call._audioSource = 'live'
+			call._liveAudioSource = audioSource
+		}
+
+		if (opts.videoSource) call._liveVideoSource = opts.videoSource
 		this.#activeCall = call
 		this.#attachCallLifecycle(call)
 
@@ -644,7 +701,7 @@ export class VoipClient extends EventEmitter {
 				peerPn: targetPnJid,
 				peerList: deviceList,
 				callId,
-				isVideo: !!opts.video,
+				isVideo: Boolean(opts.video || opts.videoSource),
 				isLidCall: true,
 				isFromDialer: false,
 				extraData: tcToken
@@ -757,7 +814,8 @@ export class VoipClient extends EventEmitter {
 	groupCall = async (
 		participants: string[],
 		opts: {
-			audioSource?: string
+			audioSource?: string | import('./types.js').LiveAudioSource
+			videoSource?: import('./types.js').LiveVideoSource
 			durationMs?: number
 			video?: import('./types.js').VideoConfig
 			linkToken?: string
@@ -795,7 +853,14 @@ export class VoipClient extends EventEmitter {
 		const audioSource = opts.audioSource ?? 'silence'
 
 		const active = new ActiveCall(callId, this.#engine, durationMs)
-		active._audioSource = audioSource
+		if (typeof audioSource === 'string') {
+			active._audioSource = audioSource
+		} else {
+			active._audioSource = 'live'
+			active._liveAudioSource = audioSource
+		}
+
+		if (opts.videoSource) active._liveVideoSource = opts.videoSource
 		if (opts.video) active._videoConfig = opts.video
 		// Group calls always run the heartbeat loop. The call creator for the
 		// heartbeat is OUR own JID (we're the originator).
@@ -813,7 +878,7 @@ export class VoipClient extends EventEmitter {
 			this.#engine.startGroupCall({
 				callId,
 				participants: resolved,
-				isVideo: !!opts.video,
+				isVideo: Boolean(opts.video || opts.videoSource),
 				callCreator: selfJid,
 				linkToken: opts.linkToken
 			})
@@ -888,26 +953,54 @@ export class VoipClient extends EventEmitter {
 		const chunkSamples = this.#captureFramesPerChunk * this.#captureChannels
 		this.#captureChunkBytes = chunkSamples * Float32Array.BYTES_PER_ELEMENT
 		this.#capturePtr = this.#engine.malloc(this.#captureChunkBytes)
+
+		// Emit audio-config to the active call before the first frame arrives
+		const audioConfig = {
+			sampleRate: this.#captureSampleRate,
+			channels: this.#captureChannels,
+			bitsPerSample: config.bitsPerSample || 32,
+			framesPerChunk: this.#captureFramesPerChunk
+		}
+		this.#activeCall?.emit('audio-config', audioConfig)
 	}
 
 	#handleAudioCaptureStart = (): void => {
 		if (!this.#engine || !this.#capturePtr) return
-		const audioSource = this.#activeCall?._audioSource ?? 'silence'
-		this.#feeder = new AudioFeeder(
-			this.#captureSampleRate,
-			this.#captureChannels,
-			this.#captureFramesPerChunk,
-			chunk => {
-				if (this.#engine && this.#capturePtr) this.#engine.sendAudioData(chunk, this.#capturePtr)
-			},
-			audioSource
-		)
-		this.#feeder.start()
+		const call = this.#activeCall
+		if (!call) return
+
+		if (call._liveAudioSource?.kind === 'live') {
+			// Live mode: consumer pushes PCM frames; no FFmpeg involved
+			const buffer = new LiveAudioBuffer({
+				targetSampleRate: this.#captureSampleRate,
+				targetChannels: this.#captureChannels,
+				framesPerChunk: this.#captureFramesPerChunk,
+				maxBufferedMs: call._liveAudioSource.maxBufferedMs ?? 400,
+				onChunk: chunk => {
+					if (this.#engine && this.#capturePtr) this.#engine.sendAudioData(chunk, this.#capturePtr)
+				}
+			})
+			call._startLiveAudio(buffer)
+		} else {
+			// File/silence mode: existing AudioFeeder path unchanged
+			const audioSource = call._audioSource ?? 'silence'
+			this.#feeder = new AudioFeeder(
+				this.#captureSampleRate,
+				this.#captureChannels,
+				this.#captureFramesPerChunk,
+				chunk => {
+					if (this.#engine && this.#capturePtr) this.#engine.sendAudioData(chunk, this.#capturePtr)
+				},
+				audioSource
+			)
+			this.#feeder.start()
+		}
 	}
 
 	#handleAudioCaptureStop = (): void => {
 		this.#feeder?.stop()
 		this.#feeder = null
+		this.#activeCall?._stopLiveAudio()
 		if (this.#engine && this.#capturePtr) {
 			try {
 				this.#engine.free(this.#capturePtr)

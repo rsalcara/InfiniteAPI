@@ -1,7 +1,7 @@
 import { promisify } from 'util'
 import { inflate } from 'zlib'
 import * as constants from './constants'
-import { jidEncode, type JidServer, WAJIDDomains } from './jid-utils'
+import { type JidServer, WAJIDDomains } from './jid-utils'
 import type { BinaryNode, BinaryNodeCodingOptions } from './types'
 
 const inflatePromise = promisify(inflate)
@@ -211,7 +211,10 @@ export const decodeDecompressedBinaryNode = (
 			server = 'hosted.lid'
 		}
 
-		return jidEncode(user, server, device)
+		// AD_JID carries an explicit device byte. Keep device 0 in the string
+		// representation so callers can distinguish the primary device from a
+		// device-less JID_PAIR. jidEncode intentionally normalizes zero away.
+		return `${user}:${device}@${server}`
 	}
 
 	const readFbJid = () => {

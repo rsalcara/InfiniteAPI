@@ -514,6 +514,18 @@ describe('native_android transport contract', () => {
 		expect(() =>
 			validateNativeAndroidConfig({
 				...nativeAndroid,
+				integrityPolicy: 'disabled' as unknown as NativeAndroidTransportConfig['integrityPolicy']
+			})
+		).toThrow('integrityPolicy must be audit or enforce')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
+				integrityProvider: {} as unknown as NativeAndroidTransportConfig['integrityProvider']
+			})
+		).toThrow('integrityProvider must be a function')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
 				host: ''
 			})
 		).toThrow('native_android: host is required')
