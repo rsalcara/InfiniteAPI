@@ -202,6 +202,21 @@ describe('Baileys Console Logging Functions', () => {
 				'[BAILEYS] 🧭 Sender source → 5515991426667@s.whatsapp.net { authorDeviceJid: 46802258641027:0@lid, msgId: MSG-PRIMARY, source: primary_device, deviceId: 0, confidence: high, evidence: author_device_jid, platform: ANDROID }'
 			)
 		})
+
+		it('escapes control characters without obfuscating complete JIDs', () => {
+			logMessageSenderSource('MSG\nPRIMARY', '5515991426667@s.whatsapp.net', {
+				type: 'primary_device',
+				authorDeviceJid: '46802258641027:0@lid',
+				deviceId: 0,
+				confidence: 'high',
+				evidence: 'author_device_jid',
+				platform: 'ANDROID'
+			})
+
+			expect(consoleSpy).toHaveBeenCalledWith(
+				'[BAILEYS] 🧭 Sender source → 5515991426667@s.whatsapp.net { authorDeviceJid: 46802258641027:0@lid, msgId: MSG\\x0aPRIMARY, source: primary_device, deviceId: 0, confidence: high, evidence: author_device_jid, platform: ANDROID }'
+			)
+		})
 	})
 
 	describe('logTcToken', () => {

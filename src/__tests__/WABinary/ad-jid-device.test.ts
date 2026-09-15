@@ -1,7 +1,14 @@
+import { decodeMessageNode } from '../../Utils/decode-wa-message'
 import { classifyProtocolMessageSenderSource } from '../../Utils/message-sender-source'
-import { decodeBinaryNode, encodeBinaryNode } from '../../WABinary'
+import { decodeBinaryNode, encodeBinaryNode, jidWithoutExplicitZeroDevice } from '../../WABinary'
 
 describe('AD_JID device attribution', () => {
+	it('keeps public JID keys canonical while preserving raw device-zero attribution', () => {
+		expect(jidWithoutExplicitZeroDevice('5511000000000:0@lid')).toBe('5511000000000@lid')
+		expect(jidWithoutExplicitZeroDevice('5511000000000:19@lid')).toBe('5511000000000:19@lid')
+		expect(jidWithoutExplicitZeroDevice('5511000000000@lid')).toBe('5511000000000@lid')
+	})
+
 	it('preserves an explicit primary-device zero through binary decoding', async () => {
 		const decoded = await decodeBinaryNode(
 			encodeBinaryNode({
@@ -34,6 +41,25 @@ describe('AD_JID device attribution', () => {
 			confidence: 'unknown',
 			evidence: 'missing_author_device'
 		})
+	})
+
+	it('keeps the public conversation key canonical while author attribution stays raw', () => {
+		const { fullMessage, author } = decodeMessageNode(
+			{
+				tag: 'message',
+				attrs: {
+					id: 'MSG-PRIMARY',
+					from: '5511000000000:0@lid',
+					participant: '5511000000000:0@lid'
+				}
+			},
+			'5511999999999@s.whatsapp.net',
+			'5511999999999:0@lid'
+		)
+
+		expect(fullMessage.key.remoteJid).toBe('5511000000000@lid')
+		expect(fullMessage.key.participant).toBe('5511000000000@lid')
+		expect(author).toBe('5511000000000:0@lid')
 	})
 
 	it('continues to preserve positive linked-device IDs', async () => {

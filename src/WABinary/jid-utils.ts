@@ -84,6 +84,18 @@ export const jidDecode = (jid: string | undefined): FullJid | undefined => {
 	}
 }
 
+/**
+ * Remove only the explicit primary-device marker from a protocol JID.
+ *
+ * AD_JID device 0 is meaningful while classifying the author, but it is not
+ * part of the public conversation key. Positive companion device IDs remain
+ * untouched so device attribution can still use the raw protocol value.
+ */
+export const jidWithoutExplicitZeroDevice = (jid: string | undefined): string | undefined => {
+	if (!jid) return jid
+	return jid.replace(/^([^@]+):0@([^@]+)$/, '$1@$2')
+}
+
 /** is the jid a user */
 export const areJidsSameUser = (jid1: string | undefined, jid2: string | undefined) =>
 	jidDecode(jid1)?.user === jidDecode(jid2)?.user

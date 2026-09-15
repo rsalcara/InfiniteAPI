@@ -797,16 +797,20 @@ export function logMessageSenderSource(
 	if (!isBaileysLogEnabled()) return
 
 	const prefix = sessionName ? `[BAILEYS] [${sessionName}]` : '[BAILEYS]'
+	// Keep complete JIDs for operational correlation, but prevent malformed
+	// values from creating extra lines or terminal control sequences.
+	const safe = (value: string) =>
+		value.replace(/[\u0000-\u001f\u007f-\u009f]/g, char => `\\x${char.charCodeAt(0).toString(16).padStart(2, '0')}`)
 	const fields = [
-		...(source.authorDeviceJid === undefined ? [] : [`authorDeviceJid: ${source.authorDeviceJid}`]),
-		`msgId: ${messageId}`,
-		`source: ${source.type}`,
+		...(source.authorDeviceJid === undefined ? [] : [`authorDeviceJid: ${safe(source.authorDeviceJid)}`]),
+		`msgId: ${safe(messageId)}`,
+		`source: ${safe(source.type)}`,
 		...(source.deviceId === undefined ? [] : [`deviceId: ${source.deviceId}`]),
-		`confidence: ${source.confidence}`,
-		`evidence: ${source.evidence}`,
-		...(source.platform === undefined ? [] : [`platform: ${source.platform}`])
+		`confidence: ${safe(source.confidence)}`,
+		`evidence: ${safe(source.evidence)}`,
+		...(source.platform === undefined ? [] : [`platform: ${safe(source.platform)}`])
 	]
-	const target = conversationJid ? ` → ${conversationJid}` : ''
+	const target = conversationJid ? ` → ${safe(conversationJid)}` : ''
 	console.log(`${prefix} 🧭 Sender source${target} { ${fields.join(', ')} }`)
 }
 

@@ -155,6 +155,7 @@ import {
 	isPnUser,
 	jidDecode,
 	jidNormalizedUser,
+	jidWithoutExplicitZeroDevice,
 	S_WHATSAPP_NET
 } from '../WABinary'
 
@@ -3617,7 +3618,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		if (resolvedParticipant) key.participant = resolvedParticipant
 		remoteJid = key.remoteJid ?? remoteJid
 
-		if (shouldIgnoreJid(remoteJid) && remoteJid !== S_WHATSAPP_NET) {
+		const canonicalRemoteJid = jidWithoutExplicitZeroDevice(remoteJid)
+		if (shouldIgnoreJid(canonicalRemoteJid!) && canonicalRemoteJid !== S_WHATSAPP_NET) {
 			logger.trace({ remoteJid }, 'ignoring receipt from jid')
 			await sendMessageAck(node)
 			return
@@ -3843,7 +3845,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleNotification = async (node: BinaryNode) => {
-		const remoteJid = node.attrs.from
+		const rawRemoteJid = node.attrs.from
+		const remoteJid = jidWithoutExplicitZeroDevice(rawRemoteJid)
 		if (shouldIgnoreJid(remoteJid!) && remoteJid !== S_WHATSAPP_NET) {
 			logger.trace({ remoteJid }, 'ignored notification')
 			await sendMessageAck(node)
@@ -3858,10 +3861,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						const fromMe = areJidsSameUser(node.attrs.participant || remoteJid, authState.creds.me!.id)
 						const { senderAlt: participantAlt, addressingMode } = extractAddressingContext(node)
 						const extendedKey: WAMessageKey = {
-							remoteJid,
+							remoteJid: remoteJid!,
 							fromMe,
-							participant: node.attrs.participant,
-							participantAlt,
+							participant: jidWithoutExplicitZeroDevice(node.attrs.participant),
+							participantAlt: jidWithoutExplicitZeroDevice(participantAlt),
 							participantUsername: node.attrs.participant_username || node.attrs.username,
 							addressingMode,
 							id: node.attrs.id,
@@ -3892,7 +3895,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleMessage = async (node: BinaryNode) => {
-		if (shouldIgnoreJid(node.attrs.from!) && node.attrs.from !== S_WHATSAPP_NET) {
+		const canonicalRemoteJid = jidWithoutExplicitZeroDevice(node.attrs.from)
+		if (shouldIgnoreJid(canonicalRemoteJid!) && canonicalRemoteJid !== S_WHATSAPP_NET) {
 			logger.trace({ from: node.attrs.from }, 'ignored message')
 			// Send a clean ACK (no error code) so the server considers the
 			// message delivered. Using error 500 (UnhandledError) previously
@@ -4951,7 +4955,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			ignoreJid = !isNodeFromMe || isJidGroup(attrs.from) ? attrs.from : attrs.recipient
 		}
 
-		if (ignoreJid && ignoreJid !== S_WHATSAPP_NET && shouldIgnoreJid(ignoreJid)) {
+		const canonicalIgnoreJid = jidWithoutExplicitZeroDevice(ignoreJid)
+		if (canonicalIgnoreJid && canonicalIgnoreJid !== S_WHATSAPP_NET && shouldIgnoreJid(canonicalIgnoreJid)) {
 			// Plain ACK (no error code) — InfiniteAPI's pre-existing semantics
 			// for ignored stanzas. NACK 500 (UnhandledError) would tell the
 			// server the message failed processing and trigger redelivery,
