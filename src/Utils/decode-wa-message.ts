@@ -14,7 +14,8 @@ import {
 	isJidNewsletter,
 	isJidStatusBroadcast,
 	isLidUser,
-	isPnUser
+	isPnUser,
+	jidWithoutExplicitZeroDevice
 	//	transferDevice
 } from '../WABinary'
 import { compactError } from './error-log-utils'
@@ -425,10 +426,12 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 	}
 
 	const pushname = stanza?.attrs?.notify
+	const publicChatId = jidWithoutExplicitZeroDevice(chatId)!
+	const publicParticipant = jidWithoutExplicitZeroDevice(participant)
 
 	const key: WAMessageKey = {
-		remoteJid: chatId,
-		remoteJidAlt: !isJidGroup(chatId) ? addressingContext.senderAlt : undefined,
+		remoteJid: publicChatId,
+		remoteJidAlt: !isJidGroup(publicChatId) ? jidWithoutExplicitZeroDevice(addressingContext.senderAlt) : undefined,
 		// Direct chats only (msgType === 'chat'): on broadcast/newsletter the remoteJid is not a
 		// user, and `stanza.attrs.username` there is participant-level data, not the chat identity.
 		remoteJidUsername:
@@ -437,8 +440,8 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 				: undefined,
 		fromMe,
 		id: msgId,
-		participant,
-		participantAlt: isJidGroup(chatId) ? addressingContext.senderAlt : undefined,
+		participant: publicParticipant,
+		participantAlt: isJidGroup(publicChatId) ? jidWithoutExplicitZeroDevice(addressingContext.senderAlt) : undefined,
 		participantUsername: stanza.attrs.participant
 			? stanza.attrs.participant_username || stanza.attrs.username
 			: undefined,

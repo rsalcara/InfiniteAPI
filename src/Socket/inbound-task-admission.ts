@@ -44,6 +44,18 @@ export const createInboundTaskAdmission = (
 	const tasks = new Set<Promise<void>>()
 	const tokens = new Set<AdmissionToken>()
 	const context = new AsyncLocalStorage<AdmissionToken>()
+	let contextDisabled = false
+
+	// The storage is scoped to one socket. `close()` must precede `drain()` so
+	// no new root task can call `run()` after this cleanup and re-enable the
+	// storage. Once admitted work is drained, detach it from Node's
+	// async-resource propagation graph so a closed socket cannot retain its
+	// context through later promises or timers.
+	const disableContext = () => {
+		if (contextDisabled) return
+		context.disable()
+		contextDisabled = true
+	}
 
 	const track = (identifier: string, factory: () => void | Promise<void>): boolean => {
 		const derivedFromAdmittedTask = context.getStore()?.active === true
@@ -105,6 +117,8 @@ export const createInboundTaskAdmission = (
 			// that outlived the deadline.
 			for (const token of tokens) token.active = false
 		}
+
+		disableContext()
 
 		return {
 			timedOut,

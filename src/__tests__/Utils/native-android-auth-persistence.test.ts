@@ -31,6 +31,22 @@ const identity: PersistedNativeAndroidIdentity = {
 		port: 443,
 		source: 'hardcoded',
 		sequenceStep: 6
+	},
+	integrity: {
+		schemaVersion: 1,
+		gpia: {
+			status: 'response_sent',
+			observedAt: 1_788_113_419_100,
+			updatedAt: 1_788_113_420_000,
+			responseSentAt: 1_788_113_420_000,
+			policyApplied: 'audit'
+		},
+		safetynet: {
+			status: 'unsupported',
+			observedAt: 1_788_113_419_113,
+			updatedAt: 1_788_113_419_113,
+			policyApplied: 'audit'
+		}
 	}
 }
 

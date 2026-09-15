@@ -1,3 +1,5 @@
+import type { MessageSenderSource } from './Message'
+
 export type WACallUpdateType =
 	| 'offer'
 	| 'ringing'
@@ -55,4 +57,6 @@ export type WACallEvent = {
 	duration?: number
 	/** Terminate reason (e.g. 'group_call_ended', 'accepted_elsewhere', 'timeout') */
 	terminateReason?: string
+	/** Protocol-level source attribution for the call creator, when available. */
+	senderSource?: MessageSenderSource
 }
