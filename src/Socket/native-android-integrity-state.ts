@@ -315,6 +315,7 @@ export const getNativeAndroidIntegrityGatedEgress = (node: BinaryNode): 'message
 		) {
 			return undefined
 		}
+
 		if (!hasDirectUserMessagePayload(node)) return undefined
 		return 'message'
 	}

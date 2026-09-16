@@ -168,20 +168,20 @@ describe('native_android integrity lifecycle', () => {
 		expect(
 			getNativeAndroidIntegrityGatedEgress({ tag: 'message', attrs: { to: '1@lid', category: 'peer' } })
 		).toBeUndefined()
-			expect(
-				getNativeAndroidIntegrityGatedEgress({
-					tag: 'message',
-					attrs: { to: '123@newsletter' },
-					content: [{ tag: 'enc', attrs: {}, content: new Uint8Array([1]) }]
-				})
-			).toBeUndefined()
-			expect(
-				getNativeAndroidIntegrityGatedEgress({
-					tag: 'message',
-					attrs: { from: '123@newsletter' },
-					content: [{ tag: 'enc', attrs: {}, content: new Uint8Array([1]) }]
-				})
-			).toBeUndefined()
+		expect(
+			getNativeAndroidIntegrityGatedEgress({
+				tag: 'message',
+				attrs: { to: '123@newsletter' },
+				content: [{ tag: 'enc', attrs: {}, content: new Uint8Array([1]) }]
+			})
+		).toBeUndefined()
+		expect(
+			getNativeAndroidIntegrityGatedEgress({
+				tag: 'message',
+				attrs: { from: '123@newsletter' },
+				content: [{ tag: 'enc', attrs: {}, content: new Uint8Array([1]) }]
+			})
+		).toBeUndefined()
 		expect(
 			getNativeAndroidIntegrityGatedEgress({
 				tag: 'message',
