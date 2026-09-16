@@ -1,0 +1,51 @@
+# Message sender source attribution
+
+InfiniteAPI now exposes `message.senderSource` on `messages.upsert` messages,
+writes an info-level structured log entry named
+`message sender source classified`, and emits a `[BAILEYS] 🧭 Sender source`
+operator line with the complete author-device JID. Message content is never
+included in either log. The `info` level and the operator line are intentional
+operational visibility decisions; `BAILEYS_LOG=false` disables the console
+line.
+
+## Evidence model
+
+The WhatsApp Android APKs `2.26.27.83` and `2.26.31.1` persist the author
+device as `message_details.author_device_jid`. Their `DeviceJid.isPrimary()`
+implementation is equivalent to `device == 0`, and `UserJid.getPrimaryDevice()`
+constructs device zero. This is the basis for the `primary_device` versus
+`linked_device` distinction.
+
+InfiniteAPI captures the stanza's `from`/`participant` author before
+`decodeMessageNode()` builds the public message key. That decoder boundary
+removes only an explicit `:0` marker from public key fields; the later
+`normalizeMessageJids()` stage resolves LID/PN aliases but does not remove
+device suffixes. Therefore:
+
+- `deviceId: 0` is classified as `primary_device`;
+- `deviceId > 0` is classified as `linked_device`;
+- `authorDeviceJid` retains the raw protocol author JID, including its device
+  suffix, for audit logs and downstream consumers;
+- public conversation keys (`key.remoteJid` and `key.participant`) remain
+  canonical: an explicit `:0` marker is removed from the key, while positive
+  companion device IDs are not rewritten by this compatibility guard;
+- `web` is emitted only when the current configured client is the author and
+  its transport profile is `web`;
+- missing/lossy author data, including bare user JIDs without an explicit device
+  suffix, is `unknown`.
+
+The protocol does not reliably disclose whether an unrelated linked device is
+Chrome, Desktop, Android or another companion. The implementation deliberately
+does not infer that from message IDs, browser-like strings, or device numbers.
+
+## Limitations
+
+This is device-level protocol attribution. It does not prove who physically
+typed a message, and it is not Android hardware attestation. History-sync
+messages can be `unknown` when the original device JID was not preserved.
+
+The public field is additive and optional, so consumers that ignore it retain
+the existing event shape and behavior. The decoder preserves device-zero only
+in the author-attribution path; downstream public event boundaries restore the
+established conversation-key contract before calling `shouldIgnoreJid` or
+emitting a consumer event.

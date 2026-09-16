@@ -49,6 +49,8 @@ import {
 	buildCompanionDeviceProps,
 	chatModificationToAppPatch,
 	type ChatMutationMap,
+	classifyCurrentClientMessageSenderSource,
+	classifyMessageWithoutAuthorDevice,
 	decodePatches,
 	decodeSyncdSnapshot,
 	encodeSignedDeviceIdentity,
@@ -62,13 +64,16 @@ import {
 	getHistoryMsg,
 	isAppStateSyncIrrecoverable,
 	isMissingKeyError,
+	logMessageSenderSource,
 	MAX_SYNC_ATTEMPTS,
+	messageSenderSourceLogFields,
 	newLTHashState,
 	OrphanQueue,
 	parseAndInjectE2ESessions,
 	processSyncAction,
 	type RawSyncdMutation,
-	resolveLidToPn
+	resolveLidToPn,
+	resolvePresenceUpdateIdentifiers
 } from '../Utils'
 import {
 	discoverOwnAppStateDevices,
@@ -128,6 +133,7 @@ import {
 	isAnyPnUser,
 	jidDecode,
 	jidNormalizedUser,
+	jidWithoutExplicitZeroDevice,
 	reduceBinaryNodeToDictionary,
 	S_WHATSAPP_NET
 } from '../WABinary'
@@ -1727,12 +1733,13 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		let presence: PresenceData | undefined
 		const rawJid = attrs.from
 		const rawParticipant = attrs.participant || attrs.from
+		const canonicalJid = jidWithoutExplicitZeroDevice(rawJid)
 		if (!rawJid) {
 			logger.warn({ attrs }, 'handlePresenceUpdate: jid (attrs.from) is missing, skipping')
 			return
 		}
 
-		if (shouldIgnoreJid(rawJid) && rawJid !== S_WHATSAPP_NET) {
+		if (shouldIgnoreJid(canonicalJid!) && canonicalJid !== S_WHATSAPP_NET) {
 			return
 		}
 
@@ -1771,10 +1778,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 			// Resolve LID→PN so consumers always see phone-number JIDs
 			const lidMapping = signalRepository.lidMapping
-			const [jid, participant] = await Promise.all([
-				resolveLidToPn(rawJid, lidMapping, logger),
-				resolveLidToPn(rawParticipant, lidMapping, logger)
-			])
+			const { id: jid, participant } = await resolvePresenceUpdateIdentifiers({
+				rawJid,
+				rawParticipant,
+				resolveJid: jid => resolveLidToPn(jid, lidMapping, logger)
+			})
 
 			ev.emit('presence.update', { id: jid!, presences: { [participant!]: presence } })
 		}
@@ -2079,6 +2087,14 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	const upsertMessage = ev.createBufferedFunction(async (msg: WAMessage, type: MessageUpsertType) => {
+		msg.senderSource ??= msg.key.fromMe
+			? classifyCurrentClientMessageSenderSource(config.transportProfile, authState.creds.me?.id)
+			: classifyMessageWithoutAuthorDevice()
+		// Keep device attribution in the normal operational log. The payload is
+		// redacted to identifiers and classification fields; message content is
+		// never included.
+		logger.info(messageSenderSourceLogFields(msg), 'message sender source classified')
+		logMessageSenderSource(msg.key.id || 'unknown', msg.key.remoteJid, msg.senderSource)
 		ev.emit('messages.upsert', { messages: [msg], type })
 
 		if (!!msg.pushName) {

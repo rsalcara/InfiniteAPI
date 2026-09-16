@@ -6,9 +6,16 @@ de mídia embutido (WebAssembly — o mesmo do WhatsApp Web). A mídia trafega
 servidor de mídia próprio.
 
 - ✅ Áudio outbound e inbound
-- ✅ **Vídeo** (VP8 / H.264 / AV1 negociados automaticamente)
+- ✅ **Negociação de vídeo** (H.264 / H.265 / AV1 quando suportados pelo WASM carregado)
 - ✅ Acesso direto ao PCM/frames (gravação, IVR, STT, etc.)
 - ✅ Funciona pela mesma sessão Baileys que você já usa para mensagens
+
+> **Limite do backend:** esta API usa o engine VoIP Web/WASM, não a pipeline
+> Android/JNI. A sinalização de vídeo pode ser negociada com `video: true`, mas
+> o envio de frames só está disponível quando o runtime expõe
+> `onVideoDataFromJs`. O método `pushVideo()` retorna `false` quando esse
+> binding não está disponível, quando o vídeo local está desativado ou quando o
+> frame é incompatível; ele não expõe fila/backpressure de vídeo.
 
 ---
 
@@ -278,7 +285,7 @@ class CallManager extends EventEmitter {
     call.on('ringing',   () => this.emit('ringing',   { callId: call.callId, sessionId }))
     call.on('connected', () => this.emit('connected', { callId: call.callId, sessionId }))
     call.on('audio',     (pcm) => this.emit('audio', { callId: call.callId, pcm }))
-    call.on('video',     (frame) => this.emit('video', { callId: call.callId, frame }))
+  call.on('video-frame', (frame) => this.emit('video', { callId: call.callId, frame }))
     call.on('ended',     (reason) => { this.emit('ended', { callId: call.callId, reason }); this.calls.delete(call.callId) })
     call.on('error',     (err) => this.emit('error', { callId: call.callId, error: String(err?.message ?? err) }))
   }
@@ -389,7 +396,7 @@ export function attachCallsToIo(io: IoServer) {
 
 - **Áudio:** downlink em `Float32Array` PCM **16 kHz mono**; uplink por arquivo,
   `'silence'`, ou stream (bridge WAV/`ffmpeg`).
-- **Vídeo:** codec (VP8/H.264/AV1) e ICE são negociados pelo próprio engine —
+- **Vídeo:** codec (H.264/H.265/AV1) e ICE são negociados pelo próprio engine —
   você só escolhe o formato de saída (`h264-raw`/`yuv420`/`rgba`).
 - **Grupos / links de chamada:** suportados para **receber/entrar**; iniciar
   chamada de grupo ainda não.

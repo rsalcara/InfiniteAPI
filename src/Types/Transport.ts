@@ -117,6 +117,73 @@ export type NativeAndroidAttestationProvider = (context: {
 	packageName: string
 }) => Promise<NativeAndroidPairingAttestation>
 
+export type NativeAndroidIntegrityChallengeKind = 'gpia' | 'safetynet'
+
+export type NativeAndroidIntegrityPolicy = 'audit' | 'enforce'
+
+export type NativeAndroidIntegrityChallengeStatus =
+	| 'not_requested'
+	| 'pending'
+	| 'response_sent'
+	| 'unavailable'
+	| 'failed'
+	| 'unsupported'
+
+export type PersistedNativeAndroidIntegrityChallenge = {
+	status: Exclude<NativeAndroidIntegrityChallengeStatus, 'not_requested'>
+	/** Epoch milliseconds when the latest challenge of this kind was observed. */
+	observedAt: number
+	/** Epoch milliseconds of the latest local state transition. */
+	updatedAt: number
+	/** Present only after the response bytes were written to the transport. */
+	responseSentAt?: number
+	/** Policy in effect for this transition; the current runtime policy remains authoritative. */
+	policyApplied: NativeAndroidIntegrityPolicy
+}
+
+/**
+ * Durable integrity metadata. It deliberately contains no nonce, token,
+ * attestation material or serialized protocol node.
+ */
+export type PersistedNativeAndroidIntegrityState = {
+	schemaVersion: 1
+	gpia?: PersistedNativeAndroidIntegrityChallenge
+	safetynet?: PersistedNativeAndroidIntegrityChallenge
+}
+
+/**
+ * Post-login integrity challenge delivered by WhatsApp to an Android client.
+ * The nonce is intentionally transient: InfiniteAPI never persists or logs it.
+ */
+export type NativeAndroidGpiaChallenge = {
+	kind: 'gpia'
+	/** Raw server attribute; transient and never persisted or logged. */
+	nonce: string
+	/** Standard Play Integrity field. The APK assigns the server nonce verbatim. */
+	requestHash: string
+	/** Meta project number captured from APK 2.26.27.83. */
+	cloudProjectNumber: 293955441834
+	profileId: string
+	appVariant: NativeAndroidAppVariant
+	clientAppId: string
+	packageName: string
+	/** Aborted when a newer challenge supersedes this one or the socket closes. */
+	signal: AbortSignal
+}
+
+/**
+ * Challenge-bound token produced by the genuine Android installation. The
+ * provider never controls the protocol stanza; InfiniteAPI builds the audited
+ * `<ib><gpia><jws>...` wire internally.
+ */
+export type NativeAndroidGpiaResponse = {
+	jws: string
+}
+
+export type NativeAndroidIntegrityProvider = (
+	challenge: NativeAndroidGpiaChallenge
+) => Promise<NativeAndroidGpiaResponse>
+
 export type NativeAndroidTransportConfig = {
 	/** A second explicit gate in addition to transportProfile. */
 	enabled: true
@@ -152,6 +219,19 @@ export type NativeAndroidTransportConfig = {
 	 * built-in persistent Node X.509 compatibility provider.
 	 */
 	attestationProvider?: NativeAndroidAttestationProvider
+	/**
+	 * `audit` records challenges without changing normal egress. `enforce`
+	 * blocks only new user-message/call egress after an unsatisfied challenge;
+	 * ACKs, retries and recovery traffic remain available. Defaults to `audit`.
+	 */
+	integrityPolicy?: NativeAndroidIntegrityPolicy
+	/**
+	 * Optional genuine post-login GPIA provider. This must run in the attested
+	 * installation that owns the session; a Node-generated or replayed token is
+	 * not valid. The safetynet response wire is intentionally not exposed until
+	 * it is independently proven from the official client.
+	 */
+	integrityProvider?: NativeAndroidIntegrityProvider
 	/** Optional server-provided endpoints, inserted at their official sequence state. */
 	connectionEndpoints?: NativeAndroidConnectionEndpoint[]
 	/** Maximum time allowed for one native DNS resolution before fallback advances. */
@@ -189,4 +269,6 @@ export type PersistedNativeAndroidIdentity = {
 	serverStaticPublicKey?: Uint8Array
 	/** Last successful native connection candidate, used by the history step. */
 	connectionEndpoint?: NativeAndroidConnectionEndpoint
+	/** Durable metadata only; never contains nonce, token or attestation bytes. */
+	integrity?: PersistedNativeAndroidIntegrityState
 }

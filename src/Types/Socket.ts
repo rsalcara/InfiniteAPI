@@ -62,6 +62,43 @@ export type ProxyRoutePolicy = {
 
 export type SocketConnectionTrigger = 'instance_create' | 'new_pairing' | 'restart' | 'reconnect'
 
+/**
+ * Result of the official-client start-chat trust lookup.
+ *
+ * The provider is intentionally opaque to the socket: it must obtain these
+ * values from an eligible first-party client/bridge. InfiniteAPI never
+ * derives an integrity signal, creates a privacy token, or treats a local
+ * contact row as proof of trust.
+ */
+export type StartChatTrustSignals = {
+	isSenderSuspicious?: boolean
+	isSenderNewAccount?: boolean
+	createdTs?: number
+}
+
+export type StartChatTrustSignalsError =
+	| 'provider-timeout'
+	| 'provider-invalid-response'
+	| 'provider-unavailable'
+	| 'observer-timeout-or-error'
+
+export type StartChatTrustSignalsState = {
+	/** Full recipient JID requested by the caller; emitted for consumer-controlled telemetry. */
+	jid: string
+	useCase: 'CHAT_FMX'
+	status: 'known' | 'unknown' | 'unavailable'
+	observedAt: number
+	signals?: StartChatTrustSignals
+	error?: StartChatTrustSignalsError
+}
+
+export type StartChatTrustSignalsProvider = (request: {
+	jid: string
+	useCase: 'CHAT_FMX'
+	/** Aborted when the lookup exceeds the socket deadline or the socket closes. */
+	signal?: AbortSignal
+}) => Promise<StartChatTrustSignals>
+
 export type SocketConfig = {
 	/** Stable consumer instance identifier included in auth-state diagnostics. */
 	instanceId?: string
@@ -71,6 +108,24 @@ export type SocketConfig = {
 	proxyRoute?: ProxyRoutePolicy
 	/** Consumer-declared reason for creating this socket, used only in structured diagnostics. */
 	connectionTrigger?: SocketConnectionTrigger
+	/**
+	 * Optional first-party provider for the Android start-chat trust lookup.
+	 * The callback must obtain genuine values; it must not synthesize
+	 * `integrity_signals`, privacy tokens, or attestation material.
+	 * When configured, a cold-recipient send may wait up to 10 seconds and the
+	 * recipient JID is sent to this consumer-controlled service. This lookup
+	 * is advisory and does not guarantee acceptance by WhatsApp/Meta.
+	 */
+	startChatTrustSignalsProvider?: StartChatTrustSignalsProvider
+	/**
+	 * Controls what happens when the optional start-chat lookup is unavailable.
+	 * `observe` preserves existing send behavior; `require-known` is intended
+	 * for controlled validation environments only and is rejected when
+	 * `NODE_ENV=production`.
+	 */
+	startChatTrustSignalsPolicy?: 'observe' | 'require-known'
+	/** Receives start-chat state, including the full requested JID, for durable application telemetry. */
+	onStartChatTrustSignals?: (state: StartChatTrustSignalsState) => void | Promise<void>
 	/** Transport profile. Web remains the stable default. */
 	transportProfile: ConnectionTransportProfile
 	/** Required only when transportProfile is native_android. */

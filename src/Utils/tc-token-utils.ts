@@ -15,6 +15,8 @@ import type { HistoryTcToken } from './history'
 // Same phone-number pattern as WABinary's isJidBot, applied against the user
 // part so the check is invariant to @c.us ↔ @s.whatsapp.net normalization.
 const BOT_PHONE_REGEX = /^1313555\d{4}$|^131655500\d{2}$/
+const TC_TOKEN_ACK_TTL_MS = 10 * 60 * 1000
+const TC_TOKEN_ACK_MAX_KEYS = 10_000
 
 /**
  * Mirrors WA Web's `Wid.isRegularUser()` (user ∧ ¬PSA ∧ ¬Bot). Used to gate tctoken
@@ -30,6 +32,118 @@ export function isRegularUser(jid: string | undefined): boolean {
 	if (BOT_PHONE_REGEX.test(user)) return false // Bot by phone pattern
 	if (isJidMetaAI(jid)) return false // MetaAI (@bot server)
 	return !!(isPnUser(jid) || isAnyLidUser(jid) || isHostedPnUser(jid) || isHostedLidUser(jid) || jid.endsWith('@c.us'))
+}
+
+type TcTokenAckEligibilityEntry = {
+	jid: string
+	expiresAt: number
+	keys: string[]
+	claimed: boolean
+}
+
+/**
+ * Payload-free correlation between a new 1:1 send and its server ACK.
+ * All PN/LID aliases are consumed together so duplicate ACKs remain
+ * idempotent even when the server changes the addressing domain.
+ */
+export class TcTokenAckEligibilityIndex {
+	private readonly entries = new Map<string, TcTokenAckEligibilityEntry>()
+
+	constructor(
+		private readonly now: () => number = Date.now,
+		private readonly ttlMs = TC_TOKEN_ACK_TTL_MS,
+		private readonly maxKeys = TC_TOKEN_ACK_MAX_KEYS
+	) {}
+
+	private key(jid: string, id: string): string {
+		return `${jidNormalizedUser(jid) || jid}\u0000${id}`
+	}
+
+	private remove(entry: TcTokenAckEligibilityEntry): void {
+		for (const key of entry.keys) this.entries.delete(key)
+	}
+
+	private pruneExpired(): void {
+		const now = this.now()
+		for (const entry of new Set(this.entries.values())) {
+			if (entry.expiresAt <= now) this.remove(entry)
+		}
+	}
+
+	remember(jids: readonly string[], id: string, canonicalJid: string): void {
+		this.pruneExpired()
+		const keys = [...new Set(jids.filter(Boolean).map(jid => this.key(jid, id)))]
+		if (!keys.length || !id || !canonicalJid) return
+		for (const key of keys) {
+			const previous = this.entries.get(key)
+			if (previous) this.remove(previous)
+		}
+
+		// A single alias group must never exceed the global bound. Reject it
+		// before evicting unrelated entries, otherwise the insertion itself
+		// would violate the advertised memory limit.
+		if (keys.length > this.maxKeys) return
+
+		while (this.entries.size + keys.length > this.maxKeys) {
+			const oldest = this.entries.values().next().value
+			if (!oldest) break
+			this.remove(oldest)
+		}
+
+		const entry = {
+			jid: jidNormalizedUser(canonicalJid) || canonicalJid,
+			expiresAt: this.now() + this.ttlMs,
+			keys,
+			claimed: false
+		}
+		for (const key of keys) this.entries.set(key, entry)
+	}
+
+	consume(jids: readonly string[], id: string): string | undefined {
+		const entry = this.peekEntry(jids, id)
+		if (!entry) return undefined
+		this.remove(entry)
+		return entry.jid
+	}
+
+	claim(jids: readonly string[], id: string): string | undefined {
+		const entry = this.peekEntry(jids, id)
+		if (!entry || entry.claimed) return undefined
+		entry.claimed = true
+		return entry.jid
+	}
+
+	release(jids: readonly string[], id: string): void {
+		const entry = this.peekEntry(jids, id)
+		if (entry) entry.claimed = false
+	}
+
+	private peekEntry(jids: readonly string[], id: string): TcTokenAckEligibilityEntry | undefined {
+		this.pruneExpired()
+		for (const jid of jids) {
+			const entry = this.entries.get(this.key(jid, id))
+			if (!entry) continue
+			if (entry.expiresAt <= this.now()) {
+				this.remove(entry)
+				return undefined
+			}
+
+			return entry
+		}
+
+		return undefined
+	}
+
+	discard(jids: readonly string[], id: string): void {
+		for (const jid of jids) {
+			const entry = this.entries.get(this.key(jid, id))
+			if (entry) this.remove(entry)
+		}
+	}
+
+	clear(): void {
+		this.entries.clear()
+	}
 }
 
 /** 7 days in seconds — matches WA Web AB prop tctoken_duration */

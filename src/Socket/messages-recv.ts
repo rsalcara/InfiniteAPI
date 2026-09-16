@@ -37,6 +37,7 @@ import {
 	aesEncryptGCM,
 	buildMessageAccountRestrictionDiagnostic,
 	canonicalizeReceiptChatJid,
+	classifyProtocolMessageSenderSource,
 	cleanMessage,
 	cleanupCorruptedSession,
 	compactError,
@@ -78,6 +79,7 @@ import {
 	RetryReason,
 	retryReasonFromDecryptionError,
 	safeCacheSet,
+	selectNotificationSenderAuthorJid,
 	shouldIncludeRetryKeysForSession,
 	toNumber,
 	unixTimestampSeconds,
@@ -154,6 +156,7 @@ import {
 	isPnUser,
 	jidDecode,
 	jidNormalizedUser,
+	jidWithoutExplicitZeroDevice,
 	S_WHATSAPP_NET
 } from '../WABinary'
 
@@ -236,6 +239,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		handleAppStateSyncKeyPeerReceipt,
 		messageRetryManager,
 		issuePrivacyTokens,
+		enqueuePrivacyTokens,
+		consumeTcTokenAckEligibility,
+		claimTcTokenAckEligibility,
+		releaseTcTokenAckEligibility,
 		registerSocketEndHandler,
 		registerSocketDrainHandler,
 		isSocketClosed,
@@ -243,6 +250,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		fetchAccountReachoutTimelock,
 		fetchNewChatMessageCap
 	} = sock
+	const assertNativeAndroidIntegrityReady = (
+		sock as typeof sock & { assertNativeAndroidIntegrityReady?: (egress?: 'message' | 'call') => void }
+	).assertNativeAndroidIntegrityReady
 
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
@@ -393,6 +403,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	 * pre-key error recovery logic depends on that broader serialization.
 	 */
 	const retryLocks = makeLockManager()
+	const tcTokenAckLocks = makeLockManager()
 	// PR #462 review (Copilot): double-underscore prefix on the namespace
 	// avoids future collisions with any real `SignalDataType` value.
 	// LockManager docs (lock-manager.ts:9) require this convention for
@@ -1034,7 +1045,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					return
 				}
 
-				ev.emit('text-status-side-sub.update', { from: node.attrs.from, hash: update.hash })
+				ev.emit('text-status-side-sub.update', {
+					from: jidWithoutExplicitZeroDevice(node.attrs.from),
+					hash: update.hash
+				})
 				logger.debug({ opName }, 'received text-status side-sub notification')
 			} catch (err) {
 				logger.error({ err, opName }, 'failed to parse text-status side-sub notification')
@@ -1056,7 +1070,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					return
 				}
 
-				ev.emit('text-status.update', { from: node.attrs.from, ...update })
+				ev.emit('text-status.update', {
+					from: jidWithoutExplicitZeroDevice(node.attrs.from),
+					...update,
+					jid: jidWithoutExplicitZeroDevice(update.jid)!
+				})
 				logger.debug({ opName, jid: update.jid }, 'received text-status notification')
 			} catch (err) {
 				logger.error({ err, opName }, 'failed to parse text-status notification')
@@ -1252,6 +1270,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								message: messageProto,
 								messageTimestamp: +child.attrs.t!
 							}).toJSON() as WAMessage
+							fullMessage.senderSource = classifyProtocolMessageSenderSource({
+								authorJid: author,
+								currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],
+								currentTransportProfile: config.transportProfile
+							})
 							await upsertMessage(fullMessage, 'append')
 							logger.debug('Processed plaintext newsletter message')
 						} catch (error) {
@@ -1371,6 +1394,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const offerCall = async (jid: string, isVideo?: boolean) => {
 		const meId = authState.creds.me?.id
 		if (!meId) throw new Boom('Not authenticated', { statusCode: 401 })
+		assertNativeAndroidIntegrityReady?.('call')
 
 		const callId = randomBytes(16).toString('hex').toUpperCase()
 		const stanzaId = randomBytes(16).toString('hex').toUpperCase()
@@ -3602,7 +3626,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		if (resolvedParticipant) key.participant = resolvedParticipant
 		remoteJid = key.remoteJid ?? remoteJid
 
-		if (shouldIgnoreJid(remoteJid) && remoteJid !== S_WHATSAPP_NET) {
+		const canonicalRemoteJid = jidWithoutExplicitZeroDevice(remoteJid)
+		if (shouldIgnoreJid(canonicalRemoteJid!) && canonicalRemoteJid !== S_WHATSAPP_NET) {
 			logger.trace({ remoteJid }, 'ignoring receipt from jid')
 			await sendMessageAck(node)
 			return
@@ -3828,7 +3853,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleNotification = async (node: BinaryNode) => {
-		const remoteJid = node.attrs.from
+		const rawRemoteJid = node.attrs.from
+		const remoteJid = jidWithoutExplicitZeroDevice(rawRemoteJid)
 		if (shouldIgnoreJid(remoteJid!) && remoteJid !== S_WHATSAPP_NET) {
 			logger.trace({ remoteJid }, 'ignored notification')
 			await sendMessageAck(node)
@@ -3842,18 +3868,19 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					if (msg) {
 						const fromMe = areJidsSameUser(node.attrs.participant || remoteJid, authState.creds.me!.id)
 						const { senderAlt: participantAlt, addressingMode } = extractAddressingContext(node)
+						const rawKeyParticipant = msg.key?.participant || node.attrs.participant
 						const extendedKey: WAMessageKey = {
-							remoteJid,
+							...(msg.key || {}),
+							remoteJid: remoteJid!,
 							fromMe,
-							participant: node.attrs.participant,
-							participantAlt,
+							participant: jidWithoutExplicitZeroDevice(rawKeyParticipant),
+							participantAlt: jidWithoutExplicitZeroDevice(participantAlt),
 							participantUsername: node.attrs.participant_username || node.attrs.username,
 							addressingMode,
-							id: node.attrs.id,
-							...(msg.key || {})
+							id: node.attrs.id
 						}
 						msg.key = extendedKey
-						msg.participant ??= node.attrs.participant
+						msg.participant = jidWithoutExplicitZeroDevice(msg.participant || rawKeyParticipant)
 						msg.messageTimestamp = +node.attrs.t!
 
 						// proto.WebMessageInfo.fromObject only copies the WAProto schema
@@ -3862,6 +3889,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						// remoteJidUsername, etc.). Reattach the full key after conversion.
 						const fullMsg = proto.WebMessageInfo.fromObject(msg) as WAMessage
 						fullMsg.key = { ...fullMsg.key, ...extendedKey }
+						fullMsg.senderSource = classifyProtocolMessageSenderSource({
+							authorJid: selectNotificationSenderAuthorJid({
+								participantJid: node.attrs.participant,
+								rawRemoteJid
+							}),
+							currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],
+							currentTransportProfile: config.transportProfile
+						})
 						await upsertMessage(fullMsg, 'append')
 					}
 				})
@@ -3872,7 +3907,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const handleMessage = async (node: BinaryNode) => {
-		if (shouldIgnoreJid(node.attrs.from!) && node.attrs.from !== S_WHATSAPP_NET) {
+		const canonicalRemoteJid = jidWithoutExplicitZeroDevice(node.attrs.from)
+		if (shouldIgnoreJid(canonicalRemoteJid!) && canonicalRemoteJid !== S_WHATSAPP_NET) {
 			logger.trace({ from: node.attrs.from }, 'ignored message')
 			// Send a clean ACK (no error code) so the server considers the
 			// message delivered. Using error 500 (UnhandledError) previously
@@ -3916,6 +3952,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				config.onMessageQuarantine
 			)
 			rememberRawProtocolSender(msg, author)
+			msg.senderSource = classifyProtocolMessageSenderSource({
+				authorJid: author,
+				currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],
+				currentTransportProfile: config.transportProfile
+			})
 
 			const alt = msg.key.participantAlt || msg.key.remoteJidAlt
 			// Handle LID/PN mappings with hybrid approach:
@@ -4443,7 +4484,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const userNodes = getBinaryNodeChildren(parentNode, 'user')
 		if (!userNodes.length) return undefined
 		return userNodes.map(u => ({
-			jid: u.attrs.jid,
+			jid: jidWithoutExplicitZeroDevice(u.attrs.jid),
 			state: u.attrs.state,
 			userPn: u.attrs.user_pn,
 			type: u.attrs.type
@@ -4464,15 +4505,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const status = getCallStatusFromNode(infoChild)
 
 			const callId = infoChild.attrs['call-id']!
-			const from = infoChild.attrs.from! || infoChild.attrs['call-creator']!
+			const rawFrom = infoChild.attrs.from || infoChild.attrs['call-creator']!
+			const from = jidWithoutExplicitZeroDevice(rawFrom)!
 
 			const call: WACallEvent = {
-				chatId: attrs.from!,
+				chatId: jidWithoutExplicitZeroDevice(attrs.from)!,
 				from,
 				id: callId,
 				date: new Date(+attrs.t! * 1000),
 				offline: !!attrs.offline,
-				status
+				status,
+				senderSource: classifyProtocolMessageSenderSource({
+					authorJid: rawFrom,
+					currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],
+					currentTransportProfile: config.transportProfile
+				})
 			}
 
 			if (status === 'relaylatency') {
@@ -4486,7 +4533,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			if (status === 'offer') {
 				call.isVideo = !!getBinaryNodeChild(infoChild, 'video')
 				call.isGroup = infoChild.attrs.type === 'group' || !!infoChild.attrs['group-jid']
-				call.groupJid = infoChild.attrs['group-jid']
+				call.groupJid = jidWithoutExplicitZeroDevice(infoChild.attrs['group-jid'])
 				// Extract and sanitize caller phone number
 				call.callerPn = sanitizeCallerPn(infoChild.attrs['caller_pn'])
 
@@ -4505,7 +4552,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				// Extract link_info (who created the link)
 				const linkInfo = getBinaryNodeChild(infoChild, 'link_info')
 				if (linkInfo) {
-					call.linkCreator = linkInfo.attrs.link_creator
+					call.linkCreator = jidWithoutExplicitZeroDevice(linkInfo.attrs.link_creator)
 					call.linkCreatorPn = linkInfo.attrs.link_creator_pn
 				}
 
@@ -4559,6 +4606,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 			// use existing call info to populate this event
 			if (existingCall) {
+				if (existingCall.senderSource) {
+					call.senderSource = existingCall.senderSource
+				}
+
 				call.isVideo = call.isVideo ?? existingCall.isVideo
 				call.isGroup = call.isGroup ?? existingCall.isGroup
 				call.groupJid = call.groupJid ?? existingCall.groupJid
@@ -4584,20 +4635,33 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				resolveLidToPn(call.from, callLidMapping, logger),
 				resolveLidToPn(call.linkCreator, callLidMapping, logger)
 			])
-			if (resolvedChatId) call.chatId = resolvedChatId
-			if (resolvedFrom) call.from = resolvedFrom
-			if (resolvedLinkCreator) call.linkCreator = resolvedLinkCreator
+			if (resolvedChatId) call.chatId = jidWithoutExplicitZeroDevice(resolvedChatId)!
+			if (resolvedFrom) call.from = jidWithoutExplicitZeroDevice(resolvedFrom)!
+			if (resolvedLinkCreator) call.linkCreator = jidWithoutExplicitZeroDevice(resolvedLinkCreator)
 			// Resolve participant JIDs in parallel
 			if (call.participants) {
 				await Promise.all(
 					call.participants.map(async p => {
 						if (p.jid) {
 							const resolved = p.userPn || (await resolveLidToPn(p.jid, callLidMapping, logger))
-							if (resolved) p.jid = resolved
+							if (resolved) p.jid = jidWithoutExplicitZeroDevice(resolved)
 						}
 					})
 				)
 			}
+
+			logger.info(
+				{
+					callId: call.id,
+					callStatus: call.status,
+					senderSource: call.senderSource?.type ?? 'unknown',
+					senderDeviceId: call.senderSource?.deviceId,
+					senderPlatform: call.senderSource?.platform,
+					senderSourceConfidence: call.senderSource?.confidence ?? 'unknown',
+					senderSourceEvidence: call.senderSource?.evidence ?? 'missing_author_device'
+				},
+				'call sender source classified'
+			)
 
 			ev.emit('call', [call])
 		}
@@ -4627,6 +4691,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		await normalizeKeyLidToPn(key, signalRepository.lidMapping, logger)
 		if (!attrs.error) {
 			if (attrs.id) {
+				const ackId = attrs.id
 				emitMessageDeliveryState(
 					ev,
 					{
@@ -4639,6 +4704,45 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					},
 					logger
 				)
+
+				// Android schedules GeneratePrivacyTokenJob only after the
+				// server confirms a normal 1:1 message. The outbound payload is
+				// explicitly marked at staging time; this avoids treating
+				// retries, edits, deletes, pins, groups, status or newsletters
+				// as a fresh trusted-contact event.
+				const tcTokenAckAliases = [
+					recentMessage?.to ?? outboundJid,
+					attrs.from ?? outboundJid,
+					recentMessage?.canonicalJid ?? outboundJid
+				]
+				if (!attrs.participant) {
+					await tcTokenAckLocks.withLock({ namespace: '__tc_token_ack__', id: ackId }, async () => {
+						const eligibleJid = claimTcTokenAckEligibility(tcTokenAckAliases, ackId)
+						if (!eligibleJid || !isRegularUser(eligibleJid)) return
+						const tokenJid = jidNormalizedUser(eligibleJid)
+						const issueTimestamp = unixTimestampSeconds()
+						try {
+							await enqueuePrivacyTokens([tokenJid], issueTimestamp)
+							consumeTcTokenAckEligibility(tcTokenAckAliases, ackId)
+							logTcToken('reissue_ack', {
+								jid: tokenJid,
+								messageId: ackId,
+								state: 'durably-queued'
+							})
+						} catch (error: any) {
+							// The message is already server-acknowledged. A local
+							// queue failure must not turn it into a delivery error.
+							// Release the claim so a queued duplicate ACK can retry.
+							releaseTcTokenAckEligibility(tcTokenAckAliases, ackId)
+							logTcToken('reissue_ack_fail', {
+								jid: tokenJid,
+								messageId: ackId,
+								error: error?.message,
+								state: 'enqueue-failed-claim-released'
+							})
+						}
+					})
+				}
 			}
 
 			return
@@ -4864,7 +4968,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			ignoreJid = !isNodeFromMe || isJidGroup(attrs.from) ? attrs.from : attrs.recipient
 		}
 
-		if (ignoreJid && ignoreJid !== S_WHATSAPP_NET && shouldIgnoreJid(ignoreJid)) {
+		const canonicalIgnoreJid = jidWithoutExplicitZeroDevice(ignoreJid)
+		if (canonicalIgnoreJid && canonicalIgnoreJid !== S_WHATSAPP_NET && shouldIgnoreJid(canonicalIgnoreJid)) {
 			// Plain ACK (no error code) — InfiniteAPI's pre-existing semantics
 			// for ignored stanzas. NACK 500 (UnhandledError) would tell the
 			// server the message failed processing and trigger redelivery,
@@ -4903,9 +5008,27 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// (call link relays may arrive without these attrs — just log them)
 			if (callId && rawCallCreator) {
 				// Resolve LID→PN for call creator
-				const callCreator =
+				const callCreator = jidWithoutExplicitZeroDevice(
 					(await resolveLidToPn(rawCallCreator, signalRepository.lidMapping, logger)) || rawCallCreator
+				)!
+				const senderSource = classifyProtocolMessageSenderSource({
+					authorJid: rawCallCreator,
+					currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],
+					currentTransportProfile: config.transportProfile
+				})
 				logger.debug({ callId, callCreator, uuid: node.attrs.uuid }, 'received relay info')
+				logger.info(
+					{
+						callId,
+						callStatus: 'relay',
+						senderSource: senderSource.type,
+						senderDeviceId: senderSource.deviceId,
+						senderPlatform: senderSource.platform,
+						senderSourceConfidence: senderSource.confidence,
+						senderSourceEvidence: senderSource.evidence
+					},
+					'call sender source classified'
+				)
 				ev.emit('call', [
 					{
 						chatId: callCreator,
@@ -4913,7 +5036,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						id: callId,
 						date: new Date(),
 						offline: false,
-						status: 'relay' as WACallUpdateType
+						status: 'relay' as WACallUpdateType,
+						senderSource
 					}
 				])
 			} else {
@@ -4966,6 +5090,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 
 				const protoMsg = proto.WebMessageInfo.fromObject(msg) as WAMessage
+				protoMsg.senderSource =
+					call.senderSource ??
+					classifyProtocolMessageSenderSource({
+						authorJid: call.from,
+						currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],
+						currentTransportProfile: config.transportProfile
+					})
 				await upsertMessage(protoMsg, call.offline ? 'append' : 'notify')
 			}
 		})

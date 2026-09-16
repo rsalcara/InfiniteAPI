@@ -46,6 +46,7 @@ import {
 	type ProcessedHistorySync
 } from './history-sync-coordinator'
 import type { ILogger } from './logger'
+import { classifyMessageWithoutAuthorDevice } from './message-sender-source'
 import {
 	ANDROID_VIEW_ONCE_STATE,
 	type AppStateBackend,
@@ -365,6 +366,10 @@ export const emitProcessedHistorySync = (
 		peerDataRequestSessionId?: string | null
 	}
 ): void => {
+	for (const message of data.messages ?? []) {
+		message.senderSource ??= classifyMessageWithoutAuthorDevice()
+	}
+
 	if (data.lidPnMappings?.length) ev.emit('lid-mapping.update', data.lidPnMappings)
 	ev.emit('messaging-history.set', {
 		...data,
@@ -1087,6 +1092,7 @@ const processMessage = async (
 		let messageRowId: number | undefined
 		try {
 			const senderJid = getKeyAuthor(message.key, meId)
+			const authorDeviceJid = rawProtocolSenders.get(message) || senderJid
 			const androidMessageType = mapMessageToAndroidType(message.message)
 			const isViewOnce = isUnavailableViewOnce || isAndroidViewOnceMessageType(androidMessageType)
 			if (androidMessageType === null && !isUnavailableViewOnce) {
@@ -1119,7 +1125,7 @@ const processMessage = async (
 				textData: content?.extendedTextMessage?.text ?? content?.conversation ?? null,
 				viewMode: isViewOnce ? 0 : null,
 				viewOnceState: isViewOnce ? ANDROID_VIEW_ONCE_STATE.UNOPENED : null,
-				authorDeviceJid: jidNormalizedUser(senderJid),
+				authorDeviceJid,
 				messageSecret: content?.messageContextInfo?.messageSecret
 					? Buffer.from(content.messageContextInfo.messageSecret)
 					: null,

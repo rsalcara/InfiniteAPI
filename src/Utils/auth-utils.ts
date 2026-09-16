@@ -335,6 +335,16 @@ export const addTransactionCapability = (
 	{ maxCommitRetries, delayBetweenTriesMs }: TransactionCapabilityOptions
 ): SignalKeyStoreWithRecordTransaction => {
 	const txStorage = new AsyncLocalStorage<TransactionContext>()
+	let txStorageDisabled = false
+
+	// This AsyncLocalStorage belongs to one auth-key capability. Disable it only
+	// after the last transaction has settled; a timed-out destroy() may leave a
+	// transaction running, so its finally block completes the cleanup later.
+	const disableTxStorageIfDrained = () => {
+		if (txStorageDisabled || !destroyed || activeTransactions !== 0 || activeDirectWrites !== 0) return
+		txStorage.disable()
+		txStorageDisabled = true
+	}
 
 	/**
 	 * Single canonical lock primitive (Stage 1 — upstream #2571). Replaces the
@@ -367,6 +377,7 @@ export const addTransactionCapability = (
 	 * and throw before incrementing.
 	 */
 	let activeTransactions = 0
+	let activeDirectWrites = 0
 
 	/**
 	 * Check if currently in a transaction
@@ -464,33 +475,53 @@ export const addTransactionCapability = (
 			const ctx = txStorage.getStore()
 
 			if (!ctx) {
-				// No transaction — hold one per-type lock across validate + write so
-				// pre-key deletion validation reads the same store state that the
-				// write will observe (H2 fix from upstream #2571). Previously
-				// `validateDeletions()` and `state.set()` ran under separate queues,
-				// allowing a concurrent writer to flip the existence state between
-				// our read and our write.
-				const types = Object.keys(data) as Array<keyof SignalDataTypeMap>
-				await Promise.all(
-					types.map(type =>
-						locks.withLock({ namespace: '__type__', id: type }, async () => {
-							if (type === 'pre-key') {
-								await preKeyManager.validateDeletions(data, type)
-							}
+				// Once teardown starts, AsyncLocalStorage is eventually disabled.
+				// Reject writes that arrive without an active transaction so a
+				// detached callback cannot bypass lifecycle guards and mutate the
+				// backing store after the capability has been destroyed.
+				if (destroyed) {
+					logger.warn({ types: Object.keys(data) }, 'transaction capability destroyed; ignoring detached write')
+					return
+				}
 
-							// `validateDeletions` may have removed every entry from
-							// the bucket (e.g. all targeted ids were already gone).
-							// Skip the durable write in that case — no work to do,
-							// and writing `{ 'pre-key': {} }` is a wasteful no-op
-							// against the storage adapter.
-							const bucket = data[type]
-							if (!bucket || Object.keys(bucket).length === 0) return
+				// Direct writes are admitted work too: they can pass the guard and
+				// then wait on a per-type lock while destroy() is starting. Count
+				// them so teardown cannot disable the context or destroy the
+				// pre-key manager underneath an admitted write.
+				activeDirectWrites++
+				try {
+					// No transaction — hold one per-type lock across validate + write so
+					// pre-key deletion validation reads the same store state that the
+					// write will observe (H2 fix from upstream #2571). Previously
+					// `validateDeletions()` and `state.set()` ran under separate queues,
+					// allowing a concurrent writer to flip the existence state between
+					// our read and our write.
+					const types = Object.keys(data) as Array<keyof SignalDataTypeMap>
+					await Promise.all(
+						types.map(type =>
+							locks.withLock({ namespace: '__type__', id: type }, async () => {
+								if (type === 'pre-key') {
+									await preKeyManager.validateDeletions(data, type)
+								}
 
-							const typeData = { [type]: bucket } as SignalDataSet
-							await state.set(typeData)
-						})
+								// `validateDeletions` may have removed every entry from
+								// the bucket (e.g. all targeted ids were already gone).
+								// Skip the durable write in that case — no work to do,
+								// and writing `{ 'pre-key': {} }` is a wasteful no-op
+								// against the storage adapter.
+								const bucket = data[type]
+								if (!bucket || Object.keys(bucket).length === 0) return
+
+								const typeData = { [type]: bucket } as SignalDataSet
+								await state.set(typeData)
+							})
+						)
 					)
-				)
+				} finally {
+					activeDirectWrites--
+					disableTxStorageIfDrained()
+				}
+
 				return
 			}
 
@@ -615,6 +646,7 @@ export const addTransactionCapability = (
 					} finally {
 						heldLocksRelease(existing.heldLocks, lockKey)
 						activeTransactions--
+						disableTxStorageIfDrained()
 					}
 				}
 
@@ -653,6 +685,7 @@ export const addTransactionCapability = (
 					throw err
 				} finally {
 					activeTransactions--
+					disableTxStorageIfDrained()
 				}
 			})
 		},
@@ -732,6 +765,7 @@ export const addTransactionCapability = (
 					} finally {
 						for (const k of newLockKeys) heldLocksRelease(existing.heldLocks, k)
 						activeTransactions--
+						disableTxStorageIfDrained()
 					}
 				}
 
@@ -770,6 +804,7 @@ export const addTransactionCapability = (
 					throw err
 				} finally {
 					activeTransactions--
+					disableTxStorageIfDrained()
 				}
 			})
 		},
@@ -835,19 +870,23 @@ export const addTransactionCapability = (
 			// trace-enabled environments don't drown in noise during shutdown.
 			let lastLoggedCount = -1
 			let lastLoggedAt = 0
-			while (activeTransactions > 0) {
+			while (activeTransactions > 0 || activeDirectWrites > 0) {
 				if (Date.now() - startedAt >= MAX_DRAIN_WAIT_MS) {
 					logger.warn(
-						{ activeTransactions, waitedMs: MAX_DRAIN_WAIT_MS },
+						{ activeTransactions, activeDirectWrites, waitedMs: MAX_DRAIN_WAIT_MS },
 						'destroy: drain wait timed out — proceeding with teardown'
 					)
 					break
 				}
 
 				const now = Date.now()
-				if (activeTransactions !== lastLoggedCount || now - lastLoggedAt >= 500) {
-					logger.trace({ activeTransactions }, 'destroy: waiting for in-flight transactions to drain')
-					lastLoggedCount = activeTransactions
+				const activeOperations = activeTransactions + activeDirectWrites
+				if (activeOperations !== lastLoggedCount || now - lastLoggedAt >= 500) {
+					logger.trace(
+						{ activeTransactions, activeDirectWrites },
+						'destroy: waiting for in-flight auth operations to drain'
+					)
+					lastLoggedCount = activeOperations
 					lastLoggedAt = now
 				}
 
@@ -855,6 +894,7 @@ export const addTransactionCapability = (
 			}
 
 			preKeyManager.destroy()
+			disableTxStorageIfDrained()
 			logger.debug('Transaction capability destroyed')
 		},
 

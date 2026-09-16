@@ -1,5 +1,5 @@
 import { Boom } from '@hapi/boom'
-import type { ChatUpdate, NewChatMessageCapInfo, ReachoutTimelockState } from '../Types'
+import type { ChatUpdate, NewChatMessageCapInfo, ReachoutTimelockState, StartChatTrustSignalsState } from '../Types'
 import { isAnyLidUser, isAnyPnUser, jidDecode, jidNormalizedUser } from '../WABinary'
 import type { USyncContactType, USyncQueryResultList } from '../WAUSync'
 import type { ILogger } from './logger'
@@ -20,6 +20,7 @@ export type DirectRecipientPreflightResult<TDevice> = {
 	lidJid: string
 	username?: string
 	freshTargetDevices?: TDevice[]
+	startChatTrustSignals?: StartChatTrustSignalsState
 }
 
 export type DirectRecipientIdentity = {
@@ -33,6 +34,8 @@ export type DirectRecipientPreflightOptions<TDevice> = {
 	getKnownLIDForPN: (pn: string) => Promise<string | null>
 	fetchReachout: () => Promise<ReachoutTimelockState | undefined>
 	fetchCapping: () => Promise<NewChatMessageCapInfo | undefined>
+	fetchStartChatTrustSignals?: (jid: string) => Promise<StartChatTrustSignalsState>
+	startChatTrustSignalsPolicy?: 'observe' | 'require-known'
 	resolveUSync: (phoneUser: string) => Promise<USyncQueryResultList[]>
 	storeMapping: (mapping: { lid: string; pn: string }) => Promise<unknown>
 	/** Called after the canonical PN/LID mapping is durably stored. */
@@ -176,6 +179,8 @@ export const runDirectRecipientPreflight = async <TDevice>({
 	getKnownLIDForPN,
 	fetchReachout,
 	fetchCapping,
+	fetchStartChatTrustSignals,
+	startChatTrustSignalsPolicy,
 	resolveUSync,
 	storeMapping,
 	onResolvedIdentity,
@@ -208,6 +213,45 @@ export const runDirectRecipientPreflight = async <TDevice>({
 			statusCode: 403,
 			data: { requestedJid: requestedPn, ...policy.restriction }
 		})
+	}
+
+	let startChatTrustSignals: StartChatTrustSignalsState | undefined
+	if (fetchStartChatTrustSignals || startChatTrustSignalsPolicy === 'require-known') {
+		startChatTrustSignals = fetchStartChatTrustSignals
+			? await fetchStartChatTrustSignals(requestedPn)
+			: {
+					jid: requestedPn,
+					useCase: 'CHAT_FMX',
+					status: 'unavailable',
+					observedAt: Date.now(),
+					error: 'provider-unavailable'
+				}
+		if (
+			startChatTrustSignalsPolicy === 'require-known' &&
+			(startChatTrustSignals.status !== 'known' ||
+				!startChatTrustSignals.signals ||
+				Object.keys(startChatTrustSignals.signals).length === 0)
+		) {
+			logger.warn(
+				{
+					requestedJid: requestedPn,
+					status: startChatTrustSignals.status,
+					category: 'start-chat-trust-signals',
+					reason: startChatTrustSignals.error ?? 'provider-unavailable',
+					action: 'blocked-no-retry'
+				},
+				'cold-recipient preflight requires known start-chat trust signals'
+			)
+			throw new Boom('Start-chat trust signals are unavailable', {
+				statusCode: 503,
+				data: {
+					requestedJid: requestedPn,
+					category: 'start-chat-trust-signals',
+					reason: startChatTrustSignals.error ?? 'provider-unavailable',
+					action: 'blocked-no-retry'
+				}
+			})
+		}
 	}
 
 	const phoneUser = jidDecode(requestedPn)?.user
@@ -328,6 +372,7 @@ export const runDirectRecipientPreflight = async <TDevice>({
 		pnJid: resolution.pnJid,
 		lidJid: resolution.lidJid,
 		...(resolution.username ? { username: resolution.username } : {}),
-		freshTargetDevices
+		freshTargetDevices,
+		...(startChatTrustSignals ? { startChatTrustSignals } : {})
 	}
 }

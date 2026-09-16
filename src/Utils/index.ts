@@ -33,8 +33,11 @@ export * from './tc-token-lifecycle'
 export * from './protocol-wire-capture'
 export * from './direct-recipient'
 export * from './outbound-policy'
+export * from './start-chat-trust-signals-provider'
 export * from './message-delivery-state'
 export * from './message-ack-error'
+export * from './message-sender-source'
+export * from './presence-update'
 export { isExpectedSocketTeardownError } from './socket-teardown'
 
 // === Identity and Session Management ===
