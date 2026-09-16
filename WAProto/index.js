@@ -117753,6 +117753,10 @@ export const proto = $root.proto = (() => {
                 case 18:
                     m.type = 18;
                     break;
+                case "BUSINESS":
+                case 19:
+                    m.type = 19;
+                    break;
                 default:
                     if (typeof d.type === "number" && (d.type | 0) === d.type)
                         m.type = d.type;
@@ -117847,6 +117851,7 @@ export const proto = $root.proto = (() => {
                 values[valuesById[16] = "LEAD"] = 16;
                 values[valuesById[17] = "MENTIONS_AND_REPLIES"] = 17;
                 values[valuesById[18] = "REQUESTS"] = 18;
+                values[valuesById[19] = "BUSINESS"] = 19;
                 return values;
             })();
 
@@ -135313,9 +135318,29 @@ export const proto = $root.proto = (() => {
             case 240:
                 m.messageStubType = 240;
                 break;
+            case "BIZ_CALLBACK_ENABLED":
+            case 247:
+                m.messageStubType = 247;
+                break;
             case "EPHEMERAL_CHANGED_FOR_COEX":
             case 248:
                 m.messageStubType = 248;
+                break;
+            case "UGC_BOT_PROFILE_UPDATED":
+            case 249:
+                m.messageStubType = 249;
+                break;
+            case "ORDER_EPHEMERAL_EXEMPTION":
+            case 250:
+                m.messageStubType = 250;
+                break;
+            case "CAMEO_CHAT_CREATED":
+            case 254:
+                m.messageStubType = 254;
+                break;
+            case "CAMEO_TRANSITIONED":
+            case 256:
+                m.messageStubType = 256;
                 break;
             default:
                 if (typeof d.messageStubType === "number" && (d.messageStubType | 0) === d.messageStubType)
@@ -136222,7 +136247,12 @@ export const proto = $root.proto = (() => {
             values[valuesById[228] = "IDENTITY_TRUST_REVOKED"] = 228;
             values[valuesById[230] = "CTWA_CONSUMER_DISCLOSURE"] = 230;
             values[valuesById[240] = "CHANGE_ACP2_SETTING"] = 240;
+            values[valuesById[247] = "BIZ_CALLBACK_ENABLED"] = 247;
             values[valuesById[248] = "EPHEMERAL_CHANGED_FOR_COEX"] = 248;
+            values[valuesById[249] = "UGC_BOT_PROFILE_UPDATED"] = 249;
+            values[valuesById[250] = "ORDER_EPHEMERAL_EXEMPTION"] = 250;
+            values[valuesById[254] = "CAMEO_CHAT_CREATED"] = 254;
+            values[valuesById[256] = "CAMEO_TRANSITIONED"] = 256;
             return values;
         })();
 
