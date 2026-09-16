@@ -2,7 +2,8 @@ import {
 	classifyCurrentClientMessageSenderSource,
 	classifyMessageWithoutAuthorDevice,
 	classifyProtocolMessageSenderSource,
-	messageSenderSourceLogFields
+	messageSenderSourceLogFields,
+	selectNotificationSenderAuthorJid
 } from '../../Utils/message-sender-source'
 
 describe('message sender source classification', () => {
@@ -22,6 +23,27 @@ describe('message sender source classification', () => {
 			confidence: 'unknown',
 			evidence: 'missing_author_device'
 		})
+	})
+
+	it('keeps the raw notification sender device when participant is absent', () => {
+		const authorJid = selectNotificationSenderAuthorJid({
+			rawRemoteJid: '5511000000000:0@s.whatsapp.net'
+		})
+
+		expect(classifyProtocolMessageSenderSource({ authorJid })).toMatchObject({
+			type: 'primary_device',
+			deviceId: 0,
+			evidence: 'author_device_jid'
+		})
+	})
+
+	it('prefers notification participant attribution when present', () => {
+		expect(
+			selectNotificationSenderAuthorJid({
+				participantJid: '5511000000000:7@s.whatsapp.net',
+				rawRemoteJid: '5511000000000:0@s.whatsapp.net'
+			})
+		).toBe('5511000000000:7@s.whatsapp.net')
 	})
 
 	it('classifies a positive device suffix as a linked device', () => {

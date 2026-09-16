@@ -9,6 +9,14 @@ type ClassifyProtocolSenderOptions = {
 	currentTransportProfile?: ConnectionTransportProfile
 }
 
+export const selectNotificationSenderAuthorJid = ({
+	participantJid,
+	rawRemoteJid
+}: {
+	participantJid?: string
+	rawRemoteJid?: string
+}): string | undefined => participantJid || rawRemoteJid
+
 const unknownSenderSource = (): MessageSenderSource => ({
 	type: 'unknown',
 	confidence: 'unknown',

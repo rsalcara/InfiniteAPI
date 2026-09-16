@@ -85,6 +85,7 @@ export const createStartChatTrustSignalsBridgeProvider = (
 		try {
 			const response = await fetchImpl(`${config.url.replace(/\/$/, '')}${path}`, {
 				method: 'POST',
+				redirect: 'error',
 				headers: {
 					'Content-Type': 'application/json',
 					...(config.token ? { Authorization: `Bearer ${config.token}` } : {})

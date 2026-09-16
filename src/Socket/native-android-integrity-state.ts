@@ -6,7 +6,7 @@ import type {
 	PersistedNativeAndroidIntegrityChallenge,
 	PersistedNativeAndroidIntegrityState
 } from '../Types/Transport'
-import type { BinaryNode } from '../WABinary'
+import { type BinaryNode, isJidNewsletter } from '../WABinary'
 
 export type NativeAndroidIntegrityState = {
 	enabled: boolean
@@ -296,8 +296,6 @@ export const markNativeAndroidIntegrityCleared = (node: BinaryNode): void => {
 export const isNativeAndroidIntegrityCleared = (node: BinaryNode): boolean =>
 	nativeAndroidIntegrityClearedNodes.has(node)
 
-const isNewsletterJid = (jid: unknown): boolean => typeof jid === 'string' && jid.endsWith('@newsletter')
-
 const hasDirectUserMessagePayload = (node: BinaryNode): boolean =>
 	Array.isArray(node.content) && node.content.some(child => child.tag === 'enc' || child.tag === 'participants')
 
@@ -310,8 +308,8 @@ export const getNativeAndroidIntegrityGatedEgress = (node: BinaryNode): 'message
 		if (
 			node.attrs?.participant ||
 			node.attrs?.category === 'peer' ||
-			isNewsletterJid(node.attrs?.to) ||
-			isNewsletterJid(node.attrs?.from)
+			isJidNewsletter(node.attrs?.to) ||
+			isJidNewsletter(node.attrs?.from)
 		) {
 			return undefined
 		}

@@ -79,6 +79,7 @@ import {
 	RetryReason,
 	retryReasonFromDecryptionError,
 	safeCacheSet,
+	selectNotificationSenderAuthorJid,
 	shouldIncludeRetryKeysForSession,
 	toNumber,
 	unixTimestampSeconds,
@@ -3867,18 +3868,19 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					if (msg) {
 						const fromMe = areJidsSameUser(node.attrs.participant || remoteJid, authState.creds.me!.id)
 						const { senderAlt: participantAlt, addressingMode } = extractAddressingContext(node)
+						const rawKeyParticipant = msg.key?.participant || node.attrs.participant
 						const extendedKey: WAMessageKey = {
+							...(msg.key || {}),
 							remoteJid: remoteJid!,
 							fromMe,
-							participant: jidWithoutExplicitZeroDevice(node.attrs.participant),
+							participant: jidWithoutExplicitZeroDevice(rawKeyParticipant),
 							participantAlt: jidWithoutExplicitZeroDevice(participantAlt),
 							participantUsername: node.attrs.participant_username || node.attrs.username,
 							addressingMode,
-							id: node.attrs.id,
-							...(msg.key || {})
+							id: node.attrs.id
 						}
 						msg.key = extendedKey
-						msg.participant ??= node.attrs.participant
+						msg.participant = jidWithoutExplicitZeroDevice(msg.participant || rawKeyParticipant)
 						msg.messageTimestamp = +node.attrs.t!
 
 						// proto.WebMessageInfo.fromObject only copies the WAProto schema
@@ -3888,7 +3890,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						const fullMsg = proto.WebMessageInfo.fromObject(msg) as WAMessage
 						fullMsg.key = { ...fullMsg.key, ...extendedKey }
 						fullMsg.senderSource = classifyProtocolMessageSenderSource({
-							authorJid: node.attrs.participant || rawRemoteJid,
+							authorJid: selectNotificationSenderAuthorJid({
+								participantJid: node.attrs.participant,
+								rawRemoteJid
+							}),
 							currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],
 							currentTransportProfile: config.transportProfile
 						})

@@ -25,6 +25,7 @@ describe('start-chat trust-signals bridge provider', () => {
 	it('sends only the CHAT_FMX request and returns parsed non-sensitive fields', async () => {
 		const fetchImpl = jest.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
 			expect(init?.method).toBe('POST')
+			expect(init?.redirect).toBe('error')
 			expect(init?.body).toBe(JSON.stringify({ jid: '5511999999999@s.whatsapp.net', use_case: 'CHAT_FMX' }))
 			return new Response(
 				JSON.stringify({
@@ -60,6 +61,25 @@ describe('start-chat trust-signals bridge provider', () => {
 		await expect(
 			provider({ jid: '5511999999999@s.whatsapp.net', useCase: 'CHAT_FMX', signal: signal() })
 		).rejects.toThrow('no valid fields')
+	})
+
+	it('does not allow fetch to follow redirects with CHAT_FMX payloads', async () => {
+		let redirectMode: RequestRedirect | undefined
+		const provider = createStartChatTrustSignalsBridgeProvider({
+			url: 'http://127.0.0.1',
+			fetch: (async (_url: RequestInfo | URL, init?: RequestInit) => {
+				redirectMode = init?.redirect
+				return new Response('', {
+					status: 308,
+					headers: { location: 'http://attacker.invalid/start-chat/trust-signals' }
+				})
+			}) as unknown as typeof fetch
+		})
+
+		await expect(
+			provider({ jid: '5511999999999@s.whatsapp.net', useCase: 'CHAT_FMX', signal: signal() })
+		).rejects.toThrow('HTTP 308')
+		expect(redirectMode).toBe('error')
 	})
 
 	it('respects the socket abort signal before dispatch', async () => {

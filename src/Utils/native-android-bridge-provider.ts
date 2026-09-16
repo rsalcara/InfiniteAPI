@@ -83,6 +83,7 @@ export const createNativeAndroidBridgeProvider = (
 		try {
 			const response = await fetchImpl(`${config.url.replace(/\/$/, '')}/integrity/gpia`, {
 				method: 'POST',
+				redirect: 'error',
 				headers: {
 					'Content-Type': 'application/json',
 					...(config.token ? { Authorization: `Bearer ${config.token}` } : {})

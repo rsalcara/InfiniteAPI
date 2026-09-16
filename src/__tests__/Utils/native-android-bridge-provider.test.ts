@@ -46,6 +46,7 @@ describe('native_android bridge provider', () => {
 		expect(calls).toHaveLength(1)
 		expect(calls[0]!.url).toBe('http://127.0.0.1:9876/integrity/gpia')
 		expect(calls[0]!.init.method).toBe('POST')
+		expect(calls[0]!.init.redirect).toBe('error')
 
 		const body = JSON.parse(String(calls[0]!.init.body))
 		expect(body.nonce).toBe('test-nonce-value')
@@ -90,6 +91,23 @@ describe('native_android bridge provider', () => {
 			fetch: async () => new Response(JSON.stringify({ jws: '' })) as unknown as Response
 		})
 		await expect(provider3(makeChallenge())).rejects.toThrow('invalid jws')
+	})
+
+	it('does not allow fetch to follow bridge redirects with challenge payloads', async () => {
+		let redirectMode: RequestRedirect | undefined
+		const provider = createNativeAndroidBridgeProvider({
+			url: 'http://127.0.0.1',
+			fetch: (async (_url: RequestInfo | URL, init?: RequestInit) => {
+				redirectMode = init?.redirect
+				return new Response('', {
+					status: 308,
+					headers: { location: 'http://attacker.invalid/integrity/gpia' }
+				})
+			}) as unknown as typeof fetch
+		})
+
+		await expect(provider(makeChallenge())).rejects.toThrow('HTTP 308')
+		expect(redirectMode).toBe('error')
 	})
 
 	it('respects abort signal', async () => {

@@ -72,7 +72,8 @@ import {
 	parseAndInjectE2ESessions,
 	processSyncAction,
 	type RawSyncdMutation,
-	resolveLidToPn
+	resolveLidToPn,
+	resolvePresenceUpdateIdentifiers
 } from '../Utils'
 import {
 	discoverOwnAppStateDevices,
@@ -1777,10 +1778,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 			// Resolve LID→PN so consumers always see phone-number JIDs
 			const lidMapping = signalRepository.lidMapping
-			const [jid, participant] = await Promise.all([
-				resolveLidToPn(canonicalJid, lidMapping, logger),
-				resolveLidToPn(jidWithoutExplicitZeroDevice(rawParticipant), lidMapping, logger)
-			])
+			const { id: jid, participant } = await resolvePresenceUpdateIdentifiers({
+				rawJid,
+				rawParticipant,
+				resolveJid: jid => resolveLidToPn(jid, lidMapping, logger)
+			})
 
 			ev.emit('presence.update', { id: jid!, presences: { [participant!]: presence } })
 		}
