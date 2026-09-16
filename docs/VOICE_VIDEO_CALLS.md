@@ -6,7 +6,7 @@ de mídia embutido (WebAssembly — o mesmo do WhatsApp Web). A mídia trafega
 servidor de mídia próprio.
 
 - ✅ Áudio outbound e inbound
-- ✅ **Negociação de vídeo** (VP8 / H.264 / AV1 quando suportados pelo WASM carregado)
+- ✅ **Negociação de vídeo** (H.264 / H.265 / AV1 quando suportados pelo WASM carregado)
 - ✅ Acesso direto ao PCM/frames (gravação, IVR, STT, etc.)
 - ✅ Funciona pela mesma sessão Baileys que você já usa para mensagens
 
@@ -14,8 +14,8 @@ servidor de mídia próprio.
 > Android/JNI. A sinalização de vídeo pode ser negociada com `video: true`, mas
 > o envio de frames só está disponível quando o runtime expõe
 > `onVideoDataFromJs`. O método `pushVideo()` retorna `false` quando esse
-> binding não está disponível; o consumidor deve tratar esse retorno como uma
-> indicação explícita de capacidade.
+> binding não está disponível, quando o vídeo local está desativado ou quando o
+> frame é incompatível; ele não expõe fila/backpressure de vídeo.
 
 ---
 
@@ -396,7 +396,7 @@ export function attachCallsToIo(io: IoServer) {
 
 - **Áudio:** downlink em `Float32Array` PCM **16 kHz mono**; uplink por arquivo,
   `'silence'`, ou stream (bridge WAV/`ffmpeg`).
-- **Vídeo:** codec (VP8/H.264/AV1) e ICE são negociados pelo próprio engine —
+- **Vídeo:** codec (H.264/H.265/AV1) e ICE são negociados pelo próprio engine —
   você só escolhe o formato de saída (`h264-raw`/`yuv420`/`rgba`).
 - **Grupos / links de chamada:** suportados para **receber/entrar**; iniciar
   chamada de grupo ainda não.

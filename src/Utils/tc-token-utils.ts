@@ -79,6 +79,11 @@ export class TcTokenAckEligibilityIndex {
 			if (previous) this.remove(previous)
 		}
 
+		// A single alias group must never exceed the global bound. Reject it
+		// before evicting unrelated entries, otherwise the insertion itself
+		// would violate the advertised memory limit.
+		if (keys.length > this.maxKeys) return
+
 		while (this.entries.size + keys.length > this.maxKeys) {
 			const oldest = this.entries.values().next().value
 			if (!oldest) break

@@ -939,7 +939,8 @@ export class WasmEngine {
 			if (!frame || !(frame.data instanceof Uint8Array) || frame.data.byteLength === 0) return false
 			if (!Number.isInteger(frame.width) || !Number.isInteger(frame.height) || frame.width <= 0 || frame.height <= 0)
 				return false
-			if (!Number.isFinite(frame.timestamp) || frame.timestamp < 0) return false
+			if (frame.timestamp !== undefined && (!Number.isFinite(frame.timestamp) || frame.timestamp < 0)) return false
+			const timestamp = frame.timestamp === undefined ? 0 : Math.trunc(frame.timestamp)
 
 			const sendFrame = (this.#instance as Record<string, unknown>).onVideoDataFromJs
 			if (typeof sendFrame !== 'function') return false
@@ -987,7 +988,7 @@ export class WasmEngine {
 						frame.height,
 						orientation,
 						format,
-						frame.timestamp
+						timestamp
 					)
 				}
 			}

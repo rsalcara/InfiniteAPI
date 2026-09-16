@@ -1447,9 +1447,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const meLid = authState.creds.me?.lid
 		const isRetryResend = Boolean(participant?.jid)
 		const isPeerMessage = additionalAttributes?.['category'] === 'peer'
-		// Retry and peer protocol messages are required to keep the encrypted
-		// session recoverable. Only new user-message egress is fail-closed.
-		if (!isRetryResend && !isPeerMessage) assertNativeAndroidIntegrityReady?.()
 		let shouldIncludeDeviceIdentity = isRetryResend
 		const statusJid = 'status@broadcast'
 
@@ -1461,6 +1458,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const isLid = server === 'lid'
 		const isNewsletter = server === 'newsletter'
 		const isGroupOrStatus = isGroup || isStatus
+		// Retry, peer, and newsletter protocol traffic must remain available
+		// while an integrity challenge is pending. Only fresh direct user
+		// messages are fail-closed.
+		if (!isRetryResend && !isPeerMessage && !isNewsletter) {
+			assertNativeAndroidIntegrityReady?.()
+		}
+
 		const finalJid = jid
 		const requestedJid = jidNormalizedUser(jid) || jid
 		const directRecipient =
@@ -2936,7 +2940,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		): Promise<AlbumSendResult> => {
 			// Run before generating/uploading any album media. relayMessage keeps
 			// the second guard immediately before encryption/transmission.
-			assertNativeAndroidIntegrityReady?.('message')
+			if (!isJidNewsletter(jid)) assertNativeAndroidIntegrityReady?.('message')
 			const startTime = Date.now()
 			const userJid = authState.creds.me!.id
 
@@ -3256,7 +3260,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			// Fail before link fetches, media upload or message generation. The
 			// relay guard remains authoritative for races after this preflight.
-			assertNativeAndroidIntegrityReady?.('message')
+			if (!isJidNewsletter(jid)) assertNativeAndroidIntegrityReady?.('message')
 
 			const userJid = authState.creds.me!.id
 

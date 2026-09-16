@@ -3888,7 +3888,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						const fullMsg = proto.WebMessageInfo.fromObject(msg) as WAMessage
 						fullMsg.key = { ...fullMsg.key, ...extendedKey }
 						fullMsg.senderSource = classifyProtocolMessageSenderSource({
-							authorJid: node.attrs.participant || remoteJid,
+							authorJid: node.attrs.participant || rawRemoteJid,
 							currentDeviceJids: [authState.creds.me?.id, authState.creds.me?.lid],
 							currentTransportProfile: config.transportProfile
 						})

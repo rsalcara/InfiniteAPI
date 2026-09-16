@@ -83,6 +83,7 @@ export type StartChatTrustSignalsError =
 	| 'observer-timeout-or-error'
 
 export type StartChatTrustSignalsState = {
+	/** Full recipient JID requested by the caller; emitted for consumer-controlled telemetry. */
 	jid: string
 	useCase: 'CHAT_FMX'
 	status: 'known' | 'unknown' | 'unavailable'
@@ -94,6 +95,8 @@ export type StartChatTrustSignalsState = {
 export type StartChatTrustSignalsProvider = (request: {
 	jid: string
 	useCase: 'CHAT_FMX'
+	/** Aborted when the lookup exceeds the socket deadline or the socket closes. */
+	signal?: AbortSignal
 }) => Promise<StartChatTrustSignals>
 
 export type SocketConfig = {
@@ -121,7 +124,7 @@ export type SocketConfig = {
 	 * `NODE_ENV=production`.
 	 */
 	startChatTrustSignalsPolicy?: 'observe' | 'require-known'
-	/** Receives redacted start-chat state for durable application telemetry. */
+	/** Receives start-chat state, including the full requested JID, for durable application telemetry. */
 	onStartChatTrustSignals?: (state: StartChatTrustSignalsState) => void | Promise<void>
 	/** Transport profile. Web remains the stable default. */
 	transportProfile: ConnectionTransportProfile

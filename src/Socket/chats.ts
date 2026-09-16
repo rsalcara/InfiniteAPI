@@ -1778,8 +1778,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			// Resolve LID→PN so consumers always see phone-number JIDs
 			const lidMapping = signalRepository.lidMapping
 			const [jid, participant] = await Promise.all([
-				resolveLidToPn(rawJid, lidMapping, logger),
-				resolveLidToPn(rawParticipant, lidMapping, logger)
+				resolveLidToPn(canonicalJid, lidMapping, logger),
+				resolveLidToPn(jidWithoutExplicitZeroDevice(rawParticipant), lidMapping, logger)
 			])
 
 			ev.emit('presence.update', { id: jid!, presences: { [participant!]: presence } })

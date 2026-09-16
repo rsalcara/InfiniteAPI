@@ -99,4 +99,12 @@ describe('TcTokenAckEligibilityIndex', () => {
 		expect(index.consume([firstPn, firstLid], 'FIRST')).toBeUndefined()
 		expect(index.consume([second], 'SECOND')).toBe(second)
 	})
+
+	it('rejects alias groups larger than the global bound', () => {
+		const index = new TcTokenAckEligibilityIndex(Date.now, 60_000, 2)
+
+		index.remember(['alias-1@s.whatsapp.net', 'alias-2@lid', 'alias-3@lid'], 'TOO-BIG', 'alias-2@lid')
+
+		expect(index.consume(['alias-1@s.whatsapp.net', 'alias-2@lid', 'alias-3@lid'], 'TOO-BIG')).toBeUndefined()
+	})
 })

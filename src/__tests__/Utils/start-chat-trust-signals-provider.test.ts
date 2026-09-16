@@ -2,13 +2,24 @@ import { jest } from '@jest/globals'
 import { createStartChatTrustSignalsBridgeProvider } from '../../Utils/start-chat-trust-signals-provider'
 
 describe('start-chat trust-signals bridge provider', () => {
+	const signal = () => new AbortController().signal
+
+	it('rejects invalid bridge URLs', () => {
+		expect(() => createStartChatTrustSignalsBridgeProvider({ url: 'ftp://android-bridge.test' })).toThrow(
+			'requires a valid http(s) url'
+		)
+		expect(() => createStartChatTrustSignalsBridgeProvider({ url: 'http://android-bridge.test' })).toThrow(
+			'requires HTTPS for non-loopback urls'
+		)
+	})
+
 	it('rejects timer values outside the Node timer range', () => {
 		expect(() =>
-			createStartChatTrustSignalsBridgeProvider({ url: 'http://android-bridge.test', timeoutMs: 2_147_483_648 })
+			createStartChatTrustSignalsBridgeProvider({ url: 'http://127.0.0.1', timeoutMs: 2_147_483_648 })
 		).toThrow('timeoutMs must be an integer')
-		expect(() =>
-			createStartChatTrustSignalsBridgeProvider({ url: 'http://android-bridge.test', timeoutMs: 1.5 })
-		).toThrow('timeoutMs must be an integer')
+		expect(() => createStartChatTrustSignalsBridgeProvider({ url: 'http://127.0.0.1', timeoutMs: 1.5 })).toThrow(
+			'timeoutMs must be an integer'
+		)
 	})
 
 	it('sends only the CHAT_FMX request and returns parsed non-sensitive fields', async () => {
@@ -26,11 +37,13 @@ describe('start-chat trust-signals bridge provider', () => {
 			)
 		})
 		const provider = createStartChatTrustSignalsBridgeProvider({
-			url: 'http://android-bridge.test',
+			url: 'http://127.0.0.1',
 			fetch: fetchImpl
 		})
 
-		await expect(provider({ jid: '5511999999999@s.whatsapp.net', useCase: 'CHAT_FMX' })).resolves.toEqual({
+		await expect(
+			provider({ jid: '5511999999999@s.whatsapp.net', useCase: 'CHAT_FMX', signal: signal() })
+		).resolves.toEqual({
 			isSenderSuspicious: false,
 			isSenderNewAccount: true,
 			createdTs: 1_786_000_000_000
@@ -40,12 +53,27 @@ describe('start-chat trust-signals bridge provider', () => {
 
 	it('rejects a bridge response without validated fields', async () => {
 		const provider = createStartChatTrustSignalsBridgeProvider({
-			url: 'http://android-bridge.test',
+			url: 'http://127.0.0.1',
 			fetch: async () => new Response(JSON.stringify({ integrity_signals: 'opaque' }), { status: 200 })
 		})
 
-		await expect(provider({ jid: '5511999999999@s.whatsapp.net', useCase: 'CHAT_FMX' })).rejects.toThrow(
-			'no valid fields'
-		)
+		await expect(
+			provider({ jid: '5511999999999@s.whatsapp.net', useCase: 'CHAT_FMX', signal: signal() })
+		).rejects.toThrow('no valid fields')
+	})
+
+	it('respects the socket abort signal before dispatch', async () => {
+		const controller = new AbortController()
+		controller.abort()
+		const provider = createStartChatTrustSignalsBridgeProvider({
+			url: 'http://127.0.0.1',
+			fetch: async () => {
+				throw new Error('should not be called')
+			}
+		})
+
+		await expect(
+			provider({ jid: '5511999999999@s.whatsapp.net', useCase: 'CHAT_FMX', signal: controller.signal })
+		).rejects.toThrow('aborted before dispatch')
 	})
 })

@@ -67,7 +67,7 @@ export type BaileysEventMap = {
 	'auth-state.capabilities': AuthStateCapabilities
 	/** Post-login Android integrity lifecycle; never contains nonce or token material. */
 	'native-android.integrity': NativeAndroidIntegrityUpdate
-	/** Redacted result of the optional Android start-chat trust lookup. */
+	/** Result of the optional Android start-chat trust lookup; includes the full requested JID. */
 	'start-chat.trust-signals': StartChatTrustSignalsState
 	/** credentials updated -- some metadata, keys or something */
 	'creds.update': Partial<AuthenticationCreds>

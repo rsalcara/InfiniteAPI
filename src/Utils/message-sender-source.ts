@@ -38,17 +38,28 @@ const isCurrentDevice = (
 	author: NonNullable<ReturnType<typeof jidDecode>>,
 	authorDeviceId: number,
 	currentDeviceJids: readonly (string | undefined)[]
-) =>
-	currentDeviceJids.some(currentJid => {
+) => {
+	const explicitCurrentDeviceIds = new Set(
+		currentDeviceJids
+			.map(currentJid => explicitDeviceId(currentJid))
+			.filter((deviceId): deviceId is number => deviceId !== undefined)
+	)
+
+	return currentDeviceJids.some(currentJid => {
 		const current = jidDecode(currentJid)
 		const currentDeviceId = explicitDeviceId(currentJid)
-		return (
+		const sameUser =
 			!!current &&
 			current.user === author.user &&
-			canonicalUserServer(current.server) === canonicalUserServer(author.server) &&
-			currentDeviceId === authorDeviceId
+			canonicalUserServer(current.server) === canonicalUserServer(author.server)
+		if (!sameUser) return false
+
+		return (
+			currentDeviceId === authorDeviceId ||
+			(currentDeviceId === undefined && explicitCurrentDeviceIds.has(authorDeviceId))
 		)
 	})
+}
 
 /**
  * Classifies the author while the protocol JID still has its device suffix.

@@ -88,6 +88,9 @@ export const createInboundTaskAdmission = (
 	}
 
 	const drain = async (): Promise<InboundTaskDrainResult> => {
+		// Draining is terminal for this admission. Closing here also makes the
+		// public drain() API safe when callers do not invoke close() first.
+		accepting = false
 		const startedAt = Date.now()
 		const deadline = startedAt + drainTimeoutMs
 

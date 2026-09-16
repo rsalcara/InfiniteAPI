@@ -64,6 +64,32 @@ describe('message sender source classification', () => {
 		})
 	})
 
+	it('derives the current companion device across PN and LID aliases', () => {
+		expect(
+			classifyProtocolMessageSenderSource({
+				authorJid: '100000000000001:7@lid',
+				currentDeviceJids: ['5511000000000:7@s.whatsapp.net', '100000000000001@lid'],
+				currentTransportProfile: 'web'
+			})
+		).toMatchObject({
+			type: 'web',
+			deviceId: 7,
+			platform: 'WEB',
+			evidence: 'current_client_transport'
+		})
+	})
+
+	it('does not derive current companion identity from bare account JIDs alone', () => {
+		const source = classifyProtocolMessageSenderSource({
+			authorJid: '100000000000001:7@lid',
+			currentDeviceJids: ['5511000000000@s.whatsapp.net', '100000000000001@lid'],
+			currentTransportProfile: 'web'
+		})
+
+		expect(source.type).toBe('linked_device')
+		expect(source.platform).toBeUndefined()
+	})
+
 	it('does not infer a platform for an unrelated linked device', () => {
 		const source = classifyProtocolMessageSenderSource({
 			authorJid: '5511000000000:7@s.whatsapp.net',

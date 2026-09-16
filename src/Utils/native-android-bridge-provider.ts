@@ -19,6 +19,11 @@ export type NativeAndroidBridgeProviderConfig = {
 
 const MAX_BRIDGE_RESPONSE_BYTES = 1_048_576
 
+const isLoopbackHost = (hostname: string): boolean => {
+	const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+	return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1'
+}
+
 /**
  * Connects the InfiniteAPI GPIA lifecycle to an external bridge service that
  * has a genuine Android installation with Google Play Services. The bridge is
@@ -28,26 +33,34 @@ const MAX_BRIDGE_RESPONSE_BYTES = 1_048_576
 export const createNativeAndroidBridgeProvider = (
 	config: NativeAndroidBridgeProviderConfig
 ): ((challenge: NativeAndroidGpiaChallenge) => Promise<NativeAndroidGpiaResponse>) => {
-	if (!config || typeof config.url !== 'string' || !config.url.startsWith('http')) {
+	if (!config || typeof config.url !== 'string') {
 		throw new Error('native_android bridge provider requires a valid http(s) url')
+	}
+
+	let bridgeUrl: URL
+	try {
+		bridgeUrl = new URL(config.url)
+	} catch {
+		throw new Error('native_android bridge provider url is not a valid URL')
+	}
+
+	if (bridgeUrl.protocol !== 'http:' && bridgeUrl.protocol !== 'https:') {
+		throw new Error('native_android bridge provider requires a valid http(s) url')
+	}
+
+	if (bridgeUrl.protocol === 'http:' && !isLoopbackHost(bridgeUrl.hostname)) {
+		throw new Error('native_android bridge provider requires HTTPS for non-loopback urls')
 	}
 
 	if (config.token !== undefined && typeof config.token !== 'string') {
 		throw new Error('native_android bridge provider token must be a string')
 	}
 
-	if (config.timeoutMs !== undefined && (!Number.isFinite(config.timeoutMs) || config.timeoutMs <= 0)) {
-		throw new Error('native_android bridge provider timeoutMs must be a positive number')
-	}
-
-	if (config.timeoutMs !== undefined && config.timeoutMs > 2_147_483_647) {
-		throw new Error('native_android bridge provider timeoutMs exceeds the Node timer range')
-	}
-
-	try {
-		new URL(config.url)
-	} catch {
-		throw new Error('native_android bridge provider url is not a valid URL')
+	if (
+		config.timeoutMs !== undefined &&
+		(!Number.isSafeInteger(config.timeoutMs) || config.timeoutMs <= 0 || config.timeoutMs > 2_147_483_647)
+	) {
+		throw new Error('native_android bridge provider timeoutMs must be an integer between 1 and 2147483647')
 	}
 
 	const fetchImpl = config.fetch ?? fetch
@@ -88,6 +101,7 @@ export const createNativeAndroidBridgeProvider = (
 			})
 
 			if (!response.ok) {
+				await cancelResponseBody(response)
 				throw new Error(`native_android bridge returned HTTP ${response.status}`)
 			}
 
@@ -125,6 +139,7 @@ const readBodyWithLimit = async (response: Response, limit: number): Promise<str
 	// Fast path: honor declared content-length when present
 	const declaredLength = Number(response.headers?.get('content-length') ?? 0)
 	if (Number.isFinite(declaredLength) && declaredLength > limit) {
+		await cancelResponseBody(response)
 		throw new Error('native_android bridge response exceeds size limit')
 	}
 
@@ -157,4 +172,9 @@ const readBodyWithLimit = async (response: Response, limit: number): Promise<str
 
 	const decoder = new TextDecoder()
 	return chunks.map(chunk => decoder.decode(chunk, { stream: true })).join('') + decoder.decode()
+}
+
+const cancelResponseBody = async (response: Response): Promise<void> => {
+	const cancellation = response.body?.cancel()
+	if (cancellation) await cancellation.catch(() => undefined)
 }

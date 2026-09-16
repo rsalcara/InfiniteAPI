@@ -124,6 +124,20 @@ export class ActiveCall extends EventEmitter {
 	 *  `_setGroupContext`. */
 	#socketForHeartbeat: { sendHeartbeat?: (callId: string, callCreator: string) => Promise<void> } | null = null
 
+	/** @internal — target peer for one-to-one video-state signaling. */
+	#videoStateTo: string | null = null
+
+	/** @internal — bound socket reference for video-state signaling. */
+	#socketForVideoState: {
+		sendVideoState?: (
+			callId: string,
+			callCreator: string,
+			to: string,
+			enabled: boolean,
+			orientation?: string
+		) => Promise<void>
+	} | null = null
+
 	constructor(
 		public readonly callId: string,
 		private readonly engine: WasmEngine,
@@ -147,6 +161,25 @@ export class ActiveCall extends EventEmitter {
 	): void => {
 		this._callCreator = callCreator
 		this.#socketForHeartbeat = sock
+	}
+
+	/** @internal — wire the one-to-one peer that receives camera state updates. */
+	_setVideoStateContext = (
+		callCreator: string,
+		to: string,
+		sock: {
+			sendVideoState?: (
+				callId: string,
+				callCreator: string,
+				to: string,
+				enabled: boolean,
+				orientation?: string
+			) => Promise<void>
+		}
+	): void => {
+		this._callCreator = callCreator
+		this.#videoStateTo = to
+		this.#socketForVideoState = sock
 	}
 
 	get state(): CallState {
@@ -196,7 +229,20 @@ export class ActiveCall extends EventEmitter {
 	}
 
 	setVideoEnabled = (enabled: boolean): void => {
+		const changed = this.#videoEnabled !== enabled
 		this.#videoEnabled = enabled
+		if (!changed || this.#ended) return
+
+		const sock = this.#socketForVideoState
+		const callCreator = this._callCreator
+		const to = this.#videoStateTo
+		if (!sock?.sendVideoState || !callCreator || !to) return
+
+		void sock.sendVideoState(this.callId, callCreator, to, enabled).catch(() => {
+			if (this.listenerCount('error') > 0) {
+				this.emit('error', new Error(`video-state update failed for ${this.callId}`))
+			}
+		})
 	}
 
 	waitForEnd = (): Promise<string> => this.#endPromise
@@ -287,6 +333,7 @@ export class VoipClient extends EventEmitter {
 	#signaling: SignalingBridge | null = null
 	#sock: any = null
 	#activeCall: ActiveCall | null = null
+	#pendingAudioCaptureStart = false
 	#baileys: any = null
 	/** Tracks incoming call IDs we have already surfaced as `'incoming'` to dedupe
 	 *  re-emits when the same `<call>` stanza is delivered with multiple children
@@ -329,6 +376,15 @@ export class VoipClient extends EventEmitter {
 			if (this.#activeCall === call) this.#activeCall = null
 			if (incomingId) this.#seenIncomingIds.delete(incomingId)
 		})
+	}
+
+	#activateCall = (call: ActiveCall, incomingId?: string): void => {
+		this.#activeCall = call
+		this.#attachCallLifecycle(call, incomingId)
+		if (this.#pendingAudioCaptureStart) {
+			this.#pendingAudioCaptureStart = false
+			this.#handleAudioCaptureStart()
+		}
 	}
 
 	/**
@@ -605,8 +661,9 @@ export class VoipClient extends EventEmitter {
 					active._setGroupContext(from, self.#sock)
 				}
 
-				self.#activeCall = active
-				self.#attachCallLifecycle(active, callId)
+				active._setVideoStateContext(from, from, self.#sock)
+
+				self.#activateCall(active, callId)
 				return active as unknown as import('./types.js').ActiveCallHandle
 			},
 			reject: async reason => {
@@ -682,8 +739,9 @@ export class VoipClient extends EventEmitter {
 		}
 
 		if (opts.videoSource) call._liveVideoSource = opts.videoSource
-		this.#activeCall = call
-		this.#attachCallLifecycle(call)
+		const selfJid = this.#sock.authState.creds.me?.lid || this.#sock.authState.creds.me?.id
+		if (selfJid) call._setVideoStateContext(selfJid, peerLid, this.#sock)
+		this.#activateCall(call)
 
 		// F3: surface video config so the call's `'video-frame'` listener gets
 		// engaged when the WASM delivers a frame. `isVideo` on `startCall` tells
@@ -866,8 +924,7 @@ export class VoipClient extends EventEmitter {
 		// heartbeat is OUR own JID (we're the originator).
 		const selfJid = this.#sock.authState.creds.me?.lid || this.#sock.authState.creds.me?.id
 		if (selfJid) active._setGroupContext(selfJid, this.#sock)
-		this.#activeCall = active
-		this.#attachCallLifecycle(active)
+		this.#activateCall(active)
 
 		// Hook the video frame stream into the active call (if opted-in).
 		if (opts.video) {
@@ -892,6 +949,7 @@ export class VoipClient extends EventEmitter {
 
 	/** Tear down the WhatsApp socket and release resources. */
 	disconnect = (): void => {
+		this.#pendingAudioCaptureStart = false
 		this.#activeCall?._forceEnd('disconnect')
 		this.#activeCall = null
 		// Detach the direct ws CB hooks BEFORE we null out the engine —
@@ -967,7 +1025,10 @@ export class VoipClient extends EventEmitter {
 	#handleAudioCaptureStart = (): void => {
 		if (!this.#engine || !this.#capturePtr) return
 		const call = this.#activeCall
-		if (!call) return
+		if (!call) {
+			this.#pendingAudioCaptureStart = true
+			return
+		}
 
 		if (call._liveAudioSource?.kind === 'live') {
 			// Live mode: consumer pushes PCM frames; no FFmpeg involved
@@ -998,6 +1059,7 @@ export class VoipClient extends EventEmitter {
 	}
 
 	#handleAudioCaptureStop = (): void => {
+		this.#pendingAudioCaptureStart = false
 		this.#feeder?.stop()
 		this.#feeder = null
 		this.#activeCall?._stopLiveAudio()

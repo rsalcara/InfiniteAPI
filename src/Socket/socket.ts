@@ -2552,6 +2552,12 @@ export const makeSocket = (config: SocketConfig) => {
 		nativeAndroidIntegrity.invalidate('safetynet')
 	})
 
+	const activeStartChatTrustSignalControllers = new Set<AbortController>()
+	registerSocketEndHandler(() => {
+		for (const controller of activeStartChatTrustSignalControllers) controller.abort()
+		activeStartChatTrustSignalControllers.clear()
+	})
+
 	const emitNativeAndroidIntegrity = (
 		kind: 'gpia' | 'safetynet',
 		status: 'pending' | 'response_sent' | 'unavailable' | 'failed' | 'unsupported',
@@ -2891,9 +2897,37 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 
 		try {
-			const raw = await promiseTimeout<StartChatTrustSignals>(10_000, (resolve, reject) =>
-				provider({ jid, useCase: 'CHAT_FMX' }).then(resolve).catch(reject)
-			)
+			const controller = new AbortController()
+			activeStartChatTrustSignalControllers.add(controller)
+			let raw: StartChatTrustSignals
+			try {
+				raw = await new Promise<StartChatTrustSignals>((resolve, reject) => {
+					let settled = false
+					const timeout = setTimeout(() => {
+						if (settled) return
+						settled = true
+						controller.abort()
+						reject(new Boom('start-chat trust signal provider timed out', { statusCode: DisconnectReason.timedOut }))
+					}, 10_000)
+
+					provider({ jid, useCase: 'CHAT_FMX', signal: controller.signal })
+						.then(value => {
+							if (settled) return
+							settled = true
+							clearTimeout(timeout)
+							resolve(value)
+						})
+						.catch(error => {
+							if (settled) return
+							settled = true
+							clearTimeout(timeout)
+							reject(error)
+						})
+				})
+			} finally {
+				activeStartChatTrustSignalControllers.delete(controller)
+			}
+
 			const signals: StartChatTrustSignals = {}
 			if (typeof raw?.isSenderSuspicious === 'boolean') signals.isSenderSuspicious = raw.isSenderSuspicious
 			if (typeof raw?.isSenderNewAccount === 'boolean') signals.isSenderNewAccount = raw.isSenderNewAccount

@@ -154,12 +154,40 @@ describe('native_android integrity lifecycle', () => {
 	})
 
 	it('gates fresh raw message/call egress but leaves protocol recovery and active-call signaling open', () => {
-		expect(getNativeAndroidIntegrityGatedEgress({ tag: 'message', attrs: { to: '1@lid' } })).toBe('message')
+		expect(
+			getNativeAndroidIntegrityGatedEgress({
+				tag: 'message',
+				attrs: { to: '1@lid' },
+				content: [{ tag: 'enc', attrs: {}, content: new Uint8Array([1]) }]
+			})
+		).toBe('message')
+		expect(getNativeAndroidIntegrityGatedEgress({ tag: 'message', attrs: { to: '1@lid' } })).toBeUndefined()
 		expect(
 			getNativeAndroidIntegrityGatedEgress({ tag: 'message', attrs: { to: '1@lid', participant: '1:2@lid' } })
 		).toBeUndefined()
 		expect(
 			getNativeAndroidIntegrityGatedEgress({ tag: 'message', attrs: { to: '1@lid', category: 'peer' } })
+		).toBeUndefined()
+			expect(
+				getNativeAndroidIntegrityGatedEgress({
+					tag: 'message',
+					attrs: { to: '123@newsletter' },
+					content: [{ tag: 'enc', attrs: {}, content: new Uint8Array([1]) }]
+				})
+			).toBeUndefined()
+			expect(
+				getNativeAndroidIntegrityGatedEgress({
+					tag: 'message',
+					attrs: { from: '123@newsletter' },
+					content: [{ tag: 'enc', attrs: {}, content: new Uint8Array([1]) }]
+				})
+			).toBeUndefined()
+		expect(
+			getNativeAndroidIntegrityGatedEgress({
+				tag: 'message',
+				attrs: { to: '1@lid' },
+				content: [{ tag: 'protocol', attrs: {} }]
+			})
 		).toBeUndefined()
 		expect(
 			getNativeAndroidIntegrityGatedEgress({
@@ -273,5 +301,30 @@ describe('native_android integrity lifecycle', () => {
 		expect(second.observedAt).toBeGreaterThan(first.observedAt)
 		expect(state.isCurrent('gpia', first.generation)).toBe(false)
 		expect(state.isCurrent('gpia', second.generation)).toBe(true)
+	})
+
+	it('rejects a stale completion after an external same-millisecond transition', () => {
+		let persisted: PersistedNativeAndroidIntegrityState | undefined
+		const state = createNativeAndroidIntegrityState({
+			enabled: true,
+			policy: 'enforce',
+			now: () => 50,
+			onPersist: value => {
+				persisted = value
+			},
+			getPersisted: () => persisted
+		})
+		const pending = state.begin('gpia', 'pending')
+		const external = {
+			schemaVersion: 1 as const,
+			gpia: {
+				status: 'failed' as const,
+				observedAt: pending.observedAt,
+				updatedAt: pending.observedAt + 1,
+				policyApplied: 'enforce' as const
+			}
+		}
+		persisted = external
+		expect(state.isCurrent('gpia', pending.generation)).toBe(false)
 	})
 })

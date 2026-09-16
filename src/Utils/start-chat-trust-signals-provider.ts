@@ -1,4 +1,5 @@
-import type { StartChatTrustSignals, StartChatTrustSignalsProvider } from '../Types'
+import { Boom } from '@hapi/boom'
+import { DisconnectReason, type StartChatTrustSignals, type StartChatTrustSignalsProvider } from '../Types'
 
 export type StartChatTrustSignalsBridgeProviderConfig = {
 	/**
@@ -14,6 +15,11 @@ export type StartChatTrustSignalsBridgeProviderConfig = {
 
 const MAX_RESPONSE_BYTES = 256 * 1024
 
+const isLoopbackHost = (hostname: string): boolean => {
+	const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+	return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1'
+}
+
 /**
  * Connects the preflight to an external Android laboratory/bridge.
  *
@@ -25,11 +31,24 @@ const MAX_RESPONSE_BYTES = 256 * 1024
 export const createStartChatTrustSignalsBridgeProvider = (
 	config: StartChatTrustSignalsBridgeProviderConfig
 ): StartChatTrustSignalsProvider => {
-	if (!config || typeof config.url !== 'string' || !config.url.startsWith('http')) {
+	if (!config || typeof config.url !== 'string') {
 		throw new Error('start-chat trust-signals provider requires a valid http(s) url')
 	}
 
-	new URL(config.url)
+	let bridgeUrl: URL
+	try {
+		bridgeUrl = new URL(config.url)
+	} catch {
+		throw new Error('start-chat trust-signals provider url is not a valid URL')
+	}
+
+	if (bridgeUrl.protocol !== 'http:' && bridgeUrl.protocol !== 'https:') {
+		throw new Error('start-chat trust-signals provider requires a valid http(s) url')
+	}
+
+	if (bridgeUrl.protocol === 'http:' && !isLoopbackHost(bridgeUrl.hostname)) {
+		throw new Error('start-chat trust-signals provider requires HTTPS for non-loopback urls')
+	}
 
 	if (config.token !== undefined && typeof config.token !== 'string') {
 		throw new Error('start-chat trust-signals provider token must be a string')
@@ -49,9 +68,20 @@ export const createStartChatTrustSignalsBridgeProvider = (
 
 	const fetchImpl = config.fetch ?? fetch
 
-	return async ({ jid, useCase }) => {
+	return async ({ jid, useCase, signal }) => {
+		const requestSignal = signal ?? new AbortController().signal
+		if (requestSignal.aborted) {
+			throw new Error('start-chat trust-signals bridge request aborted before dispatch')
+		}
+
 		const controller = new AbortController()
-		const timeout = setTimeout(() => controller.abort(), timeoutMs)
+		const onAbort = () => controller.abort()
+		requestSignal.addEventListener('abort', onAbort, { once: true })
+		let timedOut = false
+		const timeout = setTimeout(() => {
+			timedOut = true
+			controller.abort()
+		}, timeoutMs)
 		try {
 			const response = await fetchImpl(`${config.url.replace(/\/$/, '')}${path}`, {
 				method: 'POST',
@@ -62,7 +92,11 @@ export const createStartChatTrustSignalsBridgeProvider = (
 				body: JSON.stringify({ jid, use_case: useCase }),
 				signal: controller.signal
 			})
-			if (!response.ok) throw new Error(`start-chat trust-signals bridge returned HTTP ${response.status}`)
+			if (!response.ok) {
+				await cancelResponseBody(response)
+				throw new Error(`start-chat trust-signals bridge returned HTTP ${response.status}`)
+			}
+
 			const body = await readLimitedBody(response)
 			const parsed = JSON.parse(body) as Record<string, unknown>
 			const result: StartChatTrustSignals = {}
@@ -84,8 +118,17 @@ export const createStartChatTrustSignalsBridgeProvider = (
 			}
 
 			return result
+		} catch (error) {
+			if (timedOut && error instanceof Error && error.name === 'AbortError') {
+				throw new Boom('start-chat trust-signals bridge provider timed out', {
+					statusCode: DisconnectReason.timedOut
+				})
+			}
+
+			throw error
 		} finally {
 			clearTimeout(timeout)
+			requestSignal.removeEventListener('abort', onAbort)
 		}
 	}
 }
@@ -93,6 +136,7 @@ export const createStartChatTrustSignalsBridgeProvider = (
 const readLimitedBody = async (response: Response): Promise<string> => {
 	const declaredLength = Number(response.headers?.get('content-length') ?? 0)
 	if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+		await cancelResponseBody(response)
 		throw new Error('start-chat trust-signals bridge response exceeds size limit')
 	}
 
@@ -124,4 +168,9 @@ const readLimitedBody = async (response: Response): Promise<string> => {
 
 	const decoder = new TextDecoder()
 	return chunks.map(chunk => decoder.decode(chunk, { stream: true })).join('') + decoder.decode()
+}
+
+const cancelResponseBody = async (response: Response): Promise<void> => {
+	const cancellation = response.body?.cancel()
+	if (cancellation) await cancellation.catch(() => undefined)
 }

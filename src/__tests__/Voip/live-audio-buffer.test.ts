@@ -27,7 +27,9 @@ describe('live audio buffer', () => {
 		const accepted = buffer.push({ data: samples, sampleRate: 16000, channels: 1 })
 
 		expect(accepted).toBe(true)
-		expect(chunks.length).toBeGreaterThanOrEqual(0) // timer-driven, may not fire immediately
+		jest.advanceTimersByTime(20)
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0]).toEqual(samples)
 
 		buffer.stop()
 	})
@@ -189,22 +191,25 @@ describe('live audio buffer', () => {
 	})
 
 	it('drops oldest samples on overflow', () => {
+		const chunks: Float32Array[] = []
 		const buffer = new LiveAudioBuffer({
 			targetSampleRate: 16000,
 			targetChannels: 1,
 			framesPerChunk: 320,
 			maxBufferedMs: 100, // 100ms = 1600 samples at 16kHz
-			onChunk: () => {}
+			onChunk: chunk => chunks.push(chunk)
 		})
 
 		buffer.start()
 
-		// Push 2000 samples (exceeds 1600 max)
-		const samples = new Float32Array(2000).fill(0.5)
-		buffer.push({ data: samples, sampleRate: 16000, channels: 1 })
+		const existing = Float32Array.from({ length: 1200 }, (_, index) => index + 1)
+		const incoming = Float32Array.from({ length: 800 }, (_, index) => 2001 + index)
+		expect(buffer.push({ data: existing, sampleRate: 16000, channels: 1 })).toBe(true)
+		expect(buffer.push({ data: incoming, sampleRate: 16000, channels: 1 })).toBe(true)
 
-		// After overflow discard, should be at or below max
-		expect(buffer.bufferedSamples).toBeLessThanOrEqual(1600)
+		expect(buffer.bufferedSamples).toBe(1600)
+		jest.advanceTimersByTime(20)
+		expect(chunks[0]).toEqual(Float32Array.from({ length: 320 }, (_, index) => 401 + index))
 
 		buffer.stop()
 	})
@@ -247,7 +252,7 @@ describe('live audio buffer', () => {
 			targetSampleRate: 16000,
 			targetChannels: 1,
 			framesPerChunk: 320, // 320/16000 = 20ms per chunk
-			maxBufferedMs: 400,
+			maxBufferedMs: 1000,
 			onChunk: chunk => chunks.push(chunk)
 		})
 
@@ -256,7 +261,7 @@ describe('live audio buffer', () => {
 		// Push enough audio for 1 second (50 chunks worth = 16000 samples)
 		// delivered in 20ms frames (320 samples each, 50 pushes)
 		for (let i = 0; i < 50; i++) {
-			buffer.push({ data: new Float32Array(320).fill(0.5), sampleRate: 16000, channels: 1 })
+			expect(buffer.push({ data: new Float32Array(320).fill(0.5), sampleRate: 16000, channels: 1 })).toBe(true)
 		}
 
 		// Advance deterministically; wall-clock sleeps made this test flaky in CI.
@@ -264,6 +269,26 @@ describe('live audio buffer', () => {
 		buffer.stop()
 		// At 20ms intervals over 1000ms, we expect exactly 50 chunks.
 		expect(chunks.length).toBe(50)
+		expect(chunks.flatMap(chunk => [...chunk]).every(sample => sample === 0.5)).toBe(true)
+	})
+
+	it('truncates incomplete same-channel stereo tails before buffering', () => {
+		const chunks: Float32Array[] = []
+		const buffer = new LiveAudioBuffer({
+			targetSampleRate: 16000,
+			targetChannels: 2,
+			framesPerChunk: 1,
+			maxBufferedMs: 100,
+			onChunk: chunk => chunks.push(chunk)
+		})
+
+		buffer.start()
+		expect(buffer.push({ data: new Float32Array([0.1, 0.2, 0.9]), sampleRate: 16000, channels: 2 })).toBe(true)
+		jest.advanceTimersByTime(1)
+		buffer.stop()
+
+		expect(chunks[0]).toEqual(new Float32Array([0.1, 0.2]))
+		expect(buffer.bufferedSamples).toBe(0)
 	})
 
 	it('truncates large pushes to the most recent samples without corrupting the ring', () => {

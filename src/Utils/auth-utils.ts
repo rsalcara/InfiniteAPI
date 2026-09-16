@@ -646,6 +646,7 @@ export const addTransactionCapability = (
 					} finally {
 						heldLocksRelease(existing.heldLocks, lockKey)
 						activeTransactions--
+						disableTxStorageIfDrained()
 					}
 				}
 
@@ -764,6 +765,7 @@ export const addTransactionCapability = (
 					} finally {
 						for (const k of newLockKeys) heldLocksRelease(existing.heldLocks, k)
 						activeTransactions--
+						disableTxStorageIfDrained()
 					}
 				}
 

@@ -21,6 +21,8 @@ export class LiveAudioBuffer {
 	#timer: NodeJS.Timeout | null = null
 	#onChunk: (chunk: Float32Array) => void
 	#started = false
+	#nextDrainAt = 0
+	#chunkIntervalMs = 0
 	#resampleSourceRate = 0
 	#resamplePosition = 0
 	#resampleInput = new Float32Array(0)
@@ -65,8 +67,12 @@ export class LiveAudioBuffer {
 
 		// Reject empty frames — nothing to buffer.
 		if (frame.data.length === 0) return false
+		const completeInputSamples = Math.floor(frame.data.length / frame.channels) * frame.channels
+		if (completeInputSamples <= 0) return false
+		const inputData =
+			completeInputSamples === frame.data.length ? frame.data : frame.data.subarray(0, completeInputSamples)
 
-		let samples = this.#convertChannels(frame.data, frame.channels)
+		let samples = this.#convertChannels(inputData, frame.channels)
 		if (samples.length === 0) return false
 
 		if (frame.sampleRate !== this.#sampleRate) {
@@ -112,23 +118,15 @@ export class LiveAudioBuffer {
 		if (this.#started) return
 		this.#started = true
 
-		const chunkMs = (this.#framesPerChunk / this.#sampleRate) * 1000
-		// Drain at the exact chunk duration. A faster drain creates a
-		// structural deficit (silence injection); the safety margin lives
-		// in the buffer capacity, not in the drain rate.
-		const intervalMs = Math.max(1, Math.round(chunkMs))
-
-		this.#timer = setInterval(() => {
-			this.#drainChunk()
-		}, intervalMs)
-
-		this.#timer.unref()
+		this.#chunkIntervalMs = (this.#framesPerChunk / this.#sampleRate) * 1000
+		this.#nextDrainAt = Date.now() + this.#chunkIntervalMs
+		this.#scheduleNextDrain()
 	}
 
 	stop(): void {
 		this.#started = false
 		if (this.#timer) {
-			clearInterval(this.#timer)
+			clearTimeout(this.#timer)
 			this.#timer = null
 		}
 
@@ -150,6 +148,18 @@ export class LiveAudioBuffer {
 		}
 
 		this.#onChunk(chunk)
+	}
+
+	#scheduleNextDrain(): void {
+		if (!this.#started) return
+		const delayMs = Math.max(1, this.#nextDrainAt - Date.now())
+		this.#timer = setTimeout(() => {
+			this.#timer = null
+			this.#drainChunk()
+			this.#nextDrainAt += this.#chunkIntervalMs
+			this.#scheduleNextDrain()
+		}, delayMs)
+		this.#timer.unref()
 	}
 
 	#discardOldest(count: number): void {

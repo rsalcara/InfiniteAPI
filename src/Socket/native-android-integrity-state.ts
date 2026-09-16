@@ -178,8 +178,16 @@ export const createNativeAndroidIntegrityState = ({
 
 	const isCurrent = (kind: NativeAndroidIntegrityChallengeKind, generation: number) => {
 		const observedAt = records[kind]?.observedAt
+		const updatedAt = records[kind]?.updatedAt
 		refreshFromPersisted(kind)
-		return generations[kind] === generation && records[kind]?.observedAt === observedAt
+		// A replacement socket may persist a newer transition with the same
+		// observedAt millisecond. Comparing updatedAt as well prevents a stale
+		// provider callback from sending a response after that transition.
+		return (
+			generations[kind] === generation &&
+			records[kind]?.observedAt === observedAt &&
+			records[kind]?.updatedAt === updatedAt
+		)
 	}
 
 	const invalidate = (kind: NativeAndroidIntegrityChallengeKind) => {
@@ -288,13 +296,26 @@ export const markNativeAndroidIntegrityCleared = (node: BinaryNode): void => {
 export const isNativeAndroidIntegrityCleared = (node: BinaryNode): boolean =>
 	nativeAndroidIntegrityClearedNodes.has(node)
 
+const isNewsletterJid = (jid: unknown): boolean => typeof jid === 'string' && jid.endsWith('@newsletter')
+
+const hasDirectUserMessagePayload = (node: BinaryNode): boolean =>
+	Array.isArray(node.content) && node.content.some(child => child.tag === 'enc' || child.tag === 'participants')
+
 /**
  * Classifies only fresh user egress. Protocol repair and already-active call
  * signaling must remain available while an integrity challenge is pending.
  */
 export const getNativeAndroidIntegrityGatedEgress = (node: BinaryNode): 'message' | 'call' | undefined => {
 	if (node.tag === 'message') {
-		if (node.attrs?.participant || node.attrs?.category === 'peer') return undefined
+		if (
+			node.attrs?.participant ||
+			node.attrs?.category === 'peer' ||
+			isNewsletterJid(node.attrs?.to) ||
+			isNewsletterJid(node.attrs?.from)
+		) {
+			return undefined
+		}
+		if (!hasDirectUserMessagePayload(node)) return undefined
 		return 'message'
 	}
 

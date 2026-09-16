@@ -46,8 +46,8 @@ export type VideoInputFrame = {
 	height: number
 	/** Clockwise rotation in degrees, when supplied by the capture source. */
 	orientation?: number
-	/** Microseconds since stream start. */
-	timestamp: number
+	/** Optional microseconds since stream start; used by legacy WASM bindings when present. */
+	timestamp?: number
 }
 
 /** Options for placing a call. */
@@ -184,8 +184,8 @@ export interface ActiveCallHandle {
 	 */
 	pushAudio(frame: AudioInputFrame): boolean
 	/**
-	 * Push a video frame for uplink. Returns false when the frame was
-	 * rejected (wrong format, backpressure, or video not enabled).
+	 * Push a video frame for uplink. Returns false when the frame was rejected
+	 * or when the loaded WASM build does not expose live video input.
 	 */
 	pushVideo(frame: VideoInputFrame): boolean
 	/** Enable or disable the local camera without ending the audio call. */

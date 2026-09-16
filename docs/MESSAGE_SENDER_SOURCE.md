@@ -17,7 +17,10 @@ constructs device zero. This is the basis for the `primary_device` versus
 `linked_device` distinction.
 
 InfiniteAPI captures the stanza's `from`/`participant` author before
-`normalizeMessageJids()` removes the device suffix. Therefore:
+`decodeMessageNode()` builds the public message key. That decoder boundary
+removes only an explicit `:0` marker from public key fields; the later
+`normalizeMessageJids()` stage resolves LID/PN aliases but does not remove
+device suffixes. Therefore:
 
 - `deviceId: 0` is classified as `primary_device`;
 - `deviceId > 0` is classified as `linked_device`;

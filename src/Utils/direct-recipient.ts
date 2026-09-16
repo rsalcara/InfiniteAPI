@@ -216,9 +216,22 @@ export const runDirectRecipientPreflight = async <TDevice>({
 	}
 
 	let startChatTrustSignals: StartChatTrustSignalsState | undefined
-	if (fetchStartChatTrustSignals) {
-		startChatTrustSignals = await fetchStartChatTrustSignals(requestedPn)
-		if (startChatTrustSignalsPolicy === 'require-known' && startChatTrustSignals.status !== 'known') {
+	if (fetchStartChatTrustSignals || startChatTrustSignalsPolicy === 'require-known') {
+		startChatTrustSignals = fetchStartChatTrustSignals
+			? await fetchStartChatTrustSignals(requestedPn)
+			: {
+					jid: requestedPn,
+					useCase: 'CHAT_FMX',
+					status: 'unavailable',
+					observedAt: Date.now(),
+					error: 'provider-unavailable'
+				}
+		if (
+			startChatTrustSignalsPolicy === 'require-known' &&
+			(startChatTrustSignals.status !== 'known' ||
+				!startChatTrustSignals.signals ||
+				Object.keys(startChatTrustSignals.signals).length === 0)
+		) {
 			logger.warn(
 				{
 					requestedJid: requestedPn,

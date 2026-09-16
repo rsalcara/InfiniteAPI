@@ -3,7 +3,10 @@ import { Boom } from '@hapi/boom'
 import { jest } from '@jest/globals'
 import { EventEmitter } from 'events'
 import { proto } from '../../../WAProto/index.js'
-import { isNativeAndroidIntegrityCleared } from '../../Socket/native-android-integrity-state'
+import {
+	getNativeAndroidIntegrityGatedEgress,
+	isNativeAndroidIntegrityCleared
+} from '../../Socket/native-android-integrity-state'
 import { makeSocketOperationGate } from '../../Socket/socket-operation-gate'
 import type { SignalKeyStore, SocketConfig, WAMessage } from '../../Types'
 import { unpadRandomMax16 } from '../../Utils/generics'
@@ -197,6 +200,8 @@ const makeFakeSocket = ({
 			})
 		}),
 		sendNode: async (node: any) => {
+			const gatedEgress = getNativeAndroidIntegrityGatedEgress(node)
+			if (gatedEgress && !isNativeAndroidIntegrityCleared(node)) assertNativeAndroidIntegrityReady?.(gatedEgress)
 			sent.push(node)
 			await onSendNode?.(node, sent.length)
 		},

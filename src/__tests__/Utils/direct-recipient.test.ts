@@ -335,7 +335,12 @@ describe('cold-recipient preflight orchestration', () => {
 			)
 		).resolves.toMatchObject({
 			pnJid: pn,
-			startChatTrustSignals: { status: 'known', useCase: 'CHAT_FMX' }
+			startChatTrustSignals: {
+				status: 'known',
+				useCase: 'CHAT_FMX',
+				observedAt: 1_786_000_000_000,
+				signals: { isSenderSuspicious: false, isSenderNewAccount: false, createdTs: 1_785_000_000_000 }
+			}
 		})
 		expect(fetchStartChatTrustSignals).toHaveBeenCalledTimes(1)
 	})
@@ -351,6 +356,38 @@ describe('cold-recipient preflight orchestration', () => {
 						status: 'unknown',
 						observedAt: Date.now(),
 						error: 'provider-timeout'
+					}),
+					startChatTrustSignalsPolicy: 'require-known',
+					resolveUSync
+				})
+			)
+		).rejects.toMatchObject({ output: { statusCode: 503 }, data: { category: 'start-chat-trust-signals' } })
+		expect(resolveUSync).not.toHaveBeenCalled()
+	})
+
+	it('fails closed when require-known is configured without a CHAT_FMX provider', async () => {
+		const resolveUSync = jest.fn(async () => [])
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					startChatTrustSignalsPolicy: 'require-known',
+					resolveUSync
+				})
+			)
+		).rejects.toMatchObject({ output: { statusCode: 503 }, data: { category: 'start-chat-trust-signals' } })
+		expect(resolveUSync).not.toHaveBeenCalled()
+	})
+
+	it('fails closed when require-known receives an empty known CHAT_FMX payload', async () => {
+		const resolveUSync = jest.fn(async () => [])
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					fetchStartChatTrustSignals: async () => ({
+						jid: pn,
+						useCase: 'CHAT_FMX',
+						status: 'known',
+						observedAt: Date.now()
 					}),
 					startChatTrustSignalsPolicy: 'require-known',
 					resolveUSync
