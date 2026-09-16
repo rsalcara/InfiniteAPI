@@ -1,6 +1,7 @@
 import { Boom } from '@hapi/boom'
 import {
 	buildNativeAndroidGpiaResponseNode,
+	buildNativeAndroidIntegrityResponseNode,
 	containsNativeAndroidIntegrityMaterial,
 	createNativeAndroidIntegrityState,
 	getNativeAndroidIntegrityGatedEgress,
@@ -107,10 +108,10 @@ describe('native_android integrity lifecycle', () => {
 		}
 	})
 
-	it('builds only the APK-proven ib/gpia/jws response wire', () => {
+	it('builds the APK-proven response wire for each integrity challenge kind', () => {
 		const jws = 'header.payload.signature'
-		const node = buildNativeAndroidGpiaResponseNode(jws)
-		expect(node).toEqual({
+		const gpiaNode = buildNativeAndroidIntegrityResponseNode('gpia', jws)
+		expect(gpiaNode).toEqual({
 			tag: 'ib',
 			attrs: {},
 			content: [
@@ -121,11 +122,30 @@ describe('native_android integrity lifecycle', () => {
 				}
 			]
 		})
-		expect(containsNativeAndroidIntegrityMaterial(node)).toBe(true)
-		expect(() => buildNativeAndroidGpiaResponseNode('')).toThrow('empty token')
-		expect(() => buildNativeAndroidGpiaResponseNode('x'.repeat(NATIVE_ANDROID_INTEGRITY_MAX_TOKEN_BYTES + 1))).toThrow(
-			'safety limit'
-		)
+
+		const safetyNetNode = buildNativeAndroidIntegrityResponseNode('safetynet', jws)
+		expect(safetyNetNode).toEqual({
+			tag: 'ib',
+			attrs: {},
+			content: [{ tag: 'integrity_payload', attrs: {}, content: Buffer.from(jws) }]
+		})
+
+		expect(buildNativeAndroidGpiaResponseNode(jws)).toEqual(gpiaNode)
+		expect(containsNativeAndroidIntegrityMaterial(gpiaNode)).toBe(true)
+		expect(containsNativeAndroidIntegrityMaterial(safetyNetNode)).toBe(true)
+
+		for (const kind of ['gpia', 'safetynet'] as const) {
+			expect(() => buildNativeAndroidIntegrityResponseNode(kind, '')).toThrow('empty token')
+			expect(() =>
+				buildNativeAndroidIntegrityResponseNode(kind, 'x'.repeat(NATIVE_ANDROID_INTEGRITY_MAX_TOKEN_BYTES + 1))
+			).toThrow('safety limit')
+		}
+	})
+
+	it('does not classify the SafetyNet response as gated user egress', () => {
+		expect(
+			getNativeAndroidIntegrityGatedEgress(buildNativeAndroidIntegrityResponseNode('safetynet', 'token'))
+		).toBeUndefined()
 	})
 
 	it('keeps audit non-blocking and makes enforce fail closed only after a challenge', () => {

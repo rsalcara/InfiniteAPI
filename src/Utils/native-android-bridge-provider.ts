@@ -1,6 +1,6 @@
 import { Boom } from '@hapi/boom'
 import { Buffer } from 'node:buffer'
-import type { NativeAndroidGpiaChallenge, NativeAndroidGpiaResponse } from '../Types'
+import type { NativeAndroidIntegrityChallenge, NativeAndroidIntegrityResponse } from '../Types'
 import { DisconnectReason } from '../Types'
 
 export type NativeAndroidBridgeProviderConfig = {
@@ -32,7 +32,7 @@ const isLoopbackHost = (hostname: string): boolean => {
  */
 export const createNativeAndroidBridgeProvider = (
 	config: NativeAndroidBridgeProviderConfig
-): ((challenge: NativeAndroidGpiaChallenge) => Promise<NativeAndroidGpiaResponse>) => {
+): ((challenge: NativeAndroidIntegrityChallenge) => Promise<NativeAndroidIntegrityResponse>) => {
 	if (!config || typeof config.url !== 'string') {
 		throw new Error('native_android bridge provider requires a valid http(s) url')
 	}
@@ -66,7 +66,7 @@ export const createNativeAndroidBridgeProvider = (
 	const fetchImpl = config.fetch ?? fetch
 	const timeoutMs = config.timeoutMs ?? 25_000
 
-	return async (challenge: NativeAndroidGpiaChallenge): Promise<NativeAndroidGpiaResponse> => {
+	return async (challenge: NativeAndroidIntegrityChallenge): Promise<NativeAndroidIntegrityResponse> => {
 		if (challenge.signal.aborted) {
 			throw new Error('native_android bridge request aborted before dispatch')
 		}
@@ -89,7 +89,7 @@ export const createNativeAndroidBridgeProvider = (
 					...(config.token ? { Authorization: `Bearer ${config.token}` } : {})
 				},
 				body: JSON.stringify({
-					kind: 'gpia',
+					kind: challenge.kind,
 					nonce: challenge.nonce,
 					requestHash: challenge.requestHash,
 					cloudProjectNumber: challenge.cloudProjectNumber,

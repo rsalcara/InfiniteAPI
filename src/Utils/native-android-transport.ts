@@ -104,6 +104,10 @@ export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig
 		throw new Boom('native_android: integrityProvider must be a function', { statusCode: 400 })
 	}
 
+	if (config.safetyNetIntegrityProvider !== undefined && typeof config.safetyNetIntegrityProvider !== 'function') {
+		throw new Boom('native_android: safetyNetIntegrityProvider must be a function', { statusCode: 400 })
+	}
+
 	if (!Array.isArray(config.appVersion) || config.appVersion.length !== 4) {
 		throw new Boom('native_android: appVersion must contain the four official Android components', { statusCode: 400 })
 	}
