@@ -18,6 +18,8 @@ import { makeSessionCleanup } from '../Signal/session-cleanup'
 import type {
 	ConnectionState,
 	LIDMapping,
+	NativeAndroidGpiaIntegrityProvider,
+	NativeAndroidSafetyNetIntegrityProvider,
 	NewChatMessageCapInfo,
 	ReachoutTimelockState,
 	SocketConfig,
@@ -105,7 +107,7 @@ import { getAuthStoreDrainBarrier, registerAuthStoreDrainBarrier } from './auth-
 import { TcpSocketClient, WebSocketClient } from './Client'
 import { executeWMexQuery } from './mex'
 import {
-	buildNativeAndroidGpiaResponseNode,
+	buildNativeAndroidIntegrityResponseNode,
 	containsNativeAndroidIntegrityMaterial,
 	createNativeAndroidIntegrityState,
 	getNativeAndroidIntegrityGatedEgress,
@@ -2590,25 +2592,22 @@ export const makeSocket = (config: SocketConfig) => {
 			return
 		}
 
-		// The safetynet request path is proven, but its outbound stanza is still
-		// hidden in libwhatsapp.so. Never guess a wire or treat it as satisfied.
-		if (kind === 'safetynet') {
-			nativeAndroidIntegrity.begin(kind, 'unsupported')
-			emitNativeAndroidIntegrity(kind, 'unsupported', 'challenge-observed', 'wire-not-proven')
-			logger.warn(
-				{ kind, policy: nativeAndroidIntegrityPolicy, status: 'unsupported' },
-				'native_android safetynet challenge observed; response wire is not independently proven'
-			)
-			return
-		}
-
-		const provider = transportSession.nativeAndroid!.integrityProvider
-		const { generation, observedAt } = nativeAndroidIntegrity.begin(kind, provider ? 'pending' : 'unavailable')
-		if (!provider) {
+		type SelectedIntegrityProvider =
+			| { kind: 'gpia'; provider?: NativeAndroidGpiaIntegrityProvider }
+			| { kind: 'safetynet'; provider?: NativeAndroidSafetyNetIntegrityProvider }
+		const selectedProvider: SelectedIntegrityProvider =
+			kind === 'safetynet'
+				? { kind: 'safetynet', provider: transportSession.nativeAndroid!.safetyNetIntegrityProvider }
+				: { kind: 'gpia', provider: transportSession.nativeAndroid!.integrityProvider }
+		const { generation, observedAt } = nativeAndroidIntegrity.begin(
+			kind,
+			selectedProvider.provider ? 'pending' : 'unavailable'
+		)
+		if (!selectedProvider.provider) {
 			emitNativeAndroidIntegrity(kind, 'unavailable', 'challenge-observed', 'provider-not-configured')
 			logger.warn(
 				{ kind, policy: nativeAndroidIntegrityPolicy, status: 'unavailable' },
-				'native_android GPIA challenge received without a genuine Android provider'
+				'native_android integrity challenge received without a genuine Android provider'
 			)
 			return
 		}
@@ -2619,25 +2618,35 @@ export const makeSocket = (config: SocketConfig) => {
 		try {
 			const appVariant = transportSession.nativeAndroid!.appVariant
 			const appIdentity = getNativeAndroidAppIdentity(appVariant)
-			const response = await promiseTimeout<Awaited<ReturnType<typeof provider>>>(
-				NATIVE_ANDROID_INTEGRITY_DEFAULT_PROVIDER_TIMEOUT_MS,
-				(resolve, reject) => {
-					provider({
-						kind,
-						nonce,
-						requestHash: nonce,
-						cloudProjectNumber: 293955441834,
-						profileId: transportSession.nativeAndroid!.device.profileId,
-						appVariant,
-						clientAppId: appIdentity.clientAppId,
-						packageName: appIdentity.packageName,
-						signal: controller.signal
-					}).then(resolve, reject)
-				}
-			)
+			const providerRequest = {
+				nonce,
+				requestHash: nonce,
+				cloudProjectNumber: 293955441834 as const,
+				profileId: transportSession.nativeAndroid!.device.profileId,
+				appVariant,
+				clientAppId: appIdentity.clientAppId,
+				packageName: appIdentity.packageName,
+				signal: controller.signal
+			}
+			const response =
+				kind === 'safetynet'
+					? await promiseTimeout<Awaited<ReturnType<NativeAndroidSafetyNetIntegrityProvider>>>(
+							NATIVE_ANDROID_INTEGRITY_DEFAULT_PROVIDER_TIMEOUT_MS,
+							(resolve, reject) => {
+								const safetyNetProvider = selectedProvider.provider as NativeAndroidSafetyNetIntegrityProvider
+								safetyNetProvider({ ...providerRequest, kind: 'safetynet' }).then(resolve, reject)
+							}
+						)
+					: await promiseTimeout<Awaited<ReturnType<NativeAndroidGpiaIntegrityProvider>>>(
+							NATIVE_ANDROID_INTEGRITY_DEFAULT_PROVIDER_TIMEOUT_MS,
+							(resolve, reject) => {
+								const gpiaProvider = selectedProvider.provider as NativeAndroidGpiaIntegrityProvider
+								gpiaProvider({ ...providerRequest, kind: 'gpia' }).then(resolve, reject)
+							}
+						)
 
 			if (closed || controller.signal.aborted || !nativeAndroidIntegrity.isCurrent(kind, generation)) return
-			const responseNode = buildNativeAndroidGpiaResponseNode(response?.jws)
+			const responseNode = buildNativeAndroidIntegrityResponseNode(kind, response?.jws)
 			await sendNode(responseNode)
 			if (closed || controller.signal.aborted || !nativeAndroidIntegrity.isCurrent(kind, generation)) return
 

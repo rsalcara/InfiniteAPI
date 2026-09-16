@@ -526,6 +526,12 @@ describe('native_android transport contract', () => {
 		expect(() =>
 			validateNativeAndroidConfig({
 				...nativeAndroid,
+				safetyNetIntegrityProvider: {} as unknown as NativeAndroidTransportConfig['safetyNetIntegrityProvider']
+			})
+		).toThrow('safetyNetIntegrityProvider must be a function')
+		expect(() =>
+			validateNativeAndroidConfig({
+				...nativeAndroid,
 				host: ''
 			})
 		).toThrow('native_android: host is required')

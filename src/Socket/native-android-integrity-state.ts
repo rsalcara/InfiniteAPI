@@ -253,7 +253,10 @@ export const getNativeAndroidIntegrityNonce = (
 	return typeof nonce === 'string' && nonce.length > 0 ? nonce : undefined
 }
 
-export const buildNativeAndroidGpiaResponseNode = (jws: string): BinaryNode => {
+export const buildNativeAndroidIntegrityResponseNode = (
+	kind: NativeAndroidIntegrityChallengeKind,
+	jws: string
+): BinaryNode => {
 	if (typeof jws !== 'string' || jws.length === 0) {
 		throw new Boom('native_android integrity provider returned an empty token', { statusCode: 502 })
 	}
@@ -261,6 +264,14 @@ export const buildNativeAndroidGpiaResponseNode = (jws: string): BinaryNode => {
 	const token = Buffer.from(jws, 'utf8')
 	if (token.byteLength > NATIVE_ANDROID_INTEGRITY_MAX_TOKEN_BYTES) {
 		throw new Boom('native_android integrity provider token exceeds the protocol safety limit', { statusCode: 502 })
+	}
+
+	if (kind === 'safetynet') {
+		return {
+			tag: 'ib',
+			attrs: {},
+			content: [{ tag: 'integrity_payload', attrs: {}, content: token }]
+		}
 	}
 
 	return {
@@ -276,9 +287,13 @@ export const buildNativeAndroidGpiaResponseNode = (jws: string): BinaryNode => {
 	}
 }
 
+export const buildNativeAndroidGpiaResponseNode = (jws: string): BinaryNode =>
+	buildNativeAndroidIntegrityResponseNode('gpia', jws)
+
 export const containsNativeAndroidIntegrityMaterial = (node: BinaryNode): boolean =>
 	node.tag === 'gpia' ||
 	node.tag === 'safetynet' ||
+	node.tag === 'integrity_payload' ||
 	(Array.isArray(node.content) && node.content.some(containsNativeAndroidIntegrityMaterial))
 
 /**

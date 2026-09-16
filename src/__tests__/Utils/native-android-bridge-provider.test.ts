@@ -1,9 +1,12 @@
-import type { NativeAndroidGpiaChallenge } from '../../Types'
+import type { NativeAndroidIntegrityChallenge } from '../../Types'
 import { createNativeAndroidBridgeProvider } from '../../Utils/native-android-bridge-provider'
 
 describe('native_android bridge provider', () => {
-	const makeChallenge = (signal = new AbortController().signal): NativeAndroidGpiaChallenge => ({
-		kind: 'gpia',
+	const makeChallenge = (
+		signal = new AbortController().signal,
+		kind: NativeAndroidIntegrityChallenge['kind'] = 'gpia'
+	): NativeAndroidIntegrityChallenge => ({
+		kind,
 		nonce: 'test-nonce-value',
 		requestHash: 'test-nonce-value',
 		cloudProjectNumber: 293955441834,
@@ -53,6 +56,21 @@ describe('native_android bridge provider', () => {
 		expect(body.requestHash).toBe('test-nonce-value')
 		expect(body.cloudProjectNumber).toBe(293955441834)
 		expect(body.packageName).toBe('com.whatsapp.w4b')
+		expect(body.kind).toBe('gpia')
+
+		const safetyNetCalls: Array<{ init: RequestInit }> = []
+		const safetyNetProvider = createNativeAndroidBridgeProvider({
+			url: 'http://127.0.0.1:9876/',
+			fetch: (async (_url: RequestInfo | URL, init?: RequestInit) => {
+				safetyNetCalls.push({ init: init ?? {} })
+				return new Response(JSON.stringify({ jws: 'valid-safetynet-token' }), { status: 200 })
+			}) as unknown as typeof fetch
+		})
+
+		await expect(safetyNetProvider(makeChallenge(new AbortController().signal, 'safetynet'))).resolves.toEqual({
+			jws: 'valid-safetynet-token'
+		})
+		expect(JSON.parse(String(safetyNetCalls[0]!.init.body)).kind).toBe('safetynet')
 
 		const headers = calls[0]!.init.headers as Record<string, string>
 		expect(headers.Authorization).toBe('Bearer secret-token')

@@ -155,8 +155,7 @@ export type PersistedNativeAndroidIntegrityState = {
  * Post-login integrity challenge delivered by WhatsApp to an Android client.
  * The nonce is intentionally transient: InfiniteAPI never persists or logs it.
  */
-export type NativeAndroidGpiaChallenge = {
-	kind: 'gpia'
+type NativeAndroidIntegrityChallengeBase = {
 	/** Raw server attribute; transient and never persisted or logged. */
 	nonce: string
 	/** Standard Play Integrity field. The APK assigns the server nonce verbatim. */
@@ -171,18 +170,44 @@ export type NativeAndroidGpiaChallenge = {
 	signal: AbortSignal
 }
 
+export type NativeAndroidGpiaChallenge = NativeAndroidIntegrityChallengeBase & {
+	kind: 'gpia'
+}
+
+export type NativeAndroidSafetyNetChallenge = NativeAndroidIntegrityChallengeBase & {
+	kind: 'safetynet'
+}
+
+export type NativeAndroidIntegrityChallenge = NativeAndroidGpiaChallenge | NativeAndroidSafetyNetChallenge
+
 /**
  * Challenge-bound token produced by the genuine Android installation. The
  * provider never controls the protocol stanza; InfiniteAPI builds the audited
- * `<ib><gpia><jws>...` wire internally.
+ * GPIA (`<ib><gpia><jws>`) or SafetyNet (`<ib><integrity_payload>`) wire
+ * internally, according to the challenge kind.
  */
-export type NativeAndroidGpiaResponse = {
+export type NativeAndroidIntegrityResponse = {
 	jws: string
 }
 
-export type NativeAndroidIntegrityProvider = (
+/**
+ * Backward-compatible name for the pre-SafetyNet provider contract.
+ */
+export type NativeAndroidGpiaResponse = NativeAndroidIntegrityResponse
+
+export type NativeAndroidGpiaIntegrityProvider = (
 	challenge: NativeAndroidGpiaChallenge
-) => Promise<NativeAndroidGpiaResponse>
+) => Promise<NativeAndroidIntegrityResponse>
+
+export type NativeAndroidSafetyNetIntegrityProvider = (
+	challenge: NativeAndroidSafetyNetChallenge
+) => Promise<NativeAndroidIntegrityResponse>
+
+/**
+ * Deprecated: GPIA-only provider contract. SafetyNet support must be declared
+ * separately through `safetyNetIntegrityProvider`.
+ */
+export type NativeAndroidIntegrityProvider = NativeAndroidGpiaIntegrityProvider
 
 export type NativeAndroidTransportConfig = {
 	/** A second explicit gate in addition to transportProfile. */
@@ -228,10 +253,14 @@ export type NativeAndroidTransportConfig = {
 	/**
 	 * Optional genuine post-login GPIA provider. This must run in the attested
 	 * installation that owns the session; a Node-generated or replayed token is
-	 * not valid. The safetynet response wire is intentionally not exposed until
-	 * it is independently proven from the official client.
+	 * not valid.
 	 */
-	integrityProvider?: NativeAndroidIntegrityProvider
+	integrityProvider?: NativeAndroidGpiaIntegrityProvider
+	/**
+	 * Explicit SafetyNet capability. When omitted, SafetyNet challenges remain
+	 * fail-closed and never invoke the GPIA provider.
+	 */
+	safetyNetIntegrityProvider?: NativeAndroidSafetyNetIntegrityProvider
 	/** Optional server-provided endpoints, inserted at their official sequence state. */
 	connectionEndpoints?: NativeAndroidConnectionEndpoint[]
 	/** Maximum time allowed for one native DNS resolution before fallback advances. */
