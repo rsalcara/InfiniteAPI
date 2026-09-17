@@ -71957,6 +71957,7 @@ export const proto = $root.proto = (() => {
             MessageHistoryMetadata.prototype.messageCount = null;
             MessageHistoryMetadata.prototype.nonHistoryReceivers = $util.emptyArray;
             MessageHistoryMetadata.prototype.oldestMessageTimestampInBundle = null;
+            MessageHistoryMetadata.prototype.includesChatTheme = null;
 
             let $oneOfFields;
 
@@ -71975,6 +71976,12 @@ export const proto = $root.proto = (() => {
             // Virtual OneOf for proto3 optional field
             $Object.defineProperty(MessageHistoryMetadata.prototype, "_oldestMessageTimestampInBundle", {
                 get: $util.oneOfGetter($oneOfFields = ["oldestMessageTimestampInBundle"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
+            // Virtual OneOf for proto3 optional field
+            $Object.defineProperty(MessageHistoryMetadata.prototype, "_includesChatTheme", {
+                get: $util.oneOfGetter($oneOfFields = ["includesChatTheme"]),
                 set: $util.oneOfSetter($oneOfFields)
             });
 
@@ -72003,6 +72010,8 @@ export const proto = $root.proto = (() => {
                 }
                 if (m.oldestMessageTimestampInBundle != null && $Object.hasOwnProperty.call(m, "oldestMessageTimestampInBundle"))
                     w.uint32(40).int64(m.oldestMessageTimestampInBundle);
+                if (m.includesChatTheme != null && $Object.hasOwnProperty.call(m, "includesChatTheme"))
+                    w.uint32(48).bool(m.includesChatTheme);
                 if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
                     for (var i = 0; i < m.$unknowns.length; ++i)
                         w.raw(m.$unknowns[i]);
@@ -72061,6 +72070,13 @@ export const proto = $root.proto = (() => {
                                 break;
                             m.oldestMessageTimestampInBundle = r.int64();
                             m._oldestMessageTimestampInBundle = "oldestMessageTimestampInBundle";
+                            continue;
+                        }
+                    case 6: {
+                            if (u !== 0)
+                                break;
+                            m.includesChatTheme = r.bool();
+                            m._includesChatTheme = "includesChatTheme";
                             continue;
                         }
                     }
@@ -72131,6 +72147,9 @@ export const proto = $root.proto = (() => {
                     else if (typeof d.oldestMessageTimestampInBundle === "object")
                         m.oldestMessageTimestampInBundle = new $util.LongBits(d.oldestMessageTimestampInBundle.low >>> 0, d.oldestMessageTimestampInBundle.high >>> 0).toNumber();
                 }
+                if (d.includesChatTheme != null) {
+                    m.includesChatTheme = $Boolean(d.includesChatTheme);
+                }
                 return m;
             };
 
@@ -72181,6 +72200,9 @@ export const proto = $root.proto = (() => {
                         d.oldestMessageTimestampInBundle = o.longs === $String ? $String(m.oldestMessageTimestampInBundle) : m.oldestMessageTimestampInBundle;
                     else
                         d.oldestMessageTimestampInBundle = o.longs === String ? longToString(m.oldestMessageTimestampInBundle) : o.longs === Number ? longToNumber(m.oldestMessageTimestampInBundle) : m.oldestMessageTimestampInBundle;
+                }
+                if (m.includesChatTheme != null && $Object.hasOwnProperty.call(m, "includesChatTheme")) {
+                    d.includesChatTheme = m.includesChatTheme;
                 }
                 return d;
             };
@@ -91418,6 +91440,7 @@ export const proto = $root.proto = (() => {
             VideoMessage.prototype.metadataUrl = null;
             VideoMessage.prototype.videoSourceType = null;
             VideoMessage.prototype.dashManifestUrl = null;
+            VideoMessage.prototype.smartThumbnailTs = null;
 
             let $oneOfFields;
 
@@ -91589,6 +91612,12 @@ export const proto = $root.proto = (() => {
                 set: $util.oneOfSetter($oneOfFields)
             });
 
+            // Virtual OneOf for proto3 optional field
+            $Object.defineProperty(VideoMessage.prototype, "_smartThumbnailTs", {
+                get: $util.oneOfGetter($oneOfFields = ["smartThumbnailTs"]),
+                set: $util.oneOfSetter($oneOfFields)
+            });
+
             VideoMessage.create = function(properties) {
                 return new VideoMessage(properties);
             };
@@ -91668,6 +91697,8 @@ export const proto = $root.proto = (() => {
                     w.uint32(248).int32(m.videoSourceType);
                 if (m.dashManifestUrl != null && $Object.hasOwnProperty.call(m, "dashManifestUrl"))
                     w.uint32(266).string(m.dashManifestUrl);
+                if (m.smartThumbnailTs != null && $Object.hasOwnProperty.call(m, "smartThumbnailTs"))
+                    w.uint32(272).int64(m.smartThumbnailTs);
                 if (m.$unknowns != null && $Object.hasOwnProperty.call(m, "$unknowns"))
                     for (var i = 0; i < m.$unknowns.length; ++i)
                         w.raw(m.$unknowns[i]);
@@ -91911,6 +91942,13 @@ export const proto = $root.proto = (() => {
                             m._dashManifestUrl = "dashManifestUrl";
                             continue;
                         }
+                    case 34: {
+                            if (u !== 0)
+                                break;
+                            m.smartThumbnailTs = r.int64();
+                            m._smartThumbnailTs = "smartThumbnailTs";
+                            continue;
+                        }
                     }
                     r.skipType(u, q, t);
                     if (!r.discardUnknown) {
@@ -92119,6 +92157,16 @@ export const proto = $root.proto = (() => {
                 if (d.dashManifestUrl != null) {
                     m.dashManifestUrl = $String(d.dashManifestUrl);
                 }
+                if (d.smartThumbnailTs != null) {
+                    if ($util.Long)
+                        m.smartThumbnailTs = $util.Long.fromValue(d.smartThumbnailTs, false);
+                    else if (typeof d.smartThumbnailTs === "string")
+                        m.smartThumbnailTs = $parseInt(d.smartThumbnailTs, 10);
+                    else if (typeof d.smartThumbnailTs === "number")
+                        m.smartThumbnailTs = d.smartThumbnailTs;
+                    else if (typeof d.smartThumbnailTs === "object")
+                        m.smartThumbnailTs = new $util.LongBits(d.smartThumbnailTs.low >>> 0, d.smartThumbnailTs.high >>> 0).toNumber();
+                }
                 return m;
             };
 
@@ -92251,6 +92299,14 @@ export const proto = $root.proto = (() => {
                 }
                 if (m.dashManifestUrl != null && $Object.hasOwnProperty.call(m, "dashManifestUrl")) {
                     d.dashManifestUrl = m.dashManifestUrl;
+                }
+                if (m.smartThumbnailTs != null && $Object.hasOwnProperty.call(m, "smartThumbnailTs")) {
+                    if (typeof $BigInt !== "undefined" && o.longs === $BigInt)
+                        d.smartThumbnailTs = typeof m.smartThumbnailTs === "number" ? $BigInt(m.smartThumbnailTs) : $util.Long.fromBits(m.smartThumbnailTs.low >>> 0, m.smartThumbnailTs.high >>> 0, false).toBigInt();
+                    else if (typeof m.smartThumbnailTs === "number")
+                        d.smartThumbnailTs = o.longs === $String ? $String(m.smartThumbnailTs) : m.smartThumbnailTs;
+                    else
+                        d.smartThumbnailTs = o.longs === String ? longToString(m.smartThumbnailTs) : o.longs === Number ? longToNumber(m.smartThumbnailTs) : m.smartThumbnailTs;
                 }
                 return d;
             };
@@ -135342,6 +135398,10 @@ export const proto = $root.proto = (() => {
             case 256:
                 m.messageStubType = 256;
                 break;
+            case "SENDER_SIDE_CONTACT_INFO":
+            case 255:
+                m.messageStubType = 255;
+                break;
             default:
                 if (typeof d.messageStubType === "number" && (d.messageStubType | 0) === d.messageStubType)
                     m.messageStubType = d.messageStubType;
@@ -136253,6 +136313,7 @@ export const proto = $root.proto = (() => {
             values[valuesById[250] = "ORDER_EPHEMERAL_EXEMPTION"] = 250;
             values[valuesById[254] = "CAMEO_CHAT_CREATED"] = 254;
             values[valuesById[256] = "CAMEO_TRANSITIONED"] = 256;
+            values[valuesById[255] = "SENDER_SIDE_CONTACT_INFO"] = 255;
             return values;
         })();
 
