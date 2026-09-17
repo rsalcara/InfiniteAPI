@@ -16,7 +16,8 @@ export enum XWAPaths {
 	// Reachout timelock + message capping — port de upstream `4dbbba2891` (PR #2442)
 	xwa2_fetch_account_reachout_timelock = 'xwa2_fetch_account_reachout_timelock',
 	xwa2_remove_account_reachout_timelock = 'xwa2_remove_account_reachout_timelock',
-	xwa2_message_capping_info = 'xwa2_message_capping_info'
+	xwa2_message_capping_info = 'xwa2_message_capping_info',
+	xwa2_fetch_wa_users = 'xwa2_fetch_wa_users'
 }
 export enum QueryIds {
 	CREATE = '8823471724422422',
@@ -34,7 +35,8 @@ export enum QueryIds {
 	// Port de upstream `4dbbba2891` (PR #2442)
 	REACHOUT_TIMELOCK = '23983697327930364',
 	REMOVE_REACHOUT_TIMELOCK = '25040013452293167',
-	MESSAGE_CAPPING_INFO = '24503548349331633'
+	MESSAGE_CAPPING_INFO = '24503548349331633',
+	START_CHAT_CONTEXT_INTEGRITY = '26204539559207163'
 }
 export type NewsletterUpdate = {
 	name?: string

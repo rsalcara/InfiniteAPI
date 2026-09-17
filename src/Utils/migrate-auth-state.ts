@@ -3,7 +3,8 @@ import type {
 	AuthenticationState,
 	HistorySyncStoreSnapshot,
 	SignalDataSet,
-	SignalDataTypeMap
+	SignalDataTypeMap,
+	StartChatTrustSignalsSnapshot
 } from '../Types'
 import type { ILogger } from './logger'
 
@@ -18,6 +19,7 @@ export type MigrateAuthStateResult = {
 	creds: { copied: boolean }
 	historySync: { jobs: number; checkpoints: number; copied: boolean }
 	appStateSyncKeys: { missingKeys: number; peerMessages: number; copied: boolean }
+	startChatTrustSignals: { records: number; copied: boolean }
 	counts: Partial<Record<keyof SignalDataTypeMap, number>>
 	verified: boolean
 	warnings: string[]
@@ -116,12 +118,17 @@ export async function migrateAuthState({
 		creds: { copied: false },
 		historySync: { jobs: 0, checkpoints: 0, copied: false },
 		appStateSyncKeys: { missingKeys: 0, peerMessages: 0, copied: false },
+		startChatTrustSignals: { records: 0, copied: false },
 		counts: {},
 		verified: false,
 		warnings: []
 	}
 	const historySnapshot = from.historySync ? await from.historySync.exportState() : undefined
 	const appStateSnapshot = from.appStateSyncKeys ? await from.appStateSyncKeys.exportState() : undefined
+	const startChatTrustSignalsSnapshot = from.startChatTrustSignals?.exportState
+		? await from.startChatTrustSignals.exportState()
+		: undefined
+	let preservedStartChatTrustJids: Set<string> | undefined
 	const hasDurableHistoryState = Boolean(
 		historySnapshot &&
 		(historySnapshot.jobs.length > 0 ||
@@ -176,6 +183,33 @@ export async function migrateAuthState({
 			copied: applied.missingKeys > 0 || applied.peerMessages > 0
 		}
 		logger?.info(result.appStateSyncKeys, 'migrateAuthState: durable app-state key recovery copied')
+	}
+
+	if (startChatTrustSignalsSnapshot && (startChatTrustSignalsSnapshot.records.length > 0 || !skipExisting)) {
+		const target = to.startChatTrustSignals
+		if (target?.importState) {
+			let recordsToImport = startChatTrustSignalsSnapshot.records
+			if (skipExisting && !target.exportState) {
+				result.warnings.push(
+					'destination cannot honor skipExisting for start-chat trust observations without exportState'
+				)
+			} else {
+				if (skipExisting && target.exportState) {
+					const existing = new Set((await target.exportState()).records.map(record => record.jid))
+					preservedStartChatTrustJids = existing
+					recordsToImport = recordsToImport.filter(record => !existing.has(record.jid))
+				}
+
+				const applied = await target.importState({ records: recordsToImport })
+				result.startChatTrustSignals = {
+					records: applied.records,
+					copied: applied.records > 0
+				}
+				logger?.info(result.startChatTrustSignals, 'migrateAuthState: start-chat trust observations copied')
+			}
+		} else {
+			result.warnings.push('destination does not support start-chat trust observation migration')
+		}
 	}
 
 	/**
@@ -298,7 +332,17 @@ export async function migrateAuthState({
 
 	// 3. Verify (best-effort).
 	if (verify) {
-		const verifyOk = await verifyMigration(from, to, logger, result.warnings, historySnapshot, appStateSnapshot)
+		const verifyOk = await verifyMigration(
+			from,
+			to,
+			logger,
+			result.warnings,
+			historySnapshot,
+			appStateSnapshot,
+			startChatTrustSignalsSnapshot,
+			skipExisting,
+			preservedStartChatTrustJids
+		)
 		result.verified = verifyOk
 	}
 
@@ -315,7 +359,10 @@ async function verifyMigration(
 	logger: ILogger | undefined,
 	warnings: string[],
 	historySnapshot?: HistorySyncStoreSnapshot,
-	appStateSnapshot?: AppStateSyncKeyStoreSnapshot
+	appStateSnapshot?: AppStateSyncKeyStoreSnapshot,
+	startChatTrustSignalsSnapshot?: StartChatTrustSignalsSnapshot,
+	skipExisting = true,
+	preservedJids?: ReadonlySet<string>
 ): Promise<boolean> {
 	if (!from.keys.listIds && !from.keys.list) return false
 	if (!to.keys.listIds && !to.keys.list) return false
@@ -393,6 +440,43 @@ async function verifyMigration(
 				const validAckState = !row.acked || migrated.acked
 				if (!samePayload || !validAckState) {
 					warnings.push(`destination has conflicting app-state peer message:${row.messageId}`)
+					ok = false
+				}
+			}
+		}
+	}
+
+	if (startChatTrustSignalsSnapshot && (startChatTrustSignalsSnapshot.records.length > 0 || !skipExisting)) {
+		const target = to.startChatTrustSignals
+		if (!target?.exportState) {
+			warnings.push('destination does not support start-chat trust observation verification')
+			ok = false
+		} else {
+			const targetRecords = new Map((await target.exportState()).records.map(record => [record.jid, record]))
+			for (const record of startChatTrustSignalsSnapshot.records) {
+				const migrated = targetRecords.get(record.jid)
+				if (!migrated) {
+					warnings.push(`destination missing start-chat trust observation:${record.jid}`)
+					ok = false
+					continue
+				}
+
+				if (preservedJids?.has(record.jid)) continue
+
+				const samePayload =
+					migrated.observedAt === record.observedAt &&
+					migrated.isSenderNewAccount === record.isSenderNewAccount &&
+					migrated.isSenderSuspicious === record.isSenderSuspicious
+				if (!samePayload) {
+					warnings.push(`destination has conflicting start-chat trust observation:${record.jid}`)
+					ok = false
+				}
+			}
+
+			for (const [jid] of targetRecords) {
+				const sourceHasRecord = startChatTrustSignalsSnapshot.records.some(record => record.jid === jid)
+				if (!sourceHasRecord && !skipExisting) {
+					warnings.push(`destination has unexpected start-chat trust observation:${jid}`)
 					ok = false
 				}
 			}

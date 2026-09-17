@@ -165,6 +165,10 @@ const makeFakeSocket = ({
 		messageMutex: { mutex: async <T>(work: () => Promise<T>) => work() },
 		sessionActivityTracker: { recordActivity: () => undefined },
 		upsertMessage: async () => undefined,
+		fetchStartChatTrustSignals: undefined as unknown as (
+			jid: string,
+			context?: { lookupJid: string; pnJid?: string }
+		) => Promise<any>,
 		query: async () => ({ tag: 'iq', attrs: {}, content: [] }),
 		fetchPrivacySettings: async () => ({ readreceipts: 'all' }),
 		fetchAccountReachoutTimelock: async () => undefined,
@@ -331,6 +335,8 @@ describe('messages-send stanza assembly', () => {
 			)
 			const ownEncryption = fake.encryptions.find(item => item.jid.startsWith('100000000000001'))
 			expect(ownEncryption).toBeDefined()
+			// The fixture's DSM payload includes an unknown message field that
+			// protobufjs cannot skip here; valid Message bytes follow the header.
 			const dsm = proto.Message.decode(unpadRandomMax16(ownEncryption!.data))
 			expect(dsm.deviceSentMessage?.destinationJid).toBe(remoteLid)
 		} finally {
@@ -517,6 +523,44 @@ describe('messages-send stanza assembly', () => {
 			)
 		} finally {
 			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('observes trust signals even after a cold PN→LID mapping is cached', async () => {
+		const fake = makeFakeSocket({ coldRecipient: true })
+		activeFakeSocket = fake.sock
+		const trustUpdates: any[] = []
+		const fetchStartChatTrustSignals = jest.fn(async (jid: string) => {
+			const update = {
+				jid,
+				useCase: 'CHAT_FMX',
+				status: 'unknown',
+				observedAt: Date.now(),
+				error: 'provider-timeout'
+			}
+			trustUpdates.push(update)
+			fake.sock.ev.emit('start-chat.trust-signals', update)
+			return update
+		})
+		fake.sock.fetchStartChatTrustSignals = fetchStartChatTrustSignals
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			await socket.sendMessage(coldRequestedPn, { text: 'first cold identity' })
+			const trustUpdatesAfterFirstSend = trustUpdates.length
+			expect(trustUpdatesAfterFirstSend).toBeGreaterThan(0)
+
+			await socket.sendMessage(coldRequestedPn, { text: 'cached cold identity' })
+
+			expect(trustUpdates.length).toBe(trustUpdatesAfterFirstSend + 1)
+			expect(fetchStartChatTrustSignals).toHaveBeenCalledTimes(2)
+			expect(trustUpdates.at(-1)).toMatchObject({
+				jid: coldRequestedPn,
+				useCase: 'CHAT_FMX',
+				status: 'unknown'
+			})
+			expect(fake.sent.at(-1).attrs.to).toBe(coldLid)
+		} finally {
+			await socket.end(new Error('cached trust wiring test completed'))
 		}
 	})
 

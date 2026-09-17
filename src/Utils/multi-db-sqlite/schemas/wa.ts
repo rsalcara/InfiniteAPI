@@ -83,6 +83,21 @@ CREATE INDEX IF NOT EXISTS sent_real_issue_timestamp_index
 CREATE INDEX IF NOT EXISTS sent_tc_token_timestamp_index
   ON wa_trusted_contacts_send (sent_tc_token_timestamp);
 
+/* Official Android first-chat integrity observation table. Only the two
+   server booleans used by the CHAT_FMX lifecycle are persisted. */
+CREATE TABLE IF NOT EXISTS start_chat_trust_signals (
+  jid TEXT PRIMARY KEY NOT NULL,
+  is_sender_suspicious INTEGER,
+  is_sender_new_account INTEGER,
+  created_ts REAL
+);
+
+CREATE TRIGGER IF NOT EXISTS start_chat_trust_signals_contact_delete
+BEFORE DELETE ON wa_contacts
+BEGIN
+  DELETE FROM start_chat_trust_signals WHERE jid = old.jid;
+END;
+
 /* InfiniteAPI-only crash-recovery coordination for operations that span
    wa.db and axolotl.db. Canonical WhatsApp tables above remain unchanged. */
 CREATE TABLE IF NOT EXISTS infiniteapi_metadata (

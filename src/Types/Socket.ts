@@ -95,6 +95,8 @@ export type StartChatTrustSignalsState = {
 export type StartChatTrustSignalsProvider = (request: {
 	jid: string
 	useCase: 'CHAT_FMX'
+	/** Public phone-number identity supplied by direct-recipient preflight when available. */
+	pnJid?: string
 	/** Aborted when the lookup exceeds the socket deadline or the socket closes. */
 	signal?: AbortSignal
 }) => Promise<StartChatTrustSignals>
@@ -109,14 +111,12 @@ export type SocketConfig = {
 	/** Consumer-declared reason for creating this socket, used only in structured diagnostics. */
 	connectionTrigger?: SocketConnectionTrigger
 	/**
-	 * Optional first-party provider for the Android start-chat trust lookup.
-	 * The callback must obtain genuine values; it must not synthesize
-	 * `integrity_signals`, privacy tokens, or attestation material.
-	 * When configured, a cold-recipient send may wait up to 10 seconds and the
-	 * recipient JID is sent to this consumer-controlled service. This lookup
-	 * is advisory and does not guarantee acceptance by WhatsApp/Meta.
+	 * Selects the Android first-chat lookup source. Omitted follows the
+	 * transport: `native` for `native_android`, otherwise `off`. Web never
+	 * performs this Android query. This is not related to the separate
+	 * SafetyNet/GPIA providers.
 	 */
-	startChatTrustSignalsProvider?: StartChatTrustSignalsProvider
+	startChatTrustSignalsMode?: 'off' | 'native'
 	/**
 	 * Controls what happens when the optional start-chat lookup is unavailable.
 	 * `observe` preserves existing send behavior; `require-known` is intended

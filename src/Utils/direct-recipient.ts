@@ -32,9 +32,13 @@ export type DirectRecipientIdentity = {
 export type DirectRecipientPreflightOptions<TDevice> = {
 	requestedJid: string
 	getKnownLIDForPN: (pn: string) => Promise<string | null>
+	getKnownPNForLID?: (lid: string) => Promise<string | null>
 	fetchReachout: () => Promise<ReachoutTimelockState | undefined>
 	fetchCapping: () => Promise<NewChatMessageCapInfo | undefined>
-	fetchStartChatTrustSignals?: (jid: string) => Promise<StartChatTrustSignalsState>
+	fetchStartChatTrustSignals?: (
+		jid: string,
+		context: { lookupJid: string; pnJid?: string }
+	) => Promise<StartChatTrustSignalsState>
 	startChatTrustSignalsPolicy?: 'observe' | 'require-known'
 	resolveUSync: (phoneUser: string) => Promise<USyncQueryResultList[]>
 	storeMapping: (mapping: { lid: string; pn: string }) => Promise<unknown>
@@ -44,6 +48,16 @@ export type DirectRecipientPreflightOptions<TDevice> = {
 	getDevices: (lid: string) => Promise<TDevice[]>
 	logger: Pick<ILogger, 'warn' | 'info'>
 }
+
+/**
+ * `createdTs` is durable observation metadata. `require-known` must only be
+ * satisfied by an actual Android trust boolean, never by a non-empty payload
+ * that happens to contain a timestamp.
+ */
+const hasStartChatTrustSignal = (signals?: StartChatTrustSignalsState['signals']): boolean =>
+	Boolean(
+		signals && (typeof signals.isSenderSuspicious === 'boolean' || typeof signals.isSenderNewAccount === 'boolean')
+	)
 
 /**
  * Builds consumer-facing chat merges for a cold recipient. The wire route is
@@ -177,6 +191,7 @@ export const resolveDirectRecipientUSync = (
 export const runDirectRecipientPreflight = async <TDevice>({
 	requestedJid,
 	getKnownLIDForPN,
+	getKnownPNForLID,
 	fetchReachout,
 	fetchCapping,
 	fetchStartChatTrustSignals,
@@ -193,7 +208,54 @@ export const runDirectRecipientPreflight = async <TDevice>({
 
 	const knownLid = await getKnownLIDForPN(requestedPn)
 	if (knownLid && isValidLidJid(jidNormalizedUser(knownLid))) {
-		return { requestedPn, pnJid: requestedPn, lidJid: jidNormalizedUser(knownLid) }
+		const resolvedLid = jidNormalizedUser(knownLid)
+		const knownPn = getKnownPNForLID ? await getKnownPNForLID(resolvedLid).catch(() => null) : null
+		const normalizedKnownPn = knownPn ? jidNormalizedUser(knownPn) : ''
+		const resolvedPnJid =
+			normalizedKnownPn && isAnyPnUser(normalizedKnownPn) && jidDecode(normalizedKnownPn)?.user
+				? normalizedKnownPn
+				: requestedPn
+
+		if (startChatTrustSignalsPolicy === 'require-known') {
+			const startChatTrustSignals = fetchStartChatTrustSignals
+				? await fetchStartChatTrustSignals(requestedPn, { lookupJid: resolvedLid, pnJid: resolvedPnJid })
+				: {
+						jid: requestedPn,
+						useCase: 'CHAT_FMX' as const,
+						status: 'unavailable' as const,
+						observedAt: Date.now(),
+						error: 'provider-unavailable' as const
+					}
+			if (startChatTrustSignals.status !== 'known' || !hasStartChatTrustSignal(startChatTrustSignals.signals)) {
+				throw new Boom('Start-chat trust signals are unavailable', {
+					statusCode: 503,
+					data: {
+						requestedJid: requestedPn,
+						trustSignalsJid: requestedPn,
+						category: 'start-chat-trust-signals',
+						reason: startChatTrustSignals.error ?? 'provider-unavailable',
+						action: 'blocked-no-retry'
+					}
+				})
+			}
+
+			return {
+				requestedPn,
+				pnJid: resolvedPnJid,
+				lidJid: resolvedLid,
+				startChatTrustSignals
+			}
+		}
+
+		let startChatTrustSignals: StartChatTrustSignalsState | undefined
+		if (fetchStartChatTrustSignals) {
+			startChatTrustSignals = await fetchStartChatTrustSignals(requestedPn, {
+				lookupJid: resolvedLid,
+				pnJid: resolvedPnJid
+			})
+		}
+
+		return { requestedPn, pnJid: resolvedPnJid, lidJid: resolvedLid, startChatTrustSignals }
 	}
 
 	const [reachout, capping] = await Promise.all([
@@ -213,45 +275,6 @@ export const runDirectRecipientPreflight = async <TDevice>({
 			statusCode: 403,
 			data: { requestedJid: requestedPn, ...policy.restriction }
 		})
-	}
-
-	let startChatTrustSignals: StartChatTrustSignalsState | undefined
-	if (fetchStartChatTrustSignals || startChatTrustSignalsPolicy === 'require-known') {
-		startChatTrustSignals = fetchStartChatTrustSignals
-			? await fetchStartChatTrustSignals(requestedPn)
-			: {
-					jid: requestedPn,
-					useCase: 'CHAT_FMX',
-					status: 'unavailable',
-					observedAt: Date.now(),
-					error: 'provider-unavailable'
-				}
-		if (
-			startChatTrustSignalsPolicy === 'require-known' &&
-			(startChatTrustSignals.status !== 'known' ||
-				!startChatTrustSignals.signals ||
-				Object.keys(startChatTrustSignals.signals).length === 0)
-		) {
-			logger.warn(
-				{
-					requestedJid: requestedPn,
-					status: startChatTrustSignals.status,
-					category: 'start-chat-trust-signals',
-					reason: startChatTrustSignals.error ?? 'provider-unavailable',
-					action: 'blocked-no-retry'
-				},
-				'cold-recipient preflight requires known start-chat trust signals'
-			)
-			throw new Boom('Start-chat trust signals are unavailable', {
-				statusCode: 503,
-				data: {
-					requestedJid: requestedPn,
-					category: 'start-chat-trust-signals',
-					reason: startChatTrustSignals.error ?? 'provider-unavailable',
-					action: 'blocked-no-retry'
-				}
-			})
-		}
 	}
 
 	const phoneUser = jidDecode(requestedPn)?.user
@@ -311,6 +334,48 @@ export const runDirectRecipientPreflight = async <TDevice>({
 			statusCode: 503,
 			data: { requestedJid: requestedPn, category: 'recipient-resolution', reason: 'lid-unavailable' }
 		})
+	}
+
+	let startChatTrustSignals: StartChatTrustSignalsState | undefined
+	if (fetchStartChatTrustSignals || startChatTrustSignalsPolicy === 'require-known') {
+		startChatTrustSignals = fetchStartChatTrustSignals
+			? await fetchStartChatTrustSignals(requestedPn, {
+					lookupJid: resolution.lidJid,
+					pnJid: resolution.pnJid
+				})
+			: {
+					jid: requestedPn,
+					useCase: 'CHAT_FMX',
+					status: 'unavailable',
+					observedAt: Date.now(),
+					error: 'provider-unavailable'
+				}
+		if (
+			startChatTrustSignalsPolicy === 'require-known' &&
+			(startChatTrustSignals.status !== 'known' || !hasStartChatTrustSignal(startChatTrustSignals.signals))
+		) {
+			logger.warn(
+				{
+					requestedJid: requestedPn,
+					trustSignalsJid: requestedPn,
+					status: startChatTrustSignals.status,
+					category: 'start-chat-trust-signals',
+					reason: startChatTrustSignals.error ?? 'provider-unavailable',
+					action: 'blocked-no-retry'
+				},
+				'cold-recipient preflight requires known start-chat trust signals'
+			)
+			throw new Boom('Start-chat trust signals are unavailable', {
+				statusCode: 503,
+				data: {
+					requestedJid: requestedPn,
+					trustSignalsJid: requestedPn,
+					category: 'start-chat-trust-signals',
+					reason: startChatTrustSignals.error ?? 'provider-unavailable',
+					action: 'blocked-no-retry'
+				}
+			})
+		}
 	}
 
 	const storeResult = await storeMapping({ lid: resolution.lidJid, pn: resolution.pnJid })

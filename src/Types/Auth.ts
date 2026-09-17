@@ -304,6 +304,29 @@ export type SignalAuthState = {
 	keys: SignalKeyStore | SignalKeyStoreWithTransaction
 }
 
+export type StartChatTrustSignalsRecord = {
+	jid: string
+	isSenderSuspicious?: boolean
+	isSenderNewAccount?: boolean
+	/** Local observation time; Android stores this as `created_ts`. */
+	observedAt: number
+}
+
+export type StartChatTrustSignalsSnapshot = {
+	records: StartChatTrustSignalsRecord[]
+}
+
+export type StartChatTrustSignalsStore = {
+	save: (record: StartChatTrustSignalsRecord) => void | Promise<void>
+	get?: (jid: string) => StartChatTrustSignalsRecord | null | Promise<StartChatTrustSignalsRecord | null>
+	/** Optional migration support. Built-in auth adapters always provide it. */
+	exportState?: () => StartChatTrustSignalsSnapshot | Promise<StartChatTrustSignalsSnapshot>
+	/** Optional migration support. Built-in auth adapters always provide it. */
+	importState?: (snapshot: StartChatTrustSignalsSnapshot) => Promise<{ records: number }> | { records: number }
+	/** Optional reset support used by adapters with an explicit observation document. */
+	clear?: () => void | Promise<void>
+}
+
 export type AuthenticationState = {
 	creds: AuthenticationCreds
 	keys: SignalKeyStore
@@ -311,6 +334,8 @@ export type AuthenticationState = {
 	historySync?: HistorySyncStore
 	/** Durable app-state missing-key/request lifecycle. Built-in auth adapters always provide it. */
 	appStateSyncKeys?: AppStateSyncKeyStore
+	/** Durable first-chat trust-signal observation store. Optional for custom auth adapters. */
+	startChatTrustSignals?: StartChatTrustSignalsStore
 	/** Optional capability declaration supplied by auth-state adapters. */
 	storage?: AuthStateStorageMetadata
 }
