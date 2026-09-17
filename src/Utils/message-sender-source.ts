@@ -71,8 +71,9 @@ const isCurrentDevice = (
 
 /**
  * Classifies the author while the protocol JID still has its device suffix.
- * Device 0 is the primary phone; positive IDs are linked devices. WhatsApp
- * does not disclose a companion's platform in every message stanza.
+ * Device 0 is the primary phone; positive IDs are linked devices. A positive
+ * suffix proves only that another companion authored the event — it does not
+ * identify that companion as WhatsApp Web, a phone app, or a tablet.
  */
 export const classifyProtocolMessageSenderSource = ({
 	authorJid,
@@ -112,7 +113,7 @@ export const classifyProtocolMessageSenderSource = ({
 		type: 'linked_device',
 		authorDeviceJid: authorJid,
 		deviceId,
-		confidence: 'high',
+		confidence: 'low',
 		evidence: 'author_device_jid'
 	}
 }

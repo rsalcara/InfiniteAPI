@@ -51,9 +51,24 @@ describe('message sender source classification', () => {
 			type: 'linked_device',
 			authorDeviceJid: '5511000000000:7@s.whatsapp.net',
 			deviceId: 7,
-			confidence: 'high',
+			confidence: 'low',
 			evidence: 'author_device_jid'
 		})
+	})
+
+	it('does not claim Web or Android for a positive device suffix without transport evidence', () => {
+		const source = classifyProtocolMessageSenderSource({
+			authorJid: '5511000000000:19@s.whatsapp.net'
+		})
+
+		expect(source).toEqual({
+			type: 'linked_device',
+			authorDeviceJid: '5511000000000:19@s.whatsapp.net',
+			deviceId: 19,
+			confidence: 'low',
+			evidence: 'author_device_jid'
+		})
+		expect(source.platform).toBeUndefined()
 	})
 
 	it('uses web only when the current configured web client is the author', () => {

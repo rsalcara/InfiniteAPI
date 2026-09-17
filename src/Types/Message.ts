@@ -9,7 +9,7 @@ import type { CacheStore } from './Socket'
 // export the WAMessage Prototypes
 export { proto as WAProto }
 export type MessageSenderSourceType = 'primary_device' | 'linked_device' | 'web' | 'unknown'
-export type MessageSenderSourceConfidence = 'high' | 'unknown'
+export type MessageSenderSourceConfidence = 'low' | 'high' | 'unknown'
 export type MessageSenderSourceEvidence = 'author_device_jid' | 'current_client_transport' | 'missing_author_device'
 
 /**
