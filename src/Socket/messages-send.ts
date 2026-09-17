@@ -756,25 +756,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const requestedPn = jidNormalizedUser(requestedJid)
 		if (!isAnyPnUser(requestedPn)) return undefined
 
-		const knownLid = await getKnownLIDForPN(requestedPn)
-		const normalizedKnownLid = knownLid ? jidNormalizedUser(knownLid) : ''
-		if (normalizedKnownLid && isAnyLidUser(normalizedKnownLid) && jidDecode(normalizedKnownLid)?.user) {
-			const knownPn = await getKnownPNForLID(normalizedKnownLid)
-			const normalizedKnownPn = knownPn ? jidNormalizedUser(knownPn) : ''
-			return {
-				requestedPn,
-				pnJid:
-					normalizedKnownPn && isAnyPnUser(normalizedKnownPn) && jidDecode(normalizedKnownPn)?.user
-						? normalizedKnownPn
-						: requestedPn,
-				lidJid: normalizedKnownLid
-			}
-		}
-
 		return directRecipientPreflightMutex.mutex(requestedPn, () =>
 			runDirectRecipientPreflight<DeviceWithJid>({
 				requestedJid: requestedPn,
 				getKnownLIDForPN,
+				getKnownPNForLID,
 				fetchReachout: () => fetchAccountReachoutTimelock(false),
 				fetchCapping: fetchNewChatMessageCap,
 				fetchStartChatTrustSignals,

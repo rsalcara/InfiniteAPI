@@ -127,6 +127,7 @@ import { makeReachoutTimelockRemediation, type RemoveReachoutTimelockServerResul
 import { makeSocketOperationGate } from './socket-operation-gate'
 import {
 	createStartChatTrustSignalsNativeProvider,
+	isStartChatTrustSignalsRecordReusable,
 	startChatTrustSignalsStateFromRecord,
 	toStartChatTrustSignalsPrivacyToken
 } from './start-chat-trust-signals-native-provider'
@@ -2969,7 +2970,7 @@ export const makeSocket = (config: SocketConfig) => {
 					const cached = await promiseTimeout<StartChatTrustSignalsRecord | null>(2_000, (resolve, reject) =>
 						Promise.resolve(cacheStore.get!(durableJid)).then(resolve, reject)
 					)
-					if (cached) {
+					if (cached && isStartChatTrustSignalsRecordReusable(cached)) {
 						const state = startChatTrustSignalsStateFromRecord(cached, base)
 						notify(state)
 						return state

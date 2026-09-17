@@ -137,6 +137,19 @@ describe('start-chat trust-signal auth adapters', () => {
 		target.close()
 	})
 
+	it('does not verify an empty start-chat source as clean when stale destination records exist', async () => {
+		const source = await useMultiFileAuthState(join(dir, 'empty-source'))
+		const target = await useMultiDbSqliteAuthState({ sessionDir: join(dir, 'stale-target') })
+
+		await target.state.startChatTrustSignals!.save(firstRecord)
+		const result = await migrateAuthState({ from: source.state, to: target.state, skipExisting: false })
+
+		expect(result.startChatTrustSignals).toEqual({ records: 0, copied: false })
+		expect(result.verified).toBe(false)
+		expect(result.warnings).toContain(`destination has unexpected start-chat trust observation:${firstRecord.jid}`)
+		target.close()
+	})
+
 	it('verifies newly copied observations even when other existing records are skipped', async () => {
 		const source = await useMultiFileAuthState(join(dir, 'partial-source'))
 		const target = await useMultiDbSqliteAuthState({ sessionDir: join(dir, 'partial-target') })

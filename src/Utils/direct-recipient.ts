@@ -32,6 +32,7 @@ export type DirectRecipientIdentity = {
 export type DirectRecipientPreflightOptions<TDevice> = {
 	requestedJid: string
 	getKnownLIDForPN: (pn: string) => Promise<string | null>
+	getKnownPNForLID?: (lid: string) => Promise<string | null>
 	fetchReachout: () => Promise<ReachoutTimelockState | undefined>
 	fetchCapping: () => Promise<NewChatMessageCapInfo | undefined>
 	fetchStartChatTrustSignals?: (
@@ -54,7 +55,9 @@ export type DirectRecipientPreflightOptions<TDevice> = {
  * that happens to contain a timestamp.
  */
 const hasStartChatTrustSignal = (signals?: StartChatTrustSignalsState['signals']): boolean =>
-	Boolean(signals && (signals.isSenderSuspicious !== undefined || signals.isSenderNewAccount !== undefined))
+	Boolean(
+		signals && (typeof signals.isSenderSuspicious === 'boolean' || typeof signals.isSenderNewAccount === 'boolean')
+	)
 
 /**
  * Builds consumer-facing chat merges for a cold recipient. The wire route is
@@ -188,6 +191,7 @@ export const resolveDirectRecipientUSync = (
 export const runDirectRecipientPreflight = async <TDevice>({
 	requestedJid,
 	getKnownLIDForPN,
+	getKnownPNForLID,
 	fetchReachout,
 	fetchCapping,
 	fetchStartChatTrustSignals,
@@ -205,9 +209,16 @@ export const runDirectRecipientPreflight = async <TDevice>({
 	const knownLid = await getKnownLIDForPN(requestedPn)
 	if (knownLid && isValidLidJid(jidNormalizedUser(knownLid))) {
 		const resolvedLid = jidNormalizedUser(knownLid)
+		const knownPn = getKnownPNForLID ? await getKnownPNForLID(resolvedLid).catch(() => null) : null
+		const normalizedKnownPn = knownPn ? jidNormalizedUser(knownPn) : ''
+		const resolvedPnJid =
+			normalizedKnownPn && isAnyPnUser(normalizedKnownPn) && jidDecode(normalizedKnownPn)?.user
+				? normalizedKnownPn
+				: requestedPn
+
 		if (startChatTrustSignalsPolicy === 'require-known') {
 			const startChatTrustSignals = fetchStartChatTrustSignals
-				? await fetchStartChatTrustSignals(requestedPn, { lookupJid: resolvedLid })
+				? await fetchStartChatTrustSignals(requestedPn, { lookupJid: resolvedLid, pnJid: resolvedPnJid })
 				: {
 						jid: requestedPn,
 						useCase: 'CHAT_FMX' as const,
@@ -230,13 +241,21 @@ export const runDirectRecipientPreflight = async <TDevice>({
 
 			return {
 				requestedPn,
-				pnJid: requestedPn,
+				pnJid: resolvedPnJid,
 				lidJid: resolvedLid,
 				startChatTrustSignals
 			}
 		}
 
-		return { requestedPn, pnJid: requestedPn, lidJid: resolvedLid }
+		let startChatTrustSignals: StartChatTrustSignalsState | undefined
+		if (fetchStartChatTrustSignals) {
+			startChatTrustSignals = await fetchStartChatTrustSignals(requestedPn, {
+				lookupJid: resolvedLid,
+				pnJid: resolvedPnJid
+			})
+		}
+
+		return { requestedPn, pnJid: resolvedPnJid, lidJid: resolvedLid, startChatTrustSignals }
 	}
 
 	const [reachout, capping] = await Promise.all([

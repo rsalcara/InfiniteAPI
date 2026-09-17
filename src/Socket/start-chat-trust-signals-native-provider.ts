@@ -74,6 +74,14 @@ export const startChatTrustSignalsStateFromRecord = (
 })
 
 /**
+ * A timestamp alone is durable observation metadata. Native lookup is still
+ * required until at least one genuine Android signal boolean was observed.
+ */
+export const isStartChatTrustSignalsRecordReusable = (
+	record: Pick<StartChatTrustSignalsRecord, 'isSenderNewAccount' | 'isSenderSuspicious'>
+): boolean => typeof record.isSenderSuspicious === 'boolean' || typeof record.isSenderNewAccount === 'boolean'
+
+/**
  * Builds the exact `StartChatContextIntegrityQuery` variables used by Android
  * for the first-chat `CHAT_FMX` lookup. `privacy_token` is included only when
  * a previously received token exists, as the official client does.

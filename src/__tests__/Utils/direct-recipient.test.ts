@@ -409,7 +409,7 @@ describe('cold-recipient preflight orchestration', () => {
 				})
 			)
 		).resolves.toMatchObject({ pnJid: pn, lidJid: lid, startChatTrustSignals: { status: 'known' } })
-		expect(fetchStartChatTrustSignals).toHaveBeenCalledWith(pn, { lookupJid: lid })
+		expect(fetchStartChatTrustSignals).toHaveBeenCalledWith(pn, { lookupJid: lid, pnJid: pn })
 		expect(resolveUSync).not.toHaveBeenCalled()
 	})
 
@@ -433,6 +433,36 @@ describe('cold-recipient preflight orchestration', () => {
 				})
 			)
 		).rejects.toMatchObject({ output: { statusCode: 503 }, data: { category: 'start-chat-trust-signals' } })
+		expect(resolveUSync).not.toHaveBeenCalled()
+	})
+
+	it('runs observe-mode CHAT_FMX signals on the cached path and resolves the canonical PN alias', async () => {
+		const canonicalPn = '551199999999@s.whatsapp.net'
+		const resolveUSync = jest.fn(async () => [])
+		const fetchStartChatTrustSignals = jest.fn(async () => ({
+			jid: pn,
+			useCase: 'CHAT_FMX' as const,
+			status: 'known' as const,
+			observedAt: 1_786_000_000_000,
+			signals: { isSenderNewAccount: false, createdTs: 1_786_000_000_000 }
+		}))
+
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					getKnownLIDForPN: async () => lid,
+					getKnownPNForLID: async candidateLid => (candidateLid === lid ? canonicalPn : null),
+					fetchStartChatTrustSignals,
+					startChatTrustSignalsPolicy: 'observe',
+					resolveUSync
+				})
+			)
+		).resolves.toMatchObject({ requestedPn: pn, pnJid: canonicalPn, lidJid: lid })
+
+		expect(fetchStartChatTrustSignals).toHaveBeenCalledWith(pn, {
+			lookupJid: lid,
+			pnJid: canonicalPn
+		})
 		expect(resolveUSync).not.toHaveBeenCalled()
 	})
 

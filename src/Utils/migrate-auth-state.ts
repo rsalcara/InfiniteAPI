@@ -185,7 +185,7 @@ export async function migrateAuthState({
 		logger?.info(result.appStateSyncKeys, 'migrateAuthState: durable app-state key recovery copied')
 	}
 
-	if (startChatTrustSignalsSnapshot?.records.length) {
+	if (startChatTrustSignalsSnapshot && (startChatTrustSignalsSnapshot.records.length > 0 || !skipExisting)) {
 		const target = to.startChatTrustSignals
 		if (target?.importState) {
 			let recordsToImport = startChatTrustSignalsSnapshot.records
@@ -446,7 +446,7 @@ async function verifyMigration(
 		}
 	}
 
-	if (startChatTrustSignalsSnapshot?.records.length) {
+	if (startChatTrustSignalsSnapshot && (startChatTrustSignalsSnapshot.records.length > 0 || !skipExisting)) {
 		const target = to.startChatTrustSignals
 		if (!target?.exportState) {
 			warnings.push('destination does not support start-chat trust observation verification')

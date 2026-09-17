@@ -2,6 +2,7 @@ import { jest } from '@jest/globals'
 import {
 	buildStartChatContextIntegrityVariables,
 	createStartChatTrustSignalsNativeProvider,
+	isStartChatTrustSignalsRecordReusable,
 	startChatTrustSignalsStateFromRecord,
 	toStartChatTrustSignalsPrivacyToken
 } from '../../Socket/start-chat-trust-signals-native-provider'
@@ -73,6 +74,16 @@ describe('start-chat trust-signals native provider', () => {
 		})
 	})
 
+	it('accepts durable cache reuse only for a genuine trust boolean', () => {
+		expect(isStartChatTrustSignalsRecordReusable({ isSenderNewAccount: false, isSenderSuspicious: true })).toBe(true)
+		expect(isStartChatTrustSignalsRecordReusable({ isSenderNewAccount: undefined, isSenderSuspicious: false })).toBe(
+			true
+		)
+		expect(
+			isStartChatTrustSignalsRecordReusable({ isSenderNewAccount: undefined, isSenderSuspicious: undefined })
+		).toBe(false)
+	})
+
 	it('preserves a received token with absent timestamp metadata', () => {
 		expect(
 			buildStartChatContextIntegrityVariables({
@@ -123,7 +134,14 @@ describe('start-chat trust-signals native provider', () => {
 			tag: 'query',
 			attrs: { query_id: '26204539559207163' }
 		})
-		expect(variables).not.toHaveProperty('input.query_input[0].privacy_token')
+		const envelope = variables as {
+			variables?: {
+				input?: {
+					query_input?: Array<Record<string, unknown>>
+				}
+			}
+		}
+		expect(envelope.variables?.input?.query_input?.[0]).not.toHaveProperty('privacy_token')
 	})
 
 	it('lets the resolver use the freshly resolved PN alias without fabricating a timestamp', async () => {
