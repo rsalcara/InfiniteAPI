@@ -115,6 +115,12 @@ export type NativeAndroidAttestationProvider = (context: {
 	appVariant: NativeAndroidAppVariant
 	clientAppId: string
 	packageName: string
+	/**
+	 * Companion static identity public key. The official Android client uses
+	 * these bytes as the GPIA request hash and inside its KeyStore attestation
+	 * challenge; they are ephemeral to the fresh-pairing handshake.
+	 */
+	identityPublicKey?: Uint8Array
 }) => Promise<NativeAndroidPairingAttestation>
 
 export type NativeAndroidIntegrityChallengeKind = 'gpia' | 'safetynet'

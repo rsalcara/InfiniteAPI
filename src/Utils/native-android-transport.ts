@@ -20,6 +20,8 @@ import {
 } from './native-android-device-catalog'
 export { createNativeAndroidBridgeProvider } from './native-android-bridge-provider'
 export type { NativeAndroidBridgeProviderConfig } from './native-android-bridge-provider'
+export { createNativeAndroidPairingBridgeProvider } from './native-android-pairing-bridge-provider'
+export type { NativeAndroidPairingBridgeProviderConfig } from './native-android-pairing-bridge-provider'
 import { makeNativeAndroidNodeAttestationProvider } from './native-android-node-attestation'
 
 const PROFILE_FIELDS: ReadonlyArray<keyof NativeAndroidDeviceProfile> = [

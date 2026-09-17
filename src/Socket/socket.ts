@@ -2333,7 +2333,8 @@ export const makeSocket = (config: SocketConfig) => {
 					profileId: transportSession.nativeAndroid!.device.profileId,
 					appVariant: appResolution.variant,
 					clientAppId: appResolution.identity.clientAppId,
-					packageName: appResolution.identity.packageName
+					packageName: appResolution.identity.packageName,
+					identityPublicKey: creds.signedIdentityKey.public
 				})
 				appendNativeAndroidPairingAttestation(reply, attestation, appResolution.identity.clientAppId)
 
