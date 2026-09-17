@@ -12,6 +12,7 @@ import type BetterSqlite3Module from 'better-sqlite3'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDataTypeMap } from '../Types'
 import { prepareInClause } from './multi-db-sqlite/in-statement-cache'
+import { StartChatTrustSignalsBackend } from './multi-db-sqlite/start-chat-trust-signals-backend'
 import type { SqliteDbLike } from './multi-db-sqlite/types'
 import { SqliteAppStateSyncKeyStore } from './app-state-sync-key-store'
 import { initAuthCreds } from './auth-utils'
@@ -70,6 +71,12 @@ CREATE TABLE IF NOT EXISTS signal_keys (
   PRIMARY KEY (type, id)
 );
 CREATE INDEX IF NOT EXISTS signal_keys_type_idx ON signal_keys(type);
+CREATE TABLE IF NOT EXISTS start_chat_trust_signals (
+  jid TEXT PRIMARY KEY NOT NULL,
+  is_sender_suspicious INTEGER,
+  is_sender_new_account INTEGER,
+  created_ts REAL
+);
 `
 
 /**
@@ -224,6 +231,7 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 		db.exec(CREATE_SCHEMA_SQL)
 		const historySync = new SqliteHistorySyncStore(db as unknown as SqliteDbLike)
 		const appStateSyncKeys = new SqliteAppStateSyncKeyStore(db as unknown as SqliteDbLike)
+		const startChatTrustSignalsBackend = new StartChatTrustSignalsBackend(db as unknown as SqliteDbLike)
 
 		const stmts = {
 			credsSelect: db.prepare('SELECT value FROM creds WHERE key = ?'),
@@ -250,6 +258,7 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 		)
 		const clearAuthKeysAndHistory = db.transaction(() => {
 			stmts.clearKeys.run()
+			startChatTrustSignalsBackend.clear()
 			db!.exec(
 				'DELETE FROM history_sync_jobs; DELETE FROM history_sync_checkpoints; DELETE FROM history_sync_metadata; ' +
 					'DELETE FROM missing_keys; DELETE FROM peer_messages WHERE message_type IN (38, 39);'
@@ -397,6 +406,15 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 				},
 				historySync,
 				appStateSyncKeys,
+				startChatTrustSignals: {
+					get: jid => startChatTrustSignalsBackend.get(jid),
+					save: record => startChatTrustSignalsBackend.save(record),
+					exportState: async () => ({ records: startChatTrustSignalsBackend.list() }),
+					importState: async snapshot => {
+						for (const record of snapshot.records) startChatTrustSignalsBackend.save(record)
+						return { records: snapshot.records.length }
+					}
+				},
 				storage: {
 					backend: 'sqlite' as const,
 					historySyncDurable: true,

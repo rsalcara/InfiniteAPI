@@ -25,6 +25,7 @@ import type {
 	SocketConfig,
 	StartChatTrustSignals,
 	StartChatTrustSignalsError,
+	StartChatTrustSignalsRecord,
 	StartChatTrustSignalsState
 } from '../Types'
 import { DisconnectReason, QueryIds, ReachoutTimelockEnforcementType, XWAPaths } from '../Types'
@@ -79,7 +80,12 @@ import {
 	recordConnectionRestart
 } from '../Utils/prometheus-metrics'
 import { createExpectedSocketTeardownError, isExpectedSocketTeardownError } from '../Utils/socket-teardown'
-import { isRegularUser, resolveTcTokenBucketPolicy, selectNewestUsableTcToken } from '../Utils/tc-token-utils'
+import {
+	isRegularUser,
+	resolveTcTokenBucketPolicy,
+	resolveUsableTcTokenForJid,
+	selectNewestUsableTcToken
+} from '../Utils/tc-token-utils'
 import {
 	createUnifiedSessionManager,
 	extractServerTime,
@@ -119,6 +125,11 @@ import { createOfflineBufferState } from './offline-buffer-state'
 import { createPushNameAnnouncementTracker, getPushNameForAnnouncement } from './push-name-announcement'
 import { makeReachoutTimelockRemediation, type RemoveReachoutTimelockServerResult } from './reachout-remediation'
 import { makeSocketOperationGate } from './socket-operation-gate'
+import {
+	createStartChatTrustSignalsNativeProvider,
+	startChatTrustSignalsStateFromRecord,
+	toStartChatTrustSignalsPrivacyToken
+} from './start-chat-trust-signals-native-provider'
 
 /**
  * Connects to WA servers and performs:
@@ -157,6 +168,15 @@ export const makeSocket = (config: SocketConfig) => {
 		throw new Boom('require-known start-chat trust signals policy is disabled in production', {
 			statusCode: 400,
 			data: { category: 'start-chat-trust-signals', reason: 'laboratory-only-policy' }
+		})
+	}
+
+	const startChatTrustSignalsMode = runtimeConfig.startChatTrustSignalsMode ?? (isNativeAndroid ? 'native' : 'off')
+
+	if (startChatTrustSignalsMode === 'native' && !isNativeAndroid) {
+		throw new Boom('native start-chat trust signals require the native Android transport', {
+			statusCode: 400,
+			data: { category: 'start-chat-trust-signals', reason: 'native-transport-required' }
 		})
 	}
 
@@ -735,6 +755,29 @@ export const makeSocket = (config: SocketConfig) => {
 	const signalRepository = makeSignalRepository({ creds, keys }, logger, pnFromLIDUSync, {
 		multiDbStore: config.multiDbStore
 	})
+	const startChatTrustSignalsProvider =
+		startChatTrustSignalsMode === 'native'
+			? createStartChatTrustSignalsNativeProvider({
+					query,
+					generateMessageTag,
+					resolvePrivacyToken: async ({ jid, pnJid }) => {
+						const resolve = (candidateJid: string) =>
+							resolveUsableTcTokenForJid({
+								authState: { keys },
+								jid: candidateJid,
+								getLIDForPN: pn => signalRepository.lidMapping.getKnownLIDForPN(pn),
+								getPNForLID: lid => signalRepository.lidMapping.getKnownPNForLID(lid),
+								bucketPolicy: tcTokenBucketPolicy
+							})
+
+						const canonical = toStartChatTrustSignalsPrivacyToken(await resolve(jid))
+						if (canonical) return canonical
+
+						if (!pnJid || pnJid === jid) return undefined
+						return toStartChatTrustSignalsPrivacyToken(await resolve(pnJid))
+					}
+				})
+			: undefined
 
 	// Session activity tracker - tracks last activity for cleanup (must be created first)
 	const sessionActivityTracker = makeSessionActivityTracker(keys, logger)
@@ -2881,9 +2924,17 @@ export const makeSocket = (config: SocketConfig) => {
 	 * them behind this boundary prevents the Web/Node client from fabricating
 	 * attestation or trusted-contact material.
 	 */
-	const fetchStartChatTrustSignals = async (jid: string): Promise<StartChatTrustSignalsState> => {
+	type StartChatTrustSignalsLookupContext = {
+		/** Canonical LID used by the native Android query and durable record. */
+		lookupJid: string
+	}
+
+	const fetchStartChatTrustSignals = async (
+		jid: string,
+		context?: StartChatTrustSignalsLookupContext
+	): Promise<StartChatTrustSignalsState> => {
 		const observedAt = Date.now()
-		const provider = runtimeConfig.startChatTrustSignalsProvider
+		const provider = startChatTrustSignalsProvider
 		const base = { jid, useCase: 'CHAT_FMX' as const, observedAt }
 		const notify = (state: StartChatTrustSignalsState) => {
 			ev.emit('start-chat.trust-signals', state)
@@ -2906,6 +2957,23 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 
 		try {
+			const cacheStore = authState.startChatTrustSignals
+			if (cacheStore?.get) {
+				try {
+					const durableJid = context?.lookupJid ?? jid
+					const cached = await promiseTimeout<StartChatTrustSignalsRecord | null>(2_000, (resolve, reject) =>
+						Promise.resolve(cacheStore.get!(durableJid)).then(resolve, reject)
+					)
+					if (cached) {
+						const state = startChatTrustSignalsStateFromRecord(cached, base)
+						notify(state)
+						return state
+					}
+				} catch (error) {
+					logger.warn({ jid, error }, 'start-chat trust signal cache read failed; dispatching native lookup')
+				}
+			}
+
 			const controller = new AbortController()
 			activeStartChatTrustSignalControllers.add(controller)
 			let raw: StartChatTrustSignals
@@ -2919,7 +2987,12 @@ export const makeSocket = (config: SocketConfig) => {
 						reject(new Boom('start-chat trust signal provider timed out', { statusCode: DisconnectReason.timedOut }))
 					}, 10_000)
 
-					provider({ jid, useCase: 'CHAT_FMX', signal: controller.signal })
+					provider({
+						jid: context?.lookupJid ?? jid,
+						useCase: 'CHAT_FMX',
+						pnJid: context ? jid : undefined,
+						signal: controller.signal
+					})
 						.then(value => {
 							if (settled) return
 							settled = true
@@ -2946,6 +3019,28 @@ export const makeSocket = (config: SocketConfig) => {
 
 			if (Object.keys(signals).length === 0) {
 				throw new Error('provider returned no valid start-chat trust fields')
+			}
+
+			const durableSignals = authState.startChatTrustSignals
+			if (durableSignals) {
+				try {
+					const durableJid = context?.lookupJid ?? jid
+					await promiseTimeout<void>(2_000, (resolve, reject) =>
+						Promise.resolve(
+							durableSignals.save({
+								jid: durableJid,
+								isSenderSuspicious: signals.isSenderSuspicious,
+								isSenderNewAccount: signals.isSenderNewAccount,
+								observedAt
+							})
+						).then(resolve, reject)
+					)
+				} catch (error) {
+					logger.warn(
+						{ jid, durableJid: context?.lookupJid ?? jid, error },
+						'start-chat trust signal persistence failed or timed out; lookup state remains known'
+					)
+				}
 			}
 
 			const state: StartChatTrustSignalsState = { ...base, status: 'known', signals }

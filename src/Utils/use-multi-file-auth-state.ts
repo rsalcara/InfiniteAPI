@@ -2,7 +2,13 @@ import { Mutex } from 'async-mutex'
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { proto } from '../../WAProto/index.js'
-import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap } from '../Types'
+import type {
+	AuthenticationCreds,
+	AuthenticationState,
+	SignalDataTypeMap,
+	StartChatTrustSignalsRecord,
+	StartChatTrustSignalsSnapshot
+} from '../Types'
 import { FileAppStateSyncKeyStore } from './app-state-sync-key-store'
 import { initAuthCreds } from './auth-utils'
 import { BufferJSON } from './generics'
@@ -273,6 +279,56 @@ export const useMultiFileAuthState = async (
 	const creds: AuthenticationCreds = ((await readData('creds.json')) as AuthenticationCreds | null) || initAuthCreds()
 	const historySync = new FileHistorySyncStore(join(folder, 'history-sync-state.json'))
 	const appStateSyncKeys = new FileAppStateSyncKeyStore(join(folder, 'app-state-sync-state.json'))
+	const startChatTrustSignalsMutex = new Mutex()
+	const startChatTrustSignalsStore = {
+		get: async (jid: string) => {
+			const records = await startChatTrustSignalsMutex.runExclusive(async () => {
+				const current =
+					((await readData('start-chat-trust-signals.json')) as Record<string, StartChatTrustSignalsRecord> | null) ||
+					{}
+				return current[jid] ?? null
+			})
+			return records
+		},
+		save: async (record: StartChatTrustSignalsRecord) => {
+			await startChatTrustSignalsMutex.runExclusive(async () => {
+				// One logical JSON document keeps the official PK semantics and
+				// avoids creating one unbounded directory entry per recipient in
+				// the deprecated JSON adapter.
+				const current =
+					((await readData('start-chat-trust-signals.json')) as Record<string, StartChatTrustSignalsRecord> | null) ||
+					{}
+				current[record.jid] = record
+				await writeData(current, 'start-chat-trust-signals.json')
+			})
+		},
+		exportState: async () => {
+			const records = await startChatTrustSignalsMutex.runExclusive(async () => {
+				const current =
+					((await readData('start-chat-trust-signals.json')) as Record<string, StartChatTrustSignalsRecord> | null) ||
+					{}
+				return { records: Object.values(current) }
+			})
+			return records
+		},
+		importState: async (snapshot: StartChatTrustSignalsSnapshot) => {
+			await startChatTrustSignalsMutex.runExclusive(async () => {
+				const current =
+					((await readData('start-chat-trust-signals.json')) as Record<string, StartChatTrustSignalsRecord> | null) ||
+					{}
+				for (const record of snapshot.records) current[record.jid] = record
+				await writeData(current, 'start-chat-trust-signals.json')
+			})
+			return { records: snapshot.records.length }
+		},
+		clear: async () => {
+			await startChatTrustSignalsMutex.runExclusive(async () => {
+				await unlinkIgnoreMissing(join(folder, 'start-chat-trust-signals.json'))
+				await unlinkIgnoreMissing(join(folder, 'start-chat-trust-signals.json.tmp'))
+				await unlinkIgnoreMissing(join(folder, 'start-chat-trust-signals.json.bak'))
+			})
+		}
+	}
 
 	/**
 	 * Reverse `fixFileName` for the only id spaces that actually use the two
@@ -383,6 +439,7 @@ export const useMultiFileAuthState = async (
 			creds,
 			historySync,
 			appStateSyncKeys,
+			startChatTrustSignals: startChatTrustSignalsStore,
 			storage: {
 				backend: 'multifile' as const,
 				historySyncDurable: true,
@@ -488,10 +545,12 @@ export const useMultiFileAuthState = async (
 									f !== 'creds.json' &&
 									!f.startsWith('history-sync-state.json') &&
 									!f.startsWith('app-state-sync-state.json') &&
+									!f.startsWith('start-chat-trust-signals.json') &&
 									(f.endsWith('.json') || f.endsWith('.json.tmp') || f.endsWith('.json.bak'))
 							)
 							.map(f => unlinkIgnoreMissing(join(folder, f)))
 					)
+					await startChatTrustSignalsStore.clear()
 					await historySync.clear()
 					await appStateSyncKeys.clear()
 				},

@@ -13,6 +13,7 @@ import { parseIdentityKey } from './signal-id-parsing'
 import { SignalTypedBackend } from './signal-typed-backend'
 import { isMirroredSignalType, mirrorSignalEntry } from './signal-typed-mirror'
 import { SignalTypedSourceStore, type TypedSignalType } from './signal-typed-source'
+import { StartChatTrustSignalsBackend } from './start-chat-trust-signals-backend'
 import { MultiDbSqliteStore, type MultiDbSqliteStoreOptions } from './store'
 import { type TrustedContactReplacement, TrustedContactsBackend } from './trusted-contacts-backend'
 
@@ -167,6 +168,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 	// `sourceOfTruth` is on, `'tctoken'` reads/writes route here (signal_kv stays
 	// the superset fallback); replaces the signal_kv `__index` enumeration race.
 	let trustedContactsBackend: TrustedContactsBackend
+	let startChatTrustSignalsBackend: StartChatTrustSignalsBackend
 
 	try {
 		// store.open() now lives INSIDE the try/catch so any open-time error
@@ -194,6 +196,7 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		signalTypedSource = new SignalTypedSourceStore(signalTypedBackend, opts.logger)
 		rehydrateTypedIdentities(store, signalTypedSource, opts.logger)
 		trustedContactsBackend = new TrustedContactsBackend(store.handle('wa.db'))
+		startChatTrustSignalsBackend = new StartChatTrustSignalsBackend(store.handle('wa.db'))
 		historySync = new SqliteHistorySyncStore(store.handle('sync.db'))
 		appStateSyncKeys = new SqliteAppStateSyncKeyStore(store.handle('sync.db'))
 	} catch (err) {
@@ -586,6 +589,9 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		authKeysClearGeneration++
 		try {
 			await clearRemainingAuthKeyStores('recover interrupted auth keys clear')
+			await runWithBusyRetry('start-chat trust signal recovery', () => {
+				startChatTrustSignalsBackend.clear()
+			})
 			await finishAuthKeysClear('finish recovered auth keys clear')
 			opts.logger?.warn?.(
 				{
@@ -704,6 +710,36 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 		},
 		historySync,
 		appStateSyncKeys,
+		startChatTrustSignals: {
+			get: async jid =>
+				authKeysClearMutex.mutex(async () => {
+					await recoverPendingAuthKeysClearUnlocked('before-access')
+					return startChatTrustSignalsBackend.get(jid)
+				}),
+			save: async record => {
+				// Share the key-clear barrier so a reset cannot race a fresh
+				// observation back into wa.db.
+				await authKeysClearMutex.mutex(async () => {
+					await recoverPendingAuthKeysClearUnlocked('before-access')
+					await runWithBusyRetry('start-chat trust signal save', () => {
+						startChatTrustSignalsBackend.save(record)
+					})
+				})
+			},
+			exportState: async () =>
+				authKeysClearMutex.mutex(async () => {
+					await recoverPendingAuthKeysClearUnlocked('before-access')
+					return { records: startChatTrustSignalsBackend.list() }
+				}),
+			importState: async snapshot =>
+				authKeysClearMutex.mutex(async () => {
+					await recoverPendingAuthKeysClearUnlocked('before-access')
+					await runWithBusyRetry('start-chat trust signal migration', async () => {
+						for (const record of snapshot.records) startChatTrustSignalsBackend.save(record)
+					})
+					return { records: snapshot.records.length }
+				})
+		},
 		storage: {
 			backend: 'multidb-sqlite',
 			historySyncDurable: true,
@@ -1031,11 +1067,14 @@ export async function useMultiDbSqliteAuthState(opts: UseMultiDbSqliteAuthStateO
 			clear: async () => {
 				await authKeysClearMutex.mutex(async () => {
 					await recoverPendingAuthKeysClearUnlocked('before-access')
-					// wa.db owns the durable intent. Writing it and clearing both token
-					// tables is one transaction; every remaining database is replayed
-					// idempotently until all key-store surfaces have been cleared.
+					// wa.db owns the durable intent. Write the marker first so a
+					// crash cannot leave the start-chat table cleared while the
+					// rest of the reset remains unrecoverable.
 					trustedContactsBackend.beginClear()
 					authKeysClearGeneration++
+					await runWithBusyRetry('start-chat trust signal clear', () => {
+						startChatTrustSignalsBackend.clear()
+					})
 					// Only `jid_map` is cleared, NOT the shared `jid` table:
 					// other msgstore tables (`user_device.user_jid_row_id`,
 					// `user_device_info.user_jid_row_id`,

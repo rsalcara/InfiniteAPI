@@ -318,35 +318,121 @@ describe('cold-recipient preflight orchestration', () => {
 	})
 
 	it('records provider-backed CHAT_FMX signals without altering token state', async () => {
-		const fetchStartChatTrustSignals = jest.fn(async () => ({
-			jid: pn,
-			useCase: 'CHAT_FMX' as const,
-			status: 'known' as const,
-			observedAt: 1_786_000_000_000,
-			signals: { isSenderSuspicious: false, isSenderNewAccount: false, createdTs: 1_785_000_000_000 }
-		}))
+		const calls: string[] = []
+		const storeMapping = jest.fn(async () => {
+			calls.push('mapping')
+		})
+		const getDevices = jest.fn(async () => {
+			calls.push('devices')
+			return [device]
+		})
+		const fetchStartChatTrustSignals = jest.fn(async (jid: string, _context: { lookupJid: string }) => {
+			calls.push(`trust:${jid}`)
+			void _context
+			return {
+				jid,
+				useCase: 'CHAT_FMX' as const,
+				status: 'known' as const,
+				observedAt: 1_786_000_000_000,
+				signals: { isSenderSuspicious: false, isSenderNewAccount: false, createdTs: 1_785_000_000_000 }
+			}
+		})
 
 		await expect(
 			runDirectRecipientPreflight(
 				options({
-					fetchStartChatTrustSignals: async () => fetchStartChatTrustSignals(),
+					fetchStartChatTrustSignals,
+					storeMapping,
+					getDevices,
 					startChatTrustSignalsPolicy: 'require-known'
 				})
 			)
 		).resolves.toMatchObject({
 			pnJid: pn,
 			startChatTrustSignals: {
+				jid: pn,
 				status: 'known',
 				useCase: 'CHAT_FMX',
 				observedAt: 1_786_000_000_000,
 				signals: { isSenderSuspicious: false, isSenderNewAccount: false, createdTs: 1_785_000_000_000 }
 			}
 		})
+		expect(fetchStartChatTrustSignals).toHaveBeenCalledWith(pn, { lookupJid: lid })
 		expect(fetchStartChatTrustSignals).toHaveBeenCalledTimes(1)
+		expect(calls).toEqual([`trust:${pn}`, 'mapping', 'devices'])
+	})
+
+	it('runs required CHAT_FMX signals on the cached PN→LID path before returning', async () => {
+		const resolveUSync = jest.fn(async () => [])
+		const fetchStartChatTrustSignals = jest.fn(async () => ({
+			jid: pn,
+			useCase: 'CHAT_FMX' as const,
+			status: 'known' as const,
+			observedAt: 1_786_000_000_000,
+			signals: { isSenderNewAccount: false, createdTs: 1_786_000_000_000 }
+		}))
+
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					getKnownLIDForPN: async () => lid,
+					fetchStartChatTrustSignals,
+					startChatTrustSignalsPolicy: 'require-known',
+					resolveUSync
+				})
+			)
+		).resolves.toMatchObject({ pnJid: pn, lidJid: lid, startChatTrustSignals: { status: 'known' } })
+		expect(fetchStartChatTrustSignals).toHaveBeenCalledWith(pn, { lookupJid: lid })
+		expect(resolveUSync).not.toHaveBeenCalled()
+	})
+
+	it('does not satisfy require-known on the cached path with only observation metadata', async () => {
+		const resolveUSync = jest.fn(async () => [])
+		const fetchStartChatTrustSignals = jest.fn(async () => ({
+			jid: pn,
+			useCase: 'CHAT_FMX' as const,
+			status: 'known' as const,
+			observedAt: 1_786_000_000_000,
+			signals: { createdTs: 1_786_000_000_000 }
+		}))
+
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					getKnownLIDForPN: async () => lid,
+					fetchStartChatTrustSignals,
+					startChatTrustSignalsPolicy: 'require-known',
+					resolveUSync
+				})
+			)
+		).rejects.toMatchObject({ output: { statusCode: 503 }, data: { category: 'start-chat-trust-signals' } })
+		expect(resolveUSync).not.toHaveBeenCalled()
+	})
+
+	it('does not satisfy require-known on the cold path with only observation metadata', async () => {
+		const resolveUSync = jest.fn(async () => [{ id: pn, jid: pn, newJid: lid, contactType: 'in' as const }])
+		const fetchStartChatTrustSignals = jest.fn(async () => ({
+			jid: pn,
+			useCase: 'CHAT_FMX' as const,
+			status: 'known' as const,
+			observedAt: 1_786_000_000_000,
+			signals: { createdTs: 1_786_000_000_000 }
+		}))
+
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					fetchStartChatTrustSignals,
+					startChatTrustSignalsPolicy: 'require-known',
+					resolveUSync
+				})
+			)
+		).rejects.toMatchObject({ output: { statusCode: 503 }, data: { category: 'start-chat-trust-signals' } })
+		expect(resolveUSync).toHaveBeenCalledTimes(1)
 	})
 
 	it('fails closed when explicitly requiring known CHAT_FMX signals', async () => {
-		const resolveUSync = jest.fn(async () => [])
+		const resolveUSync = jest.fn(async () => [{ id: pn, jid: pn, newJid: lid, contactType: 'in' as const }])
 		await expect(
 			runDirectRecipientPreflight(
 				options({
@@ -362,11 +448,11 @@ describe('cold-recipient preflight orchestration', () => {
 				})
 			)
 		).rejects.toMatchObject({ output: { statusCode: 503 }, data: { category: 'start-chat-trust-signals' } })
-		expect(resolveUSync).not.toHaveBeenCalled()
+		expect(resolveUSync).toHaveBeenCalledTimes(1)
 	})
 
 	it('fails closed when require-known is configured without a CHAT_FMX provider', async () => {
-		const resolveUSync = jest.fn(async () => [])
+		const resolveUSync = jest.fn(async () => [{ id: pn, jid: pn, newJid: lid, contactType: 'in' as const }])
 		await expect(
 			runDirectRecipientPreflight(
 				options({
@@ -375,11 +461,11 @@ describe('cold-recipient preflight orchestration', () => {
 				})
 			)
 		).rejects.toMatchObject({ output: { statusCode: 503 }, data: { category: 'start-chat-trust-signals' } })
-		expect(resolveUSync).not.toHaveBeenCalled()
+		expect(resolveUSync).toHaveBeenCalledTimes(1)
 	})
 
 	it('fails closed when require-known receives an empty known CHAT_FMX payload', async () => {
-		const resolveUSync = jest.fn(async () => [])
+		const resolveUSync = jest.fn(async () => [{ id: pn, jid: pn, newJid: lid, contactType: 'in' as const }])
 		await expect(
 			runDirectRecipientPreflight(
 				options({
@@ -394,7 +480,7 @@ describe('cold-recipient preflight orchestration', () => {
 				})
 			)
 		).rejects.toMatchObject({ output: { statusCode: 503 }, data: { category: 'start-chat-trust-signals' } })
-		expect(resolveUSync).not.toHaveBeenCalled()
+		expect(resolveUSync).toHaveBeenCalledTimes(1)
 	})
 
 	it('continues in observe mode when CHAT_FMX signals are unknown', async () => {
@@ -403,8 +489,8 @@ describe('cold-recipient preflight orchestration', () => {
 		await expect(
 			runDirectRecipientPreflight(
 				options({
-					fetchStartChatTrustSignals: async () => ({
-						jid: pn,
+					fetchStartChatTrustSignals: async jid => ({
+						jid,
 						useCase: 'CHAT_FMX',
 						status: 'unknown',
 						observedAt: Date.now(),
@@ -414,7 +500,10 @@ describe('cold-recipient preflight orchestration', () => {
 					resolveUSync
 				})
 			)
-		).resolves.toMatchObject({ startChatTrustSignals: { status: 'unknown' }, lidJid: lid })
+		).resolves.toMatchObject({
+			startChatTrustSignals: { jid: pn, status: 'unknown' },
+			lidJid: lid
+		})
 		expect(resolveUSync).toHaveBeenCalledTimes(1)
 	})
 
