@@ -12028,6 +12028,7 @@ export namespace proto {
             messageCount?: (number|Long|null);
             nonHistoryReceivers: string[];
             oldestMessageTimestampInBundle?: (number|Long|null);
+            includesChatTheme?: (boolean|null);
             static create(properties: proto.Message.MessageHistoryMetadata.$Shape): proto.Message.MessageHistoryMetadata & proto.Message.MessageHistoryMetadata.$Shape;
             static create(properties?: proto.Message.MessageHistoryMetadata.$Properties): proto.Message.MessageHistoryMetadata;
             static encode(m: proto.Message.MessageHistoryMetadata.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -12045,6 +12046,7 @@ export namespace proto {
                 messageCount?: (number|Long|null);
                 nonHistoryReceivers?: (string[]|null);
                 oldestMessageTimestampInBundle?: (number|Long|null);
+                includesChatTheme?: (boolean|null);
                 $unknowns?: Uint8Array[];
             }
             type $Shape = proto.Message.MessageHistoryMetadata.$Properties;
@@ -15405,6 +15407,7 @@ export namespace proto {
             metadataUrl?: (string|null);
             videoSourceType?: (proto.Message.VideoMessage.VideoSourceType|null);
             dashManifestUrl?: (string|null);
+            smartThumbnailTs?: (number|Long|null);
             static create(properties: proto.Message.VideoMessage.$Shape): proto.Message.VideoMessage & proto.Message.VideoMessage.$Shape;
             static create(properties?: proto.Message.VideoMessage.$Properties): proto.Message.VideoMessage;
             static encode(m: proto.Message.VideoMessage.$Properties, w?: $protobuf.Writer): $protobuf.Writer;
@@ -15448,6 +15451,7 @@ export namespace proto {
                 metadataUrl?: (string|null);
                 videoSourceType?: (proto.Message.VideoMessage.VideoSourceType|null);
                 dashManifestUrl?: (string|null);
+                smartThumbnailTs?: (number|Long|null);
                 $unknowns?: Uint8Array[];
             }
             type $Shape = {
@@ -15482,6 +15486,7 @@ export namespace proto {
               metadataUrl?: string|null;
               videoSourceType?: proto.Message.VideoMessage.VideoSourceType|null;
               dashManifestUrl?: string|null;
+              smartThumbnailTs?: number|Long|null;
               $unknowns?: Uint8Array[];
             };
 
@@ -22808,7 +22813,8 @@ export namespace proto {
             UGC_BOT_PROFILE_UPDATED = 249,
             ORDER_EPHEMERAL_EXEMPTION = 250,
             CAMEO_CHAT_CREATED = 254,
-            CAMEO_TRANSITIONED = 256
+            CAMEO_TRANSITIONED = 256,
+            SENDER_SIDE_CONTACT_INFO = 255
         }
     }
 
