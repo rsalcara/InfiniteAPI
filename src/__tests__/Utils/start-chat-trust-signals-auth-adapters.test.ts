@@ -115,6 +115,28 @@ describe('start-chat trust-signal auth adapters', () => {
 		target.close()
 	})
 
+	it('does not import observations when skipExisting cannot enumerate the destination', async () => {
+		const source = await useMultiFileAuthState(join(dir, 'opaque-source'))
+		const target = await useMultiDbSqliteAuthState({ sessionDir: join(dir, 'opaque-target') })
+
+		await source.state.startChatTrustSignals!.save(firstRecord)
+		const durableStore = target.state.startChatTrustSignals!
+		target.state.startChatTrustSignals = {
+			save: record => durableStore.save(record),
+			importState: snapshot => durableStore.importState!(snapshot)
+		}
+
+		const result = await migrateAuthState({ from: source.state, to: target.state, skipExisting: true })
+
+		expect(result.startChatTrustSignals).toEqual({ records: 0, copied: false })
+		expect(result.warnings).toContain(
+			'destination cannot honor skipExisting for start-chat trust observations without exportState'
+		)
+		expect(result.verified).toBe(false)
+		expect(result.warnings).toContain('destination does not support start-chat trust observation verification')
+		target.close()
+	})
+
 	it('verifies newly copied observations even when other existing records are skipped', async () => {
 		const source = await useMultiFileAuthState(join(dir, 'partial-source'))
 		const target = await useMultiDbSqliteAuthState({ sessionDir: join(dir, 'partial-target') })

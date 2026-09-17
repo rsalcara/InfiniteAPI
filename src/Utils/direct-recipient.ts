@@ -34,7 +34,10 @@ export type DirectRecipientPreflightOptions<TDevice> = {
 	getKnownLIDForPN: (pn: string) => Promise<string | null>
 	fetchReachout: () => Promise<ReachoutTimelockState | undefined>
 	fetchCapping: () => Promise<NewChatMessageCapInfo | undefined>
-	fetchStartChatTrustSignals?: (jid: string, context: { lookupJid: string }) => Promise<StartChatTrustSignalsState>
+	fetchStartChatTrustSignals?: (
+		jid: string,
+		context: { lookupJid: string; pnJid?: string }
+	) => Promise<StartChatTrustSignalsState>
 	startChatTrustSignalsPolicy?: 'observe' | 'require-known'
 	resolveUSync: (phoneUser: string) => Promise<USyncQueryResultList[]>
 	storeMapping: (mapping: { lid: string; pn: string }) => Promise<unknown>
@@ -317,7 +320,10 @@ export const runDirectRecipientPreflight = async <TDevice>({
 	let startChatTrustSignals: StartChatTrustSignalsState | undefined
 	if (fetchStartChatTrustSignals || startChatTrustSignalsPolicy === 'require-known') {
 		startChatTrustSignals = fetchStartChatTrustSignals
-			? await fetchStartChatTrustSignals(requestedPn, { lookupJid: resolution.lidJid })
+			? await fetchStartChatTrustSignals(requestedPn, {
+					lookupJid: resolution.lidJid,
+					pnJid: resolution.pnJid
+				})
 			: {
 					jid: requestedPn,
 					useCase: 'CHAT_FMX',

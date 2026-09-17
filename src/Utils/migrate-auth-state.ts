@@ -189,18 +189,24 @@ export async function migrateAuthState({
 		const target = to.startChatTrustSignals
 		if (target?.importState) {
 			let recordsToImport = startChatTrustSignalsSnapshot.records
-			if (skipExisting && target.exportState) {
-				const existing = new Set((await target.exportState()).records.map(record => record.jid))
-				preservedStartChatTrustJids = existing
-				recordsToImport = recordsToImport.filter(record => !existing.has(record.jid))
-			}
+			if (skipExisting && !target.exportState) {
+				result.warnings.push(
+					'destination cannot honor skipExisting for start-chat trust observations without exportState'
+				)
+			} else {
+				if (skipExisting && target.exportState) {
+					const existing = new Set((await target.exportState()).records.map(record => record.jid))
+					preservedStartChatTrustJids = existing
+					recordsToImport = recordsToImport.filter(record => !existing.has(record.jid))
+				}
 
-			const applied = await target.importState({ records: recordsToImport })
-			result.startChatTrustSignals = {
-				records: applied.records,
-				copied: applied.records > 0
+				const applied = await target.importState({ records: recordsToImport })
+				result.startChatTrustSignals = {
+					records: applied.records,
+					copied: applied.records > 0
+				}
+				logger?.info(result.startChatTrustSignals, 'migrateAuthState: start-chat trust observations copied')
 			}
-			logger?.info(result.startChatTrustSignals, 'migrateAuthState: start-chat trust observations copied')
 		} else {
 			result.warnings.push('destination does not support start-chat trust observation migration')
 		}

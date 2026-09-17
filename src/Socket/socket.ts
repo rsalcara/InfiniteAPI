@@ -2927,6 +2927,11 @@ export const makeSocket = (config: SocketConfig) => {
 	type StartChatTrustSignalsLookupContext = {
 		/** Canonical LID used by the native Android query and durable record. */
 		lookupJid: string
+		/**
+		 * Canonical PN returned by USync. Used only as the privacy-token
+		 * fallback; the public emitted identity remains the requested JID.
+		 */
+		pnJid?: string
 	}
 
 	const fetchStartChatTrustSignals = async (
@@ -2990,7 +2995,7 @@ export const makeSocket = (config: SocketConfig) => {
 					provider({
 						jid: context?.lookupJid ?? jid,
 						useCase: 'CHAT_FMX',
-						pnJid: context ? jid : undefined,
+						pnJid: context?.pnJid ?? (context ? jid : undefined),
 						signal: controller.signal
 					})
 						.then(value => {

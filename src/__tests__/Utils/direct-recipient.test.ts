@@ -357,9 +357,36 @@ describe('cold-recipient preflight orchestration', () => {
 				signals: { isSenderSuspicious: false, isSenderNewAccount: false, createdTs: 1_785_000_000_000 }
 			}
 		})
-		expect(fetchStartChatTrustSignals).toHaveBeenCalledWith(pn, { lookupJid: lid })
+		expect(fetchStartChatTrustSignals).toHaveBeenCalledWith(pn, { lookupJid: lid, pnJid: pn })
 		expect(fetchStartChatTrustSignals).toHaveBeenCalledTimes(1)
 		expect(calls).toEqual([`trust:${pn}`, 'mapping', 'devices'])
+	})
+
+	it('passes the USync-resolved PN as the privacy-token fallback', async () => {
+		const canonicalPn = '551199999999@s.whatsapp.net'
+		const fetchStartChatTrustSignals = jest.fn(
+			async (_jid: string, _context: { lookupJid: string; pnJid?: string }) => {
+				void _context
+				return {
+					jid: _jid,
+					useCase: 'CHAT_FMX' as const,
+					status: 'known' as const,
+					observedAt: 1_786_000_000_000,
+					signals: { isSenderNewAccount: false, createdTs: 1_786_000_000_000 }
+				}
+			}
+		)
+
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					resolveUSync: async () => [{ id: canonicalPn, jid: canonicalPn, newJid: lid, contactType: 'in' as const }],
+					fetchStartChatTrustSignals
+				})
+			)
+		).resolves.toMatchObject({ requestedPn: pn, pnJid: canonicalPn, lidJid: lid })
+
+		expect(fetchStartChatTrustSignals).toHaveBeenCalledWith(pn, { lookupJid: lid, pnJid: canonicalPn })
 	})
 
 	it('runs required CHAT_FMX signals on the cached PN→LID path before returning', async () => {
