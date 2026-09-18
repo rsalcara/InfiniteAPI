@@ -5,6 +5,7 @@ import type {
 	AuthenticationCreds,
 	ConnectionTransportProfile,
 	NativeAndroidAppVariant,
+	NativeAndroidAppVersion,
 	NativeAndroidDeviceProfile,
 	NativeAndroidPairingAttestation,
 	NativeAndroidTransportConfig,
@@ -88,6 +89,33 @@ export const detectNativeAndroidAppVariant = (
 			return undefined
 	}
 }
+
+const CLIENT_APP_ID_REMOVED_VERSION: NativeAndroidAppVersion = [2, 26, 32, 6]
+
+const compareNativeAndroidAppVersion = (left: NativeAndroidAppVersion, right: NativeAndroidAppVersion) => {
+	for (let index = 0; index < 4; index += 1) {
+		const delta = left[index]! - right[index]!
+		if (delta !== 0) return delta
+	}
+
+	return 0
+}
+
+/**
+ * Evidence from the official decompiled pairing builders:
+ *
+ * - W4B 2.26.27.83 (`com.whatsapp.w4b`) includes `client-app-id`.
+ * - Consumer 2.26.27.85 (`com.whatsapp`) includes `client-app-id`.
+ * - W4B 2.26.32.6 (`com.whatsapp.w4b`) omits `client-app-id`.
+ * - W4B 2.26.35.2 (`com.whatsapp.w4b`) omits `client-app-id`.
+ * - Consumer 2.26.37.1 (`com.whatsapp`) omits `client-app-id`.
+ *
+ * The exact historical removal point is therefore in
+ * `(2.26.27.85, 2.26.32.6]`. Use the earliest proven removal boundary:
+ * sending the legacy fourth child is the observed failure mode.
+ */
+export const shouldAppendNativeAndroidClientAppId = (appVersion?: NativeAndroidAppVersion) =>
+	!appVersion || compareNativeAndroidAppVersion(appVersion, CLIENT_APP_ID_REMOVED_VERSION) < 0
 
 export const validateNativeAndroidConfig = (config: NativeAndroidTransportConfig) => {
 	if (config.enabled !== true) {
@@ -576,7 +604,8 @@ export const resolveNativeAndroidPairingAppVariant = (
 export const appendNativeAndroidPairingAttestation = (
 	reply: BinaryNode,
 	attestation: NativeAndroidPairingAttestation,
-	expectedClientAppId: string = WABA_CLIENT_APP_ID
+	expectedClientAppId: string = WABA_CLIENT_APP_ID,
+	appVersion?: NativeAndroidAppVersion
 ) => {
 	if (!(attestation.keyAttestation instanceof Uint8Array) || attestation.keyAttestation.byteLength === 0) {
 		throw new Boom('native_android: attestation provider returned an empty key_attestation', { statusCode: 400 })
@@ -607,18 +636,22 @@ export const appendNativeAndroidPairingAttestation = (
 		throw new Boom('native_android: pair-device-sign reply is malformed', { statusCode: 500 })
 	}
 
-	pairDeviceSign.content.push(
+	const children: BinaryNode[] = [
 		{ tag: 'key_attestation', attrs: {}, content: Buffer.from(attestation.keyAttestation) },
 		{
 			tag: 'gpia',
 			attrs: {},
 			content: typeof attestation.gpia === 'string' ? attestation.gpia : Buffer.from(attestation.gpia)
 		}
-	)
+	]
 
-	pairDeviceSign.content.push({
-		tag: 'client-app-id',
-		attrs: {},
-		content: expectedClientAppId
-	})
+	if (shouldAppendNativeAndroidClientAppId(appVersion)) {
+		children.push({
+			tag: 'client-app-id',
+			attrs: {},
+			content: expectedClientAppId
+		})
+	}
+
+	pairDeviceSign.content.push(...children)
 }

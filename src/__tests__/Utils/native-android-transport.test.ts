@@ -744,7 +744,7 @@ describe('native_android transport contract', () => {
 		})
 	})
 
-	it('adds only provider-supplied attestation artifacts to pair-device-sign', () => {
+	it('adds the legacy client-app-id only before the official 2.26.32.6 protocol', () => {
 		const reply: BinaryNode = {
 			tag: 'iq',
 			attrs: {},
@@ -756,17 +756,79 @@ describe('native_android transport contract', () => {
 				}
 			]
 		}
-		appendNativeAndroidPairingAttestation(reply, {
-			keyAttestation: Buffer.alloc(2039, 1),
-			gpia: Buffer.alloc(0),
-			clientAppId: WABA_CLIENT_APP_ID
-		})
+		appendNativeAndroidPairingAttestation(
+			reply,
+			{
+				keyAttestation: Buffer.alloc(2039, 1),
+				gpia: Buffer.alloc(0),
+				clientAppId: WABA_CLIENT_APP_ID
+			},
+			WABA_CLIENT_APP_ID,
+			[2, 26, 27, 83]
+		)
 		const pairSign = (reply.content as BinaryNode[])[0]!
 		const children = pairSign.content as BinaryNode[]
 		expect(children.map(node => node.tag)).toEqual(['device-identity', 'key_attestation', 'gpia', 'client-app-id'])
 		expect(Buffer.from(children[1]!.content as Uint8Array)).toHaveLength(2039)
 		expect(Buffer.from(children[2]!.content as Uint8Array)).toHaveLength(0)
 		expect(children[3]!.content).toBe(WABA_CLIENT_APP_ID)
+
+		const boundaryReply: BinaryNode = {
+			tag: 'iq',
+			attrs: {},
+			content: [
+				{
+					tag: 'pair-device-sign',
+					attrs: {},
+					content: [{ tag: 'device-identity', attrs: { 'key-index': '1' }, content: Buffer.from([0]) }]
+				}
+			]
+		}
+		appendNativeAndroidPairingAttestation(
+			boundaryReply,
+			{
+				keyAttestation: Buffer.alloc(2039, 1),
+				gpia: Buffer.alloc(0),
+				clientAppId: WABA_CLIENT_APP_ID
+			},
+			WABA_CLIENT_APP_ID,
+			[2, 26, 32, 5]
+		)
+		const boundaryPairSign = (boundaryReply.content as BinaryNode[])[0]!
+		expect((boundaryPairSign.content as BinaryNode[]).map(node => node.tag)).toEqual([
+			'device-identity',
+			'key_attestation',
+			'gpia',
+			'client-app-id'
+		])
+
+		const modernReply: BinaryNode = {
+			tag: 'iq',
+			attrs: {},
+			content: [
+				{
+					tag: 'pair-device-sign',
+					attrs: {},
+					content: [{ tag: 'device-identity', attrs: { 'key-index': '1' }, content: Buffer.from([0]) }]
+				}
+			]
+		}
+		appendNativeAndroidPairingAttestation(
+			modernReply,
+			{
+				keyAttestation: Buffer.alloc(2039, 1),
+				gpia: Buffer.alloc(0),
+				clientAppId: WABA_CLIENT_APP_ID
+			},
+			WABA_CLIENT_APP_ID,
+			[2, 26, 32, 6]
+		)
+		const modernPairSign = (modernReply.content as BinaryNode[])[0]!
+		expect((modernPairSign.content as BinaryNode[]).map(node => node.tag)).toEqual([
+			'device-identity',
+			'key_attestation',
+			'gpia'
+		])
 
 		const invalidReply: BinaryNode = {
 			tag: 'iq',

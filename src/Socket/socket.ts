@@ -2336,7 +2336,12 @@ export const makeSocket = (config: SocketConfig) => {
 					packageName: appResolution.identity.packageName,
 					identityPublicKey: creds.signedIdentityKey.public
 				})
-				appendNativeAndroidPairingAttestation(reply, attestation, appResolution.identity.clientAppId)
+				appendNativeAndroidPairingAttestation(
+					reply,
+					attestation,
+					appResolution.identity.clientAppId,
+					transportSession.nativeAndroid!.appVersion
+				)
 
 				// QR pair-success is the authoritative transition from a fresh
 				// native identity to a registered companion. Persist it together
