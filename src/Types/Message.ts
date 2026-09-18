@@ -418,6 +418,56 @@ export type NativeFlowButton = {
 }
 
 /**
+ * OTP delivery mode accepted by the official Android incoming OTP handler.
+ */
+export type OtpMessageType = 'ONE_TAP' | 'ZERO_TAP' | 'COPY_CODE'
+
+/**
+ * Android app allowed to receive the OTP through WhatsApp's one-tap flow.
+ */
+export type OtpSupportedApp = {
+	/** Android package name, for example com.example.app */
+	packageName: string
+	/** SHA signature hash compared by the official client */
+	signatureHash: string
+}
+
+/**
+ * Official WhatsApp native-flow OTP button payload.
+ * The body carries the human-readable code text; this structured payload only
+ * selects the delivery mode and the apps authorized to autofill it.
+ */
+type OtpMessageOptionsBase = {
+	/** Button/service name shown to the recipient */
+	ctaDisplayName: string
+	/** Official client default is 10 minutes */
+	codeExpirationMinutes?: number
+}
+
+/**
+ * Official WhatsApp native-flow OTP options.
+ * COPY_CODE is handled before Android app matching, so it does not require
+ * supported apps. The other official modes require at least one target app.
+ */
+export type OtpMessageOptions =
+	| (OtpMessageOptionsBase & {
+			/** Delivery mode; omitted means the official ONE_TAP default */
+			otpType?: 'ONE_TAP'
+			/** Apps authorized to receive the code */
+			supportedApps: OtpSupportedApp[]
+	  })
+	| (OtpMessageOptionsBase & {
+			otpType: 'ZERO_TAP'
+			/** Apps authorized to receive the code */
+			supportedApps: OtpSupportedApp[]
+	  })
+	| (OtpMessageOptionsBase & {
+			otpType: 'COPY_CODE'
+			/** Optional; the official COPY_CODE path does not match Android apps */
+			supportedApps?: OtpSupportedApp[]
+	  })
+
+/**
  * Row item in a list section
  */
 export type ListRow = {
@@ -858,6 +908,31 @@ export type AnyRegularMessageContent = (
 				cards: CarouselCardInput[]
 			}
 			text?: string
+			footer?: string
+	  }
+	| {
+			/**
+			 * Native WhatsApp OTP message.
+			 * The body is the visible message (including the disposable code).
+			 *
+			 * @example
+			 * ```typescript
+			 * await sock.sendMessage(jid, {
+			 *   text: '123456 is your verification code',
+			 *   otp: {
+			 *     otpType: 'ONE_TAP',
+			 *     ctaDisplayName: 'Example App',
+			 *     codeExpirationMinutes: 10,
+			 *     supportedApps: [
+			 *       { packageName: 'com.example.app', signatureHash: 'AB:CD:...' }
+			 *     ]
+			 *   }
+			 * })
+			 * ```
+			 */
+			otp: OtpMessageOptions
+			/** Visible body containing the disposable code */
+			text: string
 			footer?: string
 	  }
 	| {

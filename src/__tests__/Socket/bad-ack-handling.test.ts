@@ -1,7 +1,24 @@
 import { NewChatMessageCappingStatusType, ReachoutTimelockEnforcementType } from '../../Types'
-import { buildMessageAccountRestrictionDiagnostic, getMessageAckErrorPolicy } from '../../Utils/message-ack-error'
+import {
+	buildMessageAccountRestrictionDiagnostic,
+	getMessageAckErrorPolicy,
+	getNativeOtpAckDiagnostic
+} from '../../Utils/message-ack-error'
 
 describe('message error ACK policy', () => {
+	const otpMessage = {
+		interactiveMessage: {
+			nativeFlowMessage: {
+				buttons: [
+					{
+						name: 'otp',
+						buttonParamsJson: JSON.stringify({ otp_type: 'COPY_CODE', cta_display_name: 'Laboratório Astra' })
+					}
+				]
+			}
+		}
+	}
+
 	it('treats 463 as an account/reachout restriction without retry or token fetch', () => {
 		expect(getMessageAckErrorPolicy('463')).toEqual({
 			kind: 'message-account-restriction',
@@ -63,6 +80,72 @@ describe('message error ACK policy', () => {
 			cycleEnd: '200',
 			reachoutDiagnostic: 'lookup-complete',
 			cappingDiagnostic: 'lookup-complete'
+		})
+	})
+
+	it('identifies a 405 on a native OTP message as a Cloud API policy rejection', () => {
+		expect(
+			getNativeOtpAckDiagnostic('405', {
+				interactiveMessage: {
+					nativeFlowMessage: {
+						buttons: [
+							{
+								name: 'otp',
+								buttonParamsJson: JSON.stringify({
+									otp_type: 'COPY_CODE',
+									cta_display_name: 'Laboratório Astra'
+								})
+							}
+						]
+					}
+				}
+			})
+		).toEqual({
+			category: 'native-otp-requires-cloud-api',
+			otpType: 'COPY_CODE',
+			officialPlatform: 'whatsapp-business-cloud-api',
+			retry: false,
+			privacyTokenAction: 'none'
+		})
+	})
+
+	it('does not reinterpret 405 for other message shapes', () => {
+		expect(
+			getNativeOtpAckDiagnostic('405', {
+				interactiveMessage: {
+					nativeFlowMessage: {
+						buttons: [{ name: 'quick_reply', buttonParamsJson: '{}' }]
+					}
+				}
+			})
+		).toBeUndefined()
+	})
+
+	it.each([
+		['viewOnceMessage', { viewOnceMessage: { message: otpMessage } }],
+		['viewOnceMessageV2', { viewOnceMessageV2: { message: otpMessage } }],
+		['viewOnceMessageV2Extension', { viewOnceMessageV2Extension: { message: otpMessage } }]
+	] as const)('unwraps %s before correlating a native OTP 405', (_wrapper, message) => {
+		expect(getNativeOtpAckDiagnostic('405', message)).toMatchObject({
+			category: 'native-otp-requires-cloud-api',
+			otpType: 'COPY_CODE',
+			retry: false
+		})
+	})
+
+	it('keeps an unparseable OTP type unknown instead of guessing', () => {
+		expect(
+			getNativeOtpAckDiagnostic('405', {
+				interactiveMessage: {
+					nativeFlowMessage: {
+						buttons: [{ name: 'otp', buttonParamsJson: '{invalid-json' }]
+					}
+				}
+			})
+		).toMatchObject({
+			category: 'native-otp-requires-cloud-api',
+			otpType: 'unknown',
+			retry: false
 		})
 	})
 })

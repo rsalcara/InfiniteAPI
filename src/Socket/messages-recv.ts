@@ -91,7 +91,11 @@ import { isRecoverableLidSelfSyncStanza } from '../Utils/decode-wa-message'
 import { applyDeviceListDelta } from '../Utils/device-list-delta'
 import { makeLockManager } from '../Utils/lock-manager'
 import { makeMutex } from '../Utils/make-mutex'
-import { getMessageAckErrorPolicy } from '../Utils/message-ack-error'
+import {
+	getMessageAckErrorPolicy,
+	getNativeOtpAckDiagnostic,
+	NATIVE_OTP_REQUIRES_CLOUD_API
+} from '../Utils/message-ack-error'
 import {
 	buildMexDiagnostic,
 	type MexDiagnosticReason,
@@ -4846,6 +4850,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// device could not display the message
 		if (attrs.error) {
 			const errorPolicy = getMessageAckErrorPolicy(attrs.error)
+			const nativeOtpDiagnostic = getNativeOtpAckDiagnostic(attrs.error, recentMessage?.message)
 			// 463 is an account/reachout restriction. A privacy `type=set` IQ only
 			// announces our token and cannot fetch the peer token, so retrying the
 			// message after that IQ is both ineffective and capable of worsening the
@@ -4923,6 +4928,20 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					},
 					'479 smax-invalid: inspect the correlated outbound stanza shape and addressing'
 				)
+			} else if (nativeOtpDiagnostic) {
+				logger.warn(
+					{
+						jid: outboundJid,
+						msgId: attrs.id,
+						code: attrs.error,
+						category: nativeOtpDiagnostic.category,
+						feature: 'native-otp',
+						otpType: nativeOtpDiagnostic.otpType,
+						officialPlatform: nativeOtpDiagnostic.officialPlatform,
+						retryAction: 'suppressed'
+					},
+					'405 native OTP rejected by WhatsApp policy; authentication templates require WhatsApp Business Cloud API'
+				)
 			} else {
 				logger.warn({ attrs }, 'received error in ack')
 			}
@@ -4932,7 +4951,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					key,
 					update: {
 						status: WAMessageStatus.ERROR,
-						messageStubParameters: is463 ? [attrs.error, ACCOUNT_RESTRICTED_TEXT] : [attrs.error]
+						messageStubParameters: is463
+							? [attrs.error, ACCOUNT_RESTRICTED_TEXT]
+							: nativeOtpDiagnostic
+								? [attrs.error, NATIVE_OTP_REQUIRES_CLOUD_API]
+								: [attrs.error]
 					}
 				}
 			])
@@ -4945,7 +4968,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					canonicalJid: recentMessage?.canonicalJid ?? key.remoteJid ?? undefined,
 					wireJid: recentMessage?.to ?? wireJid,
 					serverCode: attrs.error,
-					category: errorPolicy.kind,
+					category: nativeOtpDiagnostic?.category ?? errorPolicy.kind,
 					reason: attrs.reason || 'reason unavailable',
 					action: 'retry-suppressed'
 				},

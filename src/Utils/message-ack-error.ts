@@ -6,6 +6,89 @@ export type MessageAckErrorPolicy = {
 	privacyTokenAction: 'none'
 }
 
+export type NativeOtpAckDiagnostic = {
+	category: 'native-otp-requires-cloud-api'
+	otpType: 'COPY_CODE' | 'ONE_TAP' | 'ZERO_TAP' | 'unknown'
+	officialPlatform: 'whatsapp-business-cloud-api'
+	retry: false
+	privacyTokenAction: 'none'
+}
+
+export const NATIVE_OTP_REQUIRES_CLOUD_API = 'native-otp-requires-cloud-api'
+
+type AckMessageContent = {
+	interactiveMessage?: unknown
+	viewOnceMessage?: unknown
+	viewOnceMessageV2?: unknown
+	viewOnceMessageV2Extension?: unknown
+}
+
+type NativeOtpButton = {
+	name?: unknown
+	buttonParamsJson?: unknown
+}
+
+const isNativeOtpButton = (button: unknown): button is NativeOtpButton =>
+	typeof button === 'object' && button !== null && (button as { name?: unknown }).name === 'otp'
+
+const unwrapViewOnceAckMessage = (message?: AckMessageContent): AckMessageContent | undefined => {
+	let current = message
+	for (let depth = 0; current && depth < 5; depth++) {
+		if (current.interactiveMessage) return current
+
+		const inner =
+			(current.viewOnceMessage as { message?: AckMessageContent } | null | undefined)?.message ||
+			(current.viewOnceMessageV2 as { message?: AckMessageContent } | null | undefined)?.message ||
+			(current.viewOnceMessageV2Extension as { message?: AckMessageContent } | null | undefined)?.message
+		if (!inner) return current
+		current = inner
+	}
+
+	return current
+}
+
+/**
+ * Correlates a 405 ACK with an outbound native OTP message. Meta documents
+ * authentication templates as WhatsApp Business Cloud API assets, and the
+ * official Android client only renders this receiver-side button type. Keep
+ * this diagnostic narrowly scoped: 405 must not be interpreted for other
+ * interactive messages.
+ */
+export const getNativeOtpAckDiagnostic = (
+	error: string | undefined,
+	message?: AckMessageContent
+): NativeOtpAckDiagnostic | undefined => {
+	if (error !== '405') return undefined
+
+	const interactiveMessage = unwrapViewOnceAckMessage(message)?.interactiveMessage
+	const buttons = (interactiveMessage as { nativeFlowMessage?: { buttons?: unknown } } | null | undefined)
+		?.nativeFlowMessage?.buttons
+	if (!Array.isArray(buttons) || !buttons.some(isNativeOtpButton)) {
+		return undefined
+	}
+
+	const otpButton = buttons.find(isNativeOtpButton)
+	let otpType: NativeOtpAckDiagnostic['otpType'] = 'unknown'
+	try {
+		const params = JSON.parse(typeof otpButton?.buttonParamsJson === 'string' ? otpButton.buttonParamsJson : '{}') as {
+			otp_type?: unknown
+		}
+		if (params.otp_type === 'COPY_CODE' || params.otp_type === 'ONE_TAP' || params.otp_type === 'ZERO_TAP') {
+			otpType = params.otp_type
+		}
+	} catch {
+		// Keep "unknown" rather than guessing an official type from malformed JSON.
+	}
+
+	return {
+		category: NATIVE_OTP_REQUIRES_CLOUD_API,
+		otpType,
+		officialPlatform: 'whatsapp-business-cloud-api',
+		retry: false,
+		privacyTokenAction: 'none'
+	}
+}
+
 /**
  * Error ACK policy shared by the production handler and regression tests.
  * Neither 463 nor 479 is a request to fetch a peer privacy token: the only

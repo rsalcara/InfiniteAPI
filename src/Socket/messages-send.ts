@@ -2201,6 +2201,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						// contributor as the proven #710 wire shape. The message payload
 						// remains legacy; only the stanza advertises the interactive route.
 						const SPECIAL_FLOW_NAMES: Record<string, string> = {
+							otp: 'otp',
 							review_and_pay: 'payment_info',
 							payment_info: 'payment_info',
 							mpm: 'mpm',

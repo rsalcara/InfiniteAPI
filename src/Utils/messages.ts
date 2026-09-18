@@ -25,6 +25,7 @@ import type {
 	MessageWithContextInfo,
 	NativeButton,
 	NativeFlowButton,
+	OtpMessageOptions,
 	ProductCarouselMessageOptions,
 	ProductListMessageOptions,
 	WAMediaUpload,
@@ -551,6 +552,129 @@ const prepareNativeButtonHeader = async (
 	}
 
 	return header
+}
+
+const validateRequiredOtpField = (value: unknown, fieldName: string): void => {
+	if (typeof value !== 'string' || value.trim().length === 0) {
+		throw new Boom(`${fieldName} is required and cannot be empty`, { statusCode: 400 })
+	}
+}
+
+const OTP_CONFLICTING_FIELDS = [
+	'nativeButtons',
+	'buttons',
+	'image',
+	'video',
+	'document',
+	'sticker',
+	'audio',
+	'ptv',
+	'caption',
+	'poll',
+	'location',
+	'contacts',
+	'react',
+	'event',
+	'product',
+	'nativeCarousel',
+	'nativeList',
+	'productCarousel',
+	'productList'
+] as const
+
+const validateOtpMessage = (otp: OtpMessageOptions): void => {
+	if (!otp || typeof otp !== 'object') {
+		throw new Boom('otp must be an object', { statusCode: 400 })
+	}
+
+	validateRequiredOtpField(otp.ctaDisplayName, 'otp.ctaDisplayName')
+
+	const allowedTypes = new Set(['ONE_TAP', 'ZERO_TAP', 'COPY_CODE'])
+	const otpType = otp.otpType || 'ONE_TAP'
+	if (!allowedTypes.has(otpType)) {
+		throw new Boom('otp.otpType must be ONE_TAP, ZERO_TAP or COPY_CODE', { statusCode: 400 })
+	}
+
+	if (
+		otp.codeExpirationMinutes !== undefined &&
+		(!Number.isSafeInteger(otp.codeExpirationMinutes) || otp.codeExpirationMinutes <= 0)
+	) {
+		throw new Boom('otp.codeExpirationMinutes must be a positive integer', { statusCode: 400 })
+	}
+
+	if (otp.supportedApps !== undefined && !Array.isArray(otp.supportedApps)) {
+		throw new Boom('otp.supportedApps must be an array', { statusCode: 400 })
+	}
+
+	const supportedApps = otp.supportedApps || []
+	if (otpType !== 'COPY_CODE' && supportedApps.length === 0) {
+		throw new Boom('otp.supportedApps requires at least one Android app', { statusCode: 400 })
+	}
+
+	for (const [index, app] of supportedApps.entries()) {
+		if (!app || typeof app !== 'object') {
+			throw new Boom(`otp.supportedApps[${index}] must be an object`, { statusCode: 400 })
+		}
+
+		validateRequiredOtpField(app.packageName, `otp.supportedApps[${index}].packageName`)
+		validateRequiredOtpField(app.signatureHash, `otp.supportedApps[${index}].signatureHash`)
+	}
+}
+
+/**
+ * Generates the official native-flow OTP envelope.
+ *
+ * APK evidence (WhatsApp/W4B 2.26.37.6):
+ * - IncomingOtpMessageHandler selects a native-flow button whose name is "otp"
+ *   and parses that button's params JSON.
+ * - Params contain otp_type, cta_display_name, code_expiration_minutes and
+ *   supported_apps. The visible disposable code remains in the message body.
+ */
+export const generateOtpMessage = (options: {
+	otp: OtpMessageOptions
+	text: string
+	footer?: string
+}): WAMessageContent => {
+	const { otp, text, footer } = options
+
+	if (!otp || typeof otp !== 'object') {
+		throw new Boom('otp is required', { statusCode: 400 })
+	}
+
+	validateRequiredOtpField(text, 'text')
+	validateOtpMessage(otp)
+
+	const supportedApps = otp.supportedApps || []
+	const officialParams = {
+		otp_type: otp.otpType || 'ONE_TAP',
+		cta_display_name: otp.ctaDisplayName,
+		...(otp.codeExpirationMinutes === undefined ? {} : { code_expiration_minutes: otp.codeExpirationMinutes }),
+		...(supportedApps.length
+			? {
+					supported_apps: supportedApps.map(app => ({
+						package_name: app.packageName,
+						signature_hash: app.signatureHash
+					}))
+				}
+			: {})
+	}
+
+	return {
+		interactiveMessage: {
+			body: { text },
+			footer: footer ? { text: footer } : undefined,
+			nativeFlowMessage: {
+				buttons: [
+					{
+						name: 'otp',
+						buttonParamsJson: JSON.stringify(officialParams)
+					}
+				],
+				messageParamsJson: JSON.stringify({}),
+				messageVersion: 1
+			}
+		}
+	}
 }
 
 /**
@@ -1306,9 +1430,25 @@ export const generateWAMessageContent = async (
 ) => {
 	let m: WAMessageContent = {}
 
+	// ========== OFFICIAL NATIVE-FLOW OTP ==========
+	if (hasNonNullishProperty(message, 'otp')) {
+		const conflictingFields = OTP_CONFLICTING_FIELDS.filter(field => hasNonNullishProperty(message, field))
+		if (conflictingFields.length > 0) {
+			throw new Boom(`otp cannot be combined with ${conflictingFields.join(', ')}; choose one`, {
+				statusCode: 400
+			})
+		}
+
+		const otpMsg = message as unknown as { otp: OtpMessageOptions; text?: string; footer?: string }
+		m = generateOtpMessage({
+			otp: otpMsg.otp,
+			text: otpMsg.text || '',
+			footer: otpMsg.footer
+		})
+	}
 	// ========== NATIVE FLOW BUTTONS (Modern approach) ==========
 	// Check for nativeButtons first - this is the recommended modern approach
-	if (hasNonNullishProperty(message, 'nativeButtons')) {
+	else if (hasNonNullishProperty(message, 'nativeButtons')) {
 		const nativeMsg = message as any
 		const nativeButtons = nativeMsg.nativeButtons
 		if (!Array.isArray(nativeButtons)) {

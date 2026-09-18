@@ -426,6 +426,48 @@ describe('messages-send stanza assembly', () => {
 		}
 	})
 
+	it('routes the official OTP native-flow button without the bot marker', async () => {
+		const fake = makeFakeSocket()
+		activeFakeSocket = fake.sock
+		const config = makeConfig(fake.sock.authState)
+		config.enableInteractiveMessages = true
+		const socket = makeMessagesSocket(config as any)
+		try {
+			const message = proto.Message.fromObject({
+				interactiveMessage: {
+					body: { text: '123456 is your verification code' },
+					nativeFlowMessage: {
+						buttons: [
+							{
+								name: 'otp',
+								buttonParamsJson: JSON.stringify({
+									otp_type: 'ONE_TAP',
+									cta_display_name: 'Example App',
+									code_expiration_minutes: 10,
+									supported_apps: [{ package_name: 'com.example.app', signature_hash: 'AB:CD:EF' }]
+								})
+							}
+						],
+						messageParamsJson: '{}',
+						messageVersion: 1
+					}
+				}
+			})
+			await socket.relayMessage(remotePn, message, { messageId: 'OFFICIAL-OTP-1' })
+
+			const stanza = fake.sent.at(-1)
+			const biz = stanza.content.find((node: any) => node.tag === 'biz')
+			expect(biz?.content?.[0]).toMatchObject({
+				tag: 'interactive',
+				attrs: { type: 'native_flow', v: '1' },
+				content: [{ tag: 'native_flow', attrs: { name: 'otp', v: '9' } }]
+			})
+			expect(stanza.content.some((node: any) => node.tag === 'bot')).toBe(false)
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+
 	it('uses the canonical PN for cold-recipient legacy reply buttons', async () => {
 		const fake = makeFakeSocket({ coldRecipient: true })
 		activeFakeSocket = fake.sock
