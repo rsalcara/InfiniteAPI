@@ -87,6 +87,7 @@ import {
 	xmppSignedPreKey
 } from '../Utils'
 import { logMessageReceived, logTcToken } from '../Utils/baileys-logger'
+import { isRecoverableLidSelfSyncStanza } from '../Utils/decode-wa-message'
 import { applyDeviceListDelta } from '../Utils/device-list-delta'
 import { makeLockManager } from '../Utils/lock-manager'
 import { makeMutex } from '../Utils/make-mutex'
@@ -159,6 +160,30 @@ import {
 	jidWithoutExplicitZeroDevice,
 	S_WHATSAPP_NET
 } from '../WABinary'
+
+const SELF_SYNC_FIX_LOG_PREFIX = '[InfiniteAPI:SELF-SYNC-FIX]'
+
+/**
+ * Self-sync receipt failures are non-fatal only when the stanza matches the
+ * same fingerprint as `isRecoverableLidSelfSyncStanza` in decode-wa-message.ts:
+ * from is our LID, recipient is the peer LID, peer_recipient_pn is the peer PN
+ * and the payload is msg/pkmsg. This prevents masking unrelated receipt
+ * failures on ordinary LID or PN chats.
+ *
+ * APK evidence: EWH.java (W4B 2.26.35.2) adds `peer_recipient_pn` on the send
+ * path when device JID is LID; C177487uK.java reads it on receive to resolve
+ * the chat. A stanza without the LID pair is not a self-sync echo.
+ */
+export const isSelfSyncReceiptFailureNonFatal = (
+	type: MessageReceiptType,
+	key: WAMessageKey,
+	author: string | undefined,
+	node: BinaryNode,
+	meId: string,
+	meLid: string
+) => {
+	return type === 'sender' && !!key.fromMe && !!key.id && !!author && isRecoverableLidSelfSyncStanza(node, meId, meLid)
+}
 
 const summarizeInboundNode = (node: BinaryNode) => ({
 	tag: node.tag,
@@ -4330,8 +4355,51 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							type = 'inactive'
 						}
 
-						await sendReceipt(msg.key.remoteJid!, participant!, [msg.key.id!], type)
-						acked = true
+						try {
+							await sendReceipt(msg.key.remoteJid!, participant!, [msg.key.id!], type)
+							acked = true
+						} catch (err) {
+							if (
+								!isSelfSyncReceiptFailureNonFatal(
+									type,
+									msg.key,
+									author,
+									node,
+									authState.creds.me!.id,
+									authState.creds.me!.lid!
+								)
+							) {
+								throw err
+							}
+
+							// The receipt failed but the message IS processed below
+							// (upsertMessage). Send an explicit ack so the server stops
+							// re-delivering. Without this, the server sees no receipt
+							// and re-delivers, causing duplicate upserts.
+							const fallbackAcked = await sendMessageAck(node).catch(ackErr => {
+								logger.error(
+									{ ackErr, id: msg.key.id },
+									`${SELF_SYNC_FIX_LOG_PREFIX} failed to ack self-sync after receipt failure`
+								)
+								return false
+							})
+							if (!fallbackAcked) throw err
+							acked = true
+
+							logger.warn(
+								{
+									err: compactError(err),
+									id: msg.key.id,
+									remoteJid: msg.key.remoteJid,
+									remoteJidAlt: msg.key.remoteJidAlt,
+									fromMe: msg.key.fromMe,
+									participant,
+									author,
+									type
+								},
+								`${SELF_SYNC_FIX_LOG_PREFIX} send_receipt_failed_non_fatal`
+							)
+						}
 
 						// send ack for history message
 						const isAnyHistoryMsg = getHistoryMsg(msg.message!)
@@ -4350,6 +4418,18 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				cleanMessage(msg, authState.creds.me!.id, authState.creds.me!.lid!)
 
 				await upsertMessage(msg, node.attrs.offline ? 'append' : 'notify')
+
+				if (msg.key.fromMe && msg.key.id && node.attrs.peer_recipient_pn) {
+					logger.info(
+						{
+							id: msg.key.id,
+							remoteJid: msg.key.remoteJid,
+							remoteJidAlt: msg.key.remoteJidAlt,
+							fromMe: msg.key.fromMe
+						},
+						`${SELF_SYNC_FIX_LOG_PREFIX} upsert_after_self_sync`
+					)
+				}
 
 				const msgType = getMessageTypeLabel(msg.message, { isViewOnce: !!msg.key.isViewOnce })
 
