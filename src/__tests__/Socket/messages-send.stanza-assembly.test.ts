@@ -9,6 +9,7 @@ import {
 } from '../../Socket/native-android-integrity-state'
 import { makeSocketOperationGate } from '../../Socket/socket-operation-gate'
 import type { SignalKeyStore, SocketConfig, WAMessage } from '../../Types'
+import { hkdf } from '../../Utils/crypto'
 import { unpadRandomMax16 } from '../../Utils/generics'
 import { buildMsmsgCacheKey } from '../../Utils/meta-ai-msmsg'
 import { normalizeMessageJids } from '../../Utils/process-message'
@@ -168,7 +169,7 @@ const makeFakeSocket = ({
 				senderKeyDistributionMessage: new Uint8Array()
 			}
 		}
-	} as any
+	}
 	const ev = new EventEmitter()
 	const authState = { creds: { me: { id: `${ownPn.split('@')[0]}:1@s.whatsapp.net`, lid: `${ownLid}` } }, keys }
 	const sock = {
@@ -487,6 +488,11 @@ describe('messages-send stanza assembly', () => {
 		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
 		try {
 			const messageSecret = Buffer.alloc(32, 9)
+			await fake.sock.authState.keys.set({
+				tctoken: {
+					[groupJid]: { token: Buffer.from('group-token'), timestamp: String(Math.floor(Date.now() / 1000)) }
+				}
+			})
 			await socket.relayMessage(
 				groupJid,
 				proto.Message.fromObject({
@@ -499,7 +505,7 @@ describe('messages-send stanza assembly', () => {
 				}
 			)
 
-			const cache = (activeFakeSocket as any).__msmsgSecretCache
+			const cache = activeFakeSocket.__msmsgSecretCache
 			for (const participant of [ownPn, ownLid]) {
 				expect(
 					cache.get(
@@ -522,10 +528,11 @@ describe('messages-send stanza assembly', () => {
 			const groupMessage = proto.Message.decode(unpadRandomMax16(groupEncryption!.data))
 			const groupContext = groupMessage.messageContextInfo
 			expect(groupContext?.messageSecret).toBeFalsy()
-			expect(groupContext?.botMessageSecret).toHaveLength(32)
+			expect(groupContext?.botMessageSecret).toEqual(Buffer.from(hkdf(messageSecret, 32, { info: 'Bot Message' })))
 			expect(groupContext?.botMetadata?.botMetricsMetadata?.destinationEntryPoint).toBe(
 				proto.BotMetricsEntryPoint.INVOKE_META_AI_GROUP
 			)
+			expect(stanza.content.some((node: any) => node.tag === 'tctoken')).toBe(false)
 		} finally {
 			await socket.end(new Error('group Meta AI cache test completed'))
 		}
@@ -537,6 +544,11 @@ describe('messages-send stanza assembly', () => {
 		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
 		try {
 			const messageSecret = Buffer.alloc(32, 11)
+			await fake.sock.authState.keys.set({
+				tctoken: {
+					[metaAiJid]: { token: Buffer.from('bot-token'), timestamp: String(Math.floor(Date.now() / 1000)) }
+				}
+			})
 			await socket.relayMessage(
 				metaAiJid,
 				proto.Message.fromObject({
@@ -559,7 +571,7 @@ describe('messages-send stanza assembly', () => {
 			const botMessage = proto.Message.decode(unpadRandomMax16(botEncryption!.data))
 			const context = botMessage.messageContextInfo
 			expect(context?.messageSecret).toBeFalsy()
-			expect(context?.botMessageSecret).toHaveLength(32)
+			expect(context?.botMessageSecret).toEqual(Buffer.from(hkdf(messageSecret, 32, { info: 'Bot Message' })))
 			expect(context?.botMetadata?.botMetricsMetadata).toMatchObject({
 				destinationId: metaAiJid,
 				destinationEntryPoint: proto.BotMetricsEntryPoint.INVOKE_META_AI_1ON1
@@ -567,6 +579,7 @@ describe('messages-send stanza assembly', () => {
 
 			const participants = stanza.content.find((node: any) => node.tag === 'participants')?.content || []
 			expect(participants.some((node: any) => jidDecode(node.attrs.jid)?.server === 'bot')).toBe(true)
+			expect(stanza.content.some((node: any) => node.tag === 'tctoken')).toBe(false)
 		} finally {
 			await socket.end(new Error('direct Meta AI test completed'))
 		}
