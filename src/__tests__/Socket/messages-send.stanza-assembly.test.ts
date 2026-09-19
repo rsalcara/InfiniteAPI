@@ -24,6 +24,7 @@ const coldRequestedPn = '5543991910391@s.whatsapp.net'
 const coldCanonicalPn = '554391910391@s.whatsapp.net'
 const coldLid = '127496221651050@lid'
 const groupJid = '120363012345678900@g.us'
+const metaAiJid = '718584497008509@bot'
 
 const noopLogger = {
 	level: 'silent',
@@ -160,10 +161,13 @@ const makeFakeSocket = ({
 	} as any
 	const signalRepository = {
 		...baseSignalRepository,
-		encryptGroupMessage: async () => ({
-			ciphertext: new Uint8Array(),
-			senderKeyDistributionMessage: new Uint8Array()
-		})
+		encryptGroupMessage: async ({ group, data }: { group: string; data: Uint8Array }) => {
+			encryptions.push({ jid: group, data })
+			return {
+				ciphertext: new Uint8Array(),
+				senderKeyDistributionMessage: new Uint8Array()
+			}
+		}
 	} as any
 	const ev = new EventEmitter()
 	const authState = { creds: { me: { id: `${ownPn.split('@')[0]}:1@s.whatsapp.net`, lid: `${ownLid}` } }, keys }
@@ -496,16 +500,75 @@ describe('messages-send stanza assembly', () => {
 			)
 
 			const cache = (activeFakeSocket as any).__msmsgSecretCache
-			const participantKey = buildMsmsgCacheKey({
-				fromMe: true,
-				remoteJid: groupJid,
-				id: 'GROUP-META-AI-1',
-				participant: ownLid
-			})
-			expect(cache.get(participantKey)).toEqual(messageSecret)
-			expect(fake.sent.at(-1).content.some((node: any) => node.tag === 'bot')).toBe(true)
+			for (const participant of [ownPn, ownLid]) {
+				expect(
+					cache.get(
+						buildMsmsgCacheKey({
+							fromMe: true,
+							remoteJid: groupJid,
+							id: 'GROUP-META-AI-1',
+							participant
+						})
+					)
+				).toEqual(messageSecret)
+			}
+
+			const stanza = fake.sent.at(-1)
+			expect(stanza.attrs.to).toBe(groupJid)
+			expect(stanza.content.some((node: any) => node.tag === 'bot')).toBe(true)
+
+			const groupEncryption = fake.encryptions.find(item => item.jid === groupJid)
+			expect(groupEncryption).toBeDefined()
+			const groupMessage = proto.Message.decode(unpadRandomMax16(groupEncryption!.data))
+			const groupContext = groupMessage.messageContextInfo
+			expect(groupContext?.messageSecret).toBeFalsy()
+			expect(groupContext?.botMessageSecret).toHaveLength(32)
+			expect(groupContext?.botMetadata?.botMetricsMetadata?.destinationEntryPoint).toBe(
+				proto.BotMetricsEntryPoint.INVOKE_META_AI_GROUP
+			)
 		} finally {
 			await socket.end(new Error('group Meta AI cache test completed'))
+		}
+	})
+
+	it('sends a direct Meta AI prompt to the bot route without leaking the root secret', async () => {
+		const fake = makeFakeSocket()
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			const messageSecret = Buffer.alloc(32, 11)
+			await socket.relayMessage(
+				metaAiJid,
+				proto.Message.fromObject({
+					conversation: 'direct Meta AI prompt',
+					messageContextInfo: { messageSecret }
+				}),
+				{
+					messageId: 'DIRECT-META-AI-1',
+					metaAi: { type: 'prompt' }
+				}
+			)
+
+			const stanza = fake.sent.at(-1)
+			expect(stanza.attrs.to).toBe(metaAiJid)
+			const botNode = stanza.content.find((node: any) => node.tag === 'bot')
+			expect(botNode?.attrs).toMatchObject({ type: 'prompt', client_thread_id: expect.any(String) })
+
+			const botEncryption = fake.encryptions.find(item => item.jid === metaAiJid)
+			expect(botEncryption).toBeDefined()
+			const botMessage = proto.Message.decode(unpadRandomMax16(botEncryption!.data))
+			const context = botMessage.messageContextInfo
+			expect(context?.messageSecret).toBeFalsy()
+			expect(context?.botMessageSecret).toHaveLength(32)
+			expect(context?.botMetadata?.botMetricsMetadata).toMatchObject({
+				destinationId: metaAiJid,
+				destinationEntryPoint: proto.BotMetricsEntryPoint.INVOKE_META_AI_1ON1
+			})
+
+			const participants = stanza.content.find((node: any) => node.tag === 'participants')?.content || []
+			expect(participants.some((node: any) => jidDecode(node.attrs.jid)?.server === 'bot')).toBe(true)
+		} finally {
+			await socket.end(new Error('direct Meta AI test completed'))
 		}
 	})
 
