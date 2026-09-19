@@ -90,6 +90,25 @@ describe('extractMsmsgStanzaInfo', () => {
 		})
 	})
 
+	it('parses bot thread metadata when present', () => {
+		const info = extractMsmsgStanzaInfo(
+			makeStanza([
+				{ tag: 'enc', attrs: { type: 'msmsg' } },
+				{ tag: 'meta', attrs: { target_id: 'TARG' } },
+				{
+					tag: 'bot',
+					attrs: {
+						type: 'prompt',
+						client_thread_id: 'THREAD',
+						edit: 'full'
+					}
+				}
+			])
+		)
+		expect(info?.type).toBe('prompt')
+		expect(info?.clientThreadId).toBe('THREAD')
+	})
+
 	it('treats an empty edit_target_id as the empty string (first-chunk semantics)', () => {
 		const info = extractMsmsgStanzaInfo(
 			makeStanza([

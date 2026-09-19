@@ -63,6 +63,8 @@ import {
 import { logMessageSent, logTcToken } from '../Utils/baileys-logger'
 import { getUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
+import { buildMsmsgCacheKey, makeMsmsgSecretCache, type MsmsgSecretCache } from '../Utils/meta-ai-msmsg'
+import { buildMetaAiPromptContext, resolveMetaAiPrompt } from '../Utils/meta-ai-outbound'
 import {
 	LocationBackend,
 	MediaJobBackend,
@@ -106,6 +108,7 @@ import {
 	isHostedPnUser,
 	isJidBot,
 	isJidGroup,
+	isJidMetaAI,
 	isJidNewsletter,
 	isLidUser,
 	isPnUser,
@@ -157,6 +160,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const assertNativeAndroidIntegrityReady = (
 		sock as typeof sock & { assertNativeAndroidIntegrityReady?: (egress?: 'message' | 'call') => void }
 	).assertNativeAndroidIntegrityReady
+	/** Shared with messages-recv so a prompt secret exists before the bot can answer. */
+	const msmsgSecretCache: MsmsgSecretCache = makeMsmsgSecretCache()
+	;(sock as typeof sock & { __msmsgSecretCache?: MsmsgSecretCache }).__msmsgSecretCache = msmsgSecretCache
 	const currentClientSenderSource = () =>
 		classifyCurrentClientMessageSenderSource(config.transportProfile, authState.creds.me?.id)
 
@@ -1425,12 +1431,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			useUserDevicesCache,
 			useCachedGroupMetadata,
 			statusJidList,
-			liveLocationDuration
+			liveLocationDuration,
+			metaAi,
+			onMetaAiPrepared
 		}: MessageRelayOptions
 	) => {
 		const meId = authState.creds.me?.id
 		if (!meId) throw new Boom('Not authenticated', { statusCode: 401 })
 		const meLid = authState.creds.me?.lid
+		let metaAiBotNode: BinaryNode | undefined
 		const isRetryResend = Boolean(participant?.jid)
 		const isPeerMessage = additionalAttributes?.['category'] === 'peer'
 		let shouldIncludeDeviceIdentity = isRetryResend
@@ -1453,6 +1462,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		const finalJid = jid
 		const requestedJid = jidNormalizedUser(jid) || jid
+		const metaAiPrompt = resolveMetaAiPrompt(finalJid, metaAi)
 		const directRecipient =
 			!isRetryResend && !isGroupOrStatus && !isNewsletter ? await preflightDirectRecipient(jid) : undefined
 		let mappedSelfLid: string | undefined
@@ -1563,6 +1573,51 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			!isStatus && !isGroupOrStatus && !isNewsletter && !isPeerMessage
 				? mappedCanonicalPn || directRecipient?.pnJid || requestedJid
 				: requestedJid
+
+		if (metaAiPrompt && !isRetryResend) {
+			const promptContext = buildMetaAiPromptContext(
+				finalJid,
+				metaAiPrompt,
+				meId,
+				message.messageContextInfo?.messageSecret ?? undefined
+			)
+			metaAiBotNode = { tag: 'bot', attrs: promptContext.botNode.attrs }
+			const promptContextInfo: proto.IMessageContextInfo = {
+				...(message.messageContextInfo || {}),
+				botMessageSecret: promptContext.botMessageSecret,
+				botMetadata: promptContext.botMetadata
+			}
+			delete promptContextInfo.messageSecret
+			message.messageContextInfo = promptContextInfo
+
+			for (const cacheRemote of new Set([finalJid, requestedJid, publicCanonicalJid].filter(Boolean))) {
+				safeCacheSet(
+					msmsgSecretCache,
+					buildMsmsgCacheKey({
+						fromMe: true,
+						remoteJid: cacheRemote,
+						id: msgId
+					}),
+					promptContext.messageSecret,
+					logger,
+					'meta-ai-prompt-secret'
+				)
+			}
+
+			onMetaAiPrepared?.(promptContext.metadata)
+			logger.info(
+				{
+					msgId,
+					to: finalJid,
+					botJid: promptContext.metadata.botJid,
+					type: promptContext.metadata.type,
+					threadId: promptContext.metadata.clientThreadId,
+					threadType: promptContext.metadata.threadType,
+					createdNewThread: promptContext.metadata.createdNewThread
+				},
+				'[META-AI] Prepared native prompt'
+			)
+		}
 
 		if (onResolvedRecipient) {
 			let timeout: NodeJS.Timeout | undefined
@@ -1856,7 +1911,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 
 				if (!isRetryResend) {
-					const targetUserServer = isLid ? 'lid' : 's.whatsapp.net'
+					const targetUserServer = isLid ? 'lid' : isJidMetaAI(finalJid) ? 'bot' : 's.whatsapp.net'
 					devices.push({
 						user,
 						device: 0,
@@ -1892,6 +1947,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							!legacyButtonsWireJid && directRecipient?.freshTargetDevices
 								? [...(await getUSyncDevices([senderIdentity], true, false)), ...directRecipient.freshTargetDevices]
 								: await getUSyncDevices([senderIdentity, targetLookupJid], true, false)
+						if (isJidMetaAI(finalJid) && !sessionDevices.some(device => device.jid === finalJid)) {
+							sessionDevices.unshift({ user: jidDecode(finalJid)!.user, device: 0, jid: finalJid })
+						}
+
 						devices.push(...sessionDevices)
 
 						logger.debug(
@@ -2312,6 +2371,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				metrics.interactiveMessagesFailures.inc({ type: buttonType, reason: 'feature_disabled' })
 			}
 
+			if (metaAiPrompt) {
+				if (metaAiBotNode) deferredNodes.push(metaAiBotNode)
+			}
+
 			// if the participant to send to is explicitly specified (generally retry recp)
 			// ensure the message is only sent to that person
 			// if a retry receipt is sent to everyone -- it'll fail decryption for everyone else who received the msg
@@ -2407,7 +2470,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// does not fetch the contact's token. The latter arrives independently through
 			// a `privacy_token` notification.
 			// WA Web never attaches tctoken to peer (AppStateSync) messages — server
-			const is1on1Send = !isGroup && !isRetryResend && !isStatus && !isNewsletter && !isPeerMessage
+			const is1on1Send = !isGroup && !isRetryResend && !isStatus && !isNewsletter && !isPeerMessage && !metaAiPrompt
 
 			const tcTokenAliases = is1on1Send
 				? await resolveTcTokenAliases(destinationJid, { getLIDForPN, getPNForLID })
@@ -3273,6 +3336,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						: disappearingMessagesInChat
 				await groupToggleEphemeral(jid, value)
 			} else {
+				let metaAiMetadata: WAMessage['metaAi']
+				if (resolveMetaAiPrompt(jid, options.metaAi)) {
+					const callerMetaAiPrepared = options.onMetaAiPrepared
+					options.onMetaAiPrepared = metadata => {
+						metaAiMetadata = metadata
+						callerMetaAiPrepared?.(metadata)
+					}
+				}
+
 				const fullMsg = await generateWAMessage(jid, effectiveContent, {
 					logger,
 					userJid,
@@ -3334,6 +3406,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				await relayMessage(jid, fullMsg.message!, {
 					messageId: fullMsg.key.id!,
 					useCachedGroupMetadata: options.useCachedGroupMetadata,
+					metaAi: options.metaAi,
+					onMetaAiPrepared: options.onMetaAiPrepared,
 					additionalAttributes,
 					statusJidList: options.statusJidList,
 					additionalNodes,
@@ -3342,6 +3416,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						if (isAnyLidUser(wireJid)) fullMsg.key.remoteJidAlt = wireJid
 					}
 				})
+				if (metaAiMetadata) fullMsg.metaAi = metaAiMetadata
 
 				// A SENT sticker becomes "recent" (mobile parity).
 				// Best-effort; never blocks the send (relay already happened).

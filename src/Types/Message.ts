@@ -26,6 +26,60 @@ export type MessageSenderSource = {
 	evidence: MessageSenderSourceEvidence
 }
 
+export type WAMessageMetaAi = {
+	botJid: string
+	edit?: 'first' | 'inner' | 'last' | 'full'
+	editTargetId?: string
+	targetId?: string
+	targetSenderJid?: string
+	clientThreadId?: string
+	threadType?: 'default' | 'incognito' | 'side_chat'
+	sourceChatJid?: string
+	title?: string
+	createdNewThread?: boolean
+}
+
+export type MetaAiPromptRequest = {
+	botJid?: string
+	type?:
+		| 'request_welcome'
+		| 'prompt'
+		| 'command'
+		| 'search'
+		| 'memu_onboarding'
+		| 'memu_invoke'
+		| 'voice'
+		| 'voice_background'
+		| 'text_input'
+		| 'live_ai'
+		| 'feedback'
+	personaType?: '1p' | 'ugc' | '3p'
+	modeSelected?: string | number
+	thread?: {
+		id?: string
+		type?: 'default' | 'incognito' | 'side_chat'
+		sourceChatJid?: string
+		title?: string
+	}
+	personaId?: string
+	invokerJid?: string
+	entryPoint?:
+		| 'chat_shortcut'
+		| 'context_menu'
+		| 'invoke_1on1'
+		| 'invoke_group'
+		| 'forward'
+		| 'ai_tab'
+		| 'ai_home'
+		| 'deeplink'
+	threadEntryPoint?:
+		| 'ai_tab_thread'
+		| 'ai_home_thread'
+		| 'ai_deeplink_immersive_thread'
+		| 'ai_deeplink_thread'
+		| 'ask_meta_ai_context_menu_thread'
+}
+
 export type WAMessage = proto.IWebMessageInfo & {
 	key: WAMessageKey
 	messageStubParameters?: any
@@ -33,6 +87,8 @@ export type WAMessage = proto.IWebMessageInfo & {
 	retryCount?: number
 	/** Captured before public JID normalization removes the device suffix. */
 	senderSource?: MessageSenderSource
+	/** Present when this message is a Meta AI prompt or decrypted msmsg response. */
+	metaAi?: WAMessageMetaAi
 }
 export type WAMessageContent = proto.IMessage
 export type WAContactMessage = proto.Message.IContactMessage
@@ -1091,9 +1147,17 @@ export type MessageRelayOptions = MinimalRelayOptions & {
 	 * `LiveLocationMessage`.
 	 */
 	liveLocationDuration?: number
+	/** Opt-in Meta AI prompt/thread controls. A direct `@bot` destination can omit `botJid`. */
+	metaAi?: MetaAiPromptRequest
+	/** Internal hook used by sendMessage to expose the generated thread metadata. */
+	onMetaAiPrepared?: (metadata: WAMessageMetaAi) => void
 }
 
 export type MiscMessageGenerationOptions = MinimalRelayOptions & {
+	/** Opt-in Meta AI prompt/thread controls. A direct `@bot` destination can omit `botJid`. */
+	metaAi?: MetaAiPromptRequest
+	/** Internal hook used by sendMessage to expose the generated thread metadata. */
+	onMetaAiPrepared?: (metadata: WAMessageMetaAi) => void
 	/** optional, if you want to manually set the timestamp of the message */
 	timestamp?: Date
 	/** the message you want to quote */

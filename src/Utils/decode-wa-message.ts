@@ -708,6 +708,17 @@ export const decryptMessageNode = (
 								: proto.Message.decode(e2eType !== 'plaintext' ? unpadRandomMax16(msgBuffer) : msgBuffer)
 						msg = unwrapDeviceSentMessage(msg)
 
+						if (e2eType === 'msmsg' && msmsgInfo) {
+							fullMessage.metaAi = {
+								botJid: author,
+								edit: msmsgInfo.botEditType,
+								editTargetId: msmsgInfo.botEditTargetId,
+								clientThreadId: msmsgInfo.clientThreadId,
+								targetId: msmsgInfo.targetId,
+								targetSenderJid: msmsgInfo.targetSenderJid
+							}
+						}
+
 						// Cache `messageContextInfo.messageSecret` so subsequent msmsg replies
 						// referencing this message's id can find the decryption secret. Mirrors
 						// WA Web's flow where every decoded msg has its secret stashed in
