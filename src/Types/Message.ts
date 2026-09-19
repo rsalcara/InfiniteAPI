@@ -28,6 +28,7 @@ export type MessageSenderSource = {
 
 export type WAMessageMetaAi = {
 	botJid: string
+	type?: MetaAiPromptRequest['type']
 	edit?: 'first' | 'inner' | 'last' | 'full'
 	editTargetId?: string
 	targetId?: string

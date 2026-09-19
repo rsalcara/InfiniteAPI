@@ -24,6 +24,25 @@ describe('resolveMetaAiPrompt', () => {
 			resolvedBotJid: BOT_JID
 		})
 	})
+
+	it('rejects an arbitrary botJid for a legacy bot destination', () => {
+		expect(() =>
+			resolveMetaAiPrompt('13135550002@c.us', {
+				botJid: 'evil@s.whatsapp.net'
+			})
+		).toThrow('botJid')
+	})
+
+	it('accepts a matching legacy botJid', () => {
+		expect(
+			resolveMetaAiPrompt('13135550002@c.us', {
+				botJid: '13135550002@c.us'
+			})
+		).toMatchObject({
+			botJid: '13135550002@c.us',
+			resolvedBotJid: '13135550002@c.us'
+		})
+	})
 })
 
 describe('buildMetaAiPromptContext', () => {
@@ -64,6 +83,19 @@ describe('buildMetaAiPromptContext', () => {
 		expect(context.metadata.createdNewThread).toBe(true)
 		expect(context.botMetadata.botThreadInfo?.clientInfo?.type).toBe(
 			proto.AIThreadInfo.AIThreadClientInfo.AIThreadType.DEFAULT
+		)
+	})
+
+	it('uses the group invocation entry point for group prompts by default', () => {
+		const context = buildMetaAiPromptContext(
+			'120363012345678900@g.us',
+			{
+				botJid: BOT_JID
+			},
+			'5511000000000@c.us'
+		)
+		expect(context.botMetadata.botMetricsMetadata?.destinationEntryPoint).toBe(
+			proto.BotMetricsEntryPoint.INVOKE_META_AI_GROUP
 		)
 	})
 

@@ -117,7 +117,12 @@ export const resolveMetaAiPrompt = (
 	}
 
 	if (legacyBot) {
-		return { ...(options || {}), resolvedBotJid: options?.botJid || to }
+		const requestedBot = options?.botJid
+		if (requestedBot && !isJidMetaAI(requestedBot) && jidNormalizedUser(requestedBot) !== jidNormalizedUser(to)) {
+			throw new Error('Meta AI botJid must be an @bot JID or match the legacy bot destination')
+		}
+
+		return { ...(options || {}), resolvedBotJid: requestedBot || to }
 	}
 
 	const requestedBot = options?.botJid
@@ -154,7 +159,11 @@ export const buildMetaAiPromptContext = (
 		invokerJid: resolved.invokerJid || meId,
 		botMetricsMetadata: {
 			destinationId: resolved.resolvedBotJid,
-			destinationEntryPoint: resolved.entryPoint ? ENTRY_POINTS[resolved.entryPoint] : ENTRY_POINTS.invoke_1on1,
+			destinationEntryPoint: resolved.entryPoint
+				? ENTRY_POINTS[resolved.entryPoint]
+				: isJidGroup(to)
+					? ENTRY_POINTS.invoke_group
+					: ENTRY_POINTS.invoke_1on1,
 			threadOrigin: resolved.threadEntryPoint ? THREAD_ENTRY_POINTS[resolved.threadEntryPoint] : undefined
 		},
 		botThreadInfo: {

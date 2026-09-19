@@ -1590,18 +1590,25 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			delete promptContextInfo.messageSecret
 			message.messageContextInfo = promptContextInfo
 
-			for (const cacheRemote of new Set([finalJid, requestedJid, publicCanonicalJid].filter(Boolean))) {
-				safeCacheSet(
-					msmsgSecretCache,
-					buildMsmsgCacheKey({
-						fromMe: true,
-						remoteJid: cacheRemote,
-						id: msgId
-					}),
-					promptContext.messageSecret,
-					logger,
-					'meta-ai-prompt-secret'
-				)
+			const cacheRemotes = new Set([finalJid, requestedJid, publicCanonicalJid].filter(Boolean))
+			const cacheParticipants = new Set(
+				isGroup ? [jidNormalizedUser(meId), meLid ? jidNormalizedUser(meLid) : ''].filter(Boolean) : []
+			)
+			for (const cacheRemote of cacheRemotes) {
+				for (const cacheParticipant of [undefined, ...cacheParticipants]) {
+					safeCacheSet(
+						msmsgSecretCache,
+						buildMsmsgCacheKey({
+							fromMe: true,
+							remoteJid: cacheRemote,
+							id: msgId,
+							participant: cacheParticipant
+						}),
+						promptContext.messageSecret,
+						logger,
+						'meta-ai-prompt-secret'
+					)
+				}
 			}
 
 			onMetaAiPrepared?.(promptContext.metadata)
@@ -3337,14 +3344,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				await groupToggleEphemeral(jid, value)
 			} else {
 				let metaAiMetadata: WAMessage['metaAi']
-				if (resolveMetaAiPrompt(jid, options.metaAi)) {
-					const callerMetaAiPrepared = options.onMetaAiPrepared
-					options.onMetaAiPrepared = metadata => {
-						metaAiMetadata = metadata
-						callerMetaAiPrepared?.(metadata)
-					}
-				}
-
+				const callerMetaAiPrepared = options.onMetaAiPrepared
+				const messageOptions: typeof options = resolveMetaAiPrompt(jid, options.metaAi)
+					? {
+							...options,
+							onMetaAiPrepared: metadata => {
+								metaAiMetadata = metadata
+								callerMetaAiPrepared?.(metadata)
+							}
+						}
+					: options
 				const fullMsg = await generateWAMessage(jid, effectiveContent, {
 					logger,
 					userJid,
@@ -3365,7 +3374,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					mediaCache: config.mediaCache,
 					options: config.options,
 					messageId: generateMessageIDV2(sock.user?.id),
-					...options
+					...messageOptions
 				})
 				fullMsg.senderSource = currentClientSenderSource()
 				const isEventMsg = 'event' in content && !!content.event
@@ -3406,8 +3415,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				await relayMessage(jid, fullMsg.message!, {
 					messageId: fullMsg.key.id!,
 					useCachedGroupMetadata: options.useCachedGroupMetadata,
-					metaAi: options.metaAi,
-					onMetaAiPrepared: options.onMetaAiPrepared,
+					metaAi: messageOptions.metaAi,
+					onMetaAiPrepared: messageOptions.onMetaAiPrepared,
 					additionalAttributes,
 					statusJidList: options.statusJidList,
 					additionalNodes,

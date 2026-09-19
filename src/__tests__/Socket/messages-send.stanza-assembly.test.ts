@@ -10,6 +10,7 @@ import {
 import { makeSocketOperationGate } from '../../Socket/socket-operation-gate'
 import type { SignalKeyStore, SocketConfig, WAMessage } from '../../Types'
 import { unpadRandomMax16 } from '../../Utils/generics'
+import { buildMsmsgCacheKey } from '../../Utils/meta-ai-msmsg'
 import { normalizeMessageJids } from '../../Utils/process-message'
 import { jidDecode } from '../../WABinary'
 
@@ -22,6 +23,7 @@ const remoteLid = '100000000000002@lid'
 const coldRequestedPn = '5543991910391@s.whatsapp.net'
 const coldCanonicalPn = '554391910391@s.whatsapp.net'
 const coldLid = '127496221651050@lid'
+const groupJid = '120363012345678900@g.us'
 
 const noopLogger = {
 	level: 'silent',
@@ -135,7 +137,7 @@ const makeFakeSocket = ({
 			coldMappingKnown = true
 		}
 	}
-	const signalRepository = {
+	const baseSignalRepository = {
 		lidMapping: mapping,
 		validateSession: async () => ({ exists: true }),
 		encryptMessage: async ({
@@ -155,6 +157,13 @@ const makeFakeSocket = ({
 		injectE2ESession: async () => undefined,
 		deleteSession: async () => undefined,
 		migrateSession: async () => ({ migrated: 0, skipped: 0, total: 0 })
+	} as any
+	const signalRepository = {
+		...baseSignalRepository,
+		encryptGroupMessage: async () => ({
+			ciphertext: new Uint8Array(),
+			senderKeyDistributionMessage: new Uint8Array()
+		})
 	} as any
 	const ev = new EventEmitter()
 	const authState = { creds: { me: { id: `${ownPn.split('@')[0]}:1@s.whatsapp.net`, lid: `${ownLid}` } }, keys }
@@ -465,6 +474,38 @@ describe('messages-send stanza assembly', () => {
 			expect(stanza.content.some((node: any) => node.tag === 'bot')).toBe(false)
 		} finally {
 			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('caches group Meta AI prompt secrets under the participant-qualified reply key', async () => {
+		const fake = makeFakeSocket()
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			const messageSecret = Buffer.alloc(32, 9)
+			await socket.relayMessage(
+				groupJid,
+				proto.Message.fromObject({
+					conversation: 'group Meta AI prompt',
+					messageContextInfo: { messageSecret }
+				}),
+				{
+					messageId: 'GROUP-META-AI-1',
+					metaAi: { botJid: '718584497008509@bot' }
+				}
+			)
+
+			const cache = (activeFakeSocket as any).__msmsgSecretCache
+			const participantKey = buildMsmsgCacheKey({
+				fromMe: true,
+				remoteJid: groupJid,
+				id: 'GROUP-META-AI-1',
+				participant: ownLid
+			})
+			expect(cache.get(participantKey)).toEqual(messageSecret)
+			expect(fake.sent.at(-1).content.some((node: any) => node.tag === 'bot')).toBe(true)
+		} finally {
+			await socket.end(new Error('group Meta AI cache test completed'))
 		}
 	})
 

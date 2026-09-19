@@ -1,6 +1,6 @@
 import { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto/index.js'
-import type { WAMessage, WAMessageKey } from '../Types'
+import type { MetaAiPromptRequest, WAMessage, WAMessageKey } from '../Types'
 import type { SignalRepositoryWithLIDStore } from '../Types/Signal'
 import {
 	areJidsSameUser,
@@ -711,6 +711,7 @@ export const decryptMessageNode = (
 						if (e2eType === 'msmsg' && msmsgInfo) {
 							fullMessage.metaAi = {
 								botJid: author,
+								type: msmsgInfo.type as MetaAiPromptRequest['type'],
 								edit: msmsgInfo.botEditType,
 								editTargetId: msmsgInfo.botEditTargetId,
 								clientThreadId: msmsgInfo.clientThreadId,
