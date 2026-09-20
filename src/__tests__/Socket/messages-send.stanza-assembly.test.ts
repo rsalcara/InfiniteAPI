@@ -578,7 +578,11 @@ describe('messages-send stanza assembly', () => {
 			})
 
 			const participants = stanza.content.find((node: any) => node.tag === 'participants')?.content || []
-			expect(participants.some((node: any) => jidDecode(node.attrs.jid)?.server === 'bot')).toBe(true)
+			const botParticipants = participants.filter((node: any) => jidDecode(node.attrs.jid)?.server === 'bot')
+			expect(botParticipants.map((node: any) => node.attrs.jid).sort()).toEqual([
+				`${jidDecode(metaAiJid)?.user}:2@bot`,
+				`${jidDecode(metaAiJid)?.user}@bot`
+			])
 			expect(stanza.content.some((node: any) => node.tag === 'tctoken')).toBe(false)
 		} finally {
 			await socket.end(new Error('direct Meta AI test completed'))
