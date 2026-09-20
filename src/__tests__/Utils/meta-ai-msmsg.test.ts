@@ -90,6 +90,25 @@ describe('extractMsmsgStanzaInfo', () => {
 		})
 	})
 
+	it('parses bot thread metadata when present', () => {
+		const info = extractMsmsgStanzaInfo(
+			makeStanza([
+				{ tag: 'enc', attrs: { type: 'msmsg' } },
+				{ tag: 'meta', attrs: { target_id: 'TARG' } },
+				{
+					tag: 'bot',
+					attrs: {
+						type: 'prompt',
+						client_thread_id: 'THREAD',
+						edit: 'full'
+					}
+				}
+			])
+		)
+		expect(info?.type).toBe('prompt')
+		expect(info?.clientThreadId).toBe('THREAD')
+	})
+
 	it('treats an empty edit_target_id as the empty string (first-chunk semantics)', () => {
 		const info = extractMsmsgStanzaInfo(
 			makeStanza([
@@ -185,7 +204,7 @@ describe('decryptMsmsgBotMessage — cache miss = OrphanMsmsgError', () => {
 				stanzaInfo: { targetId: 'TARG', botEditType: 'first' },
 				stanzaId: 'STANZA1',
 				authorJid: '718584497008509@bot',
-				chatJid: '13135550202@c.us',
+				chatJid: '718584497008509@bot',
 				isGroup: false,
 				isFbidBot: true,
 				meLid: '5511999@lid',
@@ -203,7 +222,7 @@ describe('decryptMsmsgBotMessage — cache miss = OrphanMsmsgError', () => {
 				stanzaInfo: { targetId: 'MSG_X' },
 				stanzaId: 'STANZA1',
 				authorJid: '718584497008509@bot',
-				chatJid: '13135550202@c.us',
+				chatJid: '718584497008509@bot',
 				isGroup: false,
 				isFbidBot: true,
 				meLid: '5511999@lid',
@@ -213,9 +232,10 @@ describe('decryptMsmsgBotMessage — cache miss = OrphanMsmsgError', () => {
 			fail('expected OrphanMsmsgError')
 		} catch (e: any) {
 			expect(e).toBeInstanceOf(OrphanMsmsgError)
-			// For FBID bot 1:1 chat: originalUserJid=meLid → isMeJid=true → fromMe=true,
-			// remote=chatJid, id=targetId, no participant.
-			expect(e.targetCacheKey).toBe('true_13135550202@c.us_MSG_X')
+			// decodeMessageNode passes sender=author for direct chats. An FBID
+			// reply therefore has chatJid=author=@bot, never the legacy @c.us
+			// display chat used by older fixtures.
+			expect(e.targetCacheKey).toBe('true_718584497008509@bot_MSG_X')
 		}
 	})
 })
@@ -259,7 +279,7 @@ describe('decryptMsmsgBotMessage — crypto roundtrip', () => {
 		stanzaInfo: { targetId, botEditType: 'first' as const },
 		stanzaId,
 		authorJid: senderJid,
-		chatJid: '13135550202@c.us',
+		chatJid: '718584497008509@bot',
 		isGroup: false,
 		isFbidBot: true,
 		meLid: originalUserJid,
@@ -275,7 +295,7 @@ describe('decryptMsmsgBotMessage — crypto roundtrip', () => {
 		const ciphertext = encryptPlaintext(Buffer.from(plaintext))
 
 		const cache = makeMsmsgSecretCache()
-		cache.set(`true_13135550202@c.us_${targetId}`, messageSecret)
+		cache.set(`true_718584497008509@bot_${targetId}`, messageSecret)
 
 		const decrypted = decryptMsmsgBotMessage(baseInput(cache, ciphertext))
 		expect(decrypted.conversation).toBe('hello from the bot')
@@ -286,7 +306,7 @@ describe('decryptMsmsgBotMessage — crypto roundtrip', () => {
 		const ciphertext = encryptPlaintext(Buffer.from(plaintext))
 
 		const cache = makeMsmsgSecretCache()
-		cache.set(`true_13135550202@c.us_${targetId}`, messageSecret)
+		cache.set(`true_718584497008509@bot_${targetId}`, messageSecret)
 
 		// Caller passes a DIFFERENT stanzaId — AAD/key mismatch → AES-GCM auth tag
 		// verification fails. The helper surfaces the underlying error.
@@ -314,7 +334,7 @@ describe('decryptMsmsgBotMessage — crypto roundtrip', () => {
 		const msMsg = proto.MessageSecretMessage.encode({ encIv: iv, encPayload: ct }).finish()
 
 		const cache = makeMsmsgSecretCache()
-		cache.set(`true_13135550202@c.us_${targetId}`, messageSecret)
+		cache.set(`true_718584497008509@bot_${targetId}`, messageSecret)
 
 		// stanzaId is the INNER chunk's own id (different); botEditTargetId points
 		// to the first chunk's id. The helper should use botEditTargetId for HKDF.
@@ -323,7 +343,7 @@ describe('decryptMsmsgBotMessage — crypto roundtrip', () => {
 			stanzaInfo: { targetId, botEditType: 'inner', botEditTargetId: firstChunkId },
 			stanzaId: 'INNER_CHUNK_OWN_ID',
 			authorJid: senderJid,
-			chatJid: '13135550202@c.us',
+			chatJid: '718584497008509@bot',
 			isGroup: false,
 			isFbidBot: true,
 			meLid: originalUserJid,

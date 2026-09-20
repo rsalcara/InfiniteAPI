@@ -95,6 +95,10 @@ export interface MsmsgStanzaInfo {
 	 *  streaming response, this is the id of the `first` chunk and becomes the
 	 *  HKDF stanzaId so all chunks derive the same key. Empty on `first`. */
 	botEditTargetId?: string
+	/** From `<bot client_thread_id="...">`, when the server includes it. */
+	clientThreadId?: string
+	/** From `<bot type="...">`, when the server includes it. */
+	type?: string
 }
 
 /**
@@ -145,6 +149,8 @@ export const extractMsmsgStanzaInfo = (stanza: BinaryNode): MsmsgStanzaInfo | nu
 			case 'bot':
 				if (attrs && 'edit_target_id' in attrs) info.botEditTargetId = attrs.edit_target_id
 				if (attrs?.edit) info.botEditType = attrs.edit as MsmsgBotEditType
+				if (attrs?.client_thread_id) info.clientThreadId = attrs.client_thread_id
+				if (attrs?.type) info.type = attrs.type
 				break
 		}
 	}

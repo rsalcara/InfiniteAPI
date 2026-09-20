@@ -1,6 +1,6 @@
 import { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto/index.js'
-import type { WAMessage, WAMessageKey } from '../Types'
+import type { MetaAiPromptRequest, WAMessage, WAMessageKey } from '../Types'
 import type { SignalRepositoryWithLIDStore } from '../Types/Signal'
 import {
 	areJidsSameUser,
@@ -707,6 +707,18 @@ export const decryptMessageNode = (
 									})
 								: proto.Message.decode(e2eType !== 'plaintext' ? unpadRandomMax16(msgBuffer) : msgBuffer)
 						msg = unwrapDeviceSentMessage(msg)
+
+						if (e2eType === 'msmsg' && msmsgInfo) {
+							fullMessage.metaAi = {
+								botJid: author,
+								type: msmsgInfo.type as MetaAiPromptRequest['type'],
+								edit: msmsgInfo.botEditType,
+								editTargetId: msmsgInfo.botEditTargetId,
+								clientThreadId: msmsgInfo.clientThreadId,
+								targetId: msmsgInfo.targetId,
+								targetSenderJid: msmsgInfo.targetSenderJid
+							}
+						}
 
 						// Cache `messageContextInfo.messageSecret` so subsequent msmsg replies
 						// referencing this message's id can find the decryption secret. Mirrors

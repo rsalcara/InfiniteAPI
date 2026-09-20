@@ -65,6 +65,7 @@ import {
 	isNodeCacheFullError,
 	makeMsmsgSecretCache,
 	MISSING_KEYS_ERROR_TEXT,
+	type MsmsgSecretCache,
 	NACK_REASONS,
 	NO_MESSAGE_FOUND_ERROR_TEXT,
 	normalizeKeyLidToPn,
@@ -391,7 +392,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	//      per disconnect (audit P2 thread 8).
 	// Upstream PR #2592 uses an unbounded module-global Map (cubic P1, coderabbit
 	// Major) — we fix that AND the timer leak.
-	const msmsgSecretCache = makeMsmsgSecretCache()
+	const msmsgSecretCache =
+		(sock as typeof sock & { __msmsgSecretCache?: MsmsgSecretCache }).__msmsgSecretCache || makeMsmsgSecretCache()
 	registerSocketEndHandler(async () => {
 		try {
 			msmsgSecretCache.flushAll()
