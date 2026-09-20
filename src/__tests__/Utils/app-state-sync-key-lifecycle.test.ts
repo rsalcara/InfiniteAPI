@@ -417,24 +417,52 @@ describe('AppStateSyncKeyLifecycle — official types 38/39 recovery', () => {
 			release = resolve
 		})
 		let attempts = 0
+		let triggerRetry!: () => void
+		const originalSetTimeout = global.setTimeout
+		const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((
+			handler: TimerHandler,
+			timeout?: number,
+			...args: unknown[]
+		) => {
+			if (timeout === 25 && typeof handler === 'function') {
+				triggerRetry = () => handler()
+				return { ref: () => undefined, unref: () => undefined } as unknown as NodeJS.Timeout
+			}
+
+			return originalSetTimeout(handler, timeout, ...args)
+		}) as unknown as typeof setTimeout)
 		const send = jest.fn(async () => {
 			attempts++
 			if (attempts === 1) throw new Error('temporary network failure')
 			await delayed
 		})
-		const { lifecycle } = makeLifecycle(store, { listOwnDevices: async () => [deviceOne], sendPeerMessage: send })
-		await lifecycle.startRecovery()
-		await lifecycle.requestMissingKey('regular', missingKeyId)
-		await lifecycle.runRecovery()
-		await lifecycle.runRecovery()
-		await waitFor(() => send.mock.calls.length === 2)
+		const { lifecycle } = makeLifecycle(store, {
+			listOwnDevices: async () => [deviceOne],
+			sendPeerMessage: send,
+			retryDelayMs: 25
+		})
 
-		expect(send).toHaveBeenCalledTimes(2)
-		expect((await store.listPeerMessages(39))[0]?.acked).toBe(false)
-		release()
-		await waitFor(async () => Boolean((await store.listPeerMessages(39))[0]?.acked))
-		expect((await store.listPeerMessages(39))[0]?.acked).toBe(true)
-		lifecycle.stop()
+		try {
+			await lifecycle.startRecovery()
+			await lifecycle.requestMissingKey('regular', missingKeyId)
+			await lifecycle.runRecovery()
+
+			// The scheduled retry owns backoff: an immediate recovery must not
+			// bypass it. Fire the captured callback explicitly so this test does
+			// not race a real 5ms timer under full-suite CPU pressure.
+			await lifecycle.runRecovery()
+			triggerRetry()
+			await waitFor(() => send.mock.calls.length === 2)
+
+			expect(send).toHaveBeenCalledTimes(2)
+			expect((await store.listPeerMessages(39))[0]?.acked).toBe(false)
+			release()
+			await waitFor(async () => Boolean((await store.listPeerMessages(39))[0]?.acked))
+			expect((await store.listPeerMessages(39))[0]?.acked).toBe(true)
+		} finally {
+			setTimeoutSpy.mockRestore()
+			lifecycle.stop()
+		}
 	})
 
 	it('recovers an unacked persisted request after restart without creating another row', async () => {
