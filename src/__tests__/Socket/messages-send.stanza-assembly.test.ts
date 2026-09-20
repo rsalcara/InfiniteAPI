@@ -13,7 +13,7 @@ import { hkdf } from '../../Utils/crypto'
 import { unpadRandomMax16 } from '../../Utils/generics'
 import { buildMsmsgCacheKey } from '../../Utils/meta-ai-msmsg'
 import { normalizeMessageJids } from '../../Utils/process-message'
-import { jidDecode } from '../../WABinary'
+import { isJidMetaAI, jidDecode } from '../../WABinary'
 
 type CapturedEncryption = { jid: string; data: Uint8Array; useLegacyLock?: boolean }
 
@@ -64,10 +64,14 @@ const makeKeys = (): SignalKeyStore => {
 const makeDeviceResult = (jid: string) => ({
 	id: jid,
 	devices: {
-		deviceList: [
-			{ id: 0, keyIndex: 1 },
-			{ id: 2, keyIndex: 2 }
-		]
+		// Expose only the non-primary Meta AI device so the send path must
+		// explicitly add the primary device; this keeps the routing assertion real.
+		deviceList: isJidMetaAI(jid)
+			? [{ id: 2, keyIndex: 2 }]
+			: [
+					{ id: 0, keyIndex: 1 },
+					{ id: 2, keyIndex: 2 }
+				]
 	}
 })
 
