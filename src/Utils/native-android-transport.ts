@@ -23,6 +23,19 @@ export { createNativeAndroidBridgeProvider } from './native-android-bridge-provi
 export type { NativeAndroidBridgeProviderConfig } from './native-android-bridge-provider'
 export { createNativeAndroidPairingBridgeProvider } from './native-android-pairing-bridge-provider'
 export type { NativeAndroidPairingBridgeProviderConfig } from './native-android-pairing-bridge-provider'
+export { createNativeAndroidRegistrationBridgeProvider } from './native-android-registration-bridge-provider'
+export type {
+	NativeAndroidRegistrationBridgeProviderConfig,
+	NativeAndroidRegistrationBridgeContext,
+	NativeAndroidRegistrationBridgeAttestation
+} from './native-android-registration-bridge-provider'
+export * from './native-android-registration-keys'
+export * from './native-android-registration-protocol'
+export { createNativeAndroidRegistrationHttpClient } from './native-android-registration-client'
+export type {
+	NativeAndroidRegistrationHttpConfig,
+	NativeAndroidRegistrationHttpResponse
+} from './native-android-registration-client'
 import { makeNativeAndroidNodeAttestationProvider } from './native-android-node-attestation'
 
 const PROFILE_FIELDS: ReadonlyArray<keyof NativeAndroidDeviceProfile> = [

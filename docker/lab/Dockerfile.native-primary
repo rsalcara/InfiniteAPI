@@ -1,0 +1,38 @@
+FROM node:22 AS engine
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . /infiniteapi
+
+WORKDIR /infiniteapi
+RUN npm install --no-audit --no-fund \
+    && npm run build \
+    && test -d lib/Utils/multi-db-sqlite \
+    && test -f lib/Socket/Client/tcp.js \
+    && grep -q "native_android" lib/Utils/native-android-transport.js
+
+FROM astra:local-base
+
+COPY --from=engine /infiniteapi /infiniteapi
+ADD docker/lab/astra-source.tar /app
+
+WORKDIR /app
+RUN node -e "const fs=require('node:fs'); const p='/app/package.json'; const pkg=JSON.parse(fs.readFileSync(p,'utf8')); pkg.dependencies.baileys='file:/infiniteapi'; fs.writeFileSync(p, JSON.stringify(pkg,null,2)+'\n');" \
+    && npm install --no-audit --no-fund \
+    && node -e "import('/app/node_modules/baileys/lib/Utils/native-android-transport.js').then(() => console.log('native_android local build loadable OK'))"
+
+ENV NODE_ENV=production \
+    PORT=8787 \
+    SESSIONS_DIR=/app/sessions \
+    AUTH_BACKEND=multidb-sqlite
+
+RUN mkdir -p /app/sessions /app/native-primary-state
+VOLUME ["/app/sessions", "/app/native-primary-state"]
+EXPOSE 8787
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
+    CMD curl -fsS http://localhost:8787/health >/dev/null || exit 1
+
+CMD ["node", "src/index.js"]

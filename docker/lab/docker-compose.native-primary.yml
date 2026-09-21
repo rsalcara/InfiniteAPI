@@ -1,0 +1,48 @@
+services:
+  astra-native-primary:
+    build:
+      context: ../..
+      dockerfile: docker/lab/Dockerfile.native-primary
+    image: astra-api:native-primary-lab
+    container_name: astra-infiniteapi-native-primary
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8789:8787"
+    environment:
+      PORT: "8787"
+      API_KEY: "${API_KEY:-ACFH4RFOTME4RU50R4FKGNW34LDFG8DSQ}"
+      AUTH_BACKEND: multidb-sqlite
+      SESSIONS_DIR: /app/sessions
+      INFINITEAPI_AUTH_STORAGE: multi_db_sqlite
+      WHATSAPP_TRANSPORT: native_android
+      NATIVE_ANDROID_APP_VARIANT: business
+      NATIVE_ANDROID_DEVICE_CATALOG: "true"
+      NATIVE_ANDROID_PROFILE_FILE: /run/native-android/profile.json
+      INFINITEAPI_NATIVE_ANDROID_STATE_DIR: /app/native-primary-state
+      NATIVE_ANDROID_BRIDGE_URL: ${NATIVE_ANDROID_BRIDGE_URL:-http://host.docker.internal:8790}
+      NATIVE_ANDROID_BRIDGE_TOKEN: ${NATIVE_ANDROID_BRIDGE_TOKEN:-}
+      NATIVE_ANDROID_BRIDGE_TIMEOUT_MS: ${NATIVE_ANDROID_BRIDGE_TIMEOUT_MS:-40000}
+      NATIVE_ANDROID_BRIDGE_ALLOW_HOST_ALIASES: "true"
+    volumes:
+      - ./sessions-native-primary:/app/sessions
+      - ./native-primary-state:/app/native-primary-state
+      - C:/github/_astra_docker/native-android-lab:/run/native-android:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  native-android-bridge:
+    image: infiniteapi-bridge:safetynet-wire-1
+    container_name: infiniteapi-native-primary-bridge
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8790:9876"
+    environment:
+      BRIDGE_TOKEN: ${NATIVE_ANDROID_BRIDGE_TOKEN:-}
+      FRIDA_HOST: ${FRIDA_HOST:-host.docker.internal}
+      FRIDA_PORT: ${FRIDA_PORT:-27044}
+      WHATSAPP_PACKAGE: ${WHATSAPP_PACKAGE:-com.whatsapp.w4b}
+      WHATSAPP_PACKAGES: ${WHATSAPP_PACKAGES:-com.whatsapp.w4b}
+      AUTO_LAUNCH_WHATSAPP: ${AUTO_LAUNCH_WHATSAPP:-true}
+      REGISTRATION_CAPTURE_HMAC_KEY_B64: ${REGISTRATION_CAPTURE_HMAC_KEY_B64:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
