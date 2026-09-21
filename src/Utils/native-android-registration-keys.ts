@@ -1,5 +1,5 @@
 import type { KeyPair } from '../Types'
-import { Curve, generateSignalPubKey, signedKeyPair } from './crypto'
+import { Curve, signedKeyPair } from './crypto'
 import { encodeBigEndian, generateRegistrationId } from './generics'
 
 export type NativeAndroidRegistrationSignalKeys = {
@@ -79,8 +79,12 @@ export const buildNativeAndroidRegistrationKeyBundle = ({
 		e_ident: identity.public,
 		e_keytype: Uint8Array.from([5]),
 		e_regid: encodeBigEndian(registrationId, 4),
-		e_skey_id: encodeBigEndian(signedPreKey.keyId, 4),
-		e_skey_val: generateSignalPubKey(signedPreKey.keyPair.public),
+		// W4B 2.26.36.72 serializes signed-pre-key IDs as 24-bit big endian
+		// (`AbstractC36251jI.A04`), unlike the 32-bit registration ID.
+		e_skey_id: encodeBigEndian(signedPreKey.keyId, 3),
+		// Registration transmits the raw 32-byte Curve public key. The APK
+		// strips the 0x05 Signal prefix (`C09200bT.A03/A04`) before CJT.A04.
+		e_skey_val: signedPreKey.keyPair.public,
 		e_skey_sig: signedPreKey.signature
 	}
 }

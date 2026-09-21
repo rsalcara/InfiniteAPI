@@ -73,11 +73,13 @@ export const createNativeAndroidRegistrationHttpClient = (
 					{ statusCode: DisconnectReason.badSession }
 				)
 			}
+
 			return { status: attested.apkResponse.status, body: apkParsed, attempts: 1 }
 		}
 
 		const maxAttempts = config.maxAttempts ?? 4
 		let lastError: unknown
+
 		for (let attempt = 1; attempt <= maxAttempts; ++attempt) {
 			const controller = new AbortController()
 			const timeout = setTimeout(() => controller.abort(), config.timeoutMs ?? 30_000)

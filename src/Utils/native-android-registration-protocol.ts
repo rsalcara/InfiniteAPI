@@ -10,6 +10,8 @@ export type NativeAndroidRegistrationEndpoint =
 	| '/v2/autoconf'
 
 export type NativeAndroidRegistrationCommon = {
+	/** Selects the official platform token: W4B uses `smba`; Consumer uses `android`. */
+	appVariant?: 'business' | 'consumer'
 	/** BCP-47 language, e.g. `pt`; official param name is `lg`. */
 	language: string
 	/** ISO-3166 country, e.g. `BR`; official param name is `lc`. */
@@ -45,6 +47,44 @@ export type NativeAndroidRegistrationCommon = {
 	keyBundle: NativeAndroidRegistrationKeyBundle
 }
 
+/**
+ * Values captured from W4B 2.26.36.72 immediately before /v2/code encryption.
+ * Every field is supplied by the real device or by the local registration
+ * bridge. This type intentionally has no defaults: the official APK omits a
+ * field when its runtime value is absent, and so must the motor.
+ */
+export type NativeAndroidRequestCodeEnvironment = {
+	_gs?: string
+	sim_mnc?: string
+	recaptcha?: string
+	device_ram?: string
+	db?: 0 | 1
+	rc?: number
+	pid?: number
+	cellular_strength?: number
+	gpia?: string
+	hasinrc?: 0 | 1
+	roaming_type?: number
+	mistyped?: number
+	aid?: string
+	mnc?: string
+	airplane_mode_type?: 0 | 1
+	mcc?: string
+	_gp?: string
+	_gg?: string
+	_ge?: string
+	prefer_sms_over_flash?: boolean
+	sim_type?: number
+	sim_mcc?: string
+	simnum?: number
+	client_metrics?: string
+	_gi?: string
+	education_screen_displayed?: boolean
+	network_radio_type?: number
+	feo2_query_status?: string
+	reason?: string
+}
+
 export type NativeAndroidRequestCodeInput = {
 	token: string
 	method: 'sms' | 'voice'
@@ -54,6 +94,7 @@ export type NativeAndroidRequestCodeInput = {
 	manageCallPermission?: 0 | 1
 	callLogPermission?: 0 | 1
 	clientStartMessage?: Uint8Array
+	environment?: NativeAndroidRequestCodeEnvironment
 }
 
 export type NativeAndroidRegisterInput = {
@@ -207,9 +248,9 @@ const addCommonParams = (builder: RegistrationRequestBuilder, common: NativeAndr
 	// A0T
 	builder.requiredString('lg', common.language)
 	builder.requiredString('lc', common.country)
-	// Network layer injects `platform=android` for every registration
-	// endpoint (C90133y9.A01 line 44, CGL line 42; W4B 2.26.36.72).
-	builder.requiredString('platform', 'smba')
+	// W4B registration telemetry identifies as `smba` (K8i lines 26/45);
+	// Consumer registration URLs use `android` (C90133y9/CGL).
+	builder.requiredString('platform', common.appVariant === 'business' ? 'smba' : 'android')
 	builder.requiredString('fdid', common.fingerprintDeviceId)
 	builder.uuid('expid', common.expirationId)
 
@@ -237,6 +278,23 @@ const addKeyBundle = (builder: RegistrationRequestBuilder, bundle: NativeAndroid
 	builder.requiredBase64('e_skey_sig', bundle.e_skey_sig)
 }
 
+/**
+ * Writes one runtime environment field at its observed position in the W4B
+ * 2.26.36.72 /v2/code wire. Undefined means the APK did not produce the value;
+ * it never falls back to a fabricated default.
+ */
+const addEnvironmentField = (
+	builder: RegistrationRequestBuilder,
+	environment: NativeAndroidRequestCodeEnvironment,
+	key: keyof NativeAndroidRequestCodeEnvironment
+): void => {
+	const value = environment[key]
+	if (value === undefined) return
+	if (typeof value === 'number') builder.setRaw(key, String(value))
+	else if (typeof value === 'boolean') builder.setRaw(key, String(value))
+	else builder.setRaw(key, value)
+}
+
 export const buildNativeAndroidRequestCodeRequest = (
 	common: NativeAndroidRegistrationCommon,
 	input: NativeAndroidRequestCodeInput
@@ -245,15 +303,64 @@ export const buildNativeAndroidRequestCodeRequest = (
 		throw new Error('native_android registration: method must be sms or voice')
 	}
 
+	// Exact field order from the 2026-09-21 pre-encryption /v2/code capture
+	// (46 fields). The generic common/key helpers use endpoint insertion order
+	// that is correct for the other registration endpoints, but /v2/code is
+	// serialized in this distinct observed order.
 	const builder = new RegistrationRequestBuilder()
-	addCommonParams(builder, common)
+	const environment = input.environment ?? {}
+	builder.requiredString('platform', common.appVariant === 'business' ? 'smba' : 'android')
+	addEnvironmentField(builder, environment, '_gs')
+	addEnvironmentField(builder, environment, 'sim_mnc')
+	builder.requiredPercentEncoded('id', common.identityId)
+	addEnvironmentField(builder, environment, 'recaptcha')
+	addEnvironmentField(builder, environment, 'device_ram')
+	addEnvironmentField(builder, environment, 'db')
+	builder.requiredString('lg', common.language)
+	addEnvironmentField(builder, environment, 'rc')
+	addEnvironmentField(builder, environment, 'pid')
+	addEnvironmentField(builder, environment, 'cellular_strength')
+	addEnvironmentField(builder, environment, 'gpia')
+	addEnvironmentField(builder, environment, 'hasinrc')
+	addEnvironmentField(builder, environment, 'roaming_type')
+	addEnvironmentField(builder, environment, 'mistyped')
+	builder.optionalString('login', common.login)
+	if (common.registrationType !== undefined) builder.setRaw('type', String(common.registrationType))
+	// A09 writes cc/in only when userType != WA_TWO_FA_CONTACT_POINT.
+	if (common.registrationType !== 1) {
+		builder.requiredString('cc', common.countryCallingCode)
+		builder.requiredString('in', common.nationalNumber)
+	}
+
+	builder.optionalString('advertising_id', input.advertisingId)
+	builder.requiredPercentEncoded('backup_token', common.backupToken)
+	addEnvironmentField(builder, environment, 'aid')
+	addEnvironmentField(builder, environment, 'mnc')
+	addEnvironmentField(builder, environment, 'airplane_mode_type')
+	addEnvironmentField(builder, environment, 'mcc')
+	addEnvironmentField(builder, environment, '_gp')
+	addEnvironmentField(builder, environment, '_gg')
+	addEnvironmentField(builder, environment, '_ge')
+	addEnvironmentField(builder, environment, 'prefer_sms_over_flash')
+	addEnvironmentField(builder, environment, 'sim_type')
+	builder.requiredBase64('e_ident', common.keyBundle.e_ident)
+	builder.requiredBase64('e_skey_sig', common.keyBundle.e_skey_sig)
+	addEnvironmentField(builder, environment, 'sim_mcc')
+	addEnvironmentField(builder, environment, 'simnum')
 	builder.requiredString('token', input.token)
+	builder.uuid('expid', common.expirationId)
+	addEnvironmentField(builder, environment, 'client_metrics')
+	addEnvironmentField(builder, environment, '_gi')
+	builder.requiredBase64('e_skey_id', common.keyBundle.e_skey_id)
+	addEnvironmentField(builder, environment, 'education_screen_displayed')
+	builder.requiredBase64('authkey', common.keyBundle.authkey)
+	builder.requiredBase64('e_skey_val', common.keyBundle.e_skey_val)
+	builder.requiredBase64('e_regid', common.keyBundle.e_regid)
+	addEnvironmentField(builder, environment, 'network_radio_type')
 	builder.requiredString('method', input.method)
 	builder.optionalString('context', input.context)
-	// A09 gates these on `userType != WA_TWO_FA_CONTACT_POINT`, so the
-	// primary flow also attempts them; each write skips null/-1 values
-	// (CJT.A00/A05), which is the fresh-install default, so all four stay
-	// out of the wire unless the caller supplies real values.
+	// A09 gates these on userType != WA_TWO_FA_CONTACT_POINT; each write skips
+	// null/-1 values, the fresh-install default.
 	if (common.registrationType !== 1) {
 		builder.booleanOrSkip('clicked_education_link', input.clickedEducationLink)
 		builder.booleanOrSkip('manage_call_permission', input.manageCallPermission)
@@ -261,9 +368,10 @@ export const buildNativeAndroidRequestCodeRequest = (
 		builder.base64('client_start_message', input.clientStartMessage)
 	}
 
-	builder.optionalString('advertising_id', input.advertisingId)
-	addLoginAndType(builder, common)
-	addKeyBundle(builder, common.keyBundle)
+	builder.requiredBase64('e_keytype', common.keyBundle.e_keytype)
+	addEnvironmentField(builder, environment, 'feo2_query_status')
+	addEnvironmentField(builder, environment, 'reason')
+	builder.requiredString('fdid', common.fingerprintDeviceId)
 
 	return { endpoint: '/v2/code', body: builder.toString() }
 }
@@ -373,5 +481,3 @@ export const protectNativeAndroidRegistrationBody = (
 	const encrypted = Buffer.concat([cipher.update(Buffer.concat([mac, bodyBytes])), cipher.final(), cipher.getAuthTag()])
 	return Buffer.concat([iv, encrypted]).toString('base64')
 }
-
-

@@ -10,7 +10,7 @@ services:
       - "127.0.0.1:8789:8787"
     environment:
       PORT: "8787"
-      API_KEY: "${API_KEY:-ACFH4RFOTME4RU50R4FKGNW34LDFG8DSQ}"
+      API_KEY: "${API_KEY:-change-me}"
       AUTH_BACKEND: multidb-sqlite
       SESSIONS_DIR: /app/sessions
       INFINITEAPI_AUTH_STORAGE: multi_db_sqlite
@@ -31,7 +31,10 @@ services:
       - "host.docker.internal:host-gateway"
 
   native-android-bridge:
-    image: infiniteapi-bridge:safetynet-wire-1
+    build:
+      context: ../..
+      dockerfile: docker/lab/Dockerfile.native-primary-bridge
+    image: infiniteapi-bridge:safetynet-wire-2
     container_name: infiniteapi-native-primary-bridge
     restart: unless-stopped
     ports:

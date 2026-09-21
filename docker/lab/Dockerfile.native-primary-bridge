@@ -1,0 +1,4 @@
+FROM infiniteapi-bridge:safetynet-wire-1
+
+COPY local-tools/hook.js /app/hook.js
+COPY docker/lab/bridge-server.py /app/server.py

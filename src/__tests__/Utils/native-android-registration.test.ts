@@ -15,6 +15,7 @@ import {
 } from '../../Utils/native-android-registration-protocol'
 
 const COMMON = {
+	appVariant: 'business',
 	language: 'pt',
 	country: 'BR',
 	countryCallingCode: '55',
@@ -28,11 +29,11 @@ const COMMON = {
 		e_ident: Uint8Array.from([2]),
 		e_keytype: Uint8Array.from([5]),
 		e_regid: Uint8Array.from([0, 0, 0x30, 0x39]),
-		e_skey_id: Uint8Array.from([0, 0, 0, 1]),
+		e_skey_id: Uint8Array.from([0, 0, 1]),
 		e_skey_val: Uint8Array.from([3]),
 		e_skey_sig: Uint8Array.from([4])
 	}
-}
+} as const
 
 describe('native_android primary registration keys', () => {
 	it('creates device-0 Signal material with a verified signed pre-key', () => {
@@ -50,8 +51,8 @@ describe('native_android primary registration keys', () => {
 		expect(bundle.e_ident).toEqual(keys.identity.public)
 		expect(bundle.e_keytype).toEqual(Uint8Array.from([5]))
 		expect(bundle.e_regid).toHaveLength(4)
-		expect(bundle.e_skey_id).toHaveLength(4)
-		expect(bundle.e_skey_val).toHaveLength(33)
+		expect(bundle.e_skey_id).toHaveLength(3)
+		expect(bundle.e_skey_val).toHaveLength(32)
 		expect(
 			Curve.verify(
 				keys.identity.public,
@@ -75,17 +76,34 @@ describe('native_android official registration wire', () => {
 		})
 
 		expect(request.endpoint).toBe('/v2/code')
-		expect(request.body.startsWith(
-			'cc=55&in=11999999999&lg=pt&lc=BR&platform=smba&fdid=fixed-fdid&expid='
-		)).toBe(true)
-		expect(request.body).toContain('&id=%01%2B%FF&backup_token=abc&token=11999999999&method=sms')
+		// W4B 2.26.36.72 identifies Business registration as `smba` and adds
+		// platform before the endpoint-specific captured map order.
+		expect(request.body.startsWith('platform=smba&id=%01%2B%FF&lg=pt')).toBe(true)
+		expect(request.body).toContain('&cc=55&in=11999999999&backup_token=abc')
+		expect([...new URLSearchParams(request.body).keys()]).toEqual([
+			'platform',
+			'id',
+			'lg',
+			'cc',
+			'in',
+			'backup_token',
+			'e_ident',
+			'e_skey_sig',
+			'token',
+			'expid',
+			'e_skey_id',
+			'authkey',
+			'e_skey_val',
+			'e_regid',
+			'method',
+			'e_keytype',
+			'fdid'
+		])
 		// Primary registration: userType and waTwoFaContactPoint are null in
 		// the APK, so neither `login` nor `type` reaches the wire.
 		expect(request.body).not.toMatch(/(^|&)login=/)
 		expect(request.body).not.toMatch(/(^|&)type=/)
 		expect(request.body).toContain('&authkey=')
-		expect(request.body.indexOf('&authkey=')).toBeGreaterThan(request.body.indexOf('&method=sms'))
-		expect(request.body.indexOf('&e_skey_sig=')).toBeGreaterThan(request.body.indexOf('&authkey='))
 	})
 
 	it('omits flash-call fields for primary when the caller supplies no values', () => {
@@ -119,7 +137,91 @@ describe('native_android official registration wire', () => {
 		expect(request.body).not.toMatch(/(^|&)cc=/)
 		expect(request.body).not.toMatch(/(^|&)in=/)
 		expect(request.body).not.toContain('clicked_education_link=')
-		expect(request.body).toContain('login=5511999999999%40s.whatsapp.net&type=1&authkey=')
+		expect(request.body).toContain('login=5511999999999%40s.whatsapp.net&type=1&backup_token=abc&e_ident=')
+	})
+
+	it('builds /v2/code environment fields only when the device supplies them', () => {
+		const request = buildNativeAndroidRequestCodeRequest(COMMON, {
+			token: '11999999999',
+			method: 'voice',
+			environment: {
+				_gs: '{"em":"real-google-payload"}',
+				sim_mnc: '260',
+				recaptcha: '{"stage":"ABPROP_DISABLED"}',
+				device_ram: '2.42',
+				db: 1,
+				rc: 0,
+				pid: 10600,
+				cellular_strength: 4,
+				gpia: 'real-play-integrity-token',
+				hasinrc: 1,
+				roaming_type: 0,
+				mistyped: 7,
+				mnc: '260',
+				airplane_mode_type: 0,
+				mcc: '310',
+				_ge: '{"sb":false,"sv":false}',
+				prefer_sms_over_flash: false,
+				sim_type: 1,
+				sim_mcc: '310',
+				simnum: 0,
+				client_metrics: '{"attempts":32,"is_sim_absent":false}',
+				education_screen_displayed: false,
+				network_radio_type: 1,
+				feo2_query_status: 'error_security_exception',
+				reason: 'server-send-request-no-routes'
+			}
+		})
+
+		expect([...new URLSearchParams(request.body).keys()]).toEqual([
+			'platform',
+			'_gs',
+			'sim_mnc',
+			'id',
+			'recaptcha',
+			'device_ram',
+			'db',
+			'lg',
+			'rc',
+			'pid',
+			'cellular_strength',
+			'gpia',
+			'hasinrc',
+			'roaming_type',
+			'mistyped',
+			'cc',
+			'in',
+			'backup_token',
+			'mnc',
+			'airplane_mode_type',
+			'mcc',
+			'_ge',
+			'prefer_sms_over_flash',
+			'sim_type',
+			'e_ident',
+			'e_skey_sig',
+			'sim_mcc',
+			'simnum',
+			'token',
+			'expid',
+			'client_metrics',
+			'e_skey_id',
+			'education_screen_displayed',
+			'authkey',
+			'e_skey_val',
+			'e_regid',
+			'network_radio_type',
+			'method',
+			'e_keytype',
+			'feo2_query_status',
+			'reason',
+			'fdid'
+		])
+		expect(request.body).toContain('reason=server-send-request-no-routes')
+		expect(request.body).not.toContain('&aid=')
+		expect(request.body).not.toContain('&_gp=')
+		expect(request.body).not.toContain('&_gg=')
+		expect(request.body).not.toContain('&_gi=')
 	})
 
 	it('builds /v2/register with the verification code before the key bundle', () => {
