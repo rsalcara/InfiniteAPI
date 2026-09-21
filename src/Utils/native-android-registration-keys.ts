@@ -34,9 +34,15 @@ export const createNativeAndroidRegistrationSignalKeys = (): NativeAndroidRegist
 	const identity = Curve.generateKeyPair()
 	const keyId = 1
 	const signedPreKey = signedKeyPair(identity, keyId)
+	// W4B 2.26.36.72 signs the raw Curve public key, not the serialized
+	// 0x05-prefixed Signal key: `AbstractC24664Avp.A0B` is called from
+	// `C09200bT` with `signedPreKey.publicKey.A01` (the 32-byte raw value).
+	// Baileys' shared `signedKeyPair` signs `generateSignalPubKey(publicKey)`,
+	// which is correct for companion sessions but not for primary registration.
+	const signature = Curve.sign(identity.private, signedPreKey.keyPair.public)
 	const registrationId = generateRegistrationId()
 
-	if (!signedPreKey.signature || signedPreKey.signature.byteLength === 0) {
+	if (!signature || signature.byteLength === 0) {
 		throw new Error('native_android registration: signed pre-key signature is unavailable')
 	}
 
@@ -50,7 +56,7 @@ export const createNativeAndroidRegistrationSignalKeys = (): NativeAndroidRegist
 		signedPreKey: {
 			keyId,
 			keyPair: signedPreKey.keyPair,
-			signature: Buffer.from(signedPreKey.signature)
+			signature: Buffer.from(signature)
 		},
 		registrationId
 	}

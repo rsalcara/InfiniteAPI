@@ -1,5 +1,5 @@
 import { createDecipheriv } from 'crypto'
-import { Curve, generateSignalPubKey } from '../../Utils/crypto'
+import { Curve } from '../../Utils/crypto'
 import { createNativeAndroidRegistrationBridgeProvider } from '../../Utils/native-android-registration-bridge-provider'
 import { createNativeAndroidRegistrationHttpClient } from '../../Utils/native-android-registration-client'
 import {
@@ -53,13 +53,9 @@ describe('native_android primary registration keys', () => {
 		expect(bundle.e_regid).toHaveLength(4)
 		expect(bundle.e_skey_id).toHaveLength(3)
 		expect(bundle.e_skey_val).toHaveLength(32)
-		expect(
-			Curve.verify(
-				keys.identity.public,
-				generateSignalPubKey(keys.signedPreKey.keyPair.public),
-				keys.signedPreKey.signature
-			)
-		).toBe(true)
+		expect(Curve.verify(keys.identity.public, keys.signedPreKey.keyPair.public, keys.signedPreKey.signature)).toBe(true)
+		expect(keys.signedPreKey.signature).toHaveLength(64)
+		expect(keys.signedPreKey.signature).toEqual(Curve.sign(keys.identity.private, keys.signedPreKey.keyPair.public))
 	})
 })
 
