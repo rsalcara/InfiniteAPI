@@ -75,7 +75,9 @@ describe('native_android official registration wire', () => {
 		})
 
 		expect(request.endpoint).toBe('/v2/code')
-		expect(request.body.startsWith('cc=55&in=11999999999&lg=pt&lc=BR&fdid=fixed-fdid&expid=')).toBe(true)
+		expect(request.body.startsWith(
+			'cc=55&in=11999999999&lg=pt&lc=BR&platform=smba&fdid=fixed-fdid&expid='
+		)).toBe(true)
 		expect(request.body).toContain('&id=%01%2B%FF&backup_token=abc&token=11999999999&method=sms')
 		// Primary registration: userType and waTwoFaContactPoint are null in
 		// the APK, so neither `login` nor `type` reaches the wire.
