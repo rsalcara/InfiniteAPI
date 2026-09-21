@@ -38,3 +38,7 @@ local-tools/*-capture.jsonl
 __pycache__/
 .claude/
 tsconfig.tsbuildinfo
+# Native primary device lab — session state and large artifacts
+docker/lab/sessions-native-primary/
+docker/lab/native-primary-state/
+docker/lab/*.tar
