@@ -64,7 +64,14 @@ import { logMessageSent, logTcToken } from '../Utils/baileys-logger'
 import { getUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
 import { buildMsmsgCacheKey, makeMsmsgSecretCache, type MsmsgSecretCache } from '../Utils/meta-ai-msmsg'
-import { buildMetaAiPromptContext, resolveMetaAiPrompt } from '../Utils/meta-ai-outbound'
+import {
+	buildMetaAiPromptContext,
+	buildMetaAiSendResult,
+	type MetaAiPromptMetadata,
+	type MetaAiSendRequest,
+	normalizeMetaAiSendRequest,
+	resolveMetaAiPrompt
+} from '../Utils/meta-ai-outbound'
 import {
 	LocationBackend,
 	MediaJobBackend,
@@ -2867,7 +2874,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}
 	})
 
-	return {
+	const messageSocket = {
 		...sock,
 		userDevicesCache,
 		devicesMutex,
@@ -3477,6 +3484,37 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 		},
 		/**
+		 * Sends a Meta AI prompt using the stable motor-level contract expected
+		 * by HTTP gateways and SDKs. Advanced callers can still use sendMessage()
+		 * with `metaAi` options; this method validates and normalizes the result.
+		 */
+		sendMetaAi: async (request: MetaAiSendRequest) => {
+			const normalized = normalizeMetaAiSendRequest(request)
+			let metaAiMetadata: WAMessage['metaAi'] | undefined
+			const message = await sendMessage(
+				normalized.to,
+				{ text: normalized.text },
+				{
+					metaAi: normalized.options,
+					onMetaAiPrepared: metadata => {
+						metaAiMetadata = metadata
+					}
+				}
+			)
+
+			if (!message) {
+				throw new Boom('Meta AI prompt message was not produced', { statusCode: 500 })
+			}
+
+			if (!metaAiMetadata) {
+				throw new Boom('Meta AI prompt metadata was not produced', { statusCode: 500 })
+			}
+
+			const preparedMetadata = metaAiMetadata as MetaAiPromptMetadata
+
+			return buildMetaAiSendResult(message, preparedMetadata)
+		},
+		/**
 		 * Sends a live-location message (`liveLocationMessage`) and mirrors the
 		 * `from_me=1` share into `location.db` with the real `expires`.
 		 * Duration is carried as `<enc duration="…">`, matching Android. Earlier
@@ -3601,4 +3639,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				return fullMsg
 			})
 	}
+
+	const sendMessage = messageSocket.sendMessage
+	return messageSocket
 }

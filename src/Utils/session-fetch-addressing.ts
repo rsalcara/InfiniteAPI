@@ -1,5 +1,6 @@
 import type { LIDMapping } from '../Types'
 import { isAnyLidUser, isAnyPnUser } from '../WABinary/jid-utils'
+import { resolveMetaAiBotAliasJid } from './meta-ai-addressing'
 
 /**
  * Resolve addresses used by the encrypt-key IQ. Known PN mappings use their
@@ -11,10 +12,11 @@ export const resolveSessionFetchJids = (
 	mappings: readonly LIDMapping[]
 ): string[] => {
 	const mappedPns = new Map(mappings.map(mapping => [mapping.pn, mapping.lid]))
+	const requested = requestedJids.map(jid => resolveMetaAiBotAliasJid(jid) || jid)
 	return [
 		...new Set([
-			...requestedJids.filter(jid => isAnyLidUser(jid)),
-			...requestedJids.filter(jid => isAnyPnUser(jid)).map(jid => mappedPns.get(jid) || jid)
+			...requested.filter(jid => isAnyLidUser(jid)),
+			...requested.filter(jid => isAnyPnUser(jid)).map(jid => mappedPns.get(jid) || jid)
 		])
 	]
 }

@@ -12,6 +12,7 @@ import type { SignalKeyStore, SocketConfig, WAMessage } from '../../Types'
 import { hkdf } from '../../Utils/crypto'
 import { unpadRandomMax16 } from '../../Utils/generics'
 import { buildMsmsgCacheKey } from '../../Utils/meta-ai-msmsg'
+import { META_AI_PUBLIC_ALIAS } from '../../Utils/meta-ai-outbound'
 import { normalizeMessageJids } from '../../Utils/process-message'
 import { isJidMetaAI, jidDecode } from '../../WABinary'
 
@@ -590,6 +591,62 @@ describe('messages-send stanza assembly', () => {
 			expect(stanza.content.some((node: any) => node.tag === 'tctoken')).toBe(false)
 		} finally {
 			await socket.end(new Error('direct Meta AI test completed'))
+		}
+	})
+
+	it('exposes the normalized public Meta AI send contract', async () => {
+		const fake = makeFakeSocket()
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			const result = await socket.sendMetaAi({
+				to: META_AI_PUBLIC_ALIAS,
+				text: 'public contract prompt',
+				type: 'request_welcome'
+			})
+
+			const stanza = fake.sent.at(-1)
+			const botNode = stanza.content.find((node: any) => node.tag === 'bot')
+
+			expect(result).toMatchObject({
+				chatJid: META_AI_PUBLIC_ALIAS,
+				botJid: META_AI_PUBLIC_ALIAS,
+				type: 'request_welcome',
+				threadType: 'default',
+				createdNewThread: true
+			})
+			expect(result.messageId).toBeTruthy()
+			expect(result.threadId).toBe(botNode?.attrs.client_thread_id)
+			expect(stanza.attrs.to).toBe(metaAiJid)
+			expect(stanza.content.some((node: any) => node.tag === 'tctoken')).toBe(false)
+		} finally {
+			await socket.end(new Error('public Meta AI contract test completed'))
+		}
+	})
+
+	it('keeps sendMetaAi callable after the socket is destructured', async () => {
+		const fake = makeFakeSocket()
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			// Gateways and SDKs routinely destructure the socket. If sendMetaAi
+			// ever goes back to depending on `this`, this call throws and the
+			// public contract silently breaks for the main integration idiom.
+			const { sendMetaAi } = socket as any
+			const result = await sendMetaAi({
+				to: META_AI_PUBLIC_ALIAS,
+				text: 'detached call',
+				type: 'request_welcome'
+			})
+
+			expect(result).toMatchObject({
+				chatJid: META_AI_PUBLIC_ALIAS,
+				botJid: META_AI_PUBLIC_ALIAS,
+				type: 'request_welcome'
+			})
+			expect(fake.sent.at(-1).attrs.to).toBe(metaAiJid)
+		} finally {
+			await socket.end(new Error('destructured sendMetaAi test completed'))
 		}
 	})
 

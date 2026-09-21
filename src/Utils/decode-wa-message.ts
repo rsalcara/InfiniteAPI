@@ -8,6 +8,7 @@ import {
 	encodeBinaryNode,
 	isHostedLidUser,
 	isHostedPnUser,
+	isJidBot,
 	isJidBroadcast,
 	isJidGroup,
 	isJidMetaAI,
@@ -482,6 +483,14 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 		if (isMe(from) || isMeLid(from)) {
 			fromMe = true
 		}
+	} else if (isJidMetaAI(from) || isJidBot(from)) {
+		// Bot replies are direct conversations where the bot JID is both the
+		// chat and the author. Without this branch, `from=...@bot` falls into
+		// the generic "Unknown message type" error before the msmsg decoder
+		// can see the stanza.
+		msgType = 'chat'
+		chatId = from
+		author = from
 	} else {
 		throw new Boom('Unknown message type', { data: stanza })
 	}

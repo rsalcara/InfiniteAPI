@@ -1,6 +1,8 @@
+import { Boom } from '@hapi/boom'
 import { randomBytes, randomUUID } from 'crypto'
 import { proto } from '../../WAProto/index.js'
-import { isJidBot, isJidGroup, isJidMetaAI, jidNormalizedUser } from '../WABinary/jid-utils'
+import type { MetaAiPromptRequest } from '../Types/Message.js'
+import { isJidBot, isJidGroup, isJidMetaAI, jidDecode, jidNormalizedUser } from '../WABinary/jid-utils'
 import { hkdf } from './crypto'
 
 /**
@@ -78,6 +80,36 @@ export interface MetaAiPromptMetadata {
 	createdNewThread: boolean
 }
 
+/**
+ * Stable, motor-level Meta AI contract for HTTP gateways and SDKs. The
+ * `MetaAiPromptRequest` fields remain available for advanced protocol needs,
+ * while `threadId` gives consumers a simple way to continue a conversation.
+ */
+export interface MetaAiSendRequest extends MetaAiPromptRequest {
+	/** Destination chat. A direct FBID `@bot` JID is the normal case. */
+	to: string
+	/** Plain text shown in the generated WhatsApp conversation message. */
+	text: string
+	/** Shortcut for `thread.id`; cannot be combined with `thread.id`. */
+	threadId?: string
+}
+
+export interface NormalizedMetaAiSendRequest {
+	to: string
+	text: string
+	options: MetaAiPromptOptions
+}
+
+export interface MetaAiSendResult {
+	messageId: string | null
+	chatJid: string | null
+	botJid: string
+	type: MetaAiPromptType
+	threadId: string
+	threadType: MetaAiThreadType
+	createdNewThread: boolean
+}
+
 const ENTRY_POINTS = {
 	chat_shortcut: proto.BotMetricsEntryPoint.META_AI_CHAT_SHORTCUT_AI_STUDIO,
 	context_menu: proto.BotMetricsEntryPoint.ASK_META_AI_CONTEXT_MENU,
@@ -105,15 +137,39 @@ const THREAD_TYPES = {
 
 const BOT_INFO = 'Bot Message'
 
+/**
+ * Stable public destination. The concrete FBID is transport data owned by the
+ * motor and must not become part of the product API contract.
+ */
+export const META_AI_PUBLIC_ALIAS = '@bot_meta_ai'
+export const META_AI_INTERNAL_BOT_JID = '718584497008509@bot'
+const META_AI_INTERNAL_BOT_USER = META_AI_INTERNAL_BOT_JID.split('@')[0]
+
+const normalizeDestination = (value: string) => value.trim().toLowerCase()
+
+export const isPublicMetaAiDestination = (value: string | undefined): boolean =>
+	normalizeDestination(value || '') === META_AI_PUBLIC_ALIAS
+
+export const resolveMetaAiTransportDestination = (value: string): string =>
+	isPublicMetaAiDestination(value) ? META_AI_INTERNAL_BOT_JID : value.trim()
+
+export const toPublicMetaAiDestination = (value: string | undefined): string | undefined => {
+	const decoded = jidDecode(value || '')
+	return decoded?.server === 'bot' && decoded.user === META_AI_INTERNAL_BOT_USER ? META_AI_PUBLIC_ALIAS : value
+}
+
 export const resolveMetaAiPrompt = (
 	to: string,
 	options: MetaAiPromptOptions | undefined
 ): (MetaAiPromptOptions & { resolvedBotJid: string }) | undefined => {
-	const directBot = isJidMetaAI(to)
+	const directBot = isPublicMetaAiDestination(to) || isJidMetaAI(to)
 	const legacyBot = isJidBot(to) || isJidBot(jidNormalizedUser(to))
 
 	if (directBot) {
-		return { ...(options || {}), resolvedBotJid: to }
+		return {
+			...(options || {}),
+			resolvedBotJid: isPublicMetaAiDestination(to) ? META_AI_INTERNAL_BOT_JID : to
+		}
 	}
 
 	if (legacyBot) {
@@ -203,5 +259,75 @@ export const buildMetaAiPromptContext = (
 		},
 		messageSecret,
 		botMessageSecret
+	}
+}
+
+export const normalizeMetaAiSendRequest = (request: MetaAiSendRequest): NormalizedMetaAiSendRequest => {
+	const requestedTo = typeof request.to === 'string' ? request.to.trim() : ''
+	const text = typeof request.text === 'string' ? request.text : ''
+	if (!requestedTo || !text.trim()) throw new Error('Meta AI send requires to and text')
+
+	const threadId = typeof request.threadId === 'string' ? request.threadId.trim() : ''
+	const nestedThreadId = typeof request.thread?.id === 'string' ? request.thread.id.trim() : ''
+	const resolvedThreadId = threadId || nestedThreadId
+	if (threadId && nestedThreadId && threadId !== nestedThreadId) {
+		throw new Error('Use either threadId or thread.id, not different values')
+	}
+
+	const source = { ...request } as Partial<MetaAiSendRequest> & MetaAiPromptOptions
+	delete source.to
+	delete source.text
+	delete source.threadId
+	delete source.thread
+	// The thread object is always rebuilt below from `resolvedThreadId`,
+	// never copied raw from the request. A `thread.id` that trims to empty
+	// must produce the same result as a `threadId` that trims to empty.
+	const normalizedThread = resolvedThreadId
+		? { ...(request.thread || {}), id: resolvedThreadId }
+		: request.thread && Object.keys(request.thread).some(k => k !== 'id')
+			? // Preserve legitimate fields (type, sourceChatJid) when only the id is blank.
+				{ ...request.thread, id: undefined }
+			: undefined
+	const normalizedOptions: MetaAiPromptOptions = {
+		...source,
+		...(normalizedThread ? { thread: normalizedThread } : {})
+	}
+	if (resolvedThreadId && !normalizedOptions.type) normalizedOptions.type = 'text_input'
+
+	// Resolve here so a public client gets a deterministic validation error
+	// instead of accidentally sending an ordinary conversation message.
+	if (!resolveMetaAiPrompt(requestedTo, normalizedOptions)) {
+		throw new Error('Meta AI send requires a direct @bot destination or a group with metaAi.botJid')
+	}
+
+	return { to: resolveMetaAiTransportDestination(requestedTo), text, options: normalizedOptions }
+}
+
+export const assertMetaAiPromptMetadata = (metadata: MetaAiPromptMetadata): void => {
+	if (
+		!metadata.botJid ||
+		!metadata.clientThreadId ||
+		!metadata.type ||
+		!metadata.threadType ||
+		typeof metadata.createdNewThread !== 'boolean'
+	) {
+		throw new Boom('Meta AI prompt metadata is incomplete', { statusCode: 500 })
+	}
+}
+
+export const buildMetaAiSendResult = (
+	message: { key?: { id?: string | null; remoteJid?: string | null } },
+	metadata: MetaAiPromptMetadata
+): MetaAiSendResult => {
+	assertMetaAiPromptMetadata(metadata)
+
+	return {
+		messageId: message.key?.id || null,
+		chatJid: toPublicMetaAiDestination(message.key?.remoteJid || undefined) || null,
+		botJid: toPublicMetaAiDestination(metadata.botJid) || '',
+		type: metadata.type,
+		threadId: metadata.clientThreadId,
+		threadType: metadata.threadType,
+		createdNewThread: metadata.createdNewThread
 	}
 }

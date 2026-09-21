@@ -13,6 +13,7 @@ import type { BaileysEventEmitter } from '../Types/Events'
 import type { SignalRepositoryWithLIDStore } from '../Types/Signal'
 import { generateSignalPubKey } from '../Utils'
 import type { ILogger } from '../Utils/logger'
+import { resolveMetaAiBotSignalAddressId } from '../Utils/meta-ai-addressing'
 import { createLIDMappingStoreWithSqlite } from '../Utils/multi-db-sqlite/factories'
 import { metrics } from '../Utils/prometheus-metrics.js'
 import { withLibsignalDiagnosticCapture } from '../Utils/suppress-libsignal-logs'
@@ -43,6 +44,7 @@ import { LIDMappingStore } from './lid-mapping'
  * degrades gracefully rather than failing the surrounding `transactWith`.
  */
 async function resolveSignalAddressId(id: string, lidMapping: LIDMappingStore): Promise<string> {
+	id = resolveMetaAiBotSignalAddressId(id)
 	if (!id.includes('.')) return id
 
 	const [deviceId, device] = id.split('.')
@@ -62,6 +64,13 @@ async function resolveSignalAddressId(id: string, lidMapping: LIDMappingStore): 
 
 	return id
 }
+
+/**
+ * Regression lock for the exact call site used by Signal storage. The helper
+ * must run before PN→LID resolution; otherwise Meta AI sessions are written
+ * under the FBID identity while key fetches use the phone identity.
+ */
+export const resolveSignalAddressIdForTests = resolveSignalAddressId
 
 // NOTE: Console.log suppression has been moved to src/index.ts
 // to ensure it runs BEFORE libsignal is loaded

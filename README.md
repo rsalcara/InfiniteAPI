@@ -514,6 +514,34 @@ The store also provides some simple functions such as `loadMessages` that utiliz
     sock.sendMessage(jid, content, options)
     ```
 
+### Meta AI Prompts
+
+`sendMetaAi` is the stable motor-level contract for SDKs and HTTP gateways. It
+validates the destination, reuses the native Meta AI wire flow, and returns the
+thread ID needed for follow-up prompts.
+
+```ts
+// Start a conversation.
+const first = await sock.sendMetaAi({
+    to: '@bot_meta_ai',
+    text: 'Who are you?',
+    type: 'request_welcome'
+})
+
+// Continue with the returned client thread ID.
+await sock.sendMetaAi({
+    to: '@bot_meta_ai',
+    text: 'Tell me more.',
+    type: 'prompt',
+    threadId: first.threadId
+})
+```
+
+`type` accepts the native `request_welcome`, `prompt`, `search`, and other
+protocol prompt types. Advanced callers can also set `botJid`, `personaType`,
+`thread.type`, `thread.sourceChatJid`, `entryPoint`, and `threadEntryPoint`.
+Group prompts require `botJid` to identify the Meta AI bot.
+
 ### Non-Media Messages
 
 #### Text Message
