@@ -39,6 +39,7 @@ import { isJidGroup, isJidNewsletter, isJidStatusBroadcast, jidNormalizedUser } 
 import { sha256 } from './crypto'
 import { generateMessageIDV2, getKeyAuthor, unixTimestampSeconds } from './generics'
 import type { ILogger } from './logger'
+import { assertMessageSecret, deriveMessageSecretKey, encryptWithMessageSecretKey } from './message-secret-envelope'
 import {
 	downloadContentFromMessage,
 	encryptedStream,
@@ -94,6 +95,16 @@ const MessageTypeProto = {
 	sticker: WAProto.Message.StickerMessage,
 	document: WAProto.Message.DocumentMessage
 } as const
+
+const rawUserFromJid = (jid: string | null | undefined, fieldName: string): string => {
+	const normalized = jid ? jidNormalizedUser(jid) : undefined
+	const raw = normalized?.split('@')[0]
+	if (!raw) {
+		throw new Boom(`${fieldName} is required to derive the encrypted envelope key`, { statusCode: 400 })
+	}
+
+	return raw
+}
 
 /**
  * Uses a regex to test whether the string contains a URL, and returns the URL if it does.
@@ -1816,7 +1827,76 @@ export const generateWAMessageContent = async (
 			message.react.senderTimestampMs = Date.now()
 		}
 
-		m.reactionMessage = WAProto.Message.ReactionMessage.create(message.react)
+		const { parentMessageSecret, targetAuthorJid, senderJid, ...reaction } = message.react
+		if (parentMessageSecret) {
+			const targetKey = reaction.key
+			if (!targetKey?.id) {
+				throw new Boom('react.key.id is required for an encrypted CAG reaction', { statusCode: 400 })
+			}
+
+			assertMessageSecret(parentMessageSecret)
+			const targetAuthorRaw = rawUserFromJid(
+				targetAuthorJid ||
+					(targetKey.fromMe ? senderJid || (options as MessageGenerationOptions).userJid : targetKey.participant || ''),
+				'reaction target author'
+			)
+			const senderRaw = rawUserFromJid(senderJid || (options as MessageGenerationOptions).userJid, 'reaction sender')
+			const key = deriveMessageSecretKey(parentMessageSecret, 'Enc Reaction', {
+				targetAuthorRaw,
+				senderRaw,
+				targetMessageId: targetKey.id
+			})
+			// Android clears ReactionMessage.key before encryption and carries it
+			// once on EncReactionMessage.targetMessageKey.
+			const plaintext = WAProto.Message.ReactionMessage.create({ ...reaction, key: null })
+			const { iv, payload } = encryptWithMessageSecretKey(
+				WAProto.Message.ReactionMessage.encode(plaintext).finish(),
+				key
+			)
+			m.encReactionMessage = WAProto.Message.EncReactionMessage.create({
+				targetMessageKey: targetKey,
+				encPayload: payload,
+				encIv: iv
+			})
+		} else {
+			m.reactionMessage = WAProto.Message.ReactionMessage.create(reaction)
+		}
+	} else if (hasNonNullishProperty(message, 'channelComment')) {
+		const comment = message.channelComment
+		assertMessageSecret(comment.parentMessageSecret)
+		const targetKey = comment.targetMessageKey
+		const targetMessageId = targetKey.id
+		if (!targetMessageId) {
+			throw new Boom('channelComment.targetMessageKey.id is required', { statusCode: 400 })
+		}
+
+		const senderJid = comment.senderJid || (options as MessageGenerationOptions).userJid
+		const targetAuthorCandidate =
+			comment.targetAuthorJid || (targetKey.fromMe ? senderJid : targetKey.participant || '')
+		const targetAuthorJid = targetAuthorCandidate || ''
+		const targetAuthorRaw = rawUserFromJid(targetAuthorJid, 'channelComment target author')
+		const senderRaw = rawUserFromJid(senderJid, 'channelComment sender')
+		const key = deriveMessageSecretKey(comment.parentMessageSecret, 'Enc Comment', {
+			targetAuthorRaw,
+			senderRaw,
+			targetMessageId
+		})
+
+		// Android decrypts an E2E.Message (not a bare CommentMessage) and reads
+		// its commentMessage field. Keep this framing byte-for-byte compatible.
+		const innerMessage = await generateWAMessageContent(comment.message, { ...options, jid: options.jid })
+		const commentPlaintext = WAProto.Message.create({
+			commentMessage: WAProto.Message.CommentMessage.create({
+				message: innerMessage,
+				targetMessageKey: targetKey
+			})
+		})
+		const { iv, payload } = encryptWithMessageSecretKey(WAProto.Message.encode(commentPlaintext).finish(), key)
+		m.encCommentMessage = WAProto.Message.EncCommentMessage.create({
+			targetMessageKey: targetKey,
+			encPayload: payload,
+			encIv: iv
+		})
 	} else if (hasNonNullishProperty(message, 'delete')) {
 		m.protocolMessage = {
 			key: message.delete,

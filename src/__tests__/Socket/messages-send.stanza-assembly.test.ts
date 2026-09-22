@@ -334,6 +334,30 @@ describe('messages-send stanza assembly', () => {
 		}
 	})
 
+	it('rejects an encrypted CAG reaction without a target key at sendMessage', async () => {
+		const fake = makeFakeSocket()
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			const content = {
+				react: {
+					text: '🔥',
+					parentMessageSecret: Buffer.alloc(32, 0x42),
+					senderJid: ownPn
+				}
+			} as any
+
+			await expect(socket.sendMessage(remotePn, content)).rejects.toMatchObject({
+				message: 'react.key.id is required for an encrypted CAG reaction',
+				output: { statusCode: 400 }
+			})
+			expect(fake.sent).toHaveLength(0)
+			expect(fake.encryptions).toHaveLength(0)
+		} finally {
+			await socket.end(new Error('encrypted CAG reaction guard test completed'))
+		}
+	})
+
 	it('keeps remote envelope, participant fanout and DSM destination in the same LID route', async () => {
 		const fake = makeFakeSocket()
 		activeFakeSocket = fake.sock

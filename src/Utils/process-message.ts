@@ -46,6 +46,12 @@ import {
 	type ProcessedHistorySync
 } from './history-sync-coordinator'
 import type { ILogger } from './logger'
+import {
+	decryptEncComment,
+	decryptEncReaction,
+	deriveMessageSecretKey,
+	requireRawUser
+} from './message-secret-envelope'
 import { classifyMessageWithoutAuthorDevice } from './message-sender-source'
 import {
 	ANDROID_VIEW_ONCE_STATE,
@@ -129,6 +135,125 @@ const yieldHistoryMirror = (): Promise<void> => new Promise(resolve => setImmedi
 
 const assertHistoryApplyActive = (signal?: AbortSignal): void => {
 	if (signal?.aborted) throw new Error('history sync apply interrupted by socket teardown')
+}
+
+export type MessageSecretEnvelopeProcessContext = Pick<
+	ProcessMessageContext,
+	'creds' | 'logger' | 'signalRepository' | 'getMessage' | 'orphanQueue'
+>
+
+/**
+ * CAG comments and reactions arrive in a message-secret envelope. Resolve the
+ * parent and decrypt in place before the caller exposes `messages.upsert`, so
+ * consumers receive the official plaintext child (`commentMessage` or
+ * `reactionMessage`) instead of opaque ciphertext. Missing parents are queued,
+ * never dropped.
+ *
+ * Returns true when the caller must suppress normal processing (missing parent,
+ * malformed envelope, or an isolated decryption failure); false when the message
+ * is either not an envelope or has been hydrated and is ready for normal
+ * processing. `parentCandidate` lets the arriving parent replay its own queued
+ * children even when a consumer-backed `getMessage` cannot yet observe it.
+ */
+export const hydrateMessageSecretEnvelope = async (
+	targetMessage: WAMessage,
+	processContext: MessageSecretEnvelopeProcessContext,
+	parentCandidate?: proto.IMessage
+): Promise<boolean> => {
+	const { creds, logger, signalRepository, getMessage, orphanQueue } = processContext
+	const rawContent = targetMessage.message
+	const encComment = rawContent?.encCommentMessage
+	const encReaction = rawContent?.encReactionMessage
+	if (!encComment && !encReaction) return false
+
+	const meUser = creds.me
+	if (!meUser) {
+		logger?.warn({ messageKey: targetMessage.key }, 'processMessage: creds.me not set, skipping encrypted envelope')
+		return true
+	}
+
+	try {
+		const envelope = encComment || encReaction
+		const target = envelope?.targetMessageKey
+		if (!target?.id) {
+			logger?.warn(
+				{ messageKey: targetMessage.key },
+				'processMessage: encrypted message-secret envelope has no target key'
+			)
+			return true
+		}
+
+		const chatJid = jidNormalizedUser(targetMessage.key.remoteJid!)
+		const parentParticipant = target.participant || targetMessage.key.participant
+		const parentFromMe =
+			areJidsSameUser(parentParticipant || chatJid, meUser.id) ||
+			(!!meUser.lid && areJidsSameUser(parentParticipant || chatJid, meUser.lid))
+		const parentKey: WAMessageKey = {
+			...target,
+			remoteJid: chatJid,
+			participant: parentParticipant,
+			fromMe: parentFromMe
+		}
+		const parent = parentCandidate || (await getMessage(parentKey))
+		const parentSecret = parent?.messageContextInfo?.messageSecret
+		if (!parent || !parentSecret) {
+			if (orphanQueue) {
+				orphanQueue.enqueue(parentKey, encComment ? 'comment' : 'reaction', targetMessage)
+				logger?.debug(
+					{ parentKey },
+					'processMessage: encrypted comment/reaction parent not found yet, queued as orphan'
+				)
+			} else {
+				logger?.warn({ parentKey }, 'encrypted comment/reaction parent not found and no orphan queue configured')
+			}
+
+			return true
+		}
+
+		const resolveCryptoJid = async (jid: string | null | undefined, fallback: string): Promise<string> => {
+			const selectedInput = jid || fallback
+			if (!selectedInput) throw new Boom('Could not resolve message-secret identity')
+			const normalized = jidNormalizedUser(selectedInput)
+			if (!isAnyLidUser(normalized)) return normalized
+			const pn = await signalRepository.lidMapping.getPNForLID(normalized)
+			const selected = pn || normalized
+			if (!selected) throw new Boom('Could not resolve message-secret identity')
+			return jidNormalizedUser(selected)
+		}
+
+		const targetAuthorJid = await resolveCryptoJid(
+			parentFromMe ? meUser.id : parentKey.participant || undefined,
+			parentFromMe ? meUser.id : targetMessage.key.participant || chatJid
+		)
+		const senderJid = await resolveCryptoJid(
+			targetMessage.key.fromMe ? meUser.id : targetMessage.key.participant || undefined,
+			meUser.id
+		)
+		const targetMessageId = target.id
+		if (!targetMessageId) throw new Boom('Encrypted envelope has no target message ID')
+		const key = deriveMessageSecretKey(parentSecret, encComment ? 'Enc Comment' : 'Enc Reaction', {
+			targetAuthorRaw: requireRawUser(targetAuthorJid),
+			senderRaw: requireRawUser(senderJid),
+			targetMessageId
+		})
+
+		if (encComment) {
+			const commentMessage = decryptEncComment(encComment, key)
+			targetMessage.message = proto.Message.create({ commentMessage })
+		} else if (encReaction) {
+			const reactionMessage = decryptEncReaction(encReaction, key)
+			// Android clears ReactionMessage.key on the wire and carries the target
+			// once on the envelope. Downstream reaction handling needs the complete,
+			// normalized key, not the sparse wire key.
+			reactionMessage.key = parentKey
+			targetMessage.message = proto.Message.create({ reactionMessage })
+		}
+
+		return false
+	} catch (err) {
+		logger?.warn({ err, messageKey: targetMessage.key }, 'failed to hydrate encrypted CAG envelope')
+		return true
+	}
 }
 
 export const isUnavailableViewOnceMessage = (message: WAMessage): boolean => {
@@ -927,9 +1052,8 @@ const extractUiElements = (content: proto.IMessage | undefined | null): UiElemen
 	return out
 }
 
-const processMessage = async (
-	message: WAMessage,
-	{
+const processMessage = async (message: WAMessage, processContext: ProcessMessageContext) => {
+	const {
 		shouldProcessHistoryMsg,
 		placeholderResendCache,
 		ev,
@@ -951,8 +1075,7 @@ const processMessage = async (
 		onHistorySyncCommitted,
 		onAppStateSyncKeyRequest,
 		onAppStateSyncKeyShare
-	}: ProcessMessageContext
-) => {
+	} = processContext
 	const meUser = creds.me
 	if (!meUser) {
 		logger?.warn({ messageKey: message.key }, 'processMessage: creds.me not set, skipping message')
@@ -961,6 +1084,33 @@ const processMessage = async (
 
 	const meId = meUser.id
 	const { accountSettings } = creds
+
+	const replayMessageSecretOrphan = async (entry: OrphanEntry): Promise<void> => {
+		try {
+			// The current parent is authoritative: consumer-backed getMessage()
+			// implementations cannot generally observe the message that is still
+			// being processed by this invocation.
+			const hydrated = await hydrateMessageSecretEnvelope(entry.message, processContext, message.message ?? undefined)
+			if (!hydrated) {
+				// The child is now ordinary plaintext protocol traffic. Run it through
+				// the same processMessage path as a live child so side effects remain
+				// identical. processMessage deliberately does not own the normal
+				// messages.upsert emission, so replay emits the standard envelope here.
+				await processMessage(entry.message, processContext)
+				ev.emit('messages.upsert', { messages: [entry.message], type: 'notify' })
+			}
+		} catch (err) {
+			// A malformed dependent must not prevent delivery of the parent or the
+			// remaining queued children. The live envelope is never emitted as
+			// opaque ciphertext.
+			logger?.warn(
+				{ err, orphanKind: entry.kind, messageKey: entry.message.key },
+				'failed to replay encrypted CAG orphan'
+			)
+		}
+	}
+
+	if (await hydrateMessageSecretEnvelope(message, processContext)) return
 
 	const chat: Partial<Chat> = { id: jidNormalizedUser(getChatId(message.key)) }
 	const isUnavailableViewOnce = isUnavailableViewOnceMessage(message)
@@ -1310,6 +1460,8 @@ const processMessage = async (
 				if (creationMsgKey) {
 					await decryptAndEmitEventResponse(entry.message, encEventResponse, creationMsgKey, content!)
 				}
+			} else if ((entry.kind === 'comment' || entry.kind === 'reaction') && entryContent) {
+				await replayMessageSecretOrphan(entry)
 			}
 		}
 	}
@@ -1835,7 +1987,7 @@ const processMessage = async (
 
 								if (cachedData.participantAlt && webMessageInfo.key) {
 									const msgKey = webMessageInfo.key as WAMessageKey
-									// eslint-disable-next-line max-depth
+
 									if (!msgKey.participantAlt) {
 										msgKey.participantAlt = cachedData.participantAlt
 										logger?.debug(
@@ -1876,6 +2028,21 @@ const processMessage = async (
 
 							if (webMessageInfo.key && signalRepository) {
 								await normalizeKeyLidToPn(webMessageInfo.key as WAMessageKey, signalRepository.lidMapping, logger)
+							}
+
+							// PDO recovery is a third `messages.upsert` producer and bypasses
+							// `upsertMessage`. Hydrate encrypted CAG envelopes here too so a
+							// recovered dependent can never expose ciphertext to consumers.
+							if (
+								await hydrateMessageSecretEnvelope(webMessageInfo as WAMessage, {
+									creds,
+									logger,
+									signalRepository,
+									getMessage,
+									orphanQueue
+								})
+							) {
+								continue
 							}
 
 							// wait till another upsert event is available, don't want it to be part of the PDO response message

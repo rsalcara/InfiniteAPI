@@ -306,6 +306,44 @@ type RequestPhoneNumber = {
 	requestPhoneNumber: boolean
 }
 
+/**
+ * A reply threaded under a community announcement-group post.
+ *
+ * The public envelope is always `encCommentMessage`; the official clients encrypt
+ * the `CommentMessage` payload before transmission. `parentMessageSecret` is the
+ * 32-byte `messageContextInfo.messageSecret` from the parent post.
+ */
+export type ChannelCommentMessageOptions = {
+	/** The announcement-group post being commented on. */
+	targetMessageKey: WAMessageKey
+	/** 32-byte secret from the parent post's `messageContextInfo`. */
+	parentMessageSecret: Uint8Array
+	/** Plaintext comment content. Text and extended text are the interoperable subset. */
+	message: AnyRegularMessageContent
+	/**
+	 * Resolved by the send path from the local account when omitted. Exposed only
+	 * for deterministic crypto tests and LID mappings that cannot be inferred.
+	 */
+	senderJid?: string
+	/** Resolved from `targetMessageKey.participant` (or the sender for from-me parents). */
+	targetAuthorJid?: string
+}
+
+/**
+ * A reaction in a community announcement group (CAG). Official clients require the
+ * encrypted `encReactionMessage` envelope; regular groups retain the plaintext
+ * `reactionMessage` envelope. When `parentMessageSecret` is omitted, existing
+ * plaintext reaction callers remain unchanged.
+ */
+export type ReactionMessageOptions = proto.Message.IReactionMessage & {
+	/** 32-byte secret from the reacted-to post. Presence selects encrypted CAG framing. */
+	parentMessageSecret?: Uint8Array
+	/** Resolved by the send path when omitted. */
+	targetAuthorJid?: string
+	/** Resolved by the send path when omitted. */
+	senderJid?: string
+}
+
 export type AnyMediaMessageContent = (
 	| ({
 			image: WAMediaUpload
@@ -889,7 +927,10 @@ export type AnyRegularMessageContent = (
 	| {
 			location: WALocationMessage
 	  }
-	| { react: proto.Message.IReactionMessage }
+	| { react: ReactionMessageOptions }
+	| {
+			channelComment: ChannelCommentMessageOptions
+	  }
 	| {
 			buttonReply: ButtonReplyInfo
 			type: 'template' | 'plain'

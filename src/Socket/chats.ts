@@ -113,7 +113,11 @@ import {
 } from '../Utils/multi-db-sqlite'
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
-import processMessage, { applyProcessedHistorySync, emitProcessedHistorySync } from '../Utils/process-message'
+import processMessage, {
+	applyProcessedHistorySync,
+	emitProcessedHistorySync,
+	hydrateMessageSecretEnvelope
+} from '../Utils/process-message'
 import { mapParticipantFanout } from '../Utils/relay-stanza'
 import {
 	buildTcTokenFromJid,
@@ -2087,6 +2091,18 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	const upsertMessage = ev.createBufferedFunction(async (msg: WAMessage, type: MessageUpsertType) => {
+		// Decrypt CAG envelopes before the buffered `messages.upsert` is created.
+		// Otherwise a child that arrives before its parent can expose ciphertext
+		// and later emit a second event for the same message ID after replay.
+		const suppressMessageSecretEnvelope = await hydrateMessageSecretEnvelope(msg, {
+			creds: authState.creds,
+			logger,
+			signalRepository,
+			getMessage,
+			orphanQueue
+		})
+		if (suppressMessageSecretEnvelope) return
+
 		msg.senderSource ??= msg.key.fromMe
 			? classifyCurrentClientMessageSenderSource(config.transportProfile, authState.creds.me?.id)
 			: classifyMessageWithoutAuthorDevice()

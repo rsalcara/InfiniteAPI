@@ -260,6 +260,69 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
 	const getKnownPNForLID = signalRepository.lidMapping.getKnownPNForLID.bind(signalRepository.lidMapping)
 
+	/** Encrypted message-secret envelopes use raw phone identities in HKDF info. */
+	const resolveSecretCryptoJid = async (
+		jid: string | null | undefined,
+		fallback?: string
+	): Promise<string | undefined> => {
+		if (!jid) return fallback
+		const normalized = jidNormalizedUser(jid)
+		if (!isAnyLidUser(normalized)) return normalized
+		const pn = await getPNForLID(normalized)
+		if (!pn) return undefined
+		return jidNormalizedUser(pn)
+	}
+
+	const prepareMessageSecretCryptoContent = async (
+		content: AnyMessageContent,
+		userJid: string
+	): Promise<AnyMessageContent> => {
+		if (typeof content !== 'object' || content === null) return content
+
+		if ('channelComment' in content && !!content.channelComment) {
+			const comment = content.channelComment
+			const senderJid = await resolveSecretCryptoJid(comment.senderJid, userJid)
+			const targetAuthorJid = await resolveSecretCryptoJid(
+				comment.targetAuthorJid || (comment.targetMessageKey.fromMe ? senderJid : comment.targetMessageKey.participant)
+			)
+			if (!senderJid || !targetAuthorJid) {
+				throw new Boom('LID→PN mapping required to send an encrypted channel comment is unavailable', {
+					statusCode: 400
+				})
+			}
+
+			return {
+				...content,
+				channelComment: { ...comment, senderJid, targetAuthorJid }
+			}
+		}
+
+		if ('react' in content && !!content.react?.parentMessageSecret) {
+			const react = content.react
+			const targetKey = react.key
+			if (!targetKey?.id) {
+				throw new Boom('react.key.id is required for an encrypted CAG reaction', { statusCode: 400 })
+			}
+
+			const senderJid = await resolveSecretCryptoJid(react.senderJid, userJid)
+			const targetAuthorJid = await resolveSecretCryptoJid(
+				react.targetAuthorJid || (targetKey.fromMe ? senderJid : targetKey.participant)
+			)
+			if (!senderJid || !targetAuthorJid) {
+				throw new Boom('LID→PN mapping required to send an encrypted CAG reaction is unavailable', {
+					statusCode: 400
+				})
+			}
+
+			return {
+				...content,
+				react: { ...react, senderJid, targetAuthorJid }
+			}
+		}
+
+		return content
+	}
+
 	const userDevicesCache =
 		config.userDevicesCache ||
 		new NodeCache<JidWithDevice[]>({
@@ -3334,7 +3397,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// We thread this through `effectiveContent` rather than reassigning
 			// `content`, so TypeScript can still narrow the original union for
 			// the `disappearingMessagesInChat` / `delete` branches below.
-			const effectiveContent: AnyMessageContent = await tryUpgradeNewsletterLinkToImage(jid, content)
+			let effectiveContent: AnyMessageContent = await tryUpgradeNewsletterLinkToImage(jid, content)
+			effectiveContent = await prepareMessageSecretCryptoContent(effectiveContent, userJid)
 
 			if (
 				typeof content === 'object' &&
