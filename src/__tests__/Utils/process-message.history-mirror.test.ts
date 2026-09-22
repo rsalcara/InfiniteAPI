@@ -1,4 +1,5 @@
 import { jest } from '@jest/globals'
+import { randomBytes } from 'crypto'
 import { proto } from '../../../WAProto/index.js'
 import type {
 	SignalDataTypeMap,
@@ -339,6 +340,30 @@ describe('history-sync message mirror', () => {
 				})
 			])
 		)
+	})
+
+	it('persists an outer CAG message secret through the history mirror', async () => {
+		const recordMessages = jest.fn(() => [1])
+		const backend = { recordMessages } as any
+		const outerSecret = randomBytes(32)
+		const message: WAMessage = {
+			key: {
+				remoteJid: '5511999999999@s.whatsapp.net',
+				fromMe: false,
+				id: 'HISTORY-CAG-SECRET'
+			},
+			messageTimestamp: 1_700_000_000,
+			messageSecret: outerSecret,
+			message: { encCommentMessage: {} } as any
+		}
+
+		await expect(mirrorHistoryMessagesToStore([message], backend)).resolves.toEqual({ stored: 1, failed: 0 })
+		expect(recordMessages).toHaveBeenCalledWith([
+			expect.objectContaining({
+				keyId: 'HISTORY-CAG-SECRET',
+				messageSecret: outerSecret
+			})
+		])
 	})
 
 	it('does not fabricate a server ACK for an outgoing Web ERROR row', async () => {

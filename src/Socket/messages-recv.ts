@@ -115,6 +115,7 @@ import {
 } from '../Utils/multi-db-sqlite'
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
+import { pdoRequestCacheKey } from '../Utils/pdo-recovery'
 import { markPrekeyDirectDistributionIntent } from '../Utils/prekey-direct-distribution'
 import { applyReconciledPrekeyCursors } from '../Utils/prekey-upload-cursors'
 import {
@@ -711,7 +712,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		const resendId = messageKey.id
+		// The sending client owns message IDs. Two group participants may choose
+		// the same ID, so the in-flight request gate must include the sender.
+		const resendId = pdoRequestCacheKey(messageKey)
 
 		// Stage 9 (upstream #2579): collapse the previous `get → set` cache-
 		// dedupe into one per-id critical section so two concurrent callers
@@ -789,8 +792,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// BOT-001-B: safeCacheSet swallows maxKeys saturation — losing this entry only
 		// means the eventual PDO response won't find its metadata, which is recoverable
 		// (downstream code already handles missing cache entries).
-		if (msgData && stanzaId) {
-			await safeCacheSet(placeholderResendCache, stanzaId, msgData, logger, 'placeholderResendCache')
+		// Keep request identity even for the generic retry path. The PDO response
+		// handler uses it to verify chat/sender before applying cached metadata.
+		if (stanzaId) {
+			const requestMetadata = msgData ?? { key: messageKey }
+			await safeCacheSet(placeholderResendCache, stanzaId, requestMetadata, logger, 'placeholderResendCache')
 			logger.debug(
 				{ messageKey: messageKey.id, stanzaId },
 				'CTWA: Cached metadata using stanzaId for PDO response lookup'
@@ -2079,6 +2085,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const { fullMessage } = decodeMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '')
 		const { key: msgKey } = fullMessage
 		const msgId = msgKey.id!
+		// Retry counters and PDO timers share this full identity. A bare message
+		// ID lets two group participants with the same client-generated ID
+		// consume or cancel each other's recovery.
+		const retryIdentity = pdoRequestCacheKey(msgKey)
 
 		// Per-JID deduplication: when multiple messages from the same contact
 		// fail with Bad MAC simultaneously, only send ONE retry request.
@@ -2102,12 +2112,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// check before either increments. Replaces the split
 			// `hasExceededMaxRetries` + `incrementRetryCount` pair which had
 			// an await boundary between the two operations.
-			const attempt = messageRetryManager.tryIncrement(msgId)
+			const attempt = messageRetryManager.tryIncrement(retryIdentity)
 			if (!attempt.proceed) {
 				logger.debug({ msgId, count: attempt.count }, 'reached retry limit with new retry manager, clearing')
 				messageRetryManager.markRetryFailed(
-					msgId,
-					msgKey.remoteJid ? await resolveRetryLookupJids(msgKey.remoteJid) : []
+					retryIdentity,
+					msgKey.remoteJid ? await resolveRetryLookupJids(msgKey.remoteJid) : [],
+					msgId
 				)
 				recordMessageFailure('retry', 'max_retries_reached')
 
@@ -2232,7 +2243,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// Use new retry manager for phone requests if available
 			if (messageRetryManager) {
 				// Schedule phone request with delay (like whatsmeow)
-				messageRetryManager.schedulePhoneRequest(msgId, async () => {
+				messageRetryManager.schedulePhoneRequest(retryIdentity, async () => {
 					try {
 						const requestId = await requestPlaceholderResend(msgKey)
 						logger.debug(
@@ -3982,6 +3993,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				msmsgSecretCache,
 				config.onMessageQuarantine
 			)
+			// Retry/PDO state is staged from the raw decoded key and must be completed
+			// with that same identity. normalizeMessageJids can rewrite remoteJid and
+			// participant LID→PN before the success branch runs, which would otherwise
+			// miss the counter/timer created by sendRetryRequest.
+			const retryIdentity = pdoRequestCacheKey(msg.key)
 			rememberRawProtocolSender(msg, author)
 			msg.senderSource = classifyProtocolMessageSenderSource({
 				authorJid: author,
@@ -4179,6 +4195,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							const startTime = Date.now()
 							const msgId = msg.key.id!
 							const msgKey = msg.key
+							const pdoIdentity = pdoRequestCacheKey(msgKey)
 
 							// Prepare metadata to preserve original message details
 							// The phone may not send all metadata in PDO response (e.g., pushName, participantAlt)
@@ -4202,7 +4219,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							if (messageRetryManager) {
 								metrics.ctwaRecoveryRequests.inc({ status: 'scheduled' })
 
-								messageRetryManager.schedulePhoneRequest(msgId, async () => {
+								messageRetryManager.schedulePhoneRequest(pdoIdentity, async () => {
 									try {
 										const requestId = await requestPlaceholderResend(msgKey, msgData)
 										if (requestId && requestId !== 'RESOLVED') {
@@ -4320,7 +4337,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					})
 				} else {
 					if (messageRetryManager && msg.key.id) {
-						messageRetryManager.markInboundRetrySuccess(msg.key.id)
+						messageRetryManager.markInboundRetrySuccess(retryIdentity)
 					}
 
 					// Best-effort: a previously-held stanza's resend just decrypted —

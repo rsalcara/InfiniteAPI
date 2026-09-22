@@ -71,6 +71,7 @@ import {
 	UI_ELEMENT_TYPE
 } from './multi-db-sqlite'
 import { type OrphanEntry, OrphanQueue } from './orphan-queue'
+import { isSamePlaceholderRecovery } from './pdo-recovery'
 import { metrics, recordHistorySyncMessages } from './prometheus-metrics.js'
 import { restoreTcTokensFromHistory } from './tc-token-utils'
 
@@ -264,6 +265,21 @@ export const isUnavailableViewOnceMessage = (message: WAMessage): boolean => {
 	return !!message.key?.isViewOnce || hasSerializedPlaceholder
 }
 
+/**
+ * Resolve the secret that must survive in a message mirror.
+ *
+ * Most messages carry `messageContextInfo` inside their regular content. CAG
+ * comments are the exception: after `hydrateMessageSecretEnvelope` unwraps
+ * `encCommentMessage`, the comment's *own* secret remains on the outer
+ * `WebMessageInfo.messageSecret`. Prefer the content-local secret, but fall
+ * back to that outer value so a future encrypted reaction is decryptable.
+ */
+export const getMessageSecretForStorage = (message: WAMessage, content: proto.IMessage | undefined): Buffer | null => {
+	const secret = content?.messageContextInfo?.messageSecret ?? message.messageSecret
+
+	return secret ? Buffer.from(secret) : null
+}
+
 const mapStickerPackToMirror = (
 	pack: proto.Message.IStickerPackMessage | null | undefined
 ): NonNullable<RecordMessageInput['stickerPack']> | null => {
@@ -348,9 +364,7 @@ export const mirrorHistoryMessagesToStore = async (
 				viewMode: isViewOnce ? 0 : null,
 				viewOnceState: isViewOnce ? ANDROID_VIEW_ONCE_STATE.UNOPENED : null,
 				authorDeviceJid: senderJid,
-				messageSecret: content?.messageContextInfo?.messageSecret
-					? Buffer.from(content.messageContextInfo.messageSecret)
-					: null,
+				messageSecret: getMessageSecretForStorage(message, content),
 				album: content?.albumMessage
 					? {
 							expectedImageCount: content.albumMessage.expectedImageCount ?? 0,
@@ -1276,9 +1290,7 @@ const processMessage = async (message: WAMessage, processContext: ProcessMessage
 				viewMode: isViewOnce ? 0 : null,
 				viewOnceState: isViewOnce ? ANDROID_VIEW_ONCE_STATE.UNOPENED : null,
 				authorDeviceJid,
-				messageSecret: content?.messageContextInfo?.messageSecret
-					? Buffer.from(content.messageContextInfo.messageSecret)
-					: null,
+				messageSecret: getMessageSecretForStorage(message, content),
 				album: content?.albumMessage
 					? {
 							expectedImageCount: content.albumMessage.expectedImageCount ?? 0,
@@ -1973,8 +1985,40 @@ const processMessage = async (message: WAMessage, processContext: ProcessMessage
 
 							// Merge cached metadata with decoded message
 							// This ensures we don't lose critical information like pushName and LID mappings
+							//
+							// Message IDs are chosen by the sending client. Before trusting the
+							// request-side metadata, verify the response names the same chat,
+							// ID and sender (including LID/PN aliases when mapped).
+							const requestMatchesResponse =
+								!cachedData ||
+								typeof cachedData !== 'object' ||
+								(await isSamePlaceholderRecovery(cachedData.key, webMessageInfo.key as WAMessageKey, async jid => {
+									const normalized = jidNormalizedUser(jid)
+									if (!normalized) return []
 
-							if (cachedData && typeof cachedData === 'object') {
+									if (isAnyLidUser(normalized)) {
+										const pn = await signalRepository.lidMapping.getPNForLID(normalized)
+										return [normalized, pn ? jidNormalizedUser(pn) : '']
+									}
+
+									if (isAnyPnUser(normalized)) {
+										const lid = await signalRepository.lidMapping.getLIDForPN(normalized)
+										return [normalized, lid ? jidNormalizedUser(lid) : '']
+									}
+
+									return [normalized]
+								}))
+
+							if (!requestMatchesResponse) {
+								logger?.warn(
+									{
+										requestId: response.stanzaId,
+										requestKey: cachedData.key,
+										responseKey: webMessageInfo.key
+									},
+									'PDO response sender does not match request; preserving response identity only'
+								)
+							} else if (cachedData && typeof cachedData === 'object') {
 								// Preserve pushName if not present in PDO response
 
 								if (cachedData.pushName && !webMessageInfo.pushName) {

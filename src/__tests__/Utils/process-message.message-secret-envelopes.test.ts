@@ -47,7 +47,10 @@ const makeContext = (getMessage: ReturnType<typeof jest.fn>) => {
 			creds: credsWithMe(),
 			keyStore: {} as any,
 			signalRepository: {
-				lidMapping: { getPNForLID: async (jid: string) => jid }
+				lidMapping: {
+					getPNForLID: async (jid: string) => jid,
+					getLIDForPN: async (jid: string) => jid
+				}
 			} as any,
 			logger: silent,
 			options: {},
@@ -102,6 +105,36 @@ const pdoMessageWithRecoveredChild = (child: proto.Message.IEncCommentMessage): 
 							webMessageInfoBytes: proto.WebMessageInfo.encode({
 								key: { remoteJid: chat, fromMe: false, id: 'comment-recovered', participant: sender },
 								message: { encCommentMessage: child },
+								messageTimestamp: 1770000001
+							}).finish()
+						}
+					}
+				]
+			}
+		}
+	})
+	// PDO responses are self-only protocol traffic.
+	controller.key.fromMe = true
+	controller.key.participant = undefined
+	return controller
+}
+
+const pdoMessageWithRecoveredContent = (
+	id: string,
+	participant: string | undefined,
+	content: proto.IMessage
+): WAMessage => {
+	const controller = inbound('pdo-controller', {
+		protocolMessage: {
+			type: proto.Message.ProtocolMessage.Type.PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE,
+			peerDataOperationRequestResponseMessage: {
+				stanzaId: 'PDO-REQUEST-1',
+				peerDataOperationResult: [
+					{
+						placeholderMessageResendResponse: {
+							webMessageInfoBytes: proto.WebMessageInfo.encode({
+								key: { remoteJid: chat, fromMe: false, id, participant },
+								message: content,
 								messageTimestamp: 1770000001
 							}).finish()
 						}
@@ -209,6 +242,56 @@ describe('processMessage — encrypted CAG comments and reactions', () => {
 
 		expect(upserts).toHaveLength(0)
 		expect(orphanQueue.drain(targetMessageKey)).toHaveLength(1)
+	})
+
+	it('does not apply PDO request metadata when the response names another sender', async () => {
+		const getMessage = jest.fn<() => Promise<any>>()
+		getMessage.mockResolvedValue(undefined)
+		const { ctx, upserts } = makeContext(getMessage as any)
+		const cached = new Map([
+			[
+				'PDO-REQUEST-1',
+				{
+					key: { ...targetMessageKey, id: 'same-client-id', participant: sender },
+					pushName: 'wrong request'
+				}
+			]
+		])
+		ctx.placeholderResendCache = {
+			get: async (key: string) => cached.get(key),
+			set: async (key: string, value: any) => {
+				cached.set(key, value)
+			},
+			del: async (key: string) => {
+				cached.delete(key)
+			}
+		} as any
+
+		await processMessage(
+			pdoMessageWithRecoveredContent('same-client-id', undefined, { conversation: 'from another sender' }),
+			{ ...ctx } as any
+		)
+
+		expect(upserts).toHaveLength(1)
+		expect(upserts[0]![0].key.participant).toBeNull()
+		expect(upserts[0]![0].pushName).toBeNull()
+		expect(upserts[0]![0].message.conversation).toBe('from another sender')
+	})
+
+	it('persists a decrypted CAG comment own outer message secret in the message mirror', async () => {
+		const ownSecret = randomBytes(32)
+		const getMessage = jest.fn<() => Promise<any>>()
+		getMessage.mockResolvedValue(parentMessage().message)
+		const { ctx } = makeContext(getMessage as any)
+		const recordMessage = jest.fn(() => 42)
+		;(ctx as any).messageStoreBackend = { recordMessage }
+
+		const message = inbound('comment-own-secret', { encCommentMessage: encryptedCommentEnvelope() })
+		;(message as any).messageSecret = ownSecret
+		await processMessage(message, { ...ctx } as any)
+
+		expect(recordMessage).toHaveBeenCalledTimes(1)
+		expect((recordMessage as any).mock.calls[0]?.[0]?.messageSecret).toEqual(ownSecret)
 	})
 
 	it('normalizes a decrypted reaction key even when the wire target is sparse', async () => {

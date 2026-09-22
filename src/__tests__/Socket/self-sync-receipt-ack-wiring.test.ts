@@ -2,6 +2,8 @@ import { jest } from '@jest/globals'
 import { proto } from '../../../WAProto/index.js'
 import { DEFAULT_CONNECTION_CONFIG, NOISE_WA_HEADER } from '../../Defaults'
 import { initAuthCreds, makeCacheableSignalKeyStore } from '../../Utils/auth-utils'
+import { decodeMessageNode } from '../../Utils/decode-wa-message'
+import { pdoRequestCacheKey } from '../../Utils/pdo-recovery'
 import type { BinaryNode } from '../../WABinary'
 import { decodeBinaryNode } from '../../WABinary'
 
@@ -136,6 +138,19 @@ const makeSelfSyncStanza = (): BinaryNode => ({
 	content: [{ tag: 'enc', attrs: { type: 'msg' }, content: makeEncryptedPayload() }]
 })
 
+const makeInboundDmLidStanza = (): BinaryNode => ({
+	tag: 'message',
+	attrs: {
+		id: 'PDO-IDENTITY-WIRING-1',
+		from: PEER_LID,
+		type: 'chat',
+		t: '1789500001',
+		addressing_mode: 'lid',
+		sender_pn: PEER_PN
+	},
+	content: [{ tag: 'enc', attrs: { type: 'msg' }, content: makeEncryptedPayload() }]
+})
+
 function makeEncryptedPayload(): Uint8Array {
 	const body = proto.Message.encode(proto.Message.create({ conversation: 'self-sync ack wiring' })).finish()
 	// decryptMessageNode calls unpadRandomMax16; a one-byte zero pad gives it
@@ -198,6 +213,13 @@ const makeSocket = async () => {
 	// the repository boundary so decrypt succeeds deterministically while the
 	// real decode, receipt, fallback ACK, upsert and NACK wiring still run.
 	socket.signalRepository.decryptMessage = async () => makeEncryptedPayload()
+	// The inbound LID/PN envelope triggers session migration before the retry
+	// branch under test. That repository side effect is outside this wiring and
+	// can wait on real Signal records, so keep it deterministic as well.
+	socket.signalRepository.migrateSession = async () => ({ migrated: 0, skipped: 0, total: 0 })
+	socket.signalRepository.lidMapping.getLIDForPN = async () => null
+	socket.signalRepository.lidMapping.getPNForLID = async () => null
+	socket.signalRepository.lidMapping.storeLIDPNMappings = async () => ({ stored: 0, skipped: 0, errors: 0 })
 
 	return { socket, logger }
 }
@@ -291,6 +313,56 @@ describe('self-sync receipt fallback ACK wiring', () => {
 		expect(handlingError).toBeDefined()
 
 		await socket.end(new Error('test complete'))
+		await new Promise(resolve => setTimeout(resolve, 2_100))
+	})
+
+	it('completes retry state staged before JID normalization through the real message handler', async () => {
+		const { socket } = await makeSocket()
+		const client = latestClient()
+		const stanza = makeInboundDmLidStanza()
+
+		// This is the same boundary used by handleMessage: the raw decoded key is
+		// captured before normalizeMessageJids can rewrite the DM LID to its PN.
+		const { fullMessage } = decodeMessageNode(stanza, ME_PN, ME_LID)
+		const rawRetryIdentity = pdoRequestCacheKey(fullMessage.key)
+		const manager = socket.messageRetryManager
+		if (!manager) throw new Error('messageRetryManager was not exposed by the socket')
+		const phoneRequestCallback = jest.fn()
+		const upserts: unknown[] = []
+
+		manager.tryIncrement(rawRetryIdentity)
+		manager.schedulePhoneRequest(rawRetryIdentity, phoneRequestCallback, 50)
+		socket.ev.on('messages.upsert', update => upserts.push(update))
+
+		try {
+			client.emit('CB:message', stanza)
+			await waitFor(() => upserts.length > 0)
+
+			expect(upserts).toEqual([
+				expect.objectContaining({
+					type: 'notify',
+					messages: [
+						expect.objectContaining({
+							key: expect.objectContaining({
+								remoteJid: PEER_PN,
+								fromMe: false,
+								id: 'PDO-IDENTITY-WIRING-1'
+							})
+						})
+					]
+				})
+			])
+
+			expect((manager as unknown as { pendingPhoneRequests: Record<string, unknown> }).pendingPhoneRequests).toEqual({})
+			expect(phoneRequestCallback).not.toHaveBeenCalled()
+			expect(manager.tryIncrement(rawRetryIdentity)).toEqual({ proceed: true, count: 1 })
+		} finally {
+			// A successful completion must have canceled the pending PDO timer.
+			manager.cancelPendingPhoneRequest(rawRetryIdentity)
+		}
+
+		await socket.end(new Error('test complete'))
+		// Drain the socket teardown timer on real timers before ending the test.
 		await new Promise(resolve => setTimeout(resolve, 2_100))
 	})
 })

@@ -42,6 +42,31 @@ const EMPTY_UINT8_ARRAY = new Uint8Array(0)
 
 const SELF_SYNC_FIX_LOG_PREFIX = '[InfiniteAPI:SELF-SYNC-FIX]'
 
+export type UnavailableFanoutType =
+	| 'bot_unavailable_fanout'
+	| 'hosted_unavailable_fanout'
+	| 'view_once_unavailable_fanout'
+
+/**
+ * Classify a stanza whose content is an `<unavailable>` placeholder.
+ *
+ * This mirrors WA Web's fanout precedence: bot > hosted > view-once. All three
+ * are unrecoverable by PDO; a plain fanout remains recoverable.
+ */
+export const classifyUnavailableFanout = (stanza: BinaryNode): UnavailableFanoutType | undefined => {
+	const content = Array.isArray(stanza.content) ? stanza.content : []
+	const unavailable = content.find(child => child.tag === 'unavailable')
+	if (!unavailable) return undefined
+
+	const hostedValue = unavailable.attrs.hosted
+	const hosted = hostedValue === 'true' || hostedValue === '1'
+	if (content.some(child => child.tag === 'bot')) return 'bot_unavailable_fanout'
+	if (hosted) return 'hosted_unavailable_fanout'
+	if (unavailable.attrs.type === 'view_once') return 'view_once_unavailable_fanout'
+
+	return undefined
+}
+
 const getEncType = (stanza: BinaryNode) => {
 	if (!Array.isArray(stanza.content)) return undefined
 
@@ -878,9 +903,16 @@ export const decryptMessageNode = (
 			// If nothing was found to decrypt, preserve unavailable view-once as
 			// an explicit non-ciphertext placeholder. CIPHERTEXT would incorrectly
 			// route it through PDO/retry even though linked devices cannot retrieve
-			// media that was already consumed.
+			// media that was already consumed. Bot/hosted fanouts use the same
+			// unrecoverable marker contract already consumed by the recovery path.
 			if (!decryptables) {
-				if (fullMessage.key?.isViewOnce) {
+				const unavailableFanout = classifyUnavailableFanout(stanza)
+				// Keep view-once's existing compact marker: it is already suppressed by
+				// `isUnavailableViewOnceMessage` and has never been PDO-recoverable.
+				if (unavailableFanout && unavailableFanout !== 'view_once_unavailable_fanout') {
+					fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
+					fullMessage.messageStubParameters = [NO_MESSAGE_FOUND_ERROR_TEXT, 'unavailable', unavailableFanout]
+				} else if (fullMessage.key?.isViewOnce) {
 					fullMessage.messageStubParameters = ['view_once_unavailable']
 				} else {
 					fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
