@@ -1862,12 +1862,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					meId: groupSenderIdentity
 				})
 
+				const forceCarouselSenderKeyDistribution = isGroup && isCarouselMessage(message)
 				const senderKeyRecipients: string[] = []
 				for (const device of devices) {
 					const deviceJid = device.jid
 					const hasKey = !!senderKeyMap[deviceJid]
 					if (
-						(!hasKey || !!participant) &&
+						(!hasKey || !!participant || forceCarouselSenderKeyDistribution) &&
 						!isHostedLidUser(deviceJid) &&
 						!isHostedPnUser(deviceJid) &&
 						device.device !== 99
