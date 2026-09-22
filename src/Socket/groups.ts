@@ -1,8 +1,21 @@
+import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto/index.js'
-import type { GroupMetadata, GroupParticipant, ParticipantAction, SocketConfig, WAMessageKey } from '../Types'
+import type {
+	GroupMetadata,
+	GroupOverview,
+	GroupParticipant,
+	GroupRoutingInfo,
+	GroupSettingType,
+	MemberShareHistoryMode,
+	ParticipantAction,
+	ReportedGroupMessage,
+	SocketConfig,
+	WAMessageKey
+} from '../Types'
 import { WAMessageAddressingMode, WAMessageStubType } from '../Types'
 import { captureProtocolWire, generateMessageIDV2, resolveLidToPn, unixTimestampSeconds } from '../Utils'
+import { safeCacheSet } from '../Utils/cache-utils'
 import { buildGroupParticipantNode, mapParticipantFanout, MAX_PARTICIPANT_FANOUT } from '../Utils/relay-stanza'
 import { resolveTcTokenBucketPolicy, resolveUsableTcTokenForJid } from '../Utils/tc-token-utils'
 import {
@@ -163,6 +176,19 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 
 		return data
 	}
+
+	// Routing cache — hoisted to socket scope for invalidation on participant updates
+	const routingCache = new NodeCache<GroupRoutingInfo>({ stdTTL: 300, maxKeys: 500, useClones: false })
+
+	sock.ev.on('group-participants.update', async ({ id }: { id: string }) => {
+		routingCache.del(id)
+	})
+
+	sock.ev.on('groups.update', async (updates: Partial<GroupMetadata>[]) => {
+		for (const update of updates) {
+			if (update.id) routingCache.del(update.id)
+		}
+	})
 
 	sock.ws.on('CB:ib,,dirty', async (node: BinaryNode) => {
 		const { attrs } = getBinaryNodeChild(node, 'dirty')!
@@ -383,7 +409,7 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 				: { tag: 'not_ephemeral', attrs: {} }
 			await groupQuery(jid, 'set', [content])
 		},
-		groupSettingUpdate: async (jid: string, setting: 'announcement' | 'not_announcement' | 'locked' | 'unlocked') => {
+		groupSettingUpdate: async (jid: string, setting: GroupSettingType) => {
 			await groupQuery(jid, 'set', [{ tag: setting, attrs: {} }])
 		},
 		groupMemberAddMode: async (jid: string, mode: 'admin_add' | 'all_member_add') => {
@@ -394,7 +420,223 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 				{ tag: 'membership_approval_mode', attrs: {}, content: [{ tag: 'group_join', attrs: { state: mode } }] }
 			])
 		},
+		groupMemberShareHistoryMode: async (jid: string, mode: MemberShareHistoryMode) => {
+			await groupQuery(jid, 'set', [{ tag: 'member_share_group_history_mode', attrs: {}, content: mode }])
+		},
+		groupFetchMetadataBatch: async (jids: string[], concurrency = 10): Promise<GroupMetadata[]> => {
+			if (!jids.length) return []
+			const results: (GroupMetadata | null)[] = []
+			for (let i = 0; i < jids.length; i += concurrency) {
+				const chunk = jids.slice(i, i + concurrency)
+				const chunkResults = await Promise.all(
+					chunk.map(async jid => {
+						try {
+							return await groupMetadata(jid)
+						} catch (error) {
+							logger.warn({ error, jid }, 'groupFetchMetadataBatch: failed for jid')
+							return null
+						}
+					})
+				)
+				results.push(...chunkResults)
+			}
+
+			return results.filter((r): r is GroupMetadata => r !== null)
+		},
+		groupFetchOverviews: async (jids?: string[]): Promise<GroupOverview[]> => {
+			const targetJids = jids?.length ? jids : null
+			if (targetJids) {
+				const results = await Promise.all(
+					targetJids.map(async jid => {
+						const result = await groupQuery(jid, 'get', [{ tag: 'query', attrs: { request: 'interactive' } }])
+						const group = getBinaryNodeChild(result, 'group')
+						return group ? overviewFromNode(group) : null
+					})
+				)
+				return results.filter((r): r is GroupOverview => r !== null)
+			}
+
+			// No specific JIDs: list all participating without participant details
+			const result = await query({
+				tag: 'iq',
+				attrs: { to: '@g.us', xmlns: 'w:g2', type: 'get' },
+				content: [
+					{
+						tag: 'participating',
+						attrs: {},
+						content: [{ tag: 'description', attrs: {} }]
+					}
+				]
+			})
+			const groupsChild = getBinaryNodeChild(result, 'groups')
+			if (!groupsChild) return []
+			return getBinaryNodeChildren(groupsChild, 'group')
+				.map(g => overviewFromNode(g))
+				.filter((r): r is GroupOverview => r !== null)
+		},
+		groupRoutingInfo: async (jid: string): Promise<GroupRoutingInfo> => {
+			const cached = routingCache.get(jid)
+			if (cached) return cached
+			const meta = await groupMetadata(jid)
+			const lidToPnMap: Record<string, string | undefined> = {}
+			for (const p of meta.participants) {
+				if (p.lid && p.phoneNumber) lidToPnMap[p.lid] = p.phoneNumber
+				else if (p.lid && isPnUser(p.id)) lidToPnMap[p.lid] = p.id
+			}
+
+			const info: GroupRoutingInfo = {
+				groupJid: jid,
+				participants: meta.participants.map(p => p.id),
+				addressingMode: meta.addressingMode ?? WAMessageAddressingMode.PN,
+				lidToPnMap,
+				fetchedAt: Date.now()
+			}
+			await safeCacheSet(routingCache, jid, info, logger, 'groupRoutingInfo')
+			return info
+		},
+		groupResolveParticipantAddresses: async (metadata: GroupMetadata): Promise<GroupMetadata> => {
+			const clone = structuredClone(metadata)
+			return normalizeGroupMetadata(clone)
+		},
+		groupRemoveParticipantsIncludingLinkedGroups: async (jid: string, participants: string[]) => {
+			const results: { jid: string; status: string; group: string }[] = []
+			// Remove from the parent group via direct IQ
+			const removeResults = await groupQuery(jid, 'set', [
+				{
+					tag: 'remove',
+					attrs: {},
+					content: participants.map(p => ({ tag: 'participant', attrs: { jid: p } }))
+				}
+			])
+			const removeNode = getBinaryNodeChild(removeResults, 'remove')
+			const parentAffected = getBinaryNodeChildren(removeNode, 'participant')
+			for (const p of parentAffected) {
+				results.push({ jid: p.attrs.jid || '', status: p.attrs.error || '200', group: jid })
+			}
+
+			// Query linked subgroups
+			const meta = await groupMetadata(jid)
+			// Process linked groups regardless of whether jid is a root community or a subgroup
+			const communityJid = meta.isCommunity ? jid : meta.linkedParent
+			if (communityJid) {
+				const linkedResult = await groupQuery(communityJid, 'get', [{ tag: 'linked_groups', attrs: {} }])
+				const linkedNode = getBinaryNodeChild(linkedResult, 'linked_groups')
+				const linkedGroups = getBinaryNodeChildren(linkedNode, 'group')
+				for (const linkedGroup of linkedGroups) {
+					const linkedJid = linkedGroup.attrs.jid
+					if (!linkedJid) continue
+					try {
+						const linkedResults = await groupQuery(linkedJid, 'set', [
+							{
+								tag: 'remove',
+								attrs: {},
+								content: participants.map(p => ({ tag: 'participant', attrs: { jid: p } }))
+							}
+						])
+						const linkedRemoveNode = getBinaryNodeChild(linkedResults, 'remove')
+						const linkedAffected = getBinaryNodeChildren(linkedRemoveNode, 'participant')
+						for (const p of linkedAffected) {
+							results.push({ jid: p.attrs.jid || '', status: p.attrs.error || '200', group: linkedJid })
+						}
+					} catch (error) {
+						logger.warn(
+							{ error, group: linkedJid },
+							'groupRemoveParticipantsIncludingLinkedGroups: subgroup remove failed'
+						)
+					}
+				}
+			}
+
+			return results
+		},
+		groupCancelMembershipRequest: async (jid: string): Promise<void> => {
+			await groupQuery(jid, 'set', [
+				{
+					tag: 'membership_requests_action',
+					attrs: {},
+					content: [
+						{
+							tag: 'cancel',
+							attrs: {}
+						}
+					]
+				}
+			])
+		},
+		groupGetReportedMessages: async (jid: string): Promise<ReportedGroupMessage[]> => {
+			const result = await groupQuery(jid, 'get', [{ tag: 'reported_messages', attrs: {} }])
+			const reportedNode = getBinaryNodeChild(result, 'reported_messages')
+			if (!reportedNode) return []
+			const messages = getBinaryNodeChildren(reportedNode, 'reported_message')
+			return messages.map(msg => {
+				const reporters = getBinaryNodeChildren(msg, 'reporter').map(r => ({
+					jid: r.attrs.jid || '',
+					timestamp: +(r.attrs.t ?? '0'),
+					phoneNumber: r.attrs.phone_number,
+					username: r.attrs.username
+				}))
+				return {
+					messageId: msg.attrs.id || '',
+					reporters
+				}
+			})
+		},
+		groupReportMessagesToAdmins: async (jid: string, messageIds: string[], reason?: string) => {
+			await groupQuery(jid, 'set', [
+				{
+					tag: 'report',
+					attrs: reason ? { reason } : {},
+					content: messageIds.map(id => ({
+						tag: 'message',
+						attrs: { id }
+					}))
+				}
+			])
+		},
+		groupUpdateMemberLabel: async (jid: string, participantJid: string, label: string) => {
+			await groupQuery(jid, 'set', [
+				{
+					tag: 'member_label',
+					attrs: { jid: participantJid },
+					content: Buffer.from(label, 'utf-8')
+				}
+			])
+		},
+		groupLookupProfilePicture: async (jid: string): Promise<{ url?: string; tag?: string }> => {
+			const result = await groupQuery(jid, 'get', [{ tag: 'picture', attrs: {} }])
+			const picNode = getBinaryNodeChild(result, 'picture')
+			return { url: picNode?.attrs.url, tag: picNode?.attrs.tag }
+		},
+		groupLookupCommunityProfilePicture: async (jid: string): Promise<{ url?: string; tag?: string }> => {
+			const result = await groupQuery(jid, 'get', [{ tag: 'picture', attrs: { type: 'community' } }])
+			const picNode = getBinaryNodeChild(result, 'picture')
+			return { url: picNode?.attrs.url, tag: picNode?.attrs.tag }
+		},
 		groupFetchAllParticipating
+	}
+}
+
+const triState = (group: BinaryNode, positive: string, negative: string): boolean | undefined => {
+	if (getBinaryNodeChild(group, positive)) return true
+	if (getBinaryNodeChild(group, negative)) return false
+	return undefined
+}
+
+const overviewFromNode = (g: BinaryNode): GroupOverview | null => {
+	if (!g.attrs.id) return null
+	return {
+		id: g.attrs.id.includes('@') ? g.attrs.id : jidEncode(g.attrs.id, 'g.us'),
+		subject: g.attrs.subject,
+		subjectTime: g.attrs.s_t ? +g.attrs.s_t : undefined,
+		creation: g.attrs.creation ? +g.attrs.creation : undefined,
+		size: g.attrs.size ? +g.attrs.size : undefined,
+		linkedParent: getBinaryNodeChild(g, 'linked_parent')?.attrs.jid,
+		isCommunity: !!getBinaryNodeChild(g, 'parent'),
+		isCommunityAnnounce: !!getBinaryNodeChild(g, 'default_sub_group'),
+		addressingMode: g.attrs.addressing_mode === 'lid' ? WAMessageAddressingMode.LID : WAMessageAddressingMode.PN,
+		ephemeralDuration: getBinaryNodeChild(g, 'ephemeral')?.attrs.expiration
+			? +getBinaryNodeChild(g, 'ephemeral')!.attrs.expiration!
+			: undefined
 	}
 }
 
@@ -464,6 +706,15 @@ export const extractGroupMetadata = (result: BinaryNode) => {
 		isCommunityAnnounce: !!getBinaryNodeChild(group, 'default_sub_group'),
 		joinApprovalMode: !!getBinaryNodeChild(group, 'membership_approval_mode'),
 		memberAddMode,
+		noFrequentlyForwarded: triState(group, 'no_frequently_forwarded', 'frequently_forwarded'),
+		allowAdminReports: triState(group, 'allow_admin_reports', 'not_allow_admin_reports'),
+		groupHistoryVisible: triState(group, 'group_history', 'no_group_history'),
+		limitSharingEnabled: triState(group, 'limit_sharing_enabled', 'limit_sharing_disabled'),
+		growthLocked: triState(group, 'growth_locked', 'growth_unlocked'),
+		memberShareHistoryMode: getBinaryNodeChildString(group, 'member_share_group_history_mode') as
+			| 'retained'
+			| 'unavailable'
+			| undefined,
 		participants: getBinaryNodeChildren(group, 'participant').map(({ attrs }) => {
 			// TODO: Store LID MAPPINGS
 			return {
