@@ -52,15 +52,18 @@ import {
 	getNativeAndroidAppIdentity,
 	getNextPreKeysNode,
 	getPairCodeCompanionIdentity,
+	getProcessPhoneValidationRateLimiter,
 	getQrCodeCompanionIdentity,
 	incrementNativeAndroidConnectionLc,
 	inspectAuthStateCapabilities,
 	makeEventBuffer,
 	makeNoiseHandler,
 	obfuscateJid,
+	preparePhoneValidation,
 	promiseTimeout,
 	resolveNativeAndroidClientPayloadPhase,
 	resolveNativeAndroidPairingAppVariant,
+	resolvePhoneValidationResult,
 	resolveProxyConnectionPhase,
 	resolveProxyRouteAudit,
 	resolveTransportSession,
@@ -822,6 +825,59 @@ export const makeSocket = (config: SocketConfig) => {
 	const connectionId = `sock:${randomBytes(8).toString('hex')}`
 	const accountJid = jidNormalizedUser(authState.creds.me?.id) || undefined
 	const authInstanceId = config.instanceId?.trim() || accountJid || connectionId
+	// B3: use injected limiter or process-level singleton.
+	const phoneValidationRateLimiter = config.phoneValidationRateLimiter ?? getProcessPhoneValidationRateLimiter()
+	// B3: tenant key prefers organizationId → instanceId → accountJid → connectionId.
+	const tenantId =
+		runtimeConfig.organizationId?.trim() || runtimeConfig.instanceId?.trim() || accountJid || connectionId
+
+	// B6: per-socket provider (passed as parameter, never written to global state).
+	const phoneMetadataProvider = config.phoneMetadataProvider ?? null
+
+	/**
+	 * Explicit number validation for consumers. The local engine mirrors
+	 * WhatsApp Android's BR plan metadata, but USync is the sole authority for
+	 * existence and no candidate is selected or rewritten silently.
+	 *
+	 * B1: One USync query per candidate, so the canonical JID can differ from
+	 * the queried digits without causing a 502.
+	 */
+	const validatePhone = async (phone: string, options: { candidates?: string[] } = {}) => {
+		const request = preparePhoneValidation(phone, options.candidates, phoneMetadataProvider)
+
+		// B3+B4: atomic check — consumeMany verifies all keys first, only
+		// registers budget if ALL pass. No partial consumption.
+		const rateLimitResult = await phoneValidationRateLimiter.consumeMany(
+			request.candidates.map(candidate => `${tenantId}:${candidate.phone}`)
+		)
+
+		if (!rateLimitResult.allowed) {
+			const rateLimitError = new Boom('phone validation rate limit exceeded', {
+				statusCode: 429,
+				data: {
+					code: 'phone_validation_rate_limited',
+					scope: rateLimitResult.scope ?? 'number',
+					retryAfterSeconds: rateLimitResult.retryAfterSeconds
+				}
+			})
+			rateLimitError.output.headers = {
+				'retry-after': String(rateLimitResult.retryAfterSeconds)
+			}
+			throw rateLimitError
+		}
+
+		// B1: one USync query per candidate. Each response belongs to that candidate.
+		const perCandidateResults = await Promise.all(
+			request.candidates.map(async candidate => {
+				const results = await onWhatsApp(`${candidate.phone}@s.whatsapp.net`)
+				if (!results || results.length === 0) return undefined
+				return results[0]
+			})
+		)
+
+		return resolvePhoneValidationResult(request, perCandidateResults)
+	}
+
 	const authInspection = inspectAuthStateCapabilities(authState, authInstanceId, accountJid)
 	const authCapabilities = authInspection.capabilities
 	if (!authCapabilities.appStateSyncRecovery) {
@@ -3125,6 +3181,7 @@ export const makeSocket = (config: SocketConfig) => {
 		sendWAMBuffer,
 		executeUSyncQuery,
 		onWhatsApp,
+		validatePhone,
 		// Port de upstream `4dbbba2891` (PR #2442) — reachout timelock + new chat message cap
 		fetchAccountReachoutTimelock,
 		/** Returns fresh server eligibility plus the official video URL, without mutating state. */

@@ -101,6 +101,28 @@ export type StartChatTrustSignalsProvider = (request: {
 	signal?: AbortSignal
 }) => Promise<StartChatTrustSignals>
 
+export type PhoneNumberClassification = 'mobile' | 'landline' | 'legacy-mobile' | 'unknown'
+
+export type PhoneValidationCandidate = {
+	/** Exact caller-supplied digits; the motor never inserts or removes digits. */
+	phone: string
+	exists: boolean
+	/** Canonical WhatsApp PN JID, present only for an existing candidate. */
+	jid?: string
+	/** Local metadata classification; existence is determined only by WhatsApp. */
+	classification: PhoneNumberClassification
+}
+
+export type PhoneValidationResult = {
+	/** Exact caller-supplied digits after removing non-digit characters. */
+	normalizedPhone: string
+	/** Non-null only after WhatsApp confirmed exactly one existing candidate. */
+	acceptedJid: string | null
+	candidates: PhoneValidationCandidate[]
+	/** Identifies which metadata source classified the candidates. */
+	classificationSource: string
+}
+
 export type SocketConfig = {
 	/** Stable consumer instance identifier included in auth-state diagnostics. */
 	instanceId?: string
@@ -514,4 +536,21 @@ export type SocketConfig = {
 
 	/** Session cleanup configuration (optional, partial overrides merged with defaults) */
 	sessionCleanupConfig?: Partial<SessionCleanupConfig>
+
+	/**
+	 * Optional phone metadata provider for classifyPhoneNumber.
+	 * When absent, the motor loads the countries.tsv from the configured path
+	 * (or falls back to classifying everything as 'unknown').
+	 */
+	phoneMetadataProvider?: import('../Utils/phone-metadata-provider').PhoneMetadataProvider
+
+	/**
+	 * Optional rate limiter for phone validation. When absent, the motor
+	 * creates an in-process singleton. Inject a distributed limiter (e.g. Redis)
+	 * for multi-worker deployments.
+	 */
+	phoneValidationRateLimiter?: {
+		consume(key: string): Promise<{ allowed: boolean; retryAfterSeconds: number; scope?: 'number' | 'tenant' }>
+		consumeMany(keys: string[]): Promise<{ allowed: boolean; retryAfterSeconds: number; scope?: 'number' | 'tenant' }>
+	}
 }
