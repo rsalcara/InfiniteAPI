@@ -91,7 +91,7 @@ import { logMessageReceived, logTcToken } from '../Utils/baileys-logger'
 import { isRecoverableLidSelfSyncStanza } from '../Utils/decode-wa-message'
 import { applyDeviceListDelta } from '../Utils/device-list-delta'
 import { makeLockManager } from '../Utils/lock-manager'
-import { makeMutex } from '../Utils/make-mutex'
+import { makeKeyedOrderGate, makeMutex } from '../Utils/make-mutex'
 import {
 	getMessageAckErrorPolicy,
 	getNativeOtpAckDiagnostic,
@@ -294,6 +294,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
 	const retryMutex = makeMutex()
+	// Live stanzas can spend different amounts of time in LID/PN setup before
+	// reaching messageMutex. Acquire a stable group key *before* that setup so
+	// message B cannot overtake message A in the same group. Other groups and
+	// DMs remain parallel.
+	const liveGroupOrderGate = makeKeyedOrderGate()
 
 	// Audit MEM-B3 — `maxKeys` previne crescimento ilimitado sob retry storm
 	// (msgRetryCache com TTL 1h) e em paths que poucos consumers fornecem
@@ -3959,6 +3964,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
+		const liveGroupOrderKey =
+			!node.attrs.offline && isJidGroup(canonicalRemoteJid) ? jidNormalizedUser(canonicalRemoteJid) : undefined
+		let releaseLiveGroupOrder = liveGroupOrderKey ? await liveGroupOrderGate.acquire(liveGroupOrderKey) : undefined
+
 		// Note on `<enc type="msmsg">`: upstream baileys (and the previous InfiniteAPI
 		// release) NACK'd these unconditionally with MissingMessageSecret because the
 		// Meta AI / FBID bot decryption was unimplemented. We now route msmsg into
@@ -4101,6 +4110,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 
 			await messageMutex.mutex(mutexKey, async () => {
+				// A now owns the normalized chat mutex. Release the admission gate so
+				// B can perform LID/PN setup concurrently while A decrypts/processes;
+				// B still waits on messageMutex, preserving delivery order.
+				releaseLiveGroupOrder?.()
+				releaseLiveGroupOrder = undefined
 				await decrypt()
 				// message failed to decrypt
 				if (msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT && msg.category !== 'peer') {
@@ -4512,6 +4526,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					logger.error({ ackErr }, 'failed to ack message after error')
 				)
 			}
+		} finally {
+			releaseLiveGroupOrder?.()
 		}
 	}
 
