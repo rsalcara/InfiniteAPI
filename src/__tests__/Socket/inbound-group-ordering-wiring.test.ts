@@ -125,6 +125,8 @@ const makeChatStanza = ({
 	participant,
 	participantAlt,
 	senderAlt,
+	recipient,
+	peerRecipientAlt,
 	offline
 }: {
 	chat: string
@@ -132,6 +134,8 @@ const makeChatStanza = ({
 	participant?: string
 	participantAlt?: string
 	senderAlt?: string
+	recipient?: string
+	peerRecipientAlt?: string
 	offline?: boolean
 }): BinaryNode => ({
 	tag: 'message',
@@ -141,6 +145,8 @@ const makeChatStanza = ({
 		...(participant && { participant }),
 		...(participantAlt && { participant_lid: participantAlt }),
 		...(senderAlt && { sender_pn: senderAlt }),
+		...(recipient && { recipient }),
+		...(peerRecipientAlt && { peer_recipient_lid: peerRecipientAlt }),
 		...(offline && { offline: 'true' }),
 		t: '1789500100'
 	},
@@ -336,6 +342,42 @@ describe('inbound live chat ordering wiring', () => {
 		await endSocket(socket)
 	})
 
+	it('orders a participant message before a later self-routed message in the same recipient group', async () => {
+		const { socket } = await makeSocket(async lid => {
+			if (lid === PARTICIPANT_A_LID) await new Promise(resolve => setTimeout(resolve, 40))
+			return lid === PARTICIPANT_A_LID ? PARTICIPANT_A_PN : PARTICIPANT_B_PN
+		})
+
+		const upsertIds: string[] = []
+		socket.ev.on('messages.upsert', update => {
+			for (const message of update.messages) upsertIds.push(message.key.id!)
+		})
+
+		const client = latestClient()
+		client.emit(
+			'CB:message',
+			makeChatStanza({
+				chat: GROUP_A,
+				id: 'PARTICIPANT-FIRST',
+				participant: PARTICIPANT_A_PN,
+				participantAlt: PARTICIPANT_A_LID
+			})
+		)
+		client.emit(
+			'CB:message',
+			makeChatStanza({
+				chat: ME_PN,
+				id: 'SELF-Routed-SECOND',
+				recipient: GROUP_A
+			})
+		)
+
+		await waitFor(() => upsertIds.length === 2)
+		expect(upsertIds).toEqual(['PARTICIPANT-FIRST', 'SELF-Routed-SECOND'])
+
+		await endSocket(socket)
+	})
+
 	it('preserves same-dm arrival order when the first raw identity lookup is slow', async () => {
 		const { socket } = await makeSocket(async () => null)
 		const phaseCalls: string[] = []
@@ -385,6 +427,33 @@ describe('inbound live chat ordering wiring', () => {
 		await endSocket(socket)
 	})
 
+	it('releases the admission gate when decoding fails before the processing mutex', async () => {
+		const { socket, logger } = await makeSocket(async () => PARTICIPANT_A_PN)
+
+		const upsertIds: string[] = []
+		socket.ev.on('messages.upsert', update => {
+			for (const message of update.messages) upsertIds.push(message.key.id!)
+		})
+
+		const client = latestClient()
+		client.emit('CB:message', makeChatStanza({ chat: GROUP_A, id: 'DECODE-FAILURE' }))
+		client.emit(
+			'CB:message',
+			makeChatStanza({
+				chat: GROUP_A,
+				id: 'AFTER-DECODE-FAILURE',
+				participant: PARTICIPANT_A_PN,
+				participantAlt: PARTICIPANT_A_LID
+			})
+		)
+
+		await waitFor(() => logger.error.mock.calls.some((call: unknown[]) => call[1] === 'error in handling message'))
+		await waitFor(() => upsertIds.length === 1)
+		expect(upsertIds).toEqual(['AFTER-DECODE-FAILURE'])
+
+		await endSocket(socket)
+	})
+
 	it('keeps different dms parallel when the first dm is delayed', async () => {
 		const mappingCalls: string[] = []
 		const { socket } = await makeSocket(async () => null)
@@ -408,6 +477,50 @@ describe('inbound live chat ordering wiring', () => {
 
 		expect(mappingCalls.indexOf(`enter:${DM_B_PN}`)).toBeLessThan(mappingCalls.lastIndexOf(`exit:${DM_A_PN}`))
 		expect(upsertIds).toEqual(['DM-FAST', 'DM-DELAYED'])
+
+		await endSocket(socket)
+	})
+
+	it('keeps self-routed chats parallel when both use the sender in from', async () => {
+		const mappingCalls: string[] = []
+		const { socket } = await makeSocket(async lid => {
+			mappingCalls.push(`enter:${lid}`)
+			if (lid === DM_A_LID) await new Promise(resolve => setTimeout(resolve, 40))
+			mappingCalls.push(`exit:${lid}`)
+			return lid === DM_A_LID ? DM_A_PN : DM_B_PN
+		})
+
+		const upsertIds: string[] = []
+		socket.ev.on('messages.upsert', update => {
+			for (const message of update.messages) upsertIds.push(message.key.id!)
+		})
+
+		const client = latestClient()
+		client.emit(
+			'CB:message',
+			makeChatStanza({
+				chat: ME_PN,
+				id: 'SELF-DM-DELAYED',
+				recipient: DM_A_LID,
+				peerRecipientAlt: DM_A_LID
+			})
+		)
+		client.emit(
+			'CB:message',
+			makeChatStanza({
+				chat: ME_PN,
+				id: 'SELF-DM-FAST',
+				recipient: DM_B_LID,
+				peerRecipientAlt: DM_B_LID
+			})
+		)
+
+		await waitFor(() => upsertIds.length === 2)
+
+		// A still owns its LID setup when B enters: effective recipient keys keep
+		// two self-routed chats independent instead of sharing the sender key.
+		expect(mappingCalls.indexOf(`enter:${DM_B_LID}`)).toBeLessThan(mappingCalls.lastIndexOf(`exit:${DM_A_LID}`))
+		expect(upsertIds).toEqual(['SELF-DM-FAST', 'SELF-DM-DELAYED'])
 
 		await endSocket(socket)
 	})
@@ -445,6 +558,50 @@ describe('inbound live chat ordering wiring', () => {
 
 		await waitFor(() => processingIds.length === 2)
 		expect(processingIds).toEqual(['FAST-GROUP', 'DELAYED-GROUP'])
+
+		await endSocket(socket)
+	})
+
+	it('keeps status participants parallel instead of sharing one broadcast queue', async () => {
+		const mappingCalls: string[] = []
+		const { socket } = await makeSocket(async lid => {
+			mappingCalls.push(`enter:${lid}`)
+			if (lid === PARTICIPANT_A_LID) await new Promise(resolve => setTimeout(resolve, 40))
+			mappingCalls.push(`exit:${lid}`)
+			return lid === PARTICIPANT_A_LID ? PARTICIPANT_A_PN : PARTICIPANT_B_PN
+		})
+
+		const upsertIds: string[] = []
+		socket.ev.on('messages.upsert', update => {
+			for (const message of update.messages) upsertIds.push(message.key.id!)
+		})
+
+		const client = latestClient()
+		client.emit(
+			'CB:message',
+			makeChatStanza({
+				chat: 'status@broadcast',
+				id: 'STATUS-A',
+				participant: PARTICIPANT_A_PN,
+				participantAlt: PARTICIPANT_A_LID
+			})
+		)
+		client.emit(
+			'CB:message',
+			makeChatStanza({
+				chat: 'status@broadcast',
+				id: 'STATUS-B',
+				participant: PARTICIPANT_B_PN,
+				participantAlt: PARTICIPANT_B_LID
+			})
+		)
+
+		await waitFor(() => upsertIds.length === 2)
+
+		expect(mappingCalls.indexOf(`enter:${PARTICIPANT_B_LID}`)).toBeLessThan(
+			mappingCalls.lastIndexOf(`exit:${PARTICIPANT_A_LID}`)
+		)
+		expect(upsertIds).toEqual(['STATUS-B', 'STATUS-A'])
 
 		await endSocket(socket)
 	})

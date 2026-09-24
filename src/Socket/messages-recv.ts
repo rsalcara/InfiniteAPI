@@ -299,7 +299,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	// message B cannot overtake message A in the same chat. Other chats remain
 	// parallel, and the offline drain is intentionally excluded.
 	const liveChatOrderGate = makeKeyedOrderGate()
-	const LIVE_CHAT_ORDER_GATE_SLOW_WAIT_MS = 1_000
+	const LIVE_CHAT_ORDER_GATE_WAIT_LOG_INTERVAL_MS = 1_000
 
 	// Audit MEM-B3 — `maxKeys` previne crescimento ilimitado sob retry storm
 	// (msgRetryCache com TTL 1h) e em paths que poucos consumers fornecem
@@ -3965,21 +3965,54 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
+		const canonicalRecipientJid = jidWithoutExplicitZeroDevice(node.attrs.recipient)
+		const canonicalStatusParticipant = jidWithoutExplicitZeroDevice(node.attrs.participant)
+		const fromIsMe =
+			!!canonicalRemoteJid &&
+			((!!authState.creds.me?.id && areJidsSameUser(canonicalRemoteJid, authState.creds.me.id)) ||
+				(!!authState.creds.me?.lid && areJidsSameUser(canonicalRemoteJid, authState.creds.me.lid)))
+		// Linked-device sends carry the sender in `from` and the real chat in
+		// `recipient`; decodeMessageNode resolves the latter as chatId. Status
+		// shares one wire chat across all participants, so admission order is
+		// preserved per participant without serializing unrelated contacts.
+		const liveChatOrderTarget = isJidStatusBroadcast(canonicalRemoteJid!)
+			? canonicalRemoteJid
+			: fromIsMe && canonicalRecipientJid
+				? canonicalRecipientJid
+				: canonicalRemoteJid
 		const liveChatOrderKey =
-			!node.attrs.offline && canonicalRemoteJid ? jidNormalizedUser(canonicalRemoteJid) : undefined
+			!node.attrs.offline && liveChatOrderTarget
+				? isJidStatusBroadcast(liveChatOrderTarget)
+					? `${liveChatOrderTarget}:${jidNormalizedUser(canonicalStatusParticipant) || 'unknown'}`
+					: jidNormalizedUser(liveChatOrderTarget)
+				: undefined
 		let releaseLiveChatOrder: (() => void) | undefined
 		if (liveChatOrderKey) {
-			const liveChatOrderScope = isJidGroup(canonicalRemoteJid) ? 'group' : 'chat'
 			const liveChatOrderWaitStartedAt = Date.now()
-			releaseLiveChatOrder = await liveChatOrderGate.acquire(liveChatOrderKey)
+			const liveChatOrderScope = isJidStatusBroadcast(liveChatOrderTarget!)
+				? 'status'
+				: isJidGroup(liveChatOrderTarget!)
+					? 'group'
+					: 'chat'
+			const liveChatOrderWaitTimer: ReturnType<typeof setInterval> = setInterval(() => {
+				logger.warn(
+					{
+						chatJid: liveChatOrderKey,
+						scope: liveChatOrderScope,
+						waitedMs: Date.now() - liveChatOrderWaitStartedAt
+					},
+					'live chat admission order gate is still waiting'
+				)
+			}, LIVE_CHAT_ORDER_GATE_WAIT_LOG_INTERVAL_MS)
+			liveChatOrderWaitTimer.unref?.()
+			try {
+				releaseLiveChatOrder = await liveChatOrderGate.acquire(liveChatOrderKey)
+			} finally {
+				clearInterval(liveChatOrderWaitTimer)
+			}
+
 			const liveChatOrderWaitMs = Date.now() - liveChatOrderWaitStartedAt
 			metrics.inboundOrderGateWait.observe({ scope: liveChatOrderScope }, liveChatOrderWaitMs)
-			if (liveChatOrderWaitMs >= LIVE_CHAT_ORDER_GATE_SLOW_WAIT_MS) {
-				logger.warn(
-					{ chatJid: liveChatOrderKey, scope: liveChatOrderScope, waitMs: liveChatOrderWaitMs },
-					'live chat admission order gate wait is high'
-				)
-			}
 		}
 
 		// Note on `<enc type="msmsg">`: upstream baileys (and the previous InfiniteAPI
