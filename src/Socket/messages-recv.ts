@@ -91,7 +91,7 @@ import { logMessageReceived, logTcToken } from '../Utils/baileys-logger'
 import { isRecoverableLidSelfSyncStanza } from '../Utils/decode-wa-message'
 import { applyDeviceListDelta } from '../Utils/device-list-delta'
 import { makeLockManager } from '../Utils/lock-manager'
-import { makeMutex } from '../Utils/make-mutex'
+import { makeKeyedOrderGate, makeMutex } from '../Utils/make-mutex'
 import {
 	getMessageAckErrorPolicy,
 	getNativeOtpAckDiagnostic,
@@ -294,6 +294,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
 	const retryMutex = makeMutex()
+	// Live stanzas can spend different amounts of time in LID/PN setup before
+	// reaching messageMutex. Acquire a stable chat key *before* that setup so
+	// message B cannot overtake message A in the same chat. Other chats remain
+	// parallel, and the offline drain is intentionally excluded.
+	const liveChatOrderGate = makeKeyedOrderGate()
+	const LIVE_CHAT_ORDER_GATE_WAIT_LOG_INTERVAL_MS = 1_000
 
 	// Audit MEM-B3 — `maxKeys` previne crescimento ilimitado sob retry storm
 	// (msgRetryCache com TTL 1h) e em paths que poucos consumers fornecem
@@ -3959,6 +3965,56 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
+		const canonicalRecipientJid = jidWithoutExplicitZeroDevice(node.attrs.recipient)
+		const canonicalStatusParticipant = jidWithoutExplicitZeroDevice(node.attrs.participant)
+		const fromIsMe =
+			!!canonicalRemoteJid &&
+			((!!authState.creds.me?.id && areJidsSameUser(canonicalRemoteJid, authState.creds.me.id)) ||
+				(!!authState.creds.me?.lid && areJidsSameUser(canonicalRemoteJid, authState.creds.me.lid)))
+		// Linked-device sends carry the sender in `from` and the real chat in
+		// `recipient`; decodeMessageNode resolves the latter as chatId. Status
+		// shares one wire chat across all participants, so admission order is
+		// preserved per participant without serializing unrelated contacts.
+		const liveChatOrderTarget = isJidStatusBroadcast(canonicalRemoteJid!)
+			? canonicalRemoteJid
+			: fromIsMe && canonicalRecipientJid
+				? canonicalRecipientJid
+				: canonicalRemoteJid
+		const liveChatOrderKey =
+			!node.attrs.offline && liveChatOrderTarget
+				? isJidStatusBroadcast(liveChatOrderTarget)
+					? `${liveChatOrderTarget}:${jidNormalizedUser(canonicalStatusParticipant) || 'unknown'}`
+					: jidNormalizedUser(liveChatOrderTarget)
+				: undefined
+		let releaseLiveChatOrder: (() => void) | undefined
+		if (liveChatOrderKey) {
+			const liveChatOrderWaitStartedAt = Date.now()
+			const liveChatOrderScope = isJidStatusBroadcast(liveChatOrderTarget!)
+				? 'status'
+				: isJidGroup(liveChatOrderTarget!)
+					? 'group'
+					: 'chat'
+			const liveChatOrderWaitTimer: ReturnType<typeof setInterval> = setInterval(() => {
+				logger.warn(
+					{
+						chatJid: liveChatOrderKey,
+						scope: liveChatOrderScope,
+						waitedMs: Date.now() - liveChatOrderWaitStartedAt
+					},
+					'live chat admission order gate is still waiting'
+				)
+			}, LIVE_CHAT_ORDER_GATE_WAIT_LOG_INTERVAL_MS)
+			liveChatOrderWaitTimer.unref?.()
+			try {
+				releaseLiveChatOrder = await liveChatOrderGate.acquire(liveChatOrderKey)
+			} finally {
+				clearInterval(liveChatOrderWaitTimer)
+			}
+
+			const liveChatOrderWaitMs = Date.now() - liveChatOrderWaitStartedAt
+			metrics.inboundOrderGateWait.observe({ scope: liveChatOrderScope }, liveChatOrderWaitMs)
+		}
+
 		// Note on `<enc type="msmsg">`: upstream baileys (and the previous InfiniteAPI
 		// release) NACK'd these unconditionally with MissingMessageSecret because the
 		// Meta AI / FBID bot decryption was unimplemented. We now route msmsg into
@@ -4006,7 +4062,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			})
 
 			const alt = msg.key.participantAlt || msg.key.remoteJidAlt
-			// Handle LID/PN mappings with hybrid approach:
+			// Handle LID/PN mappings with hybrid approach. The live admission gate
+			// used the raw wire identity and serializes same-chat setup. Aliases
+			// that resolve to the same user only after the mapping lookup are not
+			// known at admission time; messageMutex remains the normalized-chat
+			// barrier for that residual race.
 			// - Store mapping operation runs in background (non-critical for decrypt)
 			// - Session migration MUST complete before decrypt() to avoid "No session record" errors
 			// This addresses Codex/Copilot review concerns about race conditions with decrypt()
@@ -4101,6 +4161,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 
 			await messageMutex.mutex(mutexKey, async () => {
+				// A now owns the normalized chat mutex. Release the admission gate so
+				// B can perform LID/PN setup concurrently while A decrypts/processes;
+				// B still waits on messageMutex, preserving delivery order.
+				releaseLiveChatOrder?.()
+				releaseLiveChatOrder = undefined
 				await decrypt()
 				// message failed to decrypt
 				if (msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT && msg.category !== 'peer') {
@@ -4512,6 +4577,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					logger.error({ ackErr }, 'failed to ack message after error')
 				)
 			}
+		} finally {
+			releaseLiveChatOrder?.()
 		}
 	}
 

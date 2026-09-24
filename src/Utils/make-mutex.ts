@@ -40,3 +40,36 @@ export const makeKeyedMutex = () => {
 }
 
 export type KeyedMutex = ReturnType<typeof makeKeyedMutex>
+
+/**
+ * Preserves admission order for tasks that may take different amounts of time
+ * before reaching a keyed mutex. `acquire()` resolves callers in the order they
+ * first call it; callers must invoke the returned release function in a
+ * `finally` block.
+ *
+ * This is intentionally separate from `makeKeyedMutex`: ordering can require a
+ * stable raw JID before async LID→PN normalization, while the processing mutex
+ * requires the normalized chat JID.
+ */
+export const makeKeyedOrderGate = () => {
+	const occupancyByKey = new Map<string, Promise<void>>()
+
+	return {
+		async acquire(key: string): Promise<() => void> {
+			const previousOccupancy = occupancyByKey.get(key) ?? Promise.resolve()
+			let release!: () => void
+			const currentOccupancy = new Promise<void>(resolve => {
+				release = resolve
+			})
+			occupancyByKey.set(key, currentOccupancy)
+			void currentOccupancy.then(() => {
+				if (occupancyByKey.get(key) === currentOccupancy) occupancyByKey.delete(key)
+			})
+
+			await previousOccupancy
+			return release
+		}
+	}
+}
+
+export type KeyedOrderGate = ReturnType<typeof makeKeyedOrderGate>
