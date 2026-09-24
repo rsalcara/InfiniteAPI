@@ -295,10 +295,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
 	const retryMutex = makeMutex()
 	// Live stanzas can spend different amounts of time in LID/PN setup before
-	// reaching messageMutex. Acquire a stable group key *before* that setup so
-	// message B cannot overtake message A in the same group. Other groups and
-	// DMs remain parallel.
-	const liveGroupOrderGate = makeKeyedOrderGate()
+	// reaching messageMutex. Acquire a stable chat key *before* that setup so
+	// message B cannot overtake message A in the same chat. Other chats remain
+	// parallel, and the offline drain is intentionally excluded.
+	const liveChatOrderGate = makeKeyedOrderGate()
+	const LIVE_CHAT_ORDER_GATE_SLOW_WAIT_MS = 1_000
 
 	// Audit MEM-B3 — `maxKeys` previne crescimento ilimitado sob retry storm
 	// (msgRetryCache com TTL 1h) e em paths que poucos consumers fornecem
@@ -3964,9 +3965,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		const liveGroupOrderKey =
-			!node.attrs.offline && isJidGroup(canonicalRemoteJid) ? jidNormalizedUser(canonicalRemoteJid) : undefined
-		let releaseLiveGroupOrder = liveGroupOrderKey ? await liveGroupOrderGate.acquire(liveGroupOrderKey) : undefined
+		const liveChatOrderKey =
+			!node.attrs.offline && canonicalRemoteJid ? jidNormalizedUser(canonicalRemoteJid) : undefined
+		let releaseLiveChatOrder: (() => void) | undefined
+		if (liveChatOrderKey) {
+			const liveChatOrderScope = isJidGroup(canonicalRemoteJid) ? 'group' : 'chat'
+			const liveChatOrderWaitStartedAt = Date.now()
+			releaseLiveChatOrder = await liveChatOrderGate.acquire(liveChatOrderKey)
+			const liveChatOrderWaitMs = Date.now() - liveChatOrderWaitStartedAt
+			metrics.inboundOrderGateWait.observe({ scope: liveChatOrderScope }, liveChatOrderWaitMs)
+			if (liveChatOrderWaitMs >= LIVE_CHAT_ORDER_GATE_SLOW_WAIT_MS) {
+				logger.warn(
+					{ chatJid: liveChatOrderKey, scope: liveChatOrderScope, waitMs: liveChatOrderWaitMs },
+					'live chat admission order gate wait is high'
+				)
+			}
+		}
 
 		// Note on `<enc type="msmsg">`: upstream baileys (and the previous InfiniteAPI
 		// release) NACK'd these unconditionally with MissingMessageSecret because the
@@ -4015,7 +4029,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			})
 
 			const alt = msg.key.participantAlt || msg.key.remoteJidAlt
-			// Handle LID/PN mappings with hybrid approach:
+			// Handle LID/PN mappings with hybrid approach. The live admission gate
+			// used the raw wire identity and serializes same-chat setup. Aliases
+			// that resolve to the same user only after the mapping lookup are not
+			// known at admission time; messageMutex remains the normalized-chat
+			// barrier for that residual race.
 			// - Store mapping operation runs in background (non-critical for decrypt)
 			// - Session migration MUST complete before decrypt() to avoid "No session record" errors
 			// This addresses Codex/Copilot review concerns about race conditions with decrypt()
@@ -4113,8 +4131,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				// A now owns the normalized chat mutex. Release the admission gate so
 				// B can perform LID/PN setup concurrently while A decrypts/processes;
 				// B still waits on messageMutex, preserving delivery order.
-				releaseLiveGroupOrder?.()
-				releaseLiveGroupOrder = undefined
+				releaseLiveChatOrder?.()
+				releaseLiveChatOrder = undefined
 				await decrypt()
 				// message failed to decrypt
 				if (msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT && msg.category !== 'peer') {
@@ -4527,7 +4545,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				)
 			}
 		} finally {
-			releaseLiveGroupOrder?.()
+			releaseLiveChatOrder?.()
 		}
 	}
 

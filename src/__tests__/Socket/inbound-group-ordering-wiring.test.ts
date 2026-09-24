@@ -12,6 +12,10 @@ const ME_PN = '5511999999999@s.whatsapp.net'
 const ME_LID = '1029384756@lid'
 const GROUP_A = '120363400000000001@g.us'
 const GROUP_B = '120363400000000002@g.us'
+const DM_A_LID = '188888000000010@lid'
+const DM_A_PN = '5511888880010@s.whatsapp.net'
+const DM_B_LID = '188888000000011@lid'
+const DM_B_PN = '5511888880011@s.whatsapp.net'
 const PARTICIPANT_A_PN = '5511888880001@s.whatsapp.net'
 const PARTICIPANT_A_LID = '188888000000001@lid'
 const PARTICIPANT_B_PN = '5511888880002@s.whatsapp.net'
@@ -115,25 +119,28 @@ const makeTestLogger = () => {
 	return logger
 }
 
-const makeGroupStanza = ({
-	group,
+const makeChatStanza = ({
+	chat,
 	id,
 	participant,
 	participantAlt,
+	senderAlt,
 	offline
 }: {
-	group: string
+	chat: string
 	id: string
 	participant?: string
 	participantAlt?: string
+	senderAlt?: string
 	offline?: boolean
 }): BinaryNode => ({
 	tag: 'message',
 	attrs: {
 		id,
-		from: group,
+		from: chat,
 		...(participant && { participant }),
 		...(participantAlt && { participant_lid: participantAlt }),
+		...(senderAlt && { sender_pn: senderAlt }),
 		...(offline && { offline: 'true' }),
 		t: '1789500100'
 	},
@@ -280,7 +287,7 @@ describe('keyed order gate', () => {
 	})
 })
 
-describe('inbound live group ordering wiring', () => {
+describe('inbound live chat ordering wiring', () => {
 	it('preserves same-group arrival order when LID mapping has uneven latency', async () => {
 		const mappingCalls: string[] = []
 		const { socket } = await makeSocket(async lid => {
@@ -298,8 +305,8 @@ describe('inbound live group ordering wiring', () => {
 		const client = latestClient()
 		client.emit(
 			'CB:message',
-			makeGroupStanza({
-				group: GROUP_A,
+			makeChatStanza({
+				chat: GROUP_A,
 				id: 'GROUP-A-1',
 				participant: PARTICIPANT_A_PN,
 				participantAlt: PARTICIPANT_A_LID
@@ -307,8 +314,8 @@ describe('inbound live group ordering wiring', () => {
 		)
 		client.emit(
 			'CB:message',
-			makeGroupStanza({
-				group: GROUP_A,
+			makeChatStanza({
+				chat: GROUP_A,
 				id: 'GROUP-A-2',
 				participant: PARTICIPANT_B_PN,
 				participantAlt: PARTICIPANT_B_LID
@@ -329,7 +336,83 @@ describe('inbound live group ordering wiring', () => {
 		await endSocket(socket)
 	})
 
-	it('keeps different groups parallel when the first group is delayed', async () => {
+	it('preserves same-dm arrival order when the first raw identity lookup is slow', async () => {
+		const { socket } = await makeSocket(async () => null)
+		const phaseCalls: string[] = []
+		let firstLookup = true
+		socket.signalRepository.lidMapping.getLIDForPN = async pn => {
+			const isFirstLookup = pn === DM_A_PN && firstLookup
+
+			phaseCalls.push(`lookup-enter:${pn}`)
+			if (isFirstLookup) {
+				firstLookup = false
+				await new Promise(resolve => setTimeout(resolve, 30))
+			}
+
+			phaseCalls.push(`lookup-exit:${pn}`)
+
+			return isFirstLookup ? DM_A_LID : null
+		}
+
+		const originalMigrateSession = socket.signalRepository.migrateSession.bind(socket.signalRepository)
+		socket.signalRepository.migrateSession = async (...args: unknown[]) => {
+			const primaryJid = String(args[1])
+			phaseCalls.push(`migrate-enter:${primaryJid}`)
+			if (primaryJid === DM_A_LID) await new Promise(resolve => setTimeout(resolve, 30))
+			phaseCalls.push(`migrate-exit:${primaryJid}`)
+			return await originalMigrateSession(...(args as Parameters<typeof socket.signalRepository.migrateSession>))
+		}
+
+		const upsertIds: string[] = []
+		socket.ev.on('messages.upsert', update => {
+			for (const message of update.messages) upsertIds.push(message.key.id!)
+		})
+
+		const client = latestClient()
+		client.emit('CB:message', makeChatStanza({ chat: DM_A_LID, id: 'DM-A-1', senderAlt: DM_A_PN }))
+		client.emit('CB:message', makeChatStanza({ chat: DM_A_LID, id: 'DM-A-2', senderAlt: DM_A_PN }))
+
+		await waitFor(() => upsertIds.length === 2)
+
+		expect(phaseCalls[0]).toBe(`lookup-enter:${DM_A_PN}`)
+		// Both DMs share the raw wire identity. B must not begin LID/PN setup
+		// until A has released admission at the normalized chat mutex.
+		expect(phaseCalls.indexOf(`lookup-enter:${DM_A_PN}`, 1)).toBeGreaterThan(
+			phaseCalls.indexOf(`migrate-exit:${DM_A_LID}`)
+		)
+		expect(upsertIds).toEqual(['DM-A-1', 'DM-A-2'])
+
+		await endSocket(socket)
+	})
+
+	it('keeps different dms parallel when the first dm is delayed', async () => {
+		const mappingCalls: string[] = []
+		const { socket } = await makeSocket(async () => null)
+		socket.signalRepository.lidMapping.getLIDForPN = async pn => {
+			mappingCalls.push(`enter:${pn}`)
+			if (pn === DM_A_PN) await new Promise(resolve => setTimeout(resolve, 30))
+			mappingCalls.push(`exit:${pn}`)
+			return pn === DM_A_PN ? DM_A_LID : null
+		}
+
+		const upsertIds: string[] = []
+		socket.ev.on('messages.upsert', update => {
+			for (const message of update.messages) upsertIds.push(message.key.id!)
+		})
+
+		const client = latestClient()
+		client.emit('CB:message', makeChatStanza({ chat: DM_A_LID, id: 'DM-DELAYED', senderAlt: DM_A_PN }))
+		client.emit('CB:message', makeChatStanza({ chat: DM_B_LID, id: 'DM-FAST', senderAlt: DM_B_PN }))
+
+		await waitFor(() => upsertIds.length === 2)
+
+		expect(mappingCalls.indexOf(`enter:${DM_B_PN}`)).toBeLessThan(mappingCalls.lastIndexOf(`exit:${DM_A_PN}`))
+		expect(upsertIds).toEqual(['DM-FAST', 'DM-DELAYED'])
+
+		await endSocket(socket)
+	})
+
+	it('keeps different chats parallel when the first chat is delayed', async () => {
 		const { socket } = await makeSocket(async lid => {
 			if (lid === PARTICIPANT_A_LID) await new Promise(resolve => setTimeout(resolve, 40))
 			return lid === PARTICIPANT_A_LID ? PARTICIPANT_A_PN : PARTICIPANT_B_PN
@@ -343,8 +426,8 @@ describe('inbound live group ordering wiring', () => {
 		const client = latestClient()
 		client.emit(
 			'CB:message',
-			makeGroupStanza({
-				group: GROUP_A,
+			makeChatStanza({
+				chat: GROUP_A,
 				id: 'DELAYED-GROUP',
 				participant: PARTICIPANT_A_PN,
 				participantAlt: PARTICIPANT_A_LID
@@ -352,8 +435,8 @@ describe('inbound live group ordering wiring', () => {
 		)
 		client.emit(
 			'CB:message',
-			makeGroupStanza({
-				group: GROUP_B,
+			makeChatStanza({
+				chat: GROUP_B,
 				id: 'FAST-GROUP',
 				participant: PARTICIPANT_B_PN,
 				participantAlt: PARTICIPANT_B_LID
@@ -366,7 +449,48 @@ describe('inbound live group ordering wiring', () => {
 		await endSocket(socket)
 	})
 
-	it('leaves offline group drain outside the live admission gate', async () => {
+	it('leaves offline dm drain outside the live admission gate', async () => {
+		const { socket, logger } = await makeSocket(async lid => {
+			if (lid === DM_A_LID) await new Promise(resolve => setTimeout(resolve, 40))
+			return DM_A_PN
+		})
+
+		let liveUpserted = false
+		let liveStaged = false
+		socket.ev.on('messages.upsert', update => {
+			if (update.messages.some(message => message.key.id === 'OFFLINE-DM-GATE-LIVE')) liveUpserted = true
+		})
+		const originalGetLIDForPN = socket.signalRepository.lidMapping.getLIDForPN.bind(socket.signalRepository.lidMapping)
+		socket.signalRepository.lidMapping.getLIDForPN = async pn => {
+			if (pn === DM_A_PN) await new Promise(resolve => setTimeout(resolve, 40))
+			const result = await originalGetLIDForPN(pn)
+			if (pn === DM_A_PN) liveStaged = true
+			return result
+		}
+
+		const client = latestClient()
+		client.emit('CB:message', makeChatStanza({ chat: DM_A_LID, id: 'OFFLINE-DM-GATE-LIVE', senderAlt: DM_A_PN }))
+
+		// An unsupported offline DM fails during decode. If it entered the live
+		// gate, that error would remain queued behind the delayed live message;
+		// bypassing the gate makes the boundary deterministic.
+		client.emit('CB:message', {
+			tag: 'message',
+			attrs: { from: DM_A_LID, offline: 'true', t: '1789500100' },
+			content: [{ tag: 'enc', attrs: { type: 'unsupported-offline-test-type' } }]
+		})
+
+		await waitFor(() => logger.error.mock.calls.some((call: unknown[]) => call[1] === 'error in handling message'))
+		expect(liveStaged).toBe(false)
+		expect(liveUpserted).toBe(false)
+
+		await waitFor(() => liveStaged)
+		expect(liveStaged).toBe(true)
+
+		await endSocket(socket)
+	})
+
+	it('leaves offline drain outside the live admission gate', async () => {
 		const { socket, logger } = await makeSocket(async lid => {
 			if (lid === PARTICIPANT_A_LID) await new Promise(resolve => setTimeout(resolve, 40))
 			return PARTICIPANT_A_PN
@@ -387,8 +511,8 @@ describe('inbound live group ordering wiring', () => {
 		const client = latestClient()
 		client.emit(
 			'CB:message',
-			makeGroupStanza({
-				group: GROUP_A,
+			makeChatStanza({
+				chat: GROUP_A,
 				id: 'OFFLINE-GATE-LIVE',
 				participant: PARTICIPANT_A_PN,
 				participantAlt: PARTICIPANT_A_LID
@@ -400,8 +524,8 @@ describe('inbound live group ordering wiring', () => {
 		// live message completed; bypassing the gate makes it deterministic.
 		client.emit(
 			'CB:message',
-			makeGroupStanza({
-				group: GROUP_A,
+			makeChatStanza({
+				chat: GROUP_A,
 				id: 'OFFLINE-GATE-MISSING-PARTICIPANT',
 				offline: true
 			})

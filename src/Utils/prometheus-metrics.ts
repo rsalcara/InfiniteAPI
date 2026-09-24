@@ -1437,6 +1437,14 @@ export const metrics = {
 	messageRetries: baileysMetrics.register(
 		new Counter('message_retries_total', 'Total message retry attempts', ['type'])
 	),
+	inboundOrderGateWait: baileysMetrics.register(
+		new Histogram(
+			'inbound_order_gate_wait_ms',
+			'Live inbound chat admission gate wait in ms',
+			['scope'],
+			[1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000]
+		)
+	),
 	messageFailures: baileysMetrics.register(
 		new Counter('message_failures_total', 'Total message send failures', ['type', 'reason'])
 	),
