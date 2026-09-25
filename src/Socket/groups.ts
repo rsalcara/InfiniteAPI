@@ -196,8 +196,22 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 			return
 		}
 
-		await groupFetchAllParticipating()
-		await sock.cleanDirtyBits('groups')
+		// This listener's promise is not observed by the emitter, so failures
+		// must be handled here instead of escaping as an unhandled rejection.
+		// The dirty bit is cleared only after a successful refresh; on failure
+		// it stays pending.
+		try {
+			await groupFetchAllParticipating()
+		} catch (error) {
+			logger.warn({ error }, 'failed to refresh groups for dirty notification; dirty bit left pending')
+			return
+		}
+
+		try {
+			await sock.cleanDirtyBits('groups')
+		} catch (error) {
+			logger.warn({ error }, 'refreshed groups for dirty notification but failed to clear the dirty bit')
+		}
 	})
 
 	return {

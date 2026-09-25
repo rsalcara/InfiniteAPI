@@ -111,8 +111,21 @@ export const makeCommunitiesSocket = (config: SocketConfig) => {
 			return
 		}
 
-		await communityFetchAllParticipating()
-		await sock.cleanDirtyBits('groups')
+		// Same contract as the groups dirty handler: failures must not escape
+		// the unobserved listener promise, and the dirty bit is cleared only
+		// after a successful refresh.
+		try {
+			await communityFetchAllParticipating()
+		} catch (error) {
+			config.logger.warn({ error }, 'failed to refresh communities for dirty notification; dirty bit left pending')
+			return
+		}
+
+		try {
+			await sock.cleanDirtyBits('groups')
+		} catch (error) {
+			config.logger.warn({ error }, 'refreshed communities for dirty notification but failed to clear the dirty bit')
+		}
 	})
 
 	return {
