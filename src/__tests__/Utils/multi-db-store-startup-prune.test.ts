@@ -36,8 +36,10 @@ describe('MultiDbSqliteStore startup prune', () => {
 	})
 
 	afterEach(async () => {
-		await rm(dir, { recursive: true, force: true })
-	})
+		// Windows releases database descriptors asynchronously after close; give
+		// the filesystem a short retry window without weakening POSIX/CI checks.
+		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 })
+	}, 15000)
 
 	const count = (store: MultiDbSqliteStore, file: Parameters<MultiDbSqliteStore['handle']>[0], table: string) =>
 		(store.handle(file).prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n

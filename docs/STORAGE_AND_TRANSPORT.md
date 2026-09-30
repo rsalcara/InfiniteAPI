@@ -99,6 +99,41 @@ INFINITEAPI_AUTH_STORAGE=multidb-sqlite
 
 Os aliases históricos `multi_db_sqlite` e `multidb` continuam aceitos.
 
+### Driver SQLite: `better-sqlite3` e fallback `node:sqlite`
+
+Os dois backends SQLite escolhem o driver na abertura, nesta ordem:
+
+```text
+better-sqlite3 (preferido) -> node:sqlite (fallback) -> erro com as duas causas
+```
+
+- `better-sqlite3` só é escolhido se o addon nativo realmente abrir um banco
+  (`:memory:`). Um pacote instalado com binário incompatível (troca de versão
+  do Node) cai no fallback em vez de falhar na primeira escrita.
+- Ao cair no fallback, o motor registra um `warn` com o motivo da falha do
+  `better-sqlite3` (`betterSqlite3Error`). Esse log indica um deploy com o
+  addon nativo quebrado.
+- `node:sqlite` exige **Node ≥ 22.16** (sem flag e com
+  `DatabaseSync.isTransaction`). No Node 22 o módulo emite um
+  `ExperimentalWarning`; no Node 24 é estável.
+- O fallback reproduz o contrato do `better-sqlite3` usado pelo motor e pelos
+  handles públicos (`store.handle()`): modos de transação, savepoints,
+  `inTransaction`, `pragma()` (incluindo `{ simple: true }`), validação e tipos
+  de parâmetros, INT64 lido como `number`, BLOB como `Buffer`, códigos de erro
+  `SQLITE_*` estendidos e os mesmos `TypeError`/`RangeError`.
+
+Fixar o driver (testes e diagnóstico de incidente):
+
+```env
+INFINITEAPI_SQLITE_DRIVER=better-sqlite3   # sem fallback
+INFINITEAPI_SQLITE_DRIVER=node             # usa node:sqlite direto
+```
+
+Valor inválido gera `TypeError`, nunca um fallback silencioso.
+
+Os dois backends aplicam `journal_size_limit = 67108864` (64 MiB) e executam
+`PRAGMA optimize` ao fechar, com qualquer um dos drivers.
+
 ---
 
 ## 2. Perfis de conexão

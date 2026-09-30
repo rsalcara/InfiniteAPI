@@ -9,6 +9,17 @@ on:
 jobs:
   run-tests:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - node-version: 20.x
+            sqlite-driver: better-sqlite3
+          - node-version: 22.x
+            sqlite-driver: node
+          - node-version: 22.x
+            sqlite-driver: better-sqlite3
+          - node-version: 22.x
+            sqlite-driver: auto-fallback
     timeout-minutes: 10
 
     steps:
@@ -18,7 +29,7 @@ jobs:
       - name: Setup Node.js and Corepack
         uses: actions/setup-node@v4
         with:
-          node-version: 20.x
+          node-version: ${{ matrix.node-version }}
 
       - name: Enable Corepack and Set Yarn Version
         run: |
@@ -41,9 +52,9 @@ jobs:
           path: |
             node_modules
             .yarn/install-state.gz
-          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
+          key: ${{ runner.os }}-${{ matrix.node-version }}-yarn-${{ hashFiles('**/yarn.lock') }}
           restore-keys: |
-            ${{ runner.os }}-yarn-
+            ${{ runner.os }}-${{ matrix.node-version }}-yarn-
 
       - name: Install dependencies
         env:
@@ -51,7 +62,23 @@ jobs:
           GIT_TERMINAL_PROMPT: 0
         run: yarn install --immutable
 
-      - name: Run tests
+      # A dedicated leg must remove the primary addon: with it installed, an
+      # unpinned Node 22 run selects better-sqlite3 and never exercises the
+      # automatic fallback through Node's real module resolution.
+      - name: Remove better-sqlite3 to exercise automatic fallback
+        if: matrix.sqlite-driver == 'auto-fallback'
+        run: rm -rf node_modules/better-sqlite3
+
+      - name: Run automatic SQLite fallback smoke test
+        if: matrix.sqlite-driver == 'auto-fallback'
         env:
           NODE_OPTIONS: --max-old-space-size=4096
+          INFINITEAPI_SQLITE_EXPECT_DRIVER: node:sqlite
+        run: node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand src/__tests__/Utils/sqlite-driver-automatic-fallback.test.ts
+
+      - name: Run tests
+        if: matrix.sqlite-driver != 'auto-fallback'
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          INFINITEAPI_SQLITE_DRIVER: ${{ matrix.sqlite-driver }}
         run: yarn test --maxWorkers=2

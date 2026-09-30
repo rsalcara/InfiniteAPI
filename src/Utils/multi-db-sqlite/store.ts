@@ -19,6 +19,8 @@
  * and those all live inside `axolotl.db`, so the trade-off is fine.
  */
 import type { ILogger } from '../logger'
+import type { SqliteDriver } from '../sqlite-driver'
+import { loadSqliteDriver } from '../sqlite-driver'
 import { STATUS_LAST_TIMESTAMP_TRIGGER_NAME, STATUS_LAST_TIMESTAMP_TRIGGER_SQL } from './schemas/status'
 import {
 	normalizeLocationTimestampUnits,
@@ -398,7 +400,7 @@ type LockConnection = { pragma: (p: string) => unknown; exec: (sql: string) => u
  * Acquires an EXCLUSIVE, OS-held lock on the session directory and returns a
  * release function.
  *
- * Mechanism: a dedicated better-sqlite3 connection to a `.multi-db-sqlite.lock`
+ * Mechanism: a dedicated SQLite connection to a `.multi-db-sqlite.lock`
  * database that holds an open `BEGIN EXCLUSIVE` transaction for the store's
  * lifetime. This is a REAL kernel-held file lock (fcntl), not a pidfile whose
  * liveness has to be GUESSED:
@@ -423,14 +425,14 @@ type LockConnection = { pragma: (p: string) => unknown; exec: (sql: string) => u
  * instance — never a session shared across processes.
  */
 const acquireSessionLock = (
-	Database: DatabaseConstructor,
+	driver: SqliteDriver,
 	path: typeof import('node:path'),
 	sessionDir: string
 ): (() => void) => {
 	const lockPath = path.join(sessionDir, SESSION_LOCK_FILE)
 
 	const tryAcquire = (): LockConnection => {
-		const lockDb = new Database(lockPath) as unknown as LockConnection
+		const lockDb = driver.open(lockPath) as unknown as LockConnection
 		try {
 			lockDb.pragma('busy_timeout = 0') // fail fast on contention
 			lockDb.pragma('journal_mode = DELETE') // rollback journal (NOT wal): EXCLUSIVE then blocks all access
@@ -491,12 +493,24 @@ const acquireSessionLock = (
 	return () => lockDb.close()
 }
 
-type DatabaseConstructor = typeof import('better-sqlite3')
+/**
+ * SQLite recommends `PRAGMA optimize` before closing long-lived connections so
+ * the query planner statistics stay current. Since SQLite 3.46 it is bounded
+ * by an automatic analysis limit, so the cost is milliseconds. Best-effort: a
+ * failure (read-only or busy file) never prevents the close.
+ */
+const optimizeBeforeClose = (db: SqliteDbLike, file: string, logger?: ILogger): void => {
+	try {
+		db.exec('PRAGMA optimize')
+	} catch (err) {
+		logger?.debug?.({ file, err }, 'multi-db-sqlite: PRAGMA optimize before close failed')
+	}
+}
 
 const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
+	'busy_timeout = 5000',
 	'journal_mode = WAL',
 	'synchronous = NORMAL',
-	'busy_timeout = 5000',
 	// Defensively enabled. The 14 schemas in this folder currently do NOT
 	// define `FOREIGN KEY ... REFERENCES ...` clauses (they mirror the
 	// canonical mobile layout, which also keeps FK enforcement off). This
@@ -518,23 +532,12 @@ const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
 	// padrão, mas algumas distros Linux compilam com `SQLITE_DEFAULT_
 	// MMAP_SIZE` ≠ 0 e o VSZ infla sem refletir consumo real, dificultando
 	// diagnóstico de leak. Defensivo.
-	'mmap_size = 0'
+	'mmap_size = 0',
+	// Tuning: without a limit (-1, the SQLite default) the -wal file keeps the
+	// size of its largest transaction (history import, key clears) for the
+	// connection's lifetime. 64 MiB bounds that residue after each checkpoint.
+	'journal_size_limit = 67108864'
 ]
-
-async function loadBetterSqlite3(): Promise<DatabaseConstructor> {
-	try {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const mod = (await import('better-sqlite3')) as any
-		return mod.default ?? mod
-	} catch (err) {
-		const e = new Error(
-			'`better-sqlite3` is required for `MultiDbSqliteStore`. Install it: `npm install better-sqlite3`.'
-		)
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		;(e as any).cause = err
-		throw e
-	}
-}
 
 export type MultiDbSqliteStoreOptions = {
 	/**
@@ -613,9 +616,9 @@ export class MultiDbSqliteStore {
 
 		fs.mkdirSync(this.opts.sessionDir, { recursive: true })
 
-		const Database = await loadBetterSqlite3()
+		const driver = await loadSqliteDriver(this.opts.logger)
 		if (this.openGeneration !== startGen) return
-		this.releaseSessionLock = acquireSessionLock(Database, path, this.opts.sessionDir)
+		this.releaseSessionLock = acquireSessionLock(driver, path, this.opts.sessionDir)
 		const extra = this.opts.extraPragmas ?? []
 
 		// On partial-initialization failure (bad extraPragma entry, missing
@@ -626,7 +629,7 @@ export class MultiDbSqliteStore {
 		try {
 			for (const file of MULTI_DB_FILES) {
 				const fullPath = path.join(this.opts.sessionDir, file)
-				const db = new Database(fullPath)
+				const db = driver.open(fullPath)
 				// Register the handle in the map IMMEDIATELY after construction,
 				// before any pragma/schema work that could throw. The outer
 				// catch below closes every handle currently in the map, so if
@@ -636,8 +639,8 @@ export class MultiDbSqliteStore {
 				// fd / WAL lock).
 				//
 				// Boundary cast: the Map is typed `SqliteDbLike` so the
-				// emitted `.d.ts` does not pull `better-sqlite3` types. At
-				// runtime the value IS a `better-sqlite3` `Database`; the
+				// emitted `.d.ts` does not pull concrete driver types. At
+				// runtime the value IS the selected driver's adapter; the
 				// `SqliteDbLike` interface matches the methods we use.
 				this.handles.set(file, db as unknown as SqliteDbLike)
 
@@ -744,7 +747,7 @@ export class MultiDbSqliteStore {
 	 * does not force every TypeScript consumer of `baileys/Utils` to
 	 * resolve `better-sqlite3`'s typings — preserving the optional
 	 * peer-dependency contract. The runtime value is an actual
-	 * `better-sqlite3` `Database` instance; internal callers cast at the
+	 * selected SQLite driver's handle; internal callers cast at the
 	 * boundary when they need the typed API.
 	 */
 	handle(file: MultiDbFile): SqliteDbLike {
@@ -785,6 +788,7 @@ export class MultiDbSqliteStore {
 		this.handles.clear()
 		this.opened = false
 		for (const [file, db] of handlesToClose) {
+			optimizeBeforeClose(db, file, this.opts.logger)
 			try {
 				db.close()
 			} catch (err) {

@@ -1,8 +1,8 @@
-import Database from 'better-sqlite3'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { MultiDbSqliteStore } from '../../Utils/multi-db-sqlite'
+import { openSqliteDatabase } from '../../Utils/sqlite-driver'
 
 describe('msgstore.db migration v7 — final live-location columns', () => {
 	let dir: string
@@ -16,7 +16,7 @@ describe('msgstore.db migration v7 — final live-location columns', () => {
 	})
 
 	it('upgrades a legacy message_location before addon statements are prepared', async () => {
-		const legacy = new Database(join(dir, 'msgstore.db'))
+		const legacy = await openSqliteDatabase(join(dir, 'msgstore.db'))
 		legacy.exec(`
 			CREATE TABLE message_location (
 				message_row_id INTEGER PRIMARY KEY,

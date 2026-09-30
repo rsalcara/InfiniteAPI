@@ -81,6 +81,7 @@ describe('upsertMessage — encrypted CAG envelope admission', () => {
 		expect(upserts).toHaveLength(0)
 
 		await sock.end(new Error('test complete'))
+		sock.ev.destroy()
 		await session.clear()
 	})
 
@@ -105,6 +106,7 @@ describe('upsertMessage — encrypted CAG envelope admission', () => {
 		expect(upserts[0]!.message!.commentMessage!.message!.conversation).toBe('plaintext only')
 
 		await sock.end(new Error('test complete'))
+		sock.ev.destroy()
 		await session.clear()
 	})
 })

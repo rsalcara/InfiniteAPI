@@ -20,7 +20,6 @@
  * across the 11 handles).
  */
 import { jest } from '@jest/globals'
-import Database from 'better-sqlite3'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -35,6 +34,7 @@ import {
 	useMultiDbSqliteAuthState
 } from '../../Utils/multi-db-sqlite'
 import { markPrekeyDirectDistributionIntent } from '../../Utils/prekey-direct-distribution'
+import { openSqliteDatabase } from '../../Utils/sqlite-driver'
 
 const silentLogger = (): ILogger => ({
 	level: 'silent',
@@ -138,13 +138,13 @@ describe('useMultiDbSqliteAuthState', () => {
 	it('releases owned handles and the session lock when the history schema cannot be created', async () => {
 		const bootstrap = await useMultiDbSqliteAuthState({ sessionDir: dir })
 		bootstrap.close()
-		const maintenance = new Database(join(dir, 'sync.db'))
+		const maintenance = await openSqliteDatabase(join(dir, 'sync.db'))
 		maintenance.exec('DROP TABLE history_sync_jobs; CREATE VIEW history_sync_jobs AS SELECT 1 AS value')
 		maintenance.close()
 
 		await expect(useMultiDbSqliteAuthState({ sessionDir: dir })).rejects.toThrow()
 
-		const repair = new Database(join(dir, 'sync.db'))
+		const repair = await openSqliteDatabase(join(dir, 'sync.db'))
 		repair.exec('DROP VIEW history_sync_jobs')
 		repair.close()
 		const reopened = await useMultiDbSqliteAuthState({ sessionDir: dir })
@@ -338,7 +338,7 @@ describe('useMultiDbSqliteAuthState', () => {
 
 	it('keeps active enumeration valid when beginClear rolls back before creating the durable intent', async () => {
 		const auth = await useMultiDbSqliteAuthState({ sessionDir: dir })
-		const locker = new Database(join(dir, 'wa.db'))
+		const locker = await openSqliteDatabase(join(dir, 'wa.db'))
 		try {
 			seedSignalKvSessions(auth, 3)
 			const iterator = auth.state.keys.listIds!('session')[Symbol.asyncIterator]()
@@ -1185,7 +1185,7 @@ describe('useMultiDbSqliteAuthState', () => {
 		const logger: ILogger = { ...silentLogger(), warn }
 
 		const auth = await useMultiDbSqliteAuthState({ sessionDir: dir, logger })
-		const locker = new Database(join(dir, 'axolotl.db'))
+		const locker = await openSqliteDatabase(join(dir, 'axolotl.db'))
 		barrier.auth = auth
 		barrier.locker = locker
 		auth.store.handle('axolotl.db').exec('PRAGMA busy_timeout = 1')
@@ -1287,7 +1287,7 @@ describe('useMultiDbSqliteAuthState', () => {
 			'persistent clear failure'
 		)
 
-		const maintenance = new Database(join(dir, 'msgstore.db'))
+		const maintenance = await openSqliteDatabase(join(dir, 'msgstore.db'))
 		try {
 			maintenance.exec('DROP TRIGGER IF EXISTS fail_persistent_clear')
 		} finally {

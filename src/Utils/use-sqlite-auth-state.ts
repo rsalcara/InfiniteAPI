@@ -1,14 +1,3 @@
-// Type-only import so we don't pull better-sqlite3 into the bundle
-// unconditionally. The runtime `import('better-sqlite3')` below remains lazy.
-//
-// Codex P1 fix (round-3): both this `import type` and the `typeof import(...)`
-// below resolve to internal aliases ONLY. Nothing from `better-sqlite3`
-// appears in the public `SqliteAuthStateOptions` surface — see the
-// `database?: unknown` field below. The .d.ts emitted for downstream
-// consumers therefore does NOT require `better-sqlite3` types to resolve,
-// preserving the optional-peer-dep contract for non-SQLite users (no
-// `TS2307` under `skipLibCheck: false`).
-import type BetterSqlite3Module from 'better-sqlite3'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDataTypeMap } from '../Types'
 import { prepareInClause } from './multi-db-sqlite/in-statement-cache'
@@ -19,43 +8,8 @@ import { initAuthCreds } from './auth-utils'
 import { BufferJSON } from './generics'
 import { SqliteHistorySyncStore } from './history-sync-store'
 import type { ILogger } from './logger'
-
-/**
- * A live `better-sqlite3` database handle. INTERNAL alias — used for type
- * safety inside this module; NOT exposed via any exported type. Consumers
- * who want to inject a pre-opened handle pass `unknown` through the public
- * `SqliteAuthStateOptions.database` field and we cast at the boundary.
- */
-type Database = BetterSqlite3Module.Database
-/**
- * The constructor exposed by `better-sqlite3`'s `export =` default. INTERNAL.
- *
- * With `verbatimModuleSyntax: true`, `typeof BetterSqlite3Module` is illegal
- * because `BetterSqlite3Module` is imported with `import type` and lives in
- * the type namespace only. Use a `typeof import(...)` type query directly.
- */
-type DatabaseConstructor = typeof import('better-sqlite3')
-
-/**
- * Lazy load `better-sqlite3` so the dependency is only required when this
- * adapter is actually used. The package is declared as an optional peer
- * dependency; users who stick with `useMultiFileAuthState` (or supply their
- * own store) don't need to install it.
- */
-async function loadBetterSqlite3(): Promise<DatabaseConstructor> {
-	try {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const mod = (await import('better-sqlite3')) as any
-		return mod.default ?? mod
-	} catch (err) {
-		const helpful = new Error(
-			'`better-sqlite3` is required for `useSqliteAuthState`. Install it as a peer dependency: `npm install better-sqlite3` (or `yarn add better-sqlite3`).'
-		)
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		;(helpful as any).cause = err
-		throw helpful
-	}
-}
+import type { SqliteDatabase } from './sqlite-driver'
+import { loadSqliteDriver } from './sqlite-driver'
 
 const CREDS_ROW_KEY = '__creds__'
 
@@ -90,7 +44,16 @@ CREATE TABLE IF NOT EXISTS start_chat_trust_signals (
  *     bursts (e.g. concurrent migrations or sidecar processes touching the same
  *     db) without escalating to the caller.
  */
-const DEFAULT_PRAGMAS: ReadonlyArray<string> = ['journal_mode = WAL', 'synchronous = NORMAL', 'busy_timeout = 5000']
+// busy_timeout must precede WAL negotiation so a briefly contended database
+// waits for the other connection instead of failing journal-mode setup.
+// journal_size_limit bounds the -wal residue left by a large transaction
+// (64 MiB); without it the file keeps its peak size (SQLite default -1).
+const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
+	'busy_timeout = 5000',
+	'journal_mode = WAL',
+	'synchronous = NORMAL',
+	'journal_size_limit = 67108864'
+]
 
 /**
  * Total attempts (NOT additional retries) for SQLITE_BUSY on the per-call
@@ -112,10 +75,11 @@ const BUSY_RETRY_BASE_MS = 25
  *
  * Codex P1 fix (round-3): `database` is typed `unknown` rather than the
  * internal `Database` alias so this exported type does NOT carry a hard
- * dependency on `better-sqlite3`'s declarations. Consumers who never use
+ * dependency on a concrete SQLite driver's declarations. Consumers who never use
  * SQLite can import baileys' public types without needing
  * `@types/better-sqlite3` resolvable in their project. The runtime
- * expectation is unchanged: pass a `better-sqlite3` `Database` instance.
+ * expectation is unchanged for existing callers; a compatible handle from
+ * `loadSqliteDriver` is also accepted.
  */
 export type SqliteAuthStateOptions = {
 	/**
@@ -125,11 +89,11 @@ export type SqliteAuthStateOptions = {
 	 */
 	dbPath: string
 	/**
-	 * If supplied, overrides the default `better-sqlite3` import — primarily
+	 * If supplied, overrides the default driver loader — primarily
 	 * for tests / advanced consumers that want to inject a pre-opened
 	 * handle.
 	 *
-	 * **Runtime contract**: must be a `better-sqlite3` `Database` instance.
+	 * **Runtime contract**: must be a compatible SQLite `Database` handle.
 	 * Typed as `unknown` here so consumers who don't use SQLite never need
 	 * to resolve `better-sqlite3` types (the field is cast at the boundary
 	 * inside the implementation).
@@ -202,17 +166,17 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 	// need to close the native handle ourselves — otherwise the caller never
 	// sees a `close()` to call and the file descriptor / WAL lock leaks on
 	// the startup failure path.
-	let db: Database | undefined
+	let db: SqliteDatabase | undefined
 	const ownsDb = !opts.database
 	try {
 		if (opts.database) {
 			// Boundary cast: public type is `unknown` to avoid leaking
-			// `better-sqlite3` types into our .d.ts (Codex P1 round-3).
-			// Runtime contract: must be a `better-sqlite3` Database instance.
-			db = opts.database as Database
+			// Concrete driver types stay internal so the emitted .d.ts remains
+			// optional-peer-dependency friendly.
+			db = opts.database as SqliteDatabase
 		} else {
-			const Database = await loadBetterSqlite3()
-			db = new Database(opts.dbPath)
+			const driver = await loadSqliteDriver(opts.logger)
+			db = driver.open(opts.dbPath)
 			opts.logger?.debug({ dbPath: opts.dbPath }, 'sqlite auth state opened')
 		}
 
@@ -473,6 +437,14 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 			},
 			close: () => {
 				if (closeOwnsDb) {
+					// Keep planner statistics current for the next session
+					// (bounded by SQLite's automatic analysis limit). Best-effort.
+					try {
+						handle.exec('PRAGMA optimize')
+					} catch (err) {
+						opts.logger?.debug({ dbPath: opts.dbPath, err }, 'sqlite auth state: PRAGMA optimize before close failed')
+					}
+
 					handle.close()
 					opts.logger?.debug({ dbPath: opts.dbPath }, 'sqlite auth state closed')
 				} else {

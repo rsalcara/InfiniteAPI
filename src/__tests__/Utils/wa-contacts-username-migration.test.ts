@@ -17,11 +17,11 @@
  *   - the new index is actually picked by EXPLAIN QUERY PLAN for the
  *     lookup the future contact-by-username code will use (test 3)
  */
-import Database from 'better-sqlite3'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { MultiDbSqliteStore } from '../../Utils/multi-db-sqlite'
+import { openSqliteDatabase } from '../../Utils/sqlite-driver'
 
 describe('wa.db migration v1 — wa_contacts.username', () => {
 	let dir: string
@@ -70,7 +70,7 @@ describe('wa.db migration v1 — wa_contacts.username', () => {
 		// username migration ever ran, and the test wouldn't be
 		// exercising what it claims. (audit P2-4)
 		const walPath = join(dir, 'wa.db')
-		const pre = new Database(walPath)
+		const pre = await openSqliteDatabase(walPath)
 		pre.exec(`
 			CREATE TABLE IF NOT EXISTS wa_contacts (
 				_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -143,7 +143,7 @@ describe('wa.db migration v1 — wa_contacts.username', () => {
 		// COLUMN` would throw "duplicate column name" here and fail open()
 		// entirely. The PRAGMA preflight must make it a safe no-op instead.
 		const walPath = join(dir, 'wa.db')
-		const pre = new Database(walPath)
+		const pre = await openSqliteDatabase(walPath)
 		pre.exec(`
 			CREATE TABLE IF NOT EXISTS wa_contacts (
 				_id INTEGER PRIMARY KEY AUTOINCREMENT,
