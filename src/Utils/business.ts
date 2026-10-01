@@ -1,7 +1,7 @@
 import { Boom } from '@hapi/boom'
 import { createHash } from 'crypto'
-import { createWriteStream, promises as fs } from 'fs'
-import { tmpdir } from 'os'
+import { once } from 'events'
+import { createWriteStream } from 'fs'
 import { join } from 'path'
 import type {
 	CatalogCollection,
@@ -16,7 +16,13 @@ import type {
 } from '../Types'
 import { type BinaryNode, getBinaryNodeChild, getBinaryNodeChildren, getBinaryNodeChildString } from '../WABinary'
 import { generateMessageIDV2 } from './generics'
-import { getStream, getUrlFromDirectPath } from './messages-media'
+import {
+	getStream,
+	getTmpFilesDirectory,
+	getUrlFromDirectPath,
+	MEDIA_TMP_FILE_MODE,
+	removeTmpFiles
+} from './messages-media'
 
 export const parseCatalogNode = (node: BinaryNode) => {
 	const catalogNode = getBinaryNodeChild(node, 'product_catalog')
@@ -245,25 +251,38 @@ export const uploadingNecessaryImages = async (
 			const { stream } = await getStream(img)
 			const hasher = createHash('sha256')
 
-			const filePath = join(tmpdir(), 'img' + generateMessageIDV2())
-			const encFileWriteStream = createWriteStream(filePath)
+			const filePath = join(getTmpFilesDirectory(), 'img' + generateMessageIDV2())
+			const encFileWriteStream = createWriteStream(filePath, { mode: MEDIA_TMP_FILE_MODE })
 
-			for await (const block of stream) {
-				hasher.update(block)
-				encFileWriteStream.write(block)
+			try {
+				for await (const block of stream) {
+					hasher.update(block)
+					if (!encFileWriteStream.write(block)) await once(encFileWriteStream, 'drain')
+				}
+
+				// The upload reads the file from disk: it must be complete and closed.
+				encFileWriteStream.end()
+				await once(encFileWriteStream, 'finish')
+
+				const sha = hasher.digest('base64')
+				const { directPath } = await waUploadToServer(filePath, {
+					mediaType: 'product-catalog-image',
+					fileEncSha256B64: sha,
+					timeoutMs
+				})
+
+				return { url: getUrlFromDirectPath(directPath) }
+			} finally {
+				// Success or failure, the image never stays behind (audit G-03);
+				// the descriptor is released first so removal also works on Windows.
+				if (!encFileWriteStream.closed) {
+					const closed = once(encFileWriteStream, 'close').catch(() => undefined)
+					encFileWriteStream.destroy()
+					await closed
+				}
+
+				await removeTmpFiles([filePath])
 			}
-
-			const sha = hasher.digest('base64')
-
-			const { directPath } = await waUploadToServer(filePath, {
-				mediaType: 'product-catalog-image',
-				fileEncSha256B64: sha,
-				timeoutMs
-			})
-
-			await fs.unlink(filePath).catch(err => console.log('Error deleting temp file ', err))
-
-			return { url: getUrlFromDirectPath(directPath) }
 		})
 	)
 	return results

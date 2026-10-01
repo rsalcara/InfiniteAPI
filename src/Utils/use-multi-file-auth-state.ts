@@ -1,5 +1,5 @@
 import { Mutex } from 'async-mutex'
-import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'fs/promises'
+import { readdir, readFile, rename, stat, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { proto } from '../../WAProto/index.js'
 import type {
@@ -13,6 +13,7 @@ import { FileAppStateSyncKeyStore } from './app-state-sync-key-store'
 import { initAuthCreds } from './auth-utils'
 import { BufferJSON } from './generics'
 import { FileHistorySyncStore } from './history-sync-store'
+import { ensurePrivateDir, PRIVATE_FILE_MODE, restrictFile } from './private-fs'
 
 /**
  * Error thrown by {@link useMultiFileAuthState} when a JSON file on disk is
@@ -183,7 +184,10 @@ export const useMultiFileAuthState = async (
 		const bakPath = `${filePath}.bak`
 		const release = await acquireFileLock(filePath)
 		try {
-			await writeFile(tmpPath, JSON.stringify(data, BufferJSON.replacer))
+			await writeFile(tmpPath, JSON.stringify(data, BufferJSON.replacer), { mode: PRIVATE_FILE_MODE })
+			// `mode` only applies on creation; a stale tmp left by a crash keeps
+			// its old bits, and rename() carries them to the main file.
+			await restrictFile(tmpPath)
 			// Rotate the previous file to .bak. If it doesn't exist, that's fine.
 			// Windows-safe overwrite for the case where a stale `.bak` survived.
 			await renameOverwrite(filePath, bakPath).catch((err: unknown) => {
@@ -272,8 +276,13 @@ export const useMultiFileAuthState = async (
 				`found something that is not a directory at ${folder}, either delete it or specify a different location`
 			)
 		}
-	} else {
-		await mkdir(folder, { recursive: true })
+	}
+
+	// Session folder 0700 and every file in it 0600, correcting folders
+	// created before this rule (audit S-01).
+	await ensurePrivateDir(folder)
+	for (const entry of await readdir(folder, { withFileTypes: true })) {
+		if (entry.isFile()) await restrictFile(join(folder, entry.name))
 	}
 
 	const creds: AuthenticationCreds = ((await readData('creds.json')) as AuthenticationCreds | null) || initAuthCreds()

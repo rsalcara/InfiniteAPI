@@ -1,6 +1,5 @@
 import { Boom } from '@hapi/boom'
 import { randomBytes } from 'crypto'
-import { promises as fs } from 'fs'
 import { type Transform } from 'stream'
 import { proto } from '../../WAProto/index.js'
 import {
@@ -51,6 +50,7 @@ import {
 	getRawMediaUploadData,
 	getStream,
 	type MediaDownloadOptions,
+	removeTmpFiles,
 	toBuffer
 } from './messages-media'
 import { shouldIncludeReportingToken } from './reporting-utils'
@@ -223,19 +223,20 @@ export const prepareWAMessageMedia = async (
 		)
 
 		const fileSha256B64 = fileSha256.toString('base64')
-		const { mediaUrl, directPath } = await options.upload(filePath, {
-			fileEncSha256B64: fileSha256B64,
-			mediaType: mediaType,
-			timeoutMs: options.mediaUploadTimeoutMs,
-			// Route through NEWSLETTER_MEDIA_PATH_MAP so the upload goes to
-			// `/newsletter/newsletter-<type>` instead of `/mms/<type>`.
-			// Server-side routing enforces this — a newsletter message that
-			// references a `/mms/*` upload is rejected with ACK 479 and the
-			// media never becomes visible to subscribers.
-			newsletter: true
-		})
-
-		await fs.unlink(filePath)
+		const { mediaUrl, directPath } = await options
+			.upload(filePath, {
+				fileEncSha256B64: fileSha256B64,
+				mediaType: mediaType,
+				timeoutMs: options.mediaUploadTimeoutMs,
+				// Route through NEWSLETTER_MEDIA_PATH_MAP so the upload goes to
+				// `/newsletter/newsletter-<type>` instead of `/mms/<type>`.
+				// Server-side routing enforces this — a newsletter message that
+				// references a `/mms/*` upload is rejected with ACK 479 and the
+				// media never becomes visible to subscribers.
+				newsletter: true
+			})
+			// A failed upload must not leave the raw media behind (audit G-03).
+			.finally(() => removeTmpFiles([filePath], logger))
 
 		const obj = WAProto.Message.fromObject({
 			// todo: add more support here
@@ -356,16 +357,8 @@ export const prepareWAMessageMedia = async (
 			}
 		})()
 	]).finally(async () => {
-		try {
-			await fs.unlink(encFilePath)
-			if (originalFilePath) {
-				await fs.unlink(originalFilePath)
-			}
-
-			logger?.debug('removed tmp files')
-		} catch (error) {
-			logger?.warn('failed to remove tmp file')
-		}
+		await removeTmpFiles([encFilePath, originalFilePath], logger)
+		logger?.debug('removed tmp files')
 	})
 
 	const obj = WAProto.Message.fromObject({

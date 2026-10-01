@@ -17,8 +17,10 @@ import { useMultiFileAuthState } from '../../Utils/use-multi-file-auth-state'
  */
 describe('audit 1:1 regressions (utils)', () => {
 	// S-01 · app data lives in a UID-private sandbox; the equivalent on a
-	// server is 0700 directories and 0600 files. Fixed by PR-02.
-	it.failing('creates session directories 0700 and credential files 0600', async () => {
+	// server is 0700 directories and 0600 files. Fixed by PR-02 (private-fs).
+	// POSIX permission bits do not exist on Windows (libuv reports 0o666).
+	const posixIt = process.platform === 'win32' ? it.skip : it
+	posixIt('creates session directories 0700 and credential files 0600', async () => {
 		const previousUmask = process.umask(0o022)
 		const base = mkdtempSync(join(tmpdir(), 'audit-1a1-perms-'))
 		const mode = (path: string) => statSync(path).mode & 0o777

@@ -394,6 +394,45 @@ const TRANSIENT_TABLES: Partial<Record<MultiDbFile, ReadonlyArray<string>>> = {
 
 const SESSION_LOCK_FILE = '.multi-db-sqlite.lock'
 
+/**
+ * Session directory 0700 and every database file 0600 (audit S-01). Files are
+ * created 0600 BEFORE SQLite opens them (SQLite would apply the umask default)
+ * and existing ones are corrected; SQLite gives -wal/-shm/-journal the mode of
+ * the database file. POSIX bits do not apply on Windows.
+ *
+ * Entries owned by another user cannot be chmod-ed (EPERM): the session still
+ * opens as before and the paths are returned so the caller can warn.
+ */
+const makeSessionPrivate = (
+	fs: typeof import('node:fs'),
+	path: typeof import('node:path'),
+	sessionDir: string,
+	files: readonly string[]
+): string[] => {
+	fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 })
+	if (process.platform === 'win32') return []
+	const notRestricted: string[] = []
+	const restrict = (target: string, mode: number) => {
+		try {
+			fs.chmodSync(target, mode)
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code
+			if (code === 'EPERM') notRestricted.push(target)
+			else if (code !== 'ENOENT') throw error
+		}
+	}
+
+	restrict(sessionDir, 0o700)
+	for (const file of files) {
+		const fullPath = path.join(sessionDir, file)
+		fs.closeSync(fs.openSync(fullPath, 'a', 0o600))
+		restrict(fullPath, 0o600)
+		for (const sidecar of ['-wal', '-shm', '-journal']) restrict(fullPath + sidecar, 0o600)
+	}
+
+	return notRestricted
+}
+
 type LockConnection = { pragma: (p: string) => unknown; exec: (sql: string) => unknown; close: () => void }
 
 /**
@@ -614,7 +653,13 @@ export class MultiDbSqliteStore {
 		const path = await import('node:path')
 		if (this.openGeneration !== startGen) return
 
-		fs.mkdirSync(this.opts.sessionDir, { recursive: true })
+		const notRestricted = makeSessionPrivate(fs, path, this.opts.sessionDir, [...MULTI_DB_FILES, SESSION_LOCK_FILE])
+		if (notRestricted.length) {
+			this.opts.logger?.warn?.(
+				{ paths: notRestricted },
+				'multi-db-sqlite: session files owned by another user keep their permissions (expected 0700/0600)'
+			)
+		}
 
 		const driver = await loadSqliteDriver(this.opts.logger)
 		if (this.openGeneration !== startGen) return

@@ -2,7 +2,17 @@ import { Boom } from '@hapi/boom'
 import { execFile } from 'child_process'
 import * as Crypto from 'crypto'
 import { once } from 'events'
-import { createReadStream, createWriteStream, promises as fs, WriteStream } from 'fs'
+import {
+	createReadStream,
+	createWriteStream,
+	existsSync,
+	mkdtempSync,
+	promises as fs,
+	readdirSync,
+	rmSync,
+	statSync,
+	WriteStream
+} from 'fs'
 import * as http from 'http'
 import * as https from 'https'
 import type { IAudioMetadata } from 'music-metadata'
@@ -38,7 +48,73 @@ import { generateMessageIDV2 } from './generics'
 import type { ILogger } from './logger'
 import { isFetchDispatcher } from './proxy-route'
 
-const getTmpFilesDirectory = () => tmpdir()
+/**
+ * Media temporaries (including the decrypted original) live in a directory
+ * private to this process (mkdtemp creates it 0700) instead of the shared
+ * tmpdir root with umask permissions (audit G-03).
+ *
+ * The directory name carries the owner PID. When the first directory of this
+ * process is created, directories left by other processes are swept only if
+ * their owner is gone AND they are older than a day: age alone does not prove
+ * the owner died (an idle instance under the same UID must keep its files).
+ */
+const MEDIA_TMP_PREFIX = 'infiniteapi-media-'
+const MEDIA_TMP_OWNER = /^infiniteapi-media-(\d+)-/
+const MEDIA_TMP_STALE_MS = 24 * 60 * 60 * 1000
+export const MEDIA_TMP_FILE_MODE = 0o600
+let mediaTmpDirectory: string | undefined
+
+const isProcessAlive = (pid: number) => {
+	try {
+		process.kill(pid, 0)
+		return true
+	} catch (error) {
+		// EPERM: it exists but belongs to another user. Only ESRCH proves it is gone.
+		return (error as NodeJS.ErrnoException).code !== 'ESRCH'
+	}
+}
+
+/** @internal exported for tests */
+export const sweepStaleMediaTmpDirectories = () => {
+	const root = tmpdir()
+	let entries: string[]
+	try {
+		entries = readdirSync(root)
+	} catch {
+		return
+	}
+
+	const cutoff = Date.now() - MEDIA_TMP_STALE_MS
+	for (const entry of entries) {
+		const owner = MEDIA_TMP_OWNER.exec(entry)?.[1]
+		if (!owner) continue
+		const pid = Number(owner)
+		if (pid === process.pid || isProcessAlive(pid)) continue
+		const fullPath = join(root, entry)
+		try {
+			if (statSync(fullPath).mtimeMs < cutoff) rmSync(fullPath, { recursive: true, force: true })
+		} catch {
+			// Another process may be removing it; never fail a send for this.
+		}
+	}
+}
+
+export const getTmpFilesDirectory = () => {
+	if (mediaTmpDirectory && existsSync(mediaTmpDirectory)) return mediaTmpDirectory
+	if (!mediaTmpDirectory) sweepStaleMediaTmpDirectories()
+	mediaTmpDirectory = mkdtempSync(join(tmpdir(), `${MEDIA_TMP_PREFIX}${process.pid}-`))
+	return mediaTmpDirectory
+}
+
+/** Removes every path independently: one failure never leaves the others behind. */
+export const removeTmpFiles = async (paths: Array<string | undefined>, logger?: ILogger) => {
+	const results = await Promise.allSettled(
+		paths.filter((path): path is string => !!path).map(path => fs.rm(path, { force: true }))
+	)
+	for (const result of results) {
+		if (result.status === 'rejected') logger?.warn({ err: result.reason }, 'failed to remove media tmp file')
+	}
+}
 
 /**
  * Get available image processing library (Sharp or Jimp)
@@ -70,8 +146,8 @@ export const getRawMediaUploadData = async (media: WAMediaUpload, mediaType: Med
 	logger?.debug('got stream for raw upload')
 
 	const hasher = Crypto.createHash('sha256')
-	const filePath = join(tmpdir(), mediaType + generateMessageIDV2())
-	const fileWriteStream = createWriteStream(filePath)
+	const filePath = join(getTmpFilesDirectory(), mediaType + generateMessageIDV2())
+	const fileWriteStream = createWriteStream(filePath, { mode: MEDIA_TMP_FILE_MODE })
 
 	let fileLength = 0
 	try {
@@ -96,11 +172,7 @@ export const getRawMediaUploadData = async (media: WAMediaUpload, mediaType: Med
 	} catch (error) {
 		fileWriteStream.destroy()
 		stream.destroy()
-		try {
-			await fs.unlink(filePath)
-		} catch {
-			//
-		}
+		await removeTmpFiles([filePath], logger)
 
 		throw error
 	}
@@ -363,13 +435,16 @@ export async function generateThumbnail(
 	} else if (mediaType === 'video') {
 		const imgFilename = join(getTmpFilesDirectory(), generateMessageIDV2() + '.jpg')
 		try {
+			// ffmpeg runs with -y and overwrites in place, so the file it writes
+			// keeps the 0600 created here instead of the umask default.
+			await fs.writeFile(imgFilename, '', { mode: MEDIA_TMP_FILE_MODE })
 			await extractVideoThumb(file, imgFilename, '00:00:00', { width: 32, height: 32 })
 			const buff = await fs.readFile(imgFilename)
 			thumbnail = buff.toString('base64')
-
-			await fs.unlink(imgFilename)
 		} catch (err) {
 			options.logger?.debug('could not generate video thumb: ' + err)
+		} finally {
+			await removeTmpFiles([imgFilename], options.logger)
 		}
 	}
 
@@ -638,14 +713,14 @@ export const encryptedStream = async (
 	const { cipherKey, iv, macKey } = getMediaKeys(mediaKey, mediaType)
 
 	const encFilePath = join(getTmpFilesDirectory(), mediaType + generateMessageIDV2() + '-enc')
-	const encFileWriteStream = createWriteStream(encFilePath)
+	const encFileWriteStream = createWriteStream(encFilePath, { mode: MEDIA_TMP_FILE_MODE })
 
 	let originalFileStream: WriteStream | undefined
 	let originalFilePath: string | undefined
 
 	if (saveOriginalFileIfRequired) {
 		originalFilePath = join(getTmpFilesDirectory(), mediaType + generateMessageIDV2() + '-original')
-		originalFileStream = createWriteStream(originalFilePath)
+		originalFileStream = createWriteStream(originalFilePath, { mode: MEDIA_TMP_FILE_MODE })
 	}
 
 	let fileLength = 0
@@ -734,14 +809,7 @@ export const encryptedStream = async (
 		sha256Enc.destroy()
 		stream.destroy()
 
-		try {
-			await fs.unlink(encFilePath)
-			if (originalFilePath) {
-				await fs.unlink(originalFilePath)
-			}
-		} catch (err) {
-			logger?.error({ err }, 'failed deleting tmp files')
-		}
+		await removeTmpFiles([encFilePath, originalFilePath], logger)
 
 		throw error
 	}

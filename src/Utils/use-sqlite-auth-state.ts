@@ -1,3 +1,5 @@
+import { existsSync } from 'fs'
+import { dirname } from 'path'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataSet, SignalDataTypeMap } from '../Types'
 import { prepareInClause } from './multi-db-sqlite/in-statement-cache'
@@ -8,8 +10,75 @@ import { initAuthCreds } from './auth-utils'
 import { BufferJSON } from './generics'
 import { SqliteHistorySyncStore } from './history-sync-store'
 import type { ILogger } from './logger'
-import type { SqliteDatabase } from './sqlite-driver'
+import { ensurePrivateFileSync, restrictFileSync } from './private-fs'
+import type { SqliteDatabase, SqliteDriverName } from './sqlite-driver'
 import { loadSqliteDriver } from './sqlite-driver'
+
+const SIDECAR_SUFFIXES = ['-wal', '-shm', '-journal']
+
+/**
+ * The file `driver` opens for `dbPath`, or undefined for an in-memory
+ * database. better-sqlite3 takes a `file:` path as a literal name; node:sqlite
+ * reads it as an SQLite URI (`file:[//localhost]path[?query]`). `create` is
+ * false when the URI asks SQLite not to create the file (mode=ro/rw).
+ *
+ * @internal exported for tests
+ */
+export const sqliteDatabaseFile = (
+	driver: SqliteDriverName,
+	dbPath: string
+): { file: string; create: boolean } | undefined => {
+	const trimmed = dbPath.trim()
+	if (trimmed === '' || trimmed === ':memory:') return undefined
+	if (driver !== 'node:sqlite' || !trimmed.startsWith('file:')) return { file: dbPath, create: true }
+
+	const uri = trimmed.slice('file:'.length).split('#')[0]!
+	const queryStart = uri.indexOf('?')
+	let file = queryStart === -1 ? uri : uri.slice(0, queryStart)
+	const mode = new URLSearchParams(queryStart === -1 ? '' : uri.slice(queryStart + 1)).get('mode')
+	if (mode === 'memory') return undefined
+	if (file.startsWith('//')) {
+		// Authority is empty or localhost; the path starts at the next slash.
+		const pathStart = file.indexOf('/', 2)
+		file = pathStart === -1 ? '' : file.slice(pathStart)
+	}
+
+	try {
+		file = decodeURIComponent(file)
+	} catch {
+		return undefined
+	}
+
+	if (process.platform === 'win32' && /^\/[A-Za-z]:/.test(file)) file = file.slice(1)
+	if (file === '' || file === ':memory:') return undefined
+	return { file, create: mode !== 'ro' && mode !== 'rw' }
+}
+
+/**
+ * Before SQLite opens it: creates the database 0600 (SQLite would use the
+ * umask default; -wal/-shm inherit its mode) and restricts sidecars left by a
+ * previous version or crash (audit S-01). A missing directory is left to the
+ * driver, which reports it with its own error.
+ */
+const securePrivateDatabase = (file: string, create: boolean) => {
+	if (!existsSync(dirname(file))) return
+	if (create) ensurePrivateFileSync(file)
+	else restrictFileSync(file)
+	for (const suffix of SIDECAR_SUFFIXES) restrictFileSync(`${file}${suffix}`)
+}
+
+/**
+ * Restricts the file SQLite really opened (and its sidecars) to 0600, in case
+ * the path resolved differently from {@link sqliteDatabaseFile}. In-memory
+ * databases report an empty file.
+ */
+const restrictOpenedDatabase = (db: SqliteDatabase) => {
+	const rows = db.pragma('database_list') as Array<{ name?: string; file?: string }>
+	const file = rows.find(row => row.name === 'main')?.file
+	if (!file) return
+	restrictFileSync(file)
+	for (const suffix of SIDECAR_SUFFIXES) restrictFileSync(`${file}${suffix}`)
+}
 
 const CREDS_ROW_KEY = '__creds__'
 
@@ -176,6 +245,9 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 			db = opts.database as SqliteDatabase
 		} else {
 			const driver = await loadSqliteDriver(opts.logger)
+			const target = opts.dbPath ? sqliteDatabaseFile(driver.name, opts.dbPath) : undefined
+			if (target) securePrivateDatabase(target.file, target.create)
+
 			db = driver.open(opts.dbPath)
 			opts.logger?.debug({ dbPath: opts.dbPath }, 'sqlite auth state opened')
 		}
@@ -183,6 +255,8 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 		for (const pragma of DEFAULT_PRAGMAS) {
 			db.pragma(pragma)
 		}
+
+		if (ownsDb) restrictOpenedDatabase(db)
 
 		if (opts.extraPragmas?.length) {
 			for (const pragma of opts.extraPragmas) {

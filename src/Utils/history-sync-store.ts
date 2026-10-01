@@ -16,6 +16,7 @@ import type {
 import type { SqliteDbLike, SqliteStatementLike } from './multi-db-sqlite/types'
 import { BufferJSON } from './generics'
 import { makeKeyedMutex } from './make-mutex'
+import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, restrictHandle } from './private-fs'
 
 const RUNNABLE_STATES: ReadonlyArray<HistorySyncJobState> = ['received', 'downloading', 'decoded', 'applying', 'failed']
 
@@ -210,11 +211,12 @@ export class FileHistorySyncStore implements HistorySyncStore {
 
 	private async persist(source: FileStateSource): Promise<void> {
 		const directory = dirname(this.path)
-		await mkdir(directory, { recursive: true })
+		await mkdir(directory, { recursive: true, mode: PRIVATE_DIR_MODE })
 		const tmp = `${this.path}.tmp`
 		const backup = `${this.path}.bak`
-		const tmpHandle = await open(tmp, 'w')
+		const tmpHandle = await open(tmp, 'w', PRIVATE_FILE_MODE)
 		try {
+			await restrictHandle(tmpHandle)
 			await tmpHandle.writeFile(JSON.stringify(this.state, BufferJSON.replacer))
 			await tmpHandle.sync()
 		} finally {
