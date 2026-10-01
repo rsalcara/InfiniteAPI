@@ -314,8 +314,11 @@ describe('audit 1:1 regressions', () => {
 	// The probe checks both halves: the pair from sender_pn is persisted in
 	// the key store (already true today), and no usync IQ left the socket
 	// (the defect). Fixed by PR-05.
-	it.failing('learns LID↔PN from sender_pn and persists it without a USync query', async () => {
-		const { socket, signalStore } = await makeSocket(undefined, { defaultQueryTimeoutMs: 300 }, false)
+	it('learns LID↔PN from sender_pn and persists it without a USync query', async () => {
+		// An unanswered usync would hold delivery for the whole query timeout
+		// (60 s, as in production), far past waitFor's 5 s deadline: delivering
+		// at all proves the message never waited on a query.
+		const { socket, signalStore } = await makeSocket(undefined, { defaultQueryTimeoutMs: 60_000 }, false)
 		const client = latestClient()
 		const seen: string[] = []
 		socket.ev.on('messages.upsert', update => {

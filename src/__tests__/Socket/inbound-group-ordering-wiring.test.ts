@@ -215,6 +215,7 @@ const makeSocket = async (getPNForLID?: (lid: string) => Promise<string | null>)
 
 	socket.signalRepository.migrateSession = async () => ({ migrated: 0, skipped: 0, total: 0 })
 	socket.signalRepository.lidMapping.getLIDForPN = async () => null
+	socket.signalRepository.lidMapping.getKnownLIDForPN = async () => null
 	socket.signalRepository.lidMapping.getPNForLID = getPNForLID ?? (async () => null)
 	socket.signalRepository.lidMapping.storeLIDPNMappings = async () => ({ stored: 0, skipped: 0, errors: 0 })
 
@@ -382,7 +383,7 @@ describe('inbound live chat ordering wiring', () => {
 		const { socket } = await makeSocket(async () => null)
 		const phaseCalls: string[] = []
 		let firstLookup = true
-		socket.signalRepository.lidMapping.getLIDForPN = async pn => {
+		socket.signalRepository.lidMapping.getKnownLIDForPN = async pn => {
 			const isFirstLookup = pn === DM_A_PN && firstLookup
 
 			phaseCalls.push(`lookup-enter:${pn}`)
@@ -457,7 +458,7 @@ describe('inbound live chat ordering wiring', () => {
 	it('keeps different dms parallel when the first dm is delayed', async () => {
 		const mappingCalls: string[] = []
 		const { socket } = await makeSocket(async () => null)
-		socket.signalRepository.lidMapping.getLIDForPN = async pn => {
+		socket.signalRepository.lidMapping.getKnownLIDForPN = async pn => {
 			mappingCalls.push(`enter:${pn}`)
 			if (pn === DM_A_PN) await new Promise(resolve => setTimeout(resolve, 30))
 			mappingCalls.push(`exit:${pn}`)
@@ -617,10 +618,12 @@ describe('inbound live chat ordering wiring', () => {
 		socket.ev.on('messages.upsert', update => {
 			if (update.messages.some(message => message.key.id === 'OFFLINE-DM-GATE-LIVE')) liveUpserted = true
 		})
-		const originalGetLIDForPN = socket.signalRepository.lidMapping.getLIDForPN.bind(socket.signalRepository.lidMapping)
-		socket.signalRepository.lidMapping.getLIDForPN = async pn => {
+		const originalGetKnownLIDForPN = socket.signalRepository.lidMapping.getKnownLIDForPN.bind(
+			socket.signalRepository.lidMapping
+		)
+		socket.signalRepository.lidMapping.getKnownLIDForPN = async pn => {
 			if (pn === DM_A_PN) await new Promise(resolve => setTimeout(resolve, 40))
-			const result = await originalGetLIDForPN(pn)
+			const result = await originalGetKnownLIDForPN(pn)
 			if (pn === DM_A_PN) liveStaged = true
 			return result
 		}

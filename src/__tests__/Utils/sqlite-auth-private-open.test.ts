@@ -115,6 +115,9 @@ describe('sqliteDatabaseFile', () => {
 	it('does not create what SQLite would refuse to create', () => {
 		expect(sqliteDatabaseFile('node:sqlite', 'file:auth.db?mode=ro')).toEqual({ file: 'auth.db', create: false })
 		expect(sqliteDatabaseFile('node:sqlite', 'file:auth.db?mode=rw')).toEqual({ file: 'auth.db', create: false })
+		// immutable=1 still creates a missing file (only writes are refused), so
+		// it must be pre-created 0600 like any other path.
+		expect(sqliteDatabaseFile('node:sqlite', 'file:auth.db?immutable=1')).toEqual({ file: 'auth.db', create: true })
 	})
 
 	it('has no file for in-memory databases', () => {

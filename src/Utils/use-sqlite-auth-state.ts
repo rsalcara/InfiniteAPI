@@ -35,6 +35,8 @@ export const sqliteDatabaseFile = (
 	const uri = trimmed.slice('file:'.length).split('#')[0]!
 	const queryStart = uri.indexOf('?')
 	let file = queryStart === -1 ? uri : uri.slice(0, queryStart)
+	// immutable=1 is NOT a no-create flag: SQLite still creates a missing file
+	// (empty, umask mode) and only rejects writes, so it is pre-created 0600.
 	const mode = new URLSearchParams(queryStart === -1 ? '' : uri.slice(queryStart + 1)).get('mode')
 	if (mode === 'memory') return undefined
 	if (file.startsWith('//')) {

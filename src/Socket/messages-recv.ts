@@ -4115,8 +4115,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 						await signalRepository.migrateSession(primaryJid, alt)
 					} else {
-						// Symmetric hybrid guard for the PN-alt branch.
-						const existingLid = await signalRepository.lidMapping.getLIDForPN(alt)
+						// Symmetric hybrid guard for the PN-alt branch. Local lookup only
+						// (audit R-02): the stanza itself carries the pair, as the app
+						// learns it; getLIDForPN would fire a USync query on a miss and
+						// hold this message until the IQ answers or times out.
+						const existingLid = await signalRepository.lidMapping.getKnownLIDForPN(alt)
 						if (existingLid !== primaryJid) {
 							// MUST await: normalizeMessageJids() runs after this and needs the mapping
 							// in the LIDMappingStore to resolve LID→PN for events delivered to consumers
