@@ -439,35 +439,13 @@ export class VoipClient extends EventEmitter {
 			let opened = false
 			let retries = 0
 			const maxRetries = 5
-			// Scoped handler: we install OUR uncaughtException listener and detach
-			// exactly that one on cleanup. Earlier versions called
-			// process.removeAllListeners("uncaughtException") which would also
-			// remove handlers installed by the host application's framework/APM —
-			// hostile behaviour for a library.
-			let installedHandler: ((err: any) => void) | null = null
-			const detachHandler = (): void => {
-				if (installedHandler) {
-					process.off('uncaughtException', installedHandler)
-					installedHandler = null
-				}
-			}
-
+			// No process-wide uncaughtException listener: any listener stops Node
+			// from crashing on the host's own exceptions (audit G-04). The 515
+			// restart arrives as connection.update close (socket end() with
+			// restartRequired) and is retried below.
 			const connectSocket = () => {
 				this.#sock = createSocket()
 				this.#sock.ev.on('creds.update', saveCreds)
-
-				detachHandler()
-				installedHandler = (err: any) => {
-					const code = err?.output?.statusCode ?? err?.data?.attrs?.code
-					if ((code === 515 || code === '515') && !opened && retries < maxRetries) {
-						retries += 1
-						setTimeout(connectSocket, 1500)
-					} else if (!opened) {
-						rejectOpen(err)
-					}
-				}
-
-				process.on('uncaughtException', installedHandler)
 
 				this.#sock.ev.on('connection.update', (update: any) => {
 					const connection = update.connection
@@ -484,7 +462,6 @@ export class VoipClient extends EventEmitter {
 
 					if (connection === 'open') {
 						opened = true
-						detachHandler()
 						resolveOpen()
 					} else if (connection === 'close' && !opened) {
 						const shouldReconnect = statusCode === 515 || statusCode === DisconnectReason?.restartRequired
@@ -492,7 +469,6 @@ export class VoipClient extends EventEmitter {
 							retries += 1
 							setTimeout(connectSocket, 1000)
 						} else {
-							detachHandler()
 							rejectOpen(lastDisconnect?.error ?? new Error('socket closed before open'))
 						}
 					}

@@ -384,6 +384,127 @@ describe('SessionCleanup', () => {
 		})
 	})
 
+	// Audit C-01: the scheduler must never outlive stop(), and its timers must
+	// not keep the process alive.
+	describe('Scheduler lifecycle', () => {
+		const config = {
+			enabled: true,
+			intervalMs: DAY_MS,
+			cleanupHour: 3,
+			secondaryDeviceInactiveDays: 15,
+			primaryDeviceInactiveDays: 30,
+			lidOrphanHours: 24,
+			cleanupOnStartup: false,
+			autoCleanCorrupted: false
+		}
+
+		const trackTimers = () => {
+			const created: Array<{ kind: 'timeout' | 'interval'; handle: NodeJS.Timeout; fn: () => unknown }> = []
+			const originalTimeout = global.setTimeout
+			const originalInterval = global.setInterval
+			const timeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+				const handle = originalTimeout(fn, ms)
+				created.push({ kind: 'timeout', handle, fn })
+				return handle
+			}) as typeof setTimeout)
+			const intervalSpy = jest.spyOn(global, 'setInterval').mockImplementation(((fn: () => void, ms?: number) => {
+				const handle = originalInterval(fn, ms)
+				created.push({ kind: 'interval', handle, fn })
+				return handle
+			}) as typeof setInterval)
+			return {
+				created,
+				restore: () => {
+					timeoutSpy.mockRestore()
+					intervalSpy.mockRestore()
+					for (const { handle } of created) {
+						clearTimeout(handle)
+						clearInterval(handle)
+					}
+				}
+			}
+		}
+
+		it('arms a single unref-ed first-run timer even if start() is called twice', () => {
+			const timers = trackTimers()
+			try {
+				const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, mockActivityTracker as any, logger, config)
+				cleanup.start()
+				cleanup.start()
+				expect(timers.created).toHaveLength(1)
+				expect(timers.created[0]!.handle.hasRef()).toBe(false)
+				cleanup.stop()
+			} finally {
+				timers.restore()
+			}
+		})
+
+		it('does not arm the recurring interval when stop() runs during the first cleanup', async () => {
+			const timers = trackTimers()
+			try {
+				let releaseFirstRun!: () => void
+				// @ts-ignore
+				mockKeys.get.mockImplementation(
+					() =>
+						new Promise(resolve => {
+							releaseFirstRun = () => resolve({})
+						})
+				)
+				mockActivityTracker.getAllActivities.mockResolvedValue(new Map())
+				const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, mockActivityTracker as any, logger, config)
+				cleanup.start()
+
+				// Run the scheduled first cleanup now; it blocks inside runCleanup().
+				const firstRun = timers.created[0]!
+				clearTimeout(firstRun.handle)
+				const firstRunDone = firstRun.fn()
+				await new Promise(resolve => setImmediate(resolve))
+
+				cleanup.stop()
+				releaseFirstRun()
+				await firstRunDone
+
+				expect(timers.created.filter(timer => timer.kind === 'interval')).toHaveLength(0)
+			} finally {
+				timers.restore()
+			}
+		})
+
+		it('keeps start() a no-op while the first cleanup is still running', async () => {
+			const timers = trackTimers()
+			try {
+				let releaseFirstRun!: () => void
+				// @ts-ignore
+				mockKeys.get.mockImplementation(
+					() =>
+						new Promise(resolve => {
+							releaseFirstRun = () => resolve({})
+						})
+				)
+				mockActivityTracker.getAllActivities.mockResolvedValue(new Map())
+				const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, mockActivityTracker as any, logger, config)
+				cleanup.start()
+
+				const firstRun = timers.created[0]!
+				clearTimeout(firstRun.handle)
+				const firstRunDone = firstRun.fn()
+				await new Promise(resolve => setImmediate(resolve))
+
+				cleanup.start()
+				expect(timers.created).toHaveLength(1)
+
+				releaseFirstRun()
+				await firstRunDone
+				const intervals = timers.created.filter(timer => timer.kind === 'interval')
+				expect(intervals).toHaveLength(1)
+				expect(intervals[0]!.handle.hasRef()).toBe(false)
+				cleanup.stop()
+			} finally {
+				timers.restore()
+			}
+		})
+	})
+
 	describe('Configuration', () => {
 		it('should respect disabled cleanup', async () => {
 			const config = {

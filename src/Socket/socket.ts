@@ -198,6 +198,10 @@ export const makeSocket = (config: SocketConfig) => {
 	)
 	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(transportSession.profile, config.tcTokenAbProps)
 	let closed = false
+	// Deferred session-cleanup start armed on CB:success; cancelled by end()
+	// so a socket closed within 5 s of login does not start a scheduler that
+	// keeps the dead socket alive (audit C-01).
+	let sessionCleanupStartTimer: ReturnType<typeof setTimeout> | undefined
 	const ev = makeEventBuffer(logger)
 	const nativeAndroidIntegrity = createNativeAndroidIntegrityState({
 		enabled: isNativeAndroid,
@@ -1852,7 +1856,9 @@ export const makeSocket = (config: SocketConfig) => {
 		// chats.ts on connection close. (audit TST-06)
 		offlineBuffer.onClose()
 
-		// Stop session cleanup scheduler
+		// Stop session cleanup scheduler (and its deferred start, if still pending)
+		clearTimeout(sessionCleanupStartTimer)
+		sessionCleanupStartTimer = undefined
 		sessionCleanup.stop()
 
 		// Stop session activity tracker and flush pending data
@@ -2521,14 +2527,22 @@ export const makeSocket = (config: SocketConfig) => {
 		// initial message flood right after CB:success. The heavyweight
 		// getAllSessionKeys() scan would otherwise compete with migrateSession()
 		// for the same storage locks while the offline-message backlog is draining.
-		// start() is idempotent (guarded by cleanupInterval check) so deferring is safe.
-		const _cleanupStartTimer = setTimeout(() => sessionCleanup.start(), 5_000)
-		if (typeof _cleanupStartTimer.unref === 'function') {
-			_cleanupStartTimer.unref()
-		}
+		// start() is idempotent, so deferring is safe.
+		//
+		// `connection.update: open` was emitted synchronously above and a
+		// listener may already have called end(): never arm the deferred start
+		// or the tracker interval for a closed socket (audit C-01).
+		if (!closed) {
+			clearTimeout(sessionCleanupStartTimer)
+			sessionCleanupStartTimer = setTimeout(() => {
+				sessionCleanupStartTimer = undefined
+				if (!closed) sessionCleanup.start()
+			}, 5_000)
+			sessionCleanupStartTimer.unref?.()
 
-		// Start session activity tracker immediately (lightweight, no DB scan)
-		sessionActivityTracker.start()
+			// Start session activity tracker immediately (lightweight, no DB scan)
+			sessionActivityTracker.start()
+		}
 
 		// Update server time offset from success node
 		const serverTime = extractServerTime(node)

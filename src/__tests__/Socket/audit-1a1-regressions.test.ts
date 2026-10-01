@@ -365,62 +365,95 @@ describe('audit 1:1 regressions', () => {
 		expect(replies).toHaveLength(1)
 	})
 
+	// C-01 · `connection.update: open` is emitted synchronously inside the
+	// CB:success handler; a listener that ends the socket right there must not
+	// leave the deferred cleanup timer or the activity-tracker interval armed
+	// on the closed socket. Fixed by PR-01.
+	it('arms no post-login timer when an open listener closes the socket synchronously', async () => {
+		const { socket } = await makeSocket()
+		let closedByListener = false
+		const armedAfterClose: string[] = []
+		const original = { setTimeout: global.setTimeout, setInterval: global.setInterval }
+		const timers = global as any
+		timers.setTimeout = (fn: (...args: any[]) => void, ms?: number, ...rest: any[]) => {
+			if (closedByListener && ms === 5_000) armedAfterClose.push(`timeout:${ms}`)
+			return original.setTimeout(fn, ms, ...rest)
+		}
+
+		timers.setInterval = (fn: (...args: any[]) => void, ms?: number, ...rest: any[]) => {
+			if (closedByListener) armedAfterClose.push(`interval:${ms}`)
+			return original.setInterval(fn, ms, ...rest)
+		}
+
+		socket.ev.on('connection.update', update => {
+			if (update.connection === 'open' && !closedByListener) {
+				void socket.end(new Error('closed by open listener'))
+				closedByListener = true
+			}
+		})
+		try {
+			latestClient().emit('CB:success', { tag: 'success', attrs: { lid: ME_LID, t: '1789500100' }, content: [] })
+			expect(closedByListener).toBe(true)
+			expect(armedAfterClose).toEqual([])
+		} finally {
+			Object.assign(global, original)
+			await new Promise(resolve => setTimeout(resolve, 2_100))
+		}
+	})
+
 	// C-01 · a socket that closes within 5 s of CB:success must not leave a
 	// session-cleanup scheduler behind (it pins the closed socket forever).
-	// Fixed by PR-01. Live timers created by the test are tracked and cleared
-	// afterwards so the zombie cannot keep the Jest process alive.
-	it.failing(
-		'leaves no timer behind after quick close cycles following login',
-		async () => {
-			const live = new Set<unknown>()
-			const original = {
-				setTimeout: global.setTimeout,
-				setInterval: global.setInterval,
-				clearTimeout: global.clearTimeout,
-				clearInterval: global.clearInterval
-			}
-			const track =
-				(create: (...args: any[]) => any) =>
-				(...args: any[]) => {
-					const handle = create(...args)
-					live.add(handle)
-					return handle
-				}
-
-			const untrack = (clear: (handle: any) => void) => (handle: any) => {
-				live.delete(handle)
-				clear(handle)
+	// Fixed by PR-01: end() cancels the deferred start and the scheduler
+	// checks its generation. Live timers created by the test are tracked and
+	// cleared afterwards so a regression cannot keep the Jest process alive.
+	it('leaves no timer behind after quick close cycles following login', async () => {
+		const live = new Set<unknown>()
+		const original = {
+			setTimeout: global.setTimeout,
+			setInterval: global.setInterval,
+			clearTimeout: global.clearTimeout,
+			clearInterval: global.clearInterval
+		}
+		const track =
+			(create: (...args: any[]) => any) =>
+			(...args: any[]) => {
+				const handle = create(...args)
+				live.add(handle)
+				return handle
 			}
 
-			;(global as any).setTimeout = track(original.setTimeout)
-			;(global as any).setInterval = track(original.setInterval)
-			;(global as any).clearTimeout = untrack(original.clearTimeout)
-			;(global as any).clearInterval = untrack(original.clearInterval)
-			const successNode: BinaryNode = { tag: 'success', attrs: { lid: ME_LID, t: '1789500100' }, content: [] }
-			const liveCount = () =>
-				(process as any).getActiveResourcesInfo().filter((kind: string) => kind === 'Timeout').length
-			try {
-				const baseline = liveCount()
-				for (let cycle = 0; cycle < 8; cycle++) {
-					const { socket } = await makeSocket()
-					latestClient().emit('CB:success', successNode)
-					await new Promise(resolve => original.setTimeout(resolve, 30))
-					await socket.end(new Error('audit cycle'))
-					clients.length = 0
-				}
+		const untrack = (clear: (handle: any) => void) => (handle: any) => {
+			live.delete(handle)
+			clear(handle)
+		}
 
-				// The deferred cleanup start fires 5 s after CB:success.
-				await new Promise(resolve => original.setTimeout(resolve, 5_500))
-				expect(liveCount() - baseline).toBeLessThan(4)
-			} finally {
-				for (const handle of live) {
-					original.clearTimeout(handle as any)
-					original.clearInterval(handle as any)
-				}
-
-				Object.assign(global, original)
+		;(global as any).setTimeout = track(original.setTimeout)
+		;(global as any).setInterval = track(original.setInterval)
+		;(global as any).clearTimeout = untrack(original.clearTimeout)
+		;(global as any).clearInterval = untrack(original.clearInterval)
+		const successNode: BinaryNode = { tag: 'success', attrs: { lid: ME_LID, t: '1789500100' }, content: [] }
+		const liveCount = () =>
+			(process as any).getActiveResourcesInfo().filter((kind: string) => kind === 'Timeout').length
+		try {
+			const baseline = liveCount()
+			for (let cycle = 0; cycle < 8; cycle++) {
+				const { socket } = await makeSocket()
+				latestClient().emit('CB:success', successNode)
+				await new Promise(resolve => original.setTimeout(resolve, 30))
+				await socket.end(new Error('audit cycle'))
+				clients.length = 0
 			}
-		},
-		30_000
-	)
+
+			// The deferred cleanup start fires 5 s after CB:success.
+			await new Promise(resolve => original.setTimeout(resolve, 5_500))
+			expect(liveCount() - baseline).toBeLessThan(4)
+		} finally {
+			for (const handle of live) {
+				original.clearTimeout(handle as any)
+				original.clearInterval(handle as any)
+			}
+
+			Object.assign(global, original)
+		}
+	}, 30_000)
 })
