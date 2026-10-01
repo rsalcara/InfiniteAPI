@@ -1,8 +1,9 @@
 import { mkdtempSync, readdirSync, rmSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { proto } from '../../../WAProto/index.js'
 import { getStatusFromReceiptType } from '../../Utils/generics'
-import { mapWebMessageStatusToAndroid } from '../../Utils/multi-db-sqlite/message-store-backend'
+import { androidStatusFromReceiptType } from '../../Utils/multi-db-sqlite/message-store-backend'
 import { MultiDbSqliteStore } from '../../Utils/multi-db-sqlite/store'
 import { useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite/use-multi-db-sqlite-auth-state'
 import { useMultiFileAuthState } from '../../Utils/use-multi-file-auth-state'
@@ -52,11 +53,11 @@ describe('audit 1:1 regressions (utils)', () => {
 		}
 	})
 
-	// R-09 · app receipt table, ReceiptStanzaHelper.A00 (X/C29301Csr.java:337-378):
-	// sender/delivery = 5, read = 13, read-self = 17, played = 8,
-	// played-self = 18, inactive = 15. The engine's msgstore.db status is
-	// mapWebMessageStatusToAndroid(getStatusFromReceiptType(type)); 1:1 means
-	// that composition returns exactly the app's integer. Fixed by PR-06.
+	// R-09 · app receipt table, ReceiptStanzaHelper.A00 (X/C29301Csr.java:337-378),
+	// carried as ReceiptProcessingJob.status: sender/delivery = 5, read = 13,
+	// read-self = 17, played = 8, played-self = 18, inactive = 15. The engine's
+	// msgstore.db mirror stores androidStatusFromReceiptType(type); 1:1 means it
+	// returns exactly the app's integer. Fixed by PR-06.
 	const APP_RECEIPT_STATUS: Record<string, number> = {
 		sender: 5,
 		delivery: 5,
@@ -66,17 +67,35 @@ describe('audit 1:1 regressions (utils)', () => {
 		'played-self': 18,
 		inactive: 15
 	}
-	const engineAndroidStatus = (type: string | undefined) => mapWebMessageStatusToAndroid(getStatusFromReceiptType(type))
 
-	it.failing('maps every receipt type to the same Android status integer as the app', () => {
-		const engine = Object.fromEntries(Object.keys(APP_RECEIPT_STATUS).map(type => [type, engineAndroidStatus(type)]))
+	it('maps every receipt type to the same Android status integer as the app', () => {
+		const engine = Object.fromEntries(
+			Object.keys(APP_RECEIPT_STATUS).map(type => [type, androidStatusFromReceiptType(type)])
+		)
 		expect(engine).toEqual(APP_RECEIPT_STATUS)
+		// A receipt without `type` is a delivery receipt; unknown types are rejected.
+		expect(androidStatusFromReceiptType(undefined)).toBe(5)
+		expect(androidStatusFromReceiptType('retry')).toBeNull()
 	})
 
-	it('keeps the receipt states that already match the app', () => {
-		// A receipt without `type` is a delivery receipt (5).
-		expect(engineAndroidStatus(undefined)).toBe(5)
-		expect(engineAndroidStatus('read')).toBe(APP_RECEIPT_STATUS.read)
-		expect(engineAndroidStatus('played')).toBe(APP_RECEIPT_STATUS.played)
+	it('keeps the consumer event contract (WebMessageInfo.Status) unchanged', () => {
+		const { Status } = proto.WebMessageInfo
+		expect({
+			delivery: getStatusFromReceiptType(undefined),
+			sender: getStatusFromReceiptType('sender'),
+			read: getStatusFromReceiptType('read'),
+			'read-self': getStatusFromReceiptType('read-self'),
+			played: getStatusFromReceiptType('played'),
+			'played-self': getStatusFromReceiptType('played-self'),
+			inactive: getStatusFromReceiptType('inactive')
+		}).toEqual({
+			delivery: Status.DELIVERY_ACK,
+			sender: Status.SERVER_ACK,
+			read: Status.READ,
+			'read-self': Status.READ,
+			played: Status.PLAYED,
+			'played-self': undefined,
+			inactive: undefined
+		})
 	})
 })

@@ -702,6 +702,86 @@ describe('msgstore.db message-store backends', () => {
 			expect(messageStore.getMessageByKeyId(chatJid, true, 'LATE-MESSAGE')?.status).toBe(ANDROID_MESSAGE_STATUS.READ)
 		})
 
+		// Audit R-09: read-self/played-self/inactive exist only as the message
+		// status in the app (17/18/15). A receipt that beats its message keeps
+		// that exact value until the message is mirrored.
+		it('replays a status-only orphan with the app status after the message arrives', () => {
+			const db = store.handle('msgstore.db')
+			const messageStore = new MessageStoreBackend(db, jidMap)
+			const receipts = new ReceiptBackend(db, jidMap, messageStore)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const myDevice = '5511999999999:2@s.whatsapp.net'
+			const now = Math.floor(Date.now() / 1000)
+			const cases = [
+				{ keyId: 'LATE-READ-SELF', fromMe: false, androidStatus: ANDROID_MESSAGE_STATUS.READ_SELF },
+				{ keyId: 'LATE-PLAYED-SELF', fromMe: false, androidStatus: ANDROID_MESSAGE_STATUS.PLAYED_SELF },
+				{ keyId: 'LATE-INACTIVE', fromMe: true, androidStatus: ANDROID_MESSAGE_STATUS.INACTIVE }
+			]
+			for (const { keyId, fromMe, androidStatus } of cases) {
+				receipts.recordStatusOrphan({
+					chatJid,
+					fromMe,
+					keyId,
+					receiptDeviceJid: myDevice,
+					androidStatus,
+					timestamp: now
+				})
+			}
+
+			expect(db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({ n: 3 })
+			for (const { keyId, fromMe, androidStatus } of cases) {
+				const messageRowId = messageStore.recordMessage({ chatJid, fromMe, keyId, timestamp: now - 1 })
+				expect(receipts.replayOrphaned(chatJid, fromMe, keyId)).toBe(1)
+				expect([keyId, messageStore.getMessageByKeyId(chatJid, fromMe, keyId)?.status]).toEqual([keyId, androidStatus])
+				expect(receipts.listUserReceipts(messageRowId)).toEqual([])
+			}
+
+			expect(db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({ n: 0 })
+		})
+
+		it('lets a read-self orphan win over the read orphan of the same receipt', () => {
+			const db = store.handle('msgstore.db')
+			const messageStore = new MessageStoreBackend(db, jidMap)
+			const receipts = new ReceiptBackend(db, jidMap, messageStore)
+			const chatJid = '5515991426667@s.whatsapp.net'
+			const now = Math.floor(Date.now() / 1000)
+			receipts.recordUserReceipt({
+				chatJid,
+				fromMe: false,
+				keyId: 'LATE-BOTH',
+				receiptUserJid: chatJid,
+				kind: 'read',
+				timestamp: now
+			})
+			receipts.recordStatusOrphan({
+				chatJid,
+				fromMe: false,
+				keyId: 'LATE-BOTH',
+				receiptDeviceJid: '5511999999999:2@s.whatsapp.net',
+				androidStatus: ANDROID_MESSAGE_STATUS.READ_SELF,
+				timestamp: now
+			})
+			messageStore.recordMessage({ chatJid, fromMe: false, keyId: 'LATE-BOTH', timestamp: now - 1 })
+
+			expect(receipts.replayOrphaned(chatJid, false, 'LATE-BOTH')).toBe(2)
+			expect(messageStore.getMessageByKeyId(chatJid, false, 'LATE-BOTH')?.status).toBe(ANDROID_MESSAGE_STATUS.READ_SELF)
+		})
+
+		it('only holds status-only states as status orphans', () => {
+			const db = store.handle('msgstore.db')
+			const receipts = new ReceiptBackend(db, jidMap, new MessageStoreBackend(db, jidMap))
+			expect(() =>
+				receipts.recordStatusOrphan({
+					chatJid: '5515991426667@s.whatsapp.net',
+					fromMe: true,
+					keyId: 'NOT-STATUS-ONLY',
+					receiptDeviceJid: '5515991426667@s.whatsapp.net',
+					androidStatus: ANDROID_MESSAGE_STATUS.READ,
+					timestamp: 1
+				})
+			).toThrow(/not a status-only receipt state/)
+		})
+
 		it('keeps the newest timestamp when orphan receipts replay out of order', () => {
 			const messageStore = new MessageStoreBackend(store.handle('msgstore.db'), jidMap)
 			const receipts = new ReceiptBackend(store.handle('msgstore.db'), jidMap, messageStore)

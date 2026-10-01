@@ -80,6 +80,7 @@ export {
 	ANDROID_MESSAGE_STATUS,
 	ANDROID_MESSAGE_STATUS_ORDER,
 	ANDROID_VIEW_ONCE_STATE,
+	androidStatusFromReceiptType,
 	isAndroidViewOnceMessageType,
 	mapWebMessageStatusToAndroid,
 	mapContentTypeToMessageType,

@@ -105,8 +105,8 @@ import {
 	parseTextStatusUpdateNotification
 } from '../Utils/mex-notifications'
 import {
+	androidStatusFromReceiptType,
 	JidMapBackend,
-	mapWebMessageStatusToAndroid,
 	MessageStoreBackend,
 	ReceiptBackend,
 	type ReceiptKind,
@@ -224,12 +224,14 @@ const isValidEnforcementType = (value: string | undefined): value is ReachoutTim
  * dropped PLAYED (voice-note listen) receipts into read_timestamp instead
  * of played_timestamp — confirmed real bug.
  */
-const receiptKindFromStatus = (status: proto.WebMessageInfo.Status | undefined): ReceiptKind =>
-	status === proto.WebMessageInfo.Status.PLAYED
-		? 'played'
-		: status === proto.WebMessageInfo.Status.DELIVERY_ACK
-			? 'delivery'
-			: 'read'
+/**
+ * receipt_user progression kind for a receipt type, following the app's
+ * status table (ReceiptStanzaHelper.A00): sender/delivery/inactive are
+ * delivery (5/15), read/read-self are read (13/17), played/played-self are
+ * played (8/18). A `sender` receipt is not a read.
+ */
+const receiptKindFromReceiptType = (type: string | undefined): ReceiptKind =>
+	type === 'played' || type === 'played-self' ? 'played' : type === 'read' || type === 'read-self' ? 'read' : 'delivery'
 
 export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const {
@@ -3702,6 +3704,40 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					}
 
 					const status = getStatusFromReceiptType(attrs.type)
+					// msgstore.db keeps the app's own status integer for the receipt
+					// type (audit R-09), which is not the WebMessageInfo.Status the
+					// consumer event carries. inactive/played-self have no Web status
+					// and so no event, but the app still records them.
+					// A receipt can arrive before its message row is mirrored; the
+					// status-only states then wait in receipt_orphaned with their exact
+					// value (delivery/read/played orphan through receipt_user below).
+					const mirrorReceiptStatus = () => {
+						const androidStatus = androidStatusFromReceiptType(attrs.type)
+						if (!receiptChatResolver || !key.remoteJid || androidStatus === null) return
+						const statusOnly = attrs.type === 'read-self' || attrs.type === 'played-self' || attrs.type === 'inactive'
+						try {
+							for (const id of ids) {
+								const applied = receiptChatResolver.updateMessageStatus(key.remoteJid, !!key.fromMe, id, androidStatus)
+								if (!applied && statusOnly && receiptBackend) {
+									receiptBackend.recordStatusOrphan({
+										chatJid: key.remoteJid,
+										fromMe: !!key.fromMe,
+										keyId: id,
+										receiptDeviceJid: attrs.from!,
+										androidStatus,
+										timestamp: +(attrs.t ?? 0)
+									})
+								}
+							}
+						} catch (err) {
+							logger.warn({ err }, 'failed to advance message status mirror')
+						}
+					}
+
+					if (typeof status === 'undefined' && !isJidGroup(remoteJid) && !isJidStatusBroadcast(remoteJid)) {
+						mirrorReceiptStatus()
+					}
+
 					if (
 						typeof status !== 'undefined' &&
 						// basically, we only want to know when a message from us has been delivered to/read by the other person
@@ -3772,7 +3808,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								// not msgstore.db's receipt tables.
 								if (receiptBackend && isJidGroup(remoteJid) && key.remoteJid) {
 									try {
-										const receiptKind = receiptKindFromStatus(status)
+										const receiptKind = receiptKindFromReceiptType(attrs.type)
 										for (const id of ids) {
 											receiptBackend.recordUserReceipt({
 												chatJid: key.remoteJid,
@@ -3814,28 +3850,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								}))
 							)
 
-							// Android's msgstore status integers are not the same
-							// numbers as WebMessageInfo.Status. Advance the typed
-							// message row using the confirmed Android mapping.
-							if (receiptChatResolver && key.remoteJid) {
-								const androidStatus = mapWebMessageStatusToAndroid(status)
-								if (androidStatus !== null) {
-									try {
-										for (const id of ids) {
-											receiptChatResolver.updateMessageStatus(key.remoteJid, !!key.fromMe, id, androidStatus)
-										}
-									} catch (err) {
-										logger.warn({ err }, 'failed to advance message status mirror')
-									}
-								}
-							}
+							mirrorReceiptStatus()
 
 							// Mirrors 1:1 message receipts into msgstore.db. The other
 							// party IS the receipt_user for a 1:1 chat (no separate
 							// participant field the way group/status receipts have one).
 							if (receiptBackend && key.remoteJid) {
 								try {
-									const receiptKind = receiptKindFromStatus(status)
+									const receiptKind = receiptKindFromReceiptType(attrs.type)
 									for (const id of ids) {
 										receiptBackend.recordUserReceipt({
 											chatJid: key.remoteJid,

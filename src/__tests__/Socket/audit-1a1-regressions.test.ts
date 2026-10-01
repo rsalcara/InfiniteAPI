@@ -5,7 +5,9 @@ import { join } from 'path'
 import { proto } from '../../../WAProto/index.js'
 import { DEFAULT_CONNECTION_CONFIG, NOISE_WA_HEADER } from '../../Defaults'
 import { initAuthCreds, makeCacheableSignalKeyStore } from '../../Utils/auth-utils'
+import { JidMapBackend } from '../../Utils/multi-db-sqlite/lid-mapping-backend'
 import { MessageStoreBackend } from '../../Utils/multi-db-sqlite/message-store-backend'
+import { ReceiptBackend } from '../../Utils/multi-db-sqlite/receipt-backend'
 import { MultiDbSqliteStore } from '../../Utils/multi-db-sqlite/store'
 import type { BinaryNode } from '../../WABinary'
 import { decodeBinaryNode } from '../../WABinary'
@@ -316,8 +318,8 @@ describe('audit 1:1 regressions', () => {
 	// (the defect). Fixed by PR-05.
 	it('learns LID↔PN from sender_pn and persists it without a USync query', async () => {
 		// An unanswered usync would hold delivery for the whole query timeout
-		// (60 s, as in production), far past waitFor's 5 s deadline: delivering
-		// at all proves the message never waited on a query.
+		// (60 s here, above the 30 s production default), far past waitFor's
+		// 5 s deadline: delivering at all proves the message never waited on a query.
 		const { socket, signalStore } = await makeSocket(undefined, { defaultQueryTimeoutMs: 60_000 }, false)
 		const client = latestClient()
 		const seen: string[] = []
@@ -338,6 +340,133 @@ describe('audit 1:1 regressions', () => {
 			lidToPn: DM_A_PN.split('@')[0],
 			usyncQueries: 0
 		})
+	})
+
+	// R-09 · msgstore.db keeps the app's status integer per receipt type
+	// (ReceiptStanzaHelper.A00, X/C29301Csr.java:337-378), while the consumer
+	// event keeps WebMessageInfo.Status. inactive/played-self have no Web
+	// status: the app records them, consumers get no event (unchanged).
+	it('mirrors each receipt type into msgstore.db with the app status and keeps the consumer events', async () => {
+		const sessionDir = mkdtempSync(join(tmpdir(), 'audit-1a1-r09-'))
+		const store = new MultiDbSqliteStore({ sessionDir })
+		await store.open()
+		const db = store.handle('msgstore.db')
+		const messages = new MessageStoreBackend(db, new JidMapBackend(db))
+		const MY_OTHER_DEVICE = ME_PN.replace('@', ':2@')
+		// Receipts on our own messages (fromMe) and, for the -self states, on
+		// incoming messages we read/played on another device.
+		const receipts: Array<{ id: string; fromMe: boolean; attrs: Record<string, string> }> = [
+			{ id: 'R09-delivery', fromMe: true, attrs: { from: DM_A_PN } },
+			{ id: 'R09-read', fromMe: true, attrs: { from: DM_A_PN, type: 'read' } },
+			{ id: 'R09-played', fromMe: true, attrs: { from: DM_A_PN, type: 'played' } },
+			{ id: 'R09-inactive', fromMe: true, attrs: { from: DM_A_PN, type: 'inactive' } },
+			{ id: 'R09-sender', fromMe: true, attrs: { from: MY_OTHER_DEVICE, recipient: DM_A_PN, type: 'sender' } },
+			{ id: 'R09-read-self', fromMe: false, attrs: { from: MY_OTHER_DEVICE, recipient: DM_A_PN, type: 'read-self' } },
+			{
+				id: 'R09-played-self',
+				fromMe: false,
+				attrs: { from: MY_OTHER_DEVICE, recipient: DM_A_PN, type: 'played-self' }
+			}
+		]
+		for (const { id, fromMe } of receipts) {
+			messages.recordMessage({ chatJid: DM_A_PN, fromMe, keyId: id, timestamp: 1_789_500_000 })
+		}
+
+		const updateSpy = jest.spyOn(MessageStoreBackend.prototype, 'updateMessageStatus')
+		const userReceiptKinds = new Map<string, string>()
+		const kindSpy = jest.spyOn(ReceiptBackend.prototype, 'recordUserReceipt').mockImplementation(input => {
+			userReceiptKinds.set(input.keyId, input.kind)
+		})
+		try {
+			const { socket } = await makeSocket(undefined, { multiDbStore: store })
+			const client = latestClient()
+			const events = new Map<string, number | null | undefined>()
+			socket.ev.on('messages.update', updates => {
+				for (const { key, update } of updates) if ('status' in update) events.set(key.id!, update.status)
+			})
+			for (const { id, attrs } of receipts) {
+				client.emit('CB:receipt', { tag: 'receipt', attrs: { ...attrs, id, t: '1789500200' }, content: undefined })
+			}
+
+			await waitFor(() => updateSpy.mock.calls.length === receipts.length)
+			await endSocket(socket)
+			// What msgstore.db really holds after the live receipts.
+			const persisted = Object.fromEntries(
+				receipts.map(({ id, fromMe }) => [id, messages.getMessageByKeyId(DM_A_PN, fromMe, id)?.status])
+			)
+			expect(persisted).toEqual({
+				'R09-delivery': 5,
+				'R09-read': 13,
+				'R09-played': 8,
+				'R09-inactive': 15,
+				'R09-sender': 5,
+				'R09-read-self': 17,
+				'R09-played-self': 18
+			})
+			// receipt_user progression follows the same table: sender is a delivery.
+			expect(Object.fromEntries(userReceiptKinds)).toEqual({
+				'R09-delivery': 'delivery',
+				'R09-read': 'read',
+				'R09-played': 'played',
+				'R09-sender': 'delivery',
+				'R09-read-self': 'read'
+			})
+			const { Status } = proto.WebMessageInfo
+			expect(Object.fromEntries(events)).toEqual({
+				'R09-delivery': Status.DELIVERY_ACK,
+				'R09-read': Status.READ,
+				'R09-played': Status.PLAYED,
+				'R09-sender': Status.SERVER_ACK,
+				'R09-read-self': Status.READ
+			})
+		} finally {
+			updateSpy.mockRestore()
+			kindSpy.mockRestore()
+			store.close()
+			rmSync(sessionDir, { recursive: true, force: true })
+		}
+	})
+
+	it('holds status-only receipts for a message not mirrored yet with their exact app status', async () => {
+		const sessionDir = mkdtempSync(join(tmpdir(), 'audit-1a1-r09-late-'))
+		const store = new MultiDbSqliteStore({ sessionDir })
+		await store.open()
+		const orphans = new Map<string, number>()
+		const updateSpy = jest.spyOn(MessageStoreBackend.prototype, 'updateMessageStatus').mockReturnValue(false)
+		const orphanSpy = jest.spyOn(ReceiptBackend.prototype, 'recordStatusOrphan').mockImplementation(input => {
+			orphans.set(input.keyId, input.androidStatus)
+		})
+		const userSpy = jest.spyOn(ReceiptBackend.prototype, 'recordUserReceipt').mockImplementation(() => {})
+		try {
+			const { socket } = await makeSocket(undefined, { multiDbStore: store })
+			const client = latestClient()
+			const MY_OTHER_DEVICE = ME_PN.replace('@', ':2@')
+			const receipts: Array<{ id: string; attrs: Record<string, string> }> = [
+				{ id: 'LATE-read', attrs: { from: DM_A_PN, type: 'read' } },
+				{ id: 'LATE-inactive', attrs: { from: DM_A_PN, type: 'inactive' } },
+				{ id: 'LATE-read-self', attrs: { from: MY_OTHER_DEVICE, recipient: DM_A_PN, type: 'read-self' } },
+				{ id: 'LATE-played-self', attrs: { from: MY_OTHER_DEVICE, recipient: DM_A_PN, type: 'played-self' } }
+			]
+			for (const { id, attrs } of receipts) {
+				client.emit('CB:receipt', { tag: 'receipt', attrs: { ...attrs, id, t: '1789500300' }, content: undefined })
+			}
+
+			await waitFor(() => updateSpy.mock.calls.length === receipts.length)
+			await endSocket(socket)
+			// read orphans through receipt_user (replays as 13); the status-only
+			// states are held with their own value.
+			expect(Object.fromEntries(orphans)).toEqual({
+				'LATE-inactive': 15,
+				'LATE-read-self': 17,
+				'LATE-played-self': 18
+			})
+		} finally {
+			updateSpy.mockRestore()
+			orphanSpy.mockRestore()
+			userSpy.mockRestore()
+			store.close()
+			rmSync(sessionDir, { recursive: true, force: true })
+		}
 	})
 
 	// C-03 · app answers server pings (X/AbstractC37331lB.java:384 →
