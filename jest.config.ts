@@ -6,6 +6,7 @@ const config: Config = {
 	testEnvironment: 'node',
 	roots: ['<rootDir>/src', '<rootDir>/WAProto'],
 	testMatch: ['<rootDir>/src/**/*.test.ts'],
+	setupFiles: ['<rootDir>/jest.sqlite-error-realm.cjs'],
 	extensionsToTreatAsEsm: ['.ts'],
 	moduleNameMapper: {
 		'^(\\.{1,2}/.*)\\.js$': '$1',
