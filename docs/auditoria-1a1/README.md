@@ -59,7 +59,7 @@ Cada defeito comprovado é um `it.failing`, verificado rodando-o como `it`: falh
 | Sem timer zumbi após reconexão rápida | Timers acumulam em 8 ciclos | C-01 | PR-01 |
 | Diretórios 0700 / arquivos 0600 | 755/644 | S-01 | PR-02 |
 | Status de recibo igual ao app | 5 dos 7 tipos divergem do `ReceiptStanzaHelper.A00`: `sender` 4 (app 5), `read-self` 13 (app 17); `delivery`, `inactive` e `played-self` sem status (app 5, 15, 18) | R-09 | PR-06 |
-| Sem telefone no console por padrão | PN completo impresso | G-01 | PR-03 |
+| Sem telefone no console por padrão | PN completo impresso | G-01 | Descartado (decisão do operador: logs mantidos) |
 | FIFO de interativos no mesmo destino | Ordem `4, 5, 1, 2, 3` (F2-09) | E-01 | PR-20 |
 | Destino lento não segura outro destino | O envio ao grupo espera o 1:1 travado (trava global); sem a trava de produção o teste passa | E-01 | PR-20 |
 | `reporting_token` igual em todo envio da mesma mensagem | 64 envios → 4 resultados (sem token, correto e 2 errados) (F2-10) | E-14 | PR-29 |

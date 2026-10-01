@@ -134,6 +134,13 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 			// signal_kv remains the complete compatibility copy; auth-state
 			// initialization rehydrates corrected typed rows from it.
 			sql: `DELETE FROM identities WHERE recipient_id <> -1;`
+		},
+		{
+			version: 4,
+			name: 'drop signal_kv_by_type (duplicates the primary key prefix)',
+			// Audit S-05: PRIMARY KEY (type, id) already serves lookups by `type`
+			// alone (leftmost prefix), so this index only added a write per row.
+			sql: `DROP INDEX IF EXISTS signal_kv_by_type;`
 		}
 	],
 	'msgstore.db': [
@@ -559,13 +566,10 @@ const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
 	// fix. SQLite is per-connection here, so the pragma must be present on
 	// every opened handle — DEFAULT_PRAGMAS is the right place.
 	'foreign_keys = ON',
-	// Audit memory MEM-001 — sem esta pragma, SQLite cai no default de
-	// `-2000` (~2 MB de page cache por handle). Com 11 handles × N
-	// sessões, isso vira pressão de RSS desnecessária pro workload da
-	// lib (point reads em signal_kv/jid_map, sem joins grandes). `-512`
-	// = 512 KiB por handle → ~7 MB por sessão em vez de ~28 MB.
-	// Quem precisa de mais cache pode override via `extraPragmas`.
-	'cache_size = -512',
+	// Audit S-02: the app opens msgstore with `secure_delete` on and raises an
+	// alarm when it does not apply (MessagesDBHelper.onOpen); deleted rows are
+	// overwritten instead of lingering in free pages. Verified after open.
+	'secure_delete = ON',
 	// Audit memory MEM-002 — `mmap_size = 0` desabilita explicitamente o
 	// memory-mapped I/O. better-sqlite3 já usa 0 por default em builds
 	// padrão, mas algumas distros Linux compilam com `SQLITE_DEFAULT_
@@ -578,6 +582,25 @@ const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
 	'journal_size_limit = 67108864'
 ]
 
+/**
+ * Page cache per handle, in KiB. Audit MEM-001 caps it at 512 KiB because a
+ * session keeps 11 handles open. Audit S-12 proposed the app value (2000 KiB)
+ * for msgstore/axolotl; measured with 300k messages
+ * (`scripts/bench/sqlite-app-pragmas.ts`) it brought no gain on inserts,
+ * receipt updates or key_id lookups, so every file keeps 512 KiB and the
+ * operator can size each file through `cacheSizeKiB`.
+ */
+const DEFAULT_CACHE_SIZE_KIB = 512
+
+const cacheSizeKiBFor = (file: MultiDbFile, overrides?: Partial<Record<MultiDbFile, number>>): number => {
+	const kib = overrides?.[file] ?? DEFAULT_CACHE_SIZE_KIB
+	if (!Number.isSafeInteger(kib) || kib <= 0) {
+		throw new TypeError(`MultiDbSqliteStore: cacheSizeKiB for ${file} must be a positive integer, got ${kib}`)
+	}
+
+	return kib
+}
+
 export type MultiDbSqliteStoreOptions = {
 	/**
 	 * Directory where the per-concern `.db` files are written. Created if
@@ -589,6 +612,11 @@ export type MultiDbSqliteStoreOptions = {
 	 * defaults. Useful for ops tuning (e.g. `'cache_size = -8000'`).
 	 */
 	extraPragmas?: ReadonlyArray<string>
+	/**
+	 * Page cache per database file, in KiB (e.g. `{ 'msgstore.db': 2000 }`).
+	 * Default 512 for every file. `extraPragmas` still apply afterwards.
+	 */
+	cacheSizeKiB?: Partial<Record<MultiDbFile, number>>
 	/**
 	 * Optional logger for init / migration visibility.
 	 */
@@ -690,7 +718,12 @@ export class MultiDbSqliteStore {
 				this.handles.set(file, db as unknown as SqliteDbLike)
 
 				for (const pragma of DEFAULT_PRAGMAS) db.pragma(pragma)
+				db.pragma(`cache_size = -${cacheSizeKiBFor(file, this.opts.cacheSizeKiB)}`)
 				for (const pragma of extra) db.pragma(pragma)
+				if (Number(db.pragma('secure_delete', { simple: true })) !== 1) {
+					this.opts.logger?.warn?.({ file }, 'multi-db-sqlite: secure_delete is not active on this database')
+				}
+
 				db.exec(SCHEMAS[file])
 				// Apply per-DB migrations after the base schema is in place.
 				// The bookkeeping table is created on every database, including

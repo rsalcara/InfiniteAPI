@@ -1,8 +1,6 @@
-import { jest } from '@jest/globals'
 import { mkdtempSync, readdirSync, rmSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { logMessageReceived } from '../../Utils/baileys-logger'
 import { getStatusFromReceiptType } from '../../Utils/generics'
 import { mapWebMessageStatusToAndroid } from '../../Utils/multi-db-sqlite/message-store-backend'
 import { MultiDbSqliteStore } from '../../Utils/multi-db-sqlite/store'
@@ -80,23 +78,5 @@ describe('audit 1:1 regressions (utils)', () => {
 		expect(engineAndroidStatus(undefined)).toBe(5)
 		expect(engineAndroidStatus('read')).toBe(APP_RECEIPT_STATUS.read)
 		expect(engineAndroidStatus('played')).toBe(APP_RECEIPT_STATUS.played)
-	})
-
-	// G-01 · no phone number reaches stdout by default. Fixed by PR-03.
-	it.failing('does not print a raw phone JID to the console by default', () => {
-		const previous = process.env.BAILEYS_LOG
-		delete process.env.BAILEYS_LOG
-		const lines: string[] = []
-		const spy = jest.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
-			lines.push(args.map(String).join(' '))
-		})
-		try {
-			logMessageReceived('AUDIT-G01', '5511988887777@s.whatsapp.net')
-			expect(lines.join('\n')).not.toContain('5511988887777')
-		} finally {
-			spy.mockRestore()
-			if (previous === undefined) delete process.env.BAILEYS_LOG
-			else process.env.BAILEYS_LOG = previous
-		}
 	})
 })

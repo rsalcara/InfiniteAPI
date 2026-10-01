@@ -38,8 +38,11 @@ export const sqliteDatabaseFile = (
 	const mode = new URLSearchParams(queryStart === -1 ? '' : uri.slice(queryStart + 1)).get('mode')
 	if (mode === 'memory') return undefined
 	if (file.startsWith('//')) {
-		// Authority is empty or localhost; the path starts at the next slash.
+		// SQLite accepts only an empty or `localhost` authority and rejects any
+		// other host, so there is nothing to create for it.
 		const pathStart = file.indexOf('/', 2)
+		const authority = pathStart === -1 ? file.slice(2) : file.slice(2, pathStart)
+		if (authority !== '' && authority.toLowerCase() !== 'localhost') return undefined
 		file = pathStart === -1 ? '' : file.slice(pathStart)
 	}
 
@@ -93,7 +96,8 @@ CREATE TABLE IF NOT EXISTS signal_keys (
   value TEXT NOT NULL,
   PRIMARY KEY (type, id)
 );
-CREATE INDEX IF NOT EXISTS signal_keys_type_idx ON signal_keys(type);
+-- Audit S-05: PRIMARY KEY (type, id) already serves lookups by type.
+DROP INDEX IF EXISTS signal_keys_type_idx;
 CREATE TABLE IF NOT EXISTS start_chat_trust_signals (
   jid TEXT PRIMARY KEY NOT NULL,
   is_sender_suspicious INTEGER,
@@ -121,7 +125,15 @@ const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
 	'busy_timeout = 5000',
 	'journal_mode = WAL',
 	'synchronous = NORMAL',
-	'journal_size_limit = 67108864'
+	'journal_size_limit = 67108864',
+	// Audit S-02: deleted keys are overwritten, not left in free pages (the
+	// app runs its databases with secure_delete on).
+	'secure_delete = ON',
+	// Audit S-12: the app runs its key store with the SQLite default page
+	// cache (2000 KiB). Both drivers otherwise open with 16000 KiB; measured
+	// with 50k keys (`scripts/bench/sqlite-app-pragmas.ts`) that only adds
+	// ~13 MiB per session without faster reads or writes.
+	'cache_size = -2000'
 ]
 
 /**
@@ -264,6 +276,10 @@ export async function useSqliteAuthState(opts: SqliteAuthStateOptions): Promise<
 			}
 
 			opts.logger?.debug({ extraPragmas: opts.extraPragmas }, 'applied extra pragmas')
+		}
+
+		if (Number(db.pragma('secure_delete', { simple: true })) !== 1) {
+			opts.logger?.warn({}, 'sqlite auth state: secure_delete is not active on this database')
 		}
 
 		db.exec(CREATE_SCHEMA_SQL)

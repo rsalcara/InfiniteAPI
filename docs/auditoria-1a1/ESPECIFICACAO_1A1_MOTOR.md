@@ -32,7 +32,7 @@
 | S-09 | Payload enviado guardado no banco por 60 dias | `RetryReceiptHandler` lê do store; recusa se > `5184000000` ms (`X/C1VN.java:31979`) | LRU de 512 itens/5 min (`message-retry-manager.ts:183`) + `getMessage` undefined | Store durável do payload enviado + rota + destinatários; expurgo aos 60 dias; `getMessage` padrão = store | Reenvio de mensagem com 59 dias funciona; com 61 dias é recusado | ambos |
 | S-10 | Outbox persistente | `SendE2EMessageJob` com `isPersistent` (`SendE2EMessageJob.java:9518`), status 0 → 4 | Não existe | Tabela de envio pendente (status 0) antes do `sendNode`; 4 no ack | Queda antes do ack → reenvio com o mesmo id na reconexão | ambos |
 | S-11 | Quarentena com retenção | Sem acúmulo sem limite no app | `pruneOlderThan` sem chamador (`quarantine-backend.ts:167`) | Poda agendada, cancelada no `end()` | Linhas antigas removidas | ambos |
-| S-12 | `cache_size` do app | AB 20777 = 0, ou seja, padrão do SQLite | −512 × 11 arquivos | Padrão −2000 em `msgstore`/`axolotl`; configurável | PRAGMA confere | ambos |
+| S-12 | `cache_size` do app | AB 20777 = 0, ou seja, padrão do SQLite (2000 KiB) | −512 × 11 arquivos (multi-db); 16000 KiB, padrão dos drivers (arquivo único) | Multi-db: **mantém 512 KiB**, configurável por arquivo (`cacheSizeKiB`), porque 2000 KiB no `msgstore`/`axolotl` não trouxe ganho com 300 mil mensagens. Arquivo único: 2000 KiB (valor do app, −13 MiB por sessão sem perda) | PRAGMA confere; `scripts/bench/sqlite-app-pragmas.ts` | ambos |
 
 ## 2. Recebimento
 
@@ -83,8 +83,8 @@
 
 | ID | Requisito 1:1 | Hoje no motor | Mudança | Aceite |
 |---|---|---|---|---|
-| G-01 | Sem PII no stdout por padrão | `console.log` ligado com o PN de toda mensagem (`baileys-logger.ts:537-541`, `:749-791`) | Desligado por padrão; `obfuscateJid`; rotear pelo `config.logger` | Sonda F5: 0 PN no console |
-| G-02 | Sem nó bruto em `info` | `socket.ts:2638`, `chats.ts:2297` | `debug` + só atributos | Contagem por nível |
+| G-01 | ~~Sem PII no stdout por padrão~~ | `console.log` ligado com o PN de toda mensagem (`baileys-logger.ts:537-541`, `:749-791`) | **Descartado por decisão do operador**: motor de uso próprio, console com JID completo é intencional; nada muda | — |
+| G-02 | ~~Sem nó bruto em `info`~~ | `socket.ts:2638`, `chats.ts:2297` | **Descartado por decisão do operador** (mesma decisão do G-01); nada muda | — |
 | G-03 | Mídia temporária privada | `tmpdir()` com 644; limpeza frágil (`messages-media.ts:41`; `messages.ts:358-369`) | `mkdtemp` 0700 na sessão; 0600; `unlink` independente; varredura na inicialização | Sonda: modos e 0 órfãos |
 | G-04 | Sem handler global de exceção | `VoipClient` instala `uncaughtException` (`Voip/index.ts:459-470`) | Usar só `connection.update` | Exceção do host derruba o processo normalmente |
 | G-05 | Upload com limites corretos | Contagem dupla do `maxContentLength`; `isLast` errado (`messages-media.ts:672-676`, `:1353`) | Corrigir as duas contas | Teste unitário |
@@ -104,7 +104,7 @@
 
 ## 6. Ordem de implementação (dependências técnicas, não prioridade)
 
-1. **S-01, S-02, S-05, C-01, R-02, G-01, G-02, G-04, G-05**: independentes e pequenas.
+1. **S-01, S-02, S-05, C-01, R-02, G-04, G-05**: independentes e pequenas (G-01 e G-02 descartados por decisão do operador).
 2. **S-03, S-04, S-06, S-07, S-12**: base de chaves e cache.
 3. **S-08 → R-01 → R-05**: group commit, depois recibo após o commit, depois ack após persistir.
 4. **S-09 → E-06..E-13**: o store de payload habilita as regras de reenvio do app.
