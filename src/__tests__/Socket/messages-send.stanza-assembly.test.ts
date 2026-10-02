@@ -12,7 +12,7 @@ import {
 	isNativeAndroidIntegrityCleared
 } from '../../Socket/native-android-integrity-state'
 import { makeSocketOperationGate } from '../../Socket/socket-operation-gate'
-import type { SignalKeyStore, SocketConfig, WAMessage } from '../../Types'
+import { ReachoutTimelockEnforcementType, type SignalKeyStore, type SocketConfig, type WAMessage } from '../../Types'
 import { addTransactionCapability } from '../../Utils/auth-utils'
 import { hkdf } from '../../Utils/crypto'
 import { unpadRandomMax16 } from '../../Utils/generics'
@@ -335,6 +335,48 @@ describe('messages-send stanza assembly', () => {
 			// silent reintroduction of the retry-blocking bug.
 			expect(isNativeAndroidIntegrityCleared(fake.sent[0])).toBe(true)
 			expect(isNativeAndroidIntegrityCleared(fake.sent[1])).toBe(true)
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('keeps peer recovery to our own number open while the account is timelocked', async () => {
+		// The app's new-chat gate skips the account itself (`CappingGatingManager.A02`
+		// → `UserScopeMeManager.BN3`): a PDO to our own phone must not get the
+		// cold-recipient 403 that a timelocked account gets for a new chat.
+		const fake = makeFakeSocket()
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			fake.sock.ev.emit('connection.update', {
+				reachoutTimeLock: {
+					isActive: true,
+					timeEnforcementEnds: new Date(Date.now() + 3_600_000),
+					enforcementType: ReachoutTimelockEnforcementType.RESTRICT_ALL_COMPANIONS
+				}
+			})
+
+			await socket.relayMessage(ownPn, proto.Message.fromObject({ conversation: 'peer recovery' }), {
+				messageId: 'PEER-TIMELOCK-1',
+				additionalAttributes: { category: 'peer' }
+			})
+			expect(fake.sent.map(node => node.attrs.id)).toContain('PEER-TIMELOCK-1')
+
+			await expect(
+				socket.relayMessage(remotePn, proto.Message.fromObject({ conversation: 'cold' }), {
+					messageId: 'COLD-TIMELOCK-1'
+				})
+			).rejects.toMatchObject({ output: { statusCode: 403 }, data: { category: 'reachout' } })
+			expect(fake.sent.map(node => node.attrs.id)).not.toContain('COLD-TIMELOCK-1')
+
+			// A contact whose PN digits equal our LID is still someone else: self
+			// is matched per namespace (PN to PN, LID to LID), not by digits.
+			const lookalikePn = `${ownLid.split('@')[0]}@s.whatsapp.net`
+			await expect(
+				socket.relayMessage(lookalikePn, proto.Message.fromObject({ conversation: 'lookalike' }), {
+					messageId: 'LOOKALIKE-TIMELOCK-1'
+				})
+			).rejects.toMatchObject({ output: { statusCode: 403 }, data: { category: 'reachout' } })
 		} finally {
 			await socket.end(new Error('test completed'))
 		}

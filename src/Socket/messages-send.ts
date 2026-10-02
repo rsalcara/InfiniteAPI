@@ -46,6 +46,7 @@ import {
 	getUrlFromDirectPath,
 	getWAUploadToServer,
 	hasNonNullishProperty,
+	isOwnAccountJid,
 	type LiveLocationSendOptions,
 	MessageRetryManager,
 	normalizeMessageContent,
@@ -875,6 +876,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					const tokens = await authState.keys.get('tctoken', aliases)
 					return aliases.some(alias => !!tokens[alias]?.token?.length)
 				},
+				isOwnAccount: jids => isOwnAccountJid(jids, authState.creds.me),
 				fetchStartChatTrustSignals,
 				startChatTrustSignalsPolicy: config.startChatTrustSignalsPolicy ?? 'observe',
 				resolveUSync: async phoneUser => {

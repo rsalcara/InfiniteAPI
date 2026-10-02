@@ -42,6 +42,14 @@ export type DirectRecipientPreflightOptions<TDevice> = {
 	 * `CappingGatingManager.A02`). Omitted means "no token": always checked.
 	 */
 	hasPrivacyToken?: (jids: string[]) => Promise<boolean>
+	/**
+	 * Whether any of these PN/LID aliases is this account. The app's new-chat
+	 * gate skips the account itself (`CappingGatingManager.A02` calls
+	 * `UserScopeMeManager.BN3`, `X/C48572Bp.java:34`, `X/C018108l.java:603`),
+	 * so a self send or a peer message to our own devices (PDO, app-state key
+	 * request) is neither a new chat nor a start-chat trust lookup.
+	 */
+	isOwnAccount?: (jids: string[]) => boolean
 	fetchStartChatTrustSignals?: (
 		jid: string,
 		context: { lookupJid: string; pnJid?: string }
@@ -54,6 +62,16 @@ export type DirectRecipientPreflightOptions<TDevice> = {
 	onResolvedUsername?: (resolution: DirectRecipientResolution) => void | Promise<void>
 	getDevices: (lid: string) => Promise<TDevice[]>
 	logger: Pick<ILogger, 'warn' | 'info'>
+}
+
+/**
+ * Whether any alias is this account, matched per namespace: a PN against the
+ * account PN and a LID against the account LID. Digits alone are not enough,
+ * because a contact's PN can share digits with our LID (and the reverse).
+ */
+export const isOwnAccountJid = (jids: string[], me?: { id?: string; lid?: string }): boolean => {
+	const own = new Set([me?.id, me?.lid].filter((jid): jid is string => !!jid).map(jid => jidNormalizedUser(jid)))
+	return own.size > 0 && jids.some(jid => own.has(jidNormalizedUser(jid)))
 }
 
 /**
@@ -202,6 +220,7 @@ export const runDirectRecipientPreflight = async <TDevice>({
 	fetchReachout,
 	fetchCapping,
 	hasPrivacyToken,
+	isOwnAccount,
 	fetchStartChatTrustSignals,
 	startChatTrustSignalsPolicy,
 	resolveUSync,
@@ -256,8 +275,13 @@ export const runDirectRecipientPreflight = async <TDevice>({
 			normalizedKnownPn && isAnyPnUser(normalizedKnownPn) && jidDecode(normalizedKnownPn)?.user
 				? normalizedKnownPn
 				: requestedPn
+		const aliases = [...new Set([requestedPn, resolvedPnJid, resolvedLid])]
 
-		await assertNewChatAllowed([...new Set([requestedPn, resolvedPnJid, resolvedLid])])
+		if (isOwnAccount?.(aliases)) {
+			return { requestedPn, pnJid: resolvedPnJid, lidJid: resolvedLid }
+		}
+
+		await assertNewChatAllowed(aliases)
 
 		if (startChatTrustSignalsPolicy === 'require-known') {
 			const startChatTrustSignals = fetchStartChatTrustSignals
@@ -301,7 +325,10 @@ export const runDirectRecipientPreflight = async <TDevice>({
 		return { requestedPn, pnJid: resolvedPnJid, lidJid: resolvedLid, startChatTrustSignals }
 	}
 
-	await assertNewChatAllowed([requestedPn])
+	const ownAccount = isOwnAccount?.([requestedPn]) ?? false
+	if (!ownAccount) {
+		await assertNewChatAllowed([requestedPn])
+	}
 
 	const phoneUser = jidDecode(requestedPn)?.user
 	if (!phoneUser) {
@@ -362,8 +389,11 @@ export const runDirectRecipientPreflight = async <TDevice>({
 		})
 	}
 
+	// USync may canonicalize a variant of our own number: check what it returned.
+	const resolvedOwnAccount = ownAccount || (isOwnAccount?.([resolution.pnJid, resolution.lidJid]) ?? false)
+
 	let startChatTrustSignals: StartChatTrustSignalsState | undefined
-	if (fetchStartChatTrustSignals || startChatTrustSignalsPolicy === 'require-known') {
+	if (!resolvedOwnAccount && (fetchStartChatTrustSignals || startChatTrustSignalsPolicy === 'require-known')) {
 		startChatTrustSignals = fetchStartChatTrustSignals
 			? await fetchStartChatTrustSignals(requestedPn, {
 					lookupJid: resolution.lidJid,
