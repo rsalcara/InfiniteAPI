@@ -341,7 +341,7 @@ export const decodeSyncdMutations = async (
 		}
 
 		const indexStr = Buffer.from(syncActionIndex).toString()
-		const mutation = { syncAction, index: JSON.parse(indexStr) }
+		const mutation: ChatMutation = { syncAction, index: JSON.parse(indexStr), operation }
 		onMutation(mutation)
 		onRawMutation?.({ indexMac: indexBlob, valueMac: ogValueMac, operation, mutation })
 
@@ -1295,6 +1295,15 @@ export const processSyncAction = (
 			} catch (err) {
 				logger?.warn({ err }, 'failed to remove recent sticker from stickers.db')
 			}
+		}
+	} else if (action?.nctSaltSyncAction) {
+		// The app parses `nct_salt_sync` only for SET (`X/AbstractC25280B9y.java:1513`)
+		// and a companion stores that salt (`:5197-5205`). It is the account's
+		// salt for `<cstoken>`; never logged.
+		const salt = action.nctSaltSyncAction.salt
+		if (syncAction.operation !== proto.SyncdMutation.SyncdOperation.REMOVE && salt?.length) {
+			ev.emit('creds.update', { nctSalt: salt })
+			logger?.debug({ saltLength: salt.length }, 'stored NCT salt from app-state sync')
 		}
 	} else {
 		logger?.debug({ syncAction, id }, 'unprocessable update')

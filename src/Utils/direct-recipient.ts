@@ -35,6 +35,13 @@ export type DirectRecipientPreflightOptions<TDevice> = {
 	getKnownPNForLID?: (lid: string) => Promise<string | null>
 	fetchReachout: () => Promise<ReachoutTimelockState | undefined>
 	fetchCapping: () => Promise<NewChatMessageCapInfo | undefined>
+	/**
+	 * Whether any of these PN/LID aliases ever gave us a privacy token. The app
+	 * applies the reachout timelock and the new-chat cap only to recipients
+	 * outside that set (`PrivacyTokenStore.A08`, used by `C39781pK.A02` and
+	 * `CappingGatingManager.A02`). Omitted means "no token": always checked.
+	 */
+	hasPrivacyToken?: (jids: string[]) => Promise<boolean>
 	fetchStartChatTrustSignals?: (
 		jid: string,
 		context: { lookupJid: string; pnJid?: string }
@@ -187,13 +194,14 @@ export const resolveDirectRecipientUSync = (
 	}
 }
 
-/** Production preflight for a previously unknown direct PN recipient. */
+/** Production preflight for a direct PN recipient (account policy, identity, devices). */
 export const runDirectRecipientPreflight = async <TDevice>({
 	requestedJid,
 	getKnownLIDForPN,
 	getKnownPNForLID,
 	fetchReachout,
 	fetchCapping,
+	hasPrivacyToken,
 	fetchStartChatTrustSignals,
 	startChatTrustSignalsPolicy,
 	resolveUSync,
@@ -206,6 +214,39 @@ export const runDirectRecipientPreflight = async <TDevice>({
 	const requestedPn = jidNormalizedUser(requestedJid)
 	if (!isAnyPnUser(requestedPn)) return undefined
 
+	/**
+	 * The app's send gate (`C2DK.A00`) refuses a chat with no privacy token
+	 * while the account's reachout timelock is active (`C39781pK.A02`) or its
+	 * new-chat cap is reached (`CappingGatingManager.A02` +
+	 * `MessageCappingManager.A0N`), whether or not the recipient's LID is
+	 * already known. A recipient that gave us a token is not a new chat.
+	 */
+	const assertNewChatAllowed = async (aliases: string[]) => {
+		if (hasPrivacyToken && (await hasPrivacyToken(aliases))) return
+
+		const [reachout, capping] = await Promise.all([
+			fetchReachout().catch(error => {
+				logger.warn({ error, requestedJid: requestedPn }, 'cold-recipient reachout policy lookup failed')
+				return undefined
+			}),
+			fetchCapping().catch(error => {
+				logger.warn({ error, requestedJid: requestedPn }, 'cold-recipient message-capping lookup failed')
+				return undefined
+			})
+		])
+		const policy = evaluateOutboundPolicy({ reachout, capping })
+		if (!policy.allowed && policy.restriction) {
+			logger.warn(
+				{ requestedJid: requestedPn, ...policy.restriction },
+				'outbound cold-recipient send blocked by policy'
+			)
+			throw new Boom('Outbound send blocked by WhatsApp account policy', {
+				statusCode: 403,
+				data: { requestedJid: requestedPn, ...policy.restriction }
+			})
+		}
+	}
+
 	const knownLid = await getKnownLIDForPN(requestedPn)
 	if (knownLid && isValidLidJid(jidNormalizedUser(knownLid))) {
 		const resolvedLid = jidNormalizedUser(knownLid)
@@ -215,6 +256,8 @@ export const runDirectRecipientPreflight = async <TDevice>({
 			normalizedKnownPn && isAnyPnUser(normalizedKnownPn) && jidDecode(normalizedKnownPn)?.user
 				? normalizedKnownPn
 				: requestedPn
+
+		await assertNewChatAllowed([...new Set([requestedPn, resolvedPnJid, resolvedLid])])
 
 		if (startChatTrustSignalsPolicy === 'require-known') {
 			const startChatTrustSignals = fetchStartChatTrustSignals
@@ -258,24 +301,7 @@ export const runDirectRecipientPreflight = async <TDevice>({
 		return { requestedPn, pnJid: resolvedPnJid, lidJid: resolvedLid, startChatTrustSignals }
 	}
 
-	const [reachout, capping] = await Promise.all([
-		fetchReachout().catch(error => {
-			logger.warn({ error, requestedJid: requestedPn }, 'cold-recipient reachout policy lookup failed')
-			return undefined
-		}),
-		fetchCapping().catch(error => {
-			logger.warn({ error, requestedJid: requestedPn }, 'cold-recipient message-capping lookup failed')
-			return undefined
-		})
-	])
-	const policy = evaluateOutboundPolicy({ reachout, capping })
-	if (!policy.allowed && policy.restriction) {
-		logger.warn({ requestedJid: requestedPn, ...policy.restriction }, 'outbound cold-recipient send blocked by policy')
-		throw new Boom('Outbound send blocked by WhatsApp account policy', {
-			statusCode: 403,
-			data: { requestedJid: requestedPn, ...policy.restriction }
-		})
-	}
+	await assertNewChatAllowed([requestedPn])
 
 	const phoneUser = jidDecode(requestedPn)?.user
 	if (!phoneUser) {

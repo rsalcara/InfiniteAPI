@@ -140,6 +140,13 @@ export type SocketConfig = {
 	 */
 	startChatTrustSignalsMode?: 'off' | 'native'
 	/**
+	 * First-contact `<cstoken>` (NCT) on 1:1 sends that carry no usable privacy
+	 * token. Omitted follows the transport: `ab-prop` for `native_android`
+	 * (the app sends it only with AB prop 24941 on), `salt` for web (WA Web
+	 * sends it whenever the account salt is present). `off` never sends it.
+	 */
+	csTokenMode?: 'off' | 'ab-prop' | 'salt'
+	/**
 	 * Controls what happens when the optional start-chat lookup is unavailable.
 	 * `observe` preserves existing send behavior; `require-known` is intended
 	 * for controlled validation environments only and is rejected when

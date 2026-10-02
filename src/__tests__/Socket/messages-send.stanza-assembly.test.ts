@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Boom } from '@hapi/boom'
 import { jest } from '@jest/globals'
+import { createHmac } from 'crypto'
 import { EventEmitter } from 'events'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
@@ -924,6 +925,133 @@ describe('messages-send stanza assembly', () => {
 		} finally {
 			await socket.end(new Error('test completed'))
 		}
+	})
+})
+
+describe('messages-send cstoken (NCT) on 1:1 sends', () => {
+	// NctTokenMessageSendStanzaContributor (X/C30120DHe.java) and WA Web: no
+	// usable privacy token for the recipient, account salt present.
+	const salt = Buffer.alloc(32, 7)
+	const expectedCsToken = (lid: string) => createHmac('sha256', salt).update(Buffer.from(lid, 'utf8')).digest()
+	const tags = (stanza: any) => (stanza.content as any[]).map(node => node.tag)
+	const propOn = { tracked: ['24941'], values: { '24941': 'true' } }
+	const propOff = { tracked: ['24941'], values: { '24941': 'false' } }
+
+	const send = async ({
+		to,
+		message = proto.Message.fromObject({ conversation: 'first contact' }),
+		creds,
+		tctokenFor,
+		knownLid,
+		config: overrides = {}
+	}: {
+		to: string
+		message?: proto.IMessage
+		creds: { nctSalt?: Uint8Array; abProps?: { tracked: string[]; values: Record<string, string> } }
+		tctokenFor?: string
+		knownLid?: Record<string, string>
+		config?: Partial<SocketConfig>
+	}) => {
+		const fake = makeFakeSocket()
+		if (knownLid) {
+			const mapping = fake.mapping as any
+			const { getKnownLIDForPN, getLIDForPN } = fake.mapping
+			mapping.getKnownLIDForPN = async (jid: string) => knownLid[jid] ?? getKnownLIDForPN(jid)
+			mapping.getLIDForPN = async (jid: string) => knownLid[jid] ?? getLIDForPN(jid)
+		}
+
+		Object.assign(fake.sock.authState.creds, creds)
+		if (tctokenFor) {
+			await fake.sock.authState.keys.set({
+				tctoken: {
+					[tctokenFor]: { token: Buffer.from('peer-token'), timestamp: String(Math.floor(Date.now() / 1000)) }
+				}
+			})
+		}
+
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket({ ...makeConfig(fake.sock.authState), ...overrides } as any)
+		try {
+			await socket.relayMessage(to, message, { messageId: 'NCT-1' })
+			return fake.sent.at(-1)
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	}
+
+	it('signs the recipient LID with the account salt when there is no privacy token (web default)', async () => {
+		const stanza = await send({ to: remotePn, creds: { nctSalt: salt } })
+
+		expect(stanza.attrs.to).toBe(remoteLid)
+		const csToken = stanza.content.find((node: any) => node.tag === 'cstoken')
+		expect(csToken).toBeDefined()
+		expect(Buffer.from(csToken.content).equals(expectedCsToken(remoteLid))).toBe(true)
+		expect(tags(stanza)).not.toContain('tctoken')
+		// Same slot as the privacy token: after the participants and device identity.
+		expect(tags(stanza).indexOf('cstoken')).toBeGreaterThan(tags(stanza).indexOf('participants'))
+	})
+
+	it('signs the known LID when the envelope stays on PN, ahead of the biz nodes', async () => {
+		const stanza = await send({
+			to: remotePn,
+			message: proto.Message.fromObject({
+				buttonsMessage: {
+					contentText: 'Choose',
+					headerType: proto.Message.ButtonsMessage.HeaderType.EMPTY,
+					buttons: [
+						{
+							buttonId: 'a',
+							buttonText: { displayText: 'A' },
+							type: proto.Message.ButtonsMessage.Button.Type.RESPONSE
+						}
+					]
+				}
+			}),
+			creds: { nctSalt: salt },
+			config: { enableInteractiveMessages: true }
+		})
+
+		expect(stanza.attrs.to).toBe(remotePn)
+		const csToken = stanza.content.find((node: any) => node.tag === 'cstoken')
+		expect(Buffer.from(csToken.content).equals(expectedCsToken(remoteLid))).toBe(true)
+		expect(tags(stanza).indexOf('cstoken')).toBeLessThan(tags(stanza).indexOf('biz'))
+	})
+
+	it('sends the privacy token instead when the recipient has a usable one', async () => {
+		const stanza = await send({ to: remotePn, creds: { nctSalt: salt }, tctokenFor: remoteLid })
+
+		expect(tags(stanza)).toContain('tctoken')
+		expect(tags(stanza)).not.toContain('cstoken')
+	})
+
+	it('follows AB prop 24941 in ab-prop mode, as the app does', async () => {
+		const config = { csTokenMode: 'ab-prop' as const }
+		expect(tags(await send({ to: remotePn, creds: { nctSalt: salt, abProps: propOn }, config }))).toContain('cstoken')
+		expect(tags(await send({ to: remotePn, creds: { nctSalt: salt, abProps: propOff }, config }))).not.toContain(
+			'cstoken'
+		)
+		expect(tags(await send({ to: remotePn, creds: { nctSalt: salt }, config }))).not.toContain('cstoken')
+	})
+
+	it('adds nothing without a synced salt or with the mode off', async () => {
+		expect(tags(await send({ to: remotePn, creds: {} }))).not.toContain('cstoken')
+		expect(tags(await send({ to: remotePn, creds: { nctSalt: salt }, config: { csTokenMode: 'off' } }))).not.toContain(
+			'cstoken'
+		)
+	})
+
+	it('never signs PSA or bot recipients, even with a known LID', async () => {
+		for (const to of ['0@s.whatsapp.net', '13135550002@s.whatsapp.net']) {
+			const stanza = await send({ to, creds: { nctSalt: salt }, knownLid: { [to]: '100000000000077@lid' } })
+			expect(tags(stanza)).not.toContain('cstoken')
+		}
+	})
+
+	it('never signs a group send', async () => {
+		const stanza = await send({ to: groupJid, creds: { nctSalt: salt } })
+
+		expect(stanza.attrs.to).toBe(groupJid)
+		expect(tags(stanza)).not.toContain('cstoken')
 	})
 })
 

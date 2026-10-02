@@ -47,6 +47,8 @@ export type BotListInfo = {
 export type ChatMutation = {
 	syncAction: proto.ISyncActionData
 	index: string[]
+	/** Patch operation, when the mutation came from a decoded app-state patch. */
+	operation?: proto.SyncdMutation.SyncdOperation
 }
 
 export type WAPatchCreate = {

@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals'
-import { ReachoutTimelockEnforcementType } from '../../Types'
+import { NewChatMessageCappingStatusType, ReachoutTimelockEnforcementType } from '../../Types'
 import {
 	assertDirectRecipientCiphertext,
 	buildDirectRecipientChatMerges,
@@ -315,6 +315,69 @@ describe('cold-recipient preflight orchestration', () => {
 			)
 		).rejects.toMatchObject({ output: { statusCode: 403 }, data: { category: 'reachout' } })
 		expect(resolveUSync).not.toHaveBeenCalled()
+	})
+
+	it('applies the account policy to a new chat whose LID is already known', async () => {
+		// The app's send gate does not care whether the LID is cached: a chat
+		// without a privacy token is refused while the timelock is active.
+		const resolveUSync = jest.fn(async () => [])
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					getKnownLIDForPN: async () => lid,
+					resolveUSync,
+					hasPrivacyToken: async () => false,
+					fetchReachout: async () => ({
+						isActive: true,
+						enforcementType: ReachoutTimelockEnforcementType.RESTRICT_ALL_COMPANIONS
+					})
+				})
+			)
+		).rejects.toMatchObject({ output: { statusCode: 403 }, data: { category: 'reachout' } })
+		expect(resolveUSync).not.toHaveBeenCalled()
+	})
+
+	it('lets a recipient that gave us a privacy token through without reading the policy', async () => {
+		const fetchReachout = jest.fn(async () => ({
+			isActive: true,
+			enforcementType: ReachoutTimelockEnforcementType.RESTRICT_ALL_COMPANIONS
+		}))
+		const fetchCapping = jest.fn(async () => undefined)
+		const hasPrivacyToken = jest.fn(async () => true)
+
+		await expect(
+			runDirectRecipientPreflight(
+				options({ getKnownLIDForPN: async () => lid, fetchReachout, fetchCapping, hasPrivacyToken })
+			)
+		).resolves.toMatchObject({ lidJid: lid })
+		await expect(
+			runDirectRecipientPreflight(options({ fetchReachout, fetchCapping, hasPrivacyToken }))
+		).resolves.toMatchObject({ lidJid: lid })
+		expect(hasPrivacyToken).toHaveBeenCalledWith([pn, lid])
+		expect(hasPrivacyToken).toHaveBeenCalledWith([pn])
+		expect(fetchReachout).not.toHaveBeenCalled()
+		expect(fetchCapping).not.toHaveBeenCalled()
+	})
+
+	it('blocks a new chat with a known LID once the new-chat quota is capped', async () => {
+		const nowSeconds = Math.floor(Date.now() / 1000)
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					getKnownLIDForPN: async () => lid,
+					hasPrivacyToken: async () => false,
+					fetchCapping: async () => ({
+						capping_status: NewChatMessageCappingStatusType.CAPPED,
+						total_quota: 20,
+						used_quota: 20,
+						cycle_end_timestamp: String(nowSeconds + 3600)
+					})
+				})
+			)
+		).rejects.toMatchObject({
+			output: { statusCode: 403 },
+			data: { category: 'capping', quota: { total: 20, used: 20 } }
+		})
 	})
 
 	it('records provider-backed CHAT_FMX signals without altering token state', async () => {

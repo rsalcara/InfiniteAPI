@@ -509,9 +509,12 @@ export const emitProcessedHistorySync = (
 		message.senderSource ??= classifyMessageWithoutAuthorDevice()
 	}
 
-	if (data.lidPnMappings?.length) ev.emit('lid-mapping.update', data.lidPnMappings)
+	// The NCT salt is account credential state, not history for the consumer.
+	const { nctSalt, ...history } = data
+	if (nctSalt) ev.emit('creds.update', { nctSalt })
+	if (history.lidPnMappings?.length) ev.emit('lid-mapping.update', history.lidPnMappings)
 	ev.emit('messaging-history.set', {
-		...data,
+		...history,
 		isLatest: data.syncType !== proto.HistorySync.HistorySyncType.ON_DEMAND ? metadata.isLatest : undefined,
 		chunkOrder: metadata.chunkOrder,
 		peerDataRequestSessionId: metadata.peerDataRequestSessionId

@@ -71,6 +71,18 @@ export type AuthenticationCreds = SignalCreds & {
 	registered: boolean
 	pairingCode: string | undefined
 	lastPropHash: string | undefined
+	/**
+	 * Tracked server AB props from the `abt` fetches, kept with `lastPropHash`
+	 * like the app's ab_props store (see `Utils/ab-props.ts`).
+	 */
+	abProps?: { tracked: string[]; values: { [code: string]: string } }
+	/**
+	 * Account NCT salt received from the primary (initial history bootstrap or
+	 * a SET `nct_salt_sync` mutation). A companion never creates it.
+	 */
+	nctSalt?: Uint8Array
+	/** Set once the one-time NCT salt backfill read `regular_high` (see `chats.ts`). */
+	nctSaltBackfilled?: boolean
 	routingInfo: Buffer | undefined
 	additionalData?: any | undefined
 	/**

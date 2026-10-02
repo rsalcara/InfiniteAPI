@@ -79,6 +79,8 @@ import {
 	SignalTypedBackend,
 	StickersBackend
 } from '../Utils/multi-db-sqlite'
+import { buildCsTokenNode, resolveCsTokenMode } from '../Utils/nct-token'
+import { describeNewChatQuota, makeOutboundPolicyCache } from '../Utils/outbound-policy-cache'
 import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prometheus-metrics'
 import {
 	appendParticipantFanoutNode,
@@ -145,6 +147,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	} = config
 	const sock = makeNewsletterSocket(config)
 	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(config.transportProfile, config.tcTokenAbProps)
+	const csTokenMode = resolveCsTokenMode(config.transportProfile, config.csTokenMode)
 	const {
 		ev,
 		authState,
@@ -398,6 +401,25 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	// Prevent race conditions in Signal session encryption by user
 	const encryptionMutex = makeKeyedMutex()
 	const directRecipientPreflightMutex = makeKeyedMutex()
+	// Account restriction state for new-chat sends, kept like the app keeps
+	// it: from the server's notifications, and refetched only when stale.
+	const outboundPolicy = makeOutboundPolicyCache({
+		fetchReachout: () => fetchAccountReachoutTimelock(false),
+		fetchCapping: fetchNewChatMessageCap,
+		logger
+	})
+	ev.on('connection.update', ({ reachoutTimeLock }) => {
+		if (reachoutTimeLock) outboundPolicy.setReachout(reachoutTimeLock)
+	})
+	ev.on('message-capping.update', info => outboundPolicy.setCapping(info))
+	/**
+	 * The account's reachout timelock and new-chat quota (total, used,
+	 * remaining, cycle). `refresh` asks the server instead of the cache.
+	 */
+	const getOutboundPolicyState = async ({ refresh = false }: { refresh?: boolean } = {}) => {
+		const snapshot = await outboundPolicy.get({ force: refresh })
+		return { ...snapshot, newChatQuota: describeNewChatQuota(snapshot.capping) }
+	}
 
 	const tcTokenLifecycle = new TcTokenLifecycleService({
 		keys: authState.keys,
@@ -837,8 +859,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				requestedJid: requestedPn,
 				getKnownLIDForPN,
 				getKnownPNForLID,
-				fetchReachout: () => fetchAccountReachoutTimelock(false),
-				fetchCapping: fetchNewChatMessageCap,
+				fetchReachout: async () => (await outboundPolicy.get()).reachout,
+				fetchCapping: async () => (await outboundPolicy.get()).capping,
+				hasPrivacyToken: async jids => {
+					const aliases = [...new Set(jids.map(jid => jidNormalizedUser(jid)).filter(Boolean))]
+					const tokens = await authState.keys.get('tctoken', aliases)
+					return aliases.some(alias => !!tokens[alias]?.token?.length)
+				},
 				fetchStartChatTrustSignals,
 				startChatTrustSignalsPolicy: config.startChatTrustSignalsPolicy ?? 'observe',
 				resolveUSync: async phoneUser => {
@@ -2578,6 +2605,34 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					content: tcTokenBuffer
 				})
 				logTcToken('attached', { jid: destinationJid })
+			} else if (
+				is1on1Send &&
+				isRegularUser(publicCanonicalJid) &&
+				csTokenMode !== 'off' &&
+				authState.creds.nctSalt?.length
+			) {
+				// No usable privacy token: sign the recipient LID with the account
+				// salt the primary synced to us, in the privacy token's slot
+				// (`X/C30120DHe.java`; see nct-token.ts). A PN envelope resolves the
+				// LID from the local mapping only; without one nothing is added.
+				// PSA and bots are not regular users and are never signed; the
+				// check uses the public PN, since a bot's envelope may be its LID.
+				const envelopeTo = stanza.attrs.to
+				const recipientLid = isLidUser(envelopeTo)
+					? envelopeTo
+					: isPnUser(envelopeTo)
+						? await getKnownLIDForPN(jidNormalizedUser(envelopeTo))
+						: undefined
+				const csTokenNode = buildCsTokenNode(
+					recipientLid,
+					authState.creds.nctSalt,
+					csTokenMode,
+					authState.creds.abProps?.values
+				)
+				if (csTokenNode) {
+					;(stanza.content as BinaryNode[]).push(csTokenNode)
+					logger.debug({ jid: envelopeTo, reason: selectedToken.reason }, 'attached cstoken')
+				}
 			}
 
 			if (additionalNodes && additionalNodes.length > 0) {
@@ -2940,6 +2995,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 	const messageSocket = {
 		...sock,
+		getOutboundPolicyState,
 		userDevicesCache,
 		devicesMutex,
 		issuePrivacyTokens,

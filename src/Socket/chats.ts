@@ -75,6 +75,7 @@ import {
 	resolveLidToPn,
 	resolvePresenceUpdateIdentifiers
 } from '../Utils'
+import { abPropsRequestAttrs, isAbPropEnabled, readAbPropsResponse } from '../Utils/ab-props'
 import {
 	discoverOwnAppStateDevices,
 	encodeExplicitDeviceJid,
@@ -113,6 +114,12 @@ import {
 } from '../Utils/multi-db-sqlite'
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
+import {
+	buildNctSaltSnapshotQuery,
+	findNctSaltInSnapshot,
+	NCT_SALT_COLLECTION,
+	NCT_TOKEN_AB_PROP
+} from '../Utils/nct-token'
 import processMessage, {
 	applyProcessedHistorySync,
 	emitProcessedHistorySync,
@@ -1882,13 +1889,47 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	}
 
+	let socketEnding = false
+	/**
+	 * Engine-side backfill, not app behavior. Sessions paired before the NCT
+	 * salt was kept dropped its `nct_salt_sync` mutation, and an incremental
+	 * resync never delivers it again; an account whose history sync is off may
+	 * also never see the bootstrap copy. Read the salt once from a
+	 * `regular_high` snapshot (the collection the app files it under,
+	 * `X/C1LE.java`) without persisting that snapshot or emitting any of its
+	 * other mutations: replaying old deleteChat/clearChat would be destructive.
+	 */
+	const backfillNctSalt = async () => {
+		if (authState.creds.nctSalt?.length || authState.creds.nctSaltBackfilled) return
+		// Background work: once end() starts, stop before touching the key store
+		// or the socket again, so teardown never waits on it.
+		if (socketEnding) return
+
+		const { [NCT_SALT_COLLECTION]: state } = await authState.keys.get('app-state-sync-version', [NCT_SALT_COLLECTION])
+		if (socketEnding) return
+		const result = await query(buildNctSaltSnapshotQuery(state?.version ?? 0))
+		if (socketEnding) return
+
+		// Completion is recorded only after a snapshot was decoded (with or
+		// without a salt). No snapshot or any failure throws to the caller and
+		// the next connection tries again.
+		const snapshot = (await extractSyncdPatches(result, config.options))[NCT_SALT_COLLECTION]?.snapshot
+		if (!snapshot) throw new Error('regular_high snapshot missing from the app-state response')
+		const salt = await findNctSaltInSnapshot(snapshot, getCachedAppStateSyncKey, appStateMacVerification.snapshot)
+		if (socketEnding) return
+
+		ev.emit('creds.update', { ...(salt ? { nctSalt: salt } : {}), nctSaltBackfilled: true })
+		logger.info({ found: !!salt }, 'NCT salt backfill finished')
+	}
+
 	/** fetch AB props */
 	const fetchProps = async () => {
 		// Upstream #2473: query AB props using `abt` xmlns with protocol 1.
 		// Previously used `w` xmlns + protocol 2 which the server rejects with
-		// "bad-request" on current WA versions. Hash is now conditionally
-		// included only when we have one stored (vs. always sending empty
-		// string), matching server expectations.
+		// "bad-request" on current WA versions. The hash goes out only with
+		// the props it describes, and the response is kept like the app's
+		// ab_props store (see ab-props.ts).
+		const requestAttrs = abPropsRequestAttrs(authState.creds)
 		const resultNode = await query({
 			tag: 'iq',
 			attrs: {
@@ -1896,31 +1937,27 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				xmlns: 'abt',
 				type: 'get'
 			},
-			content: [
-				{
-					tag: 'props',
-					attrs: {
-						protocol: '1',
-						...(authState?.creds?.lastPropHash ? { hash: authState.creds.lastPropHash } : {})
-					}
-				}
-			]
+			content: [{ tag: 'props', attrs: requestAttrs }]
 		})
 
 		const propsNode = getBinaryNodeChild(resultNode, 'props')
 
 		let props: { [_: string]: string } = {}
 		if (propsNode) {
-			if (propsNode.attrs?.hash) {
-				// on some clients, the hash is returning as undefined
-				authState.creds.lastPropHash = propsNode?.attrs?.hash
-				ev.emit('creds.update', authState.creds)
-			}
-
 			props = reduceBinaryNodeToDictionary(propsNode, 'prop')
-		}
+			const response = readAbPropsResponse(authState.creds, propsNode, { requestedHash: !!requestAttrs.hash })
+			if (response.update) ev.emit('creds.update', response.update)
 
-		logger.debug('fetched props')
+			logger.debug(
+				{
+					received: response.received,
+					stored: Object.keys(response.abProps ?? {}).length,
+					deltaUpdate: response.deltaUpdate,
+					nctToken: isAbPropEnabled(response.abProps, NCT_TOKEN_AB_PROP)
+				},
+				'fetched props'
+			)
+		}
 
 		return props
 	}
@@ -2422,9 +2459,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			ev.emit('creds.update', { accountSyncCounter })
 			// Fire-and-forget: pick up patches missed during downtime (mute/archive/pin/read state).
 			// Runs in background so live incoming messages are not blocked.
-			resyncAppState(ALL_WA_PATCH_NAMES, true).catch(err =>
-				logger.warn({ err }, 'Background app state resync failed (non-critical on reconnection)')
-			)
+			resyncAppState(ALL_WA_PATCH_NAMES, true)
+				.catch(err => logger.warn({ err }, 'Background app state resync failed (non-critical on reconnection)'))
+				.then(backfillNctSalt)
+				.catch(err => logger.warn({ err }, 'NCT salt backfill failed; retrying on the next connection'))
 			setTimeout(() => ev.flush(), 0)
 			return
 		}
@@ -2439,6 +2477,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			logger.info('History sync is disabled by config, not waiting for notification. Transitioning to Online.')
 			syncState = SyncState.Online
 			setTimeout(() => ev.flush(), 0)
+			// Without the history bootstrap the salt can only come from regular_high.
+			backfillNctSalt().catch(err => logger.warn({ err }, 'NCT salt backfill failed; retrying on the next connection'))
 			return
 		}
 
@@ -2476,6 +2516,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				// regardless of the state machine phase.
 				const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
 				ev.emit('creds.update', { accountSyncCounter })
+				// The bootstrap carrying the salt has not arrived yet; until it does,
+				// cold sends on this connection would go out without a cstoken.
+				backfillNctSalt().catch(err =>
+					logger.warn({ err }, 'NCT salt backfill failed; retrying on the next connection')
+				)
 			}
 		}, initialHistorySyncWaitMs)
 	})
@@ -2669,6 +2714,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	registerSocketEndHandler(() => {
+		socketEnding = true
 		if (awaitingSyncTimeout) {
 			clearTimeout(awaitingSyncTimeout)
 			awaitingSyncTimeout = undefined
