@@ -2,12 +2,13 @@ import { jest } from '@jest/globals'
 import { proto } from '../../../WAProto/index.js'
 import { NOISE_IK_MODE, NOISE_WA_HEADER } from '../../Defaults'
 import { aesDecryptGCM, aesEncryptGCM, Curve, hkdf, sha256 } from '../../Utils/crypto'
+import type { ILogger } from '../../Utils/logger'
 import { assertNoiseLeafStaticKeyBinding, makeNoiseHandler } from '../../Utils/noise-handler'
 import type { BinaryNode } from '../../WABinary/types'
 
 // Create a mock logger
 const createMockLogger = () => ({
-	child: jest.fn().mockReturnThis(),
+	child: jest.fn<() => ILogger>().mockReturnThis(),
 	trace: jest.fn(),
 	debug: jest.fn(),
 	info: jest.fn(),
@@ -47,7 +48,7 @@ describe('Noise Handler', () => {
 		const handler = makeNoiseHandler({
 			keyPair: ephemeral,
 			NOISE_HEADER: NOISE_WA_HEADER,
-			logger: createMockLogger() as any,
+			logger: createMockLogger(),
 			nativeIK: {
 				initiatorStatic,
 				responderStatic: responderStatic.public
@@ -69,7 +70,7 @@ describe('Noise Handler', () => {
 		const handler = makeNoiseHandler({
 			keyPair: Curve.generateKeyPair(),
 			NOISE_HEADER: NOISE_WA_HEADER,
-			logger: createMockLogger() as any,
+			logger: createMockLogger(),
 			nativeIK: {
 				initiatorStatic: Curve.generateKeyPair(),
 				responderStatic: Curve.generateKeyPair().public
@@ -96,7 +97,7 @@ describe('Noise Handler', () => {
 		const handler = makeNoiseHandler({
 			keyPair: ephemeral,
 			NOISE_HEADER: NOISE_WA_HEADER,
-			logger: createMockLogger() as any,
+			logger: createMockLogger(),
 			nativeIK: {
 				initiatorStatic,
 				responderStatic: responderStatic.public
@@ -179,7 +180,7 @@ describe('Noise Handler', () => {
 		const handler = makeNoiseHandler({
 			keyPair: Curve.generateKeyPair(),
 			NOISE_HEADER: NOISE_WA_HEADER,
-			logger: createMockLogger() as any,
+			logger: createMockLogger(),
 			routingInfo
 		})
 
@@ -201,7 +202,7 @@ describe('Noise Handler', () => {
 			const handler = makeNoiseHandler({
 				keyPair,
 				NOISE_HEADER: NOISE_WA_HEADER,
-				logger: logger as any
+				logger
 			})
 
 			const payload1 = Buffer.from([1, 2, 3, 4, 5])
@@ -231,7 +232,7 @@ describe('Noise Handler', () => {
 			const handler = makeNoiseHandler({
 				keyPair,
 				NOISE_HEADER: NOISE_WA_HEADER,
-				logger: logger as any
+				logger
 			})
 
 			const payload = Buffer.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
@@ -261,7 +262,7 @@ describe('Noise Handler', () => {
 			const handler = makeNoiseHandler({
 				keyPair,
 				NOISE_HEADER: NOISE_WA_HEADER,
-				logger: logger as any
+				logger
 			})
 
 			const payload1 = Buffer.from([1, 2, 3])
@@ -295,7 +296,7 @@ describe('Noise Handler', () => {
 			const handler = makeNoiseHandler({
 				keyPair,
 				NOISE_HEADER: NOISE_WA_HEADER,
-				logger: logger as any
+				logger
 			})
 
 			await handler.finishInit()
@@ -316,7 +317,7 @@ describe('Noise Handler', () => {
 			const handler = makeNoiseHandler({
 				keyPair,
 				NOISE_HEADER: NOISE_WA_HEADER,
-				logger: logger as any
+				logger
 			})
 
 			await handler.finishInit()
@@ -341,7 +342,7 @@ describe('Noise Handler', () => {
 			const handler = makeNoiseHandler({
 				keyPair,
 				NOISE_HEADER: NOISE_WA_HEADER,
-				logger: logger as any
+				logger
 			})
 
 			// Create multiple frames
@@ -374,7 +375,7 @@ describe('Noise Handler', () => {
 			const handler = makeNoiseHandler({
 				keyPair,
 				NOISE_HEADER: NOISE_WA_HEADER,
-				logger: logger as any
+				logger
 			})
 
 			// Create 10 frames to stress test the while loop
@@ -406,7 +407,7 @@ describe('Noise Handler', () => {
 			const handler = makeNoiseHandler({
 				keyPair,
 				NOISE_HEADER: NOISE_WA_HEADER,
-				logger: logger as any
+				logger
 			})
 
 			await handler.finishInit()
@@ -434,7 +435,7 @@ describe('Noise Handler', () => {
 			const handler = makeNoiseHandler({
 				keyPair,
 				NOISE_HEADER: NOISE_WA_HEADER,
-				logger: logger as any
+				logger
 			})
 
 			const payload1 = Buffer.from('first')
@@ -478,7 +479,7 @@ describe('Noise Handler', () => {
 			const handler = makeNoiseHandler({
 				keyPair,
 				NOISE_HEADER: NOISE_WA_HEADER,
-				logger: logger as any
+				logger
 			})
 
 			// Create a single frame split into parts

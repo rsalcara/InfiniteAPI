@@ -312,7 +312,7 @@ const mediaToBuffer = async (
 				throw new Boom(`${context} URL response has no body`, { statusCode: 400, data: { url } })
 			}
 
-			for await (const chunk of response.body as any) {
+			for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
 				const buffer = Buffer.from(chunk)
 				totalSize += buffer.length
 

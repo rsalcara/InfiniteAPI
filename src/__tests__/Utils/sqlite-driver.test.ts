@@ -2,6 +2,7 @@ import { jest } from '@jest/globals'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { ILogger } from '../../Utils/logger'
 import { MultiDbSqliteStore } from '../../Utils/multi-db-sqlite/store'
 import type { SqliteDriverName } from '../../Utils/sqlite-driver'
 import {
@@ -401,11 +402,10 @@ describe('sqlite driver fallback', () => {
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const warnings: any[] = []
 		try {
-			const logger = { warn: (obj: unknown) => warnings.push(obj) } as any
+			const logger = { warn: (obj: unknown) => warnings.push(obj) } as unknown as ILogger
 			const driver = await loadSqliteDriver(logger, {
 				// Module resolution succeeds; only the constructor fails. This is the
 				// ABI-mismatch boundary that a require/import probe cannot catch.
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				betterSqlite3Loader: async () =>
 					class {
 						constructor() {
@@ -429,7 +429,6 @@ describe('sqlite driver fallback', () => {
 		delete process.env.INFINITEAPI_SQLITE_DRIVER
 		try {
 			const driver = await loadSqliteDriver(undefined, {
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				betterSqlite3Loader: async () =>
 					class {
 						isProbe = true
@@ -450,7 +449,6 @@ describe('sqlite driver fallback', () => {
 		await expect(
 			loadSqliteDriver(undefined, {
 				driver: 'better-sqlite3',
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				betterSqlite3Loader: async () =>
 					class {
 						constructor() {
@@ -503,7 +501,6 @@ describe('sqlite driver fallback', () => {
 				// This injects the exact failure boundary exercised by an
 				// ABI-mismatched addon: module/import resolution succeeds,
 				// construction does not.
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				betterSqlite3Loader: async () => {
 					throw new Error('native addon cannot load')
 				}

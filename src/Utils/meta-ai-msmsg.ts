@@ -212,7 +212,7 @@ export const cacheMessageSecretIfPresent = (
 		participant: msgKey.participant ?? undefined
 	})
 
-	const buf = Buffer.isBuffer(secret) ? secret : Buffer.from(secret as Uint8Array)
+	const buf = Buffer.isBuffer(secret) ? secret : Buffer.from(secret)
 	try {
 		cache.set(cacheKey, buf)
 	} catch (err) {

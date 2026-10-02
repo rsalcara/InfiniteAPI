@@ -1145,7 +1145,7 @@ describe('messages-send golden wire shapes', () => {
 
 				// JID users can be shorter than 10 digits (short national numbers).
 				for (const [, user] of text.matchAll(/(\d{5,})(?::\d+)?@/g)) {
-					if (!SYNTHETIC_NUMBERS.has(user!)) foreign.add(user!)
+					if (!SYNTHETIC_NUMBERS.has(user)) foreign.add(user!)
 				}
 			}
 		}

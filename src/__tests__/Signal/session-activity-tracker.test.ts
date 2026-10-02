@@ -4,11 +4,13 @@ import type { SessionActivityMetadata } from '../../Signal/session-activity-trac
 import { makeSessionActivityTracker } from '../../Signal/session-activity-tracker'
 import type { SignalKeyStoreWithTransaction } from '../../Types'
 
-const mockKeys: jest.Mocked<SignalKeyStoreWithTransaction> = {
-	get: jest.fn() as any,
-	set: jest.fn() as any,
-	transaction: jest.fn(async (work: () => any) => await work()) as any,
-	isInTransaction: jest.fn() as any
+type MockedKeys = jest.Mocked<SignalKeyStoreWithTransaction>
+
+const mockKeys: MockedKeys = {
+	get: jest.fn<SignalKeyStoreWithTransaction['get']>() as MockedKeys['get'],
+	set: jest.fn<SignalKeyStoreWithTransaction['set']>(),
+	transaction: jest.fn(async (work: () => Promise<unknown>) => await work()) as unknown as MockedKeys['transaction'],
+	isInTransaction: jest.fn<SignalKeyStoreWithTransaction['isInTransaction']>()
 }
 
 const logger = P({ level: 'silent' })

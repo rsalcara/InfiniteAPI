@@ -182,7 +182,7 @@ describe('MultiDbSqliteStore startup prune', () => {
 		try {
 			await new Promise<void>((resolve, reject) => {
 				const t = setTimeout(() => reject(new Error('holder did not signal HELD in time')), 15000)
-				holder.stdout!.on('data', chunk => {
+				holder.stdout.on('data', chunk => {
 					if (String(chunk).includes('HELD')) {
 						clearTimeout(t)
 						resolve()

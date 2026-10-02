@@ -32,7 +32,7 @@
 export const intFromEnv = (
 	raw: string | undefined,
 	fallback: number,
-	min: number = 0,
+	min = 0,
 	max: number = Number.MAX_SAFE_INTEGER
 ): number => {
 	if (raw === undefined) return fallback

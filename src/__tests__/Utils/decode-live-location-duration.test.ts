@@ -1,5 +1,6 @@
 import P from 'pino'
 import { proto } from '../../../WAProto/index.js'
+import type { SignalRepositoryWithLIDStore } from '../../Types/Signal'
 import { decryptMessageNode, NO_MESSAGE_FOUND_ERROR_TEXT } from '../../Utils/decode-wa-message'
 import { writeRandomPadMax16 } from '../../Utils/generics'
 import type { BinaryNode } from '../../WABinary'
@@ -37,14 +38,14 @@ describe('live-location transport metadata', () => {
 			},
 			decryptMessage: async () => plaintext,
 			migrateSession: async () => undefined
-		} as any
+		} as unknown as SignalRepositoryWithLIDStore
 
 		const decoded = decryptMessageNode(
 			stanza,
 			'5511888888888@s.whatsapp.net',
 			'123456789@lid',
 			repository,
-			P({ level: 'silent' }) as any
+			P({ level: 'silent' })
 		)
 		await decoded.decrypt()
 
@@ -77,8 +78,8 @@ describe('live-location transport metadata', () => {
 			{
 				lidMapping: { getLIDForPN: async () => undefined },
 				decryptMessage: async () => plaintext
-			} as any,
-			P({ level: 'silent' }) as any
+			} as unknown as SignalRepositoryWithLIDStore,
+			P({ level: 'silent' })
 		)
 		await decoded.decrypt()
 		expect(decoded.fullMessage.duration).toBeUndefined()
@@ -100,8 +101,8 @@ describe('unavailable view-once placeholder', () => {
 			stanza,
 			'5511888888888@s.whatsapp.net',
 			'123456789@lid',
-			{ lidMapping: { getLIDForPN: async () => undefined } } as any,
-			P({ level: 'silent' }) as any
+			{ lidMapping: { getLIDForPN: async () => undefined } } as unknown as SignalRepositoryWithLIDStore,
+			P({ level: 'silent' })
 		)
 
 		await decoded.decrypt()
@@ -134,8 +135,8 @@ describe('unrecoverable unavailable fanout classification', () => {
 			stanza,
 			'5511888888888@s.whatsapp.net',
 			'123456789@lid',
-			{ lidMapping: { getLIDForPN: async () => undefined } } as any,
-			P({ level: 'silent' }) as any
+			{ lidMapping: { getLIDForPN: async () => undefined } } as unknown as SignalRepositoryWithLIDStore,
+			P({ level: 'silent' })
 		)
 
 		await decoded.decrypt()

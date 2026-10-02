@@ -127,11 +127,17 @@ describe('profile and AB-prop tctoken buckets', () => {
 })
 
 const createMockKeys = (): jest.Mocked<SignalKeyStoreWithTransaction> => ({
-	get: jest.fn<SignalKeyStoreWithTransaction['get']>() as any,
+	get: jest.fn<SignalKeyStoreWithTransaction['get']>() as jest.MockedFunction<SignalKeyStoreWithTransaction['get']>,
 	set: jest.fn<SignalKeyStoreWithTransaction['set']>(),
-	transaction: jest.fn<SignalKeyStoreWithTransaction['transaction']>(async (work: () => any) => await work()) as any,
+	transaction: jest.fn<SignalKeyStoreWithTransaction['transaction']>(async work => await work()) as jest.MockedFunction<
+		SignalKeyStoreWithTransaction['transaction']
+	>,
 	isInTransaction: jest.fn<SignalKeyStoreWithTransaction['isInTransaction']>()
 })
+
+/** Non-generic view of the mocked `keys.get` so tests can stub raw tctoken rows. */
+type TcTokenGetMock = jest.Mock<(type: string, ids: string[]) => Promise<Record<string, unknown>>>
+const getMockOf = (keys: jest.Mocked<SignalKeyStoreWithTransaction>) => keys.get as unknown as TcTokenGetMock
 
 describe('storeTcTokensFromIqResult', () => {
 	const iqWithTokens = (tokens: BinaryNode[]): BinaryNode => ({
@@ -160,7 +166,7 @@ describe('storeTcTokensFromIqResult', () => {
 
 	it('does not copy a token returned for a different JID onto the requested recipient', async () => {
 		const keys = createMockKeys()
-		;(keys.get as any).mockResolvedValue({})
+		getMockOf(keys).mockResolvedValue({})
 		const ownJid = '46802258641027@lid'
 		const requestedJid = '207421150646274@lid'
 		const result = await storeTcTokensFromIqResult({
@@ -179,7 +185,7 @@ describe('storeTcTokensFromIqResult', () => {
 
 	it('keeps PN and LID aliases only when they resolve to the same contact', async () => {
 		const keys = createMockKeys()
-		;(keys.get as any).mockResolvedValue({})
+		getMockOf(keys).mockResolvedValue({})
 		const pn = '5511999999999@s.whatsapp.net'
 		const lid = '1234567890@lid'
 		const result = await storeTcTokensFromIqResult({
@@ -205,7 +211,7 @@ describe('storeTcTokensFromIqResult', () => {
 		const keys = createMockKeys()
 		const jid = '5511000000000@s.whatsapp.net'
 		const accepted = { token: Buffer.from([1]), timestamp: String(nowSeconds()) }
-		;(keys.get as any).mockResolvedValue({ [jid]: accepted })
+		getMockOf(keys).mockResolvedValue({ [jid]: accepted })
 		const node = tokenNode(jid, incomingToken)
 		;(node.attrs as Record<string, string>).t = accepted.timestamp
 
@@ -365,7 +371,7 @@ describe('PN/LID token selection parity', () => {
 	it('lets a LID lookup recover a valid legacy PN token', async () => {
 		const keys = createMockKeys()
 		const token = Buffer.from([9, 8, 7])
-		;(keys.get as any).mockResolvedValue({
+		getMockOf(keys).mockResolvedValue({
 			[pn]: { token, timestamp: String(nowSeconds()) }
 		})
 
@@ -385,13 +391,13 @@ describe('privacy-token issue state machine', () => {
 	const lid = '1234567890@lid'
 	const pn = '5511999999999@s.whatsapp.net'
 
-	const statefulKeys = (initial: Record<string, any> = {}) => {
+	const statefulKeys = (initial: Record<string, unknown> = {}) => {
 		const state = { ...initial }
 		const keys = {
 			get: jest.fn(async (_type: string, ids: string[]) =>
 				Object.fromEntries(ids.filter(id => state[id] !== undefined).map(id => [id, state[id]]))
 			),
-			set: jest.fn(async (data: any) => {
+			set: jest.fn(async (data: { tctoken?: Record<string, unknown> }) => {
 				for (const [id, value] of Object.entries(data.tctoken ?? {})) {
 					if (value === null) delete state[id]
 					else state[id] = value
@@ -980,7 +986,7 @@ describe('tctoken integration scenarios', () => {
 		it('does not erase a fresh token that arrives before cleanup acquires its lock', async () => {
 			const expiredTs = String(nowSeconds() - 30 * 86400)
 			const freshTs = String(nowSeconds())
-			;(mockKeys.get as any)
+			getMockOf(mockKeys)
 				.mockResolvedValueOnce({ [JID_A]: { token: TOKEN_A, timestamp: expiredTs } })
 				.mockResolvedValueOnce({ [JID_A]: { token: TOKEN_B, timestamp: freshTs } })
 
@@ -994,7 +1000,7 @@ describe('tctoken integration scenarios', () => {
 
 			// Read expired token → returns undefined, triggers cleanup
 			// @ts-ignore
-			;(mockKeys.get as any)
+			getMockOf(mockKeys)
 				.mockResolvedValueOnce({ [JID_A]: { token: TOKEN_A, timestamp: expiredTs } })
 				.mockResolvedValueOnce({ [JID_A]: { token: TOKEN_A, timestamp: expiredTs } })
 
@@ -1059,7 +1065,7 @@ describe('tctoken integration scenarios', () => {
 			const newToken = Buffer.from([4, 1, 33, 99, 88])
 			const newTimestamp = '1770920492'
 			// Simulates keys.get returning {} for unknown JID → entry is undefined
-			const existing = ({} as Record<string, any>)['unknown@lid']
+			const existing = ({} as Record<string, { token?: Buffer; timestamp?: string } | undefined>)['unknown@lid']
 
 			// Spread of undefined is a no-op at runtime
 			const merged = { ...existing, token: newToken, timestamp: newTimestamp }
@@ -1200,7 +1206,7 @@ describe('tctoken integration scenarios', () => {
 
 			const deletions: Record<string, null> = {}
 			for (const [jid, entry] of Object.entries(entries)) {
-				if (isTcTokenExpired((entry as any).timestamp)) {
+				if (isTcTokenExpired((entry as { timestamp?: string }).timestamp)) {
 					deletions[jid] = null
 				}
 			}
@@ -1297,7 +1303,7 @@ describe('tctoken integration scenarios', () => {
 		})
 
 		it('index ignores sentinel key when loading', () => {
-			const jids = [JID_A, INDEX_KEY, JID_B, '', null as any]
+			const jids: (string | null)[] = [JID_A, INDEX_KEY, JID_B, '', null]
 			const loaded = new Set<string>()
 			for (const jid of jids) {
 				if (jid && jid !== INDEX_KEY) {

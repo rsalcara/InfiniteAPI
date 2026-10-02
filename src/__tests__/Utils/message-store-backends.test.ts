@@ -89,7 +89,7 @@ describe('msgstore.db message-store backends', () => {
 				.prepare(
 					'SELECT unseen_message_count, last_message_row_id FROM chat WHERE _id = (SELECT chat_row_id FROM message WHERE _id = ?)'
 				)
-				.get(rowId) as any
+				.get(rowId) as { unseen_message_count: number; last_message_row_id: number }
 			expect(chat.unseen_message_count).toBe(1)
 			expect(chat.last_message_row_id).toBe(rowId)
 		})
@@ -447,7 +447,7 @@ describe('msgstore.db message-store backends', () => {
 			const chat = store
 				.handle('msgstore.db')
 				.prepare('SELECT last_message_row_id, sort_timestamp, last_message_sort_id, unseen_message_count FROM chat')
-				.get() as any
+				.get() as Record<string, unknown>
 			expect(chat).toMatchObject({
 				last_message_row_id: newest,
 				sort_timestamp: 2_000,
@@ -520,7 +520,7 @@ describe('msgstore.db message-store backends', () => {
 			const revoked = store
 				.handle('msgstore.db')
 				.prepare('SELECT * FROM message_revoked WHERE message_row_id = ?')
-				.get(row!._id) as any
+				.get(row!._id) as Record<string, unknown>
 			expect(revoked).toMatchObject({ revoked_key_id: 'MSG-REVOKE', revoke_timestamp: 2_000 })
 		})
 
@@ -669,7 +669,10 @@ describe('msgstore.db message-store backends', () => {
 				})
 			).not.toThrow()
 
-			const orphaned = store.handle('msgstore.db').prepare('SELECT * FROM receipt_orphaned').all() as any[]
+			const orphaned = store.handle('msgstore.db').prepare('SELECT * FROM receipt_orphaned').all() as Record<
+				string,
+				unknown
+			>[]
 			expect(orphaned).toHaveLength(1)
 			expect(orphaned[0]).toMatchObject({ key_id: 'NEVER-SEEN' })
 		})
@@ -1188,13 +1191,13 @@ describe('msgstore.db message-store backends', () => {
 			const mediaRow = store
 				.handle('msgstore.db')
 				.prepare('SELECT * FROM message_media WHERE message_row_id = ?')
-				.get(rowId) as any
+				.get(rowId) as Record<string, unknown>
 			expect(mediaRow).toMatchObject({ mime_type: 'image/jpeg', width: 1280, height: 720, media_caption: 'a photo' })
 
 			const thumb = store
 				.handle('msgstore.db')
 				.prepare('SELECT thumbnail FROM message_thumbnail WHERE message_row_id = ?')
-				.get(rowId) as any
+				.get(rowId) as { thumbnail: Uint8Array }
 			expect(Buffer.from(thumb.thumbnail)).toEqual(Buffer.from([9, 9, 9]))
 		})
 
@@ -1227,13 +1230,13 @@ describe('msgstore.db message-store backends', () => {
 			const addOnRow = store
 				.handle('msgstore.db')
 				.prepare('SELECT * FROM message_add_on WHERE key_id = ?')
-				.get('REACTION-1') as any
+				.get('REACTION-1') as { _id: number }
 			expect(addOnRow).toMatchObject({ parent_message_row_id: parentRowId })
 
 			const reactionRow = store
 				.handle('msgstore.db')
 				.prepare('SELECT * FROM message_add_on_reaction WHERE message_add_on_row_id = ?')
-				.get(addOnRow._id) as any
+				.get(addOnRow._id) as { reaction: string }
 			expect(reactionRow.reaction).toBe('❤️')
 		})
 
@@ -1261,7 +1264,7 @@ describe('msgstore.db message-store backends', () => {
 			let optionRows = store
 				.handle('msgstore.db')
 				.prepare('SELECT _id, vote_total FROM message_poll_option WHERE message_row_id = ?')
-				.all(pollRowId) as any[]
+				.all(pollRowId) as { _id: number; vote_total: number }[]
 			expect(optionRows.find(r => r._id === optA)?.vote_total).toBe(1)
 			expect(optionRows.find(r => r._id === optB)?.vote_total).toBe(0)
 
@@ -1280,7 +1283,7 @@ describe('msgstore.db message-store backends', () => {
 			optionRows = store
 				.handle('msgstore.db')
 				.prepare('SELECT _id, vote_total FROM message_poll_option WHERE message_row_id = ?')
-				.all(pollRowId) as any[]
+				.all(pollRowId) as { _id: number; vote_total: number }[]
 			expect(optionRows.find(r => r._id === optA)?.vote_total).toBe(0) // decremented — voter moved away from A
 			expect(optionRows.find(r => r._id === optB)?.vote_total).toBe(1)
 		})
@@ -1347,7 +1350,7 @@ describe('msgstore.db message-store backends', () => {
 			const locRow = store
 				.handle('msgstore.db')
 				.prepare('SELECT * FROM message_location WHERE message_row_id = ?')
-				.get(locRowId) as any
+				.get(locRowId) as Record<string, unknown>
 			expect(locRow).toMatchObject({
 				latitude: -23.5,
 				longitude: -46.6,
@@ -1418,7 +1421,7 @@ describe('msgstore.db message-store backends', () => {
 			const vcardRow = store
 				.handle('msgstore.db')
 				.prepare('SELECT * FROM message_vcard WHERE message_row_id = ?')
-				.get(vcardRowId) as any
+				.get(vcardRowId) as { vcard: string }
 			expect(vcardRow.vcard).toContain('BEGIN:VCARD')
 		})
 

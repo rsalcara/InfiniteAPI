@@ -4,7 +4,23 @@ import { initAuthCreds } from '../../Utils/auth-utils'
 import type { BinaryNode } from '../../WABinary'
 import { decodeBinaryNode } from '../../WABinary'
 
-type FakeSocketClient = Record<string, any>
+type FakeSocketClient = {
+	readonly sentNodes: BinaryNode[]
+	failGroupListQueries: boolean
+	failCleanSends: boolean
+	emit(event: string, payload?: unknown): boolean
+}
+
+type TestLogger = {
+	level: string
+	child: () => TestLogger
+	trace: jest.Mock
+	debug: jest.Mock
+	info: jest.Mock
+	warn: jest.Mock
+	error: jest.Mock
+	fatal: jest.Mock
+}
 
 const clients: FakeSocketClient[] = []
 
@@ -120,7 +136,7 @@ jest.unstable_mockModule('../../Socket/Client/tcp', () => ({
 const makeWASocket = (await import('../../Socket')).default
 
 const makeTestLogger = () => {
-	const logger: Record<string, any> = {
+	const logger: TestLogger = {
 		level: 'warn',
 		child: () => logger,
 		trace: jest.fn(),
@@ -163,7 +179,7 @@ const waitFor = async (predicate: () => boolean) => {
 	}
 }
 
-const warningsWith = (logger: Record<string, any>, message: string) =>
+const warningsWith = (logger: TestLogger, message: string) =>
 	logger.warn.mock.calls.filter((call: unknown[]) => call[1] === message)
 
 describe.each([

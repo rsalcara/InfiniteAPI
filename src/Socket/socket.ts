@@ -2276,9 +2276,9 @@ export const makeSocket = (config: SocketConfig) => {
 			}
 
 			await validateConnection()
-		} catch (err: any) {
+		} catch (err) {
 			logger.error({ err }, 'error in validating connection')
-			void end(err)
+			void end(err as Error)
 		}
 	})
 	ws.on('error', mapWebSocketError(end))
@@ -2428,9 +2428,9 @@ export const makeSocket = (config: SocketConfig) => {
 			sendUnifiedSession('pairing').catch(err => {
 				logger.debug({ err }, 'Failed to send unified_session on pairing')
 			})
-		} catch (error: any) {
-			logger.info({ trace: error.stack }, 'error in pairing')
-			void end(error)
+		} catch (error) {
+			logger.info({ trace: (error as Error).stack }, 'error in pairing')
+			void end(error as Error)
 		}
 	})
 	// login complete

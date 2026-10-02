@@ -13,7 +13,7 @@
  */
 import { jest } from '@jest/globals'
 import { AsyncLocalStorage } from 'async_hooks'
-import type { SignalDataSet, SignalKeyStore } from '../../Types'
+import type { SignalDataSet, SignalDataTypeMap, SignalKeyStore } from '../../Types'
 import { addTransactionCapability } from '../../Utils/auth-utils'
 import type { ILogger } from '../../Utils/logger'
 
@@ -37,9 +37,9 @@ const makeStore = () => {
 	const store: SignalKeyStore = {
 		async get(type, ids) {
 			const bucket = data[type] ?? {}
-			const out: Record<string, any> = {}
+			const out: { [id: string]: SignalDataTypeMap[typeof type] } = {}
 			for (const id of ids) {
-				if (id in bucket) out[id] = bucket[id]
+				if (id in bucket) out[id] = bucket[id] as SignalDataTypeMap[typeof type]
 			}
 
 			return out
@@ -48,16 +48,16 @@ const makeStore = () => {
 			// Shallow snapshot so later mutations to the live object don't bleed in.
 			const snapshot: SignalDataSet = {}
 			for (const type in d) {
-				const incoming = (d as any)[type] as Record<string, unknown>
+				const incoming = d[type as keyof SignalDataSet] as Record<string, unknown>
 				const bucket: Record<string, unknown> = {}
 				for (const id in incoming) bucket[id] = incoming[id]
-				;(snapshot as any)[type] = bucket
+				;(snapshot as Record<string, Record<string, unknown>>)[type] = bucket
 			}
 
 			setCalls.push(snapshot)
 			for (const type in d) {
 				data[type] = data[type] ?? {}
-				const incoming = (d as any)[type] as Record<string, unknown>
+				const incoming = d[type as keyof SignalDataSet] as Record<string, unknown>
 				for (const id in incoming) {
 					const v = incoming[id]
 					if (v === null) delete data[type][id]
@@ -132,12 +132,12 @@ describe('addTransactionCapability — transactWith', () => {
 		})
 
 		await keys.transactWith({ records: [{ type: 'session', id: 'a' }] }, async () => {
-			await keys.set({ session: { a: Buffer.from([1]) as any } })
-			await keys.set({ session: { a: Buffer.from([2]) as any } })
+			await keys.set({ session: { a: Buffer.from([1]) } })
+			await keys.set({ session: { a: Buffer.from([2]) } })
 		})
 
 		expect(setCalls).toHaveLength(1)
-		expect(Buffer.from((setCalls[0] as any).session.a)).toEqual(Buffer.from([2]))
+		expect(Buffer.from(setCalls[0]!.session!.a!)).toEqual(Buffer.from([2]))
 	})
 
 	it('does not commit on throw — mutations are rolled back', async () => {
@@ -149,7 +149,7 @@ describe('addTransactionCapability — transactWith', () => {
 
 		await expect(
 			keys.transactWith({ records: [{ type: 'session', id: 'a' }] }, async () => {
-				await keys.set({ session: { a: Buffer.from([1]) as any } })
+				await keys.set({ session: { a: Buffer.from([1]) } })
 				throw new Error('boom')
 			})
 		).rejects.toThrow('boom')
@@ -223,18 +223,18 @@ describe('addTransactionCapability — transactWith', () => {
 				},
 				async () => {
 					await keys.transactWith({ records: [{ type: 'session', id: 'a' }] }, async () => {
-						await keys.set({ session: { a: Buffer.from([1]) as any } })
+						await keys.set({ session: { a: Buffer.from([1]) } })
 					})
 					await keys.transactWith({ records: [{ type: 'session', id: 'b' }] }, async () => {
-						await keys.set({ session: { b: Buffer.from([2]) as any } })
+						await keys.set({ session: { b: Buffer.from([2]) } })
 					})
 				}
 			)
 
 			// One commit, covering both nested writes.
 			expect(setCalls).toHaveLength(1)
-			expect(Buffer.from((setCalls[0] as any).session.a)).toEqual(Buffer.from([1]))
-			expect(Buffer.from((setCalls[0] as any).session.b)).toEqual(Buffer.from([2]))
+			expect(Buffer.from(setCalls[0]!.session!.a!)).toEqual(Buffer.from([1]))
+			expect(Buffer.from(setCalls[0]!.session!.b!)).toEqual(Buffer.from([2]))
 		})
 	})
 
@@ -257,17 +257,17 @@ describe('addTransactionCapability — transactWith', () => {
 				// detached write must NOT mutate already-committed state.
 				void (async () => {
 					await delay(20)
-					await keys.set({ session: { a: Buffer.from([0xff]) as any } })
+					await keys.set({ session: { a: Buffer.from([0xff]) } })
 					detachedCompleted!()
 				})()
 
-				await keys.set({ session: { a: Buffer.from([0x01]) as any } })
+				await keys.set({ session: { a: Buffer.from([0x01]) } })
 			})
 
 			await detached
 
 			expect(setCalls).toHaveLength(1)
-			expect(Buffer.from((setCalls[0] as any).session.a)).toEqual(Buffer.from([0x01]))
+			expect(Buffer.from(setCalls[0]!.session!.a!)).toEqual(Buffer.from([0x01]))
 		})
 
 		it('allows an explicitly detached callback to start a fresh durable write', async () => {
@@ -282,9 +282,7 @@ describe('addTransactionCapability — transactWith', () => {
 				deferred = new Promise(resolve => {
 					setTimeout(() => {
 						void keys
-							.runOutsideTransaction(() =>
-								Promise.resolve(keys.set({ session: { deferred: Buffer.from([7]) as any } }))
-							)
+							.runOutsideTransaction(() => Promise.resolve(keys.set({ session: { deferred: Buffer.from([7]) } })))
 							.then(resolve)
 					}, 0)
 				})
@@ -293,7 +291,7 @@ describe('addTransactionCapability — transactWith', () => {
 			await deferred
 
 			expect(setCalls).toHaveLength(1)
-			expect(Buffer.from((setCalls[0] as any).session.deferred)).toEqual(Buffer.from([7]))
+			expect(Buffer.from(setCalls[0]!.session!.deferred!)).toEqual(Buffer.from([7]))
 		})
 	})
 
@@ -359,7 +357,7 @@ describe('addTransactionCapability — transactWith', () => {
 			})
 
 			await keys.destroy?.()
-			await keys.set({ session: { detached: Buffer.from([1]) as any } })
+			await keys.set({ session: { detached: Buffer.from([1]) } })
 
 			expect(setCalls).toHaveLength(0)
 		})
@@ -391,7 +389,7 @@ describe('addTransactionCapability — transactWith', () => {
 				maxCommitRetries: 1,
 				delayBetweenTriesMs: 1
 			})
-			const write = keys.set({ session: { direct: Buffer.from([1]) as any } })
+			const write = keys.set({ session: { direct: Buffer.from([1]) } })
 			await writeStartedPromise
 
 			let destroySettled = false
@@ -424,14 +422,14 @@ describe('addTransactionCapability — transactWith', () => {
 
 			const originalSet = store.set
 			store.set = async value => {
-				const senderKeys = (value as any)['sender-key']
+				const senderKeys = value['sender-key']
 				if (senderKeys?.blocker) {
 					blockerStarted()
 					await blockerRelease
 				}
 
 				await originalSet(value)
-				if ((value as any).session?.candidate) sessionWritten()
+				if (value.session?.candidate) sessionWritten()
 			}
 
 			const keys = addTransactionCapability(store, silentLogger(), {
@@ -441,12 +439,12 @@ describe('addTransactionCapability — transactWith', () => {
 
 			// Hold the sender-key lock so the second call writes its session
 			// bucket first and queues its sender-key bucket behind this write.
-			const blocker = keys.set({ 'sender-key': { blocker: Buffer.from([1]) as any } })
+			const blocker = keys.set({ 'sender-key': { blocker: Buffer.from([1]) } })
 			await blockerStartedPromise
 
 			const admitted = keys.set({
-				session: { candidate: Buffer.from([2]) as any },
-				'sender-key': { candidate: Buffer.from([3]) as any }
+				session: { candidate: Buffer.from([2]) },
+				'sender-key': { candidate: Buffer.from([3]) }
 			})
 			await sessionWrittenPromise
 
@@ -528,7 +526,7 @@ describe('addTransactionCapability — transactWith', () => {
 					maxCommitRetries: 1,
 					delayBetweenTriesMs: 1
 				})
-				const write = keys.set({ session: { timeout: Buffer.from([1]) as any } })
+				const write = keys.set({ session: { timeout: Buffer.from([1]) } })
 				await writeStartedPromise
 
 				const destroy = keys.destroy?.()

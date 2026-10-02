@@ -218,7 +218,7 @@ export class StatusBackend {
 	 * `status_info` aggregates consistent and cascade to `status_seen_receipt`.
 	 */
 	pruneExpired(cutoffTimestamp: number): number {
-		return this.stmts.pruneExpired.run(cutoffTimestamp).changes as number
+		return this.stmts.pruneExpired.run(cutoffTimestamp).changes
 	}
 
 	/** Throttled prune driven from the write path (default: hourly, 24h TTL). */

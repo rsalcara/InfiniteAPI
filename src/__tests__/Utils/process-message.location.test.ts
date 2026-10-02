@@ -8,16 +8,25 @@ import { jest } from '@jest/globals'
 import { EventEmitter } from 'events'
 import P from 'pino'
 import { proto } from '../../../WAProto/index.js'
-import type { AuthenticationCreds, BaileysEventEmitter, WAMessage } from '../../Types'
+import type {
+	AuthenticationCreds,
+	BaileysEventEmitter,
+	Contact,
+	SignalKeyStoreWithTransaction,
+	SignalRepositoryWithLIDStore,
+	WAMessage
+} from '../../Types'
 import { initAuthCreds } from '../../Utils/auth-utils'
 import { LOCATION_OPEN_ENDED_EXPIRES_MS } from '../../Utils/multi-db-sqlite'
 import processMessage from '../../Utils/process-message'
 
 const silent = P({ level: 'silent' })
 
+type ProcessContext = Parameters<typeof processMessage>[1]
+
 const credsWithMe = (): AuthenticationCreds => ({
 	...initAuthCreds(),
-	me: { id: 'me@s.whatsapp.net' } as any
+	me: { id: 'me@s.whatsapp.net' } as Contact
 })
 
 const makeLocationBackendMock = () => ({
@@ -28,20 +37,21 @@ const makeLocationBackendMock = () => ({
 
 const makeContext = (locationBackend: ReturnType<typeof makeLocationBackendMock>) => {
 	const events = new EventEmitter() as unknown as BaileysEventEmitter
-	return {
-		ctx: {
-			shouldProcessHistoryMsg: false,
-			placeholderResendCache: undefined,
-			ev: events,
-			creds: credsWithMe(),
-			keyStore: {} as any,
-			signalRepository: { lidMapping: { getPNForLID: async (jid: string) => jid } } as any,
-			logger: silent,
-			options: {},
-			getMessage: async () => undefined,
-			locationBackend: locationBackend as any
-		}
+	const ctx: ProcessContext = {
+		shouldProcessHistoryMsg: false,
+		placeholderResendCache: undefined,
+		ev: events,
+		creds: credsWithMe(),
+		keyStore: {} as unknown as SignalKeyStoreWithTransaction,
+		signalRepository: {
+			lidMapping: { getPNForLID: async (jid: string) => jid }
+		} as unknown as SignalRepositoryWithLIDStore,
+		logger: silent,
+		options: {},
+		getMessage: async () => undefined,
+		locationBackend: locationBackend as unknown as NonNullable<ProcessContext['locationBackend']>
 	}
+	return { ctx }
 }
 
 const inbound = (id: string, message: proto.IMessage, fromMe = false): WAMessage => ({
@@ -63,7 +73,7 @@ describe('processMessage — location.db mirror', () => {
 			}
 		})
 
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 
 		expect(locationBackend.upsertLocationCache).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -90,7 +100,7 @@ describe('processMessage — location.db mirror', () => {
 		})
 		msg.duration = 900
 
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 
 		expect(locationBackend.upsertLocationCache).toHaveBeenCalledWith(
 			expect.objectContaining({ jid: 'sender@s.whatsapp.net', latitude: -23.5, longitude: -46.6, speed: 1.5 })
@@ -114,7 +124,7 @@ describe('processMessage — location.db mirror', () => {
 		})
 		msg.messageTimestamp = undefined
 
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 
 		expect(locationBackend.upsertLocationSharer).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -135,7 +145,7 @@ describe('processMessage — location.db mirror', () => {
 		msg.key.remoteJid = '120363000000000000@g.us'
 		msg.duration = 900
 
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 
 		expect(locationBackend.upsertLocationSharer).not.toHaveBeenCalled()
 	})
@@ -150,7 +160,7 @@ describe('processMessage — location.db mirror', () => {
 			timeOffset: 30
 		}
 
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 
 		expect(locationBackend.upsertLocationCache).toHaveBeenCalledWith(
 			expect.objectContaining({ latitude: -23.51, longitude: -46.61, locationTs: 1_770_000_030_000 })
@@ -160,14 +170,14 @@ describe('processMessage — location.db mirror', () => {
 
 	it('does nothing when locationBackend is not configured (additive/opt-in)', async () => {
 		const { ctx } = makeContext(makeLocationBackendMock())
-		;(ctx as any).locationBackend = undefined
+		ctx.locationBackend = undefined
 
 		const msg = inbound('loc-2', {
 			locationMessage: { degreesLatitude: 1, degreesLongitude: 2 }
 		})
 
 		// Must not throw even without a locationBackend configured.
-		await expect(processMessage(msg, ctx as any)).resolves.not.toThrow()
+		await expect(processMessage(msg, ctx)).resolves.not.toThrow()
 	})
 
 	it('does not record anything for messages with no location content', async () => {
@@ -175,7 +185,7 @@ describe('processMessage — location.db mirror', () => {
 		const { ctx } = makeContext(locationBackend)
 
 		const msg = inbound('txt-1', { conversation: 'hello' })
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 
 		expect(locationBackend.upsertLocationCache).not.toHaveBeenCalled()
 		expect(locationBackend.upsertLocationSharer).not.toHaveBeenCalled()

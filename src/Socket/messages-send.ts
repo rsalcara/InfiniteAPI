@@ -131,6 +131,15 @@ import { mapUSyncResultToLIDMappings, USyncQuery, USyncUser } from '../WAUSync'
 import { markNativeAndroidIntegrityCleared } from './native-android-integrity-state'
 import { makeNewsletterSocket } from './newsletter'
 
+/** `buttonParamsJson` payload of a native-flow `single_select` button */
+type SingleSelectButtonParams = {
+	title?: string
+	sections?: Array<{
+		title?: string
+		rows?: Array<{ id?: string; rowId?: string; title?: string; description?: string }>
+	}>
+}
+
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
 		logger,
@@ -249,9 +258,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				image: { url: ogImage },
 				caption: text
 			} as AnyMessageContent
-		} catch (err: any) {
+		} catch (err) {
 			logger?.debug(
-				{ jid, url, err: err?.message },
+				{ jid, url, err: (err as Error | null | undefined)?.message },
 				'newsletter link upgrade: og:image fetch failed, falling back to text'
 			)
 			return content
@@ -1362,7 +1371,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// Check if it's a collection/product carousel
 			if (message.interactiveMessage.carouselMessage?.cards?.length) {
 				const hasCollectionCards = message.interactiveMessage.carouselMessage.cards.some(
-					(card: any) => card?.collectionMessage
+					card => card?.collectionMessage
 				)
 				if (hasCollectionCards) {
 					return 'native_flow'
@@ -1398,7 +1407,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// Check if it's a carousel with nativeFlowMessage buttons in cards
 				if (innerMessage.interactiveMessage.carouselMessage?.cards?.length) {
 					const hasNativeFlowButtons = innerMessage.interactiveMessage.carouselMessage.cards.some(
-						(card: any) => card?.nativeFlowMessage?.buttons?.length
+						card => card?.nativeFlowMessage?.buttons?.length
 					)
 					if (hasNativeFlowButtons) {
 						return 'native_flow'
@@ -1408,7 +1417,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// Check if it's a collection/product carousel
 				if (innerMessage.interactiveMessage.carouselMessage?.cards?.length) {
 					const hasCollectionCards = innerMessage.interactiveMessage.carouselMessage.cards.some(
-						(card: any) => card?.collectionMessage
+						card => card?.collectionMessage
 					)
 					if (hasCollectionCards) {
 						return 'native_flow'
@@ -1490,7 +1499,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		if (nativeFlow?.buttons?.length) {
 			// Check if any button is a catalog-type button
 			return nativeFlow.buttons.some(
-				(btn: any) => btn?.name === 'catalog_message' || btn?.name === 'single_product' || btn?.name === 'product_list'
+				btn => btn?.name === 'catalog_message' || btn?.name === 'single_product' || btn?.name === 'product_list'
 			)
 		}
 
@@ -1510,7 +1519,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const nativeFlow = interactiveMsg?.nativeFlowMessage
 		if (nativeFlow?.buttons?.length) {
 			// Check if any button is a list-type button (single_select or multi_select)
-			return nativeFlow.buttons.some((btn: any) => btn?.name === 'single_select' || btn?.name === 'multi_select')
+			return nativeFlow.buttons.some(btn => btn?.name === 'single_select' || btn?.name === 'multi_select')
 		}
 
 		return false
@@ -1612,13 +1621,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const innerMsg = message.viewOnceMessage?.message
 		const nativeFlow = innerMsg?.interactiveMessage?.nativeFlowMessage
 		if (nativeFlow?.buttons?.length) {
-			const singleSelectBtn = nativeFlow.buttons.find((btn: any) => btn?.name === 'single_select')
+			const singleSelectBtn = nativeFlow.buttons.find(btn => btn?.name === 'single_select')
 			if (singleSelectBtn?.buttonParamsJson) {
 				try {
-					const params = JSON.parse(singleSelectBtn.buttonParamsJson)
-					const sections = params.sections?.map((section: any) => ({
+					const params = JSON.parse(singleSelectBtn.buttonParamsJson) as SingleSelectButtonParams
+					const sections = params.sections?.map(section => ({
 						title: section.title,
-						rows: section.rows?.map((row: any) => ({
+						rows: section.rows?.map(row => ({
 							rowId: row.id || row.rowId,
 							title: row.title,
 							description: row.description || ''
@@ -1704,7 +1713,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						promptContext.messageSecret,
 						logger,
 						'meta-ai-prompt-secret'
-					)
+					).catch(error => logger.warn({ error, msgId }, 'failed to cache Meta AI prompt secret'))
 				}
 			}
 
@@ -2326,7 +2335,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						hasListMessage: !!listMsg,
 						hasInteractiveMessage: !!interactiveMsg,
 						hasNativeFlow: !!interactiveMsg?.nativeFlowMessage,
-						nativeFlowButtonNames: nativeFlowButtons.map((b: any) => b?.name),
+						nativeFlowButtonNames: nativeFlowButtons.map(b => b?.name),
 						isListDetected,
 						isCatalog,
 						isCarousel
@@ -2340,7 +2349,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				try {
 					// Classify button types for native_flow name and bot node decisions
 					const CTA_BUTTON_NAMES = new Set(['cta_url', 'cta_copy', 'cta_call'])
-					const allButtonNames = nativeFlowButtons.map((b: any) => b?.name).filter(Boolean)
+					const allButtonNames = nativeFlowButtons.map(b => b?.name).filter((name): name is string => Boolean(name))
 					const hasCTA = allButtonNames.some((name: string) => CTA_BUTTON_NAMES.has(name))
 					const hasQuickReply = allButtonNames.some((name: string) => name === 'quick_reply')
 					const isCTAOnly = hasCTA && !hasQuickReply
@@ -2565,8 +2574,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						;(stanza.content as BinaryNode[]).push(reportingNode)
 						logger.trace({ jid }, 'added reporting token to message')
 					}
-				} catch (error: any) {
-					logger.warn({ jid, trace: error?.stack }, 'failed to attach reporting token')
+				} catch (error) {
+					logger.warn({ jid, trace: (error as Error | null | undefined)?.stack }, 'failed to attach reporting token')
 				}
 			}
 
@@ -2655,11 +2664,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				// and tag mapping below never run on the high-volume hot path (Copilot #444).
 				const isViewOnce = !!(message.viewOnceMessage || message.viewOnceMessageV2)
 				const core = message.viewOnceMessage?.message || message.viewOnceMessageV2?.message || message
-				const isPoll = !!(
-					core.pollCreationMessage ||
-					(core as any).pollCreationMessageV2 ||
-					(core as any).pollCreationMessageV3
-				)
+				const isPoll = !!(core.pollCreationMessage || core.pollCreationMessageV2 || core.pollCreationMessageV3)
 
 				if (!!buttonType || isCarousel || isViewOnce || isPoll) {
 					const contentTags = Array.isArray(stanza.content) ? stanza.content.map((n: BinaryNode) => n.tag) : []
@@ -2670,9 +2675,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						if (buttonType === 'list') return 'list'
 						if (buttonType) {
 							if (message.buttonsMessage || core.buttonsMessage) return 'buttons:reply'
-							const names = (core.interactiveMessage?.nativeFlowMessage?.buttons || []).map((b: any) => b?.name)
-							const hasCTA = names.some((n: string) => n === 'cta_url' || n === 'cta_copy' || n === 'cta_call')
-							const hasQR = names.some((n: string) => n === 'quick_reply')
+							const names = (core.interactiveMessage?.nativeFlowMessage?.buttons || []).map(b => b?.name)
+							const hasCTA = names.some(n => n === 'cta_url' || n === 'cta_copy' || n === 'cta_call')
+							const hasQR = names.some(n => n === 'quick_reply')
 							if (hasCTA && hasQR) return 'buttons:mixed'
 							if (hasCTA) return 'buttons:cta'
 							if (hasQR) return 'buttons:reply'
@@ -2975,8 +2980,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	// reference to the old socket would otherwise pin every cached entry until GC.
 	registerSocketEndHandler(() => {
 		if (!config.userDevicesCache) {
-			userDevicesCache.close?.()
-			userDevicesCache.flushAll?.()
+			void userDevicesCache.close?.()
+			void userDevicesCache.flushAll?.()
 		}
 
 		messageRetryManager?.clear()
@@ -3072,8 +3077,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								content.url = getUrlFromDirectPath(content.directPath!, mediaHost)
 
 								logger.debug({ directPath: media.directPath, key: result.key }, 'media update successful')
-							} catch (err: any) {
-								error = err
+							} catch (err) {
+								error = err as Error
 							}
 						}
 

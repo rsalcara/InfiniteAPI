@@ -59,7 +59,7 @@ describe('compactError', () => {
 	})
 
 	it('does NOT throw on a circular object — returns "[unserializable]" sentinel instead', () => {
-		const a: any = { name: 'CircErr' }
+		const a: { name: string; self?: unknown } = { name: 'CircErr' }
 		a.self = a
 		// Calling JSON.stringify(a) would throw TypeError. The whole point of the
 		// guard: this catch-block helper must produce SOME string and not propagate.

@@ -3,26 +3,29 @@ import $protobuf from 'protobufjs/minimal.js'
 
 const $util = $protobuf.util
 
+type LongBits = { low: number; high: number }
+
 // proto implementation
-function longToStringOld(value: any, unsigned?: boolean): string {
+function longToStringOld(value: string | number | Long, unsigned?: boolean): string {
 	if (typeof value === 'string') return value
 	if (typeof value === 'number') return String(value)
 	if (!$util.Long) return String(value)
-	const normalized = ($util.Long as any).fromValue(value)
+	const normalized = ($util.Long as unknown as typeof Long).fromValue(value)
 	const prepared =
 		unsigned && normalized && typeof normalized.toUnsigned === 'function' ? normalized.toUnsigned() : normalized
 	return prepared.toString()
 }
 
 // bigint implementation
-function longToStringNew(value: any, unsigned?: boolean): string {
+function longToStringNew(value: unknown, unsigned?: boolean): string {
 	if (typeof value === 'string') return value
 	if (typeof value === 'number') return String(value)
-	if (value && typeof value.low === 'number' && typeof value.high === 'number') {
-		const lo = BigInt(value.low >>> 0)
-		const hi = BigInt(value.high >>> 0)
+	const bits = value as Partial<LongBits> | null | undefined
+	if (bits && typeof bits.low === 'number' && typeof bits.high === 'number') {
+		const lo = BigInt(bits.low >>> 0)
+		const hi = BigInt(bits.high >>> 0)
 		const combined = (hi << 32n) | lo
-		if (!unsigned && value.high < 0) {
+		if (!unsigned && bits.high < 0) {
 			return (combined - (1n << 64n)).toString()
 		}
 
@@ -32,11 +35,11 @@ function longToStringNew(value: any, unsigned?: boolean): string {
 	return String(value)
 }
 
-function longToNumberOld(value: any, unsigned?: boolean): number {
+function longToNumberOld(value: string | number | Long, unsigned?: boolean): number {
 	if (typeof value === 'number') return value
 	if (typeof value === 'string') return Number(value)
 	if (!$util.Long) return Number(value)
-	const normalized = ($util.Long as any).fromValue(value)
+	const normalized = ($util.Long as unknown as typeof Long).fromValue(value)
 	const prepared =
 		unsigned && normalized && typeof normalized.toUnsigned === 'function'
 			? normalized.toUnsigned()
@@ -46,14 +49,15 @@ function longToNumberOld(value: any, unsigned?: boolean): number {
 	return prepared.toNumber()
 }
 
-function longToNumberNew(value: any, unsigned?: boolean): number {
+function longToNumberNew(value: unknown, unsigned?: boolean): number {
 	if (typeof value === 'number') return value
 	if (typeof value === 'string') return Number(value)
-	if (value && typeof value.low === 'number' && typeof value.high === 'number') {
-		const lo = BigInt(value.low >>> 0)
-		const hi = BigInt(value.high >>> 0)
+	const bits = value as Partial<LongBits> | null | undefined
+	if (bits && typeof bits.low === 'number' && typeof bits.high === 'number') {
+		const lo = BigInt(bits.low >>> 0)
+		const hi = BigInt(bits.high >>> 0)
 		const combined = (hi << 32n) | lo
-		if (!unsigned && value.high < 0) {
+		if (!unsigned && bits.high < 0) {
 			return Number(combined - (1n << 64n))
 		}
 

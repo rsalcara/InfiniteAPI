@@ -1,5 +1,6 @@
 import { jest } from '@jest/globals'
 import type { BaileysEventEmitter } from '../../Types'
+import type { ILogger } from '../../Utils/logger'
 import { buildMessageDeliveryState, emitMessageDeliveryState } from '../../Utils/message-delivery-state'
 
 describe('message delivery state contract', () => {
@@ -45,14 +46,16 @@ describe('message delivery state contract', () => {
 	})
 
 	it('isolates synchronous consumer listener failures', () => {
-		const logger = { warn: jest.fn() } as any
+		const logger = { warn: jest.fn() }
 		const ev = {
 			emit: jest.fn(() => {
 				throw new Error('consumer failed')
 			})
 		} as unknown as BaileysEventEmitter
 
-		expect(() => emitMessageDeliveryState(ev, { key, state: 'accepted', observedAt: 10_000 }, logger)).not.toThrow()
+		expect(() =>
+			emitMessageDeliveryState(ev, { key, state: 'accepted', observedAt: 10_000 }, logger as unknown as ILogger)
+		).not.toThrow()
 		expect(logger.warn).toHaveBeenCalledWith(
 			expect.objectContaining({ state: 'accepted', messageId: key.id }),
 			'message.delivery-state listener failed; message processing continues'

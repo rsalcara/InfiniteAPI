@@ -54,12 +54,12 @@ describe('event-buffer — re-entrant flush race (M6)', () => {
 			if (!reentered) {
 				reentered = true
 				ev.buffer()
-				ev.emit('chats.upsert', [{ id: 'reentrant@s.whatsapp.net', conversationTimestamp: 0, unreadCount: 0 } as any])
+				ev.emit('chats.upsert', [{ id: 'reentrant@s.whatsapp.net', conversationTimestamp: 0, unreadCount: 0 }])
 			}
 		})
 
 		ev.buffer()
-		ev.emit('chats.upsert', [{ id: 'initial@s.whatsapp.net', conversationTimestamp: 0, unreadCount: 0 } as any])
+		ev.emit('chats.upsert', [{ id: 'initial@s.whatsapp.net', conversationTimestamp: 0, unreadCount: 0 }])
 		ev.flush()
 
 		// Let the first listener delivery settle.

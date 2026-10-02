@@ -2,6 +2,7 @@ import { DEFAULT_CONNECTION_CONFIG } from '../Defaults'
 import type { SocketConfig, UserFacingSocketConfig, WAVersion } from '../Types'
 import { attachAdminAbuseDetector } from '../Utils/admin-abuse-detector'
 import { resolveUnmarkedLegacyWebBrowser, shouldPreserveUnmarkedLegacyWebIdentity } from '../Utils/connection-presets'
+import type { ILogger } from '../Utils/logger'
 import { attachMeUsernameSync } from '../Utils/me-username-sync'
 import {
 	createMessageQuarantineRecorder,
@@ -39,7 +40,7 @@ const wireRemainingMsgstoreAdapters = (config: SocketConfig): void => {
 /**
  * Adapts Baileys logger to VersionCacheLogger interface
  */
-const createCacheLogger = (logger: any): VersionCacheLogger | undefined => {
+const createCacheLogger = (logger: ILogger | undefined): VersionCacheLogger | undefined => {
 	if (!logger) return undefined
 	return {
 		info: (obj: unknown, msg?: string) => logger.info(obj, msg),

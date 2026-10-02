@@ -7,7 +7,7 @@ const options = {
 	upload: jest.fn()
 } as unknown as MessageContentGenerationOptions
 
-const protoRoundTrip = (message: any) =>
+const protoRoundTrip = (message: proto.IMessage) =>
 	proto.Message.decode(proto.Message.encode(proto.Message.create(message)).finish())
 
 describe('official native-flow OTP envelope', () => {

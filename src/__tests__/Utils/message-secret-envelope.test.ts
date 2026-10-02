@@ -1,5 +1,6 @@
 import { createCipheriv, createHmac, randomBytes } from 'crypto'
 import { proto } from '../../../WAProto/index.js'
+import type { AnyMessageContent, MessageContentGenerationOptions } from '../../Types'
 import { decryptEncComment, decryptEncReaction, deriveMessageSecretKey } from '../../Utils/message-secret-envelope'
 import { generateWAMessageContent } from '../../Utils/messages'
 
@@ -15,7 +16,7 @@ const targetMessageKey = {
 
 const generationOptions = {
 	userJid: sender
-} as any
+} as unknown as MessageContentGenerationOptions
 
 describe('message-secret envelopes', () => {
 	it('uses the Android HMAC base, HKDF info order and trailing counter byte', () => {
@@ -124,7 +125,7 @@ describe('message-secret envelopes', () => {
 			}
 		}
 
-		await expect(generateWAMessageContent(content as any, generationOptions)).rejects.toThrow(
+		await expect(generateWAMessageContent(content as unknown as AnyMessageContent, generationOptions)).rejects.toThrow(
 			'react.key.id is required for an encrypted CAG reaction'
 		)
 	})
@@ -133,7 +134,7 @@ describe('message-secret envelopes', () => {
 		const key = deriveMessageSecretKey(parentSecret, 'Enc Reaction', {
 			targetAuthorRaw: targetAuthor,
 			senderRaw: sender,
-			targetMessageId: targetMessageKey.id!
+			targetMessageId: targetMessageKey.id
 		})
 		const envelope = {
 			encPayload: aesEncryptForTest(Buffer.alloc(0), key, Buffer.alloc(12)),

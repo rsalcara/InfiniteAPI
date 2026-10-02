@@ -16,7 +16,7 @@ export interface SqliteStatement {
 	iterate(...params: unknown[]): IterableIterator<unknown>
 }
 
-export interface SqliteTransaction<T extends (...args: any[]) => any> {
+export interface SqliteTransaction<T extends (...args: any[]) => unknown> {
 	(...args: Parameters<T>): ReturnType<T>
 	default: (...args: Parameters<T>) => ReturnType<T>
 	deferred: (...args: Parameters<T>) => ReturnType<T>
@@ -28,7 +28,7 @@ export interface SqliteDatabase {
 	exec(sql: string): unknown
 	pragma(source: string, options?: { simple?: boolean }): unknown
 	prepare(sql: string): SqliteStatement
-	transaction<T extends (...args: any[]) => any>(fn: T): SqliteTransaction<T>
+	transaction<T extends (...args: any[]) => unknown>(fn: T): SqliteTransaction<T>
 	readonly inTransaction: boolean
 	close(): void
 }
@@ -546,7 +546,7 @@ class NodeSqliteDatabaseAdapter implements SqliteDatabase {
 	}
 
 	// eslint-disable-next-line space-before-function-paren
-	transaction<T extends (...args: any[]) => any>(fn: T): SqliteTransaction<T> {
+	transaction<T extends (...args: any[]) => unknown>(fn: T): SqliteTransaction<T> {
 		const runTransaction = (mode: 'DEFERRED' | 'IMMEDIATE' | 'EXCLUSIVE', args: Parameters<T>): ReturnType<T> => {
 			this.ensureOpen()
 			// The database's own in_transaction state is authoritative. This
@@ -562,7 +562,7 @@ class NodeSqliteDatabaseAdapter implements SqliteDatabase {
 			try {
 				this.exec(beginStatement)
 				try {
-					const result = fn(...args)
+					const result = fn(...args) as ReturnType<T>
 					if (result && typeof (result as { then?: unknown }).then === 'function') {
 						throw new TypeError('Transaction function cannot return a promise')
 					}
@@ -651,8 +651,7 @@ async function loadBetterSqlite3(
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	loadModule: () => Promise<any> = () => import('better-sqlite3')
 ): Promise<SqliteDriver> {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	const module = (await loadModule()) as any
+	const module = await loadModule()
 	const Database = module.default ?? module
 	// Importing an ABI-mismatched native addon can succeed while constructing
 	// it fails. A tiny in-memory construction probe is the only reliable check
@@ -699,10 +698,9 @@ async function loadNodeSqlite(): Promise<SqliteDriver> {
 				const bytes = readSync(descriptor, header, 0, header.length, 0)
 				const signature = header.subarray(0, bytes).toString('latin1')
 				if (bytes > 0 && signature !== 'SQLite format 3\0') {
-					const error = new Error('file is not a database')
-					// eslint-disable-next-line @typescript-eslint/no-explicit-any
-					;(error as any).code = 'ERR_SQLITE_ERROR'
-					;(error as any).errcode = 26
+					const error: Error & { code?: string; errcode?: number } = new Error('file is not a database')
+					error.code = 'ERR_SQLITE_ERROR'
+					error.errcode = 26
 					throw translateSqliteError(error)
 				}
 			} finally {

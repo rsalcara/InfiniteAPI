@@ -24,7 +24,20 @@ const BR_TSV =
 	'[2-9](?:[1-9]|0[1-9]);9(?:[1-9]|0[1-9]);1[125689];[1-9][1-9];(?:[14689][1-9]|2[12478]|3[1-578]|5[1-5]|7[13-579])9;(?:300|40(?:0|20));[3589]00\t' +
 	'X\tBrazil\tX\trow\tX\tX\tX\tX\tX\tX\tX\tX\tX'
 
-type FakeSocketClient = Record<string, any>
+type FakeSocketClient = {
+	readonly sentNodes: BinaryNode[]
+}
+
+type TestLogger = {
+	level: string
+	child: () => TestLogger
+	trace: jest.Mock
+	debug: jest.Mock
+	info: jest.Mock
+	warn: jest.Mock
+	error: jest.Mock
+	fatal: jest.Mock
+}
 
 const clients: FakeSocketClient[] = []
 
@@ -163,7 +176,7 @@ const makeWASocket = (await import('../../Socket')).default
 const { initAuthCreds } = await import('../../Utils/auth-utils')
 
 const makeTestLogger = () => {
-	const logger: Record<string, any> = {
+	const logger: TestLogger = {
 		level: 'warn',
 		child: () => logger,
 		trace: jest.fn(),
@@ -378,10 +391,10 @@ describe('validatePhone socket wiring (B1+B3)', () => {
 	it('uses accountJid as tenant key when organizationId is absent (S9)', async () => {
 		const logger = makeTestLogger()
 		const credsA = initAuthCreds()
-		credsA.me = { id: '5583999999999:0@s.whatsapp.net' } as any
+		credsA.me = { id: '5583999999999:0@s.whatsapp.net' }
 
 		const credsB = initAuthCreds()
-		credsB.me = { id: '5583999999999:0@s.whatsapp.net' } as any
+		credsB.me = { id: '5583999999999:0@s.whatsapp.net' }
 
 		const socketA = makeWASocket({
 			...DEFAULT_CONNECTION_CONFIG,

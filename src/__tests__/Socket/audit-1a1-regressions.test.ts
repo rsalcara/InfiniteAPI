@@ -4,6 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { proto } from '../../../WAProto/index.js'
 import { DEFAULT_CONNECTION_CONFIG, NOISE_WA_HEADER } from '../../Defaults'
+import type { SignalKeyStore } from '../../Types'
 import { initAuthCreds, makeCacheableSignalKeyStore } from '../../Utils/auth-utils'
 import { JidMapBackend } from '../../Utils/multi-db-sqlite/lid-mapping-backend'
 import { MessageStoreBackend } from '../../Utils/multi-db-sqlite/message-store-backend'
@@ -12,7 +13,21 @@ import { MultiDbSqliteStore } from '../../Utils/multi-db-sqlite/store'
 import type { BinaryNode } from '../../WABinary'
 import { decodeBinaryNode } from '../../WABinary'
 
-type FakeSocketClient = Record<string, any>
+type FakeSocketClient = {
+	sentNodes: BinaryNode[]
+	emit(event: string, payload?: unknown): boolean
+}
+
+type TestLogger = {
+	level: string
+	child: () => TestLogger
+	trace: jest.Mock
+	debug: jest.Mock
+	info: jest.Mock
+	warn: jest.Mock
+	error: jest.Mock
+	fatal: jest.Mock
+}
 
 const ME_PN = '5511999999999@s.whatsapp.net'
 const ME_LID = '1029384756@lid'
@@ -114,7 +129,7 @@ jest.unstable_mockModule('../../Socket/Client/tcp', () => ({ TcpSocketClient: mo
 const makeWASocket = (await import('../../Socket')).default
 
 const makeTestLogger = () => {
-	const logger: Record<string, any> = {
+	const logger: TestLogger = {
 		level: 'warn',
 		child: () => logger,
 		trace: jest.fn(),
@@ -197,7 +212,7 @@ const makeSocket = async (
 
 	const logger = makeTestLogger()
 	const signalStore = new Map<string, unknown>()
-	const rawSignalStore: any = {
+	const rawSignalStore = {
 		get: async (type: string, ids: string[]) =>
 			ids.reduce<Record<string, unknown>>((result: Record<string, unknown>, id: string) => {
 				const value = signalStore.get(`${type}.${id}`)
@@ -213,7 +228,7 @@ const makeSocket = async (
 		},
 		clear: async () => signalStore.clear()
 	}
-	const keys = makeCacheableSignalKeyStore(rawSignalStore, logger as never)
+	const keys = makeCacheableSignalKeyStore(rawSignalStore as unknown as SignalKeyStore, logger as never)
 	const socket = makeWASocket({
 		...DEFAULT_CONNECTION_CONFIG,
 		auth: { creds, keys },
@@ -277,11 +292,11 @@ describe('audit 1:1 regressions', () => {
 			client.emit('CB:message', makeChatStanza({ chat: DM_A_LID, id: 'R01-1', senderAlt: DM_A_PN }))
 			await waitFor(() => committedAt !== undefined && receipt() !== undefined)
 			await endSocket(socket)
-			expect({ committedAt, receiptAt: sentAt.get(receipt()) }).toEqual({
+			expect({ committedAt, receiptAt: sentAt.get(receipt()!) }).toEqual({
 				committedAt: expect.any(Number),
 				receiptAt: expect.any(Number)
 			})
-			expect(committedAt!).toBeLessThan(sentAt.get(receipt())!)
+			expect(committedAt!).toBeLessThan(sentAt.get(receipt()!)!)
 		} finally {
 			spy.mockRestore()
 			store.close()
@@ -506,7 +521,7 @@ describe('audit 1:1 regressions', () => {
 		let closedByListener = false
 		const armedAfterClose: string[] = []
 		const original = { setTimeout: global.setTimeout, setInterval: global.setInterval }
-		const timers = global as any
+		const timers: { setTimeout: unknown; setInterval: unknown } = global
 		timers.setTimeout = (fn: (...args: any[]) => void, ms?: number, ...rest: any[]) => {
 			if (closedByListener && ms === 5_000) armedAfterClose.push(`timeout:${ms}`)
 			return original.setTimeout(fn, ms, ...rest)
@@ -547,25 +562,28 @@ describe('audit 1:1 regressions', () => {
 			clearInterval: global.clearInterval
 		}
 		const track =
-			(create: (...args: any[]) => any) =>
+			(create: (...args: any[]) => unknown) =>
 			(...args: any[]) => {
 				const handle = create(...args)
 				live.add(handle)
 				return handle
 			}
 
-		const untrack = (clear: (handle: any) => void) => (handle: any) => {
-			live.delete(handle)
-			clear(handle)
-		}
+		const untrack =
+			<H>(clear: (handle: H) => void) =>
+			(handle: H) => {
+				live.delete(handle)
+				clear(handle)
+			}
 
-		;(global as any).setTimeout = track(original.setTimeout)
-		;(global as any).setInterval = track(original.setInterval)
-		;(global as any).clearTimeout = untrack(original.clearTimeout)
-		;(global as any).clearInterval = untrack(original.clearInterval)
+		const timerGlobals: { setTimeout: unknown; setInterval: unknown; clearTimeout: unknown; clearInterval: unknown } =
+			global
+		timerGlobals.setTimeout = track(original.setTimeout)
+		timerGlobals.setInterval = track(original.setInterval)
+		timerGlobals.clearTimeout = untrack(original.clearTimeout)
+		timerGlobals.clearInterval = untrack(original.clearInterval)
 		const successNode: BinaryNode = { tag: 'success', attrs: { lid: ME_LID, t: '1789500100' }, content: [] }
-		const liveCount = () =>
-			(process as any).getActiveResourcesInfo().filter((kind: string) => kind === 'Timeout').length
+		const liveCount = () => process.getActiveResourcesInfo().filter((kind: string) => kind === 'Timeout').length
 		try {
 			const baseline = liveCount()
 			for (let cycle = 0; cycle < 8; cycle++) {
@@ -581,8 +599,8 @@ describe('audit 1:1 regressions', () => {
 			expect(liveCount() - baseline).toBeLessThan(4)
 		} finally {
 			for (const handle of live) {
-				original.clearTimeout(handle as any)
-				original.clearInterval(handle as any)
+				original.clearTimeout(handle as NodeJS.Timeout)
+				original.clearInterval(handle as NodeJS.Timeout)
 			}
 
 			Object.assign(global, original)

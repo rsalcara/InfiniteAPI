@@ -3,10 +3,21 @@ import { randomBytes } from 'crypto'
 import { EventEmitter } from 'events'
 import P from 'pino'
 import { proto } from '../../../WAProto/index.js'
-import type { AuthenticationCreds, BaileysEventEmitter, WAMessage, WAMessageKey } from '../../Types'
+import type {
+	AuthenticationCreds,
+	BaileysEventEmitter,
+	BaileysEventMap,
+	CacheStore,
+	Contact,
+	SignalKeyStoreWithTransaction,
+	SignalRepositoryWithLIDStore,
+	WAMessage,
+	WAMessageKey
+} from '../../Types'
 import { initAuthCreds } from '../../Utils/auth-utils'
 import { aesDecryptGCM, aesEncryptGCM } from '../../Utils/crypto'
 import { decryptEncComment, decryptEncReaction, deriveMessageSecretKey } from '../../Utils/message-secret-envelope'
+import type { MessageStoreBackend } from '../../Utils/multi-db-sqlite/message-store-backend'
 import { OrphanQueue } from '../../Utils/orphan-queue'
 import processMessage from '../../Utils/process-message'
 
@@ -22,40 +33,44 @@ const targetMessageKey: WAMessageKey = {
 }
 const parentSecret = randomBytes(32)
 
+type ProcessContext = Parameters<typeof processMessage>[1]
+type GetMessage = ProcessContext['getMessage']
+
 const credsWithMe = (): AuthenticationCreds => ({
 	...initAuthCreds(),
-	me: { id: 'me@s.whatsapp.net' } as any
+	me: { id: 'me@s.whatsapp.net' } as Contact
 })
 
-const makeContext = (getMessage: ReturnType<typeof jest.fn>) => {
+const makeContext = (getMessage: GetMessage) => {
 	const events = new EventEmitter() as unknown as BaileysEventEmitter
-	const upserts: any[][] = []
-	const reactions: any[][] = []
-	;(events as any).on('messages.upsert', (upsert: any) => upserts.push(upsert.messages))
-	;(events as any).on('messages.reaction', (reaction: any[]) => reactions.push(reaction))
+	const upserts: WAMessage[][] = []
+	const reactions: BaileysEventMap['messages.reaction'][] = []
+	events.on('messages.upsert', upsert => upserts.push(upsert.messages))
+	events.on('messages.reaction', reaction => reactions.push(reaction))
 
 	const orphanQueue = new OrphanQueue(silent)
+	const ctx: ProcessContext = {
+		orphanQueue,
+		shouldProcessHistoryMsg: false,
+		placeholderResendCache: undefined,
+		ev: events,
+		creds: credsWithMe(),
+		keyStore: {} as unknown as SignalKeyStoreWithTransaction,
+		signalRepository: {
+			lidMapping: {
+				getPNForLID: async (jid: string) => jid,
+				getLIDForPN: async (jid: string) => jid
+			}
+		} as unknown as SignalRepositoryWithLIDStore,
+		logger: silent,
+		options: {},
+		getMessage
+	}
 	return {
 		upserts,
 		reactions,
 		orphanQueue,
-		ctx: {
-			orphanQueue,
-			shouldProcessHistoryMsg: false,
-			placeholderResendCache: undefined,
-			ev: events,
-			creds: credsWithMe(),
-			keyStore: {} as any,
-			signalRepository: {
-				lidMapping: {
-					getPNForLID: async (jid: string) => jid,
-					getLIDForPN: async (jid: string) => jid
-				}
-			} as any,
-			logger: silent,
-			options: {},
-			getMessage
-		}
+		ctx
 	}
 }
 
@@ -151,9 +166,9 @@ const pdoMessageWithRecoveredContent = (
 
 describe('processMessage — encrypted CAG comments and reactions', () => {
 	it('queues an encrypted comment when the parent post has not arrived, then uses the arriving parent to replay', async () => {
-		const getMessage = jest.fn<() => Promise<any>>()
-		getMessage.mockResolvedValueOnce(undefined).mockResolvedValueOnce(parentMessage().message)
-		const { ctx, upserts, orphanQueue } = makeContext(getMessage as any)
+		const getMessage = jest.fn<GetMessage>()
+		getMessage.mockResolvedValueOnce(undefined).mockResolvedValueOnce(parentMessage().message!)
+		const { ctx, upserts, orphanQueue } = makeContext(getMessage)
 
 		const commentKey = deriveMessageSecretKey(parentSecret, 'Enc Comment', {
 			targetAuthorRaw: '5511800000000',
@@ -174,7 +189,7 @@ describe('processMessage — encrypted CAG comments and reactions', () => {
 		})
 
 		const comment = inbound('comment-1', { encCommentMessage })
-		await processMessage(comment, { ...ctx } as any)
+		await processMessage(comment, { ...ctx })
 		expect(upserts).toHaveLength(0)
 		expect(orphanQueue.drain(targetMessageKey)).toHaveLength(1)
 
@@ -182,23 +197,23 @@ describe('processMessage — encrypted CAG comments and reactions', () => {
 		orphanQueue.enqueue(targetMessageKey, 'comment', comment)
 		const post = parentMessage()
 		post.key = { ...post.key, id: 'PARENT-1' }
-		await processMessage(post, { ...ctx } as any)
+		await processMessage(post, { ...ctx })
 
 		expect(upserts).toHaveLength(1)
 		// The arriving parent's message content must be passed to replay; a normal
 		// consumer-backed getMessage() may not observe it until processing returns.
 		expect(getMessage).toHaveBeenCalledTimes(1)
-		const child = upserts[0]![0]
-		expect(child.key.id).toBe('comment-1')
-		expect(child.message.encCommentMessage).toBeNull()
-		expect(child.message.commentMessage.message.conversation).toBe('Great post!')
+		const child = upserts[0]?.[0]
+		expect(child?.key.id).toBe('comment-1')
+		expect(child?.message?.encCommentMessage).toBeNull()
+		expect(child?.message?.commentMessage?.message?.conversation).toBe('Great post!')
 		expect(orphanQueue.drain(targetMessageKey)).toHaveLength(0)
 	})
 
 	it('decrypts an encrypted reaction immediately when the parent post is known', async () => {
-		const getMessage = jest.fn<() => Promise<any>>()
-		getMessage.mockResolvedValue(parentMessage().message)
-		const { ctx, reactions } = makeContext(getMessage as any)
+		const getMessage = jest.fn<GetMessage>()
+		getMessage.mockResolvedValue(parentMessage().message!)
+		const { ctx, reactions } = makeContext(getMessage)
 
 		const key = deriveMessageSecretKey(parentSecret, 'Enc Reaction', {
 			targetAuthorRaw: '5511800000000',
@@ -213,42 +228,42 @@ describe('processMessage — encrypted CAG comments and reactions', () => {
 			...encrypt(plaintext, key)
 		})
 
-		await processMessage(inbound('reaction-1', { encReactionMessage }), { ...ctx } as any)
+		await processMessage(inbound('reaction-1', { encReactionMessage }), { ...ctx })
 
 		expect(reactions).toHaveLength(1)
-		expect(reactions[0]![0].reaction.text).toBe('🔥')
-		expect(reactions[0]![0].key.id).toBe('PARENT-1')
+		expect(reactions[0]?.[0]?.reaction.text).toBe('🔥')
+		expect(reactions[0]?.[0]?.key.id).toBe('PARENT-1')
 	})
 
 	it('hydrates an encrypted CAG comment recovered through PDO before emitting it', async () => {
-		const getMessage = jest.fn<() => Promise<any>>()
-		getMessage.mockResolvedValue(parentMessage().message)
-		const { ctx, upserts } = makeContext(getMessage as any)
+		const getMessage = jest.fn<GetMessage>()
+		getMessage.mockResolvedValue(parentMessage().message!)
+		const { ctx, upserts } = makeContext(getMessage)
 
-		await processMessage(pdoMessageWithRecoveredChild(encryptedCommentEnvelope()), { ...ctx } as any)
+		await processMessage(pdoMessageWithRecoveredChild(encryptedCommentEnvelope()), { ...ctx })
 
 		expect(upserts).toHaveLength(1)
-		expect(upserts[0]![0].key.id).toBe('comment-recovered')
-		expect(upserts[0]![0].message.encCommentMessage).toBeNull()
-		expect(upserts[0]![0].message.commentMessage.message.conversation).toBe('Recovered post comment')
+		expect(upserts[0]?.[0]?.key.id).toBe('comment-recovered')
+		expect(upserts[0]?.[0]?.message?.encCommentMessage).toBeNull()
+		expect(upserts[0]?.[0]?.message?.commentMessage?.message?.conversation).toBe('Recovered post comment')
 	})
 
 	it('does not emit ciphertext when PDO recovers a CAG child before its parent', async () => {
-		const getMessage = jest.fn<() => Promise<any>>()
+		const getMessage = jest.fn<GetMessage>()
 		getMessage.mockResolvedValue(undefined)
-		const { ctx, upserts, orphanQueue } = makeContext(getMessage as any)
+		const { ctx, upserts, orphanQueue } = makeContext(getMessage)
 
-		await processMessage(pdoMessageWithRecoveredChild(encryptedCommentEnvelope()), { ...ctx } as any)
+		await processMessage(pdoMessageWithRecoveredChild(encryptedCommentEnvelope()), { ...ctx })
 
 		expect(upserts).toHaveLength(0)
 		expect(orphanQueue.drain(targetMessageKey)).toHaveLength(1)
 	})
 
 	it('does not apply PDO request metadata when the response names another sender', async () => {
-		const getMessage = jest.fn<() => Promise<any>>()
+		const getMessage = jest.fn<GetMessage>()
 		getMessage.mockResolvedValue(undefined)
-		const { ctx, upserts } = makeContext(getMessage as any)
-		const cached = new Map([
+		const { ctx, upserts } = makeContext(getMessage)
+		const cached = new Map<string, unknown>([
 			[
 				'PDO-REQUEST-1',
 				{
@@ -259,45 +274,45 @@ describe('processMessage — encrypted CAG comments and reactions', () => {
 		])
 		ctx.placeholderResendCache = {
 			get: async (key: string) => cached.get(key),
-			set: async (key: string, value: any) => {
+			set: async (key: string, value: unknown) => {
 				cached.set(key, value)
 			},
 			del: async (key: string) => {
 				cached.delete(key)
 			}
-		} as any
+		} as unknown as CacheStore
 
 		await processMessage(
 			pdoMessageWithRecoveredContent('same-client-id', undefined, { conversation: 'from another sender' }),
-			{ ...ctx } as any
+			{ ...ctx }
 		)
 
 		expect(upserts).toHaveLength(1)
-		expect(upserts[0]![0].key.participant).toBeNull()
-		expect(upserts[0]![0].pushName).toBeNull()
-		expect(upserts[0]![0].message.conversation).toBe('from another sender')
+		expect(upserts[0]?.[0]?.key.participant).toBeNull()
+		expect(upserts[0]?.[0]?.pushName).toBeNull()
+		expect(upserts[0]?.[0]?.message?.conversation).toBe('from another sender')
 	})
 
 	it('persists a decrypted CAG comment own outer message secret in the message mirror', async () => {
 		const ownSecret = randomBytes(32)
-		const getMessage = jest.fn<() => Promise<any>>()
-		getMessage.mockResolvedValue(parentMessage().message)
-		const { ctx } = makeContext(getMessage as any)
-		const recordMessage = jest.fn(() => 42)
-		;(ctx as any).messageStoreBackend = { recordMessage }
+		const getMessage = jest.fn<GetMessage>()
+		getMessage.mockResolvedValue(parentMessage().message!)
+		const { ctx } = makeContext(getMessage)
+		const recordMessage = jest.fn<MessageStoreBackend['recordMessage']>(() => 42)
+		ctx.messageStoreBackend = { recordMessage } as unknown as MessageStoreBackend
 
 		const message = inbound('comment-own-secret', { encCommentMessage: encryptedCommentEnvelope() })
-		;(message as any).messageSecret = ownSecret
-		await processMessage(message, { ...ctx } as any)
+		message.messageSecret = ownSecret
+		await processMessage(message, { ...ctx })
 
 		expect(recordMessage).toHaveBeenCalledTimes(1)
-		expect((recordMessage as any).mock.calls[0]?.[0]?.messageSecret).toEqual(ownSecret)
+		expect(recordMessage.mock.calls[0]?.[0]?.messageSecret).toEqual(ownSecret)
 	})
 
 	it('normalizes a decrypted reaction key even when the wire target is sparse', async () => {
-		const getMessage = jest.fn<() => Promise<any>>()
-		getMessage.mockResolvedValue(parentMessage().message)
-		const { ctx, reactions } = makeContext(getMessage as any)
+		const getMessage = jest.fn<GetMessage>()
+		getMessage.mockResolvedValue(parentMessage().message!)
+		const { ctx, reactions } = makeContext(getMessage)
 
 		const key = deriveMessageSecretKey(parentSecret, 'Enc Reaction', {
 			targetAuthorRaw: '5511800000000',
@@ -312,18 +327,18 @@ describe('processMessage — encrypted CAG comments and reactions', () => {
 			...encrypt(plaintext, key)
 		})
 
-		await processMessage(inbound('reaction-2', { encReactionMessage }), { ...ctx } as any)
+		await processMessage(inbound('reaction-2', { encReactionMessage }), { ...ctx })
 
-		expect(reactions[0]![0].key).toEqual(
+		expect(reactions[0]?.[0]?.key).toEqual(
 			expect.objectContaining({ remoteJid: chat, id: 'PARENT-1', participant: targetAuthor, fromMe: false })
 		)
 	})
 
 	it('isolates identity-resolution failures without disrupting processing', async () => {
-		const getMessage = jest.fn<() => Promise<any>>()
-		getMessage.mockResolvedValue(parentMessage().message)
-		const { ctx, upserts } = makeContext(getMessage as any)
-		;(ctx.signalRepository.lidMapping as any).getPNForLID = jest.fn(async () => {
+		const getMessage = jest.fn<GetMessage>()
+		getMessage.mockResolvedValue(parentMessage().message!)
+		const { ctx, upserts } = makeContext(getMessage)
+		ctx.signalRepository.lidMapping.getPNForLID = jest.fn(async () => {
 			throw new Error('mapping unavailable')
 		})
 
@@ -349,7 +364,7 @@ describe('processMessage — encrypted CAG comments and reactions', () => {
 		})
 		message.key.participant = '5511900000000@lid'
 
-		await expect(processMessage(message, { ...ctx } as any)).resolves.toBeUndefined()
+		await expect(processMessage(message, { ...ctx })).resolves.toBeUndefined()
 		expect(upserts).toHaveLength(0)
 	})
 })

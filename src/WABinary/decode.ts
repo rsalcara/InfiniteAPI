@@ -51,7 +51,7 @@ export const decodeDecompressedBinaryNode = (
 	buffer: Buffer,
 	opts: Pick<BinaryNodeCodingOptions, 'DOUBLE_BYTE_TOKENS' | 'SINGLE_BYTE_TOKENS' | 'TAGS'>,
 	indexRef: { index: number } = { index: 0 },
-	depth: number = 0
+	depth = 0
 ): BinaryNode => {
 	// Depth guard — a crafted frame whose payload is just a list-of-lists
 	// recurses one level per byte. Without this guard the stack overflows

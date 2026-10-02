@@ -19,6 +19,7 @@ import {
 	makeMsmsgSecretCache,
 	OrphanMsmsgError
 } from '../../Utils/meta-ai-msmsg'
+import type { BinaryNode } from '../../WABinary'
 
 describe('buildMsmsgCacheKey', () => {
 	it('builds a tri-partite key for 1:1 chats (matches WAWebMsgKey.toString())', () => {
@@ -48,12 +49,11 @@ describe('buildMsmsgCacheKey', () => {
 })
 
 describe('extractMsmsgStanzaInfo', () => {
-	const makeStanza = (children: Array<{ tag: string; attrs?: Record<string, string> }>) =>
-		({
-			tag: 'message',
-			attrs: { id: 'STANZA1' },
-			content: children.map(c => ({ tag: c.tag, attrs: c.attrs || {} }))
-		}) as any
+	const makeStanza = (children: Array<{ tag: string; attrs?: Record<string, string> }>): BinaryNode => ({
+		tag: 'message',
+		attrs: { id: 'STANZA1' },
+		content: children.map(c => ({ tag: c.tag, attrs: c.attrs || {} }))
+	})
 
 	it('returns null when there is no enc child', () => {
 		expect(extractMsmsgStanzaInfo(makeStanza([{ tag: 'meta', attrs: { target_id: 'X' } }]))).toBeNull()
@@ -165,7 +165,7 @@ describe('cacheMessageSecretIfPresent', () => {
 
 	it('no-ops when message has no messageContextInfo.messageSecret', () => {
 		const cache = makeMsmsgSecretCache()
-		cacheMessageSecretIfPresent(cache, { conversation: 'hi' } as any, { fromMe: true, remoteJid: 'r', id: 'i' })
+		cacheMessageSecretIfPresent(cache, { conversation: 'hi' }, { fromMe: true, remoteJid: 'r', id: 'i' })
 		expect(cache.keys().length).toBe(0)
 	})
 
@@ -230,12 +230,12 @@ describe('decryptMsmsgBotMessage — cache miss = OrphanMsmsgError', () => {
 				cache
 			})
 			fail('expected OrphanMsmsgError')
-		} catch (e: any) {
+		} catch (e) {
 			expect(e).toBeInstanceOf(OrphanMsmsgError)
 			// decodeMessageNode passes sender=author for direct chats. An FBID
 			// reply therefore has chatJid=author=@bot, never the legacy @c.us
 			// display chat used by older fixtures.
-			expect(e.targetCacheKey).toBe('true_718584497008509@bot_MSG_X')
+			expect((e as OrphanMsmsgError).targetCacheKey).toBe('true_718584497008509@bot_MSG_X')
 		}
 	})
 })

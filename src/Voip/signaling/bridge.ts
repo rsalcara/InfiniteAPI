@@ -7,19 +7,35 @@
  *
  */
 
+import type { AuthenticationCreds, SignalKeyStore } from '../../Types/Auth'
+import type { SignalRepositoryWithLIDStore } from '../../Types/Signal'
+import type { BinaryNode } from '../../WABinary/types'
+import type { WasmEngine } from '../wasm-engine/index.js'
+
 export type BaileysSocket = {
-	authState: any
-	signalRepository: any
+	authState: { creds: Pick<AuthenticationCreds, 'me' | 'account'>; keys: SignalKeyStore }
+	signalRepository: SignalRepositoryWithLIDStore
 	generateMessageTag: () => string
-	query: (node: any) => Promise<any>
-	sendNode: (node: any) => Promise<void>
-	waitForMessage: (tag: string, timeoutMs: number) => Promise<any>
-	getUSyncDevices: (jids: string[], ignoreZeroDevices: boolean, forceQuery: boolean) => Promise<any[]>
+	query: (node: BinaryNode) => Promise<BinaryNode>
+	sendNode: (node: BinaryNode) => Promise<void>
+	waitForMessage: (tag: string, timeoutMs: number) => Promise<BinaryNode | undefined>
+	getUSyncDevices: (jids: string[], ignoreZeroDevices: boolean, forceQuery: boolean) => Promise<{ jid: string }[]>
 	presenceSubscribe: (jid: string) => Promise<void>
-	ws: any
-	ev: any
+	/** Not used by the bridge itself; part of the socket contract it is handed. */
+	ws: unknown
+	/** Not used by the bridge itself; part of the socket contract it is handed. */
+	ev: unknown
+	/** TcToken issuance IQ (`getPrivacyTokens` is the legacy alias). */
+	issuePrivacyTokens?: (jids: string[]) => Promise<unknown>
+	getPrivacyTokens?: (jids: string[]) => Promise<unknown>
 	tcTokenBucketPolicy?: import('../../Utils/tc-token-utils').TcTokenBucketPolicy
 }
+
+/** The slice of the WASM engine the bridge feeds inbound signaling into. */
+type VoipSignalingSink = Pick<
+	WasmEngine,
+	'handleSignalingAck' | 'handleSignalingOffer' | 'handleSignalingMessage' | 'handleSignalingReceipt'
+>
 
 export type SignalingBridgeConfig = {
 	sock: BaileysSocket
@@ -48,7 +64,7 @@ import { jidDecode, jidEncode, jidNormalizedUser } from '../../WABinary/jid-util
 // third-party lib did a runtime `import("@whiskeysockets/baileys")`; we ship
 // inside the fork so they're static imports above. Surfacing the bag here
 // because the internal methods read them off `this.#baileys` after `init()`.
-const loadBaileys = async (): Promise<any> => ({
+const loadBaileys = async () => ({
 	jidDecode,
 	jidEncode,
 	jidNormalizedUser,
@@ -63,24 +79,26 @@ const loadBaileys = async (): Promise<any> => ({
 	proto
 })
 
-const getNodeChildren = (node: any): any[] => (Array.isArray(node.content) ? node.content : [])
+type BaileysHelpers = Awaited<ReturnType<typeof loadBaileys>>
 
-const setNodeChildren = (node: any, children: any[]): void => {
+const getNodeChildren = (node: BinaryNode): BinaryNode[] => (Array.isArray(node.content) ? node.content : [])
+
+const setNodeChildren = (node: BinaryNode, children: BinaryNode[]): void => {
 	node.content = children.length ? children : undefined
 }
 
-const replaceNodeChild = (node: any, tag: string, nextChild: any): void => {
+const replaceNodeChild = (node: BinaryNode, tag: string, nextChild: BinaryNode): void => {
 	const children = getNodeChildren(node)
-	const index = children.findIndex((c: any) => c.tag === tag)
+	const index = children.findIndex(c => c.tag === tag)
 	if (index >= 0) children[index] = nextChild
 	else children.push(nextChild)
 	setNodeChildren(node, children)
 }
 
-const removeNodeChildrenByTag = (node: any, tag: string): void => {
+const removeNodeChildrenByTag = (node: BinaryNode, tag: string): void => {
 	setNodeChildren(
 		node,
-		getNodeChildren(node).filter((c: any) => c.tag !== tag)
+		getNodeChildren(node).filter(c => c.tag !== tag)
 	)
 }
 
@@ -91,8 +109,8 @@ const parseCountAttr = (value: unknown, fallback = 0): number => {
 
 export class SignalingBridge {
 	readonly #sock: BaileysSocket
-	#baileys: any = null
-	#voip: any = null
+	#baileys: BaileysHelpers | null = null
+	#voip: VoipSignalingSink | null = null
 
 	readonly #observedTcTokens = new Map<string, { token: Uint8Array; timestamp: string }>()
 	readonly #pendingTcTokenWaiters = new Map<string, ((token: Uint8Array | undefined) => void)[]>()
@@ -101,8 +119,8 @@ export class SignalingBridge {
 	readonly #remoteObfuscatedPeerByCallId = new Map<string, string>()
 	readonly #remoteXmppRoutePeerByCallId = new Map<string, string>()
 	readonly #incomingCallPeerById = new Map<string, string>()
-	#originalKeysSet?: (data: any) => Promise<unknown>
-	#wrappedKeysSet?: (data: any) => Promise<unknown>
+	#originalKeysSet?: SignalKeyStore['set']
+	#wrappedKeysSet?: SignalKeyStore['set']
 	#disposed = false
 
 	#outgoingSignalingQueue = Promise.resolve<void>(undefined)
@@ -113,7 +131,7 @@ export class SignalingBridge {
 	}
 
 	/** Hand the WASM engine in so we can dispatch ack callbacks back to it. */
-	attachEngine = (voip: any): void => {
+	attachEngine = (voip: VoipSignalingSink): void => {
 		this.#voip = voip
 	}
 
@@ -122,9 +140,9 @@ export class SignalingBridge {
 
 		// Hook auth-state writes so we observe TC tokens as they land.
 		this.#originalKeysSet = this.#sock.authState.keys.set
-		this.#wrappedKeysSet = async (data: any) => {
+		this.#wrappedKeysSet = async data => {
 			const result = await this.#originalKeysSet!.call(this.#sock.authState.keys, data)
-			for (const [jid, entry] of Object.entries<any>(data?.tctoken ?? {})) {
+			for (const [jid, entry] of Object.entries(data?.tctoken ?? {})) {
 				if (entry?.token instanceof Uint8Array && entry.token.length > 0) {
 					this.#rememberTcToken(jid, entry.token, entry.timestamp)
 				}
@@ -142,13 +160,13 @@ export class SignalingBridge {
 			.catch(() => {})
 	}
 
-	processIncomingCall = (node: any, voip: any, activeCallId: string): void => {
+	processIncomingCall = (node: BinaryNode, voip: VoipSignalingSink, activeCallId: string): void => {
 		this.#incomingSignalingQueue = this.#incomingSignalingQueue
 			.then(() => this.#doProcessIncomingCall(node, voip, activeCallId))
 			.catch(() => {})
 	}
 
-	processIncomingReceipt = (node: any, voip: any, activeCallId: string): void => {
+	processIncomingReceipt = (node: BinaryNode, voip: VoipSignalingSink, activeCallId: string): void => {
 		this.#incomingSignalingQueue = this.#incomingSignalingQueue
 			.then(() => this.#doProcessIncomingReceipt(node, voip, activeCallId))
 			.catch(() => {})
@@ -158,13 +176,13 @@ export class SignalingBridge {
 		const aliases = await this.#resolveTcTokenAliases(jid)
 		const cached = await this.#getTcToken(aliases[0]!)
 		if (cached?.length) return cached
-		const issue = (this.#sock as any).issuePrivacyTokens ?? (this.#sock as any).getPrivacyTokens
+		const issue = this.#sock.issuePrivacyTokens ?? this.#sock.getPrivacyTokens
 		if (!issue || this.#disposed) return undefined
 
 		const tokenNotification = Promise.race(
 			aliases.map(alias => this.#waitForTcToken(alias, TC_TOKEN_REQUEST_TIMEOUT_MS))
 		)
-		void Promise.resolve(issue([aliases[0]])).catch(() => undefined)
+		void Promise.resolve(issue([aliases[0]!])).catch(() => undefined)
 
 		return tokenNotification
 	}
@@ -186,7 +204,7 @@ export class SignalingBridge {
 
 	discoverPeerDevices = async (peerLidJid: string): Promise<string[]> => {
 		const devices = await this.#sock.getUSyncDevices([peerLidJid], true, false)
-		return this.#normalizeStartCallPeerList(devices.map((d: any) => d.jid).filter(Boolean))
+		return this.#normalizeStartCallPeerList(devices.map(d => d.jid).filter(Boolean))
 	}
 
 	ensureSessionsForPeers = async (jids: string[]): Promise<void> => {
@@ -194,15 +212,15 @@ export class SignalingBridge {
 		if (targets.length) await this.#ensureSignalSessions(targets, true)
 	}
 
-	resolveLid = async (pnJid: string): Promise<string | undefined> =>
+	resolveLid = async (pnJid: string): Promise<string | null | undefined> =>
 		this.#sock.signalRepository.lidMapping?.getLIDForPN(pnJid)
 
 	issueTcToken = async (jid: string): Promise<boolean> => {
-		const issue = (this.#sock as any).issuePrivacyTokens ?? (this.#sock as any).getPrivacyTokens
+		const issue = this.#sock.issuePrivacyTokens ?? this.#sock.getPrivacyTokens
 		if (!issue || this.#disposed) return false
 		try {
 			const aliases = await this.#resolveTcTokenAliases(jid)
-			await issue([aliases[0]])
+			await issue([aliases[0]!])
 			return true
 		} catch {
 			return false
@@ -226,10 +244,10 @@ export class SignalingBridge {
 	// ─── private — outbound signaling ─────────────────────────────────────────
 
 	#doSendSignaling = async (peerJid: string, callId: string, xmlPayload: Uint8Array): Promise<void> => {
-		const { decodeBinaryNode, getBinaryNodeChild } = this.#baileys
+		const { decodeBinaryNode, getBinaryNodeChild } = this.#baileys!
 
 		const rawPayload = Buffer.from(xmlPayload)
-		let voipNode: any
+		let voipNode: BinaryNode
 		try {
 			voipNode = await decodeBinaryNode(Buffer.concat([Buffer.from([0]), rawPayload]))
 		} catch {
@@ -248,7 +266,7 @@ export class SignalingBridge {
 		const destination = getBinaryNodeChild(voipNode, 'destination')
 		if (destination) {
 			const destinations = getNodeChildren(destination)
-			const destinationJids = destinations.map((n: any) => String(n.attrs.jid ?? '').trim()).filter(Boolean)
+			const destinationJids = destinations.map(n => String(n.attrs.jid ?? '').trim()).filter(Boolean)
 			const sessionTargets = this.#expandSignalSessionTargets(destinationJids)
 			if (sessionTargets.length) await this.#ensureSignalSessions(sessionTargets, signalingTag === 'offer')
 
@@ -313,7 +331,7 @@ export class SignalingBridge {
 	 */
 	#sendCallStanza = async (
 		routeTo: string,
-		voipNode: any,
+		voipNode: BinaryNode,
 		signalingTag: string,
 		effectivePeerJid: string,
 		callbackPeerJid: string
@@ -329,7 +347,7 @@ export class SignalingBridge {
 			try {
 				const ackNode = await this.#sock.waitForMessage(stanzaId, ACK_TIMEOUT_MS)
 				if (!ackNode || !this.#voip) return
-				const { encodeBinaryNode } = this.#baileys
+				const { encodeBinaryNode } = this.#baileys!
 				const ackPayload = Buffer.from(encodeBinaryNode(ackNode)).toString('base64')
 				const tcToken = await this.ensureTcToken(effectivePeerJid, callbackPeerJid)
 				try {
@@ -347,8 +365,8 @@ export class SignalingBridge {
 
 	// ─── private — inbound signaling ──────────────────────────────────────────
 
-	#doProcessIncomingCall = async (node: any, voip: any, activeCallId: string): Promise<void> => {
-		const { getAllBinaryNodeChildren, getBinaryNodeChild, encodeBinaryNode } = this.#baileys
+	#doProcessIncomingCall = async (node: BinaryNode, voip: VoipSignalingSink, activeCallId: string): Promise<void> => {
+		const { getAllBinaryNodeChildren, getBinaryNodeChild, encodeBinaryNode } = this.#baileys!
 
 		const voipChild = getAllBinaryNodeChildren(node)[0]
 		if (!voipChild) return
@@ -444,8 +462,12 @@ export class SignalingBridge {
 		}
 	}
 
-	#doProcessIncomingReceipt = async (node: any, voip: any, activeCallId: string): Promise<void> => {
-		const { getAllBinaryNodeChildren, encodeBinaryNode } = this.#baileys
+	#doProcessIncomingReceipt = async (
+		node: BinaryNode,
+		voip: VoipSignalingSink,
+		activeCallId: string
+	): Promise<void> => {
+		const { getAllBinaryNodeChildren, encodeBinaryNode } = this.#baileys!
 		const receiptChild = getAllBinaryNodeChildren(node)[0]
 		if (!receiptChild) return
 
@@ -466,8 +488,8 @@ export class SignalingBridge {
 		})
 	}
 
-	#maybeDecryptEnc = async (voipNode: any, peerJid: string): Promise<any> => {
-		const { getBinaryNodeChild, unpadRandomMax16, proto } = this.#baileys
+	#maybeDecryptEnc = async (voipNode: BinaryNode, peerJid: string): Promise<BinaryNode> => {
+		const { getBinaryNodeChild, unpadRandomMax16, proto } = this.#baileys!
 		const enc = getBinaryNodeChild(voipNode, 'enc')
 		if (!enc || !(enc.content instanceof Uint8Array)) return voipNode
 		const type = enc.attrs.type
@@ -502,8 +524,8 @@ export class SignalingBridge {
 		targetJid: string,
 		rawCallKey: Uint8Array,
 		count: number
-	): Promise<{ encNode: any; shouldIncludeDeviceIdentity: boolean }> => {
-		const { encodeWAMessage } = this.#baileys
+	): Promise<{ encNode: BinaryNode; shouldIncludeDeviceIdentity: boolean }> => {
+		const { encodeWAMessage } = this.#baileys!
 		const primaryDeviceJid = this.#toPrimaryDeviceJid(targetJid)
 		const sessionTargets =
 			primaryDeviceJid && primaryDeviceJid !== targetJid ? [primaryDeviceJid, targetJid] : [targetJid]
@@ -525,7 +547,7 @@ export class SignalingBridge {
 	}
 
 	#ensureSignalSessions = async (jids: string[], refresh: boolean): Promise<void> => {
-		const { parseAndInjectE2ESessions } = this.#baileys
+		const { parseAndInjectE2ESessions } = this.#baileys!
 		const missing: string[] = []
 
 		for (const jid of [...new Set(jids.filter(Boolean))]) {
@@ -562,8 +584,8 @@ export class SignalingBridge {
 		}
 	}
 
-	#appendDeviceIdentity = (voipNode: any): void => {
-		const { getBinaryNodeChild, encodeSignedDeviceIdentity } = this.#baileys
+	#appendDeviceIdentity = (voipNode: BinaryNode): void => {
+		const { getBinaryNodeChild, encodeSignedDeviceIdentity } = this.#baileys!
 		if (getBinaryNodeChild(voipNode, 'device-identity')) return
 		const account = this.#sock.authState.creds.account
 		if (!account) return
@@ -579,7 +601,7 @@ export class SignalingBridge {
 	// ─── private — JID utilities ──────────────────────────────────────────────
 
 	#toBareJid = (jid: string): string => {
-		const { jidDecode, jidEncode } = this.#baileys
+		const { jidDecode, jidEncode } = this.#baileys!
 		const decoded = jidDecode(jid)
 		if (!decoded?.user) return jid
 		// `decoded.server` already captures the parsed domain — using it
@@ -591,7 +613,7 @@ export class SignalingBridge {
 	}
 
 	#toCallDeviceJid = (jid: string): string => {
-		const { jidDecode, jidEncode } = this.#baileys
+		const { jidDecode, jidEncode } = this.#baileys!
 		const decoded = jidDecode(jid)
 		if (!decoded?.user) return jid
 		// `decoded.server` already captures the parsed domain — using it
@@ -604,7 +626,7 @@ export class SignalingBridge {
 	}
 
 	#toPrimaryDeviceJid = (jid: string): string | undefined => {
-		const { jidDecode, jidEncode } = this.#baileys
+		const { jidDecode, jidEncode } = this.#baileys!
 		const decoded = jidDecode(jid)
 		if (!decoded?.user) return undefined
 		const device = decoded.device
@@ -618,7 +640,7 @@ export class SignalingBridge {
 	}
 
 	#hasConcreteDevice = (jid: string): boolean => {
-		const decoded = this.#baileys.jidDecode(jid)
+		const decoded = this.#baileys!.jidDecode(jid)
 		return !!decoded?.user && decoded.device != null
 	}
 
@@ -670,7 +692,7 @@ export class SignalingBridge {
 	]
 
 	#normalizeStartCallPeerList = (jids: string[]): string[] => {
-		const { jidDecode, jidEncode } = this.#baileys
+		const { jidDecode, jidEncode } = this.#baileys!
 		const result = new Set<string>()
 		for (const jid of jids) {
 			const decoded = jidDecode(jid)

@@ -17,15 +17,20 @@
  * `assets/wasm/` originate from WhatsApp Web's own VoIP module
  * (Meta-authored binaries).
  */
+import type { Boom } from '@hapi/boom'
 import { createHmac, randomBytes } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { resolve } from 'node:path'
+import type { AbstractSocketClient } from '../Socket/Client/types'
+import type { ILogger } from '../Utils/logger'
+import type { BinaryNode } from '../WABinary/types'
+import type { BaileysSocket } from './signaling/bridge.js'
 import { SignalingBridge } from './signaling/index.js'
 import { WasmEngine } from './wasm-engine/index.js'
 import { AudioFeeder } from './audio-feeder.js'
 import { LiveAudioBuffer } from './live-audio-buffer.js'
 import { type RelayListUpdatePayload, RelayRtcTransport } from './relay-transport.js'
-import { CallState, type VoipSdkConfig } from './types.js'
+import { CallState, type VoipSdkConfig, type VoipSocketLike } from './types.js'
 
 export type { VoipSdkConfig, CallOptions, CallEvents, AudioConfig, VoipConnectionUpdate } from './types.js'
 export type { LiveAudioSource, LiveVideoSource, AudioInputFrame, VideoInputFrame, AcceptOptions } from './types.js'
@@ -41,12 +46,23 @@ import { useMultiFileAuthState } from '../Utils/use-multi-file-auth-state'
 
 const SHA256_LEN = 32
 
-const loadBaileys = async (): Promise<any> => ({
+const loadBaileys = async () => ({
 	default: makeWASocket,
 	makeWASocket,
 	useMultiFileAuthState,
 	DisconnectReason
 })
+
+type BaileysModule = Awaited<ReturnType<typeof loadBaileys>>
+
+/**
+ * The socket the client drives at runtime. `VoipSdkConfig.socket` is typed as
+ * the structural `VoipSocketLike`, but in practice it is what `makeWASocket()`
+ * returns (see the note on `VoipSocketLike`): the signaling bridge also needs
+ * the key store / signal repository, and the direct `CB:*` hooks go through
+ * the underlying socket client.
+ */
+type VoipSocket = VoipSocketLike & BaileysSocket & { readonly ws?: AbstractSocketClient }
 
 const toBareJid = (jid: string): string => {
 	if (!jid) return jid
@@ -79,7 +95,7 @@ const computeHmacSha256 = (data: Uint8Array, key: Uint8Array): Uint8Array => {
 	return new Uint8Array(result.buffer, result.byteOffset, result.byteLength)
 }
 
-const isCallReceiptNode = (node: any): boolean => {
+const isCallReceiptNode = (node: BinaryNode): boolean => {
 	if (node?.tag !== 'receipt') return false
 	const child = Array.isArray(node.content) ? node.content[0] : null
 	return !!(child?.attrs?.['call-id'] || child?.attrs?.call_id)
@@ -331,10 +347,10 @@ export class VoipClient extends EventEmitter {
 	#engine: WasmEngine | null = null
 	#relay: RelayRtcTransport | null = null
 	#signaling: SignalingBridge | null = null
-	#sock: any = null
+	#sock: VoipSocket | null = null
 	#activeCall: ActiveCall | null = null
 	#pendingAudioCaptureStart = false
-	#baileys: any = null
+	#baileys: BaileysModule | null = null
 	/** Tracks incoming call IDs we have already surfaced as `'incoming'` to dedupe
 	 *  re-emits when the same `<call>` stanza is delivered with multiple children
 	 *  (e.g. offer + transport in the same node). */
@@ -400,7 +416,7 @@ export class VoipClient extends EventEmitter {
 		// Embedded mode: socket already provided by the caller. Skip the
 		// auth/QR ceremony and go straight to wiring the WASM stack.
 		if (this.#config.socket) {
-			this.#sock = this.#config.socket
+			this.#sock = this.#config.socket as VoipSocket
 			await this.#initEngineWithSocket()
 			this.#wireIncomingCallListener()
 			return
@@ -408,7 +424,7 @@ export class VoipClient extends EventEmitter {
 
 		this.#baileys = await loadBaileys()
 		const { useMultiFileAuthState, default: makeWASocket, DisconnectReason } = this.#baileys
-		const makeSocket: (opts: any) => any = makeWASocket ?? this.#baileys.makeWASocket ?? this.#baileys
+		const makeSocket = makeWASocket ?? this.#baileys.makeWASocket ?? this.#baileys
 
 		// `authDir` is required in standalone mode — the constructor guard above
 		// already rejected configs that have neither `authDir` nor `socket`, so
@@ -416,7 +432,7 @@ export class VoipClient extends EventEmitter {
 		const authDir = resolve(this.#config.authDir!)
 		const { state, saveCreds } = await useMultiFileAuthState(authDir)
 
-		const silentLogger: any = {
+		const silentLogger: ILogger & { fatal: () => void } = {
 			level: 'silent',
 			child: () => silentLogger,
 			trace: () => {},
@@ -444,13 +460,14 @@ export class VoipClient extends EventEmitter {
 			// restart arrives as connection.update close (socket end() with
 			// restartRequired) and is retried below.
 			const connectSocket = () => {
-				this.#sock = createSocket()
-				this.#sock.ev.on('creds.update', saveCreds)
+				const sock = createSocket()
+				this.#sock = sock as VoipSocket
+				sock.ev.on('creds.update', saveCreds)
 
-				this.#sock.ev.on('connection.update', (update: any) => {
+				sock.ev.on('connection.update', update => {
 					const connection = update.connection
 					const lastDisconnect = update.lastDisconnect
-					const statusCode = lastDisconnect?.error?.output?.statusCode
+					const statusCode = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode
 					const publicUpdate = {
 						...update,
 						lastDisconnect: lastDisconnect ? { ...lastDisconnect } : lastDisconnect
@@ -493,7 +510,7 @@ export class VoipClient extends EventEmitter {
 	 * QR/auth ceremony and goes straight here).
 	 */
 	#initEngineWithSocket = async (): Promise<void> => {
-		this.#signaling = new SignalingBridge({ sock: this.#sock })
+		this.#signaling = new SignalingBridge({ sock: this.#sock! })
 		await this.#signaling.init()
 
 		this.#relay = new RelayRtcTransport({
@@ -518,9 +535,11 @@ export class VoipClient extends EventEmitter {
 		await this.#engine.initialize()
 		this.#signaling.attachEngine(this.#engine)
 
-		const selfPnJid = this.#sock.authState.creds.me?.id
-		const selfLidJid = this.#sock.authState.creds.me?.lid
-		this.#engine.initVoipStack(selfPnJid, toBareJid(selfPnJid), selfLidJid)
+		const selfPnJid = this.#sock!.authState.creds.me?.id
+		const selfLidJid = this.#sock!.authState.creds.me?.lid
+		// `creds.me` is populated once the socket is authenticated, which both
+		// connect paths guarantee before reaching this point.
+		this.#engine.initVoipStack(selfPnJid!, toBareJid(selfPnJid!), selfLidJid!)
 		await this.#engine.waitForVoipStackReady()
 		try {
 			this.#engine.updateNetworkMedium(2, 0)
@@ -531,23 +550,23 @@ export class VoipClient extends EventEmitter {
 		// mode it's the socket the client just built. Both expose the same handle.
 		// Refs are stored so `disconnect()` can detach them — otherwise a stanza
 		// arriving after teardown would run against `#engine = null`.
-		if (this.#sock.ws?.on) {
-			this.#cbCallHandler = (node: any) => {
+		if (this.#sock!.ws?.on) {
+			this.#cbCallHandler = (node: BinaryNode) => {
 				this.#signaling?.processIncomingCall(node, this.#engine!, this.#activeCall?.callId ?? '')
 			}
 
-			this.#cbReceiptHandler = (node: any) => {
+			this.#cbReceiptHandler = (node: BinaryNode) => {
 				if (!isCallReceiptNode(node)) return
 				this.#signaling?.processIncomingReceipt(node, this.#engine!, this.#activeCall?.callId ?? '')
 			}
 
-			this.#sock.ws.on('CB:call', this.#cbCallHandler)
-			this.#sock.ws.on('CB:receipt', this.#cbReceiptHandler)
+			this.#sock!.ws.on('CB:call', this.#cbCallHandler)
+			this.#sock!.ws.on('CB:receipt', this.#cbReceiptHandler)
 		}
 	}
 
-	#cbCallHandler: ((node: any) => void) | null = null
-	#cbReceiptHandler: ((node: any) => void) | null = null
+	#cbCallHandler: ((node: BinaryNode) => void) | null = null
+	#cbReceiptHandler: ((node: BinaryNode) => void) | null = null
 
 	/**
 	 * Subscribe to the socket's `'call'` event. When an offer arrives that we
@@ -690,7 +709,7 @@ export class VoipClient extends EventEmitter {
 
 		for (const jid of [targetPnJid, peerLid]) {
 			try {
-				await this.#sock.presenceSubscribe(jid)
+				await this.#sock!.presenceSubscribe(jid)
 			} catch {}
 		}
 
@@ -715,8 +734,8 @@ export class VoipClient extends EventEmitter {
 		}
 
 		if (opts.videoSource) call._liveVideoSource = opts.videoSource
-		const selfJid = this.#sock.authState.creds.me?.lid || this.#sock.authState.creds.me?.id
-		if (selfJid) call._setVideoStateContext(selfJid, peerLid, this.#sock)
+		const selfJid = this.#sock!.authState.creds.me?.lid || this.#sock!.authState.creds.me?.id
+		if (selfJid) call._setVideoStateContext(selfJid, peerLid, this.#sock!)
 		this.#activateCall(call)
 
 		// F3: surface video config so the call's `'video-frame'` listener gets
@@ -898,8 +917,8 @@ export class VoipClient extends EventEmitter {
 		if (opts.video) active._videoConfig = opts.video
 		// Group calls always run the heartbeat loop. The call creator for the
 		// heartbeat is OUR own JID (we're the originator).
-		const selfJid = this.#sock.authState.creds.me?.lid || this.#sock.authState.creds.me?.id
-		if (selfJid) active._setGroupContext(selfJid, this.#sock)
+		const selfJid = this.#sock!.authState.creds.me?.lid || this.#sock!.authState.creds.me?.id
+		if (selfJid) active._setGroupContext(selfJid, this.#sock!)
 		this.#activateCall(active)
 
 		// Hook the video frame stream into the active call (if opted-in).
@@ -933,7 +952,7 @@ export class VoipClient extends EventEmitter {
 		// the handler against a torn-down engine and throw into the host
 		// process. We captured the refs at attach time so `removeListener`
 		// targets the exact closure (a fresh arrow would not match).
-		const ws: any = this.#sock?.ws
+		const ws = this.#sock?.ws
 		const off = ws?.off ?? ws?.removeListener
 		if (off) {
 			if (this.#cbCallHandler) off.call(ws, 'CB:call', this.#cbCallHandler)
@@ -942,7 +961,7 @@ export class VoipClient extends EventEmitter {
 
 		this.#cbCallHandler = null
 		this.#cbReceiptHandler = null
-		this.#relay?.closeAll()
+		void this.#relay?.closeAll()
 		this.#engine?.destroy()
 		// Only close the socket if we created it. In embedded mode the caller
 		// still needs it for messaging after the VoIP teardown.

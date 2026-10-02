@@ -164,7 +164,7 @@ describe('stale media temporaries sweep', () => {
 
 	it('removes only directories whose owner process is gone and that are older than a day', () => {
 		// A pid that existed and has exited.
-		const deadPid = spawnSync(process.execPath, ['-e', '']).pid!
+		const deadPid = spawnSync(process.execPath, ['-e', '']).pid
 		const deadAndOld = makeOwnedDir(deadPid, true)
 		const deadButRecent = makeOwnedDir(deadPid, false)
 		// An idle instance under the same UID: alive owner, old directory.

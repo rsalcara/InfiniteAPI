@@ -3,13 +3,15 @@ import { DEFAULT_CONNECTION_CONFIG } from '../../Defaults'
 import type { AuthenticationState, NativeAndroidTransportConfig } from '../../Types'
 import { initAuthCreds } from '../../Utils/auth-utils'
 
-type FakeSocketClient = Record<string, any>
+type FakeSocketClient = {
+	readonly sendCalls: string[]
+}
 
 const integrityTestClients = globalThis as typeof globalThis & {
 	__infiniteApiStartChatTrustTestClients?: FakeSocketClient[]
 }
 integrityTestClients.__infiniteApiStartChatTrustTestClients ??= []
-const clients = integrityTestClients.__infiniteApiStartChatTrustTestClients!
+const clients = integrityTestClients.__infiniteApiStartChatTrustTestClients
 
 const mockMakeFakeSocketClient = () =>
 	class FakeSocketClient {

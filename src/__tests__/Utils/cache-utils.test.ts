@@ -195,10 +195,12 @@ describe('Cache', () => {
 })
 
 describe('MultiLevelCache', () => {
+	type L2 = NonNullable<ConstructorParameters<typeof MultiLevelCache<string>>[1]>
+
 	it('should try L1 first', async () => {
-		const l2Get = jest.fn() as any
-		const l2Set = jest.fn() as any
-		const l2Delete = jest.fn() as any
+		const l2Get = jest.fn<L2['get']>()
+		const l2Set = jest.fn<L2['set']>()
+		const l2Delete = jest.fn<L2['delete']>()
 
 		const multiCache = new MultiLevelCache<string>(
 			{ ttl: 1000, collectMetrics: false },
@@ -214,9 +216,9 @@ describe('MultiLevelCache', () => {
 	})
 
 	it('should fallback to L2 on L1 miss', async () => {
-		const l2Get = jest.fn(async () => 'l2value') as any
-		const l2Set = jest.fn() as any
-		const l2Delete = jest.fn() as any
+		const l2Get = jest.fn<L2['get']>(async () => 'l2value')
+		const l2Set = jest.fn<L2['set']>()
+		const l2Delete = jest.fn<L2['delete']>()
 
 		const multiCache = new MultiLevelCache<string>(
 			{ ttl: 1000, collectMetrics: false },
@@ -230,11 +232,11 @@ describe('MultiLevelCache', () => {
 	})
 
 	it('should write to both levels', async () => {
-		const l2Set = jest.fn() as any
+		const l2Set = jest.fn<L2['set']>()
 
 		const multiCache = new MultiLevelCache<string>(
 			{ ttl: 1000, collectMetrics: false },
-			{ get: jest.fn() as any, set: l2Set, delete: jest.fn() as any }
+			{ get: jest.fn<L2['get']>(), set: l2Set, delete: jest.fn<L2['delete']>() }
 		)
 
 		await multiCache.set('key', 'value')

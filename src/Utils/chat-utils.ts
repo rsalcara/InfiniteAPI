@@ -169,8 +169,8 @@ export const MAX_SYNC_ATTEMPTS = 2
  * WA Web treats these as "Blocked" (waits for key arrival), not fatal.
  * In Baileys we retry with a snapshot which may use a different key.
  */
-export const isMissingKeyError = (error: any): boolean => {
-	return error?.data?.isMissingKey === true
+export const isMissingKeyError = (error: unknown): boolean => {
+	return (error as { data?: { isMissingKey?: unknown } } | null | undefined)?.data?.isMissingKey === true
 }
 
 /**
@@ -178,8 +178,8 @@ export const isMissingKeyError = (error: any): boolean => {
  * TypeError indicates a WASM crash; otherwise we give up after MAX_SYNC_ATTEMPTS.
  * Missing keys are NOT checked here — they are handled separately as "Blocked".
  */
-export const isAppStateSyncIrrecoverable = (error: any, attempts: number): boolean => {
-	return attempts >= MAX_SYNC_ATTEMPTS || error?.name === 'TypeError'
+export const isAppStateSyncIrrecoverable = (error: unknown, attempts: number): boolean => {
+	return attempts >= MAX_SYNC_ATTEMPTS || (error as { name?: unknown } | null | undefined)?.name === 'TypeError'
 }
 
 export const encodeSyncdPatch = async (

@@ -777,7 +777,7 @@ export const decryptMessageNode = (
 						} else {
 							fullMessage.message = msg
 						}
-					} catch (err: any) {
+					} catch (err) {
 						// Check if this is a final failure after all retries exhausted
 						const isRetryExhausted = err instanceof RetryExhaustedError
 						const originalError = isRetryExhausted ? err.originalError : err
@@ -862,7 +862,10 @@ export const decryptMessageNode = (
 						} else if (isSessionRecord) {
 							// Session record errors are transient and the internal retry
 							// loop already exhausted its retries before reaching here.
-							logger.warn(compactContext, `no session record after ${err.attempts} attempts, will resync`)
+							logger.warn(
+								compactContext,
+								`no session record after ${(err as RetryExhaustedError).attempts} attempts, will resync`
+							)
 						} else if (isOrphanMsmsg) {
 							// Meta AI / FBID bot reply arrived but we never saw the outgoing
 							// message that carried `messageContextInfo.messageSecret`. Common
@@ -895,7 +898,9 @@ export const decryptMessageNode = (
 
 						fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
 						// Safe coercion handling edge cases where message might be undefined
-						fullMessage.messageStubParameters = [String(originalError?.message ?? originalError)]
+						fullMessage.messageStubParameters = [
+							String((originalError as Error | null | undefined)?.message ?? originalError)
+						]
 					}
 				}
 			}
@@ -923,11 +928,17 @@ export const decryptMessageNode = (
 	}
 }
 
+/** `error.message`, falling back to `error.toString()`, for pattern matching */
+const getErrorText = (error: unknown): string => {
+	const err = error as { message?: string; toString(): string } | null | undefined
+	return err?.message || err?.toString() || ''
+}
+
 /**
  * Utility function to check if an error is related to missing session record
  */
-function isSessionRecordError(error: any): boolean {
-	const errorMessage = error?.message || error?.toString() || ''
+function isSessionRecordError(error: unknown): boolean {
+	const errorMessage = getErrorText(error)
 	return DECRYPTION_RETRY_CONFIG.sessionRecordErrors.some(errorPattern => errorMessage.includes(errorPattern))
 }
 
@@ -935,8 +946,8 @@ function isSessionRecordError(error: any): boolean {
  * Utility function to check if an error indicates a corrupted session
  * (Bad MAC, MessageCounterError, Key already used)
  */
-export function isCorruptedSessionError(error: any): boolean {
-	const errorMessage = error?.message || error?.toString() || ''
+export function isCorruptedSessionError(error: unknown): boolean {
+	const errorMessage = getErrorText(error)
 	return DECRYPTION_RETRY_CONFIG.corruptedSessionErrors.some(errorPattern => errorMessage.includes(errorPattern))
 }
 

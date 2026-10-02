@@ -1,12 +1,26 @@
 import { jest } from '@jest/globals'
 import { proto } from '../../../WAProto/index.js'
 import { DEFAULT_CONNECTION_CONFIG, NOISE_WA_HEADER } from '../../Defaults'
+import type { SignalKeyStore } from '../../Types'
 import { initAuthCreds, makeCacheableSignalKeyStore } from '../../Utils/auth-utils'
 import { makeKeyedOrderGate } from '../../Utils/make-mutex'
 import type { BinaryNode } from '../../WABinary'
 import { decodeBinaryNode } from '../../WABinary'
 
-type FakeSocketClient = Record<string, any>
+type FakeSocketClient = {
+	emit(event: string, payload?: unknown): boolean
+}
+
+type TestLogger = {
+	level: string
+	child: () => TestLogger
+	trace: jest.Mock
+	debug: jest.Mock
+	info: jest.Mock
+	warn: jest.Mock
+	error: jest.Mock
+	fatal: jest.Mock
+}
 
 const ME_PN = '5511999999999@s.whatsapp.net'
 const ME_LID = '1029384756@lid'
@@ -106,7 +120,7 @@ jest.unstable_mockModule('../../Socket/Client/tcp', () => ({ TcpSocketClient: mo
 const makeWASocket = (await import('../../Socket')).default
 
 const makeTestLogger = () => {
-	const logger: Record<string, any> = {
+	const logger: TestLogger = {
 		level: 'warn',
 		child: () => logger,
 		trace: jest.fn(),
@@ -189,7 +203,7 @@ const makeSocket = async (getPNForLID?: (lid: string) => Promise<string | null>)
 
 	const logger = makeTestLogger()
 	const signalStore = new Map<string, unknown>()
-	const rawSignalStore: any = {
+	const rawSignalStore = {
 		get: async (type: string, ids: string[]) =>
 			ids.reduce<Record<string, unknown>>((result: Record<string, unknown>, id: string) => {
 				const value = signalStore.get(`${type}.${id}`)
@@ -205,7 +219,7 @@ const makeSocket = async (getPNForLID?: (lid: string) => Promise<string | null>)
 		},
 		clear: async () => signalStore.clear()
 	}
-	const keys = makeCacheableSignalKeyStore(rawSignalStore, logger as never)
+	const keys = makeCacheableSignalKeyStore(rawSignalStore as unknown as SignalKeyStore, logger as never)
 	const socket = makeWASocket({
 		...DEFAULT_CONNECTION_CONFIG,
 		auth: { creds, keys },

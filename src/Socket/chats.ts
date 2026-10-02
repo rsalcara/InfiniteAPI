@@ -104,6 +104,7 @@ import {
 	MessageAddOnBackend,
 	MessageMediaBackend,
 	MessageStoreBackend,
+	type MultiDbSqliteStore,
 	ReceiptBackend,
 	StatusBackend,
 	StickersBackend,
@@ -297,7 +298,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const appStateBackend = initOptionalMirror(
 		'sync.db.app_state',
 		'auth_state_keys',
-		() => new AppStateBackend((config.multiDbStore as any).handle('sync.db'))
+		() => new AppStateBackend((config.multiDbStore as MultiDbSqliteStore).handle('sync.db'))
 	)
 
 	const listOwnAppStateDevices = async (): Promise<string[]> => {
@@ -474,7 +475,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const waContactsBackend = initOptionalMirror(
 		'wa.db.wa_contacts',
 		'contacts_events',
-		() => new WaContactsBackend((config.multiDbStore as any).handle('wa.db'))
+		() => new WaContactsBackend((config.multiDbStore as MultiDbSqliteStore).handle('wa.db'))
 	)
 
 	// Mirrors THIS client's own device registration into `companion_devices.db`
@@ -485,7 +486,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const companionDevicesBackend = initOptionalMirror(
 		'companion_devices.db.companion_devices',
 		'creds_device_state',
-		() => new CompanionDevicesBackend((config.multiDbStore as any).handle('companion_devices.db'))
+		() => new CompanionDevicesBackend((config.multiDbStore as MultiDbSqliteStore).handle('companion_devices.db'))
 	)
 
 	// Mirrors static/live location (location_cache/location_sharer)
@@ -495,7 +496,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const locationBackend = initOptionalMirror(
 		'location.db.location',
 		'message_proto_location',
-		() => new LocationBackend((config.multiDbStore as any).handle('location.db'))
+		() => new LocationBackend((config.multiDbStore as MultiDbSqliteStore).handle('location.db'))
 	)
 
 	// Mirrors mute/pin chat settings into chatsettings.db when a
@@ -505,7 +506,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const chatSettingsBackend = initOptionalMirror(
 		'chatsettings.db.chat_settings',
 		'chat_events',
-		() => new ChatSettingsBackend((config.multiDbStore as any).handle('chatsettings.db'))
+		() => new ChatSettingsBackend((config.multiDbStore as MultiDbSqliteStore).handle('chatsettings.db'))
 	)
 
 	// Mirrors received status/story updates (status/status_info)
@@ -515,7 +516,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const statusBackend = initOptionalMirror(
 		'status.db.status',
 		'status_message_events',
-		() => new StatusBackend((config.multiDbStore as any).handle('status.db'))
+		() => new StatusBackend((config.multiDbStore as MultiDbSqliteStore).handle('status.db'))
 	)
 
 	// Mirrors starred/recent stickers into stickers.db from the
@@ -523,7 +524,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const stickersBackend = initOptionalMirror(
 		'stickers.db.stickers',
 		'app_state_sticker_actions',
-		() => new StickersBackend((config.multiDbStore as any).handle('stickers.db'))
+		() => new StickersBackend((config.multiDbStore as MultiDbSqliteStore).handle('stickers.db'))
 	)
 
 	// Mirrors real messages (message/chat tables) + delete-for-everyone
@@ -538,8 +539,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		'legacy_message_proto',
 		() =>
 			new MessageStoreBackend(
-				(config.multiDbStore as any).handle('msgstore.db'),
-				new JidMapBackend((config.multiDbStore as any).handle('msgstore.db'))
+				(config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db'),
+				new JidMapBackend((config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db'))
 			)
 	)
 	const receiptReplayBackend = messageStoreBackend
@@ -548,8 +549,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				'live_receipt_events',
 				() =>
 					new ReceiptBackend(
-						(config.multiDbStore as any).handle('msgstore.db'),
-						new JidMapBackend((config.multiDbStore as any).handle('msgstore.db')),
+						(config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db'),
+						new JidMapBackend((config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db')),
 						messageStoreBackend
 					)
 			)
@@ -561,7 +562,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const mediaBackend = initOptionalMirror(
 		'msgstore.db.message_media',
 		'message_proto_media',
-		() => new MessageMediaBackend((config.multiDbStore as any).handle('msgstore.db'))
+		() => new MessageMediaBackend((config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db'))
 	)
 
 	// Mirrors reactions/polls/locations/vcards attached to a message
@@ -574,8 +575,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				'legacy_message_proto',
 				() =>
 					new MessageAddOnBackend(
-						(config.multiDbStore as any).handle('msgstore.db'),
-						new JidMapBackend((config.multiDbStore as any).handle('msgstore.db')),
+						(config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db'),
+						new JidMapBackend((config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db')),
 						messageStoreBackend
 					)
 			)
@@ -1470,7 +1471,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 								// collection is done with sync
 								collectionsToHandle.delete(name)
 							}
-						} catch (error: any) {
+						} catch (caught) {
+							const error = caught as Error & { output?: { statusCode?: number }; data?: { keyId?: unknown } }
 							attemptsMap[name] = (attemptsMap[name] || 0) + 1
 
 							const logData = {
@@ -1486,7 +1488,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 							if (durableRecoveryQueued) {
 								logger.warn(
-									{ ...logData, keyId: error.data.keyId },
+									{ ...logData, keyId: error.data!.keyId },
 									`${name} blocked on missing key; durable syncd-key-request queued`
 								)
 								blockedCollections.add(name)
@@ -2729,8 +2731,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		// and the entries don't pin the old socket via closure. NEVER touch a consumer-provided
 		// cache — they reuse it across reconnects intentionally (CTWA recovery continuity).
 		if (ownsPlaceholderResendCache) {
-			placeholderResendCache.close?.()
-			placeholderResendCache.flushAll?.()
+			void placeholderResendCache.close?.()
+			void placeholderResendCache.flushAll?.()
 			// Reset the back-assignment so a reconnect using the same config object doesn't pick
 			// our just-closed cache up as "consumer-provided" (ownership flip-flop) — that would
 			// leave the new socket using a timer-stopped cache where entries accumulate forever

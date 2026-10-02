@@ -62,7 +62,7 @@ const parentContent = (): proto.IMessage => ({
 describe('upsertMessage — encrypted CAG envelope admission', () => {
 	it('does not expose ciphertext when a child arrives before its parent', async () => {
 		const session = await makeSession()
-		session.state.creds.me = { id: '5511000000000@s.whatsapp.net' } as any
+		session.state.creds.me = { id: '5511000000000@s.whatsapp.net' }
 		const getMessage = jest.fn(async () => undefined)
 		const sock = makeWASocket({
 			...DEFAULT_CONNECTION_CONFIG,
@@ -70,7 +70,7 @@ describe('upsertMessage — encrypted CAG envelope admission', () => {
 			logger: silentLogger(),
 			getMessage
 		})
-		const upserts: any[] = []
+		const upserts: WAMessage[] = []
 		sock.ev.on('messages.upsert', upsert => upserts.push(...upsert.messages))
 
 		await sock.upsertMessage(envelopeMessage(), 'notify')
@@ -87,7 +87,7 @@ describe('upsertMessage — encrypted CAG envelope admission', () => {
 
 	it('emits the decrypted comment when the parent is available', async () => {
 		const session = await makeSession()
-		session.state.creds.me = { id: '5511000000000@s.whatsapp.net' } as any
+		session.state.creds.me = { id: '5511000000000@s.whatsapp.net' }
 		const getMessage = jest.fn(async () => parentContent())
 		const sock = makeWASocket({
 			...DEFAULT_CONNECTION_CONFIG,
@@ -95,7 +95,7 @@ describe('upsertMessage — encrypted CAG envelope admission', () => {
 			logger: silentLogger(),
 			getMessage
 		})
-		const upserts: any[] = []
+		const upserts: WAMessage[] = []
 		sock.ev.on('messages.upsert', upsert => upserts.push(...upsert.messages))
 
 		await sock.upsertMessage(envelopeMessage(), 'notify')

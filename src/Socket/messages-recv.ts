@@ -108,6 +108,7 @@ import {
 	androidStatusFromReceiptType,
 	JidMapBackend,
 	MessageStoreBackend,
+	type MultiDbSqliteStore,
 	ReceiptBackend,
 	type ReceiptKind,
 	SignalTypedBackend,
@@ -340,7 +341,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const statusBackend = initOptionalMirror(
 		'status.db.status_seen_receipt',
 		'message_receipt_events',
-		() => new StatusBackend((config.multiDbStore as any).handle('status.db'))
+		() => new StatusBackend((config.multiDbStore as MultiDbSqliteStore).handle('status.db'))
 	)
 
 	// Mirrors message receipts (receipt_user/receipt_device) into
@@ -356,8 +357,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		'message_receipt_events',
 		() =>
 			new MessageStoreBackend(
-				(config.multiDbStore as any).handle('msgstore.db'),
-				new JidMapBackend((config.multiDbStore as any).handle('msgstore.db'))
+				(config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db'),
+				new JidMapBackend((config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db'))
 			)
 	)
 	const receiptBackend = receiptChatResolver
@@ -366,8 +367,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				'message_receipt_events',
 				() =>
 					new ReceiptBackend(
-						(config.multiDbStore as any).handle('msgstore.db'),
-						new JidMapBackend((config.multiDbStore as any).handle('msgstore.db')),
+						(config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db'),
+						new JidMapBackend((config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db')),
 						receiptChatResolver
 					)
 			)
@@ -387,7 +388,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const signalTypedBackend = initOptionalMirror(
 		'axolotl.db.transient_signal_tables',
 		'legacy_signal_flow',
-		() => new SignalTypedBackend((config.multiDbStore as any).handle('axolotl.db'))
+		() => new SignalTypedBackend((config.multiDbStore as MultiDbSqliteStore).handle('axolotl.db'))
 	)
 
 	// Per-socket cache of Meta AI / FBID bot message secrets (msmsg). Bounded by
@@ -947,7 +948,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		let data: any
+		// JSON body of a mex notification; every field is server-controlled.
+		let data: { operation?: unknown; updates?: unknown; data?: { xwa2_notify_linked_profiles?: unknown } } | null
 		try {
 			// Narrow payload content type before JSON.parse:
 			// content can be string (UTF-16 internally), Uint8Array, Buffer, or
@@ -1281,7 +1283,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				case 'update': {
 					const settingsNode = getBinaryNodeChild(child, 'settings')
 					if (settingsNode) {
-						const update: Record<string, any> = {}
+						const update: Record<string, unknown> = {}
 						const nameNode = getBinaryNodeChild(settingsNode, 'name')
 						if (nameNode?.content) update.name = nameNode.content.toString()
 
@@ -1998,7 +2000,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		// Fallback: search any child with token/link-token
 		if (!token && Array.isArray(response.content)) {
-			for (const child of response.content as BinaryNode[]) {
+			for (const child of response.content) {
 				if (child.attrs?.token || child.attrs?.['link-token']) {
 					token = child.attrs.token || child.attrs['link-token']
 					break
@@ -4013,7 +4015,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			const liveChatOrderWaitStartedAt = Date.now()
 			const liveChatOrderScope = isJidStatusBroadcast(liveChatOrderTarget!)
 				? 'status'
-				: isJidGroup(liveChatOrderTarget!)
+				: isJidGroup(liveChatOrderTarget)
 					? 'group'
 					: 'chat'
 			const liveChatOrderWaitTimer: ReturnType<typeof setInterval> = setInterval(() => {
@@ -4936,7 +4938,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								messageId: ackId,
 								state: 'durably-queued'
 							})
-						} catch (error: any) {
+						} catch (error) {
 							// The message is already server-acknowledged. A local
 							// queue failure must not turn it into a delivery error.
 							// Release the claim so a queued duplicate ACK can retry.
@@ -4944,7 +4946,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							logTcToken('reissue_ack_fail', {
 								jid: tokenJid,
 								messageId: ackId,
-								error: error?.message,
+								error: (error as Error | null | undefined)?.message,
 								state: 'enqueue-failed-claim-released'
 							})
 						}
@@ -5018,6 +5020,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						.finally(() => {
 							inFlightReachoutCheck = false
 						})
+						.catch(error => logger.warn({ error, jid, msgId }, 'failed to refresh 463 restriction diagnostics'))
 				}
 
 				logger.warn(
@@ -5390,13 +5393,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// close() stops the NodeCache check-period timer; flushAll() drops the entries so they're
 		// released immediately rather than waiting for the whole cache to be GC'd.
 		if (!config.msgRetryCounterCache) {
-			msgRetryCache.close?.()
-			msgRetryCache.flushAll?.()
+			void msgRetryCache.close?.()
+			void msgRetryCache.flushAll?.()
 		}
 
 		if (!config.callOfferCache) {
-			callOfferCache.close?.()
-			callOfferCache.flushAll?.()
+			void callOfferCache.close?.()
+			void callOfferCache.flushAll?.()
 		}
 
 		identityAssertDebounce.close?.()

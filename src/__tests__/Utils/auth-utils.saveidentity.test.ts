@@ -48,8 +48,8 @@ describe('SignalKeyStore.set — cross-type atomicity (H3 / H5)', () => {
 
 		const jid = 'peer@s.whatsapp.net'
 		await keys.set({
-			session: { [jid]: Buffer.from([0x11]) as any },
-			'identity-key': { [jid]: Buffer.from([0x22]) as any }
+			session: { [jid]: Buffer.from([0x11]) },
+			'identity-key': { [jid]: Buffer.from([0x22]) }
 		})
 
 		// Atomic contract: ONE store.set call covering both types.

@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals'
-import { SignalingBridge } from '../../Voip/signaling/bridge'
+import { type BaileysSocket, SignalingBridge } from '../../Voip/signaling/bridge'
 
 describe('SignalingBridge TcToken notification wait', () => {
 	it('waits for the peer notification after an empty issuance ACK', async () => {
@@ -16,7 +16,7 @@ describe('SignalingBridge TcToken notification wait', () => {
 			signalRepository: { lidMapping: {} },
 			issuePrivacyTokens
 		}
-		const bridge = new SignalingBridge({ sock: sock as any })
+		const bridge = new SignalingBridge({ sock: sock as unknown as BaileysSocket })
 		await bridge.init()
 
 		const pending = bridge.ensureTcToken(jid)
@@ -40,7 +40,7 @@ describe('SignalingBridge TcToken notification wait', () => {
 				authState: { keys },
 				signalRepository: { lidMapping: { getLIDForPN: jest.fn(async () => lid) } },
 				issuePrivacyTokens
-			} as any
+			} as unknown as BaileysSocket
 		})
 		await bridge.init()
 
@@ -59,7 +59,7 @@ describe('SignalingBridge TcToken notification wait', () => {
 	it('returns immediately when the embedded socket has no token lifecycle', async () => {
 		const keys = { get: jest.fn(async () => ({})), set: jest.fn(async () => undefined) }
 		const bridge = new SignalingBridge({
-			sock: { authState: { keys }, signalRepository: { lidMapping: {} } } as any
+			sock: { authState: { keys }, signalRepository: { lidMapping: {} } } as unknown as BaileysSocket
 		})
 		await bridge.init()
 
@@ -76,7 +76,7 @@ describe('SignalingBridge TcToken notification wait', () => {
 				authState: { keys },
 				signalRepository: { lidMapping: {} },
 				issuePrivacyTokens: jest.fn(async () => undefined)
-			} as any
+			} as unknown as BaileysSocket
 		})
 		await bridge.init()
 		const wrappedSet = keys.set
@@ -102,7 +102,7 @@ describe('SignalingBridge TcToken notification wait', () => {
 				authState: { keys },
 				signalRepository: { lidMapping: { getPNForLID } },
 				issuePrivacyTokens: jest.fn(async () => undefined)
-			} as any
+			} as unknown as BaileysSocket
 		})
 		await bridge.init()
 
@@ -121,7 +121,7 @@ describe('SignalingBridge TcToken notification wait', () => {
 				authState: { keys },
 				signalRepository: { lidMapping: { getPNForLID: jest.fn(async () => pn) } },
 				issuePrivacyTokens
-			} as any
+			} as unknown as BaileysSocket
 		})
 		await bridge.init()
 

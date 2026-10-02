@@ -1,13 +1,29 @@
 import { jest } from '@jest/globals'
 import { proto } from '../../../WAProto/index.js'
 import { DEFAULT_CONNECTION_CONFIG, NOISE_WA_HEADER } from '../../Defaults'
+import type { SignalKeyStore } from '../../Types'
 import { initAuthCreds, makeCacheableSignalKeyStore } from '../../Utils/auth-utils'
 import { decodeMessageNode } from '../../Utils/decode-wa-message'
 import { pdoRequestCacheKey } from '../../Utils/pdo-recovery'
 import type { BinaryNode } from '../../WABinary'
 import { decodeBinaryNode } from '../../WABinary'
 
-type FakeSocketClient = Record<string, any>
+type FakeSocketClient = {
+	sentNodes: BinaryNode[]
+	failTags: string[]
+	emit(event: string, payload?: unknown): boolean
+}
+
+type TestLogger = {
+	level: string
+	child: () => TestLogger
+	trace: jest.Mock
+	debug: jest.Mock
+	info: jest.Mock
+	warn: jest.Mock
+	error: jest.Mock
+	fatal: jest.Mock
+}
 
 const ME_PN = '5511999999999@s.whatsapp.net'
 const ME_LID = '1029384756@lid'
@@ -112,7 +128,7 @@ jest.unstable_mockModule('../../Socket/Client/tcp', () => ({ TcpSocketClient: mo
 const makeWASocket = (await import('../../Socket')).default
 
 const makeTestLogger = () => {
-	const logger: Record<string, any> = {
+	const logger: TestLogger = {
 		level: 'warn',
 		child: () => logger,
 		trace: jest.fn(),
@@ -206,7 +222,7 @@ const makeSocket = async () => {
 
 	const logger = makeTestLogger()
 	const signalStore = new Map<string, unknown>()
-	const rawSignalStore: any = {
+	const rawSignalStore = {
 		get: async (type: string, ids: string[]) =>
 			ids.reduce<Record<string, unknown>>((result: Record<string, unknown>, id: string) => {
 				const value = signalStore.get(`${type}.${id}`)
@@ -222,7 +238,7 @@ const makeSocket = async () => {
 		},
 		clear: async () => signalStore.clear()
 	}
-	const keys = makeCacheableSignalKeyStore(rawSignalStore, logger as never)
+	const keys = makeCacheableSignalKeyStore(rawSignalStore as unknown as SignalKeyStore, logger as never)
 	const socket = makeWASocket({
 		...DEFAULT_CONNECTION_CONFIG,
 		auth: { creds, keys },
@@ -330,7 +346,10 @@ describe('self-sync receipt fallback ACK wiring', () => {
 
 		const handlingError = logger.error.mock.calls
 			.map((call: unknown[]) => call[0])
-			.find((context: any) => context?.error?.message === RECEIPT_ERROR)
+			.find(
+				(context: unknown) =>
+					(context as { error?: { message?: unknown } } | undefined)?.error?.message === RECEIPT_ERROR
+			)
 		expect(handlingError).toBeDefined()
 
 		await socket.end(new Error('test complete'))

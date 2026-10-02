@@ -19,6 +19,7 @@ import type { IAudioMetadata } from 'music-metadata'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { Readable, Transform } from 'stream'
+import type { ReadableStream as NodeWebReadableStream } from 'stream/web'
 import { URL } from 'url'
 import { proto } from '../../WAProto/index.js'
 import {
@@ -242,7 +243,7 @@ export const extractImageThumb = async (bufferOrFilePath: Readable | Buffer | st
 			}
 		}
 	} else if ('jimp' in lib && typeof lib.jimp?.Jimp === 'function') {
-		const jimp = await (lib.jimp.Jimp as any).read(bufferOrFilePath)
+		const jimp = await lib.jimp.Jimp.read(bufferOrFilePath)
 		const dimensions = {
 			width: jimp.width,
 			height: jimp.height
@@ -290,7 +291,7 @@ export const generateProfilePicture = async (
 			})
 			.toBuffer()
 	} else if ('jimp' in lib && typeof lib.jimp?.Jimp === 'function') {
-		const jimp = await (lib.jimp.Jimp as any).read(buffer)
+		const jimp = await lib.jimp.Jimp.read(buffer)
 		const min = Math.min(jimp.width, jimp.height)
 		const cropped = jimp.crop({ x: 0, y: 0, w: min, h: min })
 
@@ -670,7 +671,10 @@ const getHttpStreamWithFetch = async (
 	}
 
 	// @ts-ignore Node18+ Readable.fromWeb exists
-	const readable = response.body instanceof Readable ? response.body : Readable.fromWeb(response.body as any)
+	const readable =
+		response.body instanceof Readable
+			? response.body
+			: Readable.fromWeb(response.body as unknown as NodeWebReadableStream)
 	readable.once('close', requestAbort.cleanup)
 	return readable
 }
@@ -1007,7 +1011,7 @@ export const downloadEncryptedContent = async (
 	const isRangeRequest = !!startByte || !!endByte
 	const verifyMac = !!macKey && !isRangeRequest && !firstBlockIsIV
 	const HMAC_TRAILER_LEN = 10
-	const hmac = verifyMac ? Crypto.createHmac('sha256', macKey!).update(iv) : null
+	const hmac = verifyMac ? Crypto.createHmac('sha256', macKey).update(iv) : null
 	let trailerBuf = Buffer.alloc(0)
 
 	const output = new Transform({
@@ -1052,8 +1056,8 @@ export const downloadEncryptedContent = async (
 				hmac?.update(data)
 				pushBytes(aes.update(data), b => this.push(b))
 				callback()
-			} catch (error: any) {
-				callback(error)
+			} catch (error) {
+				callback(error as Error)
 			}
 		},
 		final(callback) {
@@ -1098,8 +1102,8 @@ export const downloadEncryptedContent = async (
 
 				pushBytes(aes.final(), b => this.push(b))
 				callback()
-			} catch (error: any) {
-				callback(error)
+			} catch (error) {
+				callback(error as Error)
 			}
 		}
 	})
@@ -1125,7 +1129,7 @@ const isNodeRuntime = (): boolean => {
 		typeof process !== 'undefined' &&
 		process.versions?.node !== null &&
 		typeof process.versions.bun === 'undefined' &&
-		typeof (globalThis as any).Deno === 'undefined'
+		typeof (globalThis as { Deno?: unknown }).Deno === 'undefined'
 	)
 }
 
@@ -1415,11 +1419,11 @@ export const getWAUploadToServer = (
 					uploadInfo = await refreshMediaConn(true)
 					throw new Error(`upload failed, reason: ${JSON.stringify(result)}`)
 				}
-			} catch (error: any) {
+			} catch (error) {
 				// hosts = custom + media_conn, so the last one is at hosts.length - 1
 				const isLast = index === hosts.length - 1
 				logger.warn(
-					{ trace: error?.stack, uploadResult: result },
+					{ trace: (error as Error | null | undefined)?.stack, uploadResult: result },
 					`Error in uploading to ${hostname} ${isLast ? '' : ', retrying...'}`
 				)
 			}

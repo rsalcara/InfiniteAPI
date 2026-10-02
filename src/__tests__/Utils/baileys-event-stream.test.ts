@@ -8,6 +8,7 @@ import {
 	BaileysEventStream,
 	createEventStream,
 	eventFilters,
+	type EventHandler,
 	type EventPriority,
 	eventTransformers,
 	type StreamEvent
@@ -90,7 +91,7 @@ describe('BaileysEventStream', () => {
 
 	describe('event handlers', () => {
 		it('should call handler for specific event type', async () => {
-			const handler = jest.fn() as any
+			const handler = jest.fn<EventHandler>()
 
 			stream.on('messages.upsert', handler)
 			stream.push('messages.upsert', { message: 'test' })
@@ -102,7 +103,7 @@ describe('BaileysEventStream', () => {
 		})
 
 		it('should call global handler for all events', async () => {
-			const handler = jest.fn() as any
+			const handler = jest.fn<EventHandler>()
 
 			stream.on('*', handler)
 			stream.push('messages.upsert', { message: 'test' })
@@ -114,7 +115,7 @@ describe('BaileysEventStream', () => {
 		})
 
 		it('should support once handler', async () => {
-			const handler = jest.fn() as any
+			const handler = jest.fn<EventHandler>()
 
 			stream.once('messages.upsert', handler)
 			stream.push('messages.upsert', { first: true })
@@ -126,7 +127,7 @@ describe('BaileysEventStream', () => {
 		})
 
 		it('should remove handler with off', async () => {
-			const handler = jest.fn() as any
+			const handler = jest.fn<EventHandler>()
 
 			stream.on('messages.upsert', handler)
 			stream.off('messages.upsert', handler)
@@ -140,7 +141,7 @@ describe('BaileysEventStream', () => {
 
 	describe('pause and resume', () => {
 		it('should pause processing', async () => {
-			const handler = jest.fn() as any
+			const handler = jest.fn<EventHandler>()
 
 			stream.on('messages.upsert', handler)
 			stream.pause()
@@ -155,7 +156,7 @@ describe('BaileysEventStream', () => {
 		})
 
 		it('should resume processing', async () => {
-			const handler = jest.fn() as any
+			const handler = jest.fn<EventHandler>()
 
 			stream.on('messages.upsert', handler)
 			stream.pause()
@@ -170,7 +171,7 @@ describe('BaileysEventStream', () => {
 
 	describe('flush', () => {
 		it('should process all buffered events', async () => {
-			const handler = jest.fn() as any
+			const handler = jest.fn<EventHandler>()
 
 			stream.on('messages.upsert', handler)
 
@@ -187,9 +188,9 @@ describe('BaileysEventStream', () => {
 
 	describe('filters', () => {
 		it('should filter events before processing', async () => {
-			const handler = jest.fn() as any
+			const handler = jest.fn<EventHandler>()
 
-			stream.addFilter(event => (event.data as any).include === true)
+			stream.addFilter(event => (event.data as { include?: boolean }).include === true)
 			stream.on('*', handler)
 
 			stream.push('messages.upsert', { include: true })
@@ -206,7 +207,7 @@ describe('BaileysEventStream', () => {
 			stream.addFilter(filter)
 			stream.removeFilter(filter)
 
-			const handler = jest.fn() as any
+			const handler = jest.fn<EventHandler>()
 			stream.on('*', handler)
 
 			stream.push('messages.upsert', { test: true })
@@ -233,7 +234,7 @@ describe('BaileysEventStream', () => {
 
 			await new Promise(resolve => setTimeout(resolve, 50))
 
-			expect((receivedEvent as any)?.metadata?.transformed).toBe(true)
+			expect((receivedEvent as StreamEvent | null)?.metadata?.transformed).toBe(true)
 		})
 	})
 
