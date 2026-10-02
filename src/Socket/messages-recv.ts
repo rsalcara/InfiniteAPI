@@ -4285,6 +4285,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							const startTime = Date.now()
 							const msgId = msg.key.id!
 							const msgKey = msg.key
+							// Keyed on the normalized (PN) identity: it is the same whether
+							// this envelope or the stanza that later brings the content is
+							// LID- or PN-addressed. The success branch cancels it.
 							const pdoIdentity = pdoRequestCacheKey(msgKey)
 
 							// Prepare metadata to preserve original message details
@@ -4428,6 +4431,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				} else {
 					if (messageRetryManager && msg.key.id) {
 						messageRetryManager.markInboundRetrySuccess(retryIdentity)
+						// A CTWA placeholder resend for this message is armed under the
+						// normalized identity (see the absent-content branch), which
+						// the raw one misses when this stanza is LID-addressed. Left
+						// armed, it sent a needless PDO to the phone after the content
+						// had arrived.
+						const normalizedIdentity = pdoRequestCacheKey(msg.key)
+						if (normalizedIdentity !== retryIdentity) {
+							messageRetryManager.cancelPendingPhoneRequest(normalizedIdentity)
+						}
 					}
 
 					// Best-effort: a previously-held stanza's resend just decrypted —

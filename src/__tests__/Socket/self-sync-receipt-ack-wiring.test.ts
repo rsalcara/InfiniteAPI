@@ -151,6 +151,27 @@ const makeInboundDmLidStanza = (): BinaryNode => ({
 	content: [{ tag: 'enc', attrs: { type: 'msg' }, content: makeEncryptedPayload() }]
 })
 
+const makeAbsentContentDmStanza = (id: string, addressing: 'lid' | 'pn'): BinaryNode => ({
+	// What a freshly linked device receives when the sender encrypted only for
+	// the devices it already knew: the envelope without an <enc> for us. The
+	// real content follows in a second stanza with the same id, which the
+	// server may address in the other domain.
+	tag: 'message',
+	attrs: {
+		id,
+		type: 'text',
+		t: String(Math.floor(Date.now() / 1000)),
+		addressing_mode: addressing,
+		...(addressing === 'lid' ? { from: PEER_LID, sender_pn: PEER_PN } : { from: PEER_PN, sender_lid: PEER_LID })
+	},
+	content: []
+})
+
+const makeDeliveredDmStanza = (id: string, addressing: 'lid' | 'pn'): BinaryNode => ({
+	...makeAbsentContentDmStanza(id, addressing),
+	content: [{ tag: 'enc', attrs: { type: 'msg' }, content: makeEncryptedPayload() }]
+})
+
 function makeEncryptedPayload(): Uint8Array {
 	const body = proto.Message.encode(proto.Message.create({ conversation: 'self-sync ack wiring' })).finish()
 	// decryptMessageNode calls unpadRandomMax16; a one-byte zero pad gives it
@@ -365,4 +386,47 @@ describe('self-sync receipt fallback ACK wiring', () => {
 		// Drain the socket teardown timer on real timers before ending the test.
 		await new Promise(resolve => setTimeout(resolve, 2_100))
 	})
+	it.each([
+		['lid', 'lid'],
+		['lid', 'pn'],
+		['pn', 'lid']
+	] as const)(
+		'cancels the CTWA placeholder resend once the content arrives (envelope %s, content %s)',
+		async (absentAddressing, deliveredAddressing) => {
+			const { socket } = await makeSocket()
+			const client = latestClient()
+			const id = `PDO-ABSENT-${absentAddressing}-THEN-${deliveredAddressing}`
+			const manager = socket.messageRetryManager
+			if (!manager) throw new Error('messageRetryManager was not exposed by the socket')
+			const pending = () =>
+				(manager as unknown as { pendingPhoneRequests: Record<string, unknown> }).pendingPhoneRequests
+			// The timer is keyed on the normalized (PN) identity, the one key both
+			// stanzas share whatever domain each one was addressed in.
+			const normalizedIdentity = pdoRequestCacheKey({ remoteJid: PEER_PN, fromMe: false, id })
+			const upserts: unknown[] = []
+			socket.ev.on('messages.upsert', update => upserts.push(update))
+
+			try {
+				client.emit('CB:message', makeAbsentContentDmStanza(id, absentAddressing))
+				await waitFor(() => Object.keys(pending()).length > 0)
+				expect(Object.keys(pending())).toEqual([normalizedIdentity])
+
+				client.emit('CB:message', makeDeliveredDmStanza(id, deliveredAddressing))
+				await waitFor(() =>
+					upserts.some(
+						update => (update as { messages?: Array<{ key?: { id?: string } }> }).messages?.[0]?.key?.id === id
+					)
+				)
+
+				// Left armed, the PDO goes to the phone 3 s later although the
+				// content already arrived (seen in the cold-lead log).
+				expect(pending()).toEqual({})
+			} finally {
+				for (const key of Object.keys(pending())) manager.cancelPendingPhoneRequest(key)
+			}
+
+			await socket.end(new Error('test complete'))
+			await new Promise(resolve => setTimeout(resolve, 2_100))
+		}
+	)
 })
