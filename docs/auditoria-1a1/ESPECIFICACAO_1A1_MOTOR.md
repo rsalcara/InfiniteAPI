@@ -87,7 +87,7 @@
 | G-02 | ~~Sem nó bruto em `info`~~ | `socket.ts:2638`, `chats.ts:2297` | **Descartado por decisão do operador** (mesma decisão do G-01); nada muda | — |
 | G-03 | Mídia temporária privada | `tmpdir()` com 644; limpeza frágil (`messages-media.ts:41`; `messages.ts:358-369`) | `mkdtemp` 0700 na sessão; 0600; `unlink` independente; varredura na inicialização | Sonda: modos e 0 órfãos |
 | G-04 | Sem handler global de exceção | `VoipClient` instala `uncaughtException` (`Voip/index.ts:459-470`) | Usar só `connection.update` | Exceção do host derruba o processo normalmente |
-| G-05 | Upload com limites corretos | Contagem dupla do `maxContentLength`; `isLast` errado (`messages-media.ts:672-676`, `:1353`) | Corrigir as duas contas | Teste unitário |
+| G-05 | Upload com limites corretos | Contagem dupla do `maxContentLength`; `isLast` errado (`messages-media.ts:672-676`, `:1353`) | Corrigir as duas contas (**aplicado na PR-07**) | Teste unitário |
 
 ## 5b. Requisitos vindos da matriz de conformidade (`MATRIZ_CONFORMIDADE_1A1.md`)
 

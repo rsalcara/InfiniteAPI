@@ -694,7 +694,7 @@ export const getHttpStream = async (
 type EncryptedStreamOptions = {
 	saveOriginalFileIfRequired?: boolean
 	logger?: ILogger
-	opts?: RequestInit
+	opts?: RequestInit & { maxContentLength?: number }
 	/** Optional mediaKey to reuse (required for sticker pack thumbnail to match ZIP encryption) */
 	mediaKey?: Uint8Array
 }
@@ -746,11 +746,9 @@ export const encryptedStream = async (
 		for await (const data of stream) {
 			fileLength += data.length
 
-			if (
-				type === 'remote' &&
-				(opts as any)?.maxContentLength &&
-				fileLength + data.length > (opts as any).maxContentLength
-			) {
+			// fileLength already includes this chunk; adding it again refused
+			// content at or just under the limit.
+			if (type === 'remote' && opts?.maxContentLength && fileLength > opts.maxContentLength) {
 				throw new Boom(`content length exceeded when encrypting "${type}"`, {
 					data: { media, type }
 				})
@@ -1358,7 +1356,7 @@ export const getWAUploadToServer = (
 			)
 		}
 
-		for (const { hostname } of hosts) {
+		for (const [index, { hostname }] of hosts.entries()) {
 			logger.debug(`uploading to "${hostname}"`)
 
 			const auth = encodeURIComponent(uploadInfo.auth)
@@ -1418,7 +1416,8 @@ export const getWAUploadToServer = (
 					throw new Error(`upload failed, reason: ${JSON.stringify(result)}`)
 				}
 			} catch (error: any) {
-				const isLast = hostname === hosts[uploadInfo.hosts.length - 1]?.hostname
+				// hosts = custom + media_conn, so the last one is at hosts.length - 1
+				const isLast = index === hosts.length - 1
 				logger.warn(
 					{ trace: error?.stack, uploadResult: result },
 					`Error in uploading to ${hostname} ${isLast ? '' : ', retrying...'}`

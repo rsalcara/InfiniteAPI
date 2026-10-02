@@ -744,6 +744,43 @@ describe('getWAUploadToServer', () => {
 		await expect(upload(tempFilePath, { fileEncSha256B64: 'abc123', mediaType: 'image' })).resolves.toBeDefined()
 		expect(fetchInit?.dispatcher).toBe(dispatcher)
 	})
+	it('reports only the real last host as final when custom hosts precede the media_conn hosts', async () => {
+		globalThis.fetch = (async () => {
+			throw new Error('upload refused')
+		}) as typeof fetch
+
+		const warnings: string[] = []
+		const logger = { ...createLogger(), warn: (_obj: unknown, msg?: string) => warnings.push(String(msg)) } as ILogger
+		const mediaConn: MediaConnInfo = {
+			auth: 'auth-token',
+			ttl: 60,
+			hosts: [
+				{ hostname: 'mmg-1.example.com', maxContentLengthBytes: 1024 },
+				{ hostname: 'mmg-2.example.com', maxContentLengthBytes: 1024 }
+			],
+			fetchDate: new Date()
+		}
+		const upload = getWAUploadToServer(
+			{
+				customUploadHosts: [{ hostname: 'custom.example.com', maxContentLengthBytes: 1024 }],
+				fetchAgent: new Agent(),
+				logger,
+				options: {}
+			} as Partial<SocketConfig> as SocketConfig,
+			async () => mediaConn
+		)
+
+		await expect(upload(tempFilePath, { fileEncSha256B64: 'abc123', mediaType: 'image' })).rejects.toThrow(
+			'Media upload failed on all hosts'
+		)
+		// Three hosts were tried; only the third is the last one. The old check
+		// indexed the combined list with media_conn's length and picked mmg-1.
+		expect(warnings).toEqual([
+			'Error in uploading to custom.example.com , retrying...',
+			'Error in uploading to mmg-1.example.com , retrying...',
+			'Error in uploading to mmg-2.example.com '
+		])
+	})
 })
 
 describe('encryptedStream', () => {
@@ -862,5 +899,40 @@ describe('encryptedStream', () => {
 			expect(result.mediaKey).toBeDefined()
 			await cleanupFiles([result.encFilePath, result.originalFilePath])
 		}
+	})
+
+	describe('maxContentLength on remote media', () => {
+		const body = Buffer.from('0123456789ab') // 12 bytes
+		let server: http.Server
+		let url: string
+
+		beforeAll(async () => {
+			server = http.createServer((_req, res) => {
+				res.writeHead(200, { 'Content-Type': 'application/octet-stream' })
+				res.write(body.subarray(0, 4))
+				res.write(body.subarray(4, 8))
+				res.end(body.subarray(8))
+			})
+			await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+			url = `http://127.0.0.1:${(server.address() as { port: number }).port}/media`
+		})
+
+		afterAll(async () => {
+			await new Promise<void>(resolve => server.close(() => resolve()))
+		})
+
+		it('accepts media exactly at the limit', async () => {
+			// The old check added the chunk to a length that already included it,
+			// so content at (or one chunk under) the limit was refused.
+			const result = await encryptedStream({ url }, 'document', { opts: { maxContentLength: body.length } })
+			expect(result.fileLength).toBe(body.length)
+			await cleanupFiles([result.encFilePath, result.originalFilePath])
+		})
+
+		it('still refuses media above the limit', async () => {
+			await expect(
+				encryptedStream({ url }, 'document', { opts: { maxContentLength: body.length - 1 } })
+			).rejects.toThrow('content length exceeded when encrypting "remote"')
+		})
 	})
 })
