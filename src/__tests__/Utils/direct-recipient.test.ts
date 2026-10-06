@@ -338,6 +338,48 @@ describe('cold-recipient preflight orchestration', () => {
 		expect(resolveUSync).not.toHaveBeenCalled()
 	})
 
+	it('blocks a new chat that is not ready before USync, with every reason', async () => {
+		const resolveUSync = jest.fn(async () => [])
+		const coldOutboundReadiness = jest.fn(() => ['reachout_state_unknown', 'nct_salt_missing'])
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					resolveUSync,
+					hasPrivacyToken: async () => false,
+					fetchReachout: async () => {
+						throw new Error('lookup failed')
+					},
+					coldOutboundReadiness
+				})
+			)
+		).rejects.toMatchObject({
+			output: { statusCode: 403 },
+			data: {
+				category: 'cold-outbound-not-ready',
+				reasons: ['reachout_state_unknown', 'nct_salt_missing'],
+				action: 'blocked-no-retry'
+			}
+		})
+		// The failed lookup reaches the readiness check as "unknown", not "open".
+		expect(coldOutboundReadiness).toHaveBeenCalledWith(expect.objectContaining({ reachout: undefined }))
+		expect(resolveUSync).not.toHaveBeenCalled()
+	})
+
+	it('does not apply readiness to a recipient with a privacy token or to our own number', async () => {
+		const coldOutboundReadiness = jest.fn(() => ['nct_salt_missing'])
+		await expect(
+			runDirectRecipientPreflight(
+				options({ getKnownLIDForPN: async () => lid, hasPrivacyToken: async () => true, coldOutboundReadiness })
+			)
+		).resolves.toMatchObject({ lidJid: lid })
+		await expect(
+			runDirectRecipientPreflight(
+				options({ getKnownLIDForPN: async () => lid, isOwnAccount: () => true, coldOutboundReadiness })
+			)
+		).resolves.toMatchObject({ lidJid: lid })
+		expect(coldOutboundReadiness).not.toHaveBeenCalled()
+	})
+
 	it('lets a recipient that gave us a privacy token through without reading the policy', async () => {
 		const fetchReachout = jest.fn(async () => ({
 			isActive: true,

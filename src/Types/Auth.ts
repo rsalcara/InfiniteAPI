@@ -77,12 +77,26 @@ export type AuthenticationCreds = SignalCreds & {
 	 */
 	abProps?: { tracked: string[]; values: { [code: string]: string } }
 	/**
-	 * Account NCT salt received from the primary (initial history bootstrap or
-	 * a SET `nct_salt_sync` mutation). A companion never creates it.
+	 * Account NCT salt: delivered by the primary (initial history bootstrap or
+	 * a SET `nct_salt_sync` mutation), or minted locally by the engine fallback
+	 * — `nctSaltSource` tells which. The app's companion never creates one.
 	 */
 	nctSalt?: Uint8Array
 	/** Set once the one-time NCT salt backfill read `regular_high` (see `chats.ts`). */
 	nctSaltBackfilled?: boolean
+	/**
+	 * Where the salt came from: `'primary'` for any delivery of the account's
+	 * real salt, `'local'` for the engine's fallback mint. A genuine salt
+	 * always wins over a local one; the local one is a stopgap until delivery.
+	 */
+	nctSaltSource?: 'primary' | 'local'
+	/**
+	 * Serial of this account's verified-name certificate (the `serial` attr of
+	 * the `w:biz` `<verified_name>` response, blob-overridden — `X/DIX.C7i`).
+	 * Stamped as the `verified_name` envelope attribute on sends the way W4B
+	 * does. Absent for regular accounts without a vname certificate.
+	 */
+	verifiedNameSerial?: string
 	routingInfo: Buffer | undefined
 	additionalData?: any | undefined
 	/**

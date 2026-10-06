@@ -318,6 +318,8 @@ export type RecordMessageInput = {
 	status?: number | null
 	timestamp?: number | null
 	receivedTimestamp?: number | null
+	/** Inbound envelope `sts` (server µs timestamp) → `message.server_sts`. */
+	serverSts?: number | null
 	messageType?: number | null
 	textData?: string | null
 	viewMode?: number | null
@@ -461,8 +463,8 @@ export class MessageStoreBackend implements ChatRowResolver {
 			),
 			upsertMessage: this.db.prepare(
 				'INSERT INTO message (chat_row_id, from_me, key_id, sender_jid_row_id, status, timestamp, ' +
-					'received_timestamp, message_type, text_data, view_mode, sort_id) ' +
-					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+					'received_timestamp, server_sts, message_type, text_data, view_mode, sort_id) ' +
+					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
 					'ON CONFLICT(chat_row_id, from_me, key_id, sender_jid_row_id) DO UPDATE SET ' +
 					'status = CASE ' +
 					'WHEN excluded.status IS NULL THEN message.status ' +
@@ -471,6 +473,7 @@ export class MessageStoreBackend implements ChatRowResolver {
 					'>= (CASE message.status WHEN 0 THEN 0 WHEN 4 THEN 1 WHEN 5 THEN 2 WHEN 13 THEN 3 WHEN 8 THEN 4 ELSE 99 END) ' +
 					'THEN excluded.status ELSE message.status END, ' +
 					'received_timestamp = COALESCE(excluded.received_timestamp, message.received_timestamp), ' +
+					'server_sts = COALESCE(excluded.server_sts, message.server_sts), ' +
 					'message_type = COALESCE(excluded.message_type, message.message_type), ' +
 					'text_data = COALESCE(excluded.text_data, message.text_data), ' +
 					'view_mode = COALESCE(excluded.view_mode, message.view_mode)'
@@ -650,6 +653,7 @@ export class MessageStoreBackend implements ChatRowResolver {
 			input.status ?? null,
 			input.timestamp ?? null,
 			input.receivedTimestamp ?? null,
+			input.serverSts ?? null,
 			input.messageType ?? null,
 			input.textData ?? null,
 			input.viewMode ?? null,

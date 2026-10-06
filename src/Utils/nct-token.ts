@@ -1,14 +1,23 @@
-import type { proto } from '../../WAProto/index.js'
-import type { ConnectionTransportProfile } from '../Types'
-import { type BinaryNode, isLidUser, jidNormalizedUser, S_WHATSAPP_NET } from '../WABinary'
+import { proto } from '../../WAProto/index.js'
+import {
+	type BinaryNode,
+	getBinaryNodeChild,
+	getBinaryNodeChildren,
+	isLidUser,
+	jidNormalizedUser,
+	S_WHATSAPP_NET
+} from '../WABinary'
 import { type AbProps, isAbPropEnabled } from './ab-props'
 import { decodeSyncdSnapshot } from './chat-utils'
 import { hmacSign } from './crypto'
 
 /**
  * New-chat (NCT) token: the `<cstoken>` a 1:1 message carries when the
- * recipient has no usable privacy token, so the server can tell a first
- * contact from this account apart from an anonymous reach-out.
+ * recipient has no usable privacy token — HMAC-SHA256(key = account NCT salt,
+ * data = recipient LID), so every device holding the account salt derives the
+ * same per-recipient marker. The server never sees the salt (SyncD values are
+ * encrypted client-side before upload), so it can only weigh the token's
+ * presence, format and stability over time, not verify it cryptographically.
  *
  * App: `NctTokenMessageSendStanzaContributor` (`X/C30120DHe.java`) runs right
  * after the privacy-token contributor, only when `PrivacyTokenStore.A0X` has no
@@ -23,14 +32,25 @@ import { hmacSign } from './crypto'
  * `registration_device_id > 0`); it stores the one the primary sends in the
  * initial history bootstrap (`HistorySync.nctSalt`,
  * `X/C29379CuL.java:474-476`) or in a SET `nct_salt_sync` mutation of
- * `regular_high` (`X/AbstractC25280B9y.java:5197-5205`).
+ * `regular_high` (`X/AbstractC25280B9y.java:5197-5205`): one-element index
+ * `["nct_salt_sync"]`, `SyncActionValue.nctSaltSyncAction.salt`,
+ * `SyncActionData.version` 7. This engine reads that mutation and never writes
+ * it — the server refuses companion-written `nct_salt_sync` (prop 24915), and
+ * the opt-in engine-side mint stores locally without publishing.
  */
 export const NCT_TOKEN_AB_PROP = '24941'
 
 export type CsTokenMode = 'off' | 'ab-prop' | 'salt'
 
-export const resolveCsTokenMode = (profile: ConnectionTransportProfile, mode?: CsTokenMode): CsTokenMode =>
-	mode ?? (profile === 'native_android' ? 'ab-prop' : 'salt')
+/**
+ * The mode in force when the config omits one. Parity is the rule: `ab-prop`
+ * (the default) reproduces the Android app exactly — the token goes out only
+ * with AB prop 24941 on (`X.C30120DHe`). `salt` is the coverage opt-in that
+ * attaches the token whenever the account has a salt (received from the
+ * primary or minted by the fallback), ignoring the AB prop; `off` is the
+ * rollback.
+ */
+export const resolveCsTokenMode = (mode?: CsTokenMode): CsTokenMode => mode ?? 'ab-prop'
 
 export const computeCsToken = (salt: Uint8Array, recipientLid: string) =>
 	hmacSign(Buffer.from(recipientLid, 'utf8'), salt)
@@ -76,6 +96,28 @@ export const buildNctSaltSnapshotQuery = (version: number): BinaryNode => ({
 		}
 	]
 })
+
+/**
+ * A well-formed app-state answer that has no `regular_high` collection, or has
+ * that collection at version zero without a snapshot, is authoritative
+ * absence. This is the fresh-pairing case where the account has never created
+ * a salt, so the caller may mint. A non-empty collection that omits the
+ * requested snapshot is *not* absence: that is an incomplete read and the
+ * caller must retry rather than risk shadowing a real salt.
+ */
+export const isNctSaltSnapshotAuthoritativeAbsence = (result: BinaryNode, requestedVersion: number): boolean => {
+	const syncNode = getBinaryNodeChild(result, 'sync')
+	const collectionNode = getBinaryNodeChildren(syncNode, 'collection').find(
+		node => node.attrs?.name === NCT_SALT_COLLECTION
+	)
+	const responseVersion = Number(collectionNode?.attrs.version ?? 0)
+
+	return (
+		requestedVersion === 0 &&
+		responseVersion === 0 &&
+		(!collectionNode || !getBinaryNodeChild(collectionNode, 'snapshot')?.content)
+	)
+}
 
 /**
  * Finds the account salt in a `regular_high` snapshot. Only `nct_salt_sync` is

@@ -24,6 +24,7 @@ import {
 	assertDirectRecipientCiphertext,
 	assertMediaContent,
 	assertMeId,
+	assertNewChatAllowed,
 	bindWaitForEvent,
 	buildDirectRecipientChatMerges,
 	captureProtocolWire,
@@ -62,8 +63,12 @@ import {
 	validateLiveLocationSendOptions
 } from '../Utils'
 import { logMessageSent, logTcToken } from '../Utils/baileys-logger'
+import { fetchBizVNameCert } from '../Utils/biz-vname-cert'
+import { type ColdOutboundMode, evaluateColdOutboundReadiness } from '../Utils/cold-outbound-readiness'
+import { buildContactRefreshRequest, generateContactRefreshRequestId } from '../Utils/contact-refresh'
 import { getUrlInfo } from '../Utils/link-preview'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
+import { getMessageEcho, takeMessageEcho } from '../Utils/message-echo-cache'
 import { buildMsmsgCacheKey, makeMsmsgSecretCache, type MsmsgSecretCache } from '../Utils/meta-ai-msmsg'
 import {
 	buildMetaAiPromptContext,
@@ -81,7 +86,12 @@ import {
 	StickersBackend
 } from '../Utils/multi-db-sqlite'
 import { buildCsTokenNode, resolveCsTokenMode } from '../Utils/nct-token'
-import { describeNewChatQuota, makeOutboundPolicyCache } from '../Utils/outbound-policy-cache'
+import { evaluateOutboundPolicy } from '../Utils/outbound-policy'
+import {
+	describeNewChatQuota,
+	makeOutboundPolicyCache,
+	type OutboundPolicySnapshot
+} from '../Utils/outbound-policy-cache'
 import { metrics, recordMessageFailure, recordMessageSent } from '../Utils/prometheus-metrics'
 import {
 	appendParticipantFanoutNode,
@@ -105,6 +115,7 @@ import {
 	selectNewestUsableTcToken,
 	TcTokenAckEligibilityIndex
 } from '../Utils/tc-token-utils'
+import { getKnownUsername, rememberUsername } from '../Utils/username-map'
 import {
 	areJidsSameUser,
 	type BinaryNode,
@@ -141,6 +152,36 @@ type SingleSelectButtonParams = {
 	}>
 }
 
+/**
+ * Envelope attrs the stanza builder computes. Caller `additionalAttributes`
+ * may fill in extras the engine does not produce (`category`, `push_priority`,
+ * …) but never override these: a caller-supplied `to`/`id`/`type` would
+ * re-address the send and a `peer_recipient_*`/`verified_name` would forge
+ * peer metadata the mapping does not support.
+ */
+const RESERVED_ENVELOPE_ATTRS = new Set([
+	'to',
+	'id',
+	'type',
+	'participant',
+	'recipient',
+	'peer_recipient_pn',
+	'peer_recipient_lid',
+	'peer_recipient_username',
+	'verified_name'
+])
+
+const withoutReservedEnvelopeAttrs = (attrs?: { [_: string]: string }): { [_: string]: string } => {
+	const extras: { [_: string]: string } = {}
+	for (const [key, value] of Object.entries(attrs ?? {})) {
+		if (!RESERVED_ENVELOPE_ATTRS.has(key)) {
+			extras[key] = value
+		}
+	}
+
+	return extras
+}
+
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
 		logger,
@@ -157,7 +198,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	} = config
 	const sock = makeNewsletterSocket(config)
 	const tcTokenBucketPolicy = resolveTcTokenBucketPolicy(config.transportProfile, config.tcTokenAbProps)
-	const csTokenMode = resolveCsTokenMode(config.transportProfile, config.csTokenMode)
+	const csTokenMode = resolveCsTokenMode(config.csTokenMode)
+	const coldOutboundMode: ColdOutboundMode = config.coldOutboundMode ?? 'legacy'
+	const coldOutboundReadiness = (policy: Pick<OutboundPolicySnapshot, 'reachout' | 'capping'>) =>
+		evaluateColdOutboundReadiness({
+			mode: coldOutboundMode,
+			...policy,
+			nctSalt: authState.creds.nctSalt,
+			abProps: authState.creds.abProps?.values,
+			csTokenMode
+		})
 	const {
 		ev,
 		authState,
@@ -272,6 +322,67 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const getKnownLIDForPN = signalRepository.lidMapping.getKnownLIDForPN.bind(signalRepository.lidMapping)
 	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
 	const getKnownPNForLID = signalRepository.lidMapping.getKnownPNForLID.bind(signalRepository.lidMapping)
+
+	/**
+	 * This account's verified-name certificate serial — the value W4B stamps as
+	 * the `verified_name` envelope attr (`X/C28989Cmn` fetch → `X/DIX.C7i`
+	 * parse; the cert blob serial overrides the attr). Cached in creds after the
+	 * first fetch so later sends never wait. Regular accounts have no
+	 * certificate: the failure is memoized per connection, so a missing cert
+	 * costs at most one `w:biz` IQ per session and the attr is simply omitted.
+	 */
+	let selfVerifiedNameSerial: Promise<string | undefined> | undefined
+	const getSelfVerifiedNameSerial = async (): Promise<string | undefined> => {
+		const cached = authState.creds.verifiedNameSerial
+		if (cached) return cached
+		if (!selfVerifiedNameSerial) {
+			selfVerifiedNameSerial = (async () => {
+				const candidates = [authState.creds.me?.id, authState.creds.me?.lid]
+					.map(jid => (jid ? jidNormalizedUser(jid) : undefined))
+					.filter((jid): jid is string => !!jid)
+				for (const userJid of [...new Set(candidates)]) {
+					try {
+						const cert = await fetchBizVNameCert(query, userJid)
+						if (cert?.serial) {
+							ev.emit('creds.update', { verifiedNameSerial: cert.serial })
+							return cert.serial
+						}
+					} catch (err) {
+						logger.debug({ err, userJid }, 'verified-name certificate lookup failed')
+					}
+				}
+
+				return undefined
+			})()
+		}
+
+		return selfVerifiedNameSerial
+	}
+
+	/** Bare user jid or explicit `:0` device — the only targets A07 stamps peer_recipient_* for. */
+	const isPrimaryUserTargetJid = (jid: string | undefined): boolean => {
+		if (!jid || !(isAnyPnUser(jid) || isAnyLidUser(jid))) return false
+		const decoded = jidDecode(jid)
+		return !!decoded && (decoded.device === undefined || decoded.device === 0)
+	}
+
+	/**
+	 * A06 receipt addressing: the sender's device jid. The stanza `from`/`participant`
+	 * normally carries the device; when it was bare (primary sender) the captured
+	 * receipts use explicit `:0` (`from='6274@lid'` → `to='6274:0@lid'`).
+	 */
+	const withExplicitSenderDevice = (jid: string, senderDeviceJid?: string | null): string => {
+		const base = senderDeviceJid && areJidsSameUser(senderDeviceJid, jid) ? senderDeviceJid : jid
+		if (isPnUser(base) || isLidUser(base)) {
+			const atIndex = base.indexOf('@')
+			const userPart = base.slice(0, atIndex)
+			if (!userPart.includes(':')) {
+				return `${userPart}:0@${base.slice(atIndex + 1)}`
+			}
+		}
+
+		return base
+	}
 
 	/** Encrypted message-secret envelopes use raw phone identities in HKDF info. */
 	const resolveSecretCryptoJid = async (
@@ -431,6 +542,41 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return { ...snapshot, newChatQuota: describeNewChatQuota(snapshot.capping) }
 	}
 
+	/**
+	 * Whether a new 1:1 chat can start now under `coldOutboundMode`, plus
+	 * every gap the stricter modes would report (`gaps`) and the NCT inputs
+	 * behind them, so an operator sees why a first message carries no
+	 * `<cstoken>`. The start-chat trust lookup is per recipient and not here.
+	 */
+	const getColdOutboundReadiness = async ({ refresh = false }: { refresh?: boolean } = {}) => {
+		const state = await getOutboundPolicyState({ refresh })
+		const restriction = evaluateOutboundPolicy({ reachout: state.reachout, capping: state.capping }).restriction
+		const reasons = [...(restriction ? [restriction.code] : []), ...coldOutboundReadiness(state)]
+		const abProps = authState.creds.abProps?.values
+		return {
+			mode: coldOutboundMode,
+			coldOutboundAllowed: reasons.length === 0,
+			reasons,
+			gaps: evaluateColdOutboundReadiness({
+				mode: 'strict',
+				...state,
+				nctSalt: authState.creds.nctSalt,
+				abProps,
+				csTokenMode
+			}),
+			nct: {
+				saltPresent: !!authState.creds.nctSalt?.length,
+				csTokenMode,
+				// `undefined`: not received yet. 24915 is what makes the primary create the salt.
+				abProp24941: abProps?.['24941'],
+				abProp24915: abProps?.['24915']
+			},
+			restriction,
+			reachout: state.reachout,
+			newChatQuota: state.newChatQuota
+		}
+	}
+
 	const tcTokenLifecycle = new TcTokenLifecycleService({
 		keys: authState.keys,
 		resolvers: { getLIDForPN, getPNForLID },
@@ -570,41 +716,77 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	/**
 	 * generic send receipt function
 	 * used for receipts of phone call, read, delivery etc.
+	 *
+	 * Wire shape per `X/AbstractC29398Cuq.A00` and the captured W4B receipts:
+	 * attrs `to, id, type?, participant?, recipient?, sts?` — never `t`.
+	 * `sts` is the exact inbound echo (read receipts carry it), delivery
+	 * receipts are type-less (bare `<receipt to id/>` — captured peer ack),
+	 * and `to`/`participant` carry the SENDER's device jid
+	 * (`X/AbstractC29271CsI.A06` — bare from becomes explicit `:0`).
 	 * */
 	const sendReceipt = async (
 		jid: string,
 		participant: string | undefined,
 		messageIds: string[],
-		type: MessageReceiptType
+		type: MessageReceiptType,
+		sts?: string | null
 	) => {
 		if (!messageIds || messageIds.length === 0) {
 			throw new Boom('missing ids in receipt')
 		}
 
+		// The read-family receipt is the last one a message id gets (delivery
+		// and hist_sync receipts precede it), so it consumes the entry. Earlier
+		// receipts peek: spending the echo here would leave the later read
+		// receipt without its `sts` and the sender's device. A miss (restart,
+		// TTL, eviction) falls back to bare-jid `:0` addressing with no `sts`.
+		const echo =
+			type === 'read' || type === 'read-self' || type === 'played'
+				? takeMessageEcho(authState.creds.me?.id, messageIds[0])
+				: getMessageEcho(authState.creds.me?.id, messageIds[0])
+		const receiptSts = sts ?? echo?.sts
+		const isSenderReceipt = type === 'sender' && (isPnUser(jid) || isLidUser(jid))
+
+		let to = jid
+		let participantAttr: string | undefined
+		let recipientAttr: string | undefined
+		if (isSenderReceipt) {
+			if (!participant) throw new Boom('Missing participant for sender receipt')
+			to = participant
+			recipientAttr = jid
+		} else if (participant) {
+			// group/broadcast: to = chat, participant = sending device (A06)
+			to = jid
+			participantAttr = withExplicitSenderDevice(participant, echo?.senderDeviceJid)
+		} else {
+			to = withExplicitSenderDevice(jid, echo?.senderDeviceJid)
+		}
+
+		const attrs: BinaryNode['attrs'] = {}
+		attrs.to = to
+		attrs.id = messageIds[0]!
+		// A00 writes `type` only when non-null — a plain delivery receipt is the
+		// bare `<receipt to id/>` seen on the wire (captured partner delivery ack
+		// and companion peer ack).
+		if (type) {
+			attrs.type = type
+		}
+
+		if (participantAttr) {
+			attrs.participant = participantAttr
+		}
+
+		if (recipientAttr) {
+			attrs.recipient = recipientAttr
+		}
+
+		if (receiptSts) {
+			attrs.sts = receiptSts
+		}
+
 		const node: BinaryNode = {
 			tag: 'receipt',
-			attrs: {
-				id: messageIds[0]!
-			}
-		}
-		const isReadReceipt = type === 'read' || type === 'read-self'
-		if (isReadReceipt) {
-			node.attrs.t = unixTimestampSeconds().toString()
-		}
-
-		if (type === 'sender' && (isPnUser(jid) || isLidUser(jid))) {
-			if (!participant) throw new Boom('Missing participant for sender receipt')
-			node.attrs.recipient = jid
-			node.attrs.to = participant
-		} else {
-			node.attrs.to = jid
-			if (participant) {
-				node.attrs.participant = participant
-			}
-		}
-
-		if (type) {
-			node.attrs.type = type
+			attrs
 		}
 
 		const remainingMessageIds = messageIds.slice(1)
@@ -860,8 +1042,45 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	 * mapping is committed, devices are queried again by LID so Signal sessions
 	 * are never built from a stale PN-addressed row.
 	 */
+	const newChatGate = {
+		fetchReachout: async () => (await outboundPolicy.get()).reachout,
+		fetchCapping: async () => (await outboundPolicy.get()).capping,
+		hasPrivacyToken: async (jids: string[]) => {
+			const aliases = [...new Set(jids.map(jid => jidNormalizedUser(jid)).filter(Boolean))]
+			const tokens = await authState.keys.get('tctoken', aliases)
+			return aliases.some(alias => !!tokens[alias]?.token?.length)
+		},
+		coldOutboundReadiness,
+		logger
+	}
+
 	const preflightDirectRecipient = async (requestedJid: string) => {
 		const requestedPn = jidNormalizedUser(requestedJid)
+		if (isLidUser(requestedPn)) {
+			// A new chat addressed straight to a LID has no PN to resolve, but it
+			// is still a new chat: the same gate applies. The privacy token may be
+			// filed under the PN alias, so the token check consults it too — via
+			// the LOCAL mapping only (a remote lookup could make a remote LID look
+			// like us) and never a PN that resolves to this account.
+			if (isRegularUser(requestedPn) && !isOwnAccountJid([requestedPn], authState.creds.me)) {
+				const knownPn = await getKnownPNForLID(requestedPn).catch(() => null)
+				const knownPnNormalized = knownPn ? jidNormalizedUser(knownPn) : undefined
+				const knownPnAlias =
+					knownPnNormalized &&
+					isAnyPnUser(knownPnNormalized) &&
+					!isOwnAccountJid([knownPnNormalized], authState.creds.me)
+						? knownPnNormalized
+						: undefined
+				await assertNewChatAllowed({
+					...newChatGate,
+					requestedJid: requestedPn,
+					aliases: knownPnAlias ? [requestedPn, knownPnAlias] : [requestedPn]
+				})
+			}
+
+			return undefined
+		}
+
 		if (!isAnyPnUser(requestedPn)) return undefined
 
 		return directRecipientPreflightMutex.mutex(requestedPn, () =>
@@ -869,13 +1088,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				requestedJid: requestedPn,
 				getKnownLIDForPN,
 				getKnownPNForLID,
-				fetchReachout: async () => (await outboundPolicy.get()).reachout,
-				fetchCapping: async () => (await outboundPolicy.get()).capping,
-				hasPrivacyToken: async jids => {
-					const aliases = [...new Set(jids.map(jid => jidNormalizedUser(jid)).filter(Boolean))]
-					const tokens = await authState.keys.get('tctoken', aliases)
-					return aliases.some(alias => !!tokens[alias]?.token?.length)
-				},
+				...newChatGate,
 				isOwnAccount: jids => isOwnAccountJid(jids, authState.creds.me),
 				fetchStartChatTrustSignals,
 				startChatTrustSignalsPolicy: config.startChatTrustSignalsPolicy ?? 'observe',
@@ -895,6 +1108,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					if (merges.length > 0) ev.emit('chats.update', merges)
 				},
 				onResolvedUsername: resolution => {
+					// Remember under both addressing aliases so A07 can stamp
+					// peer_recipient_username on the next envelope either way.
+					rememberUsername(resolution.lidJid, resolution.username)
+					rememberUsername(resolution.pnJid, resolution.username)
 					ev.emit('contacts.upsert', [
 						{
 							id: resolution.lidJid!,
@@ -1028,7 +1245,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	}
 
 	const sendPeerDataOperationMessage = async (
-		pdoMessage: proto.Message.IPeerDataOperationRequestMessage
+		pdoMessage: proto.Message.IPeerDataOperationRequestMessage,
+		opts?: { messageId?: string }
 	): Promise<string> => {
 		//TODO: for later, abstract the logic to send a Peer Message instead of just PDO - useful for App State Key Resync with phone
 		// `assertMeId` lança Boom 401 padronizado e devolve o id já validado
@@ -1046,6 +1264,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const meJid = jidNormalizedUser(meId)
 
 		const msgId = await relayMessage(meJid, protocolMessage, {
+			messageId: opts?.messageId,
 			additionalAttributes: {
 				category: 'peer',
 
@@ -1060,6 +1279,37 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		})
 
 		return msgId
+	}
+
+	/**
+	 * Sends a bare CONTACT_REFRESH_REQUEST (peer data operation type 14) to
+	 * the primary — 1:1 with the app's companion request. The request id
+	 * travels as the protocol message's key.id, generated in the app's own id
+	 * format, and is recorded in wa_contact_refresh_pending. The primary's
+	 * reply carries facts only (contact data arrives later as syncd contact
+	 * mutations) and settles the pending row via reconcileContactRefresh.
+	 *
+	 * Trigger gating is the caller's responsibility — this is only the send
+	 * primitive plus bookkeeping. Before ANY call-site enables type 14 it
+	 * must reproduce the app's full gate chain (W4B 2.26.36.72):
+	 *   1. the sysconfig master switch (B9O.A05);
+	 *   2. the primary's advertised contactRefresh capability
+	 *      (readContactRefreshCapability);
+	 *   3. the secondary sysconfig gate (B9O.A07);
+	 *   4. the manual-trigger cooldown between requests.
+	 * Nothing in the engine currently calls this — enabling it without that
+	 * chain would fire uncoordinated refresh requests at the primary.
+	 */
+	const sendContactRefreshRequest = async (opts?: { requestStartMs?: number }): Promise<string> => {
+		const meId = assertMeId(authState.creds)
+		const meJid = jidNormalizedUser(meId)
+		const requestStartMs = opts?.requestStartMs ?? Date.now()
+		const requestId = generateContactRefreshRequestId(meJid, requestStartMs)
+
+		await sendPeerDataOperationMessage(buildContactRefreshRequest(), { messageId: requestId })
+		sock.contactRefreshBackend?.recordRequestSent(requestId, requestStartMs)
+		logger.info({ requestId }, 'contact refresh request sent to primary')
+		return requestId
 	}
 
 	const resolveDsmMessageForRecipient = (
@@ -1844,7 +2094,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						to: jid,
 						id: msgId,
 						type: getMessageType(message),
-						...(additionalAttributes || {})
+						...withoutReservedEnvelopeAttrs(additionalAttributes)
 					},
 					content: binaryNodeContent
 				}
@@ -2281,15 +2531,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				})
 			}
 
-			appendParticipantFanoutNode(binaryNodeContent, participants, isRetryResend, isPeerMessage)
-
 			const stanza: BinaryNode = {
 				tag: 'message',
+				// Envelope attr order matches the captured W4B wire:
+				// to, type, id, peer_recipient_*, verified_name, then extras.
+				// WABinary encode writes attrs in insertion order.
 				attrs: {
-					id: msgId,
 					to: destinationJid,
 					type: getMessageType(message),
-					...(additionalAttributes || {})
+					id: msgId
 				},
 				content: binaryNodeContent
 			}
@@ -2299,8 +2549,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const isCatalog = isCatalogMessage(message)
 			const isCarousel = isCarouselMessage(message)
 
-			// Collect biz/bot nodes to append AFTER device-identity and tctoken
-			// Stanza order: participants → device-identity → tctoken → biz (when applicable)
+			// Collect biz/bot nodes to append LAST (after tctoken/cstoken)
+			// Stanza order: device-identity → reporting → participants → tctoken|cstoken → biz (when applicable)
 			// Reference WA implementation includes biz node for carousel (native_flow v=9, name=mixed)
 			const deferredNodes: BinaryNode[] = []
 
@@ -2537,6 +2787,61 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				stanza.attrs.to = destinationJid
 			}
 
+			// A07 envelope attrs (`X/AbstractC29399Cur.A07`): identify the target
+			// user in the OTHER addressing mode, only when the envelope targets a
+			// primary device (bare user jid or explicit :0). LID target →
+			// peer_recipient_pn (+ peer_recipient_username when known); PN target
+			// → peer_recipient_lid. Mappings are resolved locally so a send never
+			// waits on a LID lookup IQ; an unknown mapping omits the attr exactly
+			// like the app's empty map.get() (captured wire: to='6274@lid' +
+			// peer_recipient_pn='6667@s.whatsapp.net').
+			const peerRecipientAttrs: BinaryNode['attrs'] = {}
+			if (!participant && isPrimaryUserTargetJid(stanza.attrs.to)) {
+				const targetUser = jidNormalizedUser(stanza.attrs.to)
+				// A corrupt reverse mapping can resolve a REMOTE user to our own
+				// identity (the self-send misclassification vector covered by the
+				// stanza-assembly tests). Our own identity is only a valid
+				// peer_recipient when the target itself is our account.
+				const targetIsSelf = isOwnAccountJid([targetUser], authState.creds.me)
+				if (isAnyLidUser(targetUser)) {
+					// Best-effort, like the preflight lookups (direct-recipient.ts):
+					// a key-store failure or a store teardown mid-send is treated as
+					// an unknown mapping — envelope metadata never blocks the send.
+					const peerPn = await getKnownPNForLID(targetUser).catch(() => null)
+					if (peerPn && (targetIsSelf || !isOwnAccountJid([peerPn], authState.creds.me))) {
+						peerRecipientAttrs.peer_recipient_pn = jidNormalizedUser(peerPn)
+					}
+
+					// A07 also names the peer's `@username` when the map knows it;
+					// an unknown username omits the attr, like the app's empty map.
+					const peerUsername = getKnownUsername(targetUser)
+					if (peerUsername) {
+						peerRecipientAttrs.peer_recipient_username = peerUsername
+					}
+				} else if (isAnyPnUser(targetUser)) {
+					const peerLid = await getKnownLIDForPN(targetUser).catch(() => null)
+					if (peerLid && (targetIsSelf || !isOwnAccountJid([peerLid], authState.creds.me))) {
+						peerRecipientAttrs.peer_recipient_lid = jidNormalizedUser(peerLid)
+					}
+				}
+			}
+
+			// verified_name = the SENDER's own vname cert serial (ours), matching the
+			// captured outbound envelope (serial only — no verified_level).
+			const verifiedNameSerial = await getSelfVerifiedNameSerial()
+
+			// Wire order: to, type, id, [participant/recipient], peer_recipient_*,
+			// verified_name, then caller extras (category, push_priority, …).
+			Object.assign(stanza.attrs, peerRecipientAttrs)
+			if (verifiedNameSerial) {
+				stanza.attrs.verified_name = verifiedNameSerial
+			}
+
+			const callerExtras = withoutReservedEnvelopeAttrs(additionalAttributes)
+			if (Object.keys(callerExtras).length > 0) {
+				Object.assign(stanza.attrs, callerExtras)
+			}
+
 			// Always include device-identity for carousel (reference WA stanza always has it)
 			if (shouldIncludeDeviceIdentity || isCarousel) {
 				;(stanza.content as BinaryNode[]).push({
@@ -2580,6 +2885,19 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					logger.warn({ jid, trace: (error as Error | null | undefined)?.stack }, 'failed to attach reporting token')
 				}
 			}
+
+			// Peer messages put additionalNodes (e.g. <meta appdata='default'/>) BEFORE
+			// the <enc> node — matches the captured SendPeerMessageJob wire
+			// (<meta/><enc/>). Non-peer additionalNodes keep their slot after tctoken.
+			if (isPeerMessage && additionalNodes && additionalNodes.length > 0) {
+				;(stanza.content as BinaryNode[]).push(...additionalNodes)
+			}
+
+			// Per-device fanout goes after device-identity + reporting and before
+			// tctoken/cstoken — the C84 contributor DAG (COMPANION_MODE_ADV and
+			// GHS_REPORTING_TOKEN runBefore PARTICIPANTS) and the captured W4B wire
+			// both give device-identity → reporting → participants.
+			appendParticipantFanoutNode(binaryNodeContent, participants, isRetryResend, isPeerMessage)
 
 			// Incoming tctoken lifecycle: read the newest valid PN/LID alias and attach it
 			// only when present. The privacy IQ issued after send announces OUR token; it
@@ -2646,12 +2964,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				}
 			}
 
-			if (additionalNodes && additionalNodes.length > 0) {
+			if (!isPeerMessage && additionalNodes && additionalNodes.length > 0) {
 				;(stanza.content as BinaryNode[]).push(...additionalNodes)
 			}
 
-			// Append deferred biz/bot nodes LAST (after device-identity, tctoken)
-			// Stanza order: participants → device-identity → tctoken → biz
+			// Append deferred biz/bot nodes LAST (after tctoken/cstoken + additionalNodes)
+			// Stanza order: device-identity → reporting → participants → tctoken|cstoken → biz
 			if (deferredNodes.length > 0) {
 				;(stanza.content as BinaryNode[]).push(...deferredNodes)
 			}
@@ -3003,6 +3321,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const messageSocket = {
 		...sock,
 		getOutboundPolicyState,
+		getColdOutboundReadiness,
 		userDevicesCache,
 		devicesMutex,
 		issuePrivacyTokens,
@@ -3038,6 +3357,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		},
 		fetchPrivacySettings,
 		sendPeerDataOperationMessage,
+		sendContactRefreshRequest,
 		createParticipantNodes,
 		getUSyncDevices,
 		messageRetryManager,

@@ -1302,7 +1302,7 @@ export const processSyncAction = (
 		// salt for `<cstoken>`; never logged.
 		const salt = action.nctSaltSyncAction.salt
 		if (syncAction.operation !== proto.SyncdMutation.SyncdOperation.REMOVE && salt?.length) {
-			ev.emit('creds.update', { nctSalt: salt })
+			ev.emit('creds.update', { nctSalt: salt, nctSaltSource: 'primary' })
 			logger?.debug({ saltLength: salt.length }, 'stored NCT salt from app-state sync')
 		}
 	} else {

@@ -12,12 +12,13 @@ import {
 	buildNctSaltSnapshotQuery,
 	computeCsToken,
 	findNctSaltInSnapshot,
+	isNctSaltSnapshotAuthoritativeAbsence,
 	NCT_TOKEN_AB_PROP,
 	resolveCsTokenMode
 } from '../../Utils/nct-token'
 import { emitProcessedHistorySync } from '../../Utils/process-message'
 import { expandAppStateKeys } from '../../Utils/wasm-bridge'
-import { S_WHATSAPP_NET } from '../../WABinary'
+import { type BinaryNode, S_WHATSAPP_NET } from '../../WABinary'
 
 const salt = Buffer.alloc(32, 3)
 const recipient = '127496221651050@lid'
@@ -39,10 +40,10 @@ describe('NCT cstoken', () => {
 		expect(computeCsToken(salt, recipient).equals(expected)).toBe(true)
 	})
 
-	it('defaults to the app gate on native Android and to the salt alone on web', () => {
-		expect(resolveCsTokenMode('native_android')).toBe('ab-prop')
-		expect(resolveCsTokenMode('web')).toBe('salt')
-		expect(resolveCsTokenMode('web', 'off')).toBe('off')
+	it('defaults to ab-prop (app parity): the token only with 24941 on', () => {
+		expect(resolveCsTokenMode()).toBe('ab-prop')
+		expect(resolveCsTokenMode('salt')).toBe('salt')
+		expect(resolveCsTokenMode('off')).toBe('off')
 	})
 
 	it('signs only a recipient LID, without device, and honours the mode', () => {
@@ -68,6 +69,49 @@ describe('NCT salt backfill from regular_high', () => {
 	const keyData = Buffer.alloc(32, 5)
 	const getKey = async () => ({ keyData })
 
+	it('treats a well-formed empty regular_high response as authoritative absence', () => {
+		const noCollection: BinaryNode = { tag: 'iq', attrs: {}, content: [{ tag: 'sync', attrs: {}, content: [] }] }
+		const emptyCollection: BinaryNode = {
+			tag: 'iq',
+			attrs: {},
+			content: [
+				{
+					tag: 'sync',
+					attrs: {},
+					content: [
+						{
+							tag: 'collection',
+							attrs: { name: 'regular_high', version: '0' }
+						}
+					]
+				}
+			]
+		}
+		expect(isNctSaltSnapshotAuthoritativeAbsence(noCollection, 0)).toBe(true)
+		expect(isNctSaltSnapshotAuthoritativeAbsence(emptyCollection, 0)).toBe(true)
+	})
+
+	it('never treats an omitted non-empty snapshot as authoritative absence', () => {
+		const nonEmpty: BinaryNode = {
+			tag: 'iq',
+			attrs: {},
+			content: [
+				{
+					tag: 'sync',
+					attrs: {},
+					content: [
+						{
+							tag: 'collection',
+							attrs: { name: 'regular_high', version: '2' }
+						}
+					]
+				}
+			]
+		}
+		expect(isNctSaltSnapshotAuthoritativeAbsence(nonEmpty, 0)).toBe(false)
+		expect(isNctSaltSnapshotAuthoritativeAbsence(nonEmpty, 2)).toBe(false)
+	})
+
 	const record = (index: string[], value: proto.ISyncActionValue): proto.ISyncdRecord => {
 		const { valueEncryptionKey } = expandAppStateKeys(keyData)
 		const plaintext = proto.SyncActionData.encode({ index: Buffer.from(JSON.stringify(index)), value }).finish()
@@ -86,15 +130,15 @@ describe('NCT salt backfill from regular_high', () => {
 		mac: Buffer.alloc(32)
 	})
 
-	it('asks for a regular_high snapshot at the stored version', () => {
-		expect(buildNctSaltSnapshotQuery(42)).toEqual({
+	it('asks for the full regular_high snapshot at version zero', () => {
+		expect(buildNctSaltSnapshotQuery(0)).toEqual({
 			tag: 'iq',
 			attrs: { to: S_WHATSAPP_NET, xmlns: 'w:sync:app:state', type: 'set' },
 			content: [
 				{
 					tag: 'sync',
 					attrs: {},
-					content: [{ tag: 'collection', attrs: { name: 'regular_high', version: '42', return_snapshot: 'true' } }]
+					content: [{ tag: 'collection', attrs: { name: 'regular_high', version: '0', return_snapshot: 'true' } }]
 				}
 			]
 		})
@@ -165,17 +209,62 @@ describe('applyAbPropsResponse (ABPropsManager semantics)', () => {
 
 	it('asks for changes since the hash only when the stored props cover every tracked code', () => {
 		// Sessions that kept only the hash (before props were stored) must get the full set back.
-		expect(abPropsRequestAttrs({ lastPropHash: 'h1', abProps: undefined })).toEqual({ protocol: '1' })
-		expect(abPropsRequestAttrs({ lastPropHash: undefined, abProps: persisted })).toEqual({ protocol: '1' })
-		expect(abPropsRequestAttrs({ lastPropHash: 'h1', abProps: persisted })).toEqual({ protocol: '1', hash: 'h1' })
+		expect(abPropsRequestAttrs({ lastPropHash: 'h1', abProps: undefined }, ['24941'])).toEqual({ protocol: '1' })
+		expect(abPropsRequestAttrs({ lastPropHash: undefined, abProps: persisted }, ['24941'])).toEqual({ protocol: '1' })
+		expect(abPropsRequestAttrs({ lastPropHash: 'h1', abProps: persisted }, ['24941'])).toEqual({
+			protocol: '1',
+			hash: 'h1'
+		})
 		// A newly tracked code is missing from what was stored: full fetch again.
 		expect(abPropsRequestAttrs({ lastPropHash: 'h1', abProps: persisted }, ['24941', '24915'])).toEqual({
 			protocol: '1'
 		})
 	})
 
-	it('persists the hash and only the tracked props of a full response', () => {
+	it('does not send the hash while a tracked code has no stored value (incident 2026-10-02)', () => {
+		// `tracked` listed 24941 but `values` was empty: with the hash the server
+		// answers "unchanged" and the prop would stay unknown for good.
+		expect(abPropsRequestAttrs({ lastPropHash: 'h1', abProps: { tracked: ['24941'], values: {} } })).toEqual({
+			protocol: '1'
+		})
+	})
+
+	it('stores the app default for a tracked code a full set leaves out', () => {
+		// The app reads an absent prop as its compiled default (24941 → false).
+		const withoutNct = {
+			tag: 'props',
+			attrs: { protocol: '1', hash: 'h4' },
+			content: [{ tag: 'prop', attrs: { config_code: '100', config_value: 'x' } }]
+		}
+		const response = readAbPropsResponse({ abProps: { tracked: ['24941'], values: {} } }, withoutNct, {
+			requestedHash: false,
+			tracked: ['24941']
+		})
+		expect(response.update).toEqual({
+			lastPropHash: 'h4',
+			abProps: { tracked: ['24941'], values: { '24941': 'false' } }
+		})
+		// Known now, so the next query carries the hash.
+		expect(abPropsRequestAttrs({ lastPropHash: 'h4', abProps: response.update!.abProps }, ['24941'])).toEqual({
+			protocol: '1',
+			hash: 'h4'
+		})
+	})
+
+	it('tracks 24915 (new-chat capping) too, defaulting it like the app', () => {
+		// The primary creates the account salt only with 24915 on (X/C2JP.java:29).
 		const response = readAbPropsResponse({ abProps: undefined }, fullResponse, { requestedHash: false })
+		expect(response.update?.abProps).toEqual({
+			tracked: ['24941', '24915'],
+			values: { '24941': 'true', '24915': 'false' }
+		})
+	})
+
+	it('persists the hash and only the tracked props of a full response', () => {
+		const response = readAbPropsResponse({ abProps: undefined }, fullResponse, {
+			requestedHash: false,
+			tracked: ['24941']
+		})
 		expect(response.received).toBe(2)
 		expect(response.update).toEqual({
 			lastPropHash: 'h2',
@@ -201,7 +290,11 @@ describe('applyAbPropsResponse (ABPropsManager semantics)', () => {
 		// The app always asks with a hash, so "no hash" means "unchanged" there.
 		// A query without a hash has nothing to be unchanged from.
 		const attrs = { protocol: fullResponse.attrs.protocol }
-		const response = readAbPropsResponse({ abProps: undefined }, { ...fullResponse, attrs }, { requestedHash: false })
+		const response = readAbPropsResponse(
+			{ abProps: undefined },
+			{ ...fullResponse, attrs },
+			{ requestedHash: false, tracked: ['24941'] }
+		)
 		expect(response.update).toEqual({ abProps: { tracked: ['24941'], values: { '24941': 'true' } } })
 		// An empty answer to that query carries nothing to store.
 		expect(
@@ -226,7 +319,7 @@ describe('applyAbPropsResponse (ABPropsManager semantics)', () => {
 		const response = readAbPropsResponse(
 			{ abProps: persisted },
 			{ tag: 'props', attrs: { protocol: '1' }, content: [] },
-			{ requestedHash: true }
+			{ requestedHash: true, tracked: ['24941'] }
 		)
 		expect(response.update).toBeUndefined()
 		expect(response.abProps).toBe(persisted.values)

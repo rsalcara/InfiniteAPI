@@ -50,6 +50,13 @@ export type DirectRecipientPreflightOptions<TDevice> = {
 	 * request) is neither a new chat nor a start-chat trust lookup.
 	 */
 	isOwnAccount?: (jids: string[]) => boolean
+	/**
+	 * Further reasons a new chat may not start, given the account state the
+	 * gate just read (unknown timelock/quota, no first-contact token). Any
+	 * reason blocks with `cold-outbound-not-ready` before USync. Omitted keeps
+	 * the restriction-only check.
+	 */
+	coldOutboundReadiness?: (policy: { reachout?: ReachoutTimelockState; capping?: NewChatMessageCapInfo }) => string[]
 	fetchStartChatTrustSignals?: (
 		jid: string,
 		context: { lookupJid: string; pnJid?: string }
@@ -213,6 +220,57 @@ export const resolveDirectRecipientUSync = (
 }
 
 /** Production preflight for a direct PN recipient (account policy, identity, devices). */
+/**
+ * The app's send gate (`C2DK.A00`) refuses a chat with no privacy token
+ * while the account's reachout timelock is active (`C39781pK.A02`) or its
+ * new-chat cap is reached (`CappingGatingManager.A02` +
+ * `MessageCappingManager.A0N`), whether the recipient is addressed by PN or
+ * LID. A recipient that gave us a token is not a new chat.
+ * `coldOutboundReadiness` can add reasons (see `coldOutboundMode`).
+ */
+export const assertNewChatAllowed = async ({
+	requestedJid,
+	aliases,
+	fetchReachout,
+	fetchCapping,
+	hasPrivacyToken,
+	coldOutboundReadiness,
+	logger
+}: Pick<
+	DirectRecipientPreflightOptions<unknown>,
+	'fetchReachout' | 'fetchCapping' | 'hasPrivacyToken' | 'coldOutboundReadiness' | 'logger'
+> & { requestedJid: string; aliases: string[] }) => {
+	if (hasPrivacyToken && (await hasPrivacyToken(aliases))) return
+
+	const [reachout, capping] = await Promise.all([
+		fetchReachout().catch(error => {
+			logger.warn({ error, requestedJid }, 'cold-recipient reachout policy lookup failed')
+			return undefined
+		}),
+		fetchCapping().catch(error => {
+			logger.warn({ error, requestedJid }, 'cold-recipient message-capping lookup failed')
+			return undefined
+		})
+	])
+	const policy = evaluateOutboundPolicy({ reachout, capping })
+	if (!policy.allowed && policy.restriction) {
+		logger.warn({ requestedJid, ...policy.restriction }, 'outbound cold-recipient send blocked by policy')
+		throw new Boom('Outbound send blocked by WhatsApp account policy', {
+			statusCode: 403,
+			data: { requestedJid, ...policy.restriction }
+		})
+	}
+
+	const reasons = coldOutboundReadiness?.({ reachout, capping }) ?? []
+	if (reasons.length) {
+		logger.warn({ requestedJid, reasons }, 'outbound cold-recipient send blocked: account not ready')
+		throw new Boom('Account is not ready to start a new chat', {
+			statusCode: 403,
+			data: { requestedJid, category: 'cold-outbound-not-ready', reasons, action: 'blocked-no-retry' }
+		})
+	}
+}
+
 export const runDirectRecipientPreflight = async <TDevice>({
 	requestedJid,
 	getKnownLIDForPN,
@@ -221,6 +279,7 @@ export const runDirectRecipientPreflight = async <TDevice>({
 	fetchCapping,
 	hasPrivacyToken,
 	isOwnAccount,
+	coldOutboundReadiness,
 	fetchStartChatTrustSignals,
 	startChatTrustSignalsPolicy,
 	resolveUSync,
@@ -233,40 +292,20 @@ export const runDirectRecipientPreflight = async <TDevice>({
 	const requestedPn = jidNormalizedUser(requestedJid)
 	if (!isAnyPnUser(requestedPn)) return undefined
 
-	/**
-	 * The app's send gate (`C2DK.A00`) refuses a chat with no privacy token
-	 * while the account's reachout timelock is active (`C39781pK.A02`) or its
-	 * new-chat cap is reached (`CappingGatingManager.A02` +
-	 * `MessageCappingManager.A0N`), whether or not the recipient's LID is
-	 * already known. A recipient that gave us a token is not a new chat.
-	 */
-	const assertNewChatAllowed = async (aliases: string[]) => {
-		if (hasPrivacyToken && (await hasPrivacyToken(aliases))) return
+	const assertAllowed = (aliases: string[]) =>
+		assertNewChatAllowed({
+			requestedJid: requestedPn,
+			aliases,
+			fetchReachout,
+			fetchCapping,
+			hasPrivacyToken,
+			coldOutboundReadiness,
+			logger
+		})
 
-		const [reachout, capping] = await Promise.all([
-			fetchReachout().catch(error => {
-				logger.warn({ error, requestedJid: requestedPn }, 'cold-recipient reachout policy lookup failed')
-				return undefined
-			}),
-			fetchCapping().catch(error => {
-				logger.warn({ error, requestedJid: requestedPn }, 'cold-recipient message-capping lookup failed')
-				return undefined
-			})
-		])
-		const policy = evaluateOutboundPolicy({ reachout, capping })
-		if (!policy.allowed && policy.restriction) {
-			logger.warn(
-				{ requestedJid: requestedPn, ...policy.restriction },
-				'outbound cold-recipient send blocked by policy'
-			)
-			throw new Boom('Outbound send blocked by WhatsApp account policy', {
-				statusCode: 403,
-				data: { requestedJid: requestedPn, ...policy.restriction }
-			})
-		}
-	}
-
-	const knownLid = await getKnownLIDForPN(requestedPn)
+	// Best-effort like the reverse lookup below: a key-store failure or store
+	// teardown reads as "no local mapping", not as a send abort.
+	const knownLid = await getKnownLIDForPN(requestedPn).catch(() => null)
 	if (knownLid && isValidLidJid(jidNormalizedUser(knownLid))) {
 		const resolvedLid = jidNormalizedUser(knownLid)
 		const knownPn = getKnownPNForLID ? await getKnownPNForLID(resolvedLid).catch(() => null) : null
@@ -281,7 +320,7 @@ export const runDirectRecipientPreflight = async <TDevice>({
 			return { requestedPn, pnJid: resolvedPnJid, lidJid: resolvedLid }
 		}
 
-		await assertNewChatAllowed(aliases)
+		await assertAllowed(aliases)
 
 		if (startChatTrustSignalsPolicy === 'require-known') {
 			const startChatTrustSignals = fetchStartChatTrustSignals
@@ -327,7 +366,7 @@ export const runDirectRecipientPreflight = async <TDevice>({
 
 	const ownAccount = isOwnAccount?.([requestedPn]) ?? false
 	if (!ownAccount) {
-		await assertNewChatAllowed([requestedPn])
+		await assertAllowed([requestedPn])
 	}
 
 	const phoneUser = jidDecode(requestedPn)?.user

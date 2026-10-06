@@ -84,6 +84,7 @@ import {
 } from '../Utils/app-state-sync-key-devices'
 import { AppStateSyncKeyLifecycle } from '../Utils/app-state-sync-key-lifecycle'
 import { buildAppStateSyncKeyPeerNode } from '../Utils/app-state-sync-key-peer'
+import { type ContactAutoHealScheduler, makeCompanionContactAutoHealer } from '../Utils/companion-contact-auto-healer'
 import {
 	AdaptiveHistoryBatchController,
 	DurableHistorySyncCoordinator,
@@ -97,6 +98,7 @@ import {
 	ChatSettingsBackend,
 	type ChatSettingsRow,
 	CompanionDevicesBackend,
+	ContactRefreshBackend,
 	JidMapBackend,
 	LocationBackend,
 	type LocationCacheRow,
@@ -115,9 +117,11 @@ import {
 } from '../Utils/multi-db-sqlite'
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
+import { backfillNctSalt as backfillNctSaltCore, type NctSaltBackfillContext } from '../Utils/nct-salt-fallback'
 import {
 	buildNctSaltSnapshotQuery,
 	findNctSaltInSnapshot,
+	isNctSaltSnapshotAuthoritativeAbsence,
 	NCT_SALT_COLLECTION,
 	NCT_TOKEN_AB_PROP
 } from '../Utils/nct-token'
@@ -181,7 +185,8 @@ const recordRawMutation = (
 	appStateBackend: AppStateBackend,
 	collectionName: WAPatchName,
 	raw: RawSyncdMutation & { version: number },
-	logger?: ILogger
+	logger?: ILogger,
+	contactRefreshBackend?: ContactRefreshBackend
 ) => {
 	try {
 		const index = raw.mutation.index
@@ -201,6 +206,22 @@ const recordRawMutation = (
 			chatJid: typeof index[1] === 'string' && index[1].includes('@') ? index[1] : null,
 			mutationName: index[0]
 		})
+
+		// Contact-refresh patch log: one row per ingested version on the
+		// contact collection (any mutation name — a version's row must exist
+		// even when the patch that reached it carried non-contact mutations,
+		// or reconcile's version probe would stall). The live apply
+		// (onMutation → processSyncAction) already ran for this mutation —
+		// onRawMutation fires after it in the same decode step — so the row
+		// faithfully marks the version as locally applied. added/edited
+		// counts stay 0 here (no per-patch aggregation at this layer); the
+		// auto-heal replay records real counts when it repairs.
+		if (contactRefreshBackend && collectionName === 'critical_unblock_low') {
+			contactRefreshBackend.recordPatchApplied({
+				version: raw.version,
+				appliedTimestampMs: Date.now()
+			})
+		}
 	} catch (err) {
 		logger?.warn?.({ err, collectionName }, 'failed to record syncd_mutation')
 	}
@@ -300,6 +321,38 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		'auth_state_keys',
 		() => new AppStateBackend((config.multiDbStore as MultiDbSqliteStore).handle('sync.db'))
 	)
+
+	// Contact Refresh (type-14 request/response lifecycle, patch log and
+	// auto-heal window marker) — wa.db tables. Same boundary-cast rationale
+	// as waContactsBackend.
+	const contactRefreshBackend = initOptionalMirror(
+		'wa.db.contact_refresh',
+		'none (tables are multi-db only)',
+		() => new ContactRefreshBackend((config.multiDbStore as MultiDbSqliteStore).handle('wa.db'))
+	)
+
+	// CompanionContactAutoHealer — hourly local-only repair of contact syncd
+	// mutations (1:1 with the app's heal task). Fail-closed by default: the
+	// app requires BOTH its config master switch AND an interval > 0, so the
+	// engine requires `enabled: true` AND `intervalHours > 0` — no single
+	// knob can turn it on by accident.
+	// getStoredContact is referenced lazily from its closure (defined below),
+	// and the scheduler only ticks after the connection opens.
+	const contactAutoHealScheduler: ContactAutoHealScheduler | undefined =
+		contactRefreshBackend && appStateBackend
+			? makeCompanionContactAutoHealer({
+					isCompanion: () => true,
+					isEnabled: () => config.contactAutoHealConfig?.enabled ?? false,
+					intervalHours: () => config.contactAutoHealConfig?.intervalHours ?? 0,
+					getLastHealTimestamp: () => contactRefreshBackend.getLastContactAutoHealTimestamp(),
+					setLastHealTimestamp: ms => contactRefreshBackend.setLastContactAutoHealTimestamp(ms),
+					listContactMutationsForHeal: () => appStateBackend.listContactMutationsForHeal(),
+					listPendingContactMutations: () => appStateBackend.listPendingContactMutations(),
+					getLocalContact: jid => getStoredContact(jid),
+					ev,
+					logger
+				})
+			: undefined
 
 	const listOwnAppStateDevices = async (): Promise<string[]> => {
 		const meId = authState.creds.me?.id
@@ -1428,7 +1481,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 									getCachedAppStateSyncKey,
 									initialVersionMap[name],
 									appStateMacVerification.snapshot,
-									appStateBackend ? raw => recordRawMutation(appStateBackend, name, raw) : undefined
+									appStateBackend
+										? raw => recordRawMutation(appStateBackend, name, raw, logger, contactRefreshBackend)
+										: undefined
 								)
 								states[name] = newState
 								Object.assign(globalMutationMap, mutationMap)
@@ -1453,7 +1508,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 									initialVersionMap[name],
 									logger,
 									appStateMacVerification.patch,
-									appStateBackend ? raw => recordRawMutation(appStateBackend, name, raw) : undefined
+									appStateBackend
+										? raw => recordRawMutation(appStateBackend, name, raw, logger, contactRefreshBackend)
+										: undefined
 								)
 
 								await authState.keys.set({ 'app-state-sync-version': { [name]: newState } })
@@ -1813,7 +1870,20 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		await appStatePatchMutex.mutex(async () => {
 			await authState.keys.transaction(async () => {
-				logger.debug({ patch: patchCreate }, 'applying app patch')
+				// Shape only — never `syncAction`: its value is the payload (the
+				// account NCT salt on `nct_salt_sync`), and a log line is no place
+				// for a secret. Jids in `index` are fine (logs may carry them).
+				logger.debug(
+					{
+						patch: {
+							type: patchCreate.type,
+							index: patchCreate.index,
+							operation: patchCreate.operation,
+							apiVersion: patchCreate.apiVersion
+						}
+					},
+					'applying app patch'
+				)
 
 				await resyncAppState([name], false)
 
@@ -1893,36 +1963,69 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	let socketEnding = false
 	/**
-	 * Engine-side backfill, not app behavior. Sessions paired before the NCT
-	 * salt was kept dropped its `nct_salt_sync` mutation, and an incremental
-	 * resync never delivers it again; an account whose history sync is off may
-	 * also never see the bootstrap copy. Read the salt once from a
-	 * `regular_high` snapshot (the collection the app files it under,
-	 * `X/C1LE.java`) without persisting that snapshot or emitting any of its
-	 * other mutations: replaying old deleteChat/clearChat would be destructive.
+	 * Engine-side NCT salt fallbacks, not app behavior (see
+	 * `Utils/nct-salt-fallback.ts` for the decision tree). The one-shot
+	 * `regular_high` snapshot read always runs — it recovers the account's
+	 * real salt when an incremental `nct_salt_sync` push was missed. The mint
+	 * is opt-in (`config.nctSaltFallback === 'mint'`): by default the
+	 * companion never creates a salt (app parity) and sends without
+	 * `<cstoken>` when none arrived. Wired here to creds, the socket and the
+	 * key store.
 	 */
-	const backfillNctSalt = async () => {
-		if (authState.creds.nctSalt?.length || authState.creds.nctSaltBackfilled) return
-		// Background work: once end() starts, stop before touching the key store
-		// or the socket again, so teardown never waits on it.
-		if (socketEnding) return
-
-		const { [NCT_SALT_COLLECTION]: state } = await authState.keys.get('app-state-sync-version', [NCT_SALT_COLLECTION])
-		if (socketEnding) return
-		const result = await query(buildNctSaltSnapshotQuery(state?.version ?? 0))
-		if (socketEnding) return
-
-		// Completion is recorded only after a snapshot was decoded (with or
-		// without a salt). No snapshot or any failure throws to the caller and
-		// the next connection tries again.
-		const snapshot = (await extractSyncdPatches(result, config.options))[NCT_SALT_COLLECTION]?.snapshot
-		if (!snapshot) throw new Error('regular_high snapshot missing from the app-state response')
-		const salt = await findNctSaltInSnapshot(snapshot, getCachedAppStateSyncKey, appStateMacVerification.snapshot)
-		if (socketEnding) return
-
-		ev.emit('creds.update', { ...(salt ? { nctSalt: salt } : {}), nctSaltBackfilled: true })
-		logger.info({ found: !!salt }, 'NCT salt backfill finished')
+	const nctSaltFallbackCtx = (): NctSaltBackfillContext => ({
+		getSalt: () => authState.creds.nctSalt,
+		isEnding: () => socketEnding,
+		enabled: config.nctSaltFallback === 'mint',
+		// The key share can land tens of milliseconds after the initial
+		// sync ends; until it does the snapshot read is impossible and a
+		// mint would mask the primary's delivery (see
+		// `Utils/nct-salt-fallback.ts`).
+		hasAppStateKey: () => !!authState.creds.myAppStateKeyId,
+		store: salt => ev.emit('creds.update', { nctSalt: salt, nctSaltBackfilled: true, nctSaltSource: 'local' }),
+		isLocalSalt: () => authState.creds.nctSaltSource === 'local',
+		logger,
+		isBackfilled: () => !!authState.creds.nctSaltBackfilled,
+		markBackfilled: salt =>
+			ev.emit(
+				'creds.update',
+				salt ? { nctSalt: salt, nctSaltBackfilled: true, nctSaltSource: 'primary' } : { nctSaltBackfilled: true }
+			),
+		// Read the salt once from a `regular_high` snapshot (the collection the
+		// app files it under, `X/C1LE.java`) without persisting that snapshot or
+		// emitting any of its other mutations: replaying old deleteChat/clearChat
+		// would be destructive.
+		readSnapshotSalt: async () => {
+			if (socketEnding) return undefined
+			// Always request the full snapshot. A query at the local version can
+			// return collection metadata without a snapshot after regular_high has
+			// already synced, which is not evidence that a salt is absent.
+			const result = await query(buildNctSaltSnapshotQuery(0))
+			if (socketEnding) return undefined
+			if (isNctSaltSnapshotAuthoritativeAbsence(result, 0)) return undefined
+			const snapshot = (await extractSyncdPatches(result, config.options))[NCT_SALT_COLLECTION]?.snapshot
+			if (!snapshot) throw new Error('regular_high snapshot missing from the app-state response')
+			const salt = await findNctSaltInSnapshot(snapshot, getCachedAppStateSyncKey, appStateMacVerification.snapshot)
+			return socketEnding ? undefined : salt
+		}
+	})
+	// One cached context per socket: `mintNctSalt` dedupes concurrent calls by
+	// context identity, so overlapping backfills share a single in-flight mint
+	// instead of publishing twice.
+	let nctSaltCtx: NctSaltBackfillContext | undefined
+	const getNctSaltCtx = (): NctSaltBackfillContext => {
+		nctSaltCtx ??= nctSaltFallbackCtx()
+		return nctSaltCtx
 	}
+
+	/**
+	 * The read-then-mint chain for sessions the app left without a salt:
+	 * sessions paired before the NCT salt was kept dropped its `nct_salt_sync`
+	 * mutation (an incremental resync never delivers it again), and an account
+	 * whose history sync is off may never see the bootstrap copy. When the
+	 * snapshot read cannot place a salt — or fails on a transient drop — the
+	 * fallback mints one instead of leaving the account bare.
+	 */
+	const backfillNctSalt = () => backfillNctSaltCore(getNctSaltCtx())
 
 	/** fetch AB props */
 	const fetchProps = async () => {
@@ -1952,13 +2055,17 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 			logger.debug(
 				{
+					requestedHash: !!requestAttrs.hash,
 					received: response.received,
 					stored: Object.keys(response.abProps ?? {}).length,
 					deltaUpdate: response.deltaUpdate,
+					nctTokenKnown: response.abProps?.[NCT_TOKEN_AB_PROP] !== undefined,
 					nctToken: isAbPropEnabled(response.abProps, NCT_TOKEN_AB_PROP)
 				},
 				'fetched props'
 			)
+		} else {
+			logger.debug({ requestedHash: !!requestAttrs.hash }, 'fetched props: response without a props node')
 		}
 
 		return props
@@ -2228,6 +2335,17 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				// singleton DB writes while w:sync:app:state is still active.
 				syncState = SyncState.Online
 				appStateSyncCompleted = true
+				// regular_high synced from scratch: a salt the account has is stored by now.
+				logger.info({ nctSalt: !!authState.creds.nctSalt?.length }, 'initial app-state sync finished')
+				// Fresh pairing whose primary delivered nothing (no bootstrap, no
+				// nct_salt_sync push): run the read-then-mint chain instead of
+				// sending bare first contacts. The read must come first — a bare
+				// mint could supersede a real salt the snapshot still holds.
+				if (!authState.creds.nctSalt?.length) {
+					backfillNctSalt().catch(err =>
+						logger.warn({ err }, 'NCT salt backfill failed; retrying on the next connection')
+					)
+				}
 
 				const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
 				ev.emit('creds.update', { accountSyncCounter })
@@ -2253,6 +2371,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					getMessage,
 					orphanQueue,
 					appStateBackend,
+					contactRefreshBackend,
 					locationBackend,
 					statusBackend,
 					messageStoreBackend,
@@ -2400,6 +2519,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	ev.on('connection.update', ({ connection, receivedPendingNotifications }) => {
 		if (connection === 'open') {
 			mirrorOwnDevice()
+			contactAutoHealScheduler?.start()
 			historySyncCoordinator?.startRecovery().catch(error => onUnexpectedError(error, 'durable history sync recovery'))
 			appStateSyncKeyLifecycle
 				?.startRecovery()
@@ -2416,6 +2536,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		// Clean up app state sync key cache on connection close
 		if (connection === 'close') {
+			contactAutoHealScheduler?.stop()
 			appStateSyncKeyLifecycle?.stop()
 			blockedCollections.clear()
 			clearTimeout(historySyncPausedTimeout)
@@ -2531,6 +2652,17 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// collections blocked on a missing key, trigger a re-sync for just those collections.
 	// This mirrors WA Web's Blocked → retry-on-key-arrival behavior.
 	ev.on('creds.update', ({ myAppStateKeyId }) => {
+		// The NCT fallback chain waits on this key — before it arrives the
+		// snapshot cannot be decoded and the mint cannot publish. A fresh
+		// pairing reaches this point with both delivery windows of the primary
+		// already exhausted (bootstrap processed, snapshot read), so a bare
+		// account here is exactly the primary-did-not-deliver case the mint is
+		// for. Not run during a full sync: doAppStateSync's own end-of-sync
+		// trigger covers it with fresher state.
+		if (myAppStateKeyId && syncState !== SyncState.Syncing && !authState.creds.nctSalt?.length) {
+			backfillNctSalt().catch(err => logger.warn({ err }, 'NCT salt backfill failed; retrying on the next connection'))
+		}
+
 		// The durable lifecycle correlates exact key sets and retries only the
 		// collections whose missing-key dependencies are now resolved. Running
 		// the legacy listener as well would retry every blocked collection and
@@ -2922,6 +3054,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		getStatusViewers,
 		getStarredStickers,
 		getRecentStickers,
+		contactRefreshBackend,
 		orphanQueue,
 		messageMutex,
 		receiptMutex,

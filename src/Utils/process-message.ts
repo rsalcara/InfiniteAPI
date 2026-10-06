@@ -37,6 +37,13 @@ import {
 	jidEncode,
 	jidNormalizedUser
 } from '../WABinary'
+import { CONTACT_MUTATION_COLLECTION } from './companion-contact-auto-healer'
+import {
+	CONTACT_REFRESH_MAX_COVERED_IDS,
+	extractContactRefreshReply,
+	reconcileContactRefresh,
+	replyFactsForPending
+} from './contact-refresh'
 import { aesDecryptGCM, hmacSign, sha256 } from './crypto'
 import { getKeyAuthor, toNumber } from './generics'
 import { downloadAndProcessHistorySyncNotification } from './history'
@@ -56,6 +63,7 @@ import { classifyMessageWithoutAuthorDevice } from './message-sender-source'
 import {
 	ANDROID_VIEW_ONCE_STATE,
 	type AppStateBackend,
+	type ContactRefreshBackend,
 	isAndroidViewOnceMessageType,
 	LOCATION_OPEN_ENDED_EXPIRES_MS,
 	type LocationBackend,
@@ -91,6 +99,8 @@ type ProcessMessageContext = {
 	orphanQueue?: OrphanQueue
 	/** Optional sync.db mirror (collection_versions/syncd_mutations/peer_messages). */
 	appStateBackend?: AppStateBackend
+	/** Optional wa.db contact-refresh mirror (pending requests + patch log). */
+	contactRefreshBackend?: ContactRefreshBackend
 	/** Optional location.db mirror (location_cache/location_sharer). */
 	locationBackend?: LocationBackend
 	/** Optional status.db mirror (status/status_info). */
@@ -1082,6 +1092,7 @@ const processMessage = async (message: WAMessage, processContext: ProcessMessage
 		getMessage,
 		orphanQueue,
 		appStateBackend,
+		contactRefreshBackend,
 		locationBackend,
 		statusBackend,
 		messageStoreBackend,
@@ -1958,6 +1969,51 @@ const processMessage = async (message: WAMessage, processContext: ProcessMessage
 			case proto.Message.ProtocolMessage.Type.PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE:
 				const response = protocolMsg.peerDataOperationRequestResponseMessage
 				if (response) {
+					// Contact refresh (type 14) reply: facts only — contact data
+					// arrives later as syncd contact mutations. Capture the facts
+					// on every covered request id, then reconcile pending requests
+					// against local syncd state (1:1 with the app's reply handler:
+					// settle + wam_companion_contact_refresh facts + patch-log
+					// prune once the local collection reaches the target version).
+					// Never allowed to affect message processing: best-effort side
+					// channel, same rule as the other optional multi-db-sqlite
+					// mirrors in this file — a transient store error must not skip
+					// the placeholderResendCache cleanup below nor bubble out of
+					// processMessage.
+					try {
+						const contactRefreshReply = extractContactRefreshReply(response)
+						if (contactRefreshReply && contactRefreshBackend) {
+							const facts = replyFactsForPending(contactRefreshReply)
+							// Defensive ceiling on the covered-id loop: a hostile or
+							// buggy reply must not turn into unbounded DB writes
+							// inside the receive path. The app coalesces only a
+							// handful of request ids per reply.
+							const coveredIds = contactRefreshReply.coveredRequestIds.slice(0, CONTACT_REFRESH_MAX_COVERED_IDS)
+							for (const coveredId of coveredIds) {
+								contactRefreshBackend.captureReplyFacts(coveredId, facts)
+							}
+
+							const outcome = reconcileContactRefresh(contactRefreshBackend.listPending(), {
+								getCollectionVersion: () =>
+									appStateBackend?.getCollectionVersion(CONTACT_MUTATION_COLLECTION)?.version ?? null,
+								hasPatchAtOrAbove: version => contactRefreshBackend.hasPatchAtOrAbove(version),
+								deletePending: refreshId => contactRefreshBackend.deletePending(refreshId),
+								deletePatchesAtOrBelow: version => contactRefreshBackend.deletePatchesAtOrBelow(version)
+							})
+							if (outcome.settled.length > 0) {
+								// The settled entries ARE the wam_companion_contact_refresh
+								// facts (event id 8586 in the app). Logged until the engine
+								// registers the event in its WAM schema.
+								logger?.info(
+									{ settled: outcome.settled, stillWaiting: outcome.waiting },
+									'contact refresh settled (wam_companion_contact_refresh)'
+								)
+							}
+						}
+					} catch (err) {
+						logger?.warn({ err }, 'failed to process contact refresh reply (wam_companion_contact_refresh)')
+					}
+
 					// Retrieve cached metadata BEFORE deletion
 					// This preserves original message details that the phone might not send
 					const cachedData = response.stanzaId

@@ -12,14 +12,22 @@ import {
 	isNativeAndroidIntegrityCleared
 } from '../../Socket/native-android-integrity-state'
 import { makeSocketOperationGate } from '../../Socket/socket-operation-gate'
-import { ReachoutTimelockEnforcementType, type SignalKeyStore, type SocketConfig, type WAMessage } from '../../Types'
+import {
+	NewChatMessageCappingStatusType,
+	ReachoutTimelockEnforcementType,
+	type SignalKeyStore,
+	type SocketConfig,
+	type WAMessage
+} from '../../Types'
 import { addTransactionCapability } from '../../Utils/auth-utils'
 import { hkdf } from '../../Utils/crypto'
 import { unpadRandomMax16 } from '../../Utils/generics'
+import { clearMessageEchoCache, rememberMessageEcho } from '../../Utils/message-echo-cache'
 import { buildMsmsgCacheKey } from '../../Utils/meta-ai-msmsg'
 import { META_AI_PUBLIC_ALIAS } from '../../Utils/meta-ai-outbound'
 import { normalizeMessageJids } from '../../Utils/process-message'
 import { getMessageReportingToken } from '../../Utils/reporting-utils'
+import { clearUsernameMap } from '../../Utils/username-map'
 import { encodeBinaryNode, isJidMetaAI, jidDecode } from '../../WABinary'
 
 type CapturedEncryption = { jid: string; data: Uint8Array; useLegacyLock?: boolean }
@@ -87,6 +95,7 @@ const makeFakeSocket = ({
 	corruptRemoteReverse = false,
 	returnPnDevicesForLidQueries = false,
 	coldRecipient = false,
+	throwMappingLookups = false,
 	socketOperationGate,
 	onSendNode,
 	assertNativeAndroidIntegrityReady
@@ -95,6 +104,7 @@ const makeFakeSocket = ({
 	corruptRemoteReverse?: boolean
 	returnPnDevicesForLidQueries?: boolean
 	coldRecipient?: boolean
+	throwMappingLookups?: boolean
 	socketOperationGate?: ReturnType<typeof makeSocketOperationGate>
 	onSendNode?: (node: any, sendIndex: number) => void | Promise<void>
 	assertNativeAndroidIntegrityReady?: (egress?: 'message' | 'call') => void
@@ -105,8 +115,12 @@ const makeFakeSocket = ({
 	const drainHandlers: Array<() => void | Promise<void>> = []
 	const keys = makeKeys()
 	let coldMappingKnown = false
-	const getKnownPNForLID = jest.fn(async (jid: string) =>
-		jid.startsWith('100000000000001')
+	const getKnownPNForLID = jest.fn(async (jid: string) => {
+		if (throwMappingLookups) {
+			throw new Error('key store unavailable')
+		}
+
+		return jid.startsWith('100000000000001')
 			? ownPn
 			: jid.startsWith('100000000000002')
 				? corruptRemoteReverse
@@ -115,7 +129,7 @@ const makeFakeSocket = ({
 				: jid.startsWith('127496221651050') && coldRecipient
 					? coldCanonicalPn
 					: null
-	)
+	})
 	const mapping = {
 		getLIDForPN: async (jid: string) =>
 			jid.startsWith('5511000000001') && ownMapping
@@ -125,14 +139,19 @@ const makeFakeSocket = ({
 					: jid.startsWith('554391910391') && coldRecipient
 						? coldLid
 						: null,
-		getKnownLIDForPN: async (jid: string) =>
-			jid.startsWith('5511000000001') && ownMapping
+		getKnownLIDForPN: async (jid: string) => {
+			if (throwMappingLookups) {
+				throw new Error('key store unavailable')
+			}
+
+			return jid.startsWith('5511000000001') && ownMapping
 				? ownLid
 				: jid.startsWith('5511000000002')
 					? remoteLid
 					: (jid.startsWith('554391910391') || (coldMappingKnown && jid.startsWith('5543991910391'))) && coldRecipient
 						? coldLid
-						: null,
+						: null
+		},
 		getPNForLID: async (jid: string) =>
 			jid.startsWith('100000000000001')
 				? ownPn
@@ -220,6 +239,20 @@ const makeFakeSocket = ({
 					]
 				}
 
+				if (user.phone === `+${jidDecode(remotePn)?.user}`) {
+					return [
+						{
+							id: remotePn,
+							jid: remotePn,
+							pnJid: remotePn,
+							newJid: remoteLid,
+							lid: remoteLid,
+							contactType: 'in',
+							username: 'remoteuser'
+						}
+					]
+				}
+
 				if (!user.id) return []
 				if (!returnPnDevicesForLidQueries) return [makeDeviceResult(user.id)]
 				if (user.id.startsWith('100000000000001')) return [makeDeviceResult(ownPn)]
@@ -245,6 +278,10 @@ const makeFakeSocket = ({
 
 const makeConfig = (auth: any): SocketConfig => ({
 	transportProfile: 'web',
+	// These tests pin stanza shapes, not the new-chat gate: the fake socket has
+	// no timelock/quota answers and no salt, which the `policy` and `strict`
+	// modes refuse. The gate has its own tests below.
+	coldOutboundMode: 'legacy',
 	waWebSocketUrl: 'wss://web.whatsapp.com/ws',
 	connectTimeoutMs: 5_000,
 	defaultQueryTimeoutMs: 5_000,
@@ -919,8 +956,121 @@ describe('messages-send stanza assembly', () => {
 			expect(stanza.attrs.to).toBe(remoteLid)
 			const remoteEncryptions = fake.encryptions.filter(item => item.jid.startsWith('100000000000002'))
 			expect(remoteEncryptions.length).toBeGreaterThan(0)
-			expect(fake.mapping.getKnownPNForLID).not.toHaveBeenCalled()
+			// The A07 peer_recipient lookup consults the reverse mapping too, but a
+			// corrupt reverse mapping (remote LID → own PN) must never leak into the
+			// envelope: no peer_recipient_pn on a send to someone else.
+			expect(stanza.attrs.peer_recipient_pn).toBeUndefined()
 		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('never aborts a send when a peer_recipient mapping lookup fails', async () => {
+		const fake = makeFakeSocket({ throwMappingLookups: true })
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			await expect(
+				socket.relayMessage(remoteLid, proto.Message.fromObject({ conversation: 'lookup failure' }), {
+					messageId: 'REMOTE-LOOKUP-THROW-1'
+				})
+			).resolves.toBe('REMOTE-LOOKUP-THROW-1')
+			await expect(
+				socket.relayMessage(remotePn, proto.Message.fromObject({ conversation: 'lookup failure' }), {
+					messageId: 'REMOTE-LOOKUP-THROW-2'
+				})
+			).resolves.toBe('REMOTE-LOOKUP-THROW-2')
+
+			// A failed lookup reads as an unknown mapping: the envelope omits
+			// peer_recipient_* exactly like an unmapped recipient. Envelope
+			// metadata must never decide whether the send itself happens.
+			const lidStanza = fake.sent.find((node: any) => node.attrs.id === 'REMOTE-LOOKUP-THROW-1')
+			expect(lidStanza.attrs.peer_recipient_pn).toBeUndefined()
+			const pnStanza = fake.sent.find((node: any) => node.attrs.id === 'REMOTE-LOOKUP-THROW-2')
+			expect(pnStanza.attrs.peer_recipient_lid).toBeUndefined()
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('treats a PN-aliased privacy token as warm on a LID-addressed send', async () => {
+		const fake = makeFakeSocket()
+		activeFakeSocket = fake.sock
+		await fake.sock.authState.keys.set({
+			tctoken: {
+				[remotePn]: { token: Buffer.from('peer-token'), timestamp: String(Math.floor(Date.now() / 1000)) }
+			}
+		})
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			fake.sock.ev.emit('connection.update', {
+				reachoutTimeLock: {
+					isActive: true,
+					timeEnforcementEnds: new Date(Date.now() + 3_600_000),
+					enforcementType: ReachoutTimelockEnforcementType.RESTRICT_ALL_COMPANIONS
+				}
+			})
+
+			// The privacy token is filed under the PN alias. The token check has
+			// to consult the locally-known PN or this warm lead reads as cold and
+			// the timelock blocks a chat that already exists.
+			await expect(
+				socket.relayMessage(remoteLid, proto.Message.fromObject({ conversation: 'warm alias' }), {
+					messageId: 'WARM-PN-ALIAS-1'
+				})
+			).resolves.toBe('WARM-PN-ALIAS-1')
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('never lets a corrupt PN alias warm the new-chat gate', async () => {
+		const fake = makeFakeSocket({ corruptRemoteReverse: true })
+		activeFakeSocket = fake.sock
+		await fake.sock.authState.keys.set({
+			tctoken: {
+				[ownPn]: { token: Buffer.from('own-token'), timestamp: String(Math.floor(Date.now() / 1000)) }
+			}
+		})
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			fake.sock.ev.emit('connection.update', {
+				reachoutTimeLock: {
+					isActive: true,
+					timeEnforcementEnds: new Date(Date.now() + 3_600_000),
+					enforcementType: ReachoutTimelockEnforcementType.RESTRICT_ALL_COMPANIONS
+				}
+			})
+
+			// The corrupt reverse mapping resolves the remote LID to our own PN.
+			// That alias must never count as a privacy-token source: the gate has
+			// to stay cold and the timelock has to block the send.
+			await expect(
+				socket.relayMessage(remoteLid, proto.Message.fromObject({ conversation: 'cold' }), {
+					messageId: 'COLD-SELF-ALIAS-1'
+				})
+			).rejects.toMatchObject({ output: { statusCode: 403 }, data: { category: 'reachout' } })
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('stamps peer_recipient_username from the USync resolution', async () => {
+		const fake = makeFakeSocket()
+		activeFakeSocket = fake.sock
+		// Force the USync resolution path: the username rides the contact row.
+		;(fake.mapping as any).getKnownLIDForPN = async () => null
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			await socket.relayMessage(remotePn, proto.Message.fromObject({ conversation: 'username' }), {
+				messageId: 'USERNAME-1'
+			})
+
+			const stanza = fake.sent.at(-1)
+			expect(stanza.attrs.peer_recipient_username).toBe('remoteuser')
+			expect(stanza.attrs.peer_recipient_pn).toBe(remotePn)
+		} finally {
+			clearUsernameMap()
 			await socket.end(new Error('test completed'))
 		}
 	})
@@ -964,6 +1114,130 @@ describe('messages-send stanza assembly', () => {
 			expect(stanza.attrs.recipient).toBe(ownLid)
 			expect(stanza.content.filter((node: any) => node.tag === 'enc')).toHaveLength(1)
 			expect(stanza.content.some((node: any) => node.tag === 'participants')).toBe(false)
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('never lets caller additionalAttributes override the wire envelope', async () => {
+		const fake = makeFakeSocket()
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket({ ...makeConfig(fake.sock.authState), enableInteractiveMessages: true } as any)
+		try {
+			const forged = {
+				// Reserved envelope fields, forged by the caller.
+				to: '5511999999999@s.whatsapp.net',
+				id: 'HIJACK',
+				type: 'hijack',
+				participant: '5511999999999:3@s.whatsapp.net',
+				recipient: '5511999999999@s.whatsapp.net',
+				peer_recipient_pn: '5511888888888@s.whatsapp.net',
+				peer_recipient_lid: '999999999999999@lid',
+				verified_name: '999',
+				// A non-reserved extra still rides.
+				push_priority: 'high'
+			}
+
+			// LID-routed send: the computed peer_recipient_pn wins and the forged
+			// peer_recipient_lid is dropped — A07 stamps only the OTHER addressing
+			// mode, so a computed lid value does not exist here to keep.
+			await socket.relayMessage(remotePn, proto.Message.fromObject({ conversation: 'extras' }), {
+				messageId: 'EXTRAS-1',
+				additionalAttributes: forged
+			})
+			const lidRouted = fake.sent.at(-1)
+			expect(lidRouted.attrs.to).toBe(remoteLid)
+			expect(lidRouted.attrs.id).toBe('EXTRAS-1')
+			expect(lidRouted.attrs.type).toBe('text')
+			expect(lidRouted.attrs.participant).toBeUndefined()
+			expect(lidRouted.attrs.recipient).toBeUndefined()
+			expect(lidRouted.attrs.peer_recipient_pn).toBe(remotePn)
+			expect(lidRouted.attrs.peer_recipient_lid).toBeUndefined()
+			expect(lidRouted.attrs.verified_name).not.toBe('999')
+			expect(lidRouted.attrs.push_priority).toBe('high')
+
+			// PN-routed send (legacy buttons wire): here the computed
+			// peer_recipient_lid exists and must win over the forged one.
+			await socket.relayMessage(
+				remotePn,
+				proto.Message.fromObject({
+					buttonsMessage: {
+						contentText: 'Choose',
+						headerType: proto.Message.ButtonsMessage.HeaderType.EMPTY,
+						buttons: [
+							{
+								buttonId: 'a',
+								buttonText: { displayText: 'A' },
+								type: proto.Message.ButtonsMessage.Button.Type.RESPONSE
+							}
+						]
+					}
+				}),
+				{ messageId: 'EXTRAS-2', additionalAttributes: forged }
+			)
+			const pnRouted = fake.sent.at(-1)
+			expect(pnRouted.attrs.to).toBe(remotePn)
+			expect(pnRouted.attrs.id).toBe('EXTRAS-2')
+			expect(pnRouted.attrs.peer_recipient_lid).toBe(remoteLid)
+			expect(pnRouted.attrs.push_priority).toBe('high')
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+})
+
+describe('receipt echo lifecycle (A00/A06)', () => {
+	const senderDeviceJid = `${remotePn.split('@')[0]}:3@s.whatsapp.net`
+
+	beforeEach(() => clearMessageEchoCache())
+
+	it('peeks on the delivery receipt and still echoes sts and device on the read receipt', async () => {
+		const fake = makeFakeSocket()
+		activeFakeSocket = fake.sock
+		rememberMessageEcho(fake.sock.authState.creds.me.id, 'ECHO-1', {
+			sts: '4242',
+			senderDeviceJid
+		})
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			// The delivery receipt is the first user of the echo and must not
+			// spend it: the read receipt after it still carries `sts` (A00) and
+			// addresses the sending device (A06).
+			await (socket as any).sendReceipt(remotePn, undefined, ['ECHO-1'], undefined)
+			const delivery = fake.sent.at(-1)
+			expect(delivery.tag).toBe('receipt')
+			expect(delivery.attrs.to).toBe(senderDeviceJid)
+			expect(delivery.attrs.id).toBe('ECHO-1')
+			expect(delivery.attrs.type).toBeUndefined()
+
+			await socket.readMessages([{ remoteJid: remotePn, fromMe: false, id: 'ECHO-1' }])
+			const read = fake.sent.at(-1)
+			expect(read.attrs.type).toBe('read')
+			expect(read.attrs.sts).toBe('4242')
+			expect(read.attrs.to).toBe(senderDeviceJid)
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	})
+
+	it('consumes the echo on the read receipt; a later read falls back to :0 with no sts', async () => {
+		const fake = makeFakeSocket()
+		activeFakeSocket = fake.sock
+		rememberMessageEcho(fake.sock.authState.creds.me.id, 'ECHO-2', {
+			sts: '4242',
+			senderDeviceJid
+		})
+		const socket = makeMessagesSocket(makeConfig(fake.sock.authState) as any)
+		try {
+			await socket.readMessages([{ remoteJid: remotePn, fromMe: false, id: 'ECHO-2' }])
+			expect(fake.sent.at(-1).attrs.sts).toBe('4242')
+
+			// The echo is spent. The miss is the documented fallback: the bare
+			// jid gets explicit `:0` and no `sts` — same as after a restart.
+			await socket.readMessages([{ remoteJid: remotePn, fromMe: false, id: 'ECHO-2' }])
+			const second = fake.sent.at(-1)
+			expect(second.attrs.sts).toBeUndefined()
+			expect(second.attrs.to).toBe(`${remotePn.split('@')[0]}:0@s.whatsapp.net`)
 		} finally {
 			await socket.end(new Error('test completed'))
 		}
@@ -1021,8 +1295,8 @@ describe('messages-send cstoken (NCT) on 1:1 sends', () => {
 		}
 	}
 
-	it('signs the recipient LID with the account salt when there is no privacy token (web default)', async () => {
-		const stanza = await send({ to: remotePn, creds: { nctSalt: salt } })
+	it('signs the recipient LID with the account salt when there is no privacy token (ab-prop default, 24941 on)', async () => {
+		const stanza = await send({ to: remotePn, creds: { nctSalt: salt, abProps: propOn } })
 
 		expect(stanza.attrs.to).toBe(remoteLid)
 		const csToken = stanza.content.find((node: any) => node.tag === 'cstoken')
@@ -1049,7 +1323,7 @@ describe('messages-send cstoken (NCT) on 1:1 sends', () => {
 					]
 				}
 			}),
-			creds: { nctSalt: salt },
+			creds: { nctSalt: salt, abProps: propOn },
 			config: { enableInteractiveMessages: true }
 		})
 
@@ -1075,6 +1349,28 @@ describe('messages-send cstoken (NCT) on 1:1 sends', () => {
 		expect(tags(await send({ to: remotePn, creds: { nctSalt: salt }, config }))).not.toContain('cstoken')
 	})
 
+	it('omits cstoken by default (ab-prop parity) when 24941 is off', async () => {
+		// Parity default: like the app, the token goes out only with AB prop
+		// 24941 on. With the prop off (its compiled default), nothing is sent.
+		const stanza = await send({
+			to: remotePn,
+			creds: { nctSalt: salt, abProps: propOff },
+			config: { transportProfile: 'native_android' }
+		})
+		expect(tags(stanza)).not.toContain('cstoken')
+	})
+
+	it('coverage opt-in (csTokenMode: salt): the salt is enough even with 24941 off', async () => {
+		// Coverage is opt-in now: a native install can force the token out
+		// whenever the account has a salt (synced or minted), ignoring 24941.
+		const stanza = await send({
+			to: remotePn,
+			creds: { nctSalt: salt, abProps: propOff },
+			config: { csTokenMode: 'salt', transportProfile: 'native_android' }
+		})
+		expect(tags(stanza)).toContain('cstoken')
+	})
+
 	it('adds nothing without a synced salt or with the mode off', async () => {
 		expect(tags(await send({ to: remotePn, creds: {} }))).not.toContain('cstoken')
 		expect(tags(await send({ to: remotePn, creds: { nctSalt: salt }, config: { csTokenMode: 'off' } }))).not.toContain(
@@ -1094,6 +1390,174 @@ describe('messages-send cstoken (NCT) on 1:1 sends', () => {
 
 		expect(stanza.attrs.to).toBe(groupJid)
 		expect(tags(stanza)).not.toContain('cstoken')
+	})
+})
+
+describe('messages-send cold outbound gate (strict mode)', () => {
+	// Incident 2026-10-02: a first contact sent while the timelock/quota
+	// lookups had failed and without a cstoken was answered with
+	// RESTRICT_ALL_COMPANIONS. Unknown is not "allowed".
+	const salt = Buffer.alloc(32, 7)
+	const tags = (stanza: any) => (stanza.content as any[]).map(node => node.tag)
+	const openPolicy = (fake: ReturnType<typeof makeFakeSocket>) => {
+		fake.sock.ev.emit('connection.update', {
+			reachoutTimeLock: { isActive: false, enforcementType: ReachoutTimelockEnforcementType.DEFAULT }
+		})
+		fake.sock.ev.emit('message-capping.update', {
+			capping_status: NewChatMessageCappingStatusType.NONE,
+			total_quota: 20,
+			used_quota: 0
+		})
+	}
+
+	const run = async (
+		setup: (fake: ReturnType<typeof makeFakeSocket>) => Promise<void> | void,
+		send: (socket: ReturnType<typeof makeMessagesSocket>, fake: ReturnType<typeof makeFakeSocket>) => Promise<void>,
+		config: Partial<SocketConfig> = {}
+	) => {
+		const fake = makeFakeSocket()
+		activeFakeSocket = fake.sock
+		const socket = makeMessagesSocket({
+			...makeConfig(fake.sock.authState),
+			coldOutboundMode: 'strict',
+			...config
+		} as any)
+		try {
+			await setup(fake)
+			await send(socket, fake)
+			return fake
+		} finally {
+			await socket.end(new Error('test completed'))
+		}
+	}
+
+	it('blocks a first contact before any network work when the account state is unknown', async () => {
+		const fake = await run(
+			() => undefined,
+			async socket => {
+				await expect(
+					socket.relayMessage(remotePn, proto.Message.fromObject({ conversation: 'cold' }), { messageId: 'COLD-1' })
+				).rejects.toMatchObject({
+					output: { statusCode: 403 },
+					data: {
+						category: 'cold-outbound-not-ready',
+						action: 'blocked-no-retry',
+						reasons: expect.arrayContaining(['reachout_state_unknown', 'capping_state_unknown', 'nct_salt_missing'])
+					}
+				})
+			}
+		)
+		expect(fake.sent.map(node => node.attrs.id)).not.toContain('COLD-1')
+		expect(fake.encryptions).toHaveLength(0)
+	})
+
+	it('blocks a first contact without a salt even when the account state is open', async () => {
+		await run(
+			fake => {
+				openPolicy(fake)
+				// 24941 known and on (ab-prop default gate), so the only missing input is the salt.
+				Object.assign(fake.sock.authState.creds, { abProps: { tracked: ['24941'], values: { '24941': 'true' } } })
+			},
+			async socket => {
+				await expect(
+					socket.relayMessage(remotePn, proto.Message.fromObject({ conversation: 'cold' }), { messageId: 'COLD-2' })
+				).rejects.toMatchObject({ data: { category: 'cold-outbound-not-ready', reasons: ['nct_salt_missing'] } })
+			}
+		)
+	})
+
+	it('blocks a first contact addressed straight to a LID', async () => {
+		// Before the fix a LID-addressed recipient skipped the new-chat gate
+		// entirely (only a PN jid reached it), so this send would go out.
+		const fake = await run(
+			() => undefined,
+			async socket => {
+				await expect(
+					socket.relayMessage(coldLid, proto.Message.fromObject({ conversation: 'cold' }), { messageId: 'COLD-1L' })
+				).rejects.toMatchObject({
+					output: { statusCode: 403 },
+					data: {
+						category: 'cold-outbound-not-ready',
+						action: 'blocked-no-retry',
+						reasons: expect.arrayContaining(['nct_salt_missing'])
+					}
+				})
+			}
+		)
+		expect(fake.sent.map(node => node.attrs.id)).not.toContain('COLD-1L')
+		expect(fake.encryptions).toHaveLength(0)
+	})
+
+	it('sends a ready first contact with its cstoken', async () => {
+		const fake = await run(
+			fake => {
+				openPolicy(fake)
+				// Parity-ready: real salt + AB prop 24941 on (the ab-prop default gate).
+				Object.assign(fake.sock.authState.creds, {
+					nctSalt: salt,
+					abProps: { tracked: ['24941'], values: { '24941': 'true' } }
+				})
+			},
+			async socket => {
+				await socket.relayMessage(remotePn, proto.Message.fromObject({ conversation: 'cold' }), {
+					messageId: 'COLD-3'
+				})
+			}
+		)
+		const stanza = fake.sent.find(node => node.attrs.id === 'COLD-3')
+		expect(stanza).toBeDefined()
+		expect(tags(stanza)).toContain('cstoken')
+	})
+
+	it('requires AB prop 24941 on (app parity)', async () => {
+		await run(
+			fake => {
+				openPolicy(fake)
+				Object.assign(fake.sock.authState.creds, {
+					nctSalt: salt,
+					abProps: { tracked: ['24941'], values: { '24941': 'false' } }
+				})
+			},
+			async socket => {
+				await expect(
+					socket.relayMessage(remotePn, proto.Message.fromObject({ conversation: 'cold' }), { messageId: 'COLD-4' })
+				).rejects.toMatchObject({ data: { reasons: ['ab_prop_24941_disabled'] } })
+			},
+			{ csTokenMode: 'ab-prop' }
+		)
+	})
+
+	it('leaves warm chats, our own number and groups alone', async () => {
+		const fake = await run(
+			async fake => {
+				await fake.sock.authState.keys.set({
+					tctoken: {
+						[remoteLid]: { token: Buffer.from('peer-token'), timestamp: String(Math.floor(Date.now() / 1000)) }
+					}
+				})
+			},
+			async socket => {
+				await socket.relayMessage(remotePn, proto.Message.fromObject({ conversation: 'warm' }), { messageId: 'WARM-1' })
+				await socket.relayMessage(ownPn, proto.Message.fromObject({ conversation: 'self' }), { messageId: 'SELF-1' })
+				await socket.relayMessage(groupJid, proto.Message.fromObject({ conversation: 'group' }), {
+					messageId: 'GROUP-1'
+				})
+			}
+		)
+		expect(fake.sent.map(node => node.attrs.id)).toEqual(expect.arrayContaining(['WARM-1', 'SELF-1', 'GROUP-1']))
+	})
+
+	it('reports the same reasons through getColdOutboundReadiness', async () => {
+		await run(
+			() => undefined,
+			async socket => {
+				const readiness = await socket.getColdOutboundReadiness()
+				expect(readiness).toMatchObject({ mode: 'strict', coldOutboundAllowed: false })
+				expect(readiness.reasons).toEqual(
+					expect.arrayContaining(['reachout_state_unknown', 'capping_state_unknown', 'nct_salt_missing'])
+				)
+			}
+		)
 	})
 })
 
@@ -1225,6 +1689,10 @@ describe('messages-send golden wire shapes', () => {
 		encryptions: fake.encryptions.map(decodeEncryption)
 	})
 
+	// Self-consistency, not ground truth: goldens regenerate from the code
+	// under test (UPDATE_GOLDEN=1), so they pin shape drift and accidental
+	// regressions but cannot prove wire fidelity. The fidelity evidence is the
+	// captured W4B wire kept in docs/auditoria-1a1/EVIDENCIAS_*.md (gitignored).
 	const expectGolden = (name: string, value: unknown) => {
 		assertSyntheticIdentities(name, value)
 		actual[name] = value

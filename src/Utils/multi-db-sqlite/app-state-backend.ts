@@ -54,6 +54,12 @@ export type SyncdMutationRow = {
 	mutationName?: string | null
 }
 
+export type PendingContactMutationRow = {
+	mutationIndex: string
+	mutationName: string | null
+	chatJid: string | null
+}
+
 export type PeerMessageRow = {
 	id: number
 	messageType: number
@@ -75,6 +81,8 @@ export class AppStateBackend {
 		selectMutationsByCollection: SqliteStatementLike
 		selectMutationsByVersionRange: SqliteStatementLike
 		deleteMutationsByCollection: SqliteStatementLike
+		listContactHealMutations: SqliteStatementLike
+		listPendingContactMutations: SqliteStatementLike
 		insertPeerMessage: SqliteStatementLike
 		ackPeerMessage: SqliteStatementLike
 		deletePeerMessage: SqliteStatementLike
@@ -128,6 +136,21 @@ export class AppStateBackend {
 					'ORDER BY mutation_version ASC'
 			),
 			deleteMutationsByCollection: this.db.prepare('DELETE FROM syncd_mutations WHERE collection_name = ?'),
+			// CompanionContactAutoHealer scan (1:1 with the app's repair query):
+			// contact/lid_contact mutations whose dependencies resolved, oldest
+			// first. Names are a literal IN — the app queries exactly these two.
+			listContactHealMutations: this.db.prepare(
+				'SELECT _id, mutation_index, mutation_value, mutation_version, collection_name, ' +
+					'are_dependencies_missing, mutation_mac, device_id, epoch, chat_jid, mutation_name ' +
+					"FROM syncd_mutations WHERE mutation_name IN ('contact', 'lid_contact') " +
+					'AND are_dependencies_missing = 0 ORDER BY _id ASC'
+			),
+			// NOT_SETTLED gate + per-row skip source: contact mutations still
+			// staged in pending_mutations haven't finished their round-trip to
+			// the primary, so a heal run must not race them.
+			listPendingContactMutations: this.db.prepare(
+				"SELECT mutation_index, mutation_name, chat_jid FROM pending_mutations WHERE mutation_name IN ('contact', 'lid_contact')"
+			),
 			insertPeerMessage: this.db.prepare(
 				'INSERT INTO peer_messages (message_type, key_remote_jid, key_from_me, key_id, device_id, timestamp, data, acked) ' +
 					'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
@@ -201,6 +224,24 @@ export class AppStateBackend {
 	listMutationsSince(collectionName: string, sinceVersion: number): SyncdMutationRow[] {
 		const rows = this.stmts.selectMutationsByVersionRange.all(collectionName, sinceVersion) as Array<RawMutationRow>
 		return rows.map(mapMutationRow)
+	}
+
+	/**
+	 * Contact/lid_contact mutations ready for the CompanionContactAutoHealer
+	 * repair scan — dependencies resolved, oldest first (the app's
+	 * `ORDER BY _id ASC`).
+	 */
+	listContactMutationsForHeal(): SyncdMutationRow[] {
+		const rows = this.stmts.listContactHealMutations.all() as Array<RawMutationRow>
+		return rows.map(mapMutationRow)
+	}
+
+	/**
+	 * Contact/lid_contact mutations still staged in pending_mutations — the
+	 * heal's NOT_SETTLED gate (any row = skip the run) and per-row skip source.
+	 */
+	listPendingContactMutations(): PendingContactMutationRow[] {
+		return this.stmts.listPendingContactMutations.all() as PendingContactMutationRow[]
 	}
 
 	clearCollection(collectionName: string): number {

@@ -6,6 +6,7 @@ import {
 	areJidsSameUser,
 	type BinaryNode,
 	encodeBinaryNode,
+	getBinaryNodeChild,
 	isHostedLidUser,
 	isHostedPnUser,
 	isJidBot,
@@ -22,6 +23,7 @@ import {
 import { compactError } from './error-log-utils'
 import { unpadRandomMax16 } from './generics'
 import type { ILogger } from './logger'
+import { rememberMessageEcho } from './message-echo-cache'
 import {
 	cacheMessageSecretIfPresent,
 	decryptMsmsgBotMessage,
@@ -31,6 +33,7 @@ import {
 } from './meta-ai-msmsg'
 import { retry, RetryExhaustedError, type RetryOptions } from './retry-utils'
 import { LibsignalDecryptError } from './suppress-libsignal-logs'
+import { rememberUsername } from './username-map'
 
 /**
  * Re-used sentinel for the msgBuffer initializer when the e2e type is `msmsg`
@@ -521,25 +524,49 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 	}
 
 	const pushname = stanza?.attrs?.notify
+	// Envelope metadata from the captured W4B inbound: `sts` is the server µs
+	// timestamp receipts must echo verbatim (A00), and `<reporting><reporting_tag>`
+	// carries a raw byte blob the reporting pipeline consumes (`C1VN.java` reads
+	// `node.A01` byte[] and persists it as a BLOB). Never base64-decode it: the
+	// dumper renders raw bytes as base64 text, which is a display artifact, not
+	// the wire format. Both live only on the stanza — the key strips them — so
+	// they ride on WAMessage and, for the receipt echo, in the per-id message-echo
+	// cache.
+	const sts = stanza.attrs.sts
+	const reportingNode = getBinaryNodeChild(stanza, 'reporting')
+	const reportingTagNode = reportingNode ? getBinaryNodeChild(reportingNode, 'reporting_tag') : undefined
+	const reportingTagContent = reportingTagNode?.content
+	const reportingTag =
+		reportingTagContent instanceof Uint8Array
+			? reportingTagContent
+			: typeof reportingTagContent === 'string'
+				? new Uint8Array(Buffer.from(reportingTagContent, 'utf8'))
+				: undefined
 	const publicChatId = jidWithoutExplicitZeroDevice(chatId)!
 	const publicParticipant = jidWithoutExplicitZeroDevice(participant)
+
+	// Direct chats only (msgType === 'chat'): on broadcast/newsletter the remoteJid is not a
+	// user, and `stanza.attrs.username` there is participant-level data, not the chat identity.
+	const remoteJidUsername =
+		msgType === 'chat'
+			? stanza.attrs.peer_recipient_username || stanza.attrs.recipient_username || stanza.attrs.username
+			: undefined
+	const participantUsername = stanza.attrs.participant
+		? stanza.attrs.participant_username || stanza.attrs.username
+		: undefined
+	// Feed the peer username map A07 stamps `peer_recipient_username` from.
+	rememberUsername(publicChatId, remoteJidUsername)
+	rememberUsername(publicParticipant, participantUsername)
 
 	const key: WAMessageKey = {
 		remoteJid: publicChatId,
 		remoteJidAlt: !isJidGroup(publicChatId) ? jidWithoutExplicitZeroDevice(addressingContext.senderAlt) : undefined,
-		// Direct chats only (msgType === 'chat'): on broadcast/newsletter the remoteJid is not a
-		// user, and `stanza.attrs.username` there is participant-level data, not the chat identity.
-		remoteJidUsername:
-			msgType === 'chat'
-				? stanza.attrs.peer_recipient_username || stanza.attrs.recipient_username || stanza.attrs.username
-				: undefined,
+		remoteJidUsername,
 		fromMe,
 		id: msgId,
 		participant: publicParticipant,
 		participantAlt: isJidGroup(publicChatId) ? jidWithoutExplicitZeroDevice(addressingContext.senderAlt) : undefined,
-		participantUsername: stanza.attrs.participant
-			? stanza.attrs.participant_username || stanza.attrs.username
-			: undefined,
+		participantUsername,
 		addressingMode: addressingContext.addressingMode,
 		...(msgType === 'newsletter' && stanza.attrs.server_id ? { server_id: stanza.attrs.server_id } : {})
 	}
@@ -549,8 +576,18 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 		category: stanza.attrs.category,
 		messageTimestamp: +(stanza.attrs.t ?? 0),
 		pushName: pushname,
-		broadcast: isJidBroadcast(from)
+		broadcast: isJidBroadcast(from),
+		sts,
+		reportingTag
 	}
+
+	// Receipts echo `sts` and address the sending device (A00/A06); `readMessages`
+	// only receives keys, so stash both here — the last place with the raw stanza.
+	// Scoped by `meId` so sessions never share entries across accounts.
+	rememberMessageEcho(meId, msgId, {
+		sts,
+		senderDeviceJid: participant || from
+	})
 
 	if (key.fromMe) {
 		fullMessage.status = proto.WebMessageInfo.Status.SERVER_ACK

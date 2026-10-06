@@ -30,6 +30,13 @@ export {
 export { type StoredWaContactRow, type WaContactRow, WaContactsBackend } from './wa-contacts-backend'
 export { CompanionDevicesBackend, type OwnDeviceRow, type StoredCompanionDeviceRow } from './companion-devices-backend'
 export {
+	ContactRefreshBackend,
+	type ContactRefreshPendingRow,
+	type ContactRefreshPatchRow,
+	type ContactRefreshReplyFacts,
+	LAST_CONTACT_AUTO_HEAL_TIMESTAMP_KEY
+} from './contact-refresh-backend'
+export {
 	MediaJobBackend,
 	MEDIA_JOB_TYPE_UPLOAD,
 	type MediaUploadJob,

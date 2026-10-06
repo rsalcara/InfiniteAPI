@@ -86,6 +86,13 @@ export type WAMessage = proto.IWebMessageInfo & {
 	messageStubParameters?: any
 	category?: string
 	retryCount?: number
+	/**
+	 * Server timestamp (µs, raw string) added to inbound envelopes (`sts` attr).
+	 * Receipts echo it verbatim and never send `t` (A00 / captured W4B wire).
+	 */
+	sts?: string | null
+	/** Decoded `<reporting><reporting_tag>` payload from the inbound envelope. */
+	reportingTag?: Uint8Array | null
 	/** Captured before public JID normalization removes the device suffix. */
 	senderSource?: MessageSenderSource
 	/** Present when this message is a Meta AI prompt or decrypted msmsg response. */

@@ -6,8 +6,20 @@ export type AbProps = { [code: string]: string }
 /** AB props the engine reads. Only these are persisted (see `StoredAbProps`). */
 export const TRACKED_AB_PROPS: readonly string[] = [
 	// NctTokenMessageSendStanzaContributor gate (`X/C30120DHe.java`).
-	'24941'
+	'24941',
+	// New-chat message capping. The primary creates the account NCT salt only
+	// with it on (`NewChatMessageCappingAsyncInit`, `X/C2JP.java:29`); kept to
+	// explain an account without a salt, not to gate anything.
+	'24915'
 ]
+
+/**
+ * App defaults for the tracked codes, used when a full set from the server
+ * leaves one out: the app reads an absent prop as its compiled default
+ * (`X/C016407t.java:8405-8406`, `builder.put(24915, false)`, `24941, false`). Storing it makes the
+ * code known, so the next request can carry the hash.
+ */
+const TRACKED_AB_PROP_DEFAULTS: AbProps = { '24941': 'false', '24915': 'false' }
 
 /**
  * Persisted AB props. The server can send thousands of props, some with long
@@ -46,8 +58,14 @@ export const applyAbPropsResponse = (
 	return stored
 }
 
+/**
+ * Whether the stored set holds a value for every tracked code. Listing a code
+ * in `tracked` is not enough: a set saved without it (e.g. `values: {}`)
+ * must not send the hash, or the server answers "unchanged" and the code
+ * stays unknown for good.
+ */
 const coversTrackedProps = (stored: StoredAbProps | undefined, tracked: readonly string[]): stored is StoredAbProps =>
-	!!stored && tracked.every(code => stored.tracked.includes(code))
+	!!stored && tracked.every(code => stored.tracked.includes(code) && stored.values[code] !== undefined)
 
 /**
  * `<props>` attributes for the `abt` query. The hash asks for "changes since";
@@ -80,7 +98,20 @@ export const readAbPropsResponse = (
 	// request went without hash and this response is the full set.
 	const stored = coversTrackedProps(creds.abProps, tracked) ? creds.abProps.values : undefined
 	const fullSet = !requestedHash && Object.keys(received).length > 0
-	const values = applyAbPropsResponse(stored, { hash, deltaUpdate, props, fullSet })
+	const applied = applyAbPropsResponse(stored, { hash, deltaUpdate, props, fullSet })
+	// A full set that leaves a tracked code out means "app default" for it.
+	const isFullSet = !deltaUpdate && (!!hash || fullSet)
+	const values =
+		applied && isFullSet
+			? {
+					...Object.fromEntries(
+						tracked.flatMap(code =>
+							TRACKED_AB_PROP_DEFAULTS[code] !== undefined ? [[code, TRACKED_AB_PROP_DEFAULTS[code]]] : []
+						)
+					),
+					...applied
+				}
+			: applied
 	const changed = values !== stored || !coversTrackedProps(creds.abProps, tracked)
 	// on some clients, the hash is returning as undefined
 	const update =
