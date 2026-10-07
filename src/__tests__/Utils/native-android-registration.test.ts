@@ -1,6 +1,12 @@
 import { createDecipheriv } from 'crypto'
 import { Curve, generateSignalPubKey } from '../../Utils/crypto'
-import { createNativeAndroidRegistrationBridgeProvider } from '../../Utils/native-android-registration-bridge-provider'
+import {
+	createNativeAndroidRegistrationBridgeProvider,
+	createNativeAndroidRegistrationEnvironmentProvider,
+	mapBridgeRegistrationEnvironment,
+	type NativeAndroidRegistrationBridgeContext,
+	percentDecodeRegistrationBytes
+} from '../../Utils/native-android-registration-bridge-provider'
 import { createNativeAndroidRegistrationHttpClient } from '../../Utils/native-android-registration-client'
 import {
 	buildNativeAndroidRegistrationKeyBundle,
@@ -261,6 +267,47 @@ describe('native_android official registration wire', () => {
 		expect(request.body).toContain('&code=123456&auth_response=Cgs')
 		expect(request.body.indexOf('&authkey=')).toBeGreaterThan(request.body.indexOf('&auth_response='))
 	})
+
+	it('encodes Uint8Array environment blobs exactly once', () => {
+		const request = buildNativeAndroidRequestCodeRequest(COMMON, {
+			token: '11999999999',
+			method: 'sms',
+			environment: {
+				_gs: Uint8Array.from([0x7b, 0x22, 0x65, 0x6d, 0x22, 0x7d]),
+				_ga: Uint8Array.from([0x25, 0x20])
+			}
+		})
+
+		// Raw blob bytes go through a single percent-encoding pass: a `%` byte
+		// (as produced by decoding the hook's pre-encoded values) leaves as
+		// `%25`, never as a literal escape.
+		expect(request.body).toContain('_gs=%7B%22em%22%7D')
+		expect(request.body).toContain('_ga=%25%20')
+	})
+
+	it('takes string environment values as plain text (encoded once)', () => {
+		const request = buildNativeAndroidRequestCodeRequest(COMMON, {
+			token: '11999999999',
+			method: 'sms',
+			environment: { _gs: '%7B' }
+		})
+		expect(request.body).toContain('_gs=%257B')
+	})
+
+	it('stamps the official user type as request metadata for the bridge', () => {
+		expect(
+			buildNativeAndroidRequestCodeRequest(COMMON, { token: '11999999999', method: 'sms' }).registrationType
+		).toBeUndefined()
+		expect(
+			buildNativeAndroidRequestCodeRequest(
+				{ ...COMMON, login: '5511999999999@s.whatsapp.net', registrationType: 1 },
+				{ token: '11999999999', method: 'sms' }
+			).registrationType
+		).toBe(1)
+		expect(
+			buildNativeAndroidRegisterRequest({ ...COMMON, registrationType: 0 }, { code: '123456' }).registrationType
+		).toBe(0)
+	})
 })
 
 describe('native_android request protection', () => {
@@ -335,6 +382,36 @@ describe('native_android registration bridge provider', () => {
 		})
 		expect(authorizationOnly).toEqual({ authorization: 'only', body: undefined })
 	})
+
+	it('threads the official user type to the bridge', async () => {
+		const calls: Array<Record<string, unknown>> = []
+		const provider = createNativeAndroidRegistrationBridgeProvider({
+			url: 'http://127.0.0.1:8790',
+			fetch: (async (_url: RequestInfo | URL, init?: RequestInit) => {
+				calls.push(JSON.parse(String(init?.body)))
+				return new Response(JSON.stringify({ authorization: 'a' }), { status: 200 })
+			}) as unknown as typeof fetch
+		})
+
+		await provider({
+			endpoint: '/v2/code',
+			appVariant: 'business',
+			phoneNumber: '5511999999999',
+			login: '5511999999999@s.whatsapp.net',
+			registrationType: 1,
+			body: 'lg=pt'
+		})
+		expect(calls[0]!.registrationType).toBe(1)
+
+		await provider({
+			endpoint: '/v2/code',
+			appVariant: 'business',
+			phoneNumber: '5511999999999',
+			login: '5511999999999@s.whatsapp.net',
+			body: 'lg=pt'
+		})
+		expect('registrationType' in calls[1]!).toBe(false)
+	})
 })
 
 describe('native_android registration HTTP client', () => {
@@ -387,5 +464,93 @@ describe('native_android registration HTTP client', () => {
 		const result = await client({ endpoint: '/v2/code', body: 'method=sms' })
 		expect(result).toEqual({ status: 403, body: { status: 'fail', reason: 'blocked' }, attempts: 1 })
 		expect(calls).toBe(1)
+	})
+
+	it('prefers the request registration type over the client default', async () => {
+		const contexts: Array<Record<string, unknown>> = []
+		const trackingProvider = async (context: NativeAndroidRegistrationBridgeContext) => {
+			contexts.push(context as unknown as Record<string, unknown>)
+			return { authorization: 'Native attestation' }
+		}
+
+		const client = createNativeAndroidRegistrationHttpClient(
+			{
+				appVariant: 'business',
+				phoneNumber: '5511999999999',
+				login: '5511999999999@s.whatsapp.net',
+				registrationType: 0,
+				baseUrl: 'https://registration.lab.invalid',
+				fetch: (async () =>
+					new Response(JSON.stringify({ status: 'sent' }), { status: 200 })) as unknown as typeof fetch
+			},
+			trackingProvider
+		)
+
+		await client({ endpoint: '/v2/code', body: 'lg=pt', registrationType: 1 })
+		expect(contexts[0]!.registrationType).toBe(1)
+		await client({ endpoint: '/v2/code', body: 'lg=pt' })
+		expect(contexts[1]!.registrationType).toBe(0)
+	})
+})
+
+describe('native_android registration environment provider', () => {
+	it('round-trips the hook percent-encoding to raw bytes', () => {
+		const raw = Uint8Array.from([0x00, 0x2f, 0x41, 0xff, 0x7e, 0x25])
+		expect(percentDecodeRegistrationBytes(percentEncodeRegistrationBytes(raw))).toEqual(raw)
+		expect(percentDecodeRegistrationBytes('abc%2Fdef')).toEqual(Uint8Array.from(Buffer.from('abc/def', 'utf8')))
+	})
+
+	it('maps the bridge environment into builder fields without touching scalars', () => {
+		const mapped = mapBridgeRegistrationEnvironment({
+			mcc: '310',
+			mnc: '260',
+			pid: 10600,
+			hasinrc: 1,
+			prefer_sms_over_flash: false,
+			gpia: 'real-token',
+			_gs: '%7B%22em%22%3A%22p%22%7D',
+			installer_package: 'com.android.vending',
+			package_source: 'store',
+			install_source_consistent: null,
+			unknown_key: 'dropped'
+		})
+
+		expect(mapped.mcc).toBe('310')
+		expect(mapped.pid).toBe(10600)
+		expect(mapped.prefer_sms_over_flash).toBe(false)
+		expect(mapped.gpia).toBe('real-token')
+		expect(mapped._gs).toEqual(Uint8Array.from(Buffer.from('{"em":"p"}', 'utf8')))
+		expect(mapped.installer_package).toBe('com.android.vending')
+		expect(mapped.install_source_consistent).toBeNull()
+		expect('unknown_key' in mapped).toBe(false)
+	})
+
+	it('fetches the real-device environment from the bridge', async () => {
+		const calls: Array<{ url: string; body: unknown }> = []
+		const provider = createNativeAndroidRegistrationEnvironmentProvider({
+			url: 'http://127.0.0.1:8790',
+			fetch: (async (url: RequestInfo | URL, init?: RequestInit) => {
+				calls.push({ url: String(url), body: JSON.parse(String(init?.body)) })
+				return new Response(JSON.stringify({ environment: { gpia: 'tok', _gs: 'abc', mcc: '310' } }), {
+					status: 200
+				})
+			}) as unknown as typeof fetch
+		})
+
+		const environment = await provider('business')
+		expect(calls[0]!.url).toBe('http://127.0.0.1:8790/registration/environment')
+		expect(calls[0]!.body).toEqual({ appVariant: 'business' })
+		expect(environment._gs).toEqual(Uint8Array.from(Buffer.from('abc', 'utf8')))
+		expect(environment.gpia).toBe('tok')
+		expect(environment.mcc).toBe('310')
+	})
+
+	it('rejects answers without an environment object and invalid app variants', async () => {
+		const provider = createNativeAndroidRegistrationEnvironmentProvider({
+			url: 'http://127.0.0.1:8790',
+			fetch: (async () => new Response(JSON.stringify({}), { status: 200 })) as unknown as typeof fetch
+		})
+		await expect(provider('business')).rejects.toThrow('did not provide an environment')
+		await expect(provider('other' as never)).rejects.toThrow('app variant')
 	})
 })

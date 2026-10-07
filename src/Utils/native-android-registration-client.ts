@@ -12,6 +12,13 @@ export type NativeAndroidRegistrationHttpConfig = {
 	appVariant: 'business' | 'consumer'
 	phoneNumber: string
 	login: string
+	/**
+	 * Official user type, forwarded to the registration bridge. The bridge's
+	 * in-APK `token` computation keys on `in=` for primary requests and on the
+	 * `login=` digits for type 1, so it must know which flow it is attesting.
+	 * Individual requests override this via `NativeAndroidRegistrationRequest`.
+	 */
+	registrationType?: 0 | 1
 	profileId?: string
 	packageName?: string
 	maxAttempts?: number
@@ -50,11 +57,13 @@ export const createNativeAndroidRegistrationHttpClient = (
 	const baseUrl = config.baseUrl ?? 'https://v.whatsapp.net'
 
 	return async (request: NativeAndroidRegistrationRequest): Promise<NativeAndroidRegistrationHttpResponse> => {
+		const registrationType = request.registrationType ?? config.registrationType
 		const attested = await attestationProvider({
 			endpoint: request.endpoint,
 			appVariant: config.appVariant,
 			phoneNumber: config.phoneNumber,
 			login: config.login,
+			...(registrationType !== undefined ? { registrationType } : {}),
 			...(config.profileId ? { profileId: config.profileId } : {}),
 			...(config.packageName ? { packageName: config.packageName } : {}),
 			body: request.body

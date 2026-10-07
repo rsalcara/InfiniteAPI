@@ -1,5 +1,6 @@
 import { Boom } from '@hapi/boom'
 import { DisconnectReason } from '../Types'
+import type { NativeAndroidRequestCodeEnvironment } from './native-android-registration-protocol'
 
 export type NativeAndroidRegistrationBridgeProviderConfig = {
 	url: string
@@ -14,6 +15,11 @@ export type NativeAndroidRegistrationBridgeContext = {
 	appVariant: 'business' | 'consumer'
 	phoneNumber: string
 	login: string
+	/**
+	 * Official user type: 0 (or absent) is the primary phone flow; 1 is the
+	 * WA_TWO_FA_CONTACT_POINT flow whose token is keyed on the `login` digits.
+	 */
+	registrationType?: 0 | 1
 	profileId?: string
 	packageName?: string
 	/** UTF-8 query built by the official 1:1 protocol builder. */
@@ -42,9 +48,7 @@ const isLoopbackHost = (hostname: string, aliases?: string[]): boolean => {
 	)
 }
 
-export const createNativeAndroidRegistrationBridgeProvider = (
-	config: NativeAndroidRegistrationBridgeProviderConfig
-): ((context: NativeAndroidRegistrationBridgeContext) => Promise<NativeAndroidRegistrationBridgeAttestation>) => {
+const validateBridgeConfig = (config: NativeAndroidRegistrationBridgeProviderConfig): void => {
 	if (!config?.url) throw new Error('native_android registration bridge provider requires a valid http(s) url')
 
 	let bridgeUrl: URL
@@ -61,6 +65,12 @@ export const createNativeAndroidRegistrationBridgeProvider = (
 	if (bridgeUrl.protocol === 'http:' && !isLoopbackHost(bridgeUrl.hostname, config.allowInsecureLoopbackAliases)) {
 		throw new Error('native_android registration bridge provider requires HTTPS for non-loopback urls')
 	}
+}
+
+export const createNativeAndroidRegistrationBridgeProvider = (
+	config: NativeAndroidRegistrationBridgeProviderConfig
+): ((context: NativeAndroidRegistrationBridgeContext) => Promise<NativeAndroidRegistrationBridgeAttestation>) => {
+	validateBridgeConfig(config)
 
 	const fetchImpl = config.fetch ?? fetch
 	const timeoutMs = config.timeoutMs ?? 30_000
@@ -93,6 +103,7 @@ export const createNativeAndroidRegistrationBridgeProvider = (
 					appVariant: context.appVariant,
 					phoneNumber: context.phoneNumber,
 					login: context.login,
+					...(context.registrationType !== undefined ? { registrationType: context.registrationType } : {}),
 					...(context.profileId ? { profileId: context.profileId } : {}),
 					...(context.packageName ? { packageName: context.packageName } : {}),
 					body: context.body
@@ -140,6 +151,185 @@ export const createNativeAndroidRegistrationBridgeProvider = (
 						? (data.apkResponse as { status: number; body: string })
 						: undefined
 			}
+		} catch (error) {
+			if (error instanceof Error && error.name === 'AbortError') {
+				throw new Boom('native_android registration bridge timed out', {
+					statusCode: DisconnectReason.timedOut
+				})
+			}
+
+			throw error
+		} finally {
+			clearTimeout(timeout)
+		}
+	}
+}
+
+/**
+ * Keys whose hook values arrive pre-percent-encoded from the native WAMSYS
+ * map (COP.A0T -> CJT.A07). Decoding them back to bytes here lets the protocol
+ * builder encode exactly once at serialization, so the wire never carries a
+ * double-encoded `%`.
+ */
+const NATIVE_BLOB_ENV_KEYS = new Set(['_gs', '_ga', 'aid', '_gp', '_gg', '_ge', '_gi'])
+
+/** Explicitly-absent install-source diagnostics keep their null. */
+const NULLABLE_ENV_KEYS = new Set(['initiating_package', 'install_source_consistent'])
+
+/**
+ * The environment keys the APK actually serializes (the protocol builder's
+ * `NativeAndroidRequestCodeEnvironment`). Anything else the hook sends is a
+ * diagnostic and never reaches the wire.
+ */
+const KNOWN_ENV_KEYS = new Set([
+	...NATIVE_BLOB_ENV_KEYS,
+	'mcc',
+	'mnc',
+	'sim_mcc',
+	'sim_mnc',
+	'sim_type',
+	'airplane_mode_type',
+	'cellular_strength',
+	'roaming_type',
+	'network_radio_type',
+	'device_ram',
+	'pid',
+	'rc',
+	'hasinrc',
+	'gpia',
+	'db',
+	'mistyped',
+	'simnum',
+	'recaptcha',
+	'prefer_sms_over_flash',
+	'client_metrics',
+	'education_screen_displayed',
+	'feo2_query_status',
+	'reason',
+	'installer_package',
+	'package_source',
+	'installing_package',
+	...NULLABLE_ENV_KEYS
+])
+
+/** Inverse of the hook's percent encoder: `%XX` escapes become raw bytes. */
+export const percentDecodeRegistrationBytes = (value: string): Uint8Array => {
+	const bytes: number[] = []
+	for (let index = 0; index < value.length; ++index) {
+		const char = value[index]!
+		if (char === '%' && index + 2 < value.length) {
+			const hex = value.slice(index + 1, index + 3)
+			if (/^[0-9a-fA-F]{2}$/.test(hex)) {
+				bytes.push(Number.parseInt(hex, 16))
+				index += 2
+				continue
+			}
+		}
+
+		bytes.push(...Buffer.from(char, 'utf8'))
+	}
+
+	return Uint8Array.from(bytes)
+}
+
+/**
+ * Converts the bridge's flat environment JSON into the builder's environment
+ * type: native-map blobs become raw bytes (single encode at serialization),
+ * telephony/device scalars pass through untouched, unknown keys are dropped.
+ */
+export const mapBridgeRegistrationEnvironment = (raw: Record<string, unknown>): NativeAndroidRequestCodeEnvironment => {
+	const environment: Record<string, unknown> = {}
+	for (const [key, value] of Object.entries(raw)) {
+		if (!KNOWN_ENV_KEYS.has(key)) continue
+		if (value === undefined) continue
+		if (value === null) {
+			if (NULLABLE_ENV_KEYS.has(key)) environment[key] = null
+			continue
+		}
+
+		if (NATIVE_BLOB_ENV_KEYS.has(key)) {
+			if (typeof value === 'string') environment[key] = percentDecodeRegistrationBytes(value)
+			continue
+		}
+
+		if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+			environment[key] = value
+		}
+	}
+
+	return environment as NativeAndroidRequestCodeEnvironment
+}
+
+export type NativeAndroidRegistrationEnvironmentProvider = (
+	appVariant: 'business' | 'consumer'
+) => Promise<NativeAndroidRequestCodeEnvironment>
+
+/**
+ * Fetches the real-device registration environment from the bridge
+ * (POST /registration/environment, answered by the in-APK
+ * `collectRegistrationEnvironment` hook). The result feeds the /v2/code
+ * builder verbatim; absent fields stay absent — nothing is fabricated.
+ */
+export const createNativeAndroidRegistrationEnvironmentProvider = (
+	config: NativeAndroidRegistrationBridgeProviderConfig
+): NativeAndroidRegistrationEnvironmentProvider => {
+	validateBridgeConfig(config)
+
+	const fetchImpl = config.fetch ?? fetch
+	const timeoutMs = config.timeoutMs ?? 30_000
+
+	return async appVariant => {
+		if (appVariant !== 'business' && appVariant !== 'consumer') {
+			throw new Boom('native_android registration environment requires an app variant', {
+				statusCode: DisconnectReason.badSession
+			})
+		}
+
+		const controller = new AbortController()
+		const timeout = setTimeout(() => controller.abort(), timeoutMs)
+		try {
+			const response = await fetchImpl(`${config.url.replace(/\/$/, '')}/registration/environment`, {
+				method: 'POST',
+				redirect: 'error',
+				headers: {
+					'Content-Type': 'application/json',
+					...(config.token ? { Authorization: `Bearer ${config.token}` } : {})
+				},
+				body: JSON.stringify({ appVariant }),
+				signal: controller.signal
+			})
+
+			if (!response.ok) {
+				await response.body?.cancel().catch(() => undefined)
+				throw new Boom(`native_android registration bridge returned HTTP ${response.status}`, {
+					statusCode: DisconnectReason.badSession
+				})
+			}
+
+			const text = await response.text()
+			if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES) {
+				throw new Boom('native_android registration bridge response exceeds size limit', {
+					statusCode: DisconnectReason.badSession
+				})
+			}
+
+			let data: { environment?: unknown }
+			try {
+				data = JSON.parse(text)
+			} catch {
+				throw new Boom('native_android registration bridge returned invalid JSON', {
+					statusCode: DisconnectReason.badSession
+				})
+			}
+
+			const environment = data.environment
+			if (typeof environment !== 'object' || environment === null || Array.isArray(environment)) {
+				throw new Boom('native_android registration bridge did not provide an environment', {
+					statusCode: DisconnectReason.badSession
+				})
+			}
+
+			return mapBridgeRegistrationEnvironment(environment as Record<string, unknown>)
 		} catch (error) {
 			if (error instanceof Error && error.name === 'AbortError') {
 				throw new Boom('native_android registration bridge timed out', {

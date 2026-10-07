@@ -54,8 +54,14 @@ export type NativeAndroidRegistrationCommon = {
  * field when its runtime value is absent, and so must the motor.
  */
 export type NativeAndroidRequestCodeEnvironment = {
-	_gs?: string
-	_ga?: string
+	/**
+	 * Native WAMSYS map blobs. Raw bytes are percent-encoded exactly once here;
+	 * strings are treated as plain (not pre-encoded) values. The registration
+	 * bridge delivers the hook's pre-encoded values as decoded bytes so the
+	 * wire always carries a single encoding pass.
+	 */
+	_gs?: string | Uint8Array
+	_ga?: string | Uint8Array
 	sim_mnc?: string
 	recaptcha?: string
 	device_ram?: string | number
@@ -67,19 +73,19 @@ export type NativeAndroidRequestCodeEnvironment = {
 	hasinrc?: 0 | 1
 	roaming_type?: number
 	mistyped?: number
-	aid?: string
+	aid?: string | Uint8Array
 	mnc?: string
 	airplane_mode_type?: 0 | 1
 	mcc?: string
-	_gp?: string
-	_gg?: string
-	_ge?: string
+	_gp?: string | Uint8Array
+	_gg?: string | Uint8Array
+	_ge?: string | Uint8Array
 	prefer_sms_over_flash?: boolean
 	sim_type?: number
 	sim_mcc?: string
 	simnum?: number
 	client_metrics?: string
-	_gi?: string
+	_gi?: string | Uint8Array
 	education_screen_displayed?: boolean
 	network_radio_type?: number
 	feo2_query_status?: string
@@ -141,6 +147,12 @@ export type NativeAndroidRegistrationRequest = {
 	endpoint: NativeAndroidRegistrationEndpoint
 	/** Canonical UTF-8 query string, in the exact APK insertion order. */
 	body: string
+	/**
+	 * Official user type of this request. Not serialized on the wire — it is
+	 * metadata for the registration bridge, whose in-APK `token` computation
+	 * keys on `in=` for primary requests and on `login=` digits for type 1.
+	 */
+	registrationType?: 0 | 1
 }
 
 const byteAt = (value: Uint8Array, index: number): number => value[index] ?? 0
@@ -301,7 +313,12 @@ const addEnvironmentField = (
 	// 17:59:59Z official /v2/code capture has no `_gs=`, `_ga=`, `aid=`,
 	// `_gp=` or `_ge=` even though the CJT map carries those keys.
 	if (typeof value === 'string' && value.length === 0) return
-	if (typeof value === 'number') builder.setRaw(key, String(value))
+	if (value instanceof Uint8Array) {
+		// Raw blob bytes are encoded exactly once and marked pre-encoded so
+		// toString() never re-encodes them.
+		if (value.byteLength === 0) return
+		builder.requiredPercentEncoded(key, value)
+	} else if (typeof value === 'number') builder.setRaw(key, String(value))
 	else if (typeof value === 'boolean') builder.setRaw(key, String(value))
 	else builder.setRaw(key, value)
 }
@@ -384,7 +401,7 @@ export const buildNativeAndroidRequestCodeRequest = (
 	addEnvironmentField(builder, environment, 'reason')
 	builder.requiredString('fdid', common.fingerprintDeviceId)
 
-	return { endpoint: '/v2/code', body: builder.toString() }
+	return { endpoint: '/v2/code', body: builder.toString(), registrationType: common.registrationType }
 }
 
 export const buildNativeAndroidRegisterRequest = (
@@ -401,7 +418,7 @@ export const buildNativeAndroidRegisterRequest = (
 	addLoginAndType(builder, common)
 	addKeyBundle(builder, common.keyBundle)
 
-	return { endpoint: '/v2/register', body: builder.toString() }
+	return { endpoint: '/v2/register', body: builder.toString(), registrationType: common.registrationType }
 }
 
 export const buildNativeAndroidSecurityRequest = (
@@ -417,7 +434,7 @@ export const buildNativeAndroidSecurityRequest = (
 	addLoginAndType(builder, common)
 	addKeyBundle(builder, common.keyBundle)
 
-	return { endpoint: '/v2/security', body: builder.toString() }
+	return { endpoint: '/v2/security', body: builder.toString(), registrationType: common.registrationType }
 }
 
 export const buildNativeAndroidConsentRequest = (
@@ -434,7 +451,7 @@ export const buildNativeAndroidConsentRequest = (
 	addLoginAndType(builder, common)
 	addKeyBundle(builder, common.keyBundle)
 
-	return { endpoint: '/v2/consent', body: builder.toString() }
+	return { endpoint: '/v2/consent', body: builder.toString(), registrationType: common.registrationType }
 }
 
 export const buildNativeAndroidDeviceConfirmRequest = (
@@ -448,7 +465,7 @@ export const buildNativeAndroidDeviceConfirmRequest = (
 	addLoginAndType(builder, common)
 	addKeyBundle(builder, common.keyBundle)
 
-	return { endpoint: '/v2/device_confirm', body: builder.toString() }
+	return { endpoint: '/v2/device_confirm', body: builder.toString(), registrationType: common.registrationType }
 }
 
 export const buildNativeAndroidAutoconfRequest = (
@@ -461,7 +478,7 @@ export const buildNativeAndroidAutoconfRequest = (
 	builder.base64('client_capabilities', input.clientCapabilities)
 	addKeyBundle(builder, common.keyBundle)
 
-	return { endpoint: '/v2/autoconf', body: builder.toString() }
+	return { endpoint: '/v2/autoconf', body: builder.toString(), registrationType: common.registrationType }
 }
 
 export type NativeAndroidRequestSigningMaterial = {

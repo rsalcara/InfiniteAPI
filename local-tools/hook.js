@@ -1085,17 +1085,30 @@ rpc.exports = {
           // replace the value in the query, preserving insertion order.
           var bodyForWire = body
           var inMatch = /(?:^|&)in=([^&]+)/.exec(body)
-          if (inMatch) {
+          var loginMatch = /(?:^|&)login=([^&]+)/.exec(body)
+          var tokenNumber = null
+          if (registrationType === 1 && loginMatch) {
+            // The type-1 (WA_TWO_FA) wire drops cc/in and carries the number
+            // inside `login`; the token is still keyed on those digits.
+            tokenNumber = percentDecodeQuery(loginMatch[1]).split('@')[0].split(':')[0]
+          } else if (inMatch) {
+            tokenNumber = percentDecodeQuery(inMatch[1])
+          } else if (loginMatch) {
+            tokenNumber = percentDecodeQuery(loginMatch[1]).split('@')[0].split(':')[0]
+          }
+          if (tokenNumber && !/^[0-9]+$/.test(tokenNumber)) tokenNumber = null
+          if (tokenNumber) {
             var ActivityThread = Java.use('android.app.ActivityThread')
             var appContext = ActivityThread.currentApplication()
             if (!appContext) throw new Error('Android application context is unavailable')
             var BpY = Java.use('X.BpY')
             var Mh2 = Java.use('X.Mh2')
             var fingerprint = Java.cast(BpY.A00.value, Mh2)
-            var officialToken = fingerprint.A01(appContext, percentDecodeQuery(inMatch[1]))
+            var officialToken = fingerprint.A01(appContext, tokenNumber)
             if (!officialToken || officialToken.length === 0) throw new Error('official registration token is empty')
             bodyForWire = body.replace(/(^|&)token=[^&]*/, '$1token=' + percentEncodeOfficial(officialToken))
-            agentLog('official registration token ready length=' + officialToken.length)
+            agentLog('official registration token ready length=' + officialToken.length +
+              ' type=' + (registrationType || 0))
           }
 
           agentLog('raw body for wire: ' + bodyForWire)
