@@ -40,11 +40,13 @@ export type NativeAndroidRegistrationWireBody = {
 }
 
 /**
- * `Base64.encodeToString(bytes, 11)` semantics (standard alphabet, CRLF and
- * wrapping suppressed, padding stripped).
+ * `Base64.encodeToString(bytes, 11)` semantics: flag 11 =
+ * URL_SAFE | NO_WRAP | NO_PADDING (android.util.Base64), so the alphabet is
+ * base64url (`-`/`_`) with no padding — the exact `enc=`/`h=` wire form the
+ * APK produces (hook.js 1174/1188).
  */
 export const encodeNativeAndroidRegistrationSignature = (bytes: Uint8Array): string =>
-	Buffer.from(bytes).toString('base64').replace(/=+$/, '')
+	Buffer.from(bytes).toString('base64url')
 
 /**
  * `Base64.encodeToString(bytes, 2)` semantics (NO_WRAP): standard alphabet

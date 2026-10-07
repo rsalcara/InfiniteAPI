@@ -35,6 +35,8 @@ export type {
 	NativeAndroidRegistrationBridgeAttestation,
 	NativeAndroidRegistrationEnvironmentProvider
 } from './native-android-registration-bridge-provider'
+export { createNativeAndroidRegistrationRelayProvider } from './native-android-registration-relay-provider'
+export type { NativeAndroidRegistrationRelayProviderConfig } from './native-android-registration-relay-provider'
 export * from './native-android-registration-keys'
 export * from './native-android-registration-protocol'
 export { createNativeAndroidRegistrationHttpClient } from './native-android-registration-client'

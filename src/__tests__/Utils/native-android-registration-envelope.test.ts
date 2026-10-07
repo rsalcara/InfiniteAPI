@@ -44,7 +44,8 @@ describe('native android registration envelope', () => {
 		const server = Curve.generateKeyPair()
 		const sealed = sealNativeAndroidRegistrationEnvelope(QUERY, { serverPublicKey: server.public })
 		const enc = sealed.body.slice(4)
-		expect(enc).toMatch(/^[A-Za-z0-9+/]+$/)
+		// Flag 11 = URL_SAFE | NO_WRAP | NO_PADDING: base64url alphabet, no '='.
+		expect(enc).toMatch(/^[A-Za-z0-9\-_]+$/)
 		expect(enc).not.toContain('=')
 	})
 
@@ -81,9 +82,10 @@ describe('native android registration envelope', () => {
 	})
 
 	it('appends the official &h= suffix with flag-11 encoding', () => {
-		// 2 bytes -> 3 base64 chars + '=' padding; flag 11 strips the '='.
-		expect(encodeNativeAndroidRegistrationSignature(Uint8Array.from([251, 255]))).toBe('+/8')
-		expect(appendNativeAndroidRegistrationSignature('enc=abc', Uint8Array.from([251, 255]))).toBe('enc=abc&h=+/8')
+		// 2 bytes -> 3 base64 chars + '=' padding; flag 11 = URL_SAFE | NO_WRAP |
+		// NO_PADDING, so `+`/`/` become `-`/`_` and the `=` is stripped.
+		expect(encodeNativeAndroidRegistrationSignature(Uint8Array.from([251, 255]))).toBe('-_8')
+		expect(appendNativeAndroidRegistrationSignature('enc=abc', Uint8Array.from([251, 255]))).toBe('enc=abc&h=-_8')
 	})
 
 	it('keeps padding only on the Authorization key chain (flag 2)', () => {

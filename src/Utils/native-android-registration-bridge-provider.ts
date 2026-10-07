@@ -35,6 +35,12 @@ export type NativeAndroidRegistrationBridgeAttestation = {
 	apkResponse?: { status: number; body: string }
 	/** Official client User-Agent for the wire. When absent the client sends none. */
 	userAgent?: string
+	/**
+	 * Real hardware profile reported by the attesting device (Build.* fields),
+	 * when a physical device produced the material. Lets the caller keep the
+	 * wire UA coherent with the TEE-signed key chain.
+	 */
+	deviceProfile?: Record<string, string>
 }
 
 const MAX_REQUEST_BYTES = 1_048_576
