@@ -33,6 +33,11 @@ function recordRegistrationCapture(capture) {
   capture.package = capture.package || currentContextPackage()
   registrationWireCaptures.unshift(capture)
   registrationWireCaptures = registrationWireCaptures.slice(0, 200)
+  try {
+    send({ type: 'wire-capture', capture: capture })
+  } catch (sendError) {
+    // Non-fatal: the in-memory copy still exists for the pull path.
+  }
 }
 
 function captureBodyBytes(bytes, offset, length) {
@@ -861,6 +866,40 @@ function collectRegistrationEnvironment(cloudProjectNumber) {
         environment.cellular_strength = signalStrength ? signalStrength.getLevel() : 5
         environment.roaming_type = telephony.isNetworkRoaming() ? 1 : 0
 
+        // Install source is system-owned state, not an APK property. Mirror
+        // X.KU2.CBW -> X.C0BJ.A2O without fabricating a value when absent.
+        try {
+          const PackageManager = Java.use('android.content.pm.PackageManager')
+          const packageManager = Java.cast(appContext.getPackageManager(), PackageManager)
+          const packageName = String(appContext.getPackageName())
+          const installer = packageManager.getInstallerPackageName(packageName)
+          if (installer !== null) environment.installer_package = String(installer)
+
+          if (parseInt(Java.use('android.os.Build$VERSION').SDK_INT.value, 10) >= 34) {
+            const sourceInfo = packageManager.getInstallSourceInfo(packageName)
+            const rawPackageSource = Number(sourceInfo.getPackageSource())
+            const packageSourceMap = {
+              0: 'unspecified',
+              1: 'other',
+              2: 'store',
+              3: 'local_file',
+              4: 'downloaded_file'
+            }
+            environment.package_source = packageSourceMap[rawPackageSource] ||
+              ('unknown_' + rawPackageSource)
+            const installingPackage = sourceInfo.getInstallingPackageName()
+            if (installingPackage !== null) {
+              environment.installing_package = String(installingPackage)
+            }
+            const initiatingPackage = sourceInfo.getInitiatingPackageName()
+            if (initiatingPackage !== null) {
+              environment.initiating_package = String(initiatingPackage)
+            }
+          }
+        } catch (error) {
+          agentLog('install source unavailable: ' + error)
+        }
+
         const ConnectivityManager = Java.use('android.net.ConnectivityManager')
         const connectivity = Java.cast(appContext.getSystemService('connectivity'), ConnectivityManager)
         const activeNetwork = connectivity.getActiveNetwork()
@@ -1058,6 +1097,7 @@ rpc.exports = {
             bodyForWire = body.replace(/(^|&)token=[^&]*/, '$1token=' + percentEncodeOfficial(officialToken))
             agentLog('official registration token ready length=' + officialToken.length)
           }
+
           agentLog('raw body for wire: ' + bodyForWire)
 
           // Environment and Google fields are collected once by
@@ -1074,18 +1114,16 @@ rpc.exports = {
           var metadata = Java.cast(Lazy.A02(Holder.A01.value), MetadataClass)
           if (!signer.A06()) throw new Error('native key attestation is disabled by remote config')
 
-          var keyChain = signer.A03(signer, Java.use('java.lang.Integer').valueOf(1), metadata.A0I())
-          if (!keyChain || keyChain.length === 0) throw new Error('native key attestation chain is empty')
-
           var JavaString = Java.use('java.lang.String')
           var plainBody = JavaString.$new(bodyForWire).getBytes('UTF-8')
-          var signature = signer.A07(plainBody, keyChain)
-          if (!signature || signature.length === 0) throw new Error('native registration signing failed')
-          // URL_SAFE | NO_WRAP | NO_PADDING, exactly as the APK body builder.
-          var signatureText = String(Base64.encodeToString(signature, 11))
 
           var finalBody
           var encrypted = false
+          // RetryingHttpClient (smali 2235847-2235869) signs the payload that
+          // actually goes on the wire: the base64 envelope string when the
+          // encryption succeeds, the plain query string in the fallback. The
+          // A07 metadata argument is `metadata.A0I()`, never the keychain.
+          var payloadToSign
           try {
             var Avp = Java.use('X.Avp')
             var Avw = Java.use('X.Avw')
@@ -1101,8 +1139,11 @@ rpc.exports = {
             var Cipher = Java.use('javax.crypto.Cipher')
             var SecretKeySpec = Java.use('javax.crypto.spec.SecretKeySpec')
             var GCMParameterSpec = Java.use('javax.crypto.spec.GCMParameterSpec')
-            var iv = new Array(12)
-            for (var index = 0; index < iv.length; ++index) iv[index] = (Math.random() * 256) | 0
+            // W4B 2.26.36.72 creates a 12-byte array and passes it directly to
+            // GCMParameterSpec without filling it. Keep the zero IV exactly;
+            // a random IV makes the server-side decrypt fail and surfaces as
+            // missing_param for the first required body parameter.
+            var iv = new Array(12).fill(0)
             var ivBytes = javaByteArray(iv)
             var cipher = Cipher.getInstance('AES/GCM/NoPadding')
             cipher.init(1, SecretKeySpec.$new(aesKey, 'AES'), GCMParameterSpec.$new(128, ivBytes))
@@ -1111,16 +1152,33 @@ rpc.exports = {
             var ByteArrayOutputStream = Java.use('java.io.ByteArrayOutputStream')
             var combined = ByteArrayOutputStream.$new()
             var publicHeader = ephemeralPublic.A00()
-            combined.write(publicHeader, 0, publicHeader.length)
+            // RetryingHttpClient (smali line 2235833) copies range [1, len):
+            // the leading 0x05 Curve type byte is stripped before the
+            // ciphertext concatenation. Sending the full 33-byte header makes
+            // the server-side decrypt fail and surfaces as missing_param.
+            combined.write(publicHeader, 1, publicHeader.length - 1)
             combined.write(cipherText, 0, cipherText.length)
             var encryptedText = String(Base64.encodeToString(combined.toByteArray(), 11))
-            finalBody = 'enc=' + encryptedText + '&h=' + signatureText
+            payloadToSign = JavaString.$new(encryptedText).getBytes('UTF-8')
+            finalBody = 'enc=' + encryptedText
             encrypted = true
           } catch (encryptionError) {
             // This is also the APK fallback when RegistrationEncryption fails.
             agentLog('official registration encryption unavailable, using signed fallback: ' + encryptionError)
-            finalBody = body + '&h=' + signatureText
+            payloadToSign = plainBody
+            finalBody = bodyForWire
           }
+
+          var signature = signer.A07(payloadToSign, metadata.A0I())
+          if (!signature || signature.length === 0) throw new Error('native registration signing failed')
+          // URL_SAFE | NO_WRAP | NO_PADDING, exactly as the APK body builder.
+          var signatureText = String(Base64.encodeToString(signature, 11))
+          finalBody = finalBody + '&h=' + signatureText
+
+          // Official order: sign first, build the attestation chain for the
+          // Authorization header afterwards (smali 2235886-2235893).
+          var keyChain = signer.A03(signer, Java.use('java.lang.Integer').valueOf(1), metadata.A0I())
+          if (!keyChain || keyChain.length === 0) throw new Error('native key attestation chain is empty')
 
           var authorization = String(Base64.encodeToString(keyChain, 2)) // NO_WRAP
           agentLog('official registration material ready endpoint=' + endpoint +
@@ -1207,10 +1265,10 @@ rpc.exports = {
 }
 
 function contextPackageName() {
-  const ActivityThread = Java.use('android.app.ActivityThread')
-  const context = ActivityThread.currentApplication()
-  if (!context) throw new Error('Android application context is unavailable')
-  return String(context.getPackageName())
+	const ActivityThread = Java.use('android.app.ActivityThread')
+	const context = ActivityThread.currentApplication()
+	if (!context) throw new Error('Android application context is unavailable')
+	return String(context.getPackageName())
 }
 
 function installRegistrationWireCapture() {

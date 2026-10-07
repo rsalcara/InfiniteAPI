@@ -55,9 +55,10 @@ export type NativeAndroidRegistrationCommon = {
  */
 export type NativeAndroidRequestCodeEnvironment = {
 	_gs?: string
+	_ga?: string
 	sim_mnc?: string
 	recaptcha?: string
-	device_ram?: string
+	device_ram?: string | number
 	db?: 0 | 1
 	rc?: number
 	pid?: number
@@ -83,6 +84,12 @@ export type NativeAndroidRequestCodeEnvironment = {
 	network_radio_type?: number
 	feo2_query_status?: string
 	reason?: string
+	/** System-owned installation state; diagnostic only and never serialized. */
+	installer_package?: string
+	package_source?: 'store' | 'local_file' | 'downloaded_file' | 'other' | 'unspecified' | `unknown_${number}`
+	installing_package?: string
+	initiating_package?: string | null
+	install_source_consistent?: boolean | null
 }
 
 export type NativeAndroidRequestCodeInput = {
@@ -289,7 +296,11 @@ const addEnvironmentField = (
 	key: keyof NativeAndroidRequestCodeEnvironment
 ): void => {
 	const value = environment[key]
-	if (value === undefined) return
+	if (value === undefined || value === null) return
+	// The APK wire serializer omits empty CJT entries: the 2026-09-21
+	// 17:59:59Z official /v2/code capture has no `_gs=`, `_ga=`, `aid=`,
+	// `_gp=` or `_ge=` even though the CJT map carries those keys.
+	if (typeof value === 'string' && value.length === 0) return
 	if (typeof value === 'number') builder.setRaw(key, String(value))
 	else if (typeof value === 'boolean') builder.setRaw(key, String(value))
 	else builder.setRaw(key, value)
@@ -303,18 +314,18 @@ export const buildNativeAndroidRequestCodeRequest = (
 		throw new Error('native_android registration: method must be sms or voice')
 	}
 
-	// Exact field order from the 2026-09-21 pre-encryption /v2/code capture
-	// (46 fields). The generic common/key helpers use endpoint insertion order
-	// that is correct for the other registration endpoints, but /v2/code is
-	// serialized in this distinct observed order.
+	// Exact field order from the 2026-09-21 17:59:59Z official /v2/code wire
+	// capture (pre-encryption plaintext, 30 fields, 1219 bytes). The CJT map
+	// holds 46 entries, but the APK serializer omits empty values and this
+	// endpoint does not send `device_ram` or `lc` at all.
 	const builder = new RegistrationRequestBuilder()
 	const environment = input.environment ?? {}
 	builder.requiredString('platform', common.appVariant === 'business' ? 'smba' : 'android')
 	addEnvironmentField(builder, environment, '_gs')
+	addEnvironmentField(builder, environment, '_ga')
 	addEnvironmentField(builder, environment, 'sim_mnc')
 	builder.requiredPercentEncoded('id', common.identityId)
 	addEnvironmentField(builder, environment, 'recaptcha')
-	addEnvironmentField(builder, environment, 'device_ram')
 	addEnvironmentField(builder, environment, 'db')
 	builder.requiredString('lg', common.language)
 	addEnvironmentField(builder, environment, 'rc')

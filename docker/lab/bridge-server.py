@@ -287,10 +287,29 @@ def on_message(message, data):
     payload = message.get("payload") or {}
     if payload.get("type") in {"log", "error"}:
         print(f"[BRIDGE] agent: {payload}", flush=True)
+    if payload.get("type") == "wire-capture":
+        capture = payload.get("capture")
+        if isinstance(capture, dict):
+            persist_registration_wire_captures([capture])
+            source = capture.get("source", "unknown")
+            print(f"[BRIDGE] wire-capture persisted: source={source}", flush=True)
 
 
 def find_whatsapp(device, package_name=None):
     package = package_name or WHATSAPP_PACKAGE
+    # Frida may report app processes by their display label (e.g. "WhatsApp Business")
+    # instead of the package name, so match by application identifier first.
+    try:
+        for app in device.enumerate_applications():
+            if app.identifier == package and app.pid:
+                class _Process:
+                    pass
+                match = _Process()
+                match.pid = app.pid
+                match.name = app.identifier
+                return match
+    except Exception:
+        pass
     processes = device.enumerate_processes()
     return next((item for item in processes if item.name == package), None)
 
@@ -616,6 +635,14 @@ def request_registration_environment(package_name=None, cloud_project_number=Non
 
             if not isinstance(environment, dict) or not isinstance(environment.get("gpia"), str):
                 raise RuntimeError("bridge returned invalid registration environment")
+            raw_installer = environment.get("installer_package")
+            raw_source = environment.get("package_source")
+            if raw_installer is None and raw_source is None:
+                environment["install_source_consistent"] = None
+            else:
+                environment["install_source_consistent"] = (
+                    raw_installer == "com.android.vending" and raw_source == "store"
+                )
             return environment
         raise RuntimeError("Frida registration environment RPC failed after reattach")
 

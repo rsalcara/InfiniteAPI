@@ -54,7 +54,11 @@ describe('native_android primary registration keys', () => {
 		expect(bundle.e_skey_id).toHaveLength(3)
 		expect(bundle.e_skey_val).toHaveLength(32)
 		expect(
-			Curve.verify(keys.identity.public, generateSignalPubKey(keys.signedPreKey.keyPair.public), keys.signedPreKey.signature)
+			Curve.verify(
+				keys.identity.public,
+				generateSignalPubKey(keys.signedPreKey.keyPair.public),
+				keys.signedPreKey.signature
+			)
 		).toBe(true)
 		expect(keys.signedPreKey.signature).toHaveLength(64)
 		expect(keys.signedPreKey.signature).toEqual(
@@ -77,7 +81,8 @@ describe('native_android official registration wire', () => {
 
 		expect(request.endpoint).toBe('/v2/code')
 		// W4B 2.26.36.72 identifies Business registration as `smba` and adds
-		// platform before the endpoint-specific captured map order.
+		// platform before the endpoint-specific captured wire order. The
+		// official /v2/code capture does not carry `lc`.
 		expect(request.body.startsWith('platform=smba&id=%01%2B%FF&lg=pt')).toBe(true)
 		expect(request.body).toContain('&cc=55&in=11999999999&backup_token=abc')
 		expect([...new URLSearchParams(request.body).keys()]).toEqual([
@@ -146,6 +151,7 @@ describe('native_android official registration wire', () => {
 			method: 'voice',
 			environment: {
 				_gs: '{"em":"real-google-payload"}',
+				_ga: 'real-native-payload',
 				sim_mnc: '260',
 				recaptcha: '{"stage":"ABPROP_DISABLED"}',
 				device_ram: '2.42',
@@ -176,10 +182,10 @@ describe('native_android official registration wire', () => {
 		expect([...new URLSearchParams(request.body).keys()]).toEqual([
 			'platform',
 			'_gs',
+			'_ga',
 			'sim_mnc',
 			'id',
 			'recaptcha',
-			'device_ram',
 			'db',
 			'lg',
 			'rc',
@@ -222,6 +228,27 @@ describe('native_android official registration wire', () => {
 		expect(request.body).not.toContain('&_gp=')
 		expect(request.body).not.toContain('&_gg=')
 		expect(request.body).not.toContain('&_gi=')
+	})
+
+	it('keeps system-owned install-source diagnostics out of the /v2/code wire', () => {
+		const request = buildNativeAndroidRequestCodeRequest(COMMON, {
+			token: '11999999999',
+			method: 'voice',
+			environment: {
+				installer_package: 'com.android.vending',
+				package_source: 'store',
+				installing_package: 'com.android.vending',
+				initiating_package: 'com.android.vending',
+				install_source_consistent: true
+			}
+		})
+
+		expect(request.endpoint).toBe('/v2/code')
+		expect(request.body).not.toContain('installer_package=')
+		expect(request.body).not.toContain('package_source=')
+		expect(request.body).not.toContain('installing_package=')
+		expect(request.body).not.toContain('initiating_package=')
+		expect(request.body).not.toContain('install_source_consistent=')
 	})
 
 	it('builds /v2/register with the verification code before the key bundle', () => {

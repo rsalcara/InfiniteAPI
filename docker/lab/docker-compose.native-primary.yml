@@ -34,7 +34,7 @@ services:
     build:
       context: ../..
       dockerfile: docker/lab/Dockerfile.native-primary-bridge
-    image: infiniteapi-bridge:safetynet-wire-2
+    image: infiniteapi-bridge:safetynet-wire-3
     container_name: infiniteapi-native-primary-bridge
     restart: unless-stopped
     ports:
@@ -45,7 +45,10 @@ services:
       FRIDA_PORT: ${FRIDA_PORT:-27044}
       WHATSAPP_PACKAGE: ${WHATSAPP_PACKAGE:-com.whatsapp.w4b}
       WHATSAPP_PACKAGES: ${WHATSAPP_PACKAGES:-com.whatsapp.w4b}
-      AUTO_LAUNCH_WHATSAPP: ${AUTO_LAUNCH_WHATSAPP:-true}
+      AUTO_LAUNCH_WHATSAPP: ${AUTO_LAUNCH_WHATSAPP:-false}
+      WARMUP_ENABLED: ${WARMUP_ENABLED:-false}
       REGISTRATION_CAPTURE_HMAC_KEY_B64: ${REGISTRATION_CAPTURE_HMAC_KEY_B64:-}
+    volumes:
+      - ./native-primary-state/captures:/tmp/infiniteapi-bridge
     extra_hosts:
       - "host.docker.internal:host-gateway"
