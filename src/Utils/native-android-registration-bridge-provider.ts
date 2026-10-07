@@ -33,6 +33,8 @@ export type NativeAndroidRegistrationBridgeAttestation = {
 	body?: string
 	/** When the bridge executed the HTTP request inside the APK, this carries the response. */
 	apkResponse?: { status: number; body: string }
+	/** Official client User-Agent for the wire. When absent the client sends none. */
+	userAgent?: string
 }
 
 const MAX_REQUEST_BYTES = 1_048_576

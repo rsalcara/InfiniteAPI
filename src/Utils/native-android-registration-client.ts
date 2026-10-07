@@ -98,7 +98,8 @@ export const createNativeAndroidRegistrationHttpClient = (
 					redirect: 'error',
 					headers: {
 						'Content-Type': 'application/x-www-form-urlencoded',
-						...(attested.authorization ? { Authorization: attested.authorization } : {})
+						...(attested.authorization ? { Authorization: attested.authorization } : {}),
+						...(attested.userAgent ? { 'User-Agent': attested.userAgent } : {})
 					},
 					body: attested.body ?? request.body,
 					signal: controller.signal

@@ -1,3 +1,6 @@
+import { readFileSync } from 'fs'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
 import type { proto } from '../../../WAProto/index.js'
 import { buildPrimaryRegistrationAuthCreds, normalizeLidJid } from '../../Utils/native-android-registration-auth'
 import type { NativeAndroidRegistrationBridgeContext } from '../../Utils/native-android-registration-bridge-provider'
@@ -7,6 +10,12 @@ import {
 } from '../../Utils/native-android-registration-flow'
 import { createNativeAndroidRegistrationSignalKeys } from '../../Utils/native-android-registration-keys'
 import type { NativeAndroidRegistrationCommon } from '../../Utils/native-android-registration-protocol'
+import { percentEncodeRegistrationString } from '../../Utils/native-android-registration-protocol'
+import {
+	buildClassicRegistrationToken,
+	NATIVE_ANDROID_REGISTRATION_PACKAGES,
+	type NativeAndroidRegistrationTokenMaterial
+} from '../../Utils/native-android-registration-token'
 
 const COMMON: Omit<NativeAndroidRegistrationCommon, 'keyBundle'> = {
 	appVariant: 'business',
@@ -247,5 +256,57 @@ describe('native_android registration flow', () => {
 			Uint8Array.from([0x0a, 0x0b])
 		)
 		expect(decodeRegistrationAuthChallenge('Cgs')).toEqual(Uint8Array.from([0x0a, 0x0b]))
+	})
+})
+
+describe('native_android registration flow self-computed token', () => {
+	const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'native-android-registration-token')
+
+	const captureMaterial = (): NativeAndroidRegistrationTokenMaterial => ({
+		packageName: NATIVE_ANDROID_REGISTRATION_PACKAGES.business,
+		logoResource: readFileSync(join(fixturesDir, 'about_logo.png')),
+		signingCertDer: readFileSync(join(fixturesDir, 'signing-cert.der')),
+		classesDexMd5: Uint8Array.from(
+			Buffer.from(readFileSync(join(fixturesDir, 'classes-dex.md5'), 'utf8').trim(), 'hex')
+		)
+	})
+
+	const singleShotFlow = (options: Partial<Parameters<typeof createNativeAndroidRegistrationFlow>[0]>) =>
+		createNativeAndroidRegistrationFlow({
+			common: { ...COMMON, nationalNumber: '1531997072' },
+			...options,
+			attestationProvider: async context => ({ authorization: 'Native attestation', body: context.body }),
+			http: {
+				baseUrl: 'https://registration.lab.invalid',
+				fetch: (async () =>
+					new Response(JSON.stringify({ status: 'sent' }), { status: 200 })) as unknown as typeof fetch
+			}
+		})
+
+	it('sends the wire-verified classic token computed in the motor', async () => {
+		const flow = singleShotFlow({ tokenMaterial: captureMaterial() })
+		const code = await flow.requestCode({ method: 'sms' })
+		// Golden /v2/code capture: in=1531997072 -> token=hEjVbznrgA3o2tS3JoE4vuRVxVg=
+		// percent-encoded by the official encoder ('=' -> %3D).
+		expect(code.request.body).toContain('&token=hEjVbznrgA3o2tS3JoE4vuRVxVg%3D')
+		expect(code.request.body).not.toContain('&token=1531997072')
+	})
+
+	it('keys the WA_TWO_FA token on the login digits, like the in-APK hook', async () => {
+		const material = captureMaterial()
+		const flow = singleShotFlow({
+			common: { ...COMMON, login: '5511999999999@s.whatsapp.net', registrationType: 1 },
+			tokenMaterial: material
+		})
+		const code = await flow.requestCode({ method: 'voice' })
+		const expected = buildClassicRegistrationToken('5511999999999', material)
+		expect(code.request.body).toContain(`token=${percentEncodeRegistrationString(expected)}`)
+		expect(code.request.body).not.toContain('token=5511999999999')
+	})
+
+	it('keeps the placeholder token when no material is configured (bridge replaces it)', async () => {
+		const flow = singleShotFlow({})
+		const code = await flow.requestCode({ method: 'sms' })
+		expect(code.request.body).toContain('&token=1531997072')
 	})
 })

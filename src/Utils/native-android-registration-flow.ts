@@ -29,6 +29,10 @@ import {
 	parseNativeAndroidRegisterResponse,
 	parseNativeAndroidRequestCodeResponse
 } from './native-android-registration-response'
+import {
+	buildClassicRegistrationToken,
+	type NativeAndroidRegistrationTokenMaterial
+} from './native-android-registration-token'
 
 export type NativeAndroidRegistrationFlowHttpOptions = Omit<
 	NativeAndroidRegistrationHttpConfig,
@@ -44,6 +48,12 @@ export type NativeAndroidRegistrationFlowOptions = {
 	common: Omit<NativeAndroidRegistrationCommon, 'keyBundle'>
 	/** Device-0 Signal material; generated fresh when omitted. */
 	keys?: NativeAndroidRegistrationSignalKeys
+	/**
+	 * APK byte material for the official classic `token`. When set, the flow
+	 * computes the token itself (self-computed mode) and the registration
+	 * bridge no longer needs to replace it in-process.
+	 */
+	tokenMaterial?: NativeAndroidRegistrationTokenMaterial
 	attestationProvider: (
 		context: NativeAndroidRegistrationBridgeContext
 	) => Promise<NativeAndroidRegistrationBridgeAttestation>
@@ -68,10 +78,11 @@ export type NativeAndroidVerifyCodeResult = NativeAndroidRegistrationStepResult<
 
 export type NativeAndroidRequestCodeCall = Omit<NativeAndroidRequestCodeInput, 'token'> & {
 	/**
-	 * Official `token`: the in-APK HMAC of the phone number. The motor cannot
-	 * reproduce it outside the app, so this defaults to a placeholder the
-	 * registration bridge replaces in-process (hook.js computes it via
-	 * `X.Mh2.A01`) before the request goes on the wire.
+	 * Official `token`. When `tokenMaterial` is configured the flow computes it
+	 * itself (see `buildClassicRegistrationToken`) and this override is rarely
+	 * needed; without material it defaults to a placeholder the registration
+	 * bridge replaces in-process (hook.js computes it via the in-APK class)
+	 * before the request goes on the wire.
 	 */
 	token?: string
 }
@@ -98,10 +109,13 @@ export const decodeRegistrationAuthChallenge = (challenge: string): Uint8Array =
  * Creates a complete primary phone-registration flow: requestCode
  * (/v2/code) → verifyCode (/v2/register) → AuthenticationCreds.
  *
- * Every request goes through the registration bridge for the official token,
- * envelope protection and GPIA/SafetyNet attestation; when the bridge executes
- * the POST inside the real APK its response short-circuits the motor's own
- * HTTP call. Responses are parsed 1:1 with the APK's FOG/FDZ parsers.
+ * With `tokenMaterial` the official `token` is computed in the motor
+ * (self-computed mode) and the attestation provider only signs — a device
+ * signer (`createNativeAndroidRegistrationDeviceAttestationProvider`) replaces
+ * the registration bridge entirely for token and envelope work. Without
+ * material the bridge still replaces the token in-process and may execute the
+ * POST inside the real APK, short-circuiting the motor's own HTTP call.
+ * Responses are parsed 1:1 with the APK's FOG/FDZ parsers.
  */
 export const createNativeAndroidRegistrationFlow = (
 	options: NativeAndroidRegistrationFlowOptions
@@ -116,6 +130,14 @@ export const createNativeAndroidRegistrationFlow = (
 		...options.common,
 		keyBundle: buildNativeAndroidRegistrationKeyBundle(keys)
 	}
+
+	// Official token keying (in-APK hook): the WA_TWO_FA flow signs the `login`
+	// digits, the primary flow signs the `in=` national digits.
+	const tokenDigits =
+		common.registrationType === 1 && common.login ? common.login.split('@')[0]!.split(':')[0]! : common.nationalNumber
+	const computedToken = options.tokenMaterial
+		? buildClassicRegistrationToken(tokenDigits, options.tokenMaterial)
+		: undefined
 
 	const digits = `${common.countryCallingCode}${common.nationalNumber}`
 	const client = createNativeAndroidRegistrationHttpClient(
@@ -138,7 +160,7 @@ export const createNativeAndroidRegistrationFlow = (
 		requestCode: async input => {
 			const request = buildNativeAndroidRequestCodeRequest(common, {
 				...input,
-				token: input.token ?? common.nationalNumber,
+				token: input.token ?? computedToken ?? common.nationalNumber,
 				environment: input.environment ?? options.environment
 			})
 			const http = await client(request)

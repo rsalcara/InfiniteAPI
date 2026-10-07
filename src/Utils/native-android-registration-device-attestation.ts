@@ -1,0 +1,122 @@
+import type { NativeAndroidDeviceProfile } from '../Types'
+import type {
+	NativeAndroidRegistrationBridgeAttestation,
+	NativeAndroidRegistrationBridgeContext
+} from './native-android-registration-bridge-provider'
+import {
+	appendNativeAndroidRegistrationSignature,
+	buildNativeAndroidRegistrationWireBody,
+	encodeNativeAndroidRegistrationAuthorization,
+	type NativeAndroidRegistrationEnvelopeMaterial
+} from './native-android-registration-envelope'
+
+/**
+ * Device-side signing the motor cannot reproduce in Node: the Android Keystore
+ * attestation signature over the wire payload (in-APK `signer.A07`) and the
+ * attestation key chain for the Authorization header (in-APK `signer.A03`).
+ * A normal app on the device implements these with its Keystore key; the
+ * private key never leaves the device.
+ */
+export type NativeAndroidRegistrationDeviceSigner = {
+	/** Keystore signature over the exact bytes the body carries (enc value or plain query). */
+	signPayload(payload: Uint8Array): Promise<Uint8Array>
+	/**
+	 * Attestation key chain (certificate list). The APK builds it AFTER the
+	 * payload signature — the Keystore issuance state advances per operation —
+	 * so providers must not pre-compute or cache the chain.
+	 */
+	buildAuthorization(): Promise<Uint8Array>
+}
+
+export type NativeAndroidRegistrationUserAgentParts = {
+	/** `Build.VERSION.RELEASE`, e.g. `14`. */
+	androidVersion: string
+	/** `Build.MANUFACTURER`, e.g. `Google`. */
+	manufacturer: string
+	/** `Build.MODEL`, e.g. `Pixel 7`. */
+	model: string
+}
+
+/** Official client version embedded in the registration User-Agent. */
+export const NATIVE_ANDROID_REGISTRATION_USER_AGENT_VERSION = '2.26.36.72'
+/** W4B platform token (`X.0d3.A00` uses the literal `SMBA`). */
+export const NATIVE_ANDROID_REGISTRATION_USER_AGENT_PLATFORM = 'SMBA'
+
+const sanitizeUserAgentPart = (value: string): string => value.replace(/[^,\.\w\-\(\)]/g, '_')
+
+/**
+ * Official registration User-Agent (`X.0d3.A00`, W4B 2.26.36.72):
+ * `WhatsApp/2.26.36.72 SMBA/<release> Device/<manufacturer>-<model>`, each
+ * device part sanitized with the APK's `[^,\.\w\-\(\)]` -> `_` rule. The
+ * registration platform selector rejects requests without it.
+ */
+export const buildNativeAndroidRegistrationUserAgentFromParts = (
+	parts: NativeAndroidRegistrationUserAgentParts
+): string =>
+	`WhatsApp/${NATIVE_ANDROID_REGISTRATION_USER_AGENT_VERSION} ${NATIVE_ANDROID_REGISTRATION_USER_AGENT_PLATFORM}/${sanitizeUserAgentPart(
+		parts.androidVersion
+	)} Device/${sanitizeUserAgentPart(parts.manufacturer)}-${sanitizeUserAgentPart(parts.model)}`
+
+/**
+ * Builds the official User-Agent from the exact hardware profile the session
+ * raffled (`createNativeAndroidDeviceProfile`), so the UA can never claim a
+ * different model than the Build.* values the rest of the registration
+ * reports: `osVersion` is `Build.VERSION.RELEASE`, `deviceModelType` is
+ * `Build.MODEL`.
+ */
+export const buildNativeAndroidRegistrationUserAgent = (
+	profile: Pick<NativeAndroidDeviceProfile, 'manufacturer' | 'deviceModelType' | 'osVersion'>
+): string =>
+	buildNativeAndroidRegistrationUserAgentFromParts({
+		// Missing Build.* fields fall back to "unknown", exactly like the APK's
+		// NoSuchFieldError handling in X.0d3.A00.
+		androidVersion: profile.osVersion ?? 'unknown',
+		manufacturer: profile.manufacturer ?? 'unknown',
+		model: profile.deviceModelType ?? 'unknown'
+	})
+
+export type NativeAndroidRegistrationDeviceAttestationOptions = {
+	signer: NativeAndroidRegistrationDeviceSigner
+	/** Static server key for the `enc=` envelope; omitted sends the APK's signed-plaintext fallback. */
+	envelopeMaterial?: NativeAndroidRegistrationEnvelopeMaterial
+	/**
+	 * The exact profile the session raffled (`createNativeAndroidDeviceProfile`).
+	 * The official User-Agent is derived from it so the wire UA always matches
+	 * the Build.* values the registration reports.
+	 */
+	deviceProfile?: Pick<NativeAndroidDeviceProfile, 'manufacturer' | 'deviceModelType' | 'osVersion'>
+	/** Explicit User-Agent override; takes precedence over `deviceProfile`. */
+	userAgent?: string
+}
+
+/**
+ * Self-computed attestation provider: the motor owns the protocol (token,
+ * query, `enc=` envelope) and the device contributes only the Keystore
+ * signatures. Implements the same contract as the registration bridge
+ * provider, so the flow can run with either one — the bridge stays optional
+ * and is no longer required for token or envelope work.
+ */
+export const createNativeAndroidRegistrationDeviceAttestationProvider = (
+	options: NativeAndroidRegistrationDeviceAttestationOptions
+): ((context: NativeAndroidRegistrationBridgeContext) => Promise<NativeAndroidRegistrationBridgeAttestation>) => {
+	if (!options?.signer?.signPayload || !options.signer.buildAuthorization) {
+		throw new Error('native_android registration device attestation requires a device signer')
+	}
+
+	return async context => {
+		const wire = buildNativeAndroidRegistrationWireBody(context.body, options.envelopeMaterial)
+		const signature = await options.signer.signPayload(wire.payloadToSign)
+		const body = appendNativeAndroidRegistrationSignature(wire.body, signature)
+		// Official order: sign first, build the key chain afterwards
+		// (smali 2235886-2235893).
+		const keyChain = await options.signer.buildAuthorization()
+		const userAgent =
+			options.userAgent ??
+			(options.deviceProfile ? buildNativeAndroidRegistrationUserAgent(options.deviceProfile) : undefined)
+		return {
+			authorization: encodeNativeAndroidRegistrationAuthorization(keyChain),
+			body,
+			...(userAgent ? { userAgent } : {})
+		}
+	}
+}
