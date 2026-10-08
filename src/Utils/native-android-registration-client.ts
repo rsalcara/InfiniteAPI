@@ -1,4 +1,6 @@
 import { Boom } from '@hapi/boom'
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
 import { DisconnectReason } from '../Types'
 import type {
 	NativeAndroidRegistrationBridgeAttestation,
@@ -35,6 +37,48 @@ export type NativeAndroidRegistrationHttpResponse = {
 
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504])
 const DEFAULT_BACKOFF_MS = [1_000, 2_000, 4_000]
+
+/**
+ * Fetch com o conjunto de headers EXATO do APK (RetryingHttpClient):
+ * Content-Type, Authorization, User-Agent, Accept-Encoding: identity — nada
+ * mais. O fetch padrão do Node/undici acrescenta `accept`/`accept-encoding`
+ * que destoam do fio oficial e mudam a codificação da resposta.
+ */
+export const createNativeAndroidRegistrationOfficialFetch = (): typeof fetch =>
+	async (input, init) => {
+		const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
+		const headers = new Headers(init?.headers)
+		const body = typeof init?.body === 'string' ? init.body : init?.body == null ? null : String(init.body)
+		const doRequest = url.protocol === 'https:' ? httpsRequest : httpRequest
+		return await new Promise<Response>((resolve, reject) => {
+			const req = doRequest(url, {
+				method: init?.method ?? 'GET',
+				headers: {
+					'Content-Type': headers.get('content-type') ?? 'application/x-www-form-urlencoded',
+					...(headers.get('authorization') ? { Authorization: headers.get('authorization')! } : {}),
+					...(headers.get('user-agent') ? { 'User-Agent': headers.get('user-agent')! } : {}),
+					'Accept-Encoding': 'identity',
+					...(body ? { 'Content-Length': String(Buffer.byteLength(body)) } : {})
+				}
+			}, res => {
+				const chunks: Buffer[] = []
+				res.on('data', chunk => chunks.push(Buffer.from(chunk)))
+				res.on('end', () => {
+					const text = Buffer.concat(chunks).toString('utf8')
+					const status = res.statusCode ?? 0
+					resolve({
+						ok: status >= 200 && status < 300,
+						status,
+						text: async () => text
+					} as unknown as Response)
+				})
+			})
+			init?.signal?.addEventListener('abort', () => req.destroy(new Error('aborted')))
+			req.on('error', reject)
+			if (body) req.write(body)
+			req.end()
+		})
+	}
 
 export const createNativeAndroidRegistrationHttpClient = (
 	config: NativeAndroidRegistrationHttpConfig,

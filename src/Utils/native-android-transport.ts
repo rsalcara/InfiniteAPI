@@ -39,7 +39,10 @@ export { createNativeAndroidRegistrationRelayProvider } from './native-android-r
 export type { NativeAndroidRegistrationRelayProviderConfig } from './native-android-registration-relay-provider'
 export * from './native-android-registration-keys'
 export * from './native-android-registration-protocol'
-export { createNativeAndroidRegistrationHttpClient } from './native-android-registration-client'
+export {
+	createNativeAndroidRegistrationHttpClient,
+	createNativeAndroidRegistrationOfficialFetch
+} from './native-android-registration-client'
 export type {
 	NativeAndroidRegistrationHttpConfig,
 	NativeAndroidRegistrationHttpResponse
