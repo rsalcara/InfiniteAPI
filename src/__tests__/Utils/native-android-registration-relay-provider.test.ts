@@ -45,7 +45,7 @@ describe('native android registration relay provider', () => {
 		// Signed-plaintext fallback: the device signs the exact query bytes.
 		expect(Buffer.from(payload.payloadBase64, 'base64').toString('utf8')).toBe(QUERY)
 		expect(payload.challengeBase64).toBeUndefined()
-		expect(attested.body).toBe(`${QUERY}&h=${RELAY_H}`)
+		expect(attested.body).toBe(`${QUERY}&H=${RELAY_H}`)
 		expect(attested.authorization).toBe(RELAY_AUTHORIZATION)
 		expect(attested.userAgent).toBeUndefined()
 	})
@@ -65,11 +65,11 @@ describe('native android registration relay provider', () => {
 		// Each seal uses a fresh ephemeral key, so the test checks internal
 		// consistency instead of re-sealing: the signed payload must be the
 		// bare enc value carried in the returned body.
-		expect(attested.body!.startsWith('enc=')).toBe(true)
+		expect(attested.body!.startsWith('ENC=')).toBe(true)
 		const payload = JSON.parse(calls[0]!.init.body!) as { payloadBase64: string; challengeBase64?: string }
 		const signedPayload = Buffer.from(payload.payloadBase64, 'base64').toString('utf8')
-		expect(attested.body).toBe(`enc=${signedPayload}&h=${RELAY_H}`)
-		expect(signedPayload).not.toContain('enc=')
+		expect(attested.body).toBe(`ENC=${signedPayload}&H=${RELAY_H}`)
+		expect(signedPayload).not.toContain('ENC=')
 		expect(payload.challengeBase64).toBe('AQID')
 	})
 

@@ -31,7 +31,7 @@ const makeSigner = (calls: string[]) => ({
 })
 
 describe('native android device attestation provider', () => {
-	it('seals, signs and returns the wire body with h= and the key chain in official order', async () => {
+	it('seals, signs and returns the wire body with H= and the key chain in official order', async () => {
 		const calls: string[] = []
 		const provider = createNativeAndroidRegistrationDeviceAttestationProvider({
 			signer: makeSigner(calls),
@@ -39,12 +39,12 @@ describe('native android device attestation provider', () => {
 		})
 
 		const attested = await provider(CONTEXT)
-		expect(attested.body!.startsWith('enc=')).toBe(true)
-		expect(attested.body!.endsWith('&h=-_8')).toBe(true)
+		expect(attested.body!.startsWith('ENC=')).toBe(true)
+		expect(attested.body!.endsWith('&H=-_8')).toBe(true)
 		// The signature covers the bare enc value, not the plain query.
 		expect(calls[0]!.startsWith('sign:')).toBe(true)
 		expect(calls[0]).not.toBe(`sign:${QUERY}`)
-		expect(calls[0]!.slice(5)).toBe(attested.body!.slice(4, -'&h=-_8'.length))
+		expect(calls[0]!.slice(5)).toBe(attested.body!.slice(4, -'&H=-_8'.length))
 		// Official order: the key chain is built AFTER the payload signature.
 		expect(calls[1]).toBe('auth')
 		expect(attested.authorization).toBe('AQID')
@@ -55,7 +55,7 @@ describe('native android device attestation provider', () => {
 		const provider = createNativeAndroidRegistrationDeviceAttestationProvider({ signer: makeSigner(calls) })
 
 		const attested = await provider(CONTEXT)
-		expect(attested.body).toBe(`${QUERY}&h=-_8`)
+		expect(attested.body).toBe(`${QUERY}&H=-_8`)
 		expect(calls[0]).toBe(`sign:${QUERY}`)
 		expect(attested.authorization).toBe('AQID')
 	})

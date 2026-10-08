@@ -23,7 +23,7 @@ export type NativeAndroidRegistrationRelayProviderConfig = {
 	allowInsecureLoopbackAliases?: string[]
 	timeoutMs?: number
 	fetch?: typeof fetch
-	/** Static server key for the `enc=` envelope; omitted sends the signed-plaintext fallback. */
+	/** Static server key for the `ENC=` envelope; omitted sends the signed-plaintext fallback. */
 	envelopeMaterial?: NativeAndroidRegistrationEnvelopeMaterial
 	/**
 	 * Explicit User-Agent override (e.g. the session's raffled identity). Takes
@@ -134,8 +134,8 @@ const parseRelayResponse = (text: string): RelayAttestationPayload => {
 
 /**
  * Self-computed attestation provider backed by the paired physical device:
- * the motor owns the protocol (token, query, `enc=` envelope) and only the
- * Keystore signature (`h=`) and key chain (`Authorization`) come from the
+ * the motor owns the protocol (token, query, `ENC=` envelope) and only the
+ * Keystore signature (`H=`) and key chain (`Authorization`) come from the
  * device, via the platform's companion relay. The device answers without any
  * user interaction — the Connector app signs on message receipt.
  *
@@ -203,7 +203,7 @@ export const createNativeAndroidRegistrationRelayProvider = (
 
 			return {
 				authorization: data.authorization,
-				body: `${wire.body}&h=${data.h}`,
+				body: `${wire.body}&H=${data.h}`,
 				...(userAgent ? { userAgent } : {}),
 				...(data.deviceProfile ? { deviceProfile: data.deviceProfile } : {})
 			}

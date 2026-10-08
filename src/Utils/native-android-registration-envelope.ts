@@ -2,7 +2,7 @@ import { createCipheriv } from 'node:crypto'
 import { Curve } from './crypto'
 
 /**
- * Official registration body envelope (`enc=`) from W4B 2.26.36.72
+ * Official registration body envelope (`ENC=`) from W4B 2.26.36.72
  * `RetryingHttpClient` (smali 2235833-2235869), reproduced 1:1:
  *
  * 1. Fresh X25519 ephemeral key pair (`Avp.A01()`).
@@ -15,14 +15,18 @@ import { Curve } from './crypto'
  * 4. combined = ephemeral public key WITHOUT the leading 0x05 Curve type byte
  *    (smali copies range [1, len)) || (ciphertext || tag).
  * 5. enc = `Base64.encodeToString(combined, 11)`. Android flag 11 is
- *    NO_PADDING(1) | NO_WRAP(2) | CRLF(8): standard alphabet, no padding, no
- *    line wrap. The same flag mapping is proven by the classic `token` wire
- *    vector (flag 2 = NO_WRAP = padded standard, see
+ *    URL_SAFE(8) | NO_WRAP(2) | NO_PADDING(1): base64url alphabet, no
+ *    padding, no line wrap. The same flag mapping is proven by the classic
+ *    `token` wire vector (flag 2 = NO_WRAP = padded standard, see
  *    native-android-registration-token.ts).
- * 6. Wire body = `enc=` + enc; `h=` signs UTF-8(enc) and is appended as
- *    `&h=`; on any encryption failure the APK falls back to sending the plain
- *    query signed as-is — `buildNativeAndroidRegistrationWireBody` mirrors
- *    that fallback exactly.
+ * 6. Wire body = `ENC=` + enc; `H=` signs UTF-8(enc) and is appended as
+ *    `&H=`. The param names are UPPERCASE: `BqN.A02`/`BqN.A03` resolve to
+ *    `CDw.A05`/`CDw.A09`, XOR-0x12 obfuscated constants decoding to "ENC"
+ *    and "H" (CDw.1.smali 323/339 + decoder A00). Lowercase `enc=`/`h=`
+ *    reaches the server as body params it cannot see and surfaces as
+ *    `missing_param` for the first required body parameter. On any encryption
+ *    failure the APK falls back to sending the plain query signed as-is —
+ *    `buildNativeAndroidRegistrationWireBody` mirrors that fallback exactly.
  */
 
 export type NativeAndroidRegistrationEnvelopeMaterial = {
@@ -31,9 +35,9 @@ export type NativeAndroidRegistrationEnvelopeMaterial = {
 }
 
 export type NativeAndroidRegistrationWireBody = {
-	/** Body to POST before the `&h=` suffix: `enc=...` or the plain query. */
+	/** Body to POST before the `&H=` suffix: `ENC=...` or the plain query. */
 	body: string
-	/** Exact UTF-8 bytes `h=` signs: the bare enc value, or the plain query. */
+	/** Exact UTF-8 bytes `H=` signs: the bare enc value, or the plain query. */
 	payloadToSign: Uint8Array
 	/** False on the APK's signed-plaintext fallback. */
 	encrypted: boolean
@@ -42,7 +46,7 @@ export type NativeAndroidRegistrationWireBody = {
 /**
  * `Base64.encodeToString(bytes, 11)` semantics: flag 11 =
  * URL_SAFE | NO_WRAP | NO_PADDING (android.util.Base64), so the alphabet is
- * base64url (`-`/`_`) with no padding — the exact `enc=`/`h=` wire form the
+ * base64url (`-`/`_`) with no padding — the exact `ENC=`/`H=` wire form the
  * APK produces (hook.js 1174/1188).
  */
 export const encodeNativeAndroidRegistrationSignature = (bytes: Uint8Array): string =>
@@ -56,7 +60,7 @@ export const encodeNativeAndroidRegistrationAuthorization = (bytes: Uint8Array):
 	Buffer.from(bytes).toString('base64')
 
 /**
- * Builds the official `enc=` envelope for one query. Throws when the material
+ * Builds the official `ENC=` envelope for one query. Throws when the material
  * or crypto fails; callers wanting the APK's silent fallback use
  * `buildNativeAndroidRegistrationWireBody`.
  */
@@ -75,12 +79,12 @@ export const sealNativeAndroidRegistrationEnvelope = (
 	const cipherText = Buffer.concat([cipher.update(queryBytes), cipher.final(), cipher.getAuthTag()])
 	const combined = Buffer.concat([Buffer.from(ephemeral.public), cipherText])
 	const enc = encodeNativeAndroidRegistrationSignature(combined)
-	return { body: `enc=${enc}`, payloadToSign: Buffer.from(enc, 'utf8'), encrypted: true }
+	return { body: `ENC=${enc}`, payloadToSign: Buffer.from(enc, 'utf8'), encrypted: true }
 }
 
 /**
  * Full body protection exactly as the APK's request builder: try the envelope,
- * fall back to the signed plain query on any failure. `h=` is appended by
+ * fall back to the signed plain query on any failure. `H=` is appended by
  * `appendNativeAndroidRegistrationSignature` once the device-side signature
  * arrives.
  */
@@ -96,6 +100,6 @@ export const buildNativeAndroidRegistrationWireBody = (
 	}
 }
 
-/** Appends the official `&h=` suffix once `h=` has been device-signed. */
+/** Appends the official `&H=` suffix once `H=` has been device-signed. */
 export const appendNativeAndroidRegistrationSignature = (body: string, signature: Uint8Array): string =>
-	`${body}&h=${encodeNativeAndroidRegistrationSignature(signature)}`
+	`${body}&H=${encodeNativeAndroidRegistrationSignature(signature)}`

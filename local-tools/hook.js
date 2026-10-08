@@ -1173,7 +1173,10 @@ rpc.exports = {
             combined.write(cipherText, 0, cipherText.length)
             var encryptedText = String(Base64.encodeToString(combined.toByteArray(), 11))
             payloadToSign = JavaString.$new(encryptedText).getBytes('UTF-8')
-            finalBody = 'enc=' + encryptedText
+            // Nomes EXATOS do envelope: maiúsculos (CDw.A05="ENC", CDw.A09="H",
+            // decodificados do XOR 0x12 em CDw.1.smali). Minúsculo faz o servidor
+            // não achar o envelope e responder missing_param.
+            finalBody = 'ENC=' + encryptedText
             encrypted = true
           } catch (encryptionError) {
             // This is also the APK fallback when RegistrationEncryption fails.
@@ -1185,8 +1188,9 @@ rpc.exports = {
           var signature = signer.A07(payloadToSign, metadata.A0I())
           if (!signature || signature.length === 0) throw new Error('native registration signing failed')
           // URL_SAFE | NO_WRAP | NO_PADDING, exactly as the APK body builder.
+          // Assinatura vai como `H=` (maiúsculo, CDw.A09) logo após o envelope.
           var signatureText = String(Base64.encodeToString(signature, 11))
-          finalBody = finalBody + '&h=' + signatureText
+          finalBody = finalBody + '&H=' + signatureText
 
           // Official order: sign first, build the attestation chain for the
           // Authorization header afterwards (smali 2235886-2235893).

@@ -10,7 +10,7 @@ import {
 
 const QUERY = 'cc=55&token=hEjVbznrgA3o2tS3JoE4vuRVxVg%3D&in=1531997072&method=sms'
 
-/** Mirrors the server-side decrypt of the `enc=` body. */
+/** Mirrors the server-side decrypt of the `ENC=` body. */
 const decryptEnvelope = (enc: string, serverPrivate: Uint8Array): string => {
 	const combined = Buffer.from(enc, 'base64')
 	const ephemeralPublic = combined.subarray(0, 32)
@@ -28,7 +28,7 @@ describe('native android registration envelope', () => {
 		const server = Curve.generateKeyPair()
 		const sealed = sealNativeAndroidRegistrationEnvelope(QUERY, { serverPublicKey: server.public })
 		expect(sealed.encrypted).toBe(true)
-		expect(sealed.body.startsWith('enc=')).toBe(true)
+		expect(sealed.body.startsWith('ENC=')).toBe(true)
 		expect(decryptEnvelope(sealed.body.slice(4), server.private)).toBe(QUERY)
 	})
 
@@ -40,7 +40,7 @@ describe('native android registration envelope', () => {
 		expect(combined.length).toBe(32 + QUERY.length + 16)
 	})
 
-	it('uses the flag-11 encoding for enc (standard alphabet, no padding)', () => {
+	it('uses the flag-11 encoding for enc (base64url alphabet, no padding)', () => {
 		const server = Curve.generateKeyPair()
 		const sealed = sealNativeAndroidRegistrationEnvelope(QUERY, { serverPublicKey: server.public })
 		const enc = sealed.body.slice(4)
@@ -49,7 +49,7 @@ describe('native android registration envelope', () => {
 		expect(enc).not.toContain('=')
 	})
 
-	it('signs the bare enc value, not the enc= query fragment', () => {
+	it('signs the bare enc value, not the ENC= query fragment', () => {
 		const server = Curve.generateKeyPair()
 		const sealed = sealNativeAndroidRegistrationEnvelope(QUERY, { serverPublicKey: server.public })
 		expect(Buffer.from(sealed.payloadToSign).toString('utf8')).toBe(sealed.body.slice(4))
@@ -81,11 +81,11 @@ describe('native android registration envelope', () => {
 		expect(malformed.body).toBe(QUERY)
 	})
 
-	it('appends the official &h= suffix with flag-11 encoding', () => {
+	it('appends the official &H= suffix with flag-11 encoding', () => {
 		// 2 bytes -> 3 base64 chars + '=' padding; flag 11 = URL_SAFE | NO_WRAP |
 		// NO_PADDING, so `+`/`/` become `-`/`_` and the `=` is stripped.
 		expect(encodeNativeAndroidRegistrationSignature(Uint8Array.from([251, 255]))).toBe('-_8')
-		expect(appendNativeAndroidRegistrationSignature('enc=abc', Uint8Array.from([251, 255]))).toBe('enc=abc&h=-_8')
+		expect(appendNativeAndroidRegistrationSignature('ENC=abc', Uint8Array.from([251, 255]))).toBe('ENC=abc&H=-_8')
 	})
 
 	it('keeps padding only on the Authorization key chain (flag 2)', () => {

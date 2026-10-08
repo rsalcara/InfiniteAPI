@@ -77,7 +77,7 @@ export const buildNativeAndroidRegistrationUserAgent = (
 
 export type NativeAndroidRegistrationDeviceAttestationOptions = {
 	signer: NativeAndroidRegistrationDeviceSigner
-	/** Static server key for the `enc=` envelope; omitted sends the APK's signed-plaintext fallback. */
+	/** Static server key for the `ENC=` envelope; omitted sends the APK's signed-plaintext fallback. */
 	envelopeMaterial?: NativeAndroidRegistrationEnvelopeMaterial
 	/**
 	 * The exact profile the session raffled (`createNativeAndroidDeviceProfile`).
@@ -91,7 +91,7 @@ export type NativeAndroidRegistrationDeviceAttestationOptions = {
 
 /**
  * Self-computed attestation provider: the motor owns the protocol (token,
- * query, `enc=` envelope) and the device contributes only the Keystore
+ * query, `ENC=` envelope) and the device contributes only the Keystore
  * signatures. Implements the same contract as the registration bridge
  * provider, so the flow can run with either one — the bridge stays optional
  * and is no longer required for token or envelope work.
