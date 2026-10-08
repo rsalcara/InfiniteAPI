@@ -954,6 +954,85 @@ function collectRegistrationEnvironment(cloudProjectNumber) {
           agentLog('registration environment native map unavailable: ' + nativeError)
         }
 
+        // O mapa CJT do app é exatamente o que o serializador oficial escreve
+        // no fio (recaptcha, mistyped, hasav, client_metrics, feo2_query_status,
+        // simnum, _gi, _gg...). Mesclamos as entradas cruas para o ambiente sair
+        // 1:1 com o que o app enviaria; o gpia fica com o token recém-gerado.
+        try {
+          const knownEnvKeys = [
+            '_gs', '_ga', 'aid', '_gp', '_gg', '_ge', '_gi',
+            'mcc', 'mnc', 'sim_mcc', 'sim_mnc', 'sim_type', 'airplane_mode_type',
+            'cellular_strength', 'roaming_type', 'network_radio_type', 'device_ram',
+            'pid', 'rc', 'hasinrc', 'hasav', 'db', 'mistyped', 'simnum', 'recaptcha',
+            'prefer_sms_over_flash', 'client_metrics', 'education_screen_displayed',
+            'feo2_query_status', 'reason'
+          ]
+          const knownSet = {}
+          for (const knownIndex = 0; knownIndex < knownEnvKeys.length; knownIndex += 1) {
+            knownSet[knownEnvKeys[knownIndex]] = true
+          }
+          const blobSet = { _gs: true, _ga: true, aid: true, _gp: true, _gg: true, _ge: true, _gi: true }
+          const MapClass = Java.use('java.util.Map')
+          const EntryClass = Java.use('java.util.Map$Entry')
+          const mergeCjtMap = function (mapObject) {
+            if (!mapObject) return 0
+            let merged = 0
+            const map = Java.cast(mapObject, MapClass)
+            const iterator = map.entrySet().iterator()
+            while (iterator.hasNext()) {
+              const entry = Java.cast(iterator.next(), EntryClass)
+              const key = String(entry.getKey())
+              if (!knownSet[key]) continue
+              const rawValue = entry.getValue()
+              if (rawValue === null) continue
+              if (rawValue.$className === '[B') {
+                if (!blobSet[key]) continue
+                const bytes = Java.cast(rawValue, Java.use('[B'))
+                if (bytes.length === 0) continue
+                let encoded = ''
+                for (let byteIndex = 0; byteIndex < bytes.length; byteIndex += 1) {
+                  const byte = bytes[byteIndex] & 0xff
+                  const safe = (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a) ||
+                    (byte >= 0x30 && byte <= 0x39) || byte === 0x2d || byte === 0x2e ||
+                    byte === 0x5f || byte === 0x7e
+                  encoded += safe ? String.fromCharCode(byte) : '%' + byte.toString(16).toUpperCase().padStart(2, '0')
+                }
+                environment[key] = encoded
+                merged += 1
+                continue
+              }
+              const text = String(rawValue)
+              if (text.length === 0 && key !== 'reason') continue
+              environment[key] = text
+              merged += 1
+            }
+            return merged
+          }
+          let mergedKeys = 0
+          for (let trackedIndex = 0; trackedIndex < trackedCjtInstances.length; trackedIndex += 1) {
+            try {
+              const mapField = trackedCjtInstances[trackedIndex].ref.A00
+              if (mapField !== undefined && mapField !== null) mergedKeys += mergeCjtMap(mapField.value)
+            } catch (trackedError) {
+              agentLog('CJT env merge failed: ' + trackedError)
+            }
+          }
+          if (mergedKeys === 0) {
+            Java.choose('X.CJT', {
+              onInstance: function (instance) {
+                try {
+                  const mapField = instance.A00
+                  if (mapField !== undefined && mapField !== null) mergedKeys += mergeCjtMap(mapField.value)
+                } catch (scanError) {}
+              },
+              onComplete: function () {}
+            })
+          }
+          agentLog('registration environment CJT merged=' + mergedKeys + ' total=' + Object.keys(environment).length)
+        } catch (cjtError) {
+          agentLog('registration environment CJT merge unavailable: ' + cjtError)
+        }
+
         requestStandardIntegrity('', cloudProjectNumber).then(function(gpia) {
           environment.gpia = gpia
           resolve(environment)

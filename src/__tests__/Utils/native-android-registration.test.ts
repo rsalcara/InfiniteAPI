@@ -108,6 +108,7 @@ describe('native_android official registration wire', () => {
 			'e_regid',
 			'method',
 			'e_keytype',
+			'reason',
 			'fdid'
 		])
 		// Primary registration: userType and waTwoFaContactPoint are null in
@@ -162,6 +163,7 @@ describe('native_android official registration wire', () => {
 				recaptcha: '{"stage":"ABPROP_DISABLED"}',
 				device_ram: '2.42',
 				db: 1,
+				hasav: 2,
 				rc: 0,
 				pid: 10600,
 				cellular_strength: 4,
@@ -191,9 +193,11 @@ describe('native_android official registration wire', () => {
 			'_ga',
 			'sim_mnc',
 			'id',
-			'recaptcha',
-			'db',
-			'lg',
+				'recaptcha',
+				'device_ram',
+				'db',
+				'hasav',
+				'lg',
 			'rc',
 			'pid',
 			'cellular_strength',

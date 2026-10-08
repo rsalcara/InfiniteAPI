@@ -66,6 +66,8 @@ export type NativeAndroidRequestCodeEnvironment = {
 	recaptcha?: string
 	device_ram?: string | number
 	db?: 0 | 1
+	/** Presence state of the advertising id, as written by the APK map (observed 2). */
+	hasav?: number
 	rc?: number
 	pid?: number
 	cellular_strength?: number
@@ -331,10 +333,11 @@ export const buildNativeAndroidRequestCodeRequest = (
 		throw new Error('native_android registration: method must be sms or voice')
 	}
 
-	// Exact field order from the 2026-09-21 17:59:59Z official /v2/code wire
-	// capture (pre-encryption plaintext, 30 fields, 1219 bytes). The CJT map
-	// holds 46 entries, but the APK serializer omits empty values and this
-	// endpoint does not send `device_ram` or `lc` at all.
+	// Field order from the official /v2/code wire captures (2026-09-21 thin
+	// body and the 2026-09-24 48-field body that the server answered with
+	// `status: ok` seventeen times). The CJT map holds 46 entries; the APK
+	// serializer omits empty map values, so absent runtime fields stay absent.
+	// This endpoint does not send `lc`.
 	const builder = new RegistrationRequestBuilder()
 	const environment = input.environment ?? {}
 	builder.requiredString('platform', common.appVariant === 'business' ? 'smba' : 'android')
@@ -343,7 +346,9 @@ export const buildNativeAndroidRequestCodeRequest = (
 	addEnvironmentField(builder, environment, 'sim_mnc')
 	builder.requiredPercentEncoded('id', common.identityId)
 	addEnvironmentField(builder, environment, 'recaptcha')
+	addEnvironmentField(builder, environment, 'device_ram')
 	addEnvironmentField(builder, environment, 'db')
+	addEnvironmentField(builder, environment, 'hasav')
 	builder.requiredString('lg', common.language)
 	addEnvironmentField(builder, environment, 'rc')
 	addEnvironmentField(builder, environment, 'pid')
@@ -398,7 +403,9 @@ export const buildNativeAndroidRequestCodeRequest = (
 
 	builder.requiredBase64('e_keytype', common.keyBundle.e_keytype)
 	addEnvironmentField(builder, environment, 'feo2_query_status')
-	addEnvironmentField(builder, environment, 'reason')
+	// `reason=` é serializado mesmo vazio no corpo oficial de 48 campos — não
+	// passa pela regra de omitir entradas vazias do mapa CJT.
+	builder.setRaw('reason', environment.reason ?? '')
 	builder.requiredString('fdid', common.fingerprintDeviceId)
 
 	return { endpoint: '/v2/code', body: builder.toString(), registrationType: common.registrationType }

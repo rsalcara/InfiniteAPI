@@ -206,6 +206,7 @@ const KNOWN_ENV_KEYS = new Set([
 	'hasinrc',
 	'gpia',
 	'db',
+	'hasav',
 	'mistyped',
 	'simnum',
 	'recaptcha',
