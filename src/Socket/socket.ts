@@ -2410,6 +2410,7 @@ export const makeSocket = (config: SocketConfig) => {
 				// with account/me so reconnects cannot rotate the device profile.
 				updatedCreds.registered = true
 				updatedCreds.nativeAndroidIdentity = authState.creds.nativeAndroidIdentity
+				updatedCreds.accountSyncCounter = (authState.creds.accountSyncCounter ?? 0) + 1
 			} else {
 				updatedCreds.webTransportIdentity = authState.creds.webTransportIdentity
 			}
