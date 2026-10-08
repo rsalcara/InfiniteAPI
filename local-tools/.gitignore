@@ -1,0 +1,5 @@
+primary-registration-test-state.json
+bridge-captures/
+*.png
+*.xml
+*.log

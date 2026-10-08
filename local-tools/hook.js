@@ -1127,6 +1127,14 @@ rpc.exports = {
           var metadata = Java.cast(Lazy.A02(Holder.A01.value), MetadataClass)
           if (!signer.A06()) throw new Error('native key attestation is disabled by remote config')
 
+          // O `authkey` do corpo É a chave estática do APK (metadata.A0I()) e
+          // são os mesmos bytes que a chain assa como challenge. Substituímos o
+          // valor do builder pelo oficial para o vínculo atestação↔authkey
+          // fechar 1:1 (base64url sem padding = flag 11, como o builder).
+          var officialAuthkey = String(Base64.encodeToString(metadata.A0I(), 11))
+          bodyForWire = bodyForWire.replace(/(^|&)authkey=[^&]*/, '$1authkey=' + officialAuthkey)
+          agentLog('official authkey injected length=' + officialAuthkey.length)
+
           var JavaString = Java.use('java.lang.String')
           var plainBody = JavaString.$new(bodyForWire).getBytes('UTF-8')
 

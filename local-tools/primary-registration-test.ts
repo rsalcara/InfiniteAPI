@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url'
 
 import { createNativeAndroidRegistrationFlow } from '../src/Utils/native-android-registration-flow'
 import { createNativeAndroidRegistrationSignalKeys, type NativeAndroidRegistrationSignalKeys } from '../src/Utils/native-android-registration-keys'
-import { createNativeAndroidRegistrationBridgeProvider } from '../src/Utils/native-android-registration-bridge-provider'
+import { createNativeAndroidRegistrationBridgeProvider, createNativeAndroidRegistrationEnvironmentProvider } from '../src/Utils/native-android-registration-bridge-provider'
 import { createNativeAndroidRegistrationRelayProvider } from '../src/Utils/native-android-registration-relay-provider'
 import type { NativeAndroidRegistrationCommon } from '../src/Utils/native-android-registration-protocol'
 import { buildClassicRegistrationToken, type NativeAndroidRegistrationTokenMaterial } from '../src/Utils/native-android-registration-token'
@@ -149,6 +149,19 @@ const attestationProvider = (clientStaticPublic?: Uint8Array) => {
 		envelopeMaterial: { serverPublicKey: SERVER_PUBLIC_KEY },
 		...(clientStaticPublic?.length ? { challenge: clientStaticPublic } : {})
 	})
+}
+
+/**
+ * Ambiente do /v2/code: com --bridge usa o ambiente REAL do aparelho (hook
+ * `collectRegistrationEnvironment` — gpia fresco, blobs WAMSYS e telefonia
+ * coerentes com quem atesta); sem bridge, o fixture da captura.
+ */
+const registrationEnvironment = async () => {
+	const bridgeUrl = (args.get('bridge') ?? '').trim()
+	if (bridgeUrl) {
+		return await createNativeAndroidRegistrationEnvironmentProvider({ url: bridgeUrl, timeoutMs: 120_000 })('business')
+	}
+	return ENVIRONMENT
 }
 
 type SavedKeys = {
@@ -301,7 +314,7 @@ const cmdRequest = async (): Promise<void> => {
 		keys,
 		tokenMaterial: tokenMaterial(),
 		attestationProvider: attestationProvider(keys.clientStaticKeyPair.public),
-		environment: ENVIRONMENT,
+		environment: await registrationEnvironment(),
 		http: { fetch: officialFetch }
 	})
 
@@ -352,7 +365,7 @@ const cmdVerify = async (): Promise<void> => {
 		keys,
 		tokenMaterial: tokenMaterial(),
 		attestationProvider: attestationProvider(keys.clientStaticKeyPair.public),
-		environment: ENVIRONMENT,
+		environment: await registrationEnvironment(),
 		http: { fetch: officialFetch }
 	})
 
