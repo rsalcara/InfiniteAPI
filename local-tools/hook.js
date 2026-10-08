@@ -7,6 +7,7 @@
 
 let listenerSequence = 0
 let keyStoreSequence = 0
+let lastJniHandlerError = null
 let registrationWireCaptures = []
 let spyOutputStreamSequence = 0
 let cjtWriteHistory = []
@@ -636,6 +637,299 @@ function javaByteArray(bytes) {
   return Java.array('byte', Array.from(bytes, byte => (byte & 0x80) ? byte - 256 : byte))
 }
 
+// Os wrappers Frida deste dispositivo falham com "TypeError: not a function"
+// ao invocar BSa/jvidispatch direto; reflexão Java resolve os mesmos métodos
+// que o app chama (JniBridge:1491, X.C1BQ) sem depender da resolução do wrapper.
+function findJavaMethod(className, methodName, paramCount) {
+  const methods = Java.use(className).class.getDeclaredMethods()
+  for (let index = 0; index < methods.length; index += 1) {
+    const method = methods[index]
+    if (String(method.getName()) !== methodName) continue
+    if (method.getParameterTypes().length !== paramCount) continue
+    method.setAccessible(true)
+    return method
+  }
+  return null
+}
+
+function invokeJniBridgeStatic(methodName, args) {
+  const method = findJavaMethod('com.whatsapp.wamsys.JniBridge', methodName, args.length)
+  if (!method) throw new Error('native dispatch not found: ' + methodName)
+  return method.invoke(null, Java.array('java.lang.Object', args))
+}
+
+function ensureNativeLibLoaded() {
+  // O nome BSa existe só no decompilado (renomeado pelo jadx); no dex real o
+  // método de load tem outro nome. O que é estável são os métodos NATIVE
+  // (nomes JNI): getJNICodeVersion só responde com libwhatsapp carregada.
+  const method = findJavaMethod('com.whatsapp.infra.nativelibloader.WhatsAppLibLoader', 'getJNICodeVersion', 0)
+  if (!method) throw new Error('getJNICodeVersion not found')
+  return method.invoke(null, Java.array('java.lang.Object', []))
+}
+
+function classDeclaresApm(cls) {
+  const methods = cls.getDeclaredMethods()
+  const seen = []
+  for (let index = 0; index < methods.length; index += 1) {
+    const method = methods[index]
+    const params = method.getParameterTypes()
+    const args = []
+    for (let p = 0; p < params.length; p += 1) args.push(String(params[p].getName()))
+    seen.push(String(method.getName()) + '(' + args.join(',') + ')')
+    if (String(method.getName()) === 'APm' && params.length === 1 &&
+      String(params[0].getName()) === 'java.lang.String') return true
+  }
+  agentLog('gpia class ' + String(cls.getName()) + ' methods: ' + seen.join(','))
+  return false
+}
+
+function surveyRuntimeNames() {
+  try {
+    const Fko = Java.use('X.Fko')
+    const cls = Fko.class
+    agentLog('X.Fko kind=' + (cls.isInterface() ? 'interface' : 'class') +
+      ' super=' + String(cls.getSuperclass() ? cls.getSuperclass().getName() : 'null'))
+    classDeclaresApm(cls)
+    const ifaces = cls.getInterfaces()
+    for (let i = 0; i < ifaces.length; i += 1) {
+      agentLog('X.Fko interface[' + i + ']=' + String(ifaces[i].getName()))
+      classDeclaresApm(ifaces[i])
+    }
+  } catch (error) {
+    agentLog('X.Fko = MISSING ' + error)
+  }
+  try {
+    const JniBridge = Java.use('com.whatsapp.wamsys.JniBridge')
+    const field = JniBridge.class.getDeclaredField('jniCallbacksIJniCallbacksAndroidGpia')
+    field.setAccessible(true)
+    const instanceField = JniBridge.class.getDeclaredField('INSTANCE')
+    instanceField.setAccessible(true)
+    const instance = instanceField.get(null)
+    const callbacks = instance ? field.get(instance) : null
+    if (callbacks) {
+      agentLog('gpia callbacks class=' + String(callbacks.getClass().getName()))
+      let superCls = callbacks.getClass().getSuperclass()
+      while (superCls) {
+        agentLog('gpia callbacks super=' + String(superCls.getName()))
+        classDeclaresApm(superCls)
+        superCls = superCls.getSuperclass()
+      }
+      classDeclaresApm(callbacks.getClass())
+      const ifaces = callbacks.getClass().getInterfaces()
+      for (let i = 0; i < ifaces.length; i += 1) {
+        agentLog('gpia callbacks interface[' + i + ']=' + String(ifaces[i].getName()))
+        classDeclaresApm(ifaces[i])
+      }
+    } else {
+      agentLog('gpia callbacks object is null')
+    }
+  } catch (error) {
+    agentLog('gpia callbacks field missing: ' + error)
+  }
+}
+
+function stubDefault(returnName) {
+  if (returnName === 'void') return undefined
+  if (returnName === 'boolean') return false
+  if (returnName === 'char') return 0
+  if (returnName === 'byte' || returnName === 'short' || returnName === 'int' ||
+      returnName === 'long' || returnName === 'float' || returnName === 'double') return 0
+  return null
+}
+
+function boxedStub(returnName) {
+  if (returnName === 'boolean') return Java.use('java.lang.Boolean').$new(false)
+  if (returnName === 'byte') return Java.use('java.lang.Byte').$new(0)
+  if (returnName === 'short') return Java.use('java.lang.Short').$new(0)
+  if (returnName === 'char') return Java.use('java.lang.Character').$new(0)
+  if (returnName === 'int') return Java.use('java.lang.Integer').$new(0)
+  if (returnName === 'long') return Java.use('java.lang.Long').$new(0)
+  if (returnName === 'float') return Java.use('java.lang.Float').$new(0)
+  if (returnName === 'double') return Java.use('java.lang.Double').$new(0)
+  return null
+}
+
+// A interface do callback de gpia muda de nome entre os builds (no estudo do
+// Messenger era X.Dj8, com implementador X.Fko; em W4B os nomes obfuscados
+// são outros). Resolvemos em runtime: primeiro a própria X.Fko quando é
+// interface com APm(String), depois as interfaces dela, e por fim a classe do
+// campo jniCallbacksIJniCallbacksAndroidGpia do JniBridge. Sem interface,
+// devolvemos null e o chamador usa uma classe solta só com APm(String).
+function resolveGpiaCallbackInterfaceName() {
+  // 1º: o cast de jnidispatchIOO nomeia a interface real do build em execução.
+  const probed = probeCallbackInterfaceViaCast()
+  if (probed) {
+    agentLog('gpia callback interface resolved by cast probe: ' + probed)
+    return probed
+  }
+  try {
+    const Fko = Java.use('X.Fko')
+    const fkoClass = Fko.class
+    if (fkoClass.isInterface() && classDeclaresApm(fkoClass)) return 'X.Fko'
+    const ifaces = fkoClass.getInterfaces()
+    for (let index = 0; index < ifaces.length; index += 1) {
+      if (classDeclaresApm(ifaces[index])) return String(ifaces[index].getName())
+    }
+  } catch (error) {
+    agentLog('gpia interface resolve via X.Fko failed: ' + error)
+  }
+  try {
+    const JniBridge = Java.use('com.whatsapp.wamsys.JniBridge')
+    const field = JniBridge.class.getDeclaredField('jniCallbacksIJniCallbacksAndroidGpia')
+    field.setAccessible(true)
+    const instanceField = JniBridge.class.getDeclaredField('INSTANCE')
+    instanceField.setAccessible(true)
+    const instance = instanceField.get(null)
+    const callbacks = instance ? field.get(instance) : null
+    if (callbacks) {
+      const ifaces = callbacks.getClass().getInterfaces()
+      for (let index = 0; index < ifaces.length; index += 1) {
+        if (classDeclaresApm(ifaces[index])) return String(ifaces[index].getName())
+      }
+    }
+  } catch (error) {
+    agentLog('gpia interface resolve via JniBridge callbacks failed: ' + error)
+  }
+  return null
+}
+
+// O Proxy implementa a interface inteira; só o método (String)->void tem
+// comportamento real (o nome muda entre builds: APm no estudo, outro no W4B).
+function makeGpiaCallbackProxy(onValue) {
+  const interfaceName = resolveGpiaCallbackInterfaceName()
+  agentLog('gpia callback interface=' + (interfaceName || '(none)'))
+  if (!interfaceName) {
+    // Sem interface identificada: o dispatch nativo resolve APm(String) pelo
+    // nome na classe do objeto; uma classe solta com esse método basta.
+    return Java.registerClass({
+      name: listenerName('GpiaWrap'),
+      methods: {
+        APm: {
+          returnType: 'void',
+          argumentTypes: ['java.lang.String'],
+          implementation: function(value) {
+            onValue(String(value))
+          }
+        }
+      }
+    }).$new()
+  }
+  const CallbackInterface = Java.use(interfaceName)
+  const InvocationHandler = Java.use('java.lang.reflect.InvocationHandler')
+  const handler = Java.registerClass({
+    name: listenerName('GpiaWrapHandler'),
+    implements: [InvocationHandler],
+    methods: {
+      invoke: {
+        returnType: 'java.lang.Object',
+        argumentTypes: ['java.lang.Object', 'java.lang.reflect.Method', '[Ljava.lang.Object;'],
+        implementation: function(proxy, method, args) {
+          const name = String(method.getName())
+          const paramTypes = method.getParameterTypes()
+          const isDelivery = paramTypes.length === 1 &&
+            String(paramTypes[0].getName()) === 'java.lang.String'
+          if (isDelivery) {
+            agentLog('gpia callback delivered via ' + name)
+            onValue(String(args[0]))
+            return null
+          }
+          return boxedStub(String(method.getReturnType().getName()))
+        }
+      }
+    }
+  })
+  const Proxy = Java.use('java.lang.reflect.Proxy')
+  const interfaceClass = CallbackInterface.class
+  const loader = interfaceClass.getClassLoader()
+  return Proxy.newProxyInstance(
+    loader,
+    Java.array('java.lang.Class', [interfaceClass]),
+    handler.$new()
+  )
+}
+
+function getWajContextInstance() {
+  const JniBridge = Java.use('com.whatsapp.wamsys.JniBridge')
+  const field = JniBridge.class.getDeclaredField('INSTANCE')
+  field.setAccessible(true)
+  const instance = field.get(null)
+  if (instance === null) return null
+  const method = findJavaMethod('com.whatsapp.wamsys.JniBridge', 'getWajContext', 0)
+  if (!method) throw new Error('getWajContext not found')
+  return method.invoke(instance, Java.array('java.lang.Object', []))
+}
+
+// jnidispatchIOO (nativo -> Java) faz o cast do callback para a interface de
+// gpia e engole a ClassCastException no jniBridgeExceptionHandler. Hookamos o
+// handler para capturar a mensagem do CCE: ela nomeia o tipo alvo do cast.
+function hookJniBridgeExceptionHandler() {
+  const JniBridge = Java.use('com.whatsapp.wamsys.JniBridge')
+  const field = JniBridge.class.getDeclaredField('jniBridgeExceptionHandler')
+  field.setAccessible(true)
+  const instanceField = JniBridge.class.getDeclaredField('INSTANCE')
+  instanceField.setAccessible(true)
+  const instance = instanceField.get(null)
+  const handler = instance ? field.get(instance) : null
+  if (!handler) {
+    agentLog('jni exception handler object is null')
+    return
+  }
+  const cls = handler.getClass()
+  const className = String(cls.getName())
+  const Handler = Java.use(className)
+  const methods = cls.getDeclaredMethods()
+  for (let index = 0; index < methods.length; index += 1) {
+    const methodName = String(methods[index].getName())
+    const overloads = Handler[methodName].overloads
+    for (let o = 0; o < overloads.length; o += 1) {
+      overloads[o].implementation = function () {
+        const parts = []
+        for (let a = 0; a < arguments.length; a += 1) {
+          const text = String(arguments[a])
+          parts.push(text)
+          if (text.indexOf('Exception') >= 0 || text.indexOf('cast') >= 0) {
+            lastJniHandlerError = text
+          }
+        }
+        agentLog('jni exception handler.' + methodName + '(' + parts.join(', ') + ')')
+        return null
+      }
+    }
+  }
+  agentLog('jni exception handler hooked: ' + className + ' methods=' + methods.length)
+}
+
+// Provoca o cast de jnidispatchIOO com um objeto qualquer; o CCE engolido pelo
+// handler revela a interface verdadeira do callback ("cannot be cast to X.Y").
+function probeCallbackInterfaceViaCast() {
+  lastJniHandlerError = null
+  try {
+    invokeJniBridgeStatic('jnidispatchIOO', [
+      Java.use('java.lang.Integer').$new(1),
+      Java.use('java.lang.String').$new('probe'),
+      Java.use('java.lang.Object').$new()
+    ])
+  } catch (probeError) {
+    agentLog('gpia cast probe threw: ' + probeError)
+  }
+  const message = lastJniHandlerError
+  if (!message) {
+    agentLog('gpia cast probe: no error captured')
+    return null
+  }
+  agentLog('gpia cast probe error: ' + message)
+  const patterns = [
+    /cast to '?([A-Za-z0-9_.$]+)'?/,
+    /to ([A-Za-z0-9_.$]+)/,
+    /interface method '[^']* ([A-Za-z0-9_.$]+)\./
+  ]
+  for (let index = 0; index < patterns.length; index += 1) {
+    const match = message.match(patterns[index])
+    if (match && match[1] && match[1].indexOf('.') >= 0) return match[1]
+  }
+  return null
+}
+
 function percentDecodeQuery(value) {
   return decodeURIComponent(value.replace(/\+/g, ' '))
 }
@@ -823,6 +1117,55 @@ function attachTaskListeners(task, prefix, onResult, reject) {
   task.addOnFailureListener(failure.$new())
 }
 
+function appWrapIntegrityToken(token) {
+  // Espelha o caminho de registro (F43FA...$2): a camada nativa wamsys recebe o
+  // token de integridade e devolve pelo callback X.Dj8.APm a string oficial do
+  // parâmetro `gpia` (1088 chars base64std na captura). Só o APK em execução
+  // consegue produzir esse blob; nunca fabricamos um valor.
+  return new Promise(function(resolve, reject) {
+    Java.perform(function() {
+      try {
+        agentLog('gpia wrap: start')
+        surveyRuntimeNames()
+        hookJniBridgeExceptionHandler()
+        const libVersion = ensureNativeLibLoaded()
+        agentLog('gpia wrap: native lib ready version=' + libVersion)
+        const wajContext = getWajContextInstance()
+        if (!wajContext) throw new Error('waj context unavailable')
+        agentLog('gpia wrap: waj context ready')
+        const appContext = Java.use('android.app.ActivityThread').currentApplication()
+        let settled = false
+        const timer = setTimeout(function() {
+          if (settled) return
+          settled = true
+          reject(new Error('gpia native wrap timed out'))
+        }, 8000)
+        const callback = makeGpiaCallbackProxy(function(value) {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve(value)
+        })
+        agentLog('gpia wrap: callback proxy ready')
+        agentLog('gpia wrap: dispatching native wrap')
+        // F43FA...$2 chama jvidispatchIIDOOOO(errorCode, 0.0, token, app,
+        // callback, wajContext); no caminho de sucesso errorCode=0.
+        invokeJniBridgeStatic('jvidispatchIIDOOOO', [
+          Java.use('java.lang.Long').$new(0),
+          Java.use('java.lang.Double').$new(0.0),
+          Java.use('java.lang.String').$new(String(token)),
+          appContext,
+          callback,
+          wajContext
+        ])
+        agentLog('gpia wrap: native wrap dispatched')
+      } catch (error) {
+        reject(error)
+      }
+    })
+  })
+}
+
 function computeOfficialUserAgent() {
   // Mirrors X.C10170d3.A00 for W4B. It intentionally uses the real Build
   // values; no device properties are fabricated or cached across reboots.
@@ -855,6 +1198,34 @@ function collectRegistrationEnvironment(cloudProjectNumber) {
         if (simOperator.length >= 3) {
           environment.sim_mcc = simOperator.substring(0, 3)
           environment.sim_mnc = simOperator.substring(3)
+        }
+        if (environment.mcc === undefined || environment.sim_mcc === undefined) {
+          // Fallback 1: registros reais de assinatura ativa. Sem SIM/rádio os
+          // campos ficam ausentes — nunca inventamos operadora.
+          try {
+            const SubscriptionManager = Java.use('android.telephony.SubscriptionManager')
+            const subscriptionManager = Java.cast(
+              appContext.getSystemService('telephony_subscription'), SubscriptionManager
+            )
+            const activeList = subscriptionManager ? subscriptionManager.getActiveSubscriptionInfoList() : null
+            if (activeList && activeList.size() > 0) {
+              const info = Java.cast(activeList.get(0), Java.use('android.telephony.SubscriptionInfo'))
+              const subMcc = String(info.getMccString ? info.getMccString() : '')
+              const subMnc = String(info.getMncString ? info.getMncString() : '')
+              if (subMcc.length >= 3) {
+                if (environment.mcc === undefined) {
+                  environment.mcc = subMcc
+                  environment.mnc = subMnc
+                }
+                if (environment.sim_mcc === undefined) {
+                  environment.sim_mcc = subMcc
+                  environment.sim_mnc = subMnc
+                }
+              }
+            }
+          } catch (subscriptionError) {
+            agentLog('subscription fallback unavailable: ' + subscriptionError)
+          }
         }
 
         environment.sim_type = telephony.getSimState() === 1 ? 0 : 1
@@ -923,22 +1294,63 @@ function collectRegistrationEnvironment(cloudProjectNumber) {
           appContext.getFilesDir(), 'rc2'
         ).exists() ? 1 : 0
 
+        // FMA.A09 lê exatamente estas duas preferências do app para os campos
+        // education_screen_displayed / prefer_sms_over_flash. Somente valores
+        // realmente presentes entram no ambiente.
+        try {
+          const Context = Java.use('android.content.Context')
+          const prefsCandidates = [
+            appContext.getSharedPreferences('com.whatsapp.w4b_preferences', 0),
+            Java.use('android.preference.PreferenceManager').getDefaultSharedPreferences(appContext)
+          ]
+          for (let prefsIndex = 0; prefsIndex < prefsCandidates.length; prefsIndex += 1) {
+            const prefs = prefsCandidates[prefsIndex]
+            if (!prefs) continue
+            if (environment.education_screen_displayed === undefined &&
+                prefs.contains('pref_flash_call_education_screen_displayed')) {
+              environment.education_screen_displayed =
+                prefs.getBoolean('pref_flash_call_education_screen_displayed', false)
+            }
+            if (environment.prefer_sms_over_flash === undefined &&
+                prefs.contains('pref_prefer_sms_over_flash')) {
+              environment.prefer_sms_over_flash =
+                prefs.getBoolean('pref_prefer_sms_over_flash', false)
+            }
+          }
+        } catch (prefsError) {
+          agentLog('registration preferences unavailable: ' + prefsError)
+        }
+
         // COP.A0T passes this native map directly into CJT.A07. Return the
         // values verbatim; never synthesize a missing Google payload.
         try {
-          const JniBridge = Java.use('com.whatsapp.wamsys.JniBridge')
-          const jniInstance = JniBridge.INSTANCE.value
-          const wajContext = jniInstance ? jniInstance.getWajContext() : null
-          if (wajContext) JniBridge.jvidispatchIOO(7, appContext, wajContext)
-          const nativeMap = wajContext ? JniBridge.jvidispatchOOO(16, appContext, wajContext) : null
+          // X.C1BQ sempre carrega a lib nativa (BSa) antes de qualquer
+          // jvidispatch; sem isso o mapa nativo volta vazio.
+          ensureNativeLibLoaded()
+          const wajContext = getWajContextInstance()
+          if (wajContext) {
+            invokeJniBridgeStatic('jvidispatchIOO', [
+              Java.use('java.lang.Integer').$new(7), appContext, wajContext
+            ])
+          }
+          const nativeMap = wajContext ? invokeJniBridgeStatic('jvidispatchOOO', [
+            Java.use('java.lang.Integer').$new(16), appContext, wajContext
+          ]) : null
           if (nativeMap) {
             const map = Java.cast(nativeMap, Java.use('java.util.Map'))
             const iterator = map.entrySet().iterator()
             while (iterator.hasNext()) {
               const entry = Java.cast(iterator.next(), Java.use('java.util.Map$Entry'))
               const key = String(entry.getKey())
-              const bytes = Java.cast(entry.getValue(), Java.use('[B'))
-              if (!bytes || bytes.length === 0) continue
+              const rawValue = entry.getValue()
+              if (rawValue === null) continue
+              if (rawValue.$className !== '[B') {
+                const text = String(rawValue)
+                if (text.length > 0) environment[key] = text
+                continue
+              }
+              const bytes = Java.cast(rawValue, Java.use('[B'))
+              if (bytes.length === 0) continue
               let value = ''
               for (let index = 0; index < bytes.length; index += 1) {
                 const byte = bytes[index] & 0xff
@@ -968,7 +1380,7 @@ function collectRegistrationEnvironment(cloudProjectNumber) {
             'feo2_query_status', 'reason'
           ]
           const knownSet = {}
-          for (const knownIndex = 0; knownIndex < knownEnvKeys.length; knownIndex += 1) {
+          for (let knownIndex = 0; knownIndex < knownEnvKeys.length; knownIndex += 1) {
             knownSet[knownEnvKeys[knownIndex]] = true
           }
           const blobSet = { _gs: true, _ga: true, aid: true, _gp: true, _gg: true, _ge: true, _gi: true }
@@ -1033,8 +1445,16 @@ function collectRegistrationEnvironment(cloudProjectNumber) {
           agentLog('registration environment CJT merge unavailable: ' + cjtError)
         }
 
-        requestStandardIntegrity('', cloudProjectNumber).then(function(gpia) {
-          environment.gpia = gpia
+        requestStandardIntegrity('', cloudProjectNumber).then(function(rawToken) {
+          return appWrapIntegrityToken(rawToken).then(function(wrapped) {
+            agentLog('gpia native wrap ready length=' + wrapped.length +
+              ' prefix=' + wrapped.slice(0, 12))
+            environment.gpia = wrapped
+          }, function(wrapError) {
+            agentLog('gpia native wrap unavailable, raw standard token kept: ' + wrapError)
+            environment.gpia = rawToken
+          })
+        }).then(function() {
           resolve(environment)
         }, reject)
       } catch (error) { reject(error) }
