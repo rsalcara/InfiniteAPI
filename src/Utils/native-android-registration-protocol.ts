@@ -2,6 +2,8 @@ import { createCipheriv, createHmac, randomBytes } from 'node:crypto'
 import type { NativeAndroidRegistrationKeyBundle } from './native-android-registration-keys'
 
 export type NativeAndroidRegistrationEndpoint =
+	| '/v2/reg_onboard_abprop'
+	| '/v2/exist'
 	| '/v2/code'
 	| '/v2/register'
 	| '/v2/security'
@@ -92,6 +94,26 @@ export type NativeAndroidRequestCodeEnvironment = {
 	network_radio_type?: number
 	feo2_query_status?: string
 	reason?: string
+	/** FCM push token, carried by /v2/exist (observed `dM_R5...:APA91bF...`). */
+	push_token?: string
+	/** Pref `backup_token_retrieval_error`; fresh installs send `null_token`. */
+	backup_token_error?: string
+	/** UI counter persisted in prefs; `0` on a fresh install. */
+	language_selector_time_spent?: number
+	/** UI counter persisted in prefs; `0` on a fresh install. */
+	language_selector_clicked_count?: number
+	/** `1` when READ_PHONE_STATE was granted at request time (FMA checkIfExists). */
+	read_phone_permission_granted?: 0 | 1
+	/** `FHa.A00(application).isEmpty()` negated — FOA fdid apps installed. */
+	is_foa_fdid_app_installed?: boolean
+	/** `Build.DEVICE` (FMA checkIfExists line 1338). */
+	device_name?: string
+	/** `TelephonyManager.getSimState()` (observed `5` = ready). */
+	sim_state?: number
+	/** Offline AB-prop exposure JSON (FMA checkIfExists `offline_ab`). */
+	offline_ab?: string
+	/** `TelephonyManager.getNetworkOperatorName()` (observed `T-Mobile`). */
+	network_operator_name?: string
 	/** System-owned installation state; diagnostic only and never serialized. */
 	installer_package?: string
 	package_source?: 'store' | 'local_file' | 'downloaded_file' | 'other' | 'unspecified' | `unknown_${number}`
@@ -323,6 +345,97 @@ const addEnvironmentField = (
 	} else if (typeof value === 'number') builder.setRaw(key, String(value))
 	else if (typeof value === 'boolean') builder.setRaw(key, String(value))
 	else builder.setRaw(key, value)
+}
+
+export type NativeAndroidPreflightInput = {
+	environment?: NativeAndroidRequestCodeEnvironment
+	advertisingId?: string
+}
+
+/**
+ * `/v2/reg_onboard_abprop` — the onboarding announce the APK sends before any
+ * number work (captured 2026-09-24T14:42:01Z, 14 fields, 611B on the wire).
+ * The body is the wamsys "common" map: identity keys plus the locale pair, in
+ * the exact native order (rc first, `in` last). No `platform`, no `login`.
+ */
+export const buildNativeAndroidRegOnboardAbpropRequest = (
+	common: NativeAndroidRegistrationCommon,
+	input?: NativeAndroidPreflightInput
+): NativeAndroidRegistrationRequest => {
+	const builder = new RegistrationRequestBuilder()
+	const environment = input?.environment ?? {}
+	// The native map initializes `rc` unconditionally (observed `rc=0` even on
+	// captures whose CJT map carried no rc entry).
+	builder.setRaw('rc', String(environment.rc ?? 0))
+	builder.requiredBase64('e_skey_sig', common.keyBundle.e_skey_sig)
+	builder.uuid('expid', common.expirationId)
+	builder.requiredBase64('e_skey_id', common.keyBundle.e_skey_id)
+	builder.requiredString('cc', common.countryCallingCode)
+	builder.requiredBase64('e_ident', common.keyBundle.e_ident)
+	builder.requiredBase64('e_skey_val', common.keyBundle.e_skey_val)
+	builder.requiredBase64('e_regid', common.keyBundle.e_regid)
+	builder.requiredBase64('e_keytype', common.keyBundle.e_keytype)
+	builder.requiredBase64('authkey', common.keyBundle.authkey)
+	builder.requiredString('fdid', common.fingerprintDeviceId)
+	builder.requiredString('lc', common.country)
+	builder.requiredString('lg', common.language)
+	builder.requiredString('in', common.nationalNumber)
+
+	return { endpoint: '/v2/reg_onboard_abprop', body: builder.toString(), registrationType: common.registrationType }
+}
+
+/**
+ * `/v2/exist` — the device onboarding check the APK sends after abprop and
+ * before /v2/code (captured 2026-09-24T14:42:03Z, 37 fields, 6630B on the
+ * wire). The wire body carries NO `token` and NO `in`: the check is about the
+ * device/install state, not the subscriber. Field order is the observed wire
+ * order (advertising_id first, offline_ab last).
+ */
+export const buildNativeAndroidExistRequest = (
+	common: NativeAndroidRegistrationCommon,
+	input?: NativeAndroidPreflightInput
+): NativeAndroidRegistrationRequest => {
+	const builder = new RegistrationRequestBuilder()
+	const environment = input?.environment ?? {}
+	builder.optionalString('advertising_id', input?.advertisingId)
+	builder.requiredPercentEncoded('backup_token', common.backupToken)
+	addEnvironmentField(builder, environment, 'recaptcha')
+	builder.requiredString('lg', common.language)
+	addEnvironmentField(builder, environment, 'language_selector_time_spent')
+	addEnvironmentField(builder, environment, 'rc')
+	addEnvironmentField(builder, environment, 'airplane_mode_type')
+	builder.requiredPercentEncoded('id', common.identityId)
+	addEnvironmentField(builder, environment, '_gs')
+	addEnvironmentField(builder, environment, 'pid')
+	addEnvironmentField(builder, environment, 'push_token')
+	addEnvironmentField(builder, environment, 'backup_token_error')
+	addEnvironmentField(builder, environment, 'device_ram')
+	addEnvironmentField(builder, environment, 'db')
+	addEnvironmentField(builder, environment, 'cellular_strength')
+	addEnvironmentField(builder, environment, 'gpia')
+	addEnvironmentField(builder, environment, 'hasinrc')
+	addEnvironmentField(builder, environment, 'read_phone_permission_granted')
+	addEnvironmentField(builder, environment, '_gg')
+	addEnvironmentField(builder, environment, 'is_foa_fdid_app_installed')
+	addEnvironmentField(builder, environment, 'aid')
+	addEnvironmentField(builder, environment, '_ge')
+	addEnvironmentField(builder, environment, 'feo2_query_status')
+	addEnvironmentField(builder, environment, 'language_selector_clicked_count')
+	addEnvironmentField(builder, environment, 'network_operator_name')
+	addEnvironmentField(builder, environment, 'mistyped')
+	addEnvironmentField(builder, environment, 'roaming_type')
+	addEnvironmentField(builder, environment, 'device_name')
+	builder.requiredString('cc', common.countryCallingCode)
+	addEnvironmentField(builder, environment, 'simnum')
+	addEnvironmentField(builder, environment, 'client_metrics')
+	builder.requiredBase64('e_skey_id', common.keyBundle.e_skey_id)
+	addEnvironmentField(builder, environment, '_gi')
+	builder.requiredString('fdid', common.fingerprintDeviceId)
+	addEnvironmentField(builder, environment, 'sim_state')
+	addEnvironmentField(builder, environment, 'network_radio_type')
+	addEnvironmentField(builder, environment, 'offline_ab')
+
+	return { endpoint: '/v2/exist', body: builder.toString(), registrationType: common.registrationType }
 }
 
 export const buildNativeAndroidRequestCodeRequest = (

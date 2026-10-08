@@ -15,7 +15,9 @@ import {
 	type NativeAndroidRegistrationSignalKeys
 } from './native-android-registration-keys'
 import {
+	buildNativeAndroidExistRequest,
 	buildNativeAndroidRegisterRequest,
+	buildNativeAndroidRegOnboardAbpropRequest,
 	buildNativeAndroidRequestCodeRequest,
 	type NativeAndroidRegisterInput,
 	type NativeAndroidRegistrationCommon,
@@ -60,6 +62,13 @@ export type NativeAndroidRegistrationFlowOptions = {
 	http?: NativeAndroidRegistrationFlowHttpOptions
 	/** Default /v2/code environment; overridable per request. */
 	environment?: NativeAndroidRequestCodeEnvironment
+	/**
+	 * Skips the onboarding pre-flight (`/v2/reg_onboard_abprop` → `/v2/exist`).
+	 * The APK always runs both before the first /v2/code of a registration
+	 * (captured 2026-09-24T14:42:01→03Z); the flag exists for unit tests that
+	 * isolate a single endpoint.
+	 */
+	skipOnboarding?: boolean
 	/** ADV signed device identity to persist with the resulting creds, when known. */
 	account?: proto.IADVSignedDeviceIdentity
 }
@@ -74,6 +83,13 @@ export type NativeAndroidRegistrationStepResult<TResponse> = {
 export type NativeAndroidVerifyCodeResult = NativeAndroidRegistrationStepResult<NativeAndroidRegisterResponse> & {
 	/** Present only when /v2/register completed with `status: 'ok'`. */
 	creds?: AuthenticationCreds
+}
+
+export type NativeAndroidOnboardResult = {
+	/** `/v2/reg_onboard_abprop` response carries `ab_hash`/`ab_key`/`exp_cfg`. */
+	abprop: NativeAndroidRegistrationStepResult<unknown>
+	/** `/v2/exist` — device onboarding check; body carries no number. */
+	exist: NativeAndroidRegistrationStepResult<unknown>
 }
 
 export type NativeAndroidRequestCodeCall = Omit<NativeAndroidRequestCodeInput, 'token'> & {
@@ -91,6 +107,12 @@ export type NativeAndroidRegistrationFlow = {
 	keys: NativeAndroidRegistrationSignalKeys
 	/** The exact common context (with key bundle) every request was/will be built from. */
 	common: NativeAndroidRegistrationCommon
+	/**
+	 * Runs the official onboarding pre-flight once per flow (abprop → exist).
+	 * `requestCode` awaits it automatically unless `skipOnboarding` is set; the
+	 * same promise is shared, so explicit + automatic calls never duplicate.
+	 */
+	onboard: () => Promise<NativeAndroidOnboardResult>
 	requestCode: (
 		input: NativeAndroidRequestCodeCall
 	) => Promise<NativeAndroidRegistrationStepResult<NativeAndroidRequestCodeResponse>>
@@ -154,10 +176,42 @@ export const createNativeAndroidRegistrationFlow = (
 	/** Pending auth challenge from the last /v2/code, echoed by /v2/register. */
 	let pendingAuthChallenge: Uint8Array | undefined
 
+	// The APK's registration onboarding always announces the install identity
+	// (abprop) and checks the device state (exist) before the first /v2/code of
+	// a registration; both run under the SAME identity/keys as the code request.
+	let onboardPromise: Promise<NativeAndroidOnboardResult> | undefined
+	const onboard = (): Promise<NativeAndroidOnboardResult> => {
+		onboardPromise ??= (async () => {
+			const abpropRequest = buildNativeAndroidRegOnboardAbpropRequest(common, {
+				environment: options.environment
+			})
+			const abpropHttp = await client(abpropRequest)
+			const existRequest = buildNativeAndroidExistRequest(common, { environment: options.environment })
+			const existHttp = await client(existRequest)
+			return {
+				abprop: {
+					request: abpropRequest,
+					httpStatus: abpropHttp.status,
+					attempts: abpropHttp.attempts,
+					response: abpropHttp.body
+				},
+				exist: {
+					request: existRequest,
+					httpStatus: existHttp.status,
+					attempts: existHttp.attempts,
+					response: existHttp.body
+				}
+			}
+		})()
+		return onboardPromise
+	}
+
 	return {
 		keys,
 		common,
+		onboard,
 		requestCode: async input => {
+			if (!options.skipOnboarding) await onboard()
 			const request = buildNativeAndroidRequestCodeRequest(common, {
 				...input,
 				token: input.token ?? computedToken ?? common.nationalNumber,

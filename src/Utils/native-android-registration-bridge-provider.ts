@@ -1,6 +1,6 @@
 import { Boom } from '@hapi/boom'
 import { DisconnectReason } from '../Types'
-import type { NativeAndroidRequestCodeEnvironment } from './native-android-registration-protocol'
+import type { NativeAndroidRegistrationEndpoint, NativeAndroidRequestCodeEnvironment } from './native-android-registration-protocol'
 
 export type NativeAndroidRegistrationBridgeProviderConfig = {
 	url: string
@@ -11,7 +11,7 @@ export type NativeAndroidRegistrationBridgeProviderConfig = {
 }
 
 export type NativeAndroidRegistrationBridgeContext = {
-	endpoint: '/v2/code' | '/v2/register' | '/v2/security' | '/v2/consent' | '/v2/device_confirm' | '/v2/autoconf'
+	endpoint: NativeAndroidRegistrationEndpoint
 	appVariant: 'business' | 'consumer'
 	phoneNumber: string
 	login: string

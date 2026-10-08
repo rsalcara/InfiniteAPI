@@ -133,6 +133,7 @@ describe('native_android registration flow', () => {
 			}
 		]
 		const flow = createNativeAndroidRegistrationFlow({
+			skipOnboarding: true,
 			common: COMMON,
 			account: ACCOUNT,
 			attestationProvider: async context => {
@@ -185,6 +186,7 @@ describe('native_android registration flow', () => {
 	it('threads the WA_TWO_FA registration type to request, bridge and client', async () => {
 		const contexts: NativeAndroidRegistrationBridgeContext[] = []
 		const flow = createNativeAndroidRegistrationFlow({
+			skipOnboarding: true,
 			common: {
 				...COMMON,
 				login: '5511999999999@s.whatsapp.net',
@@ -210,6 +212,7 @@ describe('native_android registration flow', () => {
 
 	it('returns no creds when /v2/register does not complete', async () => {
 		const flow = createNativeAndroidRegistrationFlow({
+			skipOnboarding: true,
 			common: COMMON,
 			attestationProvider: async () => ({ authorization: 'Native attestation' }),
 			http: {
@@ -230,6 +233,7 @@ describe('native_android registration flow', () => {
 	it('short-circuits on the APK-executed response without a direct fetch', async () => {
 		let fetchCalls = 0
 		const flow = createNativeAndroidRegistrationFlow({
+			skipOnboarding: true,
 			common: COMMON,
 			attestationProvider: async context => ({
 				authorization: 'Native attestation',
@@ -257,6 +261,50 @@ describe('native_android registration flow', () => {
 		)
 		expect(decodeRegistrationAuthChallenge('Cgs')).toEqual(Uint8Array.from([0x0a, 0x0b]))
 	})
+
+	it('runs the onboarding pre-flight abprop → exist before the first /v2/code', async () => {
+		const calls: { url: string; body: string }[] = []
+		const flow = createNativeAndroidRegistrationFlow({
+			common: COMMON,
+			attestationProvider: async context => ({ authorization: 'Native attestation', body: context.body }),
+			http: {
+				baseUrl: 'https://registration.lab.invalid',
+				fetch: (async (url: RequestInfo | URL, init?: RequestInit) => {
+					calls.push({ url: String(url), body: String(init?.body ?? '') })
+					const payload = calls.length < 3 ? { status: 'ok' } : { status: 'sent' }
+					return new Response(JSON.stringify(payload), { status: 200 })
+				}) as unknown as typeof fetch
+			}
+		})
+
+		const code = await flow.requestCode({ method: 'sms' })
+		expect(calls.map(call => call.url)).toEqual([
+			'https://registration.lab.invalid/v2/reg_onboard_abprop',
+			'https://registration.lab.invalid/v2/exist',
+			'https://registration.lab.invalid/v2/code'
+		])
+
+		// abprop = the native "common" map: rc first, in last, never `platform`.
+		const abprop = calls[0]!.body
+		expect(abprop.startsWith('rc=')).toBe(true)
+		expect(abprop.endsWith(`in=${COMMON.nationalNumber}`)).toBe(true)
+		expect(abprop).not.toContain('platform=')
+		expect(abprop).toContain(`fdid=${COMMON.fingerprintDeviceId}`)
+		expect(abprop).toContain('lc=BR&lg=pt')
+
+		// exist = the device onboarding check: no number and no token on the wire.
+		const exist = calls[1]!.body
+		expect(exist).not.toMatch(/(^|&)in=/)
+		expect(exist).not.toMatch(/(^|&)token=/)
+		expect(exist.startsWith('backup_token=')).toBe(true)
+		expect(exist).toContain('cc=55')
+		expect(exist).toContain('e_skey_id=')
+
+		// onboard() shares one promise: re-entry never duplicates the pre-flight.
+		await flow.onboard()
+		expect(calls).toHaveLength(3)
+		expect(code.response.status).toBe('sent')
+	})
 })
 
 describe('native_android registration flow self-computed token', () => {
@@ -273,6 +321,7 @@ describe('native_android registration flow self-computed token', () => {
 
 	const singleShotFlow = (options: Partial<Parameters<typeof createNativeAndroidRegistrationFlow>[0]>) =>
 		createNativeAndroidRegistrationFlow({
+			skipOnboarding: true,
 			common: { ...COMMON, nationalNumber: '1531997072' },
 			...options,
 			attestationProvider: async context => ({ authorization: 'Native attestation', body: context.body }),
