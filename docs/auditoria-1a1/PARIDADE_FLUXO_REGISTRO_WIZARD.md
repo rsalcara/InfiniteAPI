@@ -92,6 +92,15 @@ Limite 25 chars = `InputFilter C1842186z(25)` do APK. Foto de perfil fica local 
 - Smoke de rotas: `POST /v1/instance-registrations` 201; `POST /:id/profile` antes do
   verify → 409 `registration_not_pending_profile` (proteção de ordem); typecheck limpo
   (api/worker/dashboard).
+- `blocked` + `customBlockScreen` real (2026-10-08 16:1x, fixo novo 55 11 5205-0173,
+  método voz): o `/v2/code` recusou com `reason: "blocked"` e a tela de bloqueio do
+  servidor — `title: "Acesso indisponível no momento"`,
+  `body: "Por questões de segurança, não é possível acessar sua conta no momento.
+  Tente novamente mais tarde. Caso precise de ajuda com sua conta, fale conosco."`,
+  `btn_primary_text: "Fale conosco"` → `https://wa.me/support`, `hide_date: true`.
+  O wizard renderizou **verbatim** (contrato `customBlockScreen`, igual o APK);
+  `retryAfter: null` — a orientação é a do próprio app: tentar mais tarde / fale conosco.
+  Bloqueio é por número/perfil de registro no servidor, não é erro do painel.
 
 ## 7. Pergunta: "dá para fazer tudo via Xiaomi sem bridge?"
 
