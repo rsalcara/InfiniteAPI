@@ -441,6 +441,50 @@ const cmdRequest = async (): Promise<void> => {
 	console.log(`estado salvo em ${statePath}`)
 }
 
+const cmdOnboard = async (): Promise<void> => {
+	const number = (args.get('number') ?? '').replace(/\D/g, '')
+	if (!/^\d{8,15}$/.test(number)) {
+		console.error('uso: onboard --number <dígitos nacionais> [--fresh]')
+		process.exit(1)
+	}
+
+	// Pré-flight sozinho (abprop → exist): itera o schema do exist SEM tocar
+	// o /v2/code — não consome o cooldown de voz nem conta no client_metrics
+	// de attempts (o exist oficial manda só {"GMSVersion":...}).
+	const identity = loadOrCreateIdentity(args.has('fresh'))
+	const keys = loadKeys(identity.keys)
+	const common = {
+		appVariant: 'business',
+		language: 'pt',
+		country: 'BR',
+		countryCallingCode: '55',
+		nationalNumber: number,
+		fingerprintDeviceId: identity.fdid,
+		expirationId: identity.expid,
+		identityId: unhex(identity.identityId),
+		backupToken: unhex(identity.backupToken)
+	} satisfies Omit<NativeAndroidRegistrationCommon, 'keyBundle'>
+
+	const flow = createNativeAndroidRegistrationFlow({
+		common,
+		keys,
+		tokenMaterial: tokenMaterial(),
+		attestationProvider: attestationProvider(keys.clientStaticKeyPair.public),
+		environment: await registrationEnvironment(identity.attempts),
+		advertisingId: identity.advertisingId,
+		onboardClientMetrics: EXIST_CLIENT_METRICS,
+		http: { fetch: officialFetch }
+	})
+
+	const result = await flow.onboard()
+	for (const step of ['abprop', 'exist'] as const) {
+		const s = result[step]
+		console.log(`--- ${step} http=%d ---`, s.httpStatus)
+		console.log('BODY', s.request.body)
+		console.log('RESP', JSON.stringify(s.response, jsonReplacer, 2))
+	}
+}
+
 const cmdVerify = async (): Promise<void> => {
 	const code = (args.get('code') ?? '').trim()
 	if (!/^\d{4,8}$/.test(code)) {
@@ -498,10 +542,12 @@ const main = async (): Promise<void> => {
 			return cmdAttest()
 		case 'request':
 			return cmdRequest()
+		case 'onboard':
+			return cmdOnboard()
 		case 'verify':
 			return cmdVerify()
 		default:
-			console.error('comandos: token | attest | request --number <número> [--method sms|voice] [--fresh] | verify --code <código>')
+			console.error('comandos: token | attest | onboard --number <número> [--fresh] | request --number <número> [--method sms|voice] [--fresh] | verify --code <código>')
 			process.exit(1)
 	}
 }

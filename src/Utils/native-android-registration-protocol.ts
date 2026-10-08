@@ -394,8 +394,9 @@ export const buildNativeAndroidRegOnboardAbpropRequest = (
 /**
  * `/v2/exist` — the device onboarding check the APK sends after abprop and
  * before /v2/code (captured 2026-09-24T14:42:03Z, 37 fields, 6630B on the
- * wire). The wire body carries NO `token` and NO `in`: the check is about the
- * device/install state, not the subscriber. Field order is the observed wire
+ * wire). The wire body carries NO `token`, but since 2026-10-08 the live
+ * server also demands `in` (missing_param) and the full e_* key bundle —
+ * the capture predates that tightening. Field order is the observed wire
  * order (advertising_id first, offline_ab last).
  */
 export const buildNativeAndroidExistRequest = (
@@ -433,6 +434,11 @@ export const buildNativeAndroidExistRequest = (
 	addEnvironmentField(builder, environment, 'roaming_type')
 	addEnvironmentField(builder, environment, 'device_name')
 	builder.requiredString('cc', common.countryCallingCode)
+		// O servidor vivo de 2026-10-08 exige `in` também no exist
+		// (missing_param: `in` logo após o pacote e_* completo entrar);
+		// colado ao `cc` como no /v2/code. A captura de 2026-09-24 não
+		// levava — o schema apertou depois, e o fio vivo é a referência.
+		builder.requiredString('in', common.nationalNumber)
 		addEnvironmentField(builder, environment, 'simnum')
 		if (input?.clientMetrics !== undefined) builder.setRaw('client_metrics', input.clientMetrics)
 		else addEnvironmentField(builder, environment, 'client_metrics')

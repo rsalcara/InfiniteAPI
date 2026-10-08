@@ -294,10 +294,12 @@ describe('native_android registration flow', () => {
 		expect(abprop).toContain(`fdid=${COMMON.fingerprintDeviceId}`)
 		expect(abprop).toContain('lc=BR&lg=pt')
 
-		// exist = the device onboarding check: no number and no token on the wire.
+		// exist = the device onboarding check: no token on the wire.
 		// advertising_id leads (official wire order), backup_token right after.
 		const exist = calls[1]!.body
-		expect(exist).not.toMatch(/(^|&)in=/)
+		// Server schema (2026-10-08): /v2/exist demands `in` right after `cc`
+		// (missing_param: `in`); the 2026-09-24 capture carried no number.
+		expect(exist).toContain(`cc=55&in=${COMMON.nationalNumber}`)
 		expect(exist).not.toMatch(/(^|&)token=/)
 		expect(exist.startsWith('advertising_id=11111111-2222-3333-4444-555555555555&backup_token=')).toBe(true)
 		expect(exist).toContain('cc=55')
