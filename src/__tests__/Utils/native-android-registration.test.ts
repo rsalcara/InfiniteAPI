@@ -86,21 +86,24 @@ describe('native_android official registration wire', () => {
 		})
 
 		expect(request.endpoint).toBe('/v2/code')
-		// W4B 2.26.36.72 identifies Business registration as `smba` and adds
-		// platform before the endpoint-specific captured wire order. The
-		// official /v2/code capture does not carry `lc`.
-		expect(request.body.startsWith('platform=smba&id=%01%2B%FF&lg=pt')).toBe(true)
-		expect(request.body).toContain('&cc=55&in=11999999999&backup_token=abc')
+		// Official 48-field /v2/code order (2026-09-24 capture): `id` opens the
+		// body and `reason=` serializes even when empty. No `platform` — the APK
+		// never writes it on any registration request (KotlinRegistrationBridge
+		// A0S/A0T/A0U/A0R/A0V + FMA map helpers), and a live capture carrying it
+		// came back `blocked` while the same body without it returned `sent`.
+		// The official /v2/code capture does not carry `lc`.
+		expect(request.body.startsWith('id=%01%2B%FF&lg=pt&backup_token=abc')).toBe(true)
+		expect(request.body).not.toContain('platform=')
+		expect(request.body).toContain('&cc=55&token=11999999999&in=11999999999&expid=')
 		expect([...new URLSearchParams(request.body).keys()]).toEqual([
-			'platform',
 			'id',
 			'lg',
-			'cc',
-			'in',
 			'backup_token',
 			'e_ident',
 			'e_skey_sig',
+			'cc',
 			'token',
+			'in',
 			'expid',
 			'e_skey_id',
 			'authkey',
@@ -188,16 +191,14 @@ describe('native_android official registration wire', () => {
 		})
 
 		expect([...new URLSearchParams(request.body).keys()]).toEqual([
-			'platform',
 			'_gs',
-			'_ga',
 			'sim_mnc',
 			'id',
-				'recaptcha',
-				'device_ram',
-				'db',
-				'hasav',
-				'lg',
+			'recaptcha',
+			'device_ram',
+			'db',
+			'hasav',
+			'lg',
 			'rc',
 			'pid',
 			'cellular_strength',
@@ -205,8 +206,6 @@ describe('native_android official registration wire', () => {
 			'hasinrc',
 			'roaming_type',
 			'mistyped',
-			'cc',
-			'in',
 			'backup_token',
 			'mnc',
 			'airplane_mode_type',
@@ -218,7 +217,9 @@ describe('native_android official registration wire', () => {
 			'e_skey_sig',
 			'sim_mcc',
 			'simnum',
+			'cc',
 			'token',
+			'in',
 			'expid',
 			'client_metrics',
 			'e_skey_id',
@@ -231,7 +232,8 @@ describe('native_android official registration wire', () => {
 			'e_keytype',
 			'feo2_query_status',
 			'reason',
-			'fdid'
+			'fdid',
+			'_ga'
 		])
 		expect(request.body).toContain('reason=server-send-request-no-routes')
 		expect(request.body).not.toContain('&aid=')
@@ -268,6 +270,11 @@ describe('native_android official registration wire', () => {
 		})
 
 		expect(request.endpoint).toBe('/v2/register')
+		// addCommonParams mirrors KotlinRegistrationBridge.A0S/A0T/A0U: cc,in,
+		// lg,lc,fdid,expid,access_session_id,id,backup_token — and no `platform`
+		// anywhere in the register wire (or any registration request).
+		expect(request.body.startsWith('cc=55&in=11999999999&lg=pt&lc=BR&fdid=fixed-fdid&expid=')).toBe(true)
+		expect(request.body).not.toContain('platform=')
 		expect(request.body).toContain('&code=123456&auth_response=Cgs')
 		expect(request.body.indexOf('&authkey=')).toBeGreaterThan(request.body.indexOf('&auth_response='))
 	})

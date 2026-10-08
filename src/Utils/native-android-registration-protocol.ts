@@ -12,7 +12,11 @@ export type NativeAndroidRegistrationEndpoint =
 	| '/v2/autoconf'
 
 export type NativeAndroidRegistrationCommon = {
-	/** Selects the official platform token: W4B uses `smba`; Consumer uses `android`. */
+	/**
+	 * W4B (`business`) vs Consumer (`consumer`). Selects the User-Agent
+	 * `SMBA`/`ANDROID` token and the creds.platform field — never a body
+	 * param: no registration request in the APK writes `platform`.
+	 */
 	appVariant?: 'business' | 'consumer'
 	/** BCP-47 language, e.g. `pt`; official param name is `lg`. */
 	language: string
@@ -288,12 +292,15 @@ const addCommonParams = (builder: RegistrationRequestBuilder, common: NativeAndr
 		builder.requiredString('in', common.nationalNumber)
 	}
 
-	// A0T
+	// A0T (lg, lc, fdid, expid). The APK never writes `platform` on any
+	// registration request: KotlinRegistrationBridge A0S/A0T/A0U/A0R/A0V and
+	// the FMA additionalParams map helpers (A0N..A0Z) contain no such key; the
+	// literal only appears in payments/pathfinder/analytics classes. `smba` is
+	// the User-Agent token (device-attestation) and the creds.platform field
+	// (auth), not a body param. A live capture with `platform` returned
+	// `blocked`; the same body without it returned `sent`.
 	builder.requiredString('lg', common.language)
 	builder.requiredString('lc', common.country)
-	// W4B registration telemetry identifies as `smba` (K8i lines 26/45);
-	// Consumer registration URLs use `android` (C90133y9/CGL).
-	builder.requiredString('platform', common.appVariant === 'business' ? 'smba' : 'android')
 	builder.requiredString('fdid', common.fingerprintDeviceId)
 	builder.uuid('expid', common.expirationId)
 
