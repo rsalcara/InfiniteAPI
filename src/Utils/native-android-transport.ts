@@ -47,6 +47,7 @@ export type {
 export * from './native-android-registration-response'
 export * from './native-android-registration-auth'
 export * from './native-android-registration-flow'
+export * from './native-android-registration-environment'
 import { makeNativeAndroidNodeAttestationProvider } from './native-android-node-attestation'
 
 const PROFILE_FIELDS: ReadonlyArray<keyof NativeAndroidDeviceProfile> = [

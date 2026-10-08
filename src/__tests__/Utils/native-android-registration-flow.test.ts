@@ -302,8 +302,15 @@ describe('native_android registration flow', () => {
 		expect(exist.startsWith('advertising_id=11111111-2222-3333-4444-555555555555&backup_token=')).toBe(true)
 		expect(exist).toContain('cc=55')
 		expect(exist).toContain('e_skey_id=')
-		// Server schema (2026-10-08): /v2/exist also requires the static-key
-		// signature — missing_param: e_skey_sig without it.
+		// Server schema (2026-10-08): /v2/exist requires the FULL e_* key
+		// bundle — the live server walked missing_param one field at a time
+		// (e_skey_sig, then e_skey_val). The 2026-09-24 capture sent only
+		// e_skey_id; the wire schema tightened afterwards.
+		expect(exist).toContain('authkey=')
+		expect(exist).toContain('e_ident=')
+		expect(exist).toContain('e_keytype=')
+		expect(exist).toContain('e_regid=')
+		expect(exist).toContain('e_skey_val=')
 		expect(exist).toContain('e_skey_sig=')
 		// exist carries its own client_metrics producer ({"GMSVersion":...}).
 		expect(exist).toContain('client_metrics=%7B%22GMSVersion%22%3A263234032%7D')
