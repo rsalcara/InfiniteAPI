@@ -658,6 +658,29 @@ function invokeJniBridgeStatic(methodName, args) {
   return method.invoke(null, Java.array('java.lang.Object', args))
 }
 
+// Igual ao invokeJniBridgeStatic, mas embrulha números JS no wrapper Java que
+// casa com o tipo declarado do parâmetro (int/long/double/float): o invoke por
+// reflexão exige o wrapper exato para desembrulhar primitivos.
+function invokeJniBridgeTyped(methodName, args) {
+  const method = findJavaMethod('com.whatsapp.wamsys.JniBridge', methodName, args.length)
+  if (!method) throw new Error('native dispatch not found: ' + methodName)
+  const params = method.getParameterTypes()
+  const boxed = []
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index]
+    const typeName = String(params[index].getName())
+    if (typeof value === 'number') {
+      if (typeName === 'int') boxed.push(Java.use('java.lang.Integer').valueOf(value))
+      else if (typeName === 'long') boxed.push(Java.use('java.lang.Long').$new(value))
+      else if (typeName === 'float') boxed.push(Java.use('java.lang.Float').$new(value))
+      else boxed.push(Java.use('java.lang.Double').$new(value))
+    } else {
+      boxed.push(value)
+    }
+  }
+  return method.invoke(null, Java.array('java.lang.Object', boxed))
+}
+
 function ensureNativeLibLoaded() {
   // O nome BSa existe só no decompilado (renomeado pelo jadx); no dex real o
   // método de load tem outro nome. O que é estável são os métodos NATIVE
@@ -1147,6 +1170,33 @@ function appWrapIntegrityToken(token) {
           resolve(value)
         })
         agentLog('gpia wrap: callback proxy ready')
+        // Priming oficial (F43FA...$2 l.65-72): jvidispatchIIIIDOOO(gate 12965
+        // ? 19 : 0, 62949436L, 855397460L, 796.6509679599703d, app,
+        // wajContext, byte[20]) roda ANTES do wrap; sem ele o blob sai 64
+        // bytes curto (1004 chars vs 1088 da captura oficial). Ex0.A05 e
+        // Ex0.A06 devolvem o mesmo JniBridge.INSTANCE, então o mesmo wajContext
+        // serve aos dois dispatches.
+        var primingFlag = 0
+        try {
+          // X.Dla = runtime de AbstractC31165Dla (renomeado pelo jadx);
+          // A0M() devolve o singleton de gates X.0Cf (C02710Cf).
+          var gates = Java.use('X.Dla').A0M()
+          primingFlag = gates.A0y(12965) ? 19 : 0
+          agentLog('gpia priming gate 12965 flag=' + primingFlag)
+        } catch (gateError) {
+          agentLog('gpia priming gate unavailable, flag stays 0: ' + gateError)
+        }
+        agentLog('gpia wrap: dispatching native priming')
+        invokeJniBridgeTyped('jvidispatchIIIIDOOO', [
+          primingFlag,
+          62949436,
+          855397460,
+          796.6509679599703,
+          appContext,
+          wajContext,
+          Java.array('byte', [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        ])
+        agentLog('gpia wrap: native priming dispatched')
         agentLog('gpia wrap: dispatching native wrap')
         // F43FA...$2 chama jvidispatchIIDOOOO(errorCode, 0.0, token, app,
         // callback, wajContext); no caminho de sucesso errorCode=0.
@@ -1445,7 +1495,24 @@ function collectRegistrationEnvironment(cloudProjectNumber) {
           agentLog('registration environment CJT merge unavailable: ' + cjtError)
         }
 
-        requestStandardIntegrity('', cloudProjectNumber).then(function(rawToken) {
+        // requestHash oficial (C36183FvX case 5) = Base64 std sem pad/quebra
+        // (flag 3) da MESMA authkey estática que o request injeta no corpo
+        // (metadata.A0I(); X.058/X.BqN.A01 → X.1Bt). Sem hash o GMS entrega um
+        // token não vinculado ao cliente e o wrap sai 64 bytes curto.
+        var gpiaRequestHash = ''
+        try {
+          var LazyGpia = Java.use('X.058')
+          var HolderGpia = Java.use('X.BqN')
+          var MetadataGpia = Java.use('X.1Bt')
+          var metadataGpia = Java.cast(LazyGpia.A02(HolderGpia.A01.value), MetadataGpia)
+          var Base64Gpia = Java.use('android.util.Base64')
+          gpiaRequestHash = String(Base64Gpia.encodeToString(metadataGpia.A0I(), 3))
+          agentLog('gpia requestHash ready length=' + gpiaRequestHash.length)
+        } catch (hashError) {
+          agentLog('gpia requestHash unavailable: ' + hashError)
+        }
+
+        requestStandardIntegrity(gpiaRequestHash, cloudProjectNumber).then(function(rawToken) {
           return appWrapIntegrityToken(rawToken).then(function(wrapped) {
             agentLog('gpia native wrap ready length=' + wrapped.length +
               ' prefix=' + wrapped.slice(0, 12))
