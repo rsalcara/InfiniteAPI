@@ -266,6 +266,8 @@ describe('native_android registration flow', () => {
 		const calls: { url: string; body: string }[] = []
 		const flow = createNativeAndroidRegistrationFlow({
 			common: COMMON,
+			advertisingId: '11111111-2222-3333-4444-555555555555',
+			onboardClientMetrics: '{"GMSVersion":263234032}',
 			attestationProvider: async context => ({ authorization: 'Native attestation', body: context.body }),
 			http: {
 				baseUrl: 'https://registration.lab.invalid',
@@ -293,12 +295,18 @@ describe('native_android registration flow', () => {
 		expect(abprop).toContain('lc=BR&lg=pt')
 
 		// exist = the device onboarding check: no number and no token on the wire.
+		// advertising_id leads (official wire order), backup_token right after.
 		const exist = calls[1]!.body
 		expect(exist).not.toMatch(/(^|&)in=/)
 		expect(exist).not.toMatch(/(^|&)token=/)
-		expect(exist.startsWith('backup_token=')).toBe(true)
+		expect(exist.startsWith('advertising_id=11111111-2222-3333-4444-555555555555&backup_token=')).toBe(true)
 		expect(exist).toContain('cc=55')
 		expect(exist).toContain('e_skey_id=')
+		// exist carries its own client_metrics producer ({"GMSVersion":...}).
+		expect(exist).toContain('client_metrics=%7B%22GMSVersion%22%3A263234032%7D')
+
+		// The install GAID falls through to /v2/code when the call passes none.
+		expect(calls[2]!.body).toContain('advertising_id=11111111-2222-3333-4444-555555555555')
 
 		// onboard() shares one promise: re-entry never duplicates the pre-flight.
 		await flow.onboard()

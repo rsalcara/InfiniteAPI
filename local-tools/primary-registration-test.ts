@@ -12,13 +12,14 @@
  *
  *   npx tsx local-tools/primary-registration-test.ts token
  *   npx tsx local-tools/primary-registration-test.ts attest
- *   npx tsx local-tools/primary-registration-test.ts request --number 15XXXXXXXXX [--method sms|voice]
+ *   npx tsx local-tools/primary-registration-test.ts request --number 15XXXXXXXXX [--method sms|voice] [--fresh]
  *   npx tsx local-tools/primary-registration-test.ts verify --code NNNNNN
  *
  * `token` valida a receita do token contra o vetor capturado do APK real.
  * `attest` exercita só a perna do relay (sem tocar na Meta).
  * `request`/`verify` são o teste real; o estado entre as fases fica em
- * `primary-registration-test-state.json` e as creds em
+ * `primary-registration-test-state.json`, a identidade PERMANENTE da
+ * instalação em `primary-registration-identity.json` e as creds em
  * `primary-registration-creds.json`.
  */
 
@@ -33,7 +34,7 @@ import { createNativeAndroidRegistrationFlow } from '../src/Utils/native-android
 import { createNativeAndroidRegistrationSignalKeys, type NativeAndroidRegistrationSignalKeys } from '../src/Utils/native-android-registration-keys'
 import { createNativeAndroidRegistrationBridgeProvider, createNativeAndroidRegistrationEnvironmentProvider } from '../src/Utils/native-android-registration-bridge-provider'
 import { createNativeAndroidRegistrationRelayProvider } from '../src/Utils/native-android-registration-relay-provider'
-import type { NativeAndroidRegistrationCommon } from '../src/Utils/native-android-registration-protocol'
+import type { NativeAndroidRegistrationCommon, NativeAndroidRequestCodeEnvironment } from '../src/Utils/native-android-registration-protocol'
 import { buildClassicRegistrationToken, type NativeAndroidRegistrationTokenMaterial } from '../src/Utils/native-android-registration-token'
 
 const toolsDir = dirname(fileURLToPath(import.meta.url))
@@ -42,16 +43,17 @@ const toolsDir = dirname(fileURLToPath(import.meta.url))
 const assetsDir = join(toolsDir, '..', 'src', '__tests__', 'Utils', 'fixtures', 'native-android-registration-token')
 const statePath = join(toolsDir, 'primary-registration-test-state.json')
 const credsPath = join(toolsDir, 'primary-registration-creds.json')
+/**
+ * Identidade PERMANENTE da instalação. O APK real nunca troca esses valores
+ * entre tentativas de registro (provado na captura: expid/fdid/id/backup_token
+ * e o pacote e_* idênticos em 17 requests com `status: ok`); o servidor compara
+ * as tentativas pelo contexto de instalação — trocar tudo a cada request é o
+ * padrão "dispositivo sintético" que derrubou o /v2/code para `blocked`.
+ * `--fresh` simula uma instalação nova e recria o arquivo.
+ */
+const identityPath = join(toolsDir, 'primary-registration-identity.json')
 
 const RELAY_URL = process.env.REGISTRATION_RELAY_URL ?? 'http://127.0.0.1:8080/v1/companion-device'
-
-/**
- * `fdid` = `phoneid_id` do APK (UUID v4 persistido, `C36321jF.Atg()`); valores
- * fora do formato UUID voltam `bad_format`/`param=fdid`. O `expid` é a
- * instalação; `id`/`backup_token` são os 20 bytes persistentes de uma
- * instalação nova (primeiro registro), exatamente como o APK os gera.
- */
-const FDID = process.env.REGISTRATION_FDID ?? randomUUID()
 
 /**
  * Chave pública estática do servidor de registro (X25519) — `X.BpZ.A00` no W4B
@@ -102,23 +104,63 @@ const officialFetch = async (input: RequestInfo | URL, init?: RequestInit): Prom
 }
 
 /**
- * Telemetria coerente com o aparelho que atesta (Claro BR, LTE, ~7,5 GB RAM,
- * dados do `getprop`/`meminfo` do Xiaomi). Campos vazios/omitidos são os que o
- * builder oficial já exclui do fio.
+ * Ambiente estático EXATO da captura oficial de 2026-09-24 (17 requests com
+ * `status: ok` naquele contexto). Valores de app-prefs que o hook não coleta
+ * (recaptcha, mistyped, feo2…) saem daqui; o que o aparelho/bridge reporta em
+ * tempo real (gpia, blobs WAMSYS, pid, RAM…) SOBRESCREVE estes defaults.
+ * `REGISTRATION_ENVIRONMENT_JSON` aplica um merge final (persona de outro
+ * aparelho, ex.: o Xiaomi 724/05 quando o teste for via relay).
  */
-const ENVIRONMENT = {
-	mcc: '724',
-	mnc: '05',
-	sim_mcc: '724',
-	sim_mnc: '05',
+const ENVIRONMENT_DEFAULTS = {
+	// App state / prefs do instalador oficial (constantes da captura).
+	recaptcha: '{"stage":"ABPROP_DISABLED"}',
+	db: 1,
+	hasav: 2,
+	mistyped: 7,
+	feo2_query_status: 'error_security_exception',
+	hasinrc: 1,
+	simnum: 0,
+	prefer_sms_over_flash: false,
+	education_screen_displayed: false,
+	backup_token_error: 'null_token',
+	read_phone_permission_granted: 0,
+	is_foa_fdid_app_installed: false,
+	language_selector_time_spent: 0,
+	language_selector_clicked_count: 0,
+	offline_ab:
+		'{"exposure":["android_eula_content_update|android_eula_content_update_prod|test"],"exp_hash":["7060|android_eula_content_update"],"metrics":{}}',
+	rc: 0,
+	// Persona do dispositivo da captura (emu64xa / T-Mobile). O bridge coleta
+	// os vivos; relay/Xiaomi sobrescreve via REGISTRATION_ENVIRONMENT_JSON.
+	mcc: '310',
+	mnc: '260',
+	sim_mcc: '310',
+	sim_mnc: '260',
 	sim_type: 1,
+	sim_state: 5,
 	airplane_mode_type: 0,
 	cellular_strength: 4,
 	roaming_type: 0,
 	network_radio_type: 1,
-	device_ram: 7.49,
-	db: 0
-}
+	device_ram: 2.42,
+	device_name: 'emu64xa',
+	network_operator_name: 'T-Mobile',
+	pid: 9703,
+	// FCM do instalador da captura (o hook do bridge devolve o token real do
+	// W4B em execução, que é o mesmo aparelho/app do caminho de hoje).
+	push_token:
+		'dM_R5BYSRn-LnQUTmChw1L:APA91bFEvoF-5hpjJDGcLf7VZph2CKeiXr3bysAdNia0lVwdEkb0Cod2hWpUHttURtCRJwBJQqE2zLuQ2WhzMvpw_DZnxPye7'
+} satisfies Record<string, string | number | boolean>
+
+/**
+ * `client_metrics` do /v2/code: o APK serializa `{"attempts":N,...}` (19/37/38
+ * na captura). O /v2/exist usa OUTRO produtor — `{"GMSVersion":263234032}` —
+ * e vai por `onboardClientMetrics` no flow.
+ */
+const codeClientMetrics = (attempts: number): string =>
+	JSON.stringify({ attempts, app_campaign_download_source: 'google-play|unknown', was_activated_from_stub: false })
+
+const EXIST_CLIENT_METRICS = '{"GMSVersion":263234032}'
 
 const tokenMaterial = (): NativeAndroidRegistrationTokenMaterial => ({
 	packageName: 'com.whatsapp.w4b',
@@ -152,16 +194,24 @@ const attestationProvider = (clientStaticPublic?: Uint8Array) => {
 }
 
 /**
- * Ambiente do /v2/code: com --bridge usa o ambiente REAL do aparelho (hook
- * `collectRegistrationEnvironment` — gpia fresco, blobs WAMSYS e telefonia
- * coerentes com quem atesta); sem bridge, o fixture da captura.
+ * Ambiente do /v2/code: defaults da captura → `client_metrics` do attempt →
+ * merge do operador (`REGISTRATION_ENVIRONMENT_JSON`) → o que o aparelho/bridge
+ * reporta ao vivo (sempre por cima: gpia fresco, blobs WAMSYS e telefonia
+ * coerentes com quem atesta).
  */
-const registrationEnvironment = async () => {
+const registrationEnvironment = async (attempts: number) => {
+	const operator = process.env.REGISTRATION_ENVIRONMENT_JSON
+		? (JSON.parse(process.env.REGISTRATION_ENVIRONMENT_JSON) as Record<string, unknown>)
+		: {}
+	const base = {
+		...ENVIRONMENT_DEFAULTS,
+		client_metrics: codeClientMetrics(attempts),
+		...operator
+	} as NativeAndroidRequestCodeEnvironment
 	const bridgeUrl = (args.get('bridge') ?? '').trim()
-	if (bridgeUrl) {
-		return await createNativeAndroidRegistrationEnvironmentProvider({ url: bridgeUrl, timeoutMs: 120_000 })('business')
-	}
-	return ENVIRONMENT
+	if (!bridgeUrl) return base
+	const live = await createNativeAndroidRegistrationEnvironmentProvider({ url: bridgeUrl, timeoutMs: 120_000 })('business')
+	return { ...base, ...live }
 }
 
 type SavedKeys = {
@@ -215,6 +265,49 @@ const loadKeys = (saved: SavedKeys): NativeAndroidRegistrationSignalKeys => ({
 	},
 	registrationId: saved.registrationId
 })
+
+type SavedIdentity = {
+	createdAt: string
+	fdid: string
+	expid: string
+	identityId: string
+	backupToken: string
+	advertisingId: string
+	/** Contador de tentativas de /v2/code (o APK serializa em client_metrics). */
+	attempts: number
+	keys: SavedKeys
+}
+
+/**
+ * Carrega (ou cria, uma única vez) a identidade permanente da instalação.
+ * Tudo que o servidor usa para amarrar tentativas — chaves, expid, fdid,
+ * id/backup_token, GAID — vive aqui e NÃO muda entre requests; `--fresh`
+ * simula instalação nova.
+ */
+const loadOrCreateIdentity = (fresh: boolean): SavedIdentity => {
+	if (!fresh && existsSync(identityPath)) {
+		return JSON.parse(readFileSync(identityPath, 'utf8')) as SavedIdentity
+	}
+	const identity: SavedIdentity = {
+		createdAt: new Date().toISOString(),
+		fdid: process.env.REGISTRATION_FDID ?? randomUUID(),
+		expid: randomUUID(),
+		identityId: hex(randomBytes(20)),
+		backupToken: hex(randomBytes(20)),
+		advertisingId: randomUUID(),
+		attempts: 0,
+		keys: saveKeys(createNativeAndroidRegistrationSignalKeys())
+	}
+	writeFileSync(identityPath, JSON.stringify(identity, null, 2))
+	console.log(`identidade nova da instalação salva em ${identityPath}`)
+	return identity
+}
+
+const bumpAttempts = (identity: SavedIdentity): SavedIdentity => {
+	identity.attempts += 1
+	writeFileSync(identityPath, JSON.stringify(identity, null, 2))
+	return identity
+}
 
 const jsonReplacer = (_key: string, value: unknown): unknown => {
 	if (value instanceof Uint8Array) return { __hex: Buffer.from(value).toString('hex') }
@@ -278,7 +371,7 @@ const cmdRequest = async (): Promise<void> => {
 	const number = (args.get('number') ?? '').replace(/\D/g, '')
 	const method = (args.get('method') ?? 'sms') as 'sms' | 'voice'
 	if (!/^\d{8,15}$/.test(number)) {
-		console.error('uso: request --number <dígitos nacionais> [--method sms|voice]')
+		console.error('uso: request --number <dígitos nacionais> [--method sms|voice] [--fresh]')
 		process.exit(1)
 	}
 	if (method !== 'sms' && method !== 'voice') {
@@ -286,7 +379,11 @@ const cmdRequest = async (): Promise<void> => {
 		process.exit(1)
 	}
 
-	const keys = createNativeAndroidRegistrationSignalKeys()
+	// Identidade PERMANENTE da instalação: mesmas chaves/expid/fdid/id/
+	// backup_token/GAID em todas as tentativas, 1:1 com o APK (o servidor
+	// reprova o contexto "instalação nova a cada request"). `--fresh` = nova.
+	const identity = loadOrCreateIdentity(args.has('fresh'))
+	const keys = loadKeys(identity.keys)
 	// Diagnóstico: sobrepõe o `authkey` do corpo (chave pública estática) para
 	// testar se o servidor valida o vínculo atestação↔authkey. Uso interno.
 	const authkeyHex = (args.get('authkey-hex') ?? '').trim()
@@ -303,18 +400,21 @@ const cmdRequest = async (): Promise<void> => {
 		country: 'BR',
 		countryCallingCode: '55',
 		nationalNumber: number,
-		fingerprintDeviceId: FDID,
-		expirationId: randomUUID(),
-		identityId: randomBytes(20),
-		backupToken: randomBytes(20)
+		fingerprintDeviceId: identity.fdid,
+		expirationId: identity.expid,
+		identityId: unhex(identity.identityId),
+		backupToken: unhex(identity.backupToken)
 	} satisfies Omit<NativeAndroidRegistrationCommon, 'keyBundle'>
 
+	bumpAttempts(identity)
 	const flow = createNativeAndroidRegistrationFlow({
 		common,
 		keys,
 		tokenMaterial: tokenMaterial(),
 		attestationProvider: attestationProvider(keys.clientStaticKeyPair.public),
-		environment: await registrationEnvironment(),
+		environment: await registrationEnvironment(identity.attempts),
+		advertisingId: identity.advertisingId,
+		onboardClientMetrics: EXIST_CLIENT_METRICS,
 		http: { fetch: officialFetch }
 	})
 
@@ -359,13 +459,18 @@ const cmdVerify = async (): Promise<void> => {
 		identityId: unhex(state.common.identityId),
 		backupToken: unhex(state.common.backupToken)
 	}
+	// GAID/attempts/client_metrics vêm da MESMA identidade do request que
+	// emitiu o desafio — o /v2/register tem de parecer a mesma instalação.
+	const identity = loadOrCreateIdentity(false)
 
 	const flow = createNativeAndroidRegistrationFlow({
 		common,
 		keys,
 		tokenMaterial: tokenMaterial(),
 		attestationProvider: attestationProvider(keys.clientStaticKeyPair.public),
-		environment: await registrationEnvironment(),
+		environment: await registrationEnvironment(identity.attempts),
+		advertisingId: identity.advertisingId,
+		onboardClientMetrics: EXIST_CLIENT_METRICS,
 		http: { fetch: officialFetch }
 	})
 
@@ -396,7 +501,7 @@ const main = async (): Promise<void> => {
 		case 'verify':
 			return cmdVerify()
 		default:
-			console.error('comandos: token | attest | request --number <número> [--method sms|voice] | verify --code <código>')
+			console.error('comandos: token | attest | request --number <número> [--method sms|voice] [--fresh] | verify --code <código>')
 			process.exit(1)
 	}
 }

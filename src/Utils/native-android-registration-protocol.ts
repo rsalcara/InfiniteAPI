@@ -350,6 +350,13 @@ const addEnvironmentField = (
 export type NativeAndroidPreflightInput = {
 	environment?: NativeAndroidRequestCodeEnvironment
 	advertisingId?: string
+	/**
+	 * `/v2/exist` client_metrics override. The APK builds this map with a
+	 * different producer than /v2/code (observed `{"GMSVersion":263234032}`
+	 * against /v2/code's `{"attempts":N,...}`), so the pre-flight carries its
+	 * own value instead of reusing the code environment entry.
+	 */
+	clientMetrics?: string
 }
 
 /**
@@ -426,8 +433,9 @@ export const buildNativeAndroidExistRequest = (
 	addEnvironmentField(builder, environment, 'roaming_type')
 	addEnvironmentField(builder, environment, 'device_name')
 	builder.requiredString('cc', common.countryCallingCode)
-	addEnvironmentField(builder, environment, 'simnum')
-	addEnvironmentField(builder, environment, 'client_metrics')
+		addEnvironmentField(builder, environment, 'simnum')
+		if (input?.clientMetrics !== undefined) builder.setRaw('client_metrics', input.clientMetrics)
+		else addEnvironmentField(builder, environment, 'client_metrics')
 	builder.requiredBase64('e_skey_id', common.keyBundle.e_skey_id)
 	addEnvironmentField(builder, environment, '_gi')
 	builder.requiredString('fdid', common.fingerprintDeviceId)

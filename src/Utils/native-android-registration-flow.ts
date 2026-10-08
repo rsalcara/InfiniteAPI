@@ -63,6 +63,17 @@ export type NativeAndroidRegistrationFlowOptions = {
 	/** Default /v2/code environment; overridable per request. */
 	environment?: NativeAndroidRequestCodeEnvironment
 	/**
+	 * Install-scoped advertising id (GAID). Persisted with the install identity
+	 * and forwarded to the pre-flight `/v2/exist` and to every /v2/code unless
+	 * the call passes its own `advertisingId`.
+	 */
+	advertisingId?: string
+	/**
+	 * `/v2/exist` client_metrics value (observed `{"GMSVersion":263234032}`),
+	 * which the APK builds with a different producer than the /v2/code map.
+	 */
+	onboardClientMetrics?: string
+	/**
 	 * Skips the onboarding pre-flight (`/v2/reg_onboard_abprop` → `/v2/exist`).
 	 * The APK always runs both before the first /v2/code of a registration
 	 * (captured 2026-09-24T14:42:01→03Z); the flag exists for unit tests that
@@ -186,7 +197,11 @@ export const createNativeAndroidRegistrationFlow = (
 				environment: options.environment
 			})
 			const abpropHttp = await client(abpropRequest)
-			const existRequest = buildNativeAndroidExistRequest(common, { environment: options.environment })
+			const existRequest = buildNativeAndroidExistRequest(common, {
+				environment: options.environment,
+				advertisingId: options.advertisingId,
+				clientMetrics: options.onboardClientMetrics
+			})
 			const existHttp = await client(existRequest)
 			return {
 				abprop: {
@@ -215,6 +230,7 @@ export const createNativeAndroidRegistrationFlow = (
 			const request = buildNativeAndroidRequestCodeRequest(common, {
 				...input,
 				token: input.token ?? computedToken ?? common.nationalNumber,
+				advertisingId: input.advertisingId ?? options.advertisingId,
 				environment: input.environment ?? options.environment
 			})
 			const http = await client(request)
