@@ -386,7 +386,7 @@ def bootstrap(force=False, package_name=None):
 
             session = device.attach(process_pid)
             session.on("detached", lambda reason, *args: on_detached(package, reason, *args))
-            source = Path("/app/hook.js").read_text(encoding="utf-8")
+            source = Path(os.getenv("HOOK_PATH", "/app/hook.js")).read_text(encoding="utf-8")
             capture_key = os.getenv("REGISTRATION_CAPTURE_HMAC_KEY_B64", "").strip()
             if capture_key:
                 source = (
