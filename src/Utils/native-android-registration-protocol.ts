@@ -468,12 +468,11 @@ export const buildNativeAndroidRequestCodeRequest = (
 	// body and the 2026-09-24 48-field body that the server answered with
 	// `status: ok` seventeen times). The CJT map holds 46 entries; the APK
 	// serializer omits empty map values, so absent runtime fields stay absent.
-	// This endpoint does not send `lc`.
+	// This endpoint does not send `lc` and never sends `platform` (absent from
+	// every official capture; only payments/pathfinder classes write it).
 	const builder = new RegistrationRequestBuilder()
 	const environment = input.environment ?? {}
-	builder.requiredString('platform', common.appVariant === 'business' ? 'smba' : 'android')
 	addEnvironmentField(builder, environment, '_gs')
-	addEnvironmentField(builder, environment, '_ga')
 	addEnvironmentField(builder, environment, 'sim_mnc')
 	builder.requiredPercentEncoded('id', common.identityId)
 	addEnvironmentField(builder, environment, 'recaptcha')
@@ -490,11 +489,6 @@ export const buildNativeAndroidRequestCodeRequest = (
 	addEnvironmentField(builder, environment, 'mistyped')
 	builder.optionalString('login', common.login)
 	if (common.registrationType !== undefined) builder.setRaw('type', String(common.registrationType))
-	// A09 writes cc/in only when userType != WA_TWO_FA_CONTACT_POINT.
-	if (common.registrationType !== 1) {
-		builder.requiredString('cc', common.countryCallingCode)
-		builder.requiredString('in', common.nationalNumber)
-	}
 
 	builder.optionalString('advertising_id', input.advertisingId)
 	builder.requiredPercentEncoded('backup_token', common.backupToken)
@@ -511,7 +505,11 @@ export const buildNativeAndroidRequestCodeRequest = (
 	builder.requiredBase64('e_skey_sig', common.keyBundle.e_skey_sig)
 	addEnvironmentField(builder, environment, 'sim_mcc')
 	addEnvironmentField(builder, environment, 'simnum')
+	// A09 writes cc/in only when userType != WA_TWO_FA_CONTACT_POINT. The
+	// official wire interleaves them with token: simnum, cc, token, in, expid.
+	if (common.registrationType !== 1) builder.requiredString('cc', common.countryCallingCode)
 	builder.requiredString('token', input.token)
+	if (common.registrationType !== 1) builder.requiredString('in', common.nationalNumber)
 	builder.uuid('expid', common.expirationId)
 	addEnvironmentField(builder, environment, 'client_metrics')
 	addEnvironmentField(builder, environment, '_gi')
@@ -538,6 +536,8 @@ export const buildNativeAndroidRequestCodeRequest = (
 	// passa pela regra de omitir entradas vazias do mapa CJT.
 	builder.setRaw('reason', environment.reason ?? '')
 	builder.requiredString('fdid', common.fingerprintDeviceId)
+	// `_ga` closes the official 48-field body, after fdid.
+	addEnvironmentField(builder, environment, '_ga')
 
 	return { endpoint: '/v2/code', body: builder.toString(), registrationType: common.registrationType }
 }

@@ -658,6 +658,26 @@ function invokeJniBridgeStatic(methodName, args) {
   return method.invoke(null, Java.array('java.lang.Object', args))
 }
 
+// Lê byte[] Java via java.lang.reflect.Array: o wrapper Frida de '[B' nem
+// sempre expõe .length como número (virava loop vazio e o campo saía como
+// string vazia no ambiente — ex.: _gs/_gg/_gi do mapa nativo). O serializador
+// oficial omite valores vazios, então '' aqui significa "campo ausente".
+function byteArrayWireValue(rawArray) {
+  const bytes = Java.cast(rawArray, Java.use('[B'))
+  const ArrayClass = Java.use('java.lang.reflect.Array')
+  const length = Number(ArrayClass.getLength(bytes))
+  if (!Number.isFinite(length) || length <= 0) return ''
+  let value = ''
+  for (let index = 0; index < length; index += 1) {
+    const byte = Number(ArrayClass.getByte(bytes, index)) & 0xff
+    const safe = (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a) ||
+      (byte >= 0x30 && byte <= 0x39) || byte === 0x2d || byte === 0x2e ||
+      byte === 0x5f || byte === 0x7e
+    value += safe ? String.fromCharCode(byte) : '%' + byte.toString(16).toUpperCase().padStart(2, '0')
+  }
+  return value
+}
+
 // Igual ao invokeJniBridgeStatic, mas embrulha números JS no wrapper Java que
 // casa com o tipo declarado do parâmetro (int/long/double/float): o invoke por
 // reflexão exige o wrapper exato para desembrulhar primitivos.
@@ -1399,17 +1419,8 @@ function collectRegistrationEnvironment(cloudProjectNumber) {
                 if (text.length > 0) environment[key] = text
                 continue
               }
-              const bytes = Java.cast(rawValue, Java.use('[B'))
-              if (bytes.length === 0) continue
-              let value = ''
-              for (let index = 0; index < bytes.length; index += 1) {
-                const byte = bytes[index] & 0xff
-                const safe = (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a) ||
-                  (byte >= 0x30 && byte <= 0x39) || byte === 0x2d || byte === 0x2e ||
-                  byte === 0x5f || byte === 0x7e
-                value += safe ? String.fromCharCode(byte) : '%' + byte.toString(16).toUpperCase().padStart(2, '0')
-              }
-              environment[key] = value
+              const value = byteArrayWireValue(rawValue)
+              if (value.length > 0) environment[key] = value
             }
           }
         } catch (nativeError) {
@@ -1427,7 +1438,7 @@ function collectRegistrationEnvironment(cloudProjectNumber) {
             'cellular_strength', 'roaming_type', 'network_radio_type', 'device_ram',
             'pid', 'rc', 'hasinrc', 'hasav', 'db', 'mistyped', 'simnum', 'recaptcha',
             'prefer_sms_over_flash', 'client_metrics', 'education_screen_displayed',
-            'feo2_query_status', 'reason'
+            'feo2_query_status', 'reason', 'sim_state', 'offline_ab'
           ]
           const knownSet = {}
           for (let knownIndex = 0; knownIndex < knownEnvKeys.length; knownIndex += 1) {
@@ -1449,16 +1460,8 @@ function collectRegistrationEnvironment(cloudProjectNumber) {
               if (rawValue === null) continue
               if (rawValue.$className === '[B') {
                 if (!blobSet[key]) continue
-                const bytes = Java.cast(rawValue, Java.use('[B'))
-                if (bytes.length === 0) continue
-                let encoded = ''
-                for (let byteIndex = 0; byteIndex < bytes.length; byteIndex += 1) {
-                  const byte = bytes[byteIndex] & 0xff
-                  const safe = (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a) ||
-                    (byte >= 0x30 && byte <= 0x39) || byte === 0x2d || byte === 0x2e ||
-                    byte === 0x5f || byte === 0x7e
-                  encoded += safe ? String.fromCharCode(byte) : '%' + byte.toString(16).toUpperCase().padStart(2, '0')
-                }
+                const encoded = byteArrayWireValue(rawValue)
+                if (encoded.length === 0) continue
                 environment[key] = encoded
                 merged += 1
                 continue

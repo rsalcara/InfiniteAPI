@@ -153,12 +153,13 @@ const ENVIRONMENT_DEFAULTS = {
 } satisfies Record<string, string | number | boolean>
 
 /**
- * `client_metrics` do /v2/code: o APK serializa `{"attempts":N,...}` (19/37/38
- * na captura). O /v2/exist usa OUTRO produtor — `{"GMSVersion":263234032}` —
- * e vai por `onboardClientMetrics` no flow.
+ * `client_metrics` do /v2/code: o APK serializa `{"attempts":N,
+ * "app_campaign_download_source":"google-play|unknown"}` — 2 chaves (37 na
+ * captura oficial de 48 campos, ok×17). O /v2/exist usa OUTRO produtor —
+ * `{"GMSVersion":263234032}` — e vai por `onboardClientMetrics` no flow.
  */
 const codeClientMetrics = (attempts: number): string =>
-	JSON.stringify({ attempts, app_campaign_download_source: 'google-play|unknown', was_activated_from_stub: false })
+	JSON.stringify({ attempts, app_campaign_download_source: 'google-play|unknown' })
 
 const EXIST_CLIENT_METRICS = '{"GMSVersion":263234032}'
 
@@ -211,7 +212,10 @@ const registrationEnvironment = async (attempts: number) => {
 	const bridgeUrl = (args.get('bridge') ?? '').trim()
 	if (!bridgeUrl) return base
 	const live = await createNativeAndroidRegistrationEnvironmentProvider({ url: bridgeUrl, timeoutMs: 120_000 })('business')
-	return { ...base, ...live }
+	// O override do operador é a AUTORIDADE FINAL (por cima do ao vivo): serve
+	// para forçar/dropar campos em diagnósticos (ex.: gpia:"" remove o campo,
+	// já que o builder oficial omite valores vazios do fio).
+	return { ...base, ...live, ...operator }
 }
 
 type SavedKeys = {

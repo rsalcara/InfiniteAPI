@@ -54,11 +54,13 @@ export const NATIVE_ANDROID_REGISTRATION_EXIST_CLIENT_METRICS = '{"GMSVersion":2
 
 /**
  * `client_metrics` do `/v2/code`: `{"attempts":N,"app_campaign_download_source"
- * :"google-play|unknown","was_activated_from_stub":false}` com N crescendo a
- * cada tentativa (19/37/38 na captura oficial).
+ * :"google-play|unknown"}` com N crescendo a cada tentativa (37 na captura
+ * oficial de 48 campos que o servidor respondeu `ok`×17). A forma de 3 chaves
+ * (`was_activated_from_stub`) é do `/v2/exist` (captura 2026-09-24 14:42:03Z),
+ * não deste endpoint.
  */
 export const buildNativeAndroidRegistrationCodeClientMetrics = (attempts: number): string =>
-	JSON.stringify({ attempts, app_campaign_download_source: 'google-play|unknown', was_activated_from_stub: false })
+	JSON.stringify({ attempts, app_campaign_download_source: 'google-play|unknown' })
 
 /**
  * Ambiente pronto para o flow: defaults da captura + client_metrics do attempt
