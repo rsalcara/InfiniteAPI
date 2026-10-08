@@ -124,3 +124,51 @@ reimplementar o `wamsys-wrap` dentro do Connector (dias de trabalho).
 
 Sem mudança no motor Baileys (PR #8): o nome via `creds.me.name` é gravado pelo worker,
 logo nenhum commit novo na PR é necessário nesta rodada.
+
+## 9. Investigação: "a chamada não aconteceu" (15 3199-7072, 2026-10-08)
+
+Tela colada no teste: "Ligaremos para +55 (15) 3199-7072 e informaremos o código por voz"
++ banner "Você tentou registrar … recentemente" + "Reenviar código (23:43)".
+
+**Diagnóstico (2 camadas):**
+
+1. **Nenhuma chamada foi agendada.** Esse estado só existe quando o `/v2/code` é
+   **recusado** pelo servidor com `registration_too_recent` (422) — o "23:43" é o
+   `retryAfter` do servidor (1423 s) regressando. Ou seja: o pedido de ligação nem
+   chegou a virar chamada; o WhatsApp devolveu "registro muito recente".
+2. **Bug de estado no wizard (raiz provável do número errado):** "Número errado?" e a
+   seta de voltar limpavam só o aviso e mantinham `registrationId`; o `begin()` só
+   criava registro `if (!id)` — logo a troca de número **reaproveitava o registro do
+   número anterior** e o despacho saía para o número antigo, enquanto a tela (que
+   formata pelo input atual) mostrava o novo. Aparecia um "você tentou registrar
+   +55 (15) 3199-7072 recentemente" para uma recusa que era de outro número.
+   **Corrigido** (platform commit `536064d`): `resetRegistration()` ao voltar/trocar +
+   `begin()` só reaproveita id se o número for o mesmo da criação.
+
+**Trilha de evidência** (container atual da API): Redis `instance-registration:*` só
+tem os registros dos testes (7008 e 83 95279-5795) — nenhum para 3199-7072; o POST
+completo do container não tem create/code para 3199-7072 — o teste real do usuário
+ocorreu antes do rebuild das 15:56 (logs antigos destruídos). Os POSTs "misteriosos"
+das 16:38–16:39 são o app do Connector re-pareando: `companion_devices` recebeu
+"Xiaomi-25078PC3EG" às 16:39:47 (`active=false`, sem token — pareamento não completou).
+
+**Escalada observada:** cada recusa re-armou janela maior no mesmo número
+(7008: 277 s → 30 min; outro número: 3 h no SMS). Não re-clique dentro da espera.
+
+**Fixo → voz direto:** já é o comportamento (BR: assinante de 8 dígitos começando
+2–5 = fixo → `phoneClass: 'fixed'` → dispatch de voz direto, sem passar por SMS).
+
+## 10. Connector/tunnel (2026-10-08)
+
+O tunnel `trycloudflare` antigo morreu com o processo que o mantinha (sem garantia de
+uptime). O device "Xiaomi-25078PC3EG local" está desconectado desde 2026-10-08 05:59Z.
+Novo tunnel **durável** via Docker (`infiniteapi-cloudflared`, `--restart unless-stopped`,
+rede `infiniteapi_default`, apontando `http://infiniteapi-api:8080`); URL novo entregue
+ao usuário para atualizar no Connector. Se o container reiniciar, o hostname muda
+(`docker logs infiniteapi-cloudflared` mostra o atual). Alternativa durável: tunnel
+nomeado (conta Cloudflare) ou direto no LAN (publicar 8080 em 0.0.0.0).
+
+Sem Connector ativo a atestação cai no fallback "signed-plaintext" (igual à captura) —
+o registro continua funcionando; porém os `blocked`/"Acesso indisponível" recorrentes
+podem ser exatamente a atestação fraca → o próximo teste de número novo deve ser com
+o Connector reconectado, para separar "bloqueio de número" de "bloqueio de identidade".
