@@ -436,7 +436,12 @@ export const buildNativeAndroidExistRequest = (
 		addEnvironmentField(builder, environment, 'simnum')
 		if (input?.clientMetrics !== undefined) builder.setRaw('client_metrics', input.clientMetrics)
 		else addEnvironmentField(builder, environment, 'client_metrics')
-	builder.requiredBase64('e_skey_id', common.keyBundle.e_skey_id)
+		// O servidor exige a assinatura da chave estática também no exist
+		// (`missing_param: e_skey_sig`, observado 2026-10-08 pelo caminho
+		// oficial do APK); a captura de 2026-09-24 ia sem ela — o schema do
+		// servidor apertou depois, e o fio vivo é a referência.
+		builder.requiredBase64('e_skey_sig', common.keyBundle.e_skey_sig)
+		builder.requiredBase64('e_skey_id', common.keyBundle.e_skey_id)
 	addEnvironmentField(builder, environment, '_gi')
 	builder.requiredString('fdid', common.fingerprintDeviceId)
 	addEnvironmentField(builder, environment, 'sim_state')
