@@ -1,4 +1,4 @@
-import type { NativeAndroidDeviceProfile } from '../Types'
+import type { NativeAndroidAppVersion, NativeAndroidDeviceProfile } from '../Types'
 import type {
 	NativeAndroidRegistrationBridgeAttestation,
 	NativeAndroidRegistrationBridgeContext
@@ -37,8 +37,15 @@ export type NativeAndroidRegistrationUserAgentParts = {
 	model: string
 }
 
+/**
+ * Official client build of W4B 2.26.36.72. The app registers and logs in with
+ * the SAME build, so a registration-seeded identity carries this version and
+ * every later ClientPayload.userAgent.appVersion matches the registration
+ * User-Agent byte for byte.
+ */
+export const NATIVE_ANDROID_REGISTRATION_APP_VERSION: NativeAndroidAppVersion = [2, 26, 36, 72]
 /** Official client version embedded in the registration User-Agent. */
-export const NATIVE_ANDROID_REGISTRATION_USER_AGENT_VERSION = '2.26.36.72'
+export const NATIVE_ANDROID_REGISTRATION_USER_AGENT_VERSION = NATIVE_ANDROID_REGISTRATION_APP_VERSION.join('.')
 /** W4B platform token (`X.0d3.A00` uses the literal `SMBA`). */
 export const NATIVE_ANDROID_REGISTRATION_USER_AGENT_PLATFORM = 'SMBA'
 

@@ -1,5 +1,5 @@
 import type { proto } from '../../WAProto/index.js'
-import type { AuthenticationCreds } from '../Types'
+import type { AuthenticationCreds, NativeAndroidDeviceProfile } from '../Types'
 import { buildPrimaryRegistrationAuthCreds } from './native-android-registration-auth'
 import type {
 	NativeAndroidRegistrationBridgeAttestation,
@@ -82,6 +82,13 @@ export type NativeAndroidRegistrationFlowOptions = {
 	skipOnboarding?: boolean
 	/** ADV signed device identity to persist with the resulting creds, when known. */
 	account?: proto.IADVSignedDeviceIdentity
+	/**
+	 * Hardware profile this registration runs as. When set, `verifyCode` seeds
+	 * the full `nativeAndroidIdentity` with the creds (app identity pinned to
+	 * the registration build, `signal_protocol_store_is_new` true), so the
+	 * login that follows reuses exactly this install's identity.
+	 */
+	nativeIdentity?: { device: NativeAndroidDeviceProfile }
 }
 
 export type NativeAndroidRegistrationStepResult<TResponse> = {
@@ -249,7 +256,13 @@ export const createNativeAndroidRegistrationFlow = (
 			const response = parseNativeAndroidRegisterResponse(http.body)
 			const creds =
 				response.status === 'ok'
-					? buildPrimaryRegistrationAuthCreds({ keys, common, register: response, account: options.account })
+					? buildPrimaryRegistrationAuthCreds({
+							keys,
+							common,
+							register: response,
+							account: options.account,
+							device: options.nativeIdentity?.device
+						})
 					: undefined
 			return { request, httpStatus: http.status, attempts: http.attempts, response, creds }
 		}

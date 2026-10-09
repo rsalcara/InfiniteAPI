@@ -30,6 +30,31 @@ export type NativeAndroidClientPayloadContext = {
 	paaLink: boolean
 }
 
+/**
+ * Explicit login states of a registration-seeded primary session (device-0).
+ * They reproduce the official passive decision inputs byte for byte:
+ *   passive = !companionRegistrationInProgress && !paaLinkMode
+ *             && (forcePassiveMode || hasPreacks
+ *                 || signalProtocolStoreIsNew || queueSizePassive)
+ * (smali of HandlerThreadC08660aV.A0v — the JADX view inverts the first
+ * condition). Companion sessions do not carry this state and keep the legacy
+ * `phase`-derived behavior untouched.
+ */
+export type NativeAndroidLoginState = {
+	/** APK pref `signal_protocol_store_is_new` (C018408o.A1H). */
+	signalProtocolStoreIsNew: boolean
+	/** APK pref-driven `hasPreacks` (C34691fX.A0P); false until pre-acks exist. */
+	hasPreacks?: boolean
+	/** Official `forcePassiveMode` argument of A0v; false in the normal flow. */
+	forcePassiveMode?: boolean
+	/** Queue-size-based passive (C35091gy.A09); false without a backlog. */
+	queueSizePassive?: boolean
+	/** APK pref `logins_with_messages`; shortConnect is `< 3` with push present. */
+	loginsWithMessages?: number
+	/** Whether the session has a JID (lid_db_migrated needs one to be written). */
+	hasJid?: boolean
+}
+
 type NativeAndroidClientPayloadContextOptions = {
 	phase: NativeAndroidClientPayloadContext['phase']
 	connectionLc?: number
@@ -43,6 +68,8 @@ type NativeAndroidClientPayloadContextOptions = {
 	connectAttemptCount?: number
 	addressSource?: number
 	proxyDirectness?: 0 | 1
+	/** Present only for registration-seeded primary sessions. */
+	loginState?: NativeAndroidLoginState
 }
 
 export const resolveNativeAndroidClientPayloadPhase = ({
@@ -116,12 +143,42 @@ export const createNativeAndroidClientPayloadContext = (
 
 	const isReconnect = options.phase === 'reconnect'
 	const isInitialPairLogin = options.phase === 'initial_pair_login'
+	const loginState = options.loginState
+
+	// Official passive decision (smali of HandlerThreadC08660aV.A0v):
+	//   passive = !companionRegistrationInProgress && !paaLinkMode
+	//             && (forcePassiveMode || hasPreacks
+	//                 || signalProtocolStoreIsNew || queueSizePassive)
+	// Companion registration and PAA link mode are never active in the motor,
+	// so only the four state flags remain. Without an explicit login state
+	// (companion/web) the historical phase-derived behavior is preserved.
+	const passive = loginState
+		? Boolean(
+				loginState.forcePassiveMode ||
+					loginState.hasPreacks ||
+					loginState.signalProtocolStoreIsNew ||
+					loginState.queueSizePassive
+			)
+		: isInitialPairLogin
+	// Official shortConnect (C08570aM.A03) is
+	// `(c2dm_reg_id || fbns_token) && logins_with_messages < 3`; a
+	// registration-seeded session is push-registered by its number.
+	const shortConnect = loginState ? (loginState.loginsWithMessages ?? 0) < 3 : true
+	// Official lid_db_migrated is written only when a JID exists and the Signal
+	// store is no longer new (case 312 of AbstractC45341yV).
+	const lidDbMigrated = loginState
+		? loginState.hasJid && !loginState.signalProtocolStoreIsNew
+			? true
+			: undefined
+		: isReconnect
+			? true
+			: undefined
 
 	return {
 		phase: options.phase,
 		sessionId: options.sessionId ?? nativeAndroidSessionId(),
-		passive: isInitialPairLogin,
-		shortConnect: true,
+		passive,
+		shortConnect,
 		connectType: options.connectType ?? proto.ClientPayload.ConnectType.CELLULAR_HSPA,
 		connectReason:
 			options.connectReason ??
@@ -141,7 +198,7 @@ export const createNativeAndroidClientPayloadContext = (
 		}),
 		connectionLc,
 		trafficAnonymization: proto.ClientPayload.TrafficAnonymization.OFF,
-		lidDbMigrated: isReconnect ? true : undefined,
+		lidDbMigrated,
 		paaLink: false
 	}
 }
@@ -285,7 +342,10 @@ export const generateLoginNode = (
 					...getClientPayload(config, nativeContext),
 					passive: nativeContext!.passive,
 					username: +user,
-					device: device
+					// Official ClientPayload writes `device_` explicitly; a device-0
+					// primary has no suffix in its JID, so fill the zero the server
+					// expects instead of leaving the field unset.
+					device: device ?? 0
 				}
 			: {
 					...getClientPayload(config),

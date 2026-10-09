@@ -1,11 +1,16 @@
 import { randomBytes } from 'node:crypto'
 import type { proto } from '../../WAProto/index.js'
-import type { AuthenticationCreds, Contact } from '../Types'
+import type { AuthenticationCreds, Contact, NativeAndroidDeviceProfile } from '../Types'
 import { jidEncode } from '../WABinary/jid-utils'
 import { Curve } from './crypto'
-import type { NativeAndroidRegistrationSignalKeys } from './native-android-registration-keys'
+import { NATIVE_ANDROID_REGISTRATION_APP_VERSION } from './native-android-registration-device-attestation'
+import {
+	randomNativeAndroidPreKeyIdStart,
+	type NativeAndroidRegistrationSignalKeys
+} from './native-android-registration-keys'
 import type { NativeAndroidRegistrationCommon } from './native-android-registration-protocol'
 import type { NativeAndroidRegisterResponse } from './native-android-registration-response'
+import { getNativeAndroidAppIdentity } from './native-android-transport'
 
 export type NativeAndroidPrimaryRegistrationAuthInput = {
 	/**
@@ -27,6 +32,14 @@ export type NativeAndroidPrimaryRegistrationAuthInput = {
 	 * with the creds in one step.
 	 */
 	account?: proto.IADVSignedDeviceIdentity
+	/**
+	 * Hardware profile raffled for this registration. When present the full
+	 * `nativeAndroidIdentity` is seeded with the creds, so every later login
+	 * reuses exactly the app identity (clientAppId/appVersion) and device the
+	 * registration declared — the official app registers and logs in as the
+	 * same install. When absent no identity marker is written (legacy callers).
+	 */
+	device?: NativeAndroidDeviceProfile
 }
 
 /**
@@ -63,7 +76,8 @@ export const buildPrimaryRegistrationAuthCreds = ({
 	keys,
 	common,
 	register,
-	account
+	account,
+	device
 }: NativeAndroidPrimaryRegistrationAuthInput): AuthenticationCreds => {
 	if (register.status !== 'ok') {
 		throw new Error(
@@ -77,9 +91,38 @@ export const buildPrimaryRegistrationAuthCreds = ({
 		throw new Error('native_android registration: countryCallingCode + nationalNumber must yield the account digits')
 	}
 
+	// The official primary `me` is the bare account JID (device-0 is implicit);
+	// the login builder writes ClientPayload.device_ = 0 explicitly, which the
+	// engine mirrors in generateLoginNode (`device ?? 0`).
 	const me: Contact = { id: jidEncode(digits, 's.whatsapp.net') }
 	const lid = normalizeLidJid(register.lid)
 	if (lid) me.lid = lid
+
+	// Two independent draws, exactly like C10890eL.A02: `next_prekey_id` and the
+	// signed pre-key id are both `nextInt(16777214) + 1`.
+	const preKeyIdStart = randomNativeAndroidPreKeyIdStart()
+
+	const appVariant = common.appVariant === 'business' ? ('business' as const) : ('consumer' as const)
+	const nativeAndroidIdentity = device
+		? {
+				schemaVersion: 1 as const,
+				profile: 'native_android' as const,
+				preset: appVariant === 'consumer' ? ('native_android_consumer' as const) : ('native_android_business' as const),
+				appVariant,
+				clientAppId: getNativeAndroidAppIdentity(appVariant).clientAppId,
+				// The official app registers and logs in with the same build, so the
+				// seeded identity pins the registration version for every login.
+				appVersion: NATIVE_ANDROID_REGISTRATION_APP_VERSION,
+				device,
+				connectionLc: 0,
+				registrationSeeded: true,
+				// APK pref `signal_protocol_store_is_new`, set when the Signal
+				// identity is created and cleared only after the pre-key batches
+				// are uploaded (see CYF/DSQ in W4B 2.26.36.72).
+				signalProtocolStoreIsNew: true,
+				loginsWithMessages: 0
+			}
+		: undefined
 
 	return {
 		noiseKey: keys.clientStaticKeyPair,
@@ -90,18 +133,19 @@ export const buildPrimaryRegistrationAuthCreds = ({
 		advSecretKey: randomBytes(32).toString('base64'),
 		me,
 		account,
-		firstUnuploadedPreKeyId: 1,
-		nextPreKeyId: 1,
+		firstUnuploadedPreKeyId: preKeyIdStart,
+		nextPreKeyId: preKeyIdStart,
 		processedHistoryMessages: [],
 		accountSyncCounter: 0,
 		accountSettings: {
 			unarchiveChats: false
 		},
-		platform: common.appVariant === 'business' ? 'smba' : 'android',
+		platform: appVariant === 'business' ? 'smba' : 'android',
 		registered: true,
 		pairingCode: undefined,
 		lastPropHash: undefined,
 		routingInfo: register.edgeRoutingInfo ? Buffer.from(register.edgeRoutingInfo, 'base64') : undefined,
-		additionalData: undefined
+		additionalData: undefined,
+		...(nativeAndroidIdentity ? { nativeAndroidIdentity } : {})
 	}
 }

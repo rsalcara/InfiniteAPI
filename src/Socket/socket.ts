@@ -56,8 +56,10 @@ import {
 	getQrCodeCompanionIdentity,
 	incrementNativeAndroidConnectionLc,
 	inspectAuthStateCapabilities,
+	isRegistrationSeededPrimary,
 	makeEventBuffer,
 	makeNoiseHandler,
+	type NativeAndroidLoginState,
 	obfuscateJid,
 	preparePhoneValidation,
 	promiseTimeout,
@@ -167,6 +169,19 @@ export const makeSocket = (config: SocketConfig) => {
 	} = runtimeConfig
 	const transportSession = resolveTransportSession(runtimeConfig, authState.creds)
 	const isNativeAndroid = transportSession.profile === 'native_android'
+	// Explicit login states for registration-seeded primaries (see
+	// NativeAndroidLoginState): they drive the official passive/shortConnect/
+	// lid_db_migrated decisions from real persisted state. Companion and Web
+	// sessions never match and keep the legacy phase-derived behavior.
+	const currentNativeLoginState = (): NativeAndroidLoginState | undefined => {
+		if (!isNativeAndroid || !isRegistrationSeededPrimary(authState.creds)) return undefined
+		const identity = authState.creds.nativeAndroidIdentity
+		return {
+			signalProtocolStoreIsNew: identity?.signalProtocolStoreIsNew ?? true,
+			loginsWithMessages: identity?.loginsWithMessages ?? 0,
+			hasJid: Boolean(authState.creds.me)
+		}
+	}
 	const nativeAndroidIntegrityPolicy = transportSession.nativeAndroid?.integrityPolicy ?? 'audit'
 	if (runtimeConfig.startChatTrustSignalsPolicy === 'require-known' && process.env.NODE_ENV === 'production') {
 		throw new Boom('require-known start-chat trust signals policy is disabled in production', {
@@ -305,7 +320,8 @@ export const makeSocket = (config: SocketConfig) => {
 					accountSyncCounter: authState.creds.accountSyncCounter
 				}),
 				connectionLc: authState.creds.nativeAndroidIdentity?.connectionLc,
-				port: url.port ? Number.parseInt(url.port, 10) : 443
+				port: url.port ? Number.parseInt(url.port, 10) : 443,
+				loginState: currentNativeLoginState()
 			})
 		: undefined
 
@@ -1420,6 +1436,17 @@ export const makeSocket = (config: SocketConfig) => {
 			} else {
 				logger.info(`pre-keys: validation passed — no upload needed (server ${preKeyCount} > ${count})`)
 			}
+
+			// 1:1 with MyPreKeysManager (CYF/DSQ in W4B 2.26.36.72): when the
+			// pre-key batches are uploaded/verified, `signal_protocol_store_is_new`
+			// flips false and only then do later logins compute passive=false.
+			// The flag exists only on registration-seeded primary identities.
+			const identity = authState.creds.nativeAndroidIdentity
+			if (identity?.signalProtocolStoreIsNew) {
+				identity.signalProtocolStoreIsNew = false
+				ev.emit('creds.update', { nativeAndroidIdentity: identity })
+				logger.info('native_android: signal_protocol_store_is_new cleared after pre-key batches completed')
+			}
 		} catch (error) {
 			logger.error({ error }, 'Failed to check/upload pre-keys during initialization')
 			// Don't throw - allow connection to continue even if pre-key check fails
@@ -2261,19 +2288,20 @@ export const makeSocket = (config: SocketConfig) => {
 
 	ws.on('open', async () => {
 		try {
-			if (isNativeAndroid && ws instanceof TcpSocketClient && ws.selectedEndpoint && nativeClientPayloadContext) {
-				nativeClientPayloadContext = createNativeAndroidClientPayloadContext({
-					phase: nativeClientPayloadContext.phase,
-					connectionLc: nativeClientPayloadContext.connectionLc,
-					sessionId: nativeClientPayloadContext.sessionId,
-					port: ws.selectedEndpoint.port,
-					sequenceStep: ws.selectedEndpoint.sequenceStep ?? 1,
-					dnsAppCached: ws.dnsAppCached,
-					connectAttemptCount: ws.connectAttemptCount,
-					addressSource: ws.addressSource,
-					proxyDirectness: transportSession.nativeAndroid?.proxy ? 1 : 0
-				})
-			}
+		if (isNativeAndroid && ws instanceof TcpSocketClient && ws.selectedEndpoint && nativeClientPayloadContext) {
+			nativeClientPayloadContext = createNativeAndroidClientPayloadContext({
+				phase: nativeClientPayloadContext.phase,
+				connectionLc: nativeClientPayloadContext.connectionLc,
+				sessionId: nativeClientPayloadContext.sessionId,
+				port: ws.selectedEndpoint.port,
+				sequenceStep: ws.selectedEndpoint.sequenceStep ?? 1,
+				dnsAppCached: ws.dnsAppCached,
+				connectAttemptCount: ws.connectAttemptCount,
+				addressSource: ws.addressSource,
+				proxyDirectness: transportSession.nativeAndroid?.proxy ? 1 : 0,
+				loginState: currentNativeLoginState()
+			})
+		}
 
 			await validateConnection()
 		} catch (err) {

@@ -306,4 +306,24 @@ export type PersistedNativeAndroidIdentity = {
 	connectionEndpoint?: NativeAndroidConnectionEndpoint
 	/** Durable metadata only; never contains nonce, token or attestation bytes. */
 	integrity?: PersistedNativeAndroidIntegrityState
+	/**
+	 * Set only when these credentials were seeded by a primary phone-number
+	 * registration (device-0, /v2/register). Companion pairing (QR / pair-code)
+	 * never sets it, so its login semantics stay exactly as before.
+	 */
+	registrationSeeded?: boolean
+	/**
+	 * APK pref `signal_protocol_store_is_new` (C018408o.A1H): written true when
+	 * the Signal identity is created (`SignalCoordinator/createIdentityKeysAnd-
+	 * SignedPreKeys`) and cleared false only after MyPreKeysManager finishes
+	 * uploading the pre-key batches. While true the official passive decision
+	 * stays true (no pre-acks, PAA off).
+	 */
+	signalProtocolStoreIsNew?: boolean
+	/**
+	 * APK pref `logins_with_messages`: counts short-connect logins that kept
+	 * processing messages past the app's 15-minute window. Official shortConnect
+	 * is `(c2dm_reg_id || fbns_token) && logins_with_messages < 3`.
+	 */
+	loginsWithMessages?: number
 }

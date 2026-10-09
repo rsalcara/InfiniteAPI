@@ -46,8 +46,11 @@ describe('native_android primary registration keys', () => {
 		const keys = createNativeAndroidRegistrationSignalKeys()
 		const bundle = buildNativeAndroidRegistrationKeyBundle(keys)
 
+		// Official C10890eL: registration_id = SecureRandom.nextInt(2147483646)+1
+		// (full 31-bit positive range; e_regid is a plain 4-byte BE encoding,
+		// NOT masked to 14 bits like the companion Signal registration id).
 		expect(keys.registrationId).toBeGreaterThan(0)
-		expect(keys.registrationId).toBeLessThanOrEqual(0x3fff)
+		expect(keys.registrationId).toBeLessThanOrEqual(2_147_483_646)
 		expect(keys.clientStaticKeyPair.private).toHaveLength(32)
 		expect(keys.clientStaticKeyPair.public).toHaveLength(32)
 		expect(keys.identity.private).toHaveLength(32)

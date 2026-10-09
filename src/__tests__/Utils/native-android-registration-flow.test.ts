@@ -67,8 +67,11 @@ describe('native_android primary registration auth state', () => {
 		expect(creds.me?.lid).toBe('123456789012345@lid')
 		expect(creds.routingInfo).toEqual(Buffer.from('cm91dGU=', 'base64'))
 		expect(creds.account).toBe(ACCOUNT)
-		expect(creds.firstUnuploadedPreKeyId).toBe(1)
-		expect(creds.nextPreKeyId).toBe(1)
+		// Official C10890eL: both cursors start at the same random id
+		// (nextInt(16777214)+1), not at 1.
+		expect(creds.firstUnuploadedPreKeyId).toBe(creds.nextPreKeyId)
+		expect(creds.firstUnuploadedPreKeyId).toBeGreaterThanOrEqual(1)
+		expect(creds.firstUnuploadedPreKeyId).toBeLessThanOrEqual(16_777_214)
 		expect(creds.accountSyncCounter).toBe(0)
 		expect(creds.accountSettings).toEqual({ unarchiveChats: false })
 		expect(creds.processedHistoryMessages).toEqual([])

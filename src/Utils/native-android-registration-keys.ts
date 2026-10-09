@@ -1,6 +1,7 @@
+import { randomInt } from 'node:crypto'
 import type { KeyPair } from '../Types'
 import { Curve, signedKeyPair } from './crypto'
-import { encodeBigEndian, generateRegistrationId } from './generics'
+import { encodeBigEndian } from './generics'
 
 export type NativeAndroidRegistrationSignalKeys = {
 	/** X25519 client-static/auth key persisted separately by the APK. */
@@ -25,6 +26,19 @@ export type NativeAndroidRegistrationKeyBundle = {
 }
 
 /**
+ * Official id ranges from `SignalCoordinator/createIdentityKeysAndSignedPreKeys`
+ * (W4B 2.26.36.72, `C10890eL.A02`): the registration id is
+ * `SecureRandom.nextInt(2147483646) + 1` (full 31-bit positive range, encoded
+ * as 4-byte big endian by `AbstractC36751jx.A03` — no 14-bit Signal mask), and
+ * both the signed pre-key id and the `next_prekey_id` start are
+ * `nextInt(16777214) + 1` ("generated random starting ID").
+ */
+const randomRegistrationId = () => randomInt(1, 2_147_483_647)
+
+/** Random one-time pre-key id start, matching `C10890eL.A00() + 1`. */
+export const randomNativeAndroidPreKeyIdStart = () => randomInt(1, 16_777_215)
+
+/**
  * Builds the Signal material used by the official phone-number registration
  * request. This is device-0 material: it is not a companion identity and must
  * never be mixed with an existing QR/pair-code auth state.
@@ -32,18 +46,18 @@ export type NativeAndroidRegistrationKeyBundle = {
 export const createNativeAndroidRegistrationSignalKeys = (): NativeAndroidRegistrationSignalKeys => {
 	const clientStaticKeyPair = Curve.generateKeyPair()
 	const identity = Curve.generateKeyPair()
-	const keyId = 1
+	const keyId = randomNativeAndroidPreKeyIdStart()
 	// signedKeyPair signs the 0x05-prefixed Signal form (`generateSignalPubKey`),
 	// which is what W4B 2.26.36.72 stores in the signed pre-key protobuf.
 	const signedPreKey = signedKeyPair(identity, keyId)
 
-	const registrationId = generateRegistrationId()
+	const registrationId = randomRegistrationId()
 
 	if (!signedPreKey.signature || signedPreKey.signature.byteLength === 0) {
 		throw new Error('native_android registration: signed pre-key signature is unavailable')
 	}
 
-	if (registrationId <= 0 || registrationId > 0x3fff) {
+	if (registrationId <= 0) {
 		throw new Error('native_android registration: invalid Signal registration id')
 	}
 
