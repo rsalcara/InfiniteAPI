@@ -525,8 +525,21 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 			migratedAppIdentity = true
 		}
 
-		if (!persisted.appVersion) {
+		// The official app logs in as the SAME build it registered with. A
+		// missing value — or the pre-seeding default [2,26,35,75] written by
+		// early patching — is an artifact; pin the registration build. Identities
+		// seeded by buildPrimaryRegistrationAuthCreds already carry the exact
+		// build, and any other explicit value is trusted as a real registration.
+		const legacyPatchedAppVersion = [2, 26, 35, 75].join('.')
+		if (!persisted.appVersion || persisted.appVersion.join('.') === legacyPatchedAppVersion) {
 			persisted.appVersion = NATIVE_ANDROID_REGISTRATION_APP_VERSION
+			migratedAppIdentity = true
+		}
+
+		if (persisted.connectionLc === undefined) {
+			// Official connection_lc default (AbstractC45341yV), reset when the
+			// auth key is created; early patching left it unset.
+			persisted.connectionLc = 0
 			migratedAppIdentity = true
 		}
 
