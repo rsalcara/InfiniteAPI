@@ -234,7 +234,7 @@ describe('native_android /v2/register response parser (FDZ)', () => {
 			sms_wait: 5,
 			voice_wait: 6,
 			flash_wait: 7,
-			need_chat_restore_pn_verify: true,
+			need_chat_restore_pn_verify: 1,
 			pending: 'pending-value',
 			parent_consent_url: 'https://example.invalid/consent',
 			consent_id: 7,

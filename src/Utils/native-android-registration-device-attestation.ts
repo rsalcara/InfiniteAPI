@@ -58,9 +58,10 @@ const sanitizeUserAgentPart = (value: string): string => value.replace(/[^,\.\w\
  * registration platform selector rejects requests without it.
  */
 export const buildNativeAndroidRegistrationUserAgentFromParts = (
-	parts: NativeAndroidRegistrationUserAgentParts
+	parts: NativeAndroidRegistrationUserAgentParts,
+	appVariant: 'consumer' | 'business' = 'business'
 ): string =>
-	`WhatsApp/${NATIVE_ANDROID_REGISTRATION_USER_AGENT_VERSION} ${NATIVE_ANDROID_REGISTRATION_USER_AGENT_PLATFORM}/${sanitizeUserAgentPart(
+	`WhatsApp/${NATIVE_ANDROID_REGISTRATION_USER_AGENT_VERSION} ${appVariant === 'consumer' ? 'ANDROID' : 'SMBA'}/${sanitizeUserAgentPart(
 		parts.androidVersion
 	)} Device/${sanitizeUserAgentPart(parts.manufacturer)}-${sanitizeUserAgentPart(parts.model)}`
 
@@ -72,7 +73,8 @@ export const buildNativeAndroidRegistrationUserAgentFromParts = (
  * `Build.MODEL`.
  */
 export const buildNativeAndroidRegistrationUserAgent = (
-	profile: Pick<NativeAndroidDeviceProfile, 'manufacturer' | 'deviceModelType' | 'osVersion'>
+	profile: Pick<NativeAndroidDeviceProfile, 'manufacturer' | 'deviceModelType' | 'osVersion'>,
+	appVariant: 'consumer' | 'business' = 'business'
 ): string =>
 	buildNativeAndroidRegistrationUserAgentFromParts({
 		// Missing Build.* fields fall back to "unknown", exactly like the APK's
@@ -80,7 +82,7 @@ export const buildNativeAndroidRegistrationUserAgent = (
 		androidVersion: profile.osVersion ?? 'unknown',
 		manufacturer: profile.manufacturer ?? 'unknown',
 		model: profile.deviceModelType ?? 'unknown'
-	})
+	}, appVariant)
 
 export type NativeAndroidRegistrationDeviceAttestationOptions = {
 	signer: NativeAndroidRegistrationDeviceSigner
@@ -113,13 +115,16 @@ export const createNativeAndroidRegistrationDeviceAttestationProvider = (
 	return async context => {
 		const wire = buildNativeAndroidRegistrationWireBody(context.body, options.envelopeMaterial)
 		const signature = await options.signer.signPayload(wire.payloadToSign)
+		if (!(signature instanceof Uint8Array) || signature.length === 0) throw new Error('empty device signature')
 		const body = appendNativeAndroidRegistrationSignature(wire.body, signature)
 		// Official order: sign first, build the key chain afterwards
 		// (smali 2235886-2235893).
 		const keyChain = await options.signer.buildAuthorization()
+		if (!(keyChain instanceof Uint8Array) || keyChain.length === 0) throw new Error('empty attestation chain')
 		const userAgent =
 			options.userAgent ??
-			(options.deviceProfile ? buildNativeAndroidRegistrationUserAgent(options.deviceProfile) : undefined)
+			(options.deviceProfile ? buildNativeAndroidRegistrationUserAgent(options.deviceProfile, context.appVariant) : undefined)
+		if (!userAgent) throw new Error('registration User-Agent is required')
 		return {
 			authorization: encodeNativeAndroidRegistrationAuthorization(keyChain),
 			body,

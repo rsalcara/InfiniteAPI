@@ -65,8 +65,9 @@ export type NativeAndroidPreKeyDigestLocalState = {
 export type NativeAndroidPreKeyDigestFailure = {
 	ok: false
 	/**
-	 * DT6 failure taxonomy: 'registration-mismatch' | 'signed-pre-key-mismatch' |
-	 * 'missing-local-pre-key' = A0O(5); 'hash-mismatch' = A0O(3).
+	 * DT6 failure taxonomy (C08 acceptance: registro=5; signed/type/key ausente/hash=3):
+	 * 'registration-mismatch' = A0O(5); 'signed-pre-key-mismatch' |
+	 * 'missing-local-pre-key' | 'hash-mismatch' = A0O(3).
 	 */
 	reason:
 		| 'malformed-digest'
@@ -207,7 +208,7 @@ export const verifyNativeAndroidPreKeyDigest = (
 	if (digest.type !== KEY_BUNDLE_TYPE) {
 		// DT6 gates the whole compare on the bundle type byte; anything else
 		// falls straight into the A0O re-upload path.
-		return { ok: false, reason: 'malformed-digest', officialCode: 12, detail: { type: digest.type } }
+		return { ok: false, reason: 'malformed-digest', officialCode: 3, detail: { type: digest.type } }
 	}
 
 	if (digest.registrationId !== state.registrationId) {
@@ -223,14 +224,14 @@ export const verifyNativeAndroidPreKeyDigest = (
 		return {
 			ok: false,
 			reason: 'signed-pre-key-mismatch',
-			officialCode: 5,
+			officialCode: 3,
 			detail: { server: digest.signedPreKeyId, local: state.signedPreKeyId }
 		}
 	}
 
 	for (const id of digest.serverPreKeyIds) {
 		if (!state.preKeys.has(id)) {
-			return { ok: false, reason: 'missing-local-pre-key', officialCode: 5, detail: { preKeyId: id } }
+			return { ok: false, reason: 'missing-local-pre-key', officialCode: 3, detail: { preKeyId: id } }
 		}
 	}
 

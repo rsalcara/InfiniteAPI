@@ -221,7 +221,17 @@ const KNOWN_ENV_KEYS = new Set([
 	'installer_package',
 	'package_source',
 	'installing_package',
-	...NULLABLE_ENV_KEYS
+	...NULLABLE_ENV_KEYS,
+	'push_token',
+	'backup_token_error',
+	'language_selector_time_spent',
+	'language_selector_clicked_count',
+	'read_phone_permission_granted',
+	'is_foa_fdid_app_installed',
+	'device_name',
+	'sim_state',
+	'offline_ab',
+	'network_operator_name',
 ])
 
 /** Inverse of the hook's percent encoder: `%XX` escapes become raw bytes. */

@@ -160,7 +160,7 @@ describe('native-android-prekey-digest — official onGetPreKeyDigest (DT6) cont
 			parseNativeAndroidPreKeyDigestNode(classicDigestNode({ ...state, signedPreKeyId: 8 }, serverIds)),
 			state
 		)
-		expect(skeyDiverged).toMatchObject({ ok: false, reason: 'signed-pre-key-mismatch', officialCode: 5 })
+		expect(skeyDiverged).toMatchObject({ ok: false, reason: 'signed-pre-key-mismatch', officialCode: 3 })
 
 		// 999 is not in the local store, so the helper cannot compute a real
 		// hash — and it does not need to: DT6 checks list coverage before the
@@ -176,7 +176,7 @@ describe('native-android-prekey-digest — official onGetPreKeyDigest (DT6) cont
 			parseNativeAndroidPreKeyDigestNode(nodeListingMissingKey),
 			state
 		)
-		expect(missingLocal).toMatchObject({ ok: false, reason: 'missing-local-pre-key', officialCode: 5 })
+		expect(missingLocal).toMatchObject({ ok: false, reason: 'missing-local-pre-key', officialCode: 3 })
 
 		const nodeWithWrongHash = node('digest', [
 			leaf('registration', be(state.registrationId, 4)),
@@ -210,7 +210,7 @@ describe('native-android-prekey-digest — official onGetPreKeyDigest (DT6) cont
 		expect(verifyNativeAndroidPreKeyDigest(parseNativeAndroidPreKeyDigestNode(wrongType), state)).toMatchObject({
 			ok: false,
 			reason: 'malformed-digest',
-			officialCode: 12
+			officialCode: 3
 		})
 	})
 

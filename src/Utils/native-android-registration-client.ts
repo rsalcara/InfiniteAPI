@@ -99,7 +99,10 @@ export const createNativeAndroidRegistrationHttpClient = (
 	}
 
 	if (!config.login) throw new Error('native_android registration: login is required')
-	if (config.maxAttempts !== undefined && (config.maxAttempts < 1 || config.maxAttempts > 4)) {
+	if (config.timeoutMs !== undefined && (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1)) {
+		throw new Error('native_android registration: timeoutMs must be a positive integer')
+	}
+	if (config.maxAttempts !== undefined && (!Number.isInteger(config.maxAttempts) || config.maxAttempts < 1 || config.maxAttempts > 4)) {
 		throw new Error('native_android registration: official retry count is between 1 and 4')
 	}
 

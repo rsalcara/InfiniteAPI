@@ -35,7 +35,8 @@ describe('native android device attestation provider', () => {
 		const calls: string[] = []
 		const provider = createNativeAndroidRegistrationDeviceAttestationProvider({
 			signer: makeSigner(calls),
-			envelopeMaterial: { serverPublicKey: Curve.generateKeyPair().public }
+			envelopeMaterial: { serverPublicKey: Curve.generateKeyPair().public },
+			deviceProfile: { manufacturer: 'samsung', deviceModelType: 'SM-S948B', osVersion: '16' }
 		})
 
 		const attested = await provider(CONTEXT)
@@ -52,7 +53,10 @@ describe('native android device attestation provider', () => {
 
 	it('uses the APK signed-plaintext fallback without envelope material', async () => {
 		const calls: string[] = []
-		const provider = createNativeAndroidRegistrationDeviceAttestationProvider({ signer: makeSigner(calls) })
+		const provider = createNativeAndroidRegistrationDeviceAttestationProvider({
+			signer: makeSigner(calls),
+			deviceProfile: { manufacturer: 'samsung', deviceModelType: 'SM-S948B', osVersion: '16' }
+		})
 
 		const attested = await provider(CONTEXT)
 		expect(attested.body).toBe(`${QUERY}&H=-_8`)
@@ -85,10 +89,9 @@ describe('native android device attestation provider', () => {
 		expect(attested.userAgent).toBe('WhatsApp/2.26.36.72 SMBA/12 Device/Google-emulator64_x86_64_arm64')
 	})
 
-	it('sends no User-Agent when neither profile nor override is given', async () => {
+	it('fails closed when neither profile nor override is given', async () => {
 		const provider = createNativeAndroidRegistrationDeviceAttestationProvider({ signer: makeSigner([]) })
-		const attested = await provider(CONTEXT)
-		expect(attested.userAgent).toBeUndefined()
+		await expect(provider(CONTEXT)).rejects.toThrow('registration User-Agent is required')
 	})
 
 	it('builds the exact X.0d3.A00 user-agent shape with the APK sanitize rule', () => {

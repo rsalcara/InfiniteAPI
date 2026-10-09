@@ -261,7 +261,6 @@ const readBoolean = (source: Record<string, unknown> | null, key: string): boole
 	const value = source[key]
 	if (typeof value === 'boolean') return value
 	if (typeof value === 'string') return value.trim().toLowerCase() === 'true'
-	if (typeof value === 'number') return value !== 0
 	return false
 }
 
@@ -398,7 +397,7 @@ export const parseNativeAndroidRegisterResponse = (body: unknown): NativeAndroid
 		smsWait: readInt(source, 'sms_wait', 0),
 		voiceWait: readInt(source, 'voice_wait', 0),
 		flashWait: readInt(source, 'flash_wait', 0),
-		needChatRestorePnVerify: readBoolean(source, 'need_chat_restore_pn_verify'),
+		needChatRestorePnVerify: readInt(source, 'need_chat_restore_pn_verify', 0) === 1,
 		pending: readString(source, 'pending'),
 		parentConsentUrl: readString(source, 'parent_consent_url'),
 		consentId: readInt(source, 'consent_id', 0),
