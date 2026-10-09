@@ -555,6 +555,22 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 			persisted.loginsWithMessages = 0
 			migratedAppIdentity = true
 		}
+
+		if (
+			persisted.signalProtocolStoreIsNew &&
+			(persisted.connectionLc ?? 0) === 0 &&
+			(creds.accountSyncCounter ?? 0) > 0
+		) {
+			// accountSyncCounter only advances after an accepted login (the
+			// initial-sync settlement runs post-open) and connectionLc counts
+			// server successes. A never-used Signal store with a counter above
+			// zero is a pairing no official lifecycle produces — and it forces
+			// the login into the 'reconnect' phase, contradicting the same
+			// payload's passive/signal-store state. Sessions that never logged
+			// in carry the real value: 0 (first-login phase, 1:1 with the app).
+			creds.accountSyncCounter = 0
+			migratedAppIdentity = true
+		}
 	}
 
 	if (persisted && (!persisted.appVariant || !persisted.clientAppId)) {

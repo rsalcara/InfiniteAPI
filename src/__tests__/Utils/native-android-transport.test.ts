@@ -479,6 +479,30 @@ describe('native_android transport contract', () => {
 		expect(creds.nativeAndroidIdentity?.appVersion).toEqual([2, 26, 36, 71])
 	})
 
+	it('resets a spurious account sync counter on never-logged-in registration primaries', () => {
+		const creds = initAuthCreds()
+		resolveTransportSession(nativeConfig(), creds)
+		const identity = creds.nativeAndroidIdentity!
+		identity.registrationSeeded = true
+		creds.registered = true
+		creds.me = { id: '5511999999999@s.whatsapp.net', name: 'primary' }
+		creds.account = undefined
+		// accountSyncCounter only advances post-open and connectionLc counts
+		// server successes; a never-logged-in session (lc 0) cannot own one.
+		creds.accountSyncCounter = 3
+
+		const resolved = resolveTransportSession(nativeConfig(), creds)
+
+		expect(resolved.credsChanged).toBe(true)
+		expect(creds.accountSyncCounter).toBe(0)
+
+		// A session that HAS logged in keeps its counter.
+		creds.accountSyncCounter = 2
+		creds.nativeAndroidIdentity!.connectionLc = 4
+		expect(resolveTransportSession(nativeConfig(), creds).credsChanged).toBe(false)
+		expect(creds.accountSyncCounter).toBe(2)
+	})
+
 	it('rejects incomplete device identities and mismatched persisted profiles', () => {
 		expect(() =>
 			validateNativeAndroidConfig({
