@@ -336,6 +336,14 @@ export type PersistedNativeAndroidIdentity = {
 	/** Failure reason recorded alongside `loginFailed` (the APK stores the int). */
 	loginFailedReason?: number
 	/**
+	 * Official failure category classified from the `<failure>` node (0 default,
+	 * 2/13/14/15 ban family, 3 expired, 4 retryable 5xx, 5 underage, 7 permanent
+	 * ban, 11 violation). Persisted alongside `loginFailedReason` so a later
+	 * `connect()` gate can report the real category instead of collapsing every
+	 * terminal failure into type 0 (audit C10).
+	 */
+	loginFailedType?: number
+	/**
 	 * APK pref `previously_logged_out_from_primary`: set once the primary is
 	 * definitively logged out by a terminal failure (HandlerC08360a1).
 	 */

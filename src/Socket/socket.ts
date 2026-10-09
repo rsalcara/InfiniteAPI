@@ -182,13 +182,19 @@ export const makeSocket = (config: SocketConfig) => {
 	// carry the flag and keep connecting exactly as before.
 	if (isRegistrationSeededPrimary(authState.creds) && authState.creds.nativeAndroidIdentity?.loginFailed) {
 		const identity = authState.creds.nativeAndroidIdentity
+		const gateReason = identity.loginFailedReason ?? 401
+		// Report the real official category (persisted at failure time when
+		// available, otherwise re-derived from the raw reason) instead of the
+		// default type 0 — 405 keeps type 3 and a 403 ban keeps type 7 across
+		// restarts (audit C10).
+		const gateClassification = classifyNativeAndroidLoginFailure(gateReason)
 		throw new Boom('primary login failed: re-registration required', {
 			statusCode: 401,
 			data: {
 				category: 'native-android-login-failed',
 				loginFailed: true,
-				reason: identity.loginFailedReason ?? 401,
-				failureType: 0,
+				reason: gateReason,
+				failureType: identity.loginFailedType ?? gateClassification.failureType,
 				retryable: false
 			}
 		})
@@ -2207,16 +2213,19 @@ export const makeSocket = (config: SocketConfig) => {
 	}
 
 	/** i have no idea why this exists. pls enlighten me */
-	const sendPassiveIq = (tag: 'passive' | 'active') =>
-		query({
-			tag: 'iq',
-			attrs: {
-				to: S_WHATSAPP_NET,
-				xmlns: 'passive',
-				type: 'set'
+	const sendPassiveIq = (tag: 'passive' | 'active', timeoutMs?: number) =>
+		query(
+			{
+				tag: 'iq',
+				attrs: {
+					to: S_WHATSAPP_NET,
+					xmlns: 'passive',
+					type: 'set'
+				},
+				content: [{ tag, attrs: {} }]
 			},
-			content: [{ tag, attrs: {} }]
-		})
+			timeoutMs
+		)
 
 	/**
 	 * Official active-mode handshake for registration-seeded primaries
@@ -2244,7 +2253,7 @@ export const makeSocket = (config: SocketConfig) => {
 				settle('timeout')
 			}, ACTIVE_MODE_ACK_WATCHDOG_MS)
 			watchdog.unref?.()
-			sendPassiveIq('active')
+			sendPassiveIq('active', ACTIVE_MODE_ACK_WATCHDOG_MS)
 				.then(() => settle('ack'))
 				.catch(err => {
 					// A query timeout is a non-answer just like the watchdog — both
@@ -2611,7 +2620,15 @@ export const makeSocket = (config: SocketConfig) => {
 				// with account/me so reconnects cannot rotate the device profile.
 				updatedCreds.registered = true
 				updatedCreds.nativeAndroidIdentity = authState.creds.nativeAndroidIdentity
-				updatedCreds.accountSyncCounter = (authState.creds.accountSyncCounter ?? 0) + 1
+				// (P19) NÃO incrementar accountSyncCounter aqui: pair-success é
+				// pareamento, não sincronização concluída. O contador é avançado
+				// apenas pelos produtores de sync (chats.ts), que confirmam
+				// histórico/offline/app-state. Incrementar aqui faria o primeiro
+				// reconnect assumir "já sincronizado" (skipOfflineBuffer/
+				// isReconnection) e pular o buffer offline indevidamente — e o
+				// próprio motor zera esse estado espúrio na migração de
+				// native-android-transport (store novo + connectionLc 0 + counter>0).
+				// updatedCreds.accountSyncCounter = (authState.creds.accountSyncCounter ?? 0) + 1
 			} else {
 				updatedCreds.webTransportIdentity = authState.creds.webTransportIdentity
 			}
@@ -2876,7 +2893,7 @@ export const makeSocket = (config: SocketConfig) => {
 		// for registration-seeded primaries. Retryable (5xx) failures never set
 		// it — the official client schedules a reconnect instead.
 		if (!failure.retryable) {
-			const update = applyNativeAndroidTerminalLoginFailure(authState.creds, reason)
+			const update = applyNativeAndroidTerminalLoginFailure(authState.creds, reason, failure.failureType)
 			if (update?.nativeAndroidIdentity) {
 				authState.creds.nativeAndroidIdentity = update.nativeAndroidIdentity
 				ev.emit('creds.update', update)
@@ -2887,10 +2904,18 @@ export const makeSocket = (config: SocketConfig) => {
 			}
 		}
 
+		// `appeal_token` is a recovery credential: keep it in the in-memory error
+		// data so the platform can persist it for the ban appeal (audit C10), but
+		// it must NEVER reach a log — the worker redacts it before logging (C19).
 		void end(
 			new Boom('Connection Failure', {
 				statusCode: reason,
-				data: { ...node.attrs, failureType: failure.failureType, retryable: failure.retryable }
+				data: {
+					...node.attrs,
+					hasAppealToken: node.attrs.appeal_token !== undefined,
+					failureType: failure.failureType,
+					retryable: failure.retryable
+				}
 			})
 		)
 	})

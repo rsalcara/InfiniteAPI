@@ -28,7 +28,7 @@ export const classifyNativeAndroidLoginFailure = (
 	switch (reason) {
 		case 402:
 			if (code === 109) return { failureType: 15, retryable: false }
-			if (attrs.appeal_token) {
+			if (attrs.appeal_token !== undefined) {
 				if (code === 106) return { failureType: 13, retryable: false }
 				if (code === 107) return { failureType: 14, retryable: false }
 			}
@@ -53,15 +53,26 @@ export const classifyNativeAndroidLoginFailure = (
  * from_primary`; `connect()` refuses while `login_failed` is set). Companion
  * credentials are never matched, so their behavior stays exactly as before.
  * Returns the creds update to persist, or undefined when nothing changes.
+ *
+ * The classified `failureType` is persisted alongside the raw `reason` so a
+ * later restart can reproduce the official category (405 → type 3, 403 → type 7,
+ * 5xx → type 4, …) instead of collapsing every terminal failure into the
+ * default type 0 (audit C10).
  */
 export const applyNativeAndroidTerminalLoginFailure = (
 	creds: AuthenticationCreds,
-	reason: number
+	reason: number,
+	failureType?: NativeAndroidLoginFailureClassification['failureType']
 ): Partial<AuthenticationCreds> | undefined => {
 	if (!isRegistrationSeededPrimary(creds)) return undefined
 	const identity = creds.nativeAndroidIdentity
 	if (!identity) return undefined
-	if (identity.loginFailed && identity.previouslyLoggedOutFromPrimary && identity.loginFailedReason === reason) {
+	if (
+		identity.loginFailed &&
+		identity.previouslyLoggedOutFromPrimary &&
+		identity.loginFailedReason === reason &&
+		(failureType === undefined || identity.loginFailedType === failureType)
+	) {
 		return undefined
 	}
 
@@ -69,6 +80,7 @@ export const applyNativeAndroidTerminalLoginFailure = (
 		...identity,
 		loginFailed: true,
 		loginFailedReason: reason,
+		loginFailedType: failureType,
 		previouslyLoggedOutFromPrimary: true
 	}
 	return { nativeAndroidIdentity }
