@@ -231,7 +231,7 @@ const KNOWN_ENV_KEYS = new Set([
 	'device_name',
 	'sim_state',
 	'offline_ab',
-	'network_operator_name',
+	'network_operator_name'
 ])
 
 /** Inverse of the hook's percent encoder: `%XX` escapes become raw bytes. */

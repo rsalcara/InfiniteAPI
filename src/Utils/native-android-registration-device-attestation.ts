@@ -76,13 +76,16 @@ export const buildNativeAndroidRegistrationUserAgent = (
 	profile: Pick<NativeAndroidDeviceProfile, 'manufacturer' | 'deviceModelType' | 'osVersion'>,
 	appVariant: 'consumer' | 'business' = 'business'
 ): string =>
-	buildNativeAndroidRegistrationUserAgentFromParts({
-		// Missing Build.* fields fall back to "unknown", exactly like the APK's
-		// NoSuchFieldError handling in X.0d3.A00.
-		androidVersion: profile.osVersion ?? 'unknown',
-		manufacturer: profile.manufacturer ?? 'unknown',
-		model: profile.deviceModelType ?? 'unknown'
-	}, appVariant)
+	buildNativeAndroidRegistrationUserAgentFromParts(
+		{
+			// Missing Build.* fields fall back to "unknown", exactly like the APK's
+			// NoSuchFieldError handling in X.0d3.A00.
+			androidVersion: profile.osVersion ?? 'unknown',
+			manufacturer: profile.manufacturer ?? 'unknown',
+			model: profile.deviceModelType ?? 'unknown'
+		},
+		appVariant
+	)
 
 export type NativeAndroidRegistrationDeviceAttestationOptions = {
 	signer: NativeAndroidRegistrationDeviceSigner
@@ -123,7 +126,9 @@ export const createNativeAndroidRegistrationDeviceAttestationProvider = (
 		if (!(keyChain instanceof Uint8Array) || keyChain.length === 0) throw new Error('empty attestation chain')
 		const userAgent =
 			options.userAgent ??
-			(options.deviceProfile ? buildNativeAndroidRegistrationUserAgent(options.deviceProfile, context.appVariant) : undefined)
+			(options.deviceProfile
+				? buildNativeAndroidRegistrationUserAgent(options.deviceProfile, context.appVariant)
+				: undefined)
 		if (!userAgent) throw new Error('registration User-Agent is required')
 		return {
 			authorization: encodeNativeAndroidRegistrationAuthorization(keyChain),
