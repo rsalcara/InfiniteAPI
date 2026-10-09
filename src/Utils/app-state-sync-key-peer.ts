@@ -25,10 +25,6 @@ export const buildAppStateSyncKeyPeerNode = ({
 		throw new Boom('App-state peer message requires an explicit target device', { statusCode: 400 })
 	}
 
-	if (encrypted.type === 'pkmsg' && !deviceIdentity) {
-		throw new Boom('Missing signed device identity for app-state peer message', { statusCode: 500 })
-	}
-
 	const content: BinaryNode[] = [
 		{
 			tag: 'enc',
@@ -36,7 +32,9 @@ export const buildAppStateSyncKeyPeerNode = ({
 			content: encrypted.ciphertext
 		}
 	]
-	if (encrypted.type === 'pkmsg') {
+	// The device-identity node is companion-only (APK gates it on owning an ADV
+	// identity). A primary pkmsg travels without the node instead of failing.
+	if (encrypted.type === 'pkmsg' && deviceIdentity) {
 		content.push({ tag: 'device-identity', attrs: {}, content: deviceIdentity })
 	}
 

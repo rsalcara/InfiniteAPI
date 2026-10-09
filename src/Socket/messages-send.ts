@@ -2843,11 +2843,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 
 			// Always include device-identity for carousel (reference WA stanza always has it)
-			if (shouldIncludeDeviceIdentity || isCarousel) {
+			// — for companions. A primary never holds an ADV signed device identity,
+			// and the APK omits the node for it (message builder gate `BLz()`), so the
+			// stanza is sent without it instead of pushing an empty proto.
+			if ((shouldIncludeDeviceIdentity || isCarousel) && authState.creds.account) {
 				;(stanza.content as BinaryNode[]).push({
 					tag: 'device-identity',
 					attrs: {},
-					content: encodeSignedDeviceIdentity(authState.creds.account!, true)
+					content: encodeSignedDeviceIdentity(authState.creds.account, true)
 				})
 
 				logger.debug({ jid }, 'adding device identity')

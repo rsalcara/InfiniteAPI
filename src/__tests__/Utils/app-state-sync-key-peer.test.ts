@@ -1,4 +1,3 @@
-import { Boom } from '@hapi/boom'
 import { buildAppStateSyncKeyPeerNode } from '../../Utils/app-state-sync-key-peer'
 
 describe('buildAppStateSyncKeyPeerNode — official SendPeerMessageJob wire contract', () => {
@@ -57,14 +56,18 @@ describe('buildAppStateSyncKeyPeerNode — official SendPeerMessageJob wire cont
 		expect(node.attrs.to).toBe(primary)
 	})
 
-	it('fails closed for a pkmsg without signed device identity', () => {
-		expect(() =>
-			buildAppStateSyncKeyPeerNode({
-				targetDeviceJid,
-				messageId: 'peer-share-38',
-				encrypted: { type: 'pkmsg', ciphertext: Buffer.from([4, 5]) }
-			})
-		).toThrow(Boom)
+	it('sends a pkmsg without the device-identity node when there is no ADV identity', () => {
+		// Primary registration never owns an ADV signed device identity and the
+		// APK omits the node for it (SendPeerMessageJob companion gate), so the
+		// stanza must go out without `device-identity` instead of failing.
+		const node = buildAppStateSyncKeyPeerNode({
+			targetDeviceJid,
+			messageId: 'peer-share-38',
+			encrypted: { type: 'pkmsg', ciphertext: Buffer.from([4, 5]) }
+		})
+		const content = node.content as Array<{ tag: string }>
+
+		expect(content.map(child => child.tag)).toEqual(['enc'])
 	})
 
 	it.each(['5511999999999@s.whatsapp.net', 'invalid', '120363000000000000@g.us'])(

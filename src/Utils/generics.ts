@@ -86,7 +86,14 @@ export const generateParticipantHashV2 = (participants: string[]): string => {
 export const encodeWAMessage = (message: proto.IMessage) => writeRandomPadMax16(proto.Message.encode(message).finish())
 
 export const generateRegistrationId = (): number => {
-	return (Uint16Array.from(randomBytes(2))[0] ?? 0) & 16383
+	// Signal registration ids are 14-bit and non-zero (bundle validation rejects
+	// 0); the previous Uint16Array.from() read only the first byte (range 0..255).
+	let id = 0
+	while (!id) {
+		id = randomBytes(2).readUInt16BE(0) & 16383
+	}
+
+	return id
 }
 
 export const encodeBigEndian = (e: number, t = 4) => {

@@ -1,6 +1,9 @@
 import { Boom } from '@hapi/boom'
 import { DisconnectReason } from '../Types'
-import type { NativeAndroidRegistrationEndpoint, NativeAndroidRequestCodeEnvironment } from './native-android-registration-protocol'
+import type {
+	NativeAndroidRegistrationEndpoint,
+	NativeAndroidRequestCodeEnvironment
+} from './native-android-registration-protocol'
 
 export type NativeAndroidRegistrationBridgeProviderConfig = {
 	url: string

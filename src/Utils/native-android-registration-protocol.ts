@@ -441,19 +441,19 @@ export const buildNativeAndroidExistRequest = (
 	addEnvironmentField(builder, environment, 'roaming_type')
 	addEnvironmentField(builder, environment, 'device_name')
 	builder.requiredString('cc', common.countryCallingCode)
-		// O servidor vivo de 2026-10-08 exige `in` também no exist
-		// (missing_param: `in` logo após o pacote e_* completo entrar);
-		// colado ao `cc` como no /v2/code. A captura de 2026-09-24 não
-		// levava — o schema apertou depois, e o fio vivo é a referência.
-		builder.requiredString('in', common.nationalNumber)
-		addEnvironmentField(builder, environment, 'simnum')
-		if (input?.clientMetrics !== undefined) builder.setRaw('client_metrics', input.clientMetrics)
-		else addEnvironmentField(builder, environment, 'client_metrics')
-		// O servidor de 2026-10-08 exige o pacote e_* COMPLETO no exist
-		// (missing_param: e_skey_sig e depois e_skey_val, observado pelo
-		// caminho oficial do APK); a captura de 2026-09-24 mandava só
-		// e_skey_id — o schema apertou depois, e o fio vivo é a referência.
-		addKeyBundle(builder, common.keyBundle)
+	// O servidor vivo de 2026-10-08 exige `in` também no exist
+	// (missing_param: `in` logo após o pacote e_* completo entrar);
+	// colado ao `cc` como no /v2/code. A captura de 2026-09-24 não
+	// levava — o schema apertou depois, e o fio vivo é a referência.
+	builder.requiredString('in', common.nationalNumber)
+	addEnvironmentField(builder, environment, 'simnum')
+	if (input?.clientMetrics !== undefined) builder.setRaw('client_metrics', input.clientMetrics)
+	else addEnvironmentField(builder, environment, 'client_metrics')
+	// O servidor de 2026-10-08 exige o pacote e_* COMPLETO no exist
+	// (missing_param: e_skey_sig e depois e_skey_val, observado pelo
+	// caminho oficial do APK); a captura de 2026-09-24 mandava só
+	// e_skey_id — o schema apertou depois, e o fio vivo é a referência.
+	addKeyBundle(builder, common.keyBundle)
 	addEnvironmentField(builder, environment, '_gi')
 	builder.requiredString('fdid', common.fingerprintDeviceId)
 	addEnvironmentField(builder, environment, 'sim_state')

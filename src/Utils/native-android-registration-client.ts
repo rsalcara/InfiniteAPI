@@ -44,14 +44,20 @@ const DEFAULT_BACKOFF_MS = [1_000, 2_000, 4_000]
  * mais. O fetch padrão do Node/undici acrescenta `accept`/`accept-encoding`
  * que destoam do fio oficial e mudam a codificação da resposta.
  */
-export const createNativeAndroidRegistrationOfficialFetch = (): typeof fetch =>
-	async (input, init) => {
-		const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
-		const headers = new Headers(init?.headers)
-		const body = typeof init?.body === 'string' ? init.body : init?.body == null ? null : String(init.body)
-		const doRequest = url.protocol === 'https:' ? httpsRequest : httpRequest
-		return await new Promise<Response>((resolve, reject) => {
-			const req = doRequest(url, {
+export const createNativeAndroidRegistrationOfficialFetch = (): typeof fetch => async (input, init) => {
+	const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
+	const headers = new Headers(init?.headers)
+	const body =
+		typeof init?.body === 'string'
+			? init.body
+			: init?.body === null || init?.body === undefined
+				? null
+				: String(init.body)
+	const doRequest = url.protocol === 'https:' ? httpsRequest : httpRequest
+	return await new Promise<Response>((resolve, reject) => {
+		const req = doRequest(
+			url,
+			{
 				method: init?.method ?? 'GET',
 				headers: {
 					'Content-Type': headers.get('content-type') ?? 'application/x-www-form-urlencoded',
@@ -60,7 +66,8 @@ export const createNativeAndroidRegistrationOfficialFetch = (): typeof fetch =>
 					'Accept-Encoding': 'identity',
 					...(body ? { 'Content-Length': String(Buffer.byteLength(body)) } : {})
 				}
-			}, res => {
+			},
+			res => {
 				const chunks: Buffer[] = []
 				res.on('data', chunk => chunks.push(Buffer.from(chunk)))
 				res.on('end', () => {
@@ -72,13 +79,14 @@ export const createNativeAndroidRegistrationOfficialFetch = (): typeof fetch =>
 						text: async () => text
 					} as unknown as Response)
 				})
-			})
-			init?.signal?.addEventListener('abort', () => req.destroy(new Error('aborted')))
-			req.on('error', reject)
-			if (body) req.write(body)
-			req.end()
-		})
-	}
+			}
+		)
+		init?.signal?.addEventListener('abort', () => req.destroy(new Error('aborted')))
+		req.on('error', reject)
+		if (body) req.write(body)
+		req.end()
+	})
+}
 
 export const createNativeAndroidRegistrationHttpClient = (
 	config: NativeAndroidRegistrationHttpConfig,
@@ -96,7 +104,9 @@ export const createNativeAndroidRegistrationHttpClient = (
 	}
 
 	const fetchImpl = config.fetch ?? fetch
-	const sleep = config.sleep ?? (async () => undefined)
+	// The official client backs off for real between retryable attempts; a no-op
+	// default would burn all 4 attempts in milliseconds and amplify outages.
+	const sleep = config.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
 	// Official registration host from W4B 2.26.36.72: C0d7.A0a (XOR 18).
 	const baseUrl = config.baseUrl ?? 'https://v.whatsapp.net'
 

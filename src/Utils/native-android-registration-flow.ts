@@ -1,3 +1,4 @@
+import { Boom } from '@hapi/boom'
 import type { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, NativeAndroidDeviceProfile } from '../Types'
 import { buildPrimaryRegistrationAuthCreds } from './native-android-registration-auth'
@@ -224,7 +225,12 @@ export const createNativeAndroidRegistrationFlow = (
 					response: existHttp.body
 				}
 			}
-		})()
+		})().catch(error => {
+			// A rejected onboarding must not stay cached: the next caller retries
+			// from scratch instead of replaying the same failure forever.
+			onboardPromise = undefined
+			throw error
+		})
 		return onboardPromise
 	}
 
@@ -233,7 +239,25 @@ export const createNativeAndroidRegistrationFlow = (
 		common,
 		onboard,
 		requestCode: async input => {
-			if (!options.skipOnboarding) await onboard()
+			if (!options.skipOnboarding) {
+				const onboarded = await onboard()
+				// The APK never issues /v2/code after a failed onboarding step; both
+				// steps must complete at the HTTP level first.
+				for (const step of ['abprop', 'exist'] as const) {
+					const result = onboarded[step]
+					if (result.httpStatus < 200 || result.httpStatus >= 300) {
+						throw new Boom(`registration onboarding failed at ${step}`, {
+							statusCode: 502,
+							data: {
+								step,
+								endpoint: step === 'abprop' ? '/v2/reg_onboard_abprop' : '/v2/exist',
+								httpStatus: result.httpStatus
+							}
+						})
+					}
+				}
+			}
+
 			const request = buildNativeAndroidRequestCodeRequest(common, {
 				...input,
 				token: input.token ?? computedToken ?? common.nationalNumber,
@@ -252,10 +276,13 @@ export const createNativeAndroidRegistrationFlow = (
 				...input,
 				authResponse: input.authResponse ?? pendingAuthChallenge
 			})
+			// The challenge answers exactly one /v2/register attempt (the APK keeps
+			// it on the verification screen state and clears it on completion).
+			pendingAuthChallenge = undefined
 			const http = await client(request)
 			const response = parseNativeAndroidRegisterResponse(http.body)
 			const creds =
-				response.status === 'ok'
+				http.status >= 200 && http.status < 300 && response.status === 'ok'
 					? buildPrimaryRegistrationAuthCreds({
 							keys,
 							common,

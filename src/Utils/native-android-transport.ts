@@ -421,7 +421,7 @@ export type ResolvedTransportSession = {
  */
 export const isRegistrationSeededPrimary = (creds: AuthenticationCreds): boolean => {
 	const identity = creds.nativeAndroidIdentity
-	if (!identity || identity.profile !== 'native_android') return false
+	if (identity?.profile !== 'native_android') return false
 	if (identity.registrationSeeded) return true
 	const decoded = creds.me?.id ? jidDecode(creds.me.id) : undefined
 	const device = decoded?.device

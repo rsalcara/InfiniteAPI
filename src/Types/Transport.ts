@@ -326,4 +326,18 @@ export type PersistedNativeAndroidIdentity = {
 	 * is `(c2dm_reg_id || fbns_token) && logins_with_messages < 3`.
 	 */
 	loginsWithMessages?: number
+	/**
+	 * APK `login_failed` (C0GB.A0K): set when a non-retryable login failure hits
+	 * a registration-seeded primary (the official type-0 chain of
+	 * HandlerC08360a1). `connect()` refuses while set and only a new successful
+	 * registration clears it (FHW.A01), 1:1 with the app.
+	 */
+	loginFailed?: boolean
+	/** Failure reason recorded alongside `loginFailed` (the APK stores the int). */
+	loginFailedReason?: number
+	/**
+	 * APK pref `previously_logged_out_from_primary`: set once the primary is
+	 * definitively logged out by a terminal failure (HandlerC08360a1).
+	 */
+	previouslyLoggedOutFromPrimary?: boolean
 }

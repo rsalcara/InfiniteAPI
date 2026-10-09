@@ -5,8 +5,8 @@ import { jidEncode } from '../WABinary/jid-utils'
 import { Curve } from './crypto'
 import { NATIVE_ANDROID_REGISTRATION_APP_VERSION } from './native-android-registration-device-attestation'
 import {
-	randomNativeAndroidPreKeyIdStart,
-	type NativeAndroidRegistrationSignalKeys
+	type NativeAndroidRegistrationSignalKeys,
+	randomNativeAndroidPreKeyIdStart
 } from './native-android-registration-keys'
 import type { NativeAndroidRegistrationCommon } from './native-android-registration-protocol'
 import type { NativeAndroidRegisterResponse } from './native-android-registration-response'

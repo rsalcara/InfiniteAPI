@@ -2270,8 +2270,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 		}
 
-		if (!account) throw new Boom('Account not available', { statusCode: 401 })
-		const deviceIdentity = encodeSignedDeviceIdentity(account, true)
+		// A primary never owns an ADV signed device identity (the APK omits the
+		// device-identity node for non-companions — SendRetryReceiptJob gate
+		// `meManager.BLz()`), so its absence must not fail the retry receipt.
+		const deviceIdentity = account ? encodeSignedDeviceIdentity(account, true) : undefined
 		let receipt: BinaryNode | undefined
 		let directDistributionKeyId: number | undefined
 		let directDistributionKeysNode: BinaryNode | undefined
@@ -2374,7 +2376,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						{ tag: 'identity', attrs: {}, content: identityKey.public },
 						xmppPreKey(key!, +keyId!),
 						xmppSignedPreKey(signedPreKey),
-						{ tag: 'device-identity', attrs: {}, content: deviceIdentity }
+						// Companion-only node: omitted for primaries, 1:1 with the APK
+						// retry-receipt builder (`if (bArr3 != null)`).
+						...(deviceIdentity ? [{ tag: 'device-identity' as const, attrs: {}, content: deviceIdentity }] : [])
 					]
 				}
 
