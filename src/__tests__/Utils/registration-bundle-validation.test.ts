@@ -7,7 +7,10 @@ import { validatePrimaryRegistrationBundle } from '../../Utils/registration-bund
 
 describe('registration-bundle-validation (audit M09)', () => {
 	const clone = (keys: NativeAndroidRegistrationSignalKeys): NativeAndroidRegistrationSignalKeys => ({
-		clientStaticKeyPair: { public: Buffer.from(keys.clientStaticKeyPair.public), private: Buffer.from(keys.clientStaticKeyPair.private) },
+		clientStaticKeyPair: {
+			public: Buffer.from(keys.clientStaticKeyPair.public),
+			private: Buffer.from(keys.clientStaticKeyPair.private)
+		},
 		identity: { public: Buffer.from(keys.identity.public), private: Buffer.from(keys.identity.private) },
 		signedPreKey: {
 			keyId: keys.signedPreKey.keyId,

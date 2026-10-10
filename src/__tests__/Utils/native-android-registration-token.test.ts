@@ -23,6 +23,24 @@ const captureMaterial = (): NativeAndroidRegistrationTokenMaterial => ({
 	classesDexMd5: Uint8Array.from(Buffer.from(readFileSync(join(fixturesDir, 'classes-dex.md5'), 'utf8').trim(), 'hex'))
 })
 
+/**
+ * Material of the WhatsApp Messenger (consumer) 2.26.38.10 install
+ * (`com.whatsapp`) used by the primary-device flow. The APK resolves the logo
+ * as the `/res/drawable-xxhdpi-v4/about_logo.png` bucket shipped inside
+ * `split_config.xhdpi.apk`; the cert is the OLDEST lineage entry ("Brian
+ * Acton") returned by `getSigningCertificateHistory()[0]` after key rotation;
+ * the dex MD5 is the raw MD5 of the `classes.dex` entry of the installed
+ * base.apk.
+ */
+const consumerMaterial = (): NativeAndroidRegistrationTokenMaterial => ({
+	packageName: NATIVE_ANDROID_REGISTRATION_PACKAGES.consumer,
+	logoResource: readFileSync(join(fixturesDir, 'consumer', 'about_logo.png')),
+	signingCertDer: readFileSync(join(fixturesDir, 'consumer', 'signing-cert.der')),
+	classesDexMd5: Uint8Array.from(
+		Buffer.from(readFileSync(join(fixturesDir, 'consumer', 'classes-dex.md5'), 'utf8').trim(), 'hex')
+	)
+})
+
 describe('native android classic registration token', () => {
 	it('reproduces the real wire token byte-for-byte (golden /v2/code capture)', () => {
 		// Captured query: cc=55&token=hEjVbznrgA3o2tS3JoE4vuRVxVg=&in=1531997072
@@ -109,5 +127,45 @@ describe('native android classic registration token', () => {
 		expect(() =>
 			createClassicRegistrationTokenBuilder({ ...captureMaterial(), classesDexMd5: new Uint8Array(3) })
 		).toThrow(/classesDexMd5/)
+	})
+})
+
+describe('native android classic registration token — consumer (WhatsApp Messenger) variant', () => {
+	it('pins the fixture bytes taken from the com.whatsapp 2.26.38.10 install', () => {
+		const material = consumerMaterial()
+		// /res/drawable-xxhdpi-v4/about_logo.png (the hdpi/hdpi-v4 buckets sit in
+		// the same split but the APK classpath order picks xxhdpi-v4 for this build).
+		expect(material.logoResource).toHaveLength(60358)
+		// Oldest signing lineage cert ("Brian Acton"), not the rotated "WhatsApp LLC" signer.
+		expect(material.signingCertDer).toHaveLength(822)
+		expect(Buffer.from(material.classesDexMd5).toString('hex')).toBe('2122b0e07d77d1ac1fe458d167c7cbc5')
+		expect(material.packageName).toBe('com.whatsapp')
+	})
+
+	it('computes the consumer token for the real test MSISDN (1:1 chain)', () => {
+		// Regression vector recomputed from the 2.26.38.10 install material.
+		expect(buildClassicRegistrationToken('82956348194', consumerMaterial())).toBe('+C0t+Tlo8I7uXqwUmik5w1lvvCc=')
+	})
+
+	it('diverges from the business token for the same `in=` digits', () => {
+		expect(buildClassicRegistrationToken('1531997072', consumerMaterial())).toBe('B+sKKrrUz4S/mlayTyhjAPfS+Bc=')
+		expect(buildClassicRegistrationToken('1531997072', consumerMaterial())).not.toBe(
+			buildClassicRegistrationToken('1531997072', captureMaterial())
+		)
+	})
+
+	it('is deterministic on the consumer material', () => {
+		expect(buildClassicRegistrationToken('82956348194', consumerMaterial())).toBe(
+			buildClassicRegistrationToken('82956348194', consumerMaterial())
+		)
+	})
+
+	it('rejects malformed consumer material instead of minting a wrong token', () => {
+		expect(() =>
+			buildClassicRegistrationToken('82956348194', { ...consumerMaterial(), classesDexMd5: new Uint8Array(15) })
+		).toThrow(/classesDexMd5/)
+		expect(() => buildClassicRegistrationToken('82956348194', { ...consumerMaterial(), packageName: '' })).toThrow(
+			/packageName/
+		)
 	})
 })

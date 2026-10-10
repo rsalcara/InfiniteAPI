@@ -528,6 +528,7 @@ export const buildNativeAndroidRequestCodeRequest = (
 			)
 		}
 	}
+
 	addEnvironmentField(builder, environment, '_gs')
 	addEnvironmentField(builder, environment, 'sim_mnc')
 	builder.requiredPercentEncoded('id', common.identityId)

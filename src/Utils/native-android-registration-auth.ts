@@ -10,8 +10,8 @@ import {
 } from './native-android-registration-keys'
 import type { NativeAndroidRegistrationCommon } from './native-android-registration-protocol'
 import type { NativeAndroidRegisterResponse } from './native-android-registration-response'
-import { validatePrimaryRegistrationBundle } from './registration-bundle-validation'
 import { getNativeAndroidAppIdentity } from './native-android-transport'
+import { validatePrimaryRegistrationBundle } from './registration-bundle-validation'
 
 export type NativeAndroidPrimaryRegistrationAuthInput = {
 	/**

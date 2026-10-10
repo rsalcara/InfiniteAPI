@@ -395,6 +395,23 @@ describe('native_android registration flow self-computed token', () => {
 		expect(code.request.body).not.toContain('&token=1531997072')
 	})
 
+	it('sends the consumer-variant token computed from the com.whatsapp material', async () => {
+		const material: NativeAndroidRegistrationTokenMaterial = {
+			packageName: NATIVE_ANDROID_REGISTRATION_PACKAGES.consumer,
+			logoResource: readFileSync(join(fixturesDir, 'consumer', 'about_logo.png')),
+			signingCertDer: readFileSync(join(fixturesDir, 'consumer', 'signing-cert.der')),
+			classesDexMd5: Uint8Array.from(
+				Buffer.from(readFileSync(join(fixturesDir, 'consumer', 'classes-dex.md5'), 'utf8').trim(), 'hex')
+			)
+		}
+		const flow = singleShotFlow({ tokenMaterial: material })
+		const code = await flow.requestCode({ method: 'sms' })
+		// Same `in=1531997072` as the golden business capture, consumer variant:
+		// recomputed 1:1 from the 2.26.38.10 com.whatsapp install material.
+		expect(code.request.body).toContain(`token=${percentEncodeRegistrationString('B+sKKrrUz4S/mlayTyhjAPfS+Bc=')}`)
+		expect(code.request.body).not.toContain('&token=hEjVbznrgA3o2tS3JoE4vuRVxVg%3D')
+	})
+
 	it('keys the WA_TWO_FA token on the login digits, like the in-APK hook', async () => {
 		const material = captureMaterial()
 		const flow = singleShotFlow({

@@ -51,7 +51,8 @@ export function publicKeyHash(value: Uint8Array): string {
 export function assertRegistrationAuthBinding(pair: CurvePair, actualWirePublic: Uint8Array): void {
 	assertX25519Pair(pair, 'registration auth')
 	assertBytes(actualWirePublic, 32, 'wire authkey')
-	if (!timingSafeEqual(pair.public, actualWirePublic)) throw new Error('registration authkey differs from login static key')
+	if (!timingSafeEqual(pair.public, actualWirePublic))
+		throw new Error('registration authkey differs from login static key')
 }
 
 /** 3-byte big-endian pre-key id, the `AbstractC36751jx` wire encoding. */
@@ -71,7 +72,8 @@ export function saveChallenge(raw: Uint8Array): SavedChallenge {
 }
 
 export function restoreChallenge(saved: SavedChallenge): Uint8Array {
-	if (saved.encoding !== 'base64url' || !/^[A-Za-z0-9_-]+$/.test(saved.data)) throw new Error('invalid challenge format')
+	if (saved.encoding !== 'base64url' || !/^[A-Za-z0-9_-]+$/.test(saved.data))
+		throw new Error('invalid challenge format')
 	const raw = Buffer.from(saved.data, 'base64url')
 	if (raw.length === 0 || raw.toString('base64url') !== saved.data) throw new Error('noncanonical challenge')
 	return raw

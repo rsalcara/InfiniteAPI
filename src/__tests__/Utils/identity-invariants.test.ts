@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { Curve } from '../../Utils/crypto'
 import {
 	assertBytes,
 	assertInteger,
@@ -10,7 +11,6 @@ import {
 	restoreChallenge,
 	saveChallenge
 } from '../../Utils/identity-invariants'
-import { Curve } from '../../Utils/crypto'
 
 describe('identity-invariants (audit M01)', () => {
 	it('accepts exact-size Uint8Array and Buffer values', () => {
@@ -50,9 +50,9 @@ describe('identity-invariants (audit M01)', () => {
 		expect(() => assertX25519Pair({ public: pair.public.subarray(0, 31), private: pair.private }, 'pair')).toThrow(
 			'pair.public: invalid byte length'
 		)
-		expect(() =>
-			assertX25519Pair({ public: pair.public, private: pair.private.subarray(0, 31) }, 'pair')
-		).toThrow('pair.private: invalid byte length')
+		expect(() => assertX25519Pair({ public: pair.public, private: pair.private.subarray(0, 31) }, 'pair')).toThrow(
+			'pair.private: invalid byte length'
+		)
 	})
 
 	it('hashes public keys with sha256', () => {

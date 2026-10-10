@@ -61,6 +61,7 @@ const readBoundedResponseText = async (response: Response): Promise<string> => {
 				statusCode: DisconnectReason.badSession
 			})
 		}
+
 		chunks.push(Buffer.from(value))
 	}
 

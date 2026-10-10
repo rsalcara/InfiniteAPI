@@ -2755,6 +2755,7 @@ export const makeSocket = (config: SocketConfig) => {
 				// real error (audit A11) — never emit `connection: open` on it.
 				return
 			}
+
 			if (activeModeOutcome === 'timeout') {
 				// Official "connection active timeout fired" → A0k(0L, 10, true):
 				// reconnectable disconnect (code 10), NOT login_failed.

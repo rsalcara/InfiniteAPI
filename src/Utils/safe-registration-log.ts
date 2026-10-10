@@ -26,6 +26,7 @@ export function safeRegistrationLog(input: RegistrationLogMetadata): Registratio
 	) {
 		throw new Error('invalid HTTP status')
 	}
+
 	if (input.category !== undefined && !/^[a-z0-9_-]{1,80}$/i.test(input.category)) throw new Error('invalid category')
 	return {
 		endpoint: input.endpoint,
