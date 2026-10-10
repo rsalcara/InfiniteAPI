@@ -73,23 +73,34 @@ describe('native android registration relay provider', () => {
 		expect(payload.challengeBase64).toBe('AQID')
 	})
 
-	it('prefers the explicit User-Agent, then the device UA, then the raffled profile', async () => {
+	it('builds the User-Agent in the motor: explicit override, then real hardware, then raffled, device string last', async () => {
 		const calls: FetchCall[] = []
+		// The device cannot know which build its token material proves (the
+		// material is server-side), and its hardcoded UA string is stale — the
+		// motor must win the version/platform pair. Wire shape is the
+		// Connector's `signer.deviceProperties()`.
 		const deviceResponse = {
 			h: RELAY_H,
 			authorization: RELAY_AUTHORIZATION,
 			userAgent: 'WhatsApp/2.26.36.72 SMBA/16 Device/Xiaomi-25078PC3EG',
-			deviceProfile: { manufacturer: 'Xiaomi', deviceModelType: '25078PC3EG', osVersion: '16' }
+			deviceProfile: { manufacturer: 'Xiaomi', model: '25078PC3EG', androidVersion: '16', sdkInt: '36' }
 		}
+		const CONSUMER_CONTEXT: NativeAndroidRegistrationBridgeContext = { ...CONTEXT, appVariant: 'consumer' }
 
 		const withDevice = createNativeAndroidRegistrationRelayProvider({
 			url: 'https://api.example.com',
 			deviceProfile: { manufacturer: 'samsung', deviceModelType: 'SM-S948B', osVersion: '16' },
 			fetch: makeFetch({ json: deviceResponse }, calls)
 		})
-		const fromDevice = await withDevice(CONTEXT)
-		expect(fromDevice.userAgent).toBe(deviceResponse.userAgent)
-		expect(fromDevice.deviceProfile).toEqual(deviceResponse.deviceProfile)
+		const fromDevice = await withDevice(CONSUMER_CONTEXT)
+		// Real hardware from the device, variant version/platform from the motor.
+		expect(fromDevice.userAgent).toBe('WhatsApp/2.26.40.7 Android/16 Device/Xiaomi-25078PC3EG')
+		expect(fromDevice.deviceProfile).toEqual({
+			manufacturer: 'Xiaomi',
+			model: '25078PC3EG',
+			androidVersion: '16',
+			sdkInt: '36'
+		})
 
 		const withOverride = createNativeAndroidRegistrationRelayProvider({
 			url: 'https://api.example.com',
@@ -99,13 +110,28 @@ describe('native android registration relay provider', () => {
 		const overridden = await withOverride(CONTEXT)
 		expect(overridden.userAgent).toBe('WhatsApp/2.26.36.72 SMBA/16 Device/samsung-SM-S948B')
 
-		const withoutDeviceUa = createNativeAndroidRegistrationRelayProvider({
+		const withoutDeviceProfile = createNativeAndroidRegistrationRelayProvider({
 			url: 'https://api.example.com',
 			deviceProfile: { manufacturer: 'samsung', deviceModelType: 'SM-S948B', osVersion: '16' },
 			fetch: makeFetch({ json: { h: RELAY_H, authorization: RELAY_AUTHORIZATION } }, calls)
 		})
-		const raffled = await withoutDeviceUa(CONTEXT)
+		const raffled = await withoutDeviceProfile(CONTEXT)
 		expect(raffled.userAgent).toBe('WhatsApp/2.26.36.72 SMBA/16 Device/samsung-SM-S948B')
+
+		const bare = createNativeAndroidRegistrationRelayProvider({
+			url: 'https://api.example.com',
+			fetch: makeFetch({ json: deviceResponse }, calls)
+		})
+		const consumerBare = await bare(CONSUMER_CONTEXT)
+		// No profile anywhere (device profile incomplete + no raffled): only
+		// then is the device-supplied string trusted.
+		const onlyString = createNativeAndroidRegistrationRelayProvider({
+			url: 'https://api.example.com',
+			fetch: makeFetch({ json: { ...deviceResponse, deviceProfile: undefined } }, calls)
+		})
+		const lastResort = await onlyString(CONSUMER_CONTEXT)
+		expect(consumerBare.userAgent).toBe('WhatsApp/2.26.40.7 Android/16 Device/Xiaomi-25078PC3EG')
+		expect(lastResort.userAgent).toBe('WhatsApp/2.26.36.72 SMBA/16 Device/Xiaomi-25078PC3EG')
 	})
 
 	it('rejects relay responses without signature or attestation', async () => {

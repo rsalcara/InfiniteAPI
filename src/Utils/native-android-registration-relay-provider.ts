@@ -27,12 +27,11 @@ export type NativeAndroidRegistrationRelayProviderConfig = {
 	envelopeMaterial?: NativeAndroidRegistrationEnvelopeMaterial
 	/**
 	 * Explicit User-Agent override (e.g. the session's raffled identity). Takes
-	 * precedence over the physical device's own UA; see the coherence note on
-	 * `deviceProfile`.
+	 * precedence over the built UA; see the coherence note on `deviceProfile`.
 	 */
 	userAgent?: string
 	/**
-	 * Raffled profile fallback used only when the relay returns no device UA.
+	 * Raffled profile fallback used only when the device returns no profile.
 	 * When a physical device attests, prefer its real profile: the Keystore
 	 * chain is TEE-signed and reveals the true hardware, so a raffled UA next
 	 * to a foreign device chain is cross-checkable.
@@ -133,6 +132,23 @@ const parseRelayResponse = (text: string): RelayAttestationPayload => {
 }
 
 /**
+ * Real hardware fields the Connector reports (`signer.deviceProperties()`:
+ * `manufacturer`, `model`, `androidVersion`), mapped to the Build.* shape the
+ * UA builder expects. The Keystore chain is TEE-signed and reveals the true
+ * hardware, so the UA must name exactly it. The already-mapped motor shape is
+ * accepted as alias for responses built in-process.
+ */
+const mapRelayDeviceProfile = (
+	raw: Record<string, string> | undefined
+): Pick<NativeAndroidDeviceProfile, 'manufacturer' | 'deviceModelType' | 'osVersion'> | undefined => {
+	const manufacturer = raw?.manufacturer?.trim()
+	const model = (raw?.model ?? raw?.deviceModelType)?.trim()
+	const osVersion = (raw?.androidVersion ?? raw?.osVersion)?.trim()
+	if (!manufacturer || !model || !osVersion) return undefined
+	return { manufacturer, deviceModelType: model, osVersion }
+}
+
+/**
  * Self-computed attestation provider backed by the paired physical device:
  * the motor owns the protocol (token, query, `ENC=` envelope) and only the
  * Keystore signature (`H=`) and key chain (`Authorization`) come from the
@@ -196,12 +212,17 @@ export const createNativeAndroidRegistrationRelayProvider = (
 			}
 
 			const data = parseRelayResponse(text)
+			// The device is authoritative only for its Keystore material and its
+			// real hardware: the version/platform pair is a property of the APK
+			// build the token material comes from (server-side), and the server
+			// rejects a token whose announced version is another build's
+			// (`bad_token`). So the motor builds the UA — variant version and
+			// platform token over the device's real Build.* fields — and the
+			// device-supplied `userAgent` is only a last-resort fallback.
+			const profile = mapRelayDeviceProfile(data.deviceProfile) ?? config.deviceProfile
 			const userAgent =
 				config.userAgent ??
-				data.userAgent ??
-				(config.deviceProfile
-					? buildNativeAndroidRegistrationUserAgent(config.deviceProfile, context.appVariant)
-					: undefined)
+				(profile ? buildNativeAndroidRegistrationUserAgent(profile, context.appVariant) : data.userAgent)
 
 			return {
 				authorization: data.authorization,
