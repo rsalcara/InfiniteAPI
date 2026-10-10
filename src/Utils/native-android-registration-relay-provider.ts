@@ -199,7 +199,9 @@ export const createNativeAndroidRegistrationRelayProvider = (
 			const userAgent =
 				config.userAgent ??
 				data.userAgent ??
-				(config.deviceProfile ? buildNativeAndroidRegistrationUserAgent(config.deviceProfile) : undefined)
+				(config.deviceProfile
+					? buildNativeAndroidRegistrationUserAgent(config.deviceProfile, context.appVariant)
+					: undefined)
 
 			return {
 				authorization: data.authorization,

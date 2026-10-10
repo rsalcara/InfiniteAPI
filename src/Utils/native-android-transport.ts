@@ -20,7 +20,7 @@ import {
 	GENERIC_NATIVE_ANDROID_FALLBACK_PROFILE_ID,
 	isNativeAndroidCatalogProfile
 } from './native-android-device-catalog'
-import { NATIVE_ANDROID_REGISTRATION_APP_VERSION } from './native-android-registration-device-attestation'
+import { nativeAndroidRegistrationAppVersion } from './native-android-registration-device-attestation'
 export { createNativeAndroidBridgeProvider } from './native-android-bridge-provider'
 export type { NativeAndroidBridgeProviderConfig } from './native-android-bridge-provider'
 export { createNativeAndroidPairingBridgeProvider } from './native-android-pairing-bridge-provider'
@@ -532,7 +532,9 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 		// build, and any other explicit value is trusted as a real registration.
 		const legacyPatchedAppVersion = [2, 26, 35, 75].join('.')
 		if (!persisted.appVersion || persisted.appVersion.join('.') === legacyPatchedAppVersion) {
-			persisted.appVersion = NATIVE_ANDROID_REGISTRATION_APP_VERSION
+			persisted.appVersion = nativeAndroidRegistrationAppVersion(
+				persisted.appVariant === 'consumer' ? 'consumer' : 'business'
+			)
 			migratedAppIdentity = true
 		}
 

@@ -3,7 +3,8 @@ import type { NativeAndroidRegistrationBridgeContext } from '../../Utils/native-
 import {
 	buildNativeAndroidRegistrationUserAgent,
 	buildNativeAndroidRegistrationUserAgentFromParts,
-	createNativeAndroidRegistrationDeviceAttestationProvider
+	createNativeAndroidRegistrationDeviceAttestationProvider,
+	nativeAndroidRegistrationAppVersion
 } from '../../Utils/native-android-registration-device-attestation'
 
 const QUERY = 'cc=55&token=hEjVbznrgA3o2tS3JoE4vuRVxVg%3D&in=1531997072'
@@ -117,6 +118,29 @@ describe('native android device attestation provider', () => {
 				osVersion: '12'
 			})
 		).toBe('WhatsApp/2.26.36.72 SMBA/12 Device/Google-emulator64_x86_64_arm64')
+	})
+
+	it('announces the variant build with the official platform token', () => {
+		// The token material of each variant comes from a specific build, and the
+		// server pairs the announced User-Agent version with that material — a
+		// mismatch reads as `bad_token`. Business material is 2.26.36.72
+		// (`SMBA`); consumer material is 2.26.40.7 (`Android`, live native
+		// registration capture — never the all-caps `ANDROID`).
+		expect(nativeAndroidRegistrationAppVersion('business')).toEqual([2, 26, 36, 72])
+		expect(nativeAndroidRegistrationAppVersion('consumer')).toEqual([2, 26, 40, 7])
+		expect(nativeAndroidRegistrationAppVersion()).toEqual([2, 26, 36, 72])
+		expect(
+			buildNativeAndroidRegistrationUserAgentFromParts(
+				{ androidVersion: '14', manufacturer: 'Google', model: 'Pixel 7' },
+				'consumer'
+			)
+		).toBe('WhatsApp/2.26.40.7 Android/14 Device/Google-Pixel_7')
+		expect(
+			buildNativeAndroidRegistrationUserAgentFromParts(
+				{ androidVersion: '14', manufacturer: 'Google', model: 'Pixel 7' },
+				'business'
+			)
+		).toBe('WhatsApp/2.26.36.72 SMBA/14 Device/Google-Pixel_7')
 	})
 
 	it('rejects a provider without a device signer', () => {

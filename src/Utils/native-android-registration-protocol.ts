@@ -14,8 +14,9 @@ export type NativeAndroidRegistrationEndpoint =
 export type NativeAndroidRegistrationCommon = {
 	/**
 	 * W4B (`business`) vs Consumer (`consumer`). Selects the User-Agent
-	 * `SMBA`/`ANDROID` token and the creds.platform field — never a body
-	 * param: no registration request in the APK writes `platform`.
+	 * `SMBA`/`Android` token, the announced build and the creds.platform
+	 * field — never a body param: no registration request in the APK writes
+	 * `platform`.
 	 */
 	appVariant?: 'business' | 'consumer'
 	/** BCP-47 language, e.g. `pt`; official param name is `lg`. */

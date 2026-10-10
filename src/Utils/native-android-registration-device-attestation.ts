@@ -44,10 +44,33 @@ export type NativeAndroidRegistrationUserAgentParts = {
  * User-Agent byte for byte.
  */
 export const NATIVE_ANDROID_REGISTRATION_APP_VERSION: NativeAndroidAppVersion = [2, 26, 36, 72]
+/**
+ * Official client build of the consumer APK (com.whatsapp 2.26.40.7). Pinned
+ * to the SAME build the consumer token material comes from
+ * (`assets/native-registration-token/consumer/`): the token is signed over
+ * that build's `classes.dex`, so a User-Agent announcing another version
+ * describes a different client than the one the token proves and the server
+ * answers `bad_token` ("a token that does not belong to the client sending
+ * it"). Business keeps 2.26.36.72 for the same reason — that is the build its
+ * material is read from and the pair that already registers.
+ */
+export const NATIVE_ANDROID_REGISTRATION_CONSUMER_APP_VERSION: NativeAndroidAppVersion = [2, 26, 40, 7]
 /** Official client version embedded in the registration User-Agent. */
 export const NATIVE_ANDROID_REGISTRATION_USER_AGENT_VERSION = NATIVE_ANDROID_REGISTRATION_APP_VERSION.join('.')
 /** W4B platform token (`X.0d3.A00` uses the literal `SMBA`). */
 export const NATIVE_ANDROID_REGISTRATION_USER_AGENT_PLATFORM = 'SMBA'
+
+/**
+ * The build a registration announces, per variant. Always the build the
+ * variant's token material was extracted from — see the pairing note on
+ * `NATIVE_ANDROID_REGISTRATION_CONSUMER_APP_VERSION`.
+ */
+export const nativeAndroidRegistrationAppVersion = (
+	appVariant: 'consumer' | 'business' = 'business'
+): NativeAndroidAppVersion =>
+	appVariant === 'consumer'
+		? NATIVE_ANDROID_REGISTRATION_CONSUMER_APP_VERSION
+		: NATIVE_ANDROID_REGISTRATION_APP_VERSION
 
 const sanitizeUserAgentPart = (value: string): string => value.replace(/[^,\.\w\-\(\)]/g, '_')
 
@@ -55,13 +78,15 @@ const sanitizeUserAgentPart = (value: string): string => value.replace(/[^,\.\w\
  * Official registration User-Agent (`X.0d3.A00`, W4B 2.26.36.72):
  * `WhatsApp/2.26.36.72 SMBA/<release> Device/<manufacturer>-<model>`, each
  * device part sanitized with the APK's `[^,\.\w\-\(\)]` -> `_` rule. The
- * registration platform selector rejects requests without it.
+ * registration platform selector rejects requests without it. The consumer
+ * build names itself `Android` (live native registration capture) — the
+ * server reads the platform out of exactly this string.
  */
 export const buildNativeAndroidRegistrationUserAgentFromParts = (
 	parts: NativeAndroidRegistrationUserAgentParts,
 	appVariant: 'consumer' | 'business' = 'business'
 ): string =>
-	`WhatsApp/${NATIVE_ANDROID_REGISTRATION_USER_AGENT_VERSION} ${appVariant === 'consumer' ? 'ANDROID' : 'SMBA'}/${sanitizeUserAgentPart(
+	`WhatsApp/${nativeAndroidRegistrationAppVersion(appVariant).join('.')} ${appVariant === 'consumer' ? 'Android' : 'SMBA'}/${sanitizeUserAgentPart(
 		parts.androidVersion
 	)} Device/${sanitizeUserAgentPart(parts.manufacturer)}-${sanitizeUserAgentPart(parts.model)}`
 

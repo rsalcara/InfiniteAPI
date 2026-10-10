@@ -3,7 +3,7 @@ import type { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, Contact, NativeAndroidDeviceProfile } from '../Types'
 import { jidEncode } from '../WABinary/jid-utils'
 import { Curve } from './crypto'
-import { NATIVE_ANDROID_REGISTRATION_APP_VERSION } from './native-android-registration-device-attestation'
+import { nativeAndroidRegistrationAppVersion } from './native-android-registration-device-attestation'
 import {
 	type NativeAndroidRegistrationSignalKeys,
 	randomNativeAndroidPreKeyIdStart
@@ -123,8 +123,9 @@ export const buildPrimaryRegistrationAuthCreds = ({
 		appVariant,
 		clientAppId: getNativeAndroidAppIdentity(appVariant).clientAppId,
 		// The official app registers and logs in with the same build, so the
-		// seeded identity pins the registration version for every login.
-		appVersion: NATIVE_ANDROID_REGISTRATION_APP_VERSION,
+		// seeded identity pins the registration version for every login — the
+		// build whose APK material signs this variant's registration token.
+		appVersion: nativeAndroidRegistrationAppVersion(appVariant),
 		device,
 		connectionLc: 0,
 		registrationSeeded: true,
