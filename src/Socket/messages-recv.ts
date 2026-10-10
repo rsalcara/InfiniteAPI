@@ -115,6 +115,7 @@ import {
 	StatusBackend
 } from '../Utils/multi-db-sqlite'
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
+import { isRegistrationSeededPrimary } from '../Utils/native-android-transport'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
 import { pdoRequestCacheKey } from '../Utils/pdo-recovery'
 import { markPrekeyDirectDistributionIntent } from '../Utils/prekey-direct-distribution'
@@ -1359,6 +1360,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const meId = authState.creds.me?.id
 		const stanza = buildAckStanza(node, errorCode, meId)
 
+		// Official primary ACK shape (audit A12, AbstractC29477Cu0.A05): a
+		// receipt+delivery ack carries NO `type` at all, and `edit` is echoed only
+		// when non-empty and not "0". WA-Web baseline (companion/QR) keeps the
+		// historical always-copy-type stanza untouched.
+		if (isRegistrationSeededPrimary(authState.creds)) {
+			if (node.tag === 'receipt' && node.attrs.type === 'delivery') {
+				delete stanza.attrs.type
+			}
+
+			const edit = node.attrs.edit
+			if (edit && edit !== '0') {
+				stanza.attrs.edit = edit
+			}
+		}
+
 		// Best-effort pre-ack mirror (axolotl.db `preacks`): persist the encoded
 		// ack BEFORE sending, drop THIS ack's row AFTER it goes out. During
 		// teardown, delete the unsent row and leave server redelivery eligible;
@@ -2104,9 +2120,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// fail with Bad MAC simultaneously, only send ONE retry request.
 		// The peer will resend all failed messages when it receives the retry receipt.
 		// For group messages, scope by participant (each participant has its own Signal session).
-		const retryDedupeJid = msgKey.participant
-			? jidNormalizedUser(msgKey.participant)
-			: jidNormalizedUser(node.attrs.from)
+		// Registration-seeded primaries dedupe per MESSAGE identity instead (audit
+		// A13): the official client answers every failed message individually;
+		// companion/QR keeps the historical per-JID suppression.
+		const retryDedupeJid = isRegistrationSeededPrimary(authState.creds)
+			? retryIdentity
+			: msgKey.participant
+				? jidNormalizedUser(msgKey.participant)
+				: jidNormalizedUser(node.attrs.from)
 		if (retryRequestActiveJids.has(retryDedupeJid)) {
 			logger.debug(
 				{ fromJid: retryDedupeJid, msgId },
@@ -2273,7 +2294,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// A primary never owns an ADV signed device identity (the APK omits the
 		// device-identity node for non-companions — SendRetryReceiptJob gate
 		// `meManager.BLz()`), so its absence must not fail the retry receipt.
-		const deviceIdentity = account ? encodeSignedDeviceIdentity(account, true) : undefined
+		// Companion/QR keeps the historical contract (audit A14): without an
+		// account there is no signed identity to attach and the retry cannot be
+		// built.
+		const primaryRetry = isRegistrationSeededPrimary(authState.creds)
+		if (!primaryRetry && !account) throw new Boom('Account not available', { statusCode: 401 })
+		const deviceIdentity = !primaryRetry && account ? encodeSignedDeviceIdentity(account, true) : undefined
 		let receipt: BinaryNode | undefined
 		let directDistributionKeyId: number | undefined
 		let directDistributionKeysNode: BinaryNode | undefined

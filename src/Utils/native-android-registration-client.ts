@@ -1,12 +1,15 @@
 import { Boom } from '@hapi/boom'
+import { randomUUID } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { DisconnectReason } from '../Types'
+import logger from './logger'
 import type {
 	NativeAndroidRegistrationBridgeAttestation,
 	NativeAndroidRegistrationBridgeContext
 } from './native-android-registration-bridge-provider'
 import type { NativeAndroidRegistrationRequest } from './native-android-registration-protocol'
+import { safeRegistrationLog } from './safe-registration-log'
 
 export type NativeAndroidRegistrationHttpConfig = {
 	/** Official endpoint host. Override is intended only for local laboratories. */
@@ -37,6 +40,32 @@ export type NativeAndroidRegistrationHttpResponse = {
 
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504])
 const DEFAULT_BACKOFF_MS = [1_000, 2_000, 4_000]
+// Audit M05 hard cap: registration answers are small JSON documents; a
+// hostile/hostile-broken answer must not exhaust memory before the parse.
+const MAX_REGISTRATION_RESPONSE_BYTES = 1048576
+
+const readBoundedResponseText = async (response: Response): Promise<string> => {
+	// The official-header fetch below pre-bounds its own accumulation; a
+	// streaming Response must be capped here for the same reason.
+	if (!response.body) return response.text()
+	const reader = response.body.getReader()
+	const chunks: Buffer[] = []
+	let size = 0
+	for (;;) {
+		const { done, value } = await reader.read()
+		if (done) break
+		size += value.byteLength
+		if (size > MAX_REGISTRATION_RESPONSE_BYTES) {
+			await reader.cancel()
+			throw new Boom('native_android registration returned an oversized response', {
+				statusCode: DisconnectReason.badSession
+			})
+		}
+		chunks.push(Buffer.from(value))
+	}
+
+	return Buffer.concat(chunks).toString('utf8')
+}
 
 /**
  * Fetch com o conjunto de headers EXATO do APK (RetryingHttpClient):
@@ -69,7 +98,24 @@ export const createNativeAndroidRegistrationOfficialFetch = (): typeof fetch => 
 			},
 			res => {
 				const chunks: Buffer[] = []
-				res.on('data', chunk => chunks.push(Buffer.from(chunk)))
+				let size = 0
+				const declared = res.headers['content-length']
+				if (declared !== undefined && (!/^\d+$/.test(declared) || Number(declared) > MAX_REGISTRATION_RESPONSE_BYTES)) {
+					res.destroy()
+					reject(new Error('registration response exceeds limit'))
+					return
+				}
+
+				res.on('data', chunk => {
+					size += chunk.length
+					if (size > MAX_REGISTRATION_RESPONSE_BYTES) {
+						res.destroy()
+						reject(new Error('registration response exceeds limit'))
+						return
+					}
+
+					chunks.push(Buffer.from(chunk))
+				})
 				res.on('end', () => {
 					const text = Buffer.concat(chunks).toString('utf8')
 					const status = res.statusCode ?? 0
@@ -149,6 +195,8 @@ export const createNativeAndroidRegistrationHttpClient = (
 
 		const maxAttempts = config.maxAttempts ?? 4
 		let lastError: unknown
+		const operationId = randomUUID()
+		const started = Date.now()
 
 		for (let attempt = 1; attempt <= maxAttempts; ++attempt) {
 			const controller = new AbortController()
@@ -165,7 +213,7 @@ export const createNativeAndroidRegistrationHttpClient = (
 					body: attested.body ?? request.body,
 					signal: controller.signal
 				})
-				const text = await response.text()
+				const text = await readBoundedResponseText(response)
 				let parsed: unknown
 				try {
 					parsed = JSON.parse(text)
@@ -176,6 +224,19 @@ export const createNativeAndroidRegistrationHttpClient = (
 				}
 
 				if (!RETRYABLE_STATUS.has(response.status) || attempt === maxAttempts) {
+					// Allowlisted metadata only (audit M10): never the request,
+					// the response body or the provider result.
+					logger.debug(
+						safeRegistrationLog({
+							endpoint: request.endpoint,
+							operationId,
+							phase: 'http',
+							attempts: attempt,
+							durationMs: Date.now() - started,
+							httpStatus: response.status
+						}),
+						'native_android registration response'
+					)
 					return { status: response.status, body: parsed, attempts: attempt }
 				}
 

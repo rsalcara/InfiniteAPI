@@ -115,9 +115,10 @@ export type NativeAndroidRequestCodeCall = Omit<NativeAndroidRequestCodeInput, '
 	/**
 	 * Official `token`. When `tokenMaterial` is configured the flow computes it
 	 * itself (see `buildClassicRegistrationToken`) and this override is rarely
-	 * needed; without material it defaults to a placeholder the registration
-	 * bridge replaces in-process (hook.js computes it via the in-APK class)
-	 * before the request goes on the wire.
+	 * needed; without material the caller must pass the value explicitly — the
+	 * registration bridge replaces its own placeholder in-process (hook.js
+	 * computes it via the in-APK class) before the request goes on the wire.
+	 * The flow never fabricates a token (audit A07).
 	 */
 	token?: string
 }
@@ -154,8 +155,10 @@ export const decodeRegistrationAuthChallenge = (challenge: string): Uint8Array =
  * (self-computed mode) and the attestation provider only signs — a device
  * signer (`createNativeAndroidRegistrationDeviceAttestationProvider`) replaces
  * the registration bridge entirely for token and envelope work. Without
- * material the bridge still replaces the token in-process and may execute the
- * POST inside the real APK, short-circuiting the motor's own HTTP call.
+ * material the caller passes the bridge placeholder explicitly and the bridge
+ * replaces it in-process, possibly executing the POST inside the real APK
+ * (short-circuiting the motor's own HTTP call); the flow refuses to dispatch
+ * /v2/code with no token at all (audit A07).
  * Responses are parsed 1:1 with the APK's FOG/FDZ parsers.
  */
 export const createNativeAndroidRegistrationFlow = (
@@ -258,9 +261,23 @@ export const createNativeAndroidRegistrationFlow = (
 				}
 			}
 
+			// The official `token` is the classic HMAC over the `in=` digits
+			// (buildClassicRegistrationToken, the in-APK computation); the motor
+			// computes it whenever the APK material is configured. There is no
+			// silent fallback to the raw phone number — that would fabricate wire
+			// (audit A07). In-APK bridge callers that replace the token in-process
+			// pass their placeholder explicitly via `input.token`.
+			const token = input.token ?? computedToken
+			if (!token) {
+				throw new Boom(
+					'native_android registration: /v2/code requires an official token (configure tokenMaterial or pass token)',
+					{ statusCode: 500, data: { step: 'code-token' } }
+				)
+			}
+
 			const request = buildNativeAndroidRequestCodeRequest(common, {
 				...input,
-				token: input.token ?? computedToken ?? common.nationalNumber,
+				token,
 				advertisingId: input.advertisingId ?? options.advertisingId,
 				environment: input.environment ?? options.environment
 			})
@@ -272,13 +289,22 @@ export const createNativeAndroidRegistrationFlow = (
 			return { request, httpStatus: http.status, attempts: http.attempts, response }
 		},
 		verifyCode: async input => {
+			// Fail-closed before /v2/register (audit A06): the creds assembled from
+			// the response seed `nativeAndroidIdentity` from this device profile;
+			// without it the session would be born unmarked and every later connect
+			// would misclassify it as non-primary.
+			const deviceProfile = options.nativeIdentity?.device
+			if (!deviceProfile) {
+				throw new Boom('native_android registration: a persisted device profile is required before /v2/register', {
+					statusCode: 500,
+					data: { step: 'device-profile' }
+				})
+			}
+
 			const request = buildNativeAndroidRegisterRequest(common, {
 				...input,
 				authResponse: input.authResponse ?? pendingAuthChallenge
 			})
-			// The challenge answers exactly one /v2/register attempt (the APK keeps
-			// it on the verification screen state and clears it on completion).
-			pendingAuthChallenge = undefined
 			const http = await client(request)
 			const response = parseNativeAndroidRegisterResponse(http.body)
 			const creds =
@@ -288,9 +314,14 @@ export const createNativeAndroidRegistrationFlow = (
 							common,
 							register: response,
 							account: options.account,
-							device: options.nativeIdentity?.device
+							device: deviceProfile
 						})
 					: undefined
+			// The challenge answers exactly one /v2/register attempt (the APK keeps
+			// it on the verification screen state and clears it on completion). Only
+			// a completed registration consumes it — a failed attempt keeps the
+			// challenge so the retry can echo the same auth_response (audit A07).
+			if (creds) pendingAuthChallenge = undefined
 			return { request, httpStatus: http.status, attempts: http.attempts, response, creds }
 		}
 	}

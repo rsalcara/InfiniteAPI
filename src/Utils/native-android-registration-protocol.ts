@@ -511,12 +511,23 @@ export const buildNativeAndroidRequestCodeRequest = (
 	// `pref_flash_call_manage_call_permission_granted`): `method=flash` is
 	// MOBILE-only and requires preferring flash over SMS plus both call
 	// permissions granted so the client can read the caller-id flash call.
-	// Landline (`voice`) needs none of this. Forcing the coupled trio here keeps
-	// the flash body consistent whatever the caller passed.
+	// Landline (`voice`) needs none of this. The official serializer reports the
+	// REAL grant checks (GBM.A02: `pref_flash_call_manage_call_permission_granted`
+	// = A0B() ? 1 : 0, `pref_flash_call_call_log_permission_granted` = A0A() ? 1
+	// : 0), so the caller must pass the true device state — synthesizing
+	// `granted` here would invent hardware state on the wire (audit A03/A04).
+	// `registrationType === 1` never serializes this trio (A09 gate below), so
+	// it is exempt from the check.
 	const isFlashMethod = input.method === 'flash'
-	const manageCallPermission = isFlashMethod ? 1 : input.manageCallPermission
-	const callLogPermission = isFlashMethod ? 1 : input.callLogPermission
-	if (isFlashMethod) environment.prefer_sms_over_flash = false
+	const manageCallPermission = input.manageCallPermission
+	const callLogPermission = input.callLogPermission
+	if (isFlashMethod && common.registrationType !== 1) {
+		if (manageCallPermission !== 1 || callLogPermission !== 1 || environment.prefer_sms_over_flash !== false) {
+			throw new Error(
+				'native_android registration: method=flash requires the real flash-call trio (manage_call_permission=1, call_log_permission=1, prefer_sms_over_flash=false)'
+			)
+		}
+	}
 	addEnvironmentField(builder, environment, '_gs')
 	addEnvironmentField(builder, environment, 'sim_mnc')
 	builder.requiredPercentEncoded('id', common.identityId)

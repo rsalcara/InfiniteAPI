@@ -31,6 +31,20 @@ const COMMON: Omit<NativeAndroidRegistrationCommon, 'keyBundle'> = {
 
 const ACCOUNT = { details: Uint8Array.from([0x09, 0x08]) } as unknown as proto.IADVSignedDeviceIdentity
 
+const DEVICE = {
+	profileId: 'fixture-profile',
+	manufacturer: 'Xiaomi',
+	device: 'fixture-device',
+	osVersion: '14',
+	osBuildNumber: 'AP1A.240505.005',
+	phoneId: 'f85c1f5ff4823fcb',
+	deviceExpId: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d',
+	mcc: '724',
+	mnc: '05',
+	localeLanguageIso6391: 'pt',
+	localeCountryIso31661Alpha2: 'BR'
+}
+
 describe('native_android LID normalization', () => {
 	it('normalizes every official lid form into digits@lid', () => {
 		expect(normalizeLidJid('123456789012345')).toBe('123456789012345@lid')
@@ -54,7 +68,8 @@ describe('native_android primary registration auth state', () => {
 				lid: '123456789012345',
 				edgeRoutingInfo: 'cm91dGU='
 			} as never,
-			account: ACCOUNT
+			account: ACCOUNT,
+			device: DEVICE
 		})
 
 		expect(creds.noiseKey).toBe(keys.clientStaticKeyPair)
@@ -86,7 +101,8 @@ describe('native_android primary registration auth state', () => {
 		const creds = buildPrimaryRegistrationAuthCreds({
 			keys,
 			common: { ...COMMON, appVariant: 'consumer' },
-			register: { status: 'ok', lid: null, edgeRoutingInfo: null } as never
+			register: { status: 'ok', lid: null, edgeRoutingInfo: null } as never,
+			device: DEVICE
 		})
 		expect(creds.platform).toBe('android')
 		expect(creds.me?.lid).toBeUndefined()
@@ -98,23 +114,36 @@ describe('native_android primary registration auth state', () => {
 			buildPrimaryRegistrationAuthCreds({
 				keys,
 				common: COMMON,
-				register: { status: 'sent', reason: null } as never
+				register: { status: 'sent', reason: null } as never,
+				device: DEVICE
 			})
 		).toThrow('status of "sent"')
 		expect(() =>
 			buildPrimaryRegistrationAuthCreds({
 				keys,
 				common: COMMON,
-				register: { status: 'fail', reason: 'blocked' } as never
+				register: { status: 'fail', reason: 'blocked' } as never,
+				device: DEVICE
 			})
 		).toThrow('reason: blocked')
 		expect(() =>
 			buildPrimaryRegistrationAuthCreds({
 				keys,
 				common: { ...COMMON, nationalNumber: '' },
-				register: { status: 'ok' } as never
+				register: { status: 'ok' } as never,
+				device: DEVICE
 			})
 		).toThrow('account digits')
+		// Fail-closed (audit A06): an unmarked session would be classified as
+		// non-primary on every later connect.
+		expect(() =>
+			buildPrimaryRegistrationAuthCreds({
+				keys,
+				common: COMMON,
+				register: { status: 'ok' } as never,
+				device: undefined as never
+			})
+		).toThrow('persisted device profile')
 	})
 })
 
@@ -139,6 +168,7 @@ describe('native_android registration flow', () => {
 			skipOnboarding: true,
 			common: COMMON,
 			account: ACCOUNT,
+			nativeIdentity: { device: DEVICE },
 			attestationProvider: async context => {
 				contexts.push(context)
 				return { authorization: 'Native attestation', body: context.body }
@@ -152,14 +182,14 @@ describe('native_android registration flow', () => {
 			}
 		})
 
-		const code = await flow.requestCode({ method: 'sms' })
+		const code = await flow.requestCode({ method: 'sms', token: '11999999999' })
 		expect(code.httpStatus).toBe(200)
 		expect(code.attempts).toBe(1)
 		expect(code.response.status).toBe('sent')
 		// /v2/code keeps the wait fields as strings (optString), 1:1 with the APK.
 		expect(code.response.smsWait).toBe('30')
-		// The placeholder token keeps the official wire shape; the bridge
-		// replaces it in-APK before the request goes out.
+		// The caller passes the bridge placeholder explicitly (the motor never
+		// fabricates a token); the bridge replaces it in-APK before the wire.
 		expect(code.request.body).toContain('&token=11999999999&')
 		expect(code.request.registrationType).toBeUndefined()
 		expect(contexts[0]).toMatchObject({
@@ -206,7 +236,7 @@ describe('native_android registration flow', () => {
 			}
 		})
 
-		const code = await flow.requestCode({ method: 'voice' })
+		const code = await flow.requestCode({ method: 'voice', token: '11999999999' })
 		expect(code.request.registrationType).toBe(1)
 		expect(contexts[0]!.registrationType).toBe(1)
 		expect(code.request.body).toContain('login=5511999999999%40s.whatsapp.net&type=1')
@@ -217,6 +247,7 @@ describe('native_android registration flow', () => {
 		const flow = createNativeAndroidRegistrationFlow({
 			skipOnboarding: true,
 			common: COMMON,
+			nativeIdentity: { device: DEVICE },
 			attestationProvider: async () => ({ authorization: 'Native attestation' }),
 			http: {
 				baseUrl: 'https://registration.lab.invalid',
@@ -252,7 +283,7 @@ describe('native_android registration flow', () => {
 			}
 		})
 
-		const code = await flow.requestCode({ method: 'sms' })
+		const code = await flow.requestCode({ method: 'sms', token: '11999999999' })
 		expect(code.response.smsWait).toBe('10')
 		expect(code.attempts).toBe(1)
 		expect(fetchCalls).toBe(0)
@@ -282,7 +313,7 @@ describe('native_android registration flow', () => {
 			}
 		})
 
-		const code = await flow.requestCode({ method: 'sms' })
+		const code = await flow.requestCode({ method: 'sms', token: '11999999999' })
 		expect(calls.map(call => call.url)).toEqual([
 			'https://registration.lab.invalid/v2/reg_onboard_abprop',
 			'https://registration.lab.invalid/v2/exist',
@@ -376,9 +407,12 @@ describe('native_android registration flow self-computed token', () => {
 		expect(code.request.body).not.toContain('token=5511999999999')
 	})
 
-	it('keeps the placeholder token when no material is configured (bridge replaces it)', async () => {
+	it('rejects /v2/code without a token and sends only a caller-passed bridge placeholder', async () => {
 		const flow = singleShotFlow({})
-		const code = await flow.requestCode({ method: 'sms' })
+		// The motor never fabricates a token (audit A07): without tokenMaterial
+		// the caller must pass the bridge placeholder explicitly.
+		await expect(flow.requestCode({ method: 'sms' })).rejects.toThrow(/official token/)
+		const code = await flow.requestCode({ method: 'sms', token: '1531997072' })
 		expect(code.request.body).toContain('&token=1531997072')
 	})
 })

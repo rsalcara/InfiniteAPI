@@ -10,6 +10,7 @@ import {
 } from './native-android-registration-keys'
 import type { NativeAndroidRegistrationCommon } from './native-android-registration-protocol'
 import type { NativeAndroidRegisterResponse } from './native-android-registration-response'
+import { validatePrimaryRegistrationBundle } from './registration-bundle-validation'
 import { getNativeAndroidAppIdentity } from './native-android-transport'
 
 export type NativeAndroidPrimaryRegistrationAuthInput = {
@@ -33,13 +34,14 @@ export type NativeAndroidPrimaryRegistrationAuthInput = {
 	 */
 	account?: proto.IADVSignedDeviceIdentity
 	/**
-	 * Hardware profile raffled for this registration. When present the full
+	 * Hardware profile raffled for this registration. The full
 	 * `nativeAndroidIdentity` is seeded with the creds, so every later login
 	 * reuses exactly the app identity (clientAppId/appVersion) and device the
 	 * registration declared — the official app registers and logs in as the
-	 * same install. When absent no identity marker is written (legacy callers).
+	 * same install. Required: without it the session would come out of
+	 * registration unmarked and be classified as non-primary (audit A06).
 	 */
-	device?: NativeAndroidDeviceProfile
+	device: NativeAndroidDeviceProfile
 }
 
 /**
@@ -79,6 +81,10 @@ export const buildPrimaryRegistrationAuthCreds = ({
 	account,
 	device
 }: NativeAndroidPrimaryRegistrationAuthInput): AuthenticationCreds => {
+	// Fail-closed (audit M09): restored key material must be a valid bundle
+	// before any cred is derived from it or any request echoes it back.
+	validatePrimaryRegistrationBundle(keys)
+
 	if (register.status !== 'ok') {
 		throw new Error(
 			`native_android registration: cannot build auth state from a /v2/register status of "${register.status}"` +
@@ -89,6 +95,13 @@ export const buildPrimaryRegistrationAuthCreds = ({
 	const digits = `${common.countryCallingCode}${common.nationalNumber}`
 	if (!/^\d{5,15}$/.test(digits)) {
 		throw new Error('native_android registration: countryCallingCode + nationalNumber must yield the account digits')
+	}
+
+	// Fail-closed (audit A06): without a persisted device profile the session
+	// would leave registration without `nativeAndroidIdentity`/`registrationSeeded`
+	// and be misclassified as non-primary on every later connect.
+	if (!device) {
+		throw new Error('primary registration requires a persisted device profile')
 	}
 
 	// The official primary `me` is the bare account JID (device-0 is implicit);
@@ -103,26 +116,24 @@ export const buildPrimaryRegistrationAuthCreds = ({
 	const preKeyIdStart = randomNativeAndroidPreKeyIdStart()
 
 	const appVariant = common.appVariant === 'business' ? ('business' as const) : ('consumer' as const)
-	const nativeAndroidIdentity = device
-		? {
-				schemaVersion: 1 as const,
-				profile: 'native_android' as const,
-				preset: appVariant === 'consumer' ? ('native_android_consumer' as const) : ('native_android_business' as const),
-				appVariant,
-				clientAppId: getNativeAndroidAppIdentity(appVariant).clientAppId,
-				// The official app registers and logs in with the same build, so the
-				// seeded identity pins the registration version for every login.
-				appVersion: NATIVE_ANDROID_REGISTRATION_APP_VERSION,
-				device,
-				connectionLc: 0,
-				registrationSeeded: true,
-				// APK pref `signal_protocol_store_is_new`, set when the Signal
-				// identity is created and cleared only after the pre-key batches
-				// are uploaded (see CYF/DSQ in W4B 2.26.36.72).
-				signalProtocolStoreIsNew: true,
-				loginsWithMessages: 0
-			}
-		: undefined
+	const nativeAndroidIdentity = {
+		schemaVersion: 1 as const,
+		profile: 'native_android' as const,
+		preset: appVariant === 'consumer' ? ('native_android_consumer' as const) : ('native_android_business' as const),
+		appVariant,
+		clientAppId: getNativeAndroidAppIdentity(appVariant).clientAppId,
+		// The official app registers and logs in with the same build, so the
+		// seeded identity pins the registration version for every login.
+		appVersion: NATIVE_ANDROID_REGISTRATION_APP_VERSION,
+		device,
+		connectionLc: 0,
+		registrationSeeded: true,
+		// APK pref `signal_protocol_store_is_new`, set when the Signal
+		// identity is created and cleared only after the pre-key batches
+		// are uploaded (see CYF/DSQ in W4B 2.26.36.72).
+		signalProtocolStoreIsNew: true,
+		loginsWithMessages: 0
+	}
 
 	return {
 		noiseKey: keys.clientStaticKeyPair,
@@ -146,6 +157,6 @@ export const buildPrimaryRegistrationAuthCreds = ({
 		lastPropHash: undefined,
 		routingInfo: register.edgeRoutingInfo ? Buffer.from(register.edgeRoutingInfo, 'base64') : undefined,
 		additionalData: undefined,
-		...(nativeAndroidIdentity ? { nativeAndroidIdentity } : {})
+		nativeAndroidIdentity
 	}
 }

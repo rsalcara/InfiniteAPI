@@ -1,3 +1,4 @@
+import { Boom } from '@hapi/boom'
 import { buildAppStateSyncKeyPeerNode } from '../../Utils/app-state-sync-key-peer'
 
 describe('buildAppStateSyncKeyPeerNode — official SendPeerMessageJob wire contract', () => {
@@ -56,14 +57,25 @@ describe('buildAppStateSyncKeyPeerNode — official SendPeerMessageJob wire cont
 		expect(node.attrs.to).toBe(primary)
 	})
 
-	it('sends a pkmsg without the device-identity node when there is no ADV identity', () => {
+	it('fails closed for a pkmsg without signed device identity (companion)', () => {
+		expect(() =>
+			buildAppStateSyncKeyPeerNode({
+				targetDeviceJid,
+				messageId: 'peer-share-38',
+				encrypted: { type: 'pkmsg', ciphertext: Buffer.from([4, 5]) }
+			})
+		).toThrow(Boom)
+	})
+
+	it('sends a primary pkmsg without the device-identity node', () => {
 		// Primary registration never owns an ADV signed device identity and the
 		// APK omits the node for it (SendPeerMessageJob companion gate), so the
 		// stanza must go out without `device-identity` instead of failing.
 		const node = buildAppStateSyncKeyPeerNode({
 			targetDeviceJid,
 			messageId: 'peer-share-38',
-			encrypted: { type: 'pkmsg', ciphertext: Buffer.from([4, 5]) }
+			encrypted: { type: 'pkmsg', ciphertext: Buffer.from([4, 5]) },
+			primary: true
 		})
 		const content = node.content as Array<{ tag: string }>
 

@@ -2,6 +2,8 @@ import { randomInt } from 'node:crypto'
 import type { KeyPair } from '../Types'
 import { Curve, signedKeyPair } from './crypto'
 import { encodeBigEndian } from './generics'
+import { assertRegistrationAuthBinding } from './identity-invariants'
+import { validatePrimaryRegistrationBundle } from './registration-bundle-validation'
 
 export type NativeAndroidRegistrationSignalKeys = {
 	/** X25519 client-static/auth key persisted separately by the APK. */
@@ -61,7 +63,7 @@ export const createNativeAndroidRegistrationSignalKeys = (): NativeAndroidRegist
 		throw new Error('native_android registration: invalid Signal registration id')
 	}
 
-	return {
+	const keys: NativeAndroidRegistrationSignalKeys = {
 		clientStaticKeyPair,
 		identity,
 		signedPreKey: {
@@ -71,6 +73,10 @@ export const createNativeAndroidRegistrationSignalKeys = (): NativeAndroidRegist
 		},
 		registrationId
 	}
+	// Fail-closed self-check (audit M01/M09): never hand out a bundle whose
+	// pairs don't derive or whose signed pre-key signature doesn't verify.
+	validatePrimaryRegistrationBundle(keys)
+	return keys
 }
 
 /**
@@ -91,7 +97,7 @@ export const buildNativeAndroidRegistrationKeyBundle = ({
 		throw new Error('native_android registration: signed pre-key signature is required')
 	}
 
-	return {
+	const bundle: NativeAndroidRegistrationKeyBundle = {
 		authkey: clientStaticKeyPair.public,
 		e_ident: identity.public,
 		e_keytype: Uint8Array.from([5]),
@@ -104,4 +110,8 @@ export const buildNativeAndroidRegistrationKeyBundle = ({
 		e_skey_val: signedPreKey.keyPair.public,
 		e_skey_sig: signedPreKey.signature
 	}
+	// Wire binding (audit M01): the authkey on the request must be the public
+	// half of the persisted registration static key (C28938Clv.A00 / C1CB).
+	assertRegistrationAuthBinding(clientStaticKeyPair, bundle.authkey)
+	return bundle
 }

@@ -580,7 +580,7 @@ export const makeSocket = (config: SocketConfig) => {
 	}
 
 	/** send a query, and wait for its response. auto-generates message ID if not provided */
-	const query = async (node: BinaryNode, timeoutMs?: number) => {
+	const query = async (node: BinaryNode, timeoutMs?: number, opts?: { acceptErrorIq?: boolean }) => {
 		if (!node.attrs.id) {
 			node.attrs.id = generateMessageTag()
 		}
@@ -619,7 +619,10 @@ export const makeSocket = (config: SocketConfig) => {
 			})
 		}
 
-		if (result && 'tag' in result) {
+		// `acceptErrorIq` lets the caller inspect a server error-iq answer itself
+		// (the active-mode handshake must treat it as a non-fatal answer, A1N
+		// z=false, instead of rejecting).
+		if (result && 'tag' in result && !opts?.acceptErrorIq) {
 			assertNodeErrorFree(result)
 		}
 
@@ -2213,7 +2216,7 @@ export const makeSocket = (config: SocketConfig) => {
 	}
 
 	/** i have no idea why this exists. pls enlighten me */
-	const sendPassiveIq = (tag: 'passive' | 'active', timeoutMs?: number) =>
+	const sendPassiveIq = (tag: 'passive' | 'active', timeoutMs?: number, opts?: { acceptErrorIq?: boolean }) =>
 		query(
 			{
 				tag: 'iq',
@@ -2224,7 +2227,8 @@ export const makeSocket = (config: SocketConfig) => {
 				},
 				content: [{ tag, attrs: {} }]
 			},
-			timeoutMs
+			timeoutMs,
+			opts
 		)
 
 	/**
@@ -2232,16 +2236,18 @@ export const makeSocket = (config: SocketConfig) => {
 	 * (HandlerThreadC08660aV.A1K "sendActiveModeIq" → C17A.A02 =
 	 * sendEmptyMessageDelayed(2, 32000)): the login is only usable after the
 	 * active-mode IQ is answered, and a 32 s watchdog bounds the wait.
-	 *   'ack'     — answer received (A1N z=true cancels the watchdog)
-	 *   'error'   — error response: continue WITHOUT disconnect (A1N z=false)
-	 *   'timeout' — no answer: official A0k(0L, 10, true) → disconnect code 10
-	 *               (reconnectable — NOT login_failed)
+	 *   'ack'         — answer received (A1N z=true cancels the watchdog)
+	 *   'error'       — server error-iq answer: continue WITHOUT disconnect (A1N z=false)
+	 *   'local-error' — local send/transport failure: the socket is already
+	 *                   broken, so the session ends with that error
+	 *   'timeout'     — no answer: official A0k(0L, 10, true) → disconnect code 10
+	 *                   (reconnectable — NOT login_failed)
 	 */
 	const ACTIVE_MODE_ACK_WATCHDOG_MS = 32_000
-	const waitForActiveModeAck = async (): Promise<'ack' | 'error' | 'timeout'> =>
+	const waitForActiveModeAck = async (): Promise<'ack' | 'error' | 'local-error' | 'timeout'> =>
 		new Promise(resolve => {
 			let settled = false
-			const settle = (outcome: 'ack' | 'error' | 'timeout') => {
+			const settle = (outcome: 'ack' | 'error' | 'local-error' | 'timeout') => {
 				if (settled) return
 				settled = true
 				clearTimeout(watchdog)
@@ -2253,22 +2259,42 @@ export const makeSocket = (config: SocketConfig) => {
 				settle('timeout')
 			}, ACTIVE_MODE_ACK_WATCHDOG_MS)
 			watchdog.unref?.()
-			sendPassiveIq('active', ACTIVE_MODE_ACK_WATCHDOG_MS)
-				.then(() => settle('ack'))
+			sendPassiveIq('active', ACTIVE_MODE_ACK_WATCHDOG_MS, { acceptErrorIq: true })
+				.then(result => {
+					// An error-iq is still an answer: the official handler keeps the
+					// connection (A1N z=false).
+					if (result && 'tag' in result && getBinaryNodeChild(result, 'error')) {
+						logger.warn('native_android: active mode iq error response (A1N z=false)')
+						settle('error')
+					} else {
+						settle('ack')
+					}
+				})
 				.catch(err => {
 					// A query timeout is a non-answer just like the watchdog — both
 					// map to the official 32 s code-10 disconnect.
 					if (err instanceof Boom && err.output.statusCode === DisconnectReason.timedOut) {
 						settle('timeout')
 					} else {
-						logger.warn({ err }, 'native_android: active mode iq error response (A1N z=false)')
-						settle('error')
+						// Local send/transport failure: the socket is broken beyond the
+						// active-mode exchange — end with the real error instead of
+						// continuing on a dead connection.
+						logger.warn({ err }, 'native_android: active mode iq failed locally')
+						void end(err as Error)
+						settle('local-error')
 					}
 				})
 		})
 
 	/** logout & invalidate connection */
 	const logout = async (msg?: string) => {
+		// Remote primary logout is not implemented (audit A10):
+		// `remove-companion-device` is a companion operation and would desync a
+		// registration-seeded primary; refusing keeps the primary wire clean.
+		if (isRegistrationSeededPrimary(authState.creds)) {
+			throw new Boom('remote primary logout is not implemented', { statusCode: 501 })
+		}
+
 		const jid = authState.creds.me?.id
 		if (jid) {
 			await sendNode({
@@ -2466,8 +2492,10 @@ export const makeSocket = (config: SocketConfig) => {
 					port: ws.selectedEndpoint.port,
 					// The payload bits 7..11 report the official moveToNext counter
 					// (C35511hh.A08 → XppLoginContext.A01), NOT the endpoint stage id
-					// (`selectedEndpoint.sequenceStep` is diagnostics-only).
-					sequenceStep: ws.stageAdvanceCount,
+					// (`selectedEndpoint.sequenceStep` is diagnostics-only). Only for
+					// seeded primaries; companion/Web sessions keep the historical
+					// `selectedEndpoint.sequenceStep` payload byte-for-byte (audit A02).
+					sequenceStep: loginState ? ws.stageAdvanceCount : ws.selectedEndpoint.sequenceStep,
 					dnsAppCached: ws.dnsAppCached,
 					connectAttemptCount: ws.connectAttemptCount,
 					addressSource: ws.addressSource,
@@ -2722,6 +2750,11 @@ export const makeSocket = (config: SocketConfig) => {
 		if (isSeededPrimary) {
 			const activeModeOutcome = await waitForActiveModeAck()
 			if (closed) return
+			if (activeModeOutcome === 'local-error') {
+				// The local transport failure already ended the session with the
+				// real error (audit A11) — never emit `connection: open` on it.
+				return
+			}
 			if (activeModeOutcome === 'timeout') {
 				// Official "connection active timeout fired" → A0k(0L, 10, true):
 				// reconnectable disconnect (code 10), NOT login_failed.

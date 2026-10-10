@@ -139,18 +139,49 @@ describe('native_android official registration wire', () => {
 		expect(request.body).not.toContain('client_start_message=')
 	})
 
-	it('couples the flash-call trio when method is flash (mobile-only)', () => {
+	it('serializes an explicitly supplied flash-call trio', () => {
 		const request = buildNativeAndroidRequestCodeRequest(COMMON, {
 			token: '11999999999',
-			method: 'flash'
+			method: 'flash',
+			manageCallPermission: 1,
+			callLogPermission: 1,
+			environment: { prefer_sms_over_flash: false }
 		})
 
 		// flash-call needs prefer_sms_over_flash=false plus both call permissions
-		// granted, forced by the builder regardless of caller input.
+		// granted; the values come from the caller's real device state (GBM.A02
+		// writes A0B()/A0A() grant-check results) and serialize as supplied.
 		expect(request.body).toContain('method=flash')
 		expect(request.body).toContain('prefer_sms_over_flash=false')
 		expect(request.body).toContain('manage_call_permission=true')
 		expect(request.body).toContain('call_log_permission=true')
+	})
+
+	it('rejects flash without the real flash-call trio', () => {
+		expect(() =>
+			buildNativeAndroidRequestCodeRequest(COMMON, {
+				token: '11999999999',
+				method: 'flash'
+			})
+		).toThrow(/flash-call trio/)
+		expect(() =>
+			buildNativeAndroidRequestCodeRequest(COMMON, {
+				token: '11999999999',
+				method: 'flash',
+				manageCallPermission: 0,
+				callLogPermission: 1,
+				environment: { prefer_sms_over_flash: false }
+			})
+		).toThrow(/flash-call trio/)
+		expect(() =>
+			buildNativeAndroidRequestCodeRequest(COMMON, {
+				token: '11999999999',
+				method: 'flash',
+				manageCallPermission: 1,
+				callLogPermission: 1,
+				environment: { prefer_sms_over_flash: true }
+			})
+		).toThrow(/flash-call trio/)
 	})
 
 	it('writes type and login only for the WA_TWO_FA flow and drops cc/in there', () => {

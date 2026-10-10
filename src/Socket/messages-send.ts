@@ -85,6 +85,7 @@ import {
 	SignalTypedBackend,
 	StickersBackend
 } from '../Utils/multi-db-sqlite'
+import { isRegistrationSeededPrimary } from '../Utils/native-android-transport'
 import { buildCsTokenNode, resolveCsTokenMode } from '../Utils/nct-token'
 import { evaluateOutboundPolicy } from '../Utils/outbound-policy'
 import {
@@ -2845,12 +2846,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			// Always include device-identity for carousel (reference WA stanza always has it)
 			// — for companions. A primary never holds an ADV signed device identity,
 			// and the APK omits the node for it (message builder gate `BLz()`), so the
-			// stanza is sent without it instead of pushing an empty proto.
-			if ((shouldIncludeDeviceIdentity || isCarousel) && authState.creds.account) {
+			// stanza is sent without it (audit A15). Companion/QR keeps the historical
+			// node byte-for-byte — including the empty-identity encoding when no
+			// account is available yet — so its golden send stanzas never move.
+			if ((shouldIncludeDeviceIdentity || isCarousel) && !isRegistrationSeededPrimary(authState.creds)) {
 				;(stanza.content as BinaryNode[]).push({
 					tag: 'device-identity',
 					attrs: {},
-					content: encodeSignedDeviceIdentity(authState.creds.account, true)
+					content: encodeSignedDeviceIdentity(authState.creds.account!, true)
 				})
 
 				logger.debug({ jid }, 'adding device identity')
