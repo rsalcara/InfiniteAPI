@@ -126,9 +126,25 @@ export type NativeAndroidRequestCodeEnvironment = {
 	install_source_consistent?: boolean | null
 }
 
+/**
+ * OTP delivery methods accepted by the official `/v2/code` (2.26.37.6):
+ * `sms`, `voice`, `wa_old`, `email_otp`, `flash`, `send_sms`, `silent_auth`
+ * (`AbstractC31124Dhu`/`AbstractC35293Fhj` method predicates, `AbstractC34923FZe`
+ * handler registration). `flash` (flash-call) is MOBILE-only and requires the
+ * three coupled flags below; landline ("fixo") works over `voice`.
+ */
+export type NativeAndroidRegistrationCodeMethod =
+	| 'sms'
+	| 'voice'
+	| 'flash'
+	| 'wa_old'
+	| 'email_otp'
+	| 'send_sms'
+	| 'silent_auth'
+
 export type NativeAndroidRequestCodeInput = {
 	token: string
-	method: 'sms' | 'voice'
+	method: NativeAndroidRegistrationCodeMethod
 	context?: string
 	advertisingId?: string
 	clickedEducationLink?: 0 | 1
@@ -467,8 +483,19 @@ export const buildNativeAndroidRequestCodeRequest = (
 	common: NativeAndroidRegistrationCommon,
 	input: NativeAndroidRequestCodeInput
 ): NativeAndroidRegistrationRequest => {
-	if (input.method !== 'sms' && input.method !== 'voice') {
-		throw new Error('native_android registration: method must be sms or voice')
+	const VALID_CODE_METHODS: ReadonlySet<string> = new Set([
+		'sms',
+		'voice',
+		'flash',
+		'wa_old',
+		'email_otp',
+		'send_sms',
+		'silent_auth'
+	])
+	if (!VALID_CODE_METHODS.has(input.method)) {
+		throw new Error(
+			'native_android registration: method must be one of sms, voice, flash, wa_old, email_otp, send_sms, silent_auth'
+		)
 	}
 
 	// Field order from the official /v2/code wire captures (2026-09-21 thin
@@ -478,7 +505,18 @@ export const buildNativeAndroidRequestCodeRequest = (
 	// This endpoint does not send `lc` and never sends `platform` (absent from
 	// every official capture; only payments/pathfinder classes write it).
 	const builder = new RegistrationRequestBuilder()
-	const environment = input.environment ?? {}
+	const environment: NativeAndroidRequestCodeEnvironment = { ...(input.environment ?? {}) }
+	// Flash-call coupling (AbstractC31129Dhz prefs `pref_prefer_sms_over_flash`,
+	// `pref_flash_call_call_log_permission_granted`,
+	// `pref_flash_call_manage_call_permission_granted`): `method=flash` is
+	// MOBILE-only and requires preferring flash over SMS plus both call
+	// permissions granted so the client can read the caller-id flash call.
+	// Landline (`voice`) needs none of this. Forcing the coupled trio here keeps
+	// the flash body consistent whatever the caller passed.
+	const isFlashMethod = input.method === 'flash'
+	const manageCallPermission = isFlashMethod ? 1 : input.manageCallPermission
+	const callLogPermission = isFlashMethod ? 1 : input.callLogPermission
+	if (isFlashMethod) environment.prefer_sms_over_flash = false
 	addEnvironmentField(builder, environment, '_gs')
 	addEnvironmentField(builder, environment, 'sim_mnc')
 	builder.requiredPercentEncoded('id', common.identityId)
@@ -532,8 +570,8 @@ export const buildNativeAndroidRequestCodeRequest = (
 	// null/-1 values, the fresh-install default.
 	if (common.registrationType !== 1) {
 		builder.booleanOrSkip('clicked_education_link', input.clickedEducationLink)
-		builder.booleanOrSkip('manage_call_permission', input.manageCallPermission)
-		builder.booleanOrSkip('call_log_permission', input.callLogPermission)
+		builder.booleanOrSkip('manage_call_permission', manageCallPermission)
+		builder.booleanOrSkip('call_log_permission', callLogPermission)
 		builder.base64('client_start_message', input.clientStartMessage)
 	}
 

@@ -139,6 +139,20 @@ describe('native_android official registration wire', () => {
 		expect(request.body).not.toContain('client_start_message=')
 	})
 
+	it('couples the flash-call trio when method is flash (mobile-only)', () => {
+		const request = buildNativeAndroidRequestCodeRequest(COMMON, {
+			token: '11999999999',
+			method: 'flash'
+		})
+
+		// flash-call needs prefer_sms_over_flash=false plus both call permissions
+		// granted, forced by the builder regardless of caller input.
+		expect(request.body).toContain('method=flash')
+		expect(request.body).toContain('prefer_sms_over_flash=false')
+		expect(request.body).toContain('manage_call_permission=true')
+		expect(request.body).toContain('call_log_permission=true')
+	})
+
 	it('writes type and login only for the WA_TWO_FA flow and drops cc/in there', () => {
 		const request = buildNativeAndroidRequestCodeRequest(
 			{
