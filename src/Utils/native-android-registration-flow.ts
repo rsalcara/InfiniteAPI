@@ -291,24 +291,30 @@ export const createNativeAndroidRegistrationFlow = (
 		const gate = parseNativeAndroidRegistrationBlockGate(response)
 		const proof = stepProofs.get(endpoint)
 		const blockScreenHash = registrationBlockScreenHash(gate.customBlockScreen)
-		logger.debug(
-			safeRegistrationLog({
-				endpoint,
-				operationId: 'native-android-registration',
-				phase: step,
-				attempts: http.attempts,
-				durationMs: Date.now() - startedAt,
-				httpStatus: http.status,
-				status: gate.status,
-				...(gate.reason !== null ? { reason: gate.reason } : {}),
-				...(blockScreenHash !== undefined ? { blockScreenHash } : {}),
-				...(materialHash !== undefined ? { materialHash } : {}),
-				...(proof?.signatureHash !== undefined ? { proofHash: proof.signatureHash } : {}),
-				...(proof?.attestedPackage != null ? { attestedPackage: proof.attestedPackage } : {}),
-				...(typeof proof?.challengeAgeMs === 'number' ? { challengeAgeMs: proof.challengeAgeMs } : {})
-			}),
-			'native_android registration step'
-		)
+		const line = safeRegistrationLog({
+			endpoint,
+			operationId: 'native-android-registration',
+			phase: step,
+			attempts: http.attempts,
+			durationMs: Date.now() - startedAt,
+			httpStatus: http.status,
+			status: gate.status,
+			...(gate.reason !== null ? { reason: gate.reason } : {}),
+			...(blockScreenHash !== undefined ? { blockScreenHash } : {}),
+			...(materialHash !== undefined ? { materialHash } : {}),
+			...(proof?.signatureHash !== undefined ? { proofHash: proof.signatureHash } : {}),
+			...(proof?.attestedPackage != null ? { attestedPackage: proof.attestedPackage } : {}),
+			...(typeof proof?.challengeAgeMs === 'number' ? { challengeAgeMs: proof.challengeAgeMs } : {}),
+			...(proof?.packageNameMatches !== undefined ? { packageNameMatches: proof.packageNameMatches } : {}),
+			...(proof?.signingCertMatches !== undefined ? { signingCertMatches: proof.signingCertMatches } : {})
+		})
+		// An attested install identity that does not name the registration
+		// material is the server's "Baixe o app oficial" trigger waiting to
+		// happen — surface it at warn level so it is visible without debug.
+		const identityDiverged =
+			proof != null && (proof.packageNameMatches === false || proof.signingCertMatches === false)
+		if (identityDiverged) logger.warn(line, 'native_android registration step')
+		else logger.debug(line, 'native_android registration step')
 	}
 
 	const digits = `${common.countryCallingCode}${common.nationalNumber}`

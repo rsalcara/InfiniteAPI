@@ -707,7 +707,9 @@ describe('native_android registration sanitized step correlation (audit gap F)',
 		'materialHash',
 		'proofHash',
 		'attestedPackage',
-		'challengeAgeMs'
+		'challengeAgeMs',
+		'packageNameMatches',
+		'signingCertMatches'
 	])
 
 	const stepLines = (spy: { mock: { calls: unknown[][] } }): RegistrationLogMetadata[] =>

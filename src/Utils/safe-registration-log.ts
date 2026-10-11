@@ -39,6 +39,10 @@ export type RegistrationLogMetadata = {
 	attestedPackage?: string
 	/** Age of the attestation challenge timestamp at validation time (ms). */
 	challengeAgeMs?: number
+	/** Whether the attested application id names the expected package. */
+	packageNameMatches?: boolean
+	/** Whether the attested application id carries the expected signing digest. */
+	signingCertMatches?: boolean
 }
 
 const SHA256_HEX = /^[0-9a-f]{64}$/
@@ -56,6 +60,10 @@ const externalToken = (value: string | undefined, pattern: RegExp): string | und
 /** Keeps `value` only when it is a sha-256 hex digest; drops anything else. */
 const digestToken = (value: string | undefined): string | undefined =>
 	value !== undefined && SHA256_HEX.test(value) ? value : undefined
+
+/** Keeps `value` only when it is a real boolean; drops anything else. */
+const booleanToken = (value: boolean | undefined): boolean | undefined =>
+	typeof value === 'boolean' ? value : undefined
 
 export function safeRegistrationLog(input: RegistrationLogMetadata): RegistrationLogMetadata {
 	if (!/^\/v2\/[a-z_]+$/.test(input.endpoint)) throw new Error('invalid log endpoint')
@@ -81,6 +89,8 @@ export function safeRegistrationLog(input: RegistrationLogMetadata): Registratio
 	const materialHash = digestToken(input.materialHash)
 	const proofHash = digestToken(input.proofHash)
 	const attestedPackage = externalToken(input.attestedPackage, PACKAGE_TOKEN)
+	const packageNameMatches = booleanToken(input.packageNameMatches)
+	const signingCertMatches = booleanToken(input.signingCertMatches)
 	return {
 		endpoint: input.endpoint,
 		operationId: input.operationId,
@@ -95,7 +105,9 @@ export function safeRegistrationLog(input: RegistrationLogMetadata): Registratio
 		...(materialHash !== undefined ? { materialHash } : {}),
 		...(proofHash !== undefined ? { proofHash } : {}),
 		...(attestedPackage !== undefined ? { attestedPackage } : {}),
-		...(challengeAgeMs !== undefined ? { challengeAgeMs } : {})
+		...(challengeAgeMs !== undefined ? { challengeAgeMs } : {}),
+		...(packageNameMatches !== undefined ? { packageNameMatches } : {}),
+		...(signingCertMatches !== undefined ? { signingCertMatches } : {})
 	}
 }
 
