@@ -1,8 +1,10 @@
+import { createDecipheriv } from 'node:crypto'
 import { jest } from '@jest/globals'
 import { readFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import type { proto } from '../../../WAProto/index.js'
+import { Curve } from '../../Utils/crypto'
 import { buildPrimaryRegistrationAuthCreds, normalizeLidJid } from '../../Utils/native-android-registration-auth'
 import type { NativeAndroidAttestationProofDiagnostics } from '../../Utils/native-android-registration-attestation-validation'
 import type { NativeAndroidRegistrationBridgeContext } from '../../Utils/native-android-registration-bridge-provider'
@@ -867,5 +869,136 @@ describe('native_android registration sanitized step correlation (audit gap F)',
 		} finally {
 			debugSpy.mockRestore()
 		}
+	})
+})
+
+describe('native_android registration unattested profile (whalibmob default)', () => {
+	// Mirrors the server-side decrypt of the `ENC=` body (same as the envelope
+	// suite), used with a test-owned server key pair to prove the sealed wire
+	// carries the exact plaintext query.
+	const decryptEnvelope = (enc: string, serverPrivate: Uint8Array): string => {
+		const combined = Buffer.from(enc, 'base64')
+		const ephemeralPublic = combined.subarray(0, 32)
+		const cipherText = combined.subarray(32)
+		const aesKey = Curve.sharedKey(serverPrivate, ephemeralPublic)
+		const decipher = createDecipheriv('aes-256-gcm', aesKey, new Uint8Array(12))
+		decipher.setAuthTag(cipherText.subarray(cipherText.length - 16))
+		return Buffer.concat([
+			decipher.update(cipherText.subarray(0, cipherText.length - 16)),
+			decipher.final()
+		]).toString('utf8')
+	}
+
+	type WireCall = { endpoint: string; headers: Record<string, string>; body: string }
+
+	const wireRecording = (calls: WireCall[]) =>
+		((async (url: RequestInfo | URL, init?: RequestInit) => {
+			const headers: Record<string, string> = {}
+			for (const [key, value] of Object.entries((init?.headers ?? {}) as Record<string, string>)) {
+				headers[key.toLowerCase()] = String(value)
+			}
+			const endpoint = String(url).replace('https://registration.lab.invalid', '')
+			calls.push({ endpoint, headers, body: String(init?.body ?? '') })
+			const body = endpoint.endsWith('/register')
+				? { status: 'ok', lid: '123456789012345' }
+				: endpoint.endsWith('/exist')
+					? { status: 'fail', reason: 'incorrect' }
+					: { status: 'sent' }
+			return new Response(JSON.stringify(body), { status: 200 })
+		}) as unknown as typeof fetch)
+
+	const unattestedFlow = (
+		calls: WireCall[],
+		overrides: Partial<Parameters<typeof createNativeAndroidRegistrationFlow>[0]> = {}
+	) =>
+		createNativeAndroidRegistrationFlow({
+			attestationProfile: 'unattested',
+			skipFunnel: true,
+			common: COMMON,
+			nativeIdentity: { device: DEVICE },
+			http: { baseUrl: 'https://registration.lab.invalid', fetch: wireRecording(calls) },
+			...overrides
+		})
+
+	it('sends every registration route as a sealed ENC= body with no H= and no Authorization', async () => {
+		const calls: WireCall[] = []
+		const flow = unattestedFlow(calls)
+		await flow.requestCode({ method: 'voice', token: '1531997072' })
+		const verified = await flow.verifyCode({ code: '123456' })
+		expect(calls.map(call => call.endpoint)).toEqual([
+			'/v2/reg_onboard_abprop',
+			'/v2/exist',
+			'/v2/code',
+			'/v2/register'
+		])
+		for (const call of calls) {
+			expect(call.body.startsWith('ENC=')).toBe(true)
+			expect(call.body).not.toContain('&H=')
+			expect(call.headers.authorization).toBeUndefined()
+			// The UA is the one platform-selector input left once the provider is
+			// gone: it names the persisted device and the announced build.
+			expect(call.headers['user-agent']).toMatch(/^WhatsApp\/[\d.]+ SMBA\/14 Device\/Xiaomi-/)
+		}
+		// The unattested wire still completes the registration.
+		expect(verified.creds?.registered).toBe(true)
+	})
+
+	it('drops the attestation artifacts from the environment and keeps the collected telemetry', async () => {
+		const calls: WireCall[] = []
+		const flow = unattestedFlow(calls, {
+			environment: {
+				gpia: 'foreign-jws-token',
+				_gg: 'gg-leg',
+				_gi: 'gi-leg',
+				_gp: 'gp-leg',
+				_ge: 'ge-leg',
+				_ga: 'ga-leg',
+				mcc: '724',
+				mnc: '005',
+				pid: 4321
+			}
+		})
+		const code = await flow.requestCode({ method: 'sms', token: '1531997072' })
+		// `code.request.body` is the plaintext the server recovers after
+		// decrypting `ENC=`: no attestation artifact survives the profile while
+		// the telemetry stays exactly as collected.
+		for (const key of ['gpia', '_gg', '_gi', '_gp', '_ge', '_ga']) {
+			expect(code.request.body).not.toContain(`${key}=`)
+		}
+		expect(code.request.body).toContain('mcc=724')
+		expect(code.request.body).toContain('mnc=005')
+		expect(code.request.body).toContain('pid=4321')
+	})
+
+	it('seals with the caller envelope material so the plaintext round-trips', async () => {
+		const server = Curve.generateKeyPair()
+		const calls: WireCall[] = []
+		const flow = unattestedFlow(calls, { envelopeMaterial: { serverPublicKey: server.public } })
+		const code = await flow.requestCode({ method: 'sms', token: '1531997072' })
+		const wire = calls.find(call => call.endpoint === '/v2/code')!
+		expect(decryptEnvelope(wire.body.slice(4), server.private)).toBe(code.request.body)
+	})
+
+	it('requires a device profile for the User-Agent', () => {
+		expect(() => createNativeAndroidRegistrationFlow({ attestationProfile: 'unattested', common: COMMON })).toThrow(
+			/requires a device profile/
+		)
+	})
+
+	it('refuses an attestation provider on the unattested profile', () => {
+		expect(() =>
+			createNativeAndroidRegistrationFlow({
+				attestationProfile: 'unattested',
+				common: COMMON,
+				nativeIdentity: { device: DEVICE },
+				attestationProvider: async () => ({ authorization: 'Native attestation' })
+			})
+		).toThrow(/never uses an attestation provider/)
+	})
+
+	it('still requires an attestation provider on the device profile', () => {
+		expect(() => createNativeAndroidRegistrationFlow({ skipOnboarding: true, skipFunnel: true, common: COMMON })).toThrow(
+			/requires an attestation provider/
+		)
 	})
 })

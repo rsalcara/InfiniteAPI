@@ -17,6 +17,10 @@ import {
 	mapAttestedDeviceProfile
 } from './native-android-registration-device-attestation'
 import {
+	buildNativeAndroidRegistrationWireBody,
+	type NativeAndroidRegistrationEnvelopeMaterial
+} from './native-android-registration-envelope'
+import {
 	buildNativeAndroidClientFunnelRequest,
 	buildNativeAndroidPrePnFunnelRequest
 } from './native-android-registration-funnel'
@@ -30,6 +34,7 @@ import {
 	buildNativeAndroidRegisterRequest,
 	buildNativeAndroidRegOnboardAbpropRequest,
 	buildNativeAndroidRequestCodeRequest,
+	sanitizeNativeAndroidRegistrationEnvironment,
 	type NativeAndroidRegisterInput,
 	type NativeAndroidRegistrationCommon,
 	type NativeAndroidRegistrationEndpoint,
@@ -74,9 +79,33 @@ export type NativeAndroidRegistrationFlowOptions = {
 	 * bridge no longer needs to replace it in-process.
 	 */
 	tokenMaterial?: NativeAndroidRegistrationTokenMaterial
-	attestationProvider: (
+	/**
+	 * How the registration wire carries attestation.
+	 *
+	 * `device` (default): the attestation provider seals AND signs every route
+	 * — `&H=` plus `Authorization` carry the Keystore chain and the
+	 * environment carries the Play Integrity legs. `attestationProvider` is
+	 * required.
+	 *
+	 * `unattested`: the whalibmob reference profile with no attestation server
+	 * attached (`attestBody` -> `EMPTY_BODY`, every attestation field omitted).
+	 * The flow seals `ENC=` itself and each request goes out with no `&H=`, no
+	 * `Authorization` and no attestation artifacts in the environment. The
+	 * registration server treats an absent artifact as nothing to validate,
+	 * while an artifact minted by another application names another package
+	 * and is exactly what triggers the app-identity block ("Baixe o app
+	 * oficial"). A registration client that cannot attest as the official
+	 * application must send this profile.
+	 */
+	attestationProfile?: 'device' | 'unattested'
+	attestationProvider?: (
 		context: NativeAndroidRegistrationBridgeContext
 	) => Promise<NativeAndroidRegistrationBridgeAttestation>
+	/**
+	 * Envelope material for the unattested profile's own seal; defaults to the
+	 * official server key. Under `device` the provider owns the seal.
+	 */
+	envelopeMaterial?: NativeAndroidRegistrationEnvelopeMaterial
 	http?: NativeAndroidRegistrationFlowHttpOptions
 	/** Default /v2/code environment; overridable per request. */
 	environment?: NativeAndroidRequestCodeEnvironment
@@ -195,7 +224,19 @@ export const createNativeAndroidRegistrationFlow = (
 	options: NativeAndroidRegistrationFlowOptions
 ): NativeAndroidRegistrationFlow => {
 	if (!options?.common) throw new Error('native_android registration flow requires the registration context')
-	if (!options.attestationProvider) {
+	const attestationProfile = options.attestationProfile ?? 'device'
+	if (attestationProfile === 'unattested') {
+		// The unattested profile signs nothing, so a provider could only
+		// reintroduce the artifacts this profile exists to omit.
+		if (options.attestationProvider) {
+			throw new Error('native_android registration flow: the unattested profile never uses an attestation provider')
+		}
+		// The User-Agent is the one platform-selector input left once the
+		// provider is gone — the provider is what normally supplies it.
+		if (!options.nativeIdentity?.device) {
+			throw new Error('native_android registration flow: the unattested profile requires a device profile for the User-Agent')
+		}
+	} else if (!options.attestationProvider) {
 		throw new Error('native_android registration flow requires an attestation provider')
 	}
 
@@ -248,8 +289,12 @@ export const createNativeAndroidRegistrationFlow = (
 		if (leftKeys.length !== rightKeys.length) return false
 		return leftKeys.every((key, index) => key === rightKeys[index] && a[key] === b[key])
 	}
-	const capturedAttestationProvider: typeof options.attestationProvider = async context => {
-		const attestation = await options.attestationProvider(context)
+	const capturedAttestationProvider = async (
+		context: NativeAndroidRegistrationBridgeContext
+	): Promise<NativeAndroidRegistrationBridgeAttestation> => {
+		// Guaranteed by the profile validation above: only the `device` profile
+		// ever wraps a provider, and that profile requires one.
+		const attestation = await options.attestationProvider!(context)
 		const reported = attestation.deviceProfile
 		if (reported) {
 			if (!attestedDeviceProfile) attestedDeviceProfile = reported
@@ -326,7 +371,7 @@ export const createNativeAndroidRegistrationFlow = (
 			login: common.login ?? `${digits}@s.whatsapp.net`,
 			registrationType: common.registrationType
 		},
-		capturedAttestationProvider
+		attestationProfile === 'device' ? capturedAttestationProvider : undefined
 	)
 
 	/** Pending auth challenge from the last /v2/code, echoed by /v2/register. */
@@ -354,13 +399,40 @@ export const createNativeAndroidRegistrationFlow = (
 				)
 			: undefined
 	}
+	// Unattested profile: the Play Integrity legs are dropped from every
+	// environment map — an artifact minted by another application names that
+	// package and is the app-identity block trigger (see
+	// NATIVE_ANDROID_REGISTRATION_ATTESTATION_ENV_KEYS). Telemetry (mcc/mnc/
+	// sim/ram/pid/…) stays exactly as collected. The `device` profile keeps the
+	// whole map: its provider minted the artifacts.
+	const flowEnvironment = (environment?: NativeAndroidRequestCodeEnvironment) =>
+		attestationProfile === 'unattested'
+			? sanitizeNativeAndroidRegistrationEnvironment(environment)
+			: environment
 	const funnelOptions = () => {
 		const userAgent = funnelUserAgent()
+		const environment = flowEnvironment(options.environment)
 		return {
 			accessSessionId: funnelAccessSessionId,
 			...(options.advertisingId ? { advertisingId: options.advertisingId } : {}),
-			...(options.environment ? { environment: options.environment } : {}),
+			...(environment ? { environment } : {}),
 			...(userAgent ? { userAgent } : {})
+		}
+	}
+	// The unattested profile has no provider to seal and sign, so the flow
+	// seals the body itself (whalibmob `encryptPayload` + `sendEncrypted` over
+	// `EMPTY_BODY`): `ENC=` only — never `&H=`, never `Authorization`. The
+	// `device` profile leaves the request alone: its provider seals, signs and
+	// supplies the User-Agent. Funnel requests are sealed by their own builders
+	// and never pass through here.
+	const wireRequest = (request: NativeAndroidRegistrationRequest): NativeAndroidRegistrationRequest => {
+		if (attestationProfile !== 'unattested') return request
+		const wire = buildNativeAndroidRegistrationWireBody(request.body, options.envelopeMaterial)
+		return {
+			...request,
+			body: wire.body,
+			sendAttestationPayload: false,
+			userAgent: request.userAgent ?? funnelUserAgent()
 		}
 	}
 	let funnelPreviousScreen: string | undefined
@@ -435,19 +507,19 @@ export const createNativeAndroidRegistrationFlow = (
 			// any registration request exists.
 			await sendPrePnFunnel('session_start', 'registration_session_start')
 			const abpropRequest = buildNativeAndroidRegOnboardAbpropRequest(common, {
-				environment: options.environment
+				environment: flowEnvironment(options.environment)
 			})
 			const abpropStartedAt = Date.now()
-			const abpropHttp = await client(abpropRequest)
+			const abpropHttp = await client(wireRequest(abpropRequest))
 			logRegistrationStep('abprop', '/v2/reg_onboard_abprop', abpropHttp, abpropStartedAt, abpropHttp.body)
 			await sendClientFunnel('enter_number', 'exist_check', 'exist_attempt')
 			const existRequest = buildNativeAndroidExistRequest(common, {
-				environment: options.environment,
+				environment: flowEnvironment(options.environment),
 				advertisingId: options.advertisingId,
 				clientMetrics: options.onboardClientMetrics
 			})
 			const existStartedAt = Date.now()
-			const existHttp = await client(existRequest)
+			const existHttp = await client(wireRequest(existRequest))
 			logRegistrationStep('exist', '/v2/exist', existHttp, existStartedAt, existHttp.body)
 			// `exist_success` means the identity is fresh (`reason: incorrect`),
 			// the state that lets the client proceed to /v2/code;
@@ -548,10 +620,10 @@ export const createNativeAndroidRegistrationFlow = (
 				...input,
 				token,
 				advertisingId: input.advertisingId ?? options.advertisingId,
-				environment: input.environment ?? options.environment
+				environment: flowEnvironment(input.environment ?? options.environment)
 			})
 			const codeStartedAt = Date.now()
-			const http = await client(request)
+			const http = await client(wireRequest(request))
 			logRegistrationStep('code', '/v2/code', http, codeStartedAt, http.body)
 			const response = parseNativeAndroidRequestCodeResponse(http.body)
 			pendingAuthChallenge = response.authChallenge
@@ -585,7 +657,7 @@ export const createNativeAndroidRegistrationFlow = (
 				authResponse: input.authResponse ?? pendingAuthChallenge
 			})
 			const registerStartedAt = Date.now()
-			const http = await client(request)
+			const http = await client(wireRequest(request))
 			logRegistrationStep('register', '/v2/register', http, registerStartedAt, http.body)
 			const response = parseNativeAndroidRegisterResponse(http.body)
 			const creds =

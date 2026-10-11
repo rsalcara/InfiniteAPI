@@ -18,7 +18,8 @@ import {
 	buildNativeAndroidRequestCodeRequest,
 	percentEncodeRegistrationBytes,
 	percentEncodeRegistrationString,
-	protectNativeAndroidRegistrationBody
+	protectNativeAndroidRegistrationBody,
+	sanitizeNativeAndroidRegistrationEnvironment
 } from '../../Utils/native-android-registration-protocol'
 
 const COMMON = {
@@ -202,6 +203,37 @@ describe('native_android official registration wire', () => {
 		expect(request.body).not.toMatch(/(^|&)in=/)
 		expect(request.body).not.toContain('clicked_education_link=')
 		expect(request.body).toContain('login=5511999999999%40s.whatsapp.net&type=1&backup_token=abc&e_ident=')
+	})
+
+	it('drops exactly the attestation artifacts when sanitizing the environment', () => {
+		const environment = {
+			gpia: 'real-play-integrity-token',
+			_gg: 'gg-leg',
+			_gi: 'gi-leg',
+			_gp: 'gp-leg',
+			_ge: '{"sb":false,"sv":false}',
+			_ga: 'ga-leg',
+			_gs: '{"em":"real-google-payload"}',
+			aid: 'gpaxhhu6dv7i2bkZ3MhoP+wp98HvtKT81YcBIqTp7IM=',
+			mcc: '310',
+			mnc: '260',
+			pid: 10600
+		}
+		const sanitized = sanitizeNativeAndroidRegistrationEnvironment(environment)!
+		// The drop list is exactly the attestation field set the whalibmob
+		// reference mints from its attestor (`attestationFields`): a field with
+		// no value is omitted rather than sent empty, and every one of these
+		// names the application that produced it.
+		expect(sanitized).toEqual({
+			_gs: '{"em":"real-google-payload"}',
+			aid: 'gpaxhhu6dv7i2bkZ3MhoP+wp98HvtKT81YcBIqTp7IM=',
+			mcc: '310',
+			mnc: '260',
+			pid: 10600
+		})
+		// The caller's map is never mutated and an absent map stays absent.
+		expect(environment.gpia).toBe('real-play-integrity-token')
+		expect(sanitizeNativeAndroidRegistrationEnvironment(undefined)).toBeUndefined()
 	})
 
 	it('builds /v2/code environment fields only when the device supplies them', () => {

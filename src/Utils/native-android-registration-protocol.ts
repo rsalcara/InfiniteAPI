@@ -362,6 +362,36 @@ export const addKeyBundle = (builder: RegistrationRequestBuilder, bundle: Native
 }
 
 /**
+ * Environment fields that are attestation artifacts (the Play Integrity legs),
+ * not device telemetry. Each one is only meaningful when minted by the official
+ * application: a Play Integrity token declares the package that requested it
+ * and an AndroidKeyStore attestation extension declares the package holding the
+ * key. Artifacts naming any other package make the registration server answer
+ * the app-identity block ("Baixe o app oficial"), while an absent artifact has
+ * nothing to validate — the official serializer omits the map entries its
+ * attestor never produced, and the whalibmob reference registers with every one
+ * of these fields absent.
+ */
+export const NATIVE_ANDROID_REGISTRATION_ATTESTATION_ENV_KEYS: ReadonlyArray<keyof NativeAndroidRequestCodeEnvironment> =
+	['gpia', '_gg', '_gi', '_gp', '_ge', '_ga']
+
+/**
+ * Drops the attestation artifacts from an environment map for the unattested
+ * registration profile. Telemetry (mcc/mnc/sim/ram/pid/…) is preserved as
+ * collected; the caller's map is never mutated.
+ */
+export const sanitizeNativeAndroidRegistrationEnvironment = (
+	environment: NativeAndroidRequestCodeEnvironment | undefined
+): NativeAndroidRequestCodeEnvironment | undefined => {
+	if (!environment) return undefined
+	const sanitized: NativeAndroidRequestCodeEnvironment = { ...environment }
+	for (const key of NATIVE_ANDROID_REGISTRATION_ATTESTATION_ENV_KEYS) {
+		delete sanitized[key]
+	}
+	return sanitized
+}
+
+/**
  * Writes one runtime environment field at its observed position in the W4B
  * 2.26.36.72 /v2/code wire. Undefined means the APK did not produce the value;
  * it never falls back to a fabricated default.

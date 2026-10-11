@@ -137,7 +137,10 @@ export const createNativeAndroidRegistrationOfficialFetch = (): typeof fetch => 
 
 export const createNativeAndroidRegistrationHttpClient = (
 	config: NativeAndroidRegistrationHttpConfig,
-	attestationProvider: (
+	// Absent for the unattested registration profile: every request goes out
+	// with its sealed `ENC=` body only, exactly like the whalibmob reference
+	// with no attestation server attached (`attestBody` -> `EMPTY_BODY`).
+	attestationProvider?: (
 		context: NativeAndroidRegistrationBridgeContext
 	) => Promise<NativeAndroidRegistrationBridgeAttestation>
 ) => {
@@ -169,9 +172,10 @@ export const createNativeAndroidRegistrationHttpClient = (
 		// `sendAttestationPayload: false` is the APK's `HS5(false)` funnel flag
 		// (RetryingHttpClient p8, `if-eqz v17, :cond_11`): the body is already
 		// sealed and unsigned, so the attestation provider is never called and
-		// the request goes out without `&H=` and without `Authorization`.
+		// the request goes out without `&H=` and without `Authorization`. The
+		// unattested profile seals its body the same way and has no provider.
 		const attested =
-			request.sendAttestationPayload === false
+			request.sendAttestationPayload === false || !attestationProvider
 				? null
 				: await attestationProvider({
 						endpoint: request.endpoint,
