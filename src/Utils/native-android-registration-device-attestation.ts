@@ -114,7 +114,11 @@ export const buildNativeAndroidRegistrationUserAgent = (
 
 export type NativeAndroidRegistrationDeviceAttestationOptions = {
 	signer: NativeAndroidRegistrationDeviceSigner
-	/** Static server key for the `ENC=` envelope; omitted sends the APK's signed-plaintext fallback. */
+	/**
+	 * Static server key for the `ENC=` envelope. Omitted = the built-in official
+	 * key (the APK seals every endpoint); the signed-plaintext fallback only
+	 * happens when the seal throws.
+	 */
 	envelopeMaterial?: NativeAndroidRegistrationEnvelopeMaterial
 	/**
 	 * The exact profile the session raffled (`createNativeAndroidDeviceProfile`).

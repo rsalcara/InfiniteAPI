@@ -5,6 +5,7 @@ import {
 	buildNativeAndroidRegistrationWireBody,
 	encodeNativeAndroidRegistrationAuthorization,
 	encodeNativeAndroidRegistrationSignature,
+	NATIVE_ANDROID_REGISTRATION_SERVER_PUBLIC_KEY,
 	sealNativeAndroidRegistrationEnvelope
 } from '../../Utils/native-android-registration-envelope'
 
@@ -70,15 +71,24 @@ describe('native android registration envelope', () => {
 		)
 	})
 
-	it('falls back to the signed plain query when encryption is unavailable (APK parity)', () => {
-		const fallback = buildNativeAndroidRegistrationWireBody(QUERY)
-		expect(fallback.encrypted).toBe(false)
-		expect(fallback.body).toBe(QUERY)
-		expect(Buffer.from(fallback.payloadToSign).toString('utf8')).toBe(QUERY)
+	it('seals with the built-in official server key when no material is given', () => {
+		const sealed = buildNativeAndroidRegistrationWireBody(QUERY)
+		expect(sealed.encrypted).toBe(true)
+		expect(sealed.body.startsWith('ENC=')).toBe(true)
+		expect(Buffer.from(sealed.payloadToSign).toString('utf8')).toBe(sealed.body.slice(4))
+	})
 
+	it('carries the official server key byte-for-byte (H8U.A00 / whalibmob REGISTRATION_PUBLIC_KEY)', () => {
+		expect(Buffer.from(NATIVE_ANDROID_REGISTRATION_SERVER_PUBLIC_KEY).toString('hex')).toBe(
+			'8e8c0f74c3ebc5d7a6865c6c3c843856b06121cce8ea774d22fb6f122512302d'
+		)
+	})
+
+	it('falls back to the signed plain query only when the seal throws (APK parity)', () => {
 		const malformed = buildNativeAndroidRegistrationWireBody(QUERY, { serverPublicKey: new Uint8Array(3) })
 		expect(malformed.encrypted).toBe(false)
 		expect(malformed.body).toBe(QUERY)
+		expect(Buffer.from(malformed.payloadToSign).toString('utf8')).toBe(QUERY)
 	})
 
 	it('appends the official &H= suffix with flag-11 encoding', () => {

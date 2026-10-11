@@ -23,7 +23,11 @@ export type NativeAndroidRegistrationRelayProviderConfig = {
 	allowInsecureLoopbackAliases?: string[]
 	timeoutMs?: number
 	fetch?: typeof fetch
-	/** Static server key for the `ENC=` envelope; omitted sends the signed-plaintext fallback. */
+	/**
+	 * Static server key for the `ENC=` envelope. Omitted = the built-in official
+	 * key (the APK seals every endpoint); the signed-plaintext fallback only
+	 * happens when the seal throws.
+	 */
 	envelopeMaterial?: NativeAndroidRegistrationEnvelopeMaterial
 	/**
 	 * Explicit User-Agent override (e.g. the session's raffled identity). Takes

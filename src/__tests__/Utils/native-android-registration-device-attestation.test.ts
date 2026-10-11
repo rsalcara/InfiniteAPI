@@ -52,10 +52,25 @@ describe('native android device attestation provider', () => {
 		expect(attested.authorization).toBe('AQID')
 	})
 
-	it('uses the APK signed-plaintext fallback without envelope material', async () => {
+	it('seals with the built-in server key when no material is given', async () => {
 		const calls: string[] = []
 		const provider = createNativeAndroidRegistrationDeviceAttestationProvider({
 			signer: makeSigner(calls),
+			deviceProfile: { manufacturer: 'samsung', deviceModelType: 'SM-S948B', osVersion: '16' }
+		})
+
+		const attested = await provider(CONTEXT)
+		expect(attested.body!.startsWith('ENC=')).toBe(true)
+		expect(calls[0]).not.toBe(`sign:${QUERY}`)
+		expect(calls[0]!.slice(5)).toBe(attested.body!.slice(4, -'&H=-_8'.length))
+		expect(attested.authorization).toBe('AQID')
+	})
+
+	it('uses the APK signed-plaintext fallback only when the seal is unavailable', async () => {
+		const calls: string[] = []
+		const provider = createNativeAndroidRegistrationDeviceAttestationProvider({
+			signer: makeSigner(calls),
+			envelopeMaterial: { serverPublicKey: new Uint8Array(3) },
 			deviceProfile: { manufacturer: 'samsung', deviceModelType: 'SM-S948B', osVersion: '16' }
 		})
 

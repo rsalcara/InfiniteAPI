@@ -30,7 +30,7 @@ const makeFetch = (response: { status?: number; ok?: boolean; json?: unknown }, 
 	}) as unknown as typeof fetch
 
 describe('native android registration relay provider', () => {
-	it('signs through the device relay and appends the device h= verbatim', async () => {
+	it('seals with the built-in server key by default and appends the device h= verbatim', async () => {
 		const calls: FetchCall[] = []
 		const provider = createNativeAndroidRegistrationRelayProvider({
 			url: 'https://api.example.com',
@@ -42,12 +42,29 @@ describe('native android registration relay provider', () => {
 		expect(calls).toHaveLength(1)
 		expect(calls[0]!.url).toBe('https://api.example.com/registration/attestation')
 		const payload = JSON.parse(calls[0]!.init.body!) as { payloadBase64: string; challengeBase64?: string }
-		// Signed-plaintext fallback: the device signs the exact query bytes.
-		expect(Buffer.from(payload.payloadBase64, 'base64').toString('utf8')).toBe(QUERY)
+		// Default seal: the device signs the bare enc value carried in the body.
+		expect(attested.body!.startsWith('ENC=')).toBe(true)
+		const signedPayload = Buffer.from(payload.payloadBase64, 'base64').toString('utf8')
+		expect(attested.body).toBe(`ENC=${signedPayload}&H=${RELAY_H}`)
 		expect(payload.challengeBase64).toBeUndefined()
-		expect(attested.body).toBe(`${QUERY}&H=${RELAY_H}`)
 		expect(attested.authorization).toBe(RELAY_AUTHORIZATION)
 		expect(attested.userAgent).toBeUndefined()
+	})
+
+	it('keeps the signed-plaintext fallback when the seal is unavailable (APK parity)', async () => {
+		const calls: FetchCall[] = []
+		const provider = createNativeAndroidRegistrationRelayProvider({
+			url: 'https://api.example.com',
+			envelopeMaterial: { serverPublicKey: new Uint8Array(3) },
+			fetch: makeFetch({ json: { h: RELAY_H, authorization: RELAY_AUTHORIZATION } }, calls)
+		})
+
+		const attested = await provider(CONTEXT)
+
+		const payload = JSON.parse(calls[0]!.init.body!) as { payloadBase64: string; challengeBase64?: string }
+		expect(Buffer.from(payload.payloadBase64, 'base64').toString('utf8')).toBe(QUERY)
+		expect(attested.body).toBe(`${QUERY}&H=${RELAY_H}`)
+		expect(attested.authorization).toBe(RELAY_AUTHORIZATION)
 	})
 
 	it('sends the bare enc value as payload when the envelope material is set', async () => {

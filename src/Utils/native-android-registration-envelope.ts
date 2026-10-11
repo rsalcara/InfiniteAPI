@@ -24,15 +24,34 @@ import { Curve } from './crypto'
  *    `CDw.A05`/`CDw.A09`, XOR-0x12 obfuscated constants decoding to "ENC"
  *    and "H" (CDw.1.smali 323/339 + decoder A00). Lowercase `enc=`/`h=`
  *    reaches the server as body params it cannot see and surfaces as
- *    `missing_param` for the first required body parameter. On any encryption
- *    failure the APK falls back to sending the plain query signed as-is —
- *    `buildNativeAndroidRegistrationWireBody` mirrors that fallback exactly.
+ *    `missing_param` for the first required body parameter. Every endpoint
+ *    seals: `DKX.A1W` is a constant `true` in 2.26.38.10 (the `isEncrypted`
+ *    predicate of `RetryingHttpClient.A00`), so the plain query is only the
+ *    APK's exception path ("encryption failed, using plain query string") —
+ *    `buildNativeAndroidRegistrationWireBody` mirrors that: seal with the
+ *    built-in server key by default, fall back only when the seal throws.
  */
 
 export type NativeAndroidRegistrationEnvelopeMaterial = {
 	/** Static server X25519 public key (`BpZ.A00.value`), 32 bytes. */
 	serverPublicKey: Uint8Array
 }
+
+/**
+ * The official server key, byte-identical across the APK `H8U.A00` literal
+ * (consumer 2.26.38.10/2.26.37.6), `AbstractC34152F0o.A00` (2.26.37.6) and
+ * whalibmob `constants.js` `REGISTRATION_PUBLIC_KEY`. It is a protocol
+ * constant — same for every device and number — so the motor carries it and
+ * the envelope needs no external material.
+ */
+export const NATIVE_ANDROID_REGISTRATION_SERVER_PUBLIC_KEY: Uint8Array = Uint8Array.from([
+	0x8e, 0x8c, 0x0f, 0x74, 0xc3, 0xeb, 0xc5, 0xd7, 0xa6, 0x86, 0x5c, 0x6c, 0x3c, 0x84, 0x38, 0x56,
+	0xb0, 0x61, 0x21, 0xcc, 0xe8, 0xea, 0x77, 0x4d, 0x22, 0xfb, 0x6f, 0x12, 0x25, 0x12, 0x30, 0x2d
+])
+
+export const nativeAndroidRegistrationDefaultEnvelopeMaterial = (): NativeAndroidRegistrationEnvelopeMaterial => ({
+	serverPublicKey: NATIVE_ANDROID_REGISTRATION_SERVER_PUBLIC_KEY
+})
 
 export type NativeAndroidRegistrationWireBody = {
 	/** Body to POST before the `&H=` suffix: `ENC=...` or the plain query. */
@@ -83,18 +102,21 @@ export const sealNativeAndroidRegistrationEnvelope = (
 }
 
 /**
- * Full body protection exactly as the APK's request builder: try the envelope,
- * fall back to the signed plain query on any failure. `H=` is appended by
- * `appendNativeAndroidRegistrationSignature` once the device-side signature
- * arrives.
+ * Full body protection exactly as the APK's request builder: seal with the
+ * official server key (or the caller's material), fall back to the signed
+ * plain query only when the seal throws — the APK's exception path. `H=` is
+ * appended by `appendNativeAndroidRegistrationSignature` once the device-side
+ * signature arrives.
  */
 export const buildNativeAndroidRegistrationWireBody = (
 	query: string,
 	material?: NativeAndroidRegistrationEnvelopeMaterial
 ): NativeAndroidRegistrationWireBody => {
 	try {
-		if (!material) throw new Error('native_android registration envelope: material is required')
-		return sealNativeAndroidRegistrationEnvelope(query, material)
+		return sealNativeAndroidRegistrationEnvelope(
+			query,
+			material ?? nativeAndroidRegistrationDefaultEnvelopeMaterial()
+		)
 	} catch {
 		return { body: query, payloadToSign: Buffer.from(query, 'utf8'), encrypted: false }
 	}
