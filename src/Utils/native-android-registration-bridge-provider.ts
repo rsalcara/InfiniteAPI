@@ -289,8 +289,19 @@ export const mapBridgeRegistrationEnvironment = (raw: Record<string, unknown>): 
 	return environment as NativeAndroidRequestCodeEnvironment
 }
 
+export type NativeAndroidRegistrationEnvironmentProviderOptions = {
+	/**
+	 * `authkey` do registro (o `metadata.A0I()` do APK). O device o devolve em
+	 * Base64 URL_SAFE|NO_WRAP como `requestHash` do Play Integrity Standard que
+	 * produz o campo `gpia` — 1:1 com o `gpia-param-prepare` oficial
+	 * (C42288Ijh case 16 → HXY.A02), que amarra o token ao authkey enviado.
+	 */
+	challenge?: Uint8Array
+}
+
 export type NativeAndroidRegistrationEnvironmentProvider = (
-	appVariant: 'business' | 'consumer'
+	appVariant: 'business' | 'consumer',
+	options?: NativeAndroidRegistrationEnvironmentProviderOptions
 ) => Promise<NativeAndroidRequestCodeEnvironment>
 
 /**
@@ -307,7 +318,7 @@ export const createNativeAndroidRegistrationEnvironmentProvider = (
 	const fetchImpl = config.fetch ?? fetch
 	const timeoutMs = config.timeoutMs ?? 30_000
 
-	return async appVariant => {
+	return async (appVariant, options) => {
 		if (appVariant !== 'business' && appVariant !== 'consumer') {
 			throw new Boom('native_android registration environment requires an app variant', {
 				statusCode: DisconnectReason.badSession
@@ -324,7 +335,12 @@ export const createNativeAndroidRegistrationEnvironmentProvider = (
 					'Content-Type': 'application/json',
 					...(config.token ? { Authorization: `Bearer ${config.token}` } : {})
 				},
-				body: JSON.stringify({ appVariant }),
+				body: JSON.stringify({
+					appVariant,
+					...(options?.challenge?.length
+						? { challengeBase64: Buffer.from(options.challenge).toString('base64') }
+						: {})
+				}),
 				signal: controller.signal
 			})
 
