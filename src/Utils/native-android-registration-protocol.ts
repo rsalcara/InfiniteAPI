@@ -10,6 +10,8 @@ export type NativeAndroidRegistrationEndpoint =
 	| '/v2/consent'
 	| '/v2/device_confirm'
 	| '/v2/autoconf'
+	| '/v2/pre_pn_client_log'
+	| '/v2/client_log'
 
 export type NativeAndroidRegistrationCommon = {
 	/**
@@ -198,6 +200,20 @@ export type NativeAndroidRegistrationRequest = {
 	 * keys on `in=` for primary requests and on `login=` digits for type 1.
 	 */
 	registrationType?: 0 | 1
+	/**
+	 * APK `HS5` route flag (`RetryingHttpClient` p8). The funnel routes
+	 * (`/v2/pre_pn_client_log`, `/v2/client_log`) are `HS5(false)`: the body is
+	 * only `ENC=<blob>` — no `&H=` suffix, no `Authorization` header and no
+	 * attestation provider call (`if-eqz v17, :cond_11` skips the whole
+	 * signWithKeyAttestation path). Every other route defaults to true.
+	 */
+	sendAttestationPayload?: boolean
+	/**
+	 * Official User-Agent for requests that skip the attestation provider —
+	 * the provider is what normally supplies it. The registration platform
+	 * selector rejects requests without one.
+	 */
+	userAgent?: string
 }
 
 const byteAt = (value: Uint8Array, index: number): number => value[index] ?? 0
@@ -245,7 +261,7 @@ const uuidToBytes = (value: string): Uint8Array => {
 	)
 }
 
-class RegistrationRequestBuilder {
+export class RegistrationRequestBuilder {
 	private readonly values = new Map<string, string>()
 	private readonly percentEncoded = new Set<string>()
 
@@ -335,7 +351,7 @@ const addLoginAndType = (builder: RegistrationRequestBuilder, common: NativeAndr
 	if (common.registrationType !== undefined) builder.setRaw('type', String(common.registrationType))
 }
 
-const addKeyBundle = (builder: RegistrationRequestBuilder, bundle: NativeAndroidRegistrationKeyBundle): void => {
+export const addKeyBundle = (builder: RegistrationRequestBuilder, bundle: NativeAndroidRegistrationKeyBundle): void => {
 	builder.requiredBase64('authkey', bundle.authkey)
 	builder.requiredBase64('e_ident', bundle.e_ident)
 	builder.requiredBase64('e_keytype', bundle.e_keytype)

@@ -166,6 +166,7 @@ describe('native_android registration flow', () => {
 		]
 		const flow = createNativeAndroidRegistrationFlow({
 			skipOnboarding: true,
+			skipFunnel: true,
 			common: COMMON,
 			account: ACCOUNT,
 			nativeIdentity: { device: DEVICE },
@@ -220,6 +221,7 @@ describe('native_android registration flow', () => {
 		const contexts: NativeAndroidRegistrationBridgeContext[] = []
 		const flow = createNativeAndroidRegistrationFlow({
 			skipOnboarding: true,
+			skipFunnel: true,
 			common: {
 				...COMMON,
 				login: '5511999999999@s.whatsapp.net',
@@ -246,6 +248,7 @@ describe('native_android registration flow', () => {
 	it('returns no creds when /v2/register does not complete', async () => {
 		const flow = createNativeAndroidRegistrationFlow({
 			skipOnboarding: true,
+			skipFunnel: true,
 			common: COMMON,
 			nativeIdentity: { device: DEVICE },
 			attestationProvider: async () => ({ authorization: 'Native attestation' }),
@@ -268,6 +271,7 @@ describe('native_android registration flow', () => {
 		let fetchCalls = 0
 		const flow = createNativeAndroidRegistrationFlow({
 			skipOnboarding: true,
+			skipFunnel: true,
 			common: COMMON,
 			attestationProvider: async context => ({
 				authorization: 'Native attestation',
@@ -299,6 +303,7 @@ describe('native_android registration flow', () => {
 	it('runs the onboarding pre-flight abprop → exist before the first /v2/code', async () => {
 		const calls: { url: string; body: string }[] = []
 		const flow = createNativeAndroidRegistrationFlow({
+			skipFunnel: true,
 			common: COMMON,
 			advertisingId: '11111111-2222-3333-4444-555555555555',
 			onboardClientMetrics: '{"GMSVersion":263234032}',
@@ -376,6 +381,7 @@ describe('native_android registration flow self-computed token', () => {
 	const singleShotFlow = (options: Partial<Parameters<typeof createNativeAndroidRegistrationFlow>[0]>) =>
 		createNativeAndroidRegistrationFlow({
 			skipOnboarding: true,
+			skipFunnel: true,
 			common: { ...COMMON, nationalNumber: '1531997072' },
 			...options,
 			attestationProvider: async context => ({ authorization: 'Native attestation', body: context.body }),

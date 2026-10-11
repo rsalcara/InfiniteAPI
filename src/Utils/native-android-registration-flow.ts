@@ -1,4 +1,5 @@
 import { Boom } from '@hapi/boom'
+import { randomUUID } from 'node:crypto'
 import type { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, NativeAndroidDeviceProfile } from '../Types'
 import { buildPrimaryRegistrationAuthCreds } from './native-android-registration-auth'
@@ -10,6 +11,11 @@ import {
 	createNativeAndroidRegistrationHttpClient,
 	type NativeAndroidRegistrationHttpConfig
 } from './native-android-registration-client'
+import { buildNativeAndroidRegistrationUserAgent } from './native-android-registration-device-attestation'
+import {
+	buildNativeAndroidClientFunnelRequest,
+	buildNativeAndroidPrePnFunnelRequest
+} from './native-android-registration-funnel'
 import {
 	buildNativeAndroidRegistrationKeyBundle,
 	createNativeAndroidRegistrationSignalKeys,
@@ -29,6 +35,7 @@ import {
 import {
 	type NativeAndroidRegisterResponse,
 	type NativeAndroidRequestCodeResponse,
+	isRegistrationSuccess,
 	parseNativeAndroidRegisterResponse,
 	parseNativeAndroidRequestCodeResponse
 } from './native-android-registration-response'
@@ -36,6 +43,8 @@ import {
 	buildClassicRegistrationToken,
 	type NativeAndroidRegistrationTokenMaterial
 } from './native-android-registration-token'
+import logger from './logger'
+import { safeRegistrationLog } from './safe-registration-log'
 
 export type NativeAndroidRegistrationFlowHttpOptions = Omit<
 	NativeAndroidRegistrationHttpConfig,
@@ -81,6 +90,12 @@ export type NativeAndroidRegistrationFlowOptions = {
 	 * isolate a single endpoint.
 	 */
 	skipOnboarding?: boolean
+	/**
+	 * Skips the registration funnel telemetry (`/v2/pre_pn_client_log`,
+	 * `/v2/client_log`). The APK always sends it around the registration
+	 * calls; the flag exists for unit tests that isolate a single endpoint.
+	 */
+	skipFunnel?: boolean
 	/** ADV signed device identity to persist with the resulting creds, when known. */
 	account?: proto.IADVSignedDeviceIdentity
 	/**
@@ -198,22 +213,115 @@ export const createNativeAndroidRegistrationFlow = (
 	/** Pending auth challenge from the last /v2/code, echoed by /v2/register. */
 	let pendingAuthChallenge: Uint8Array | undefined
 
+	// Registration funnel (1:1 com BaseFunnelLogger/PrePnBaseFunnelLogger). The
+	// APK fires these around abprop/exist/code/register and only logs failures
+	// ("failed to send funnel log"): telemetry that can abort a registration is
+	// worse than no telemetry, so every funnel error is swallowed here.
+	// `previous_screen` follows the APK's `pref_previous_screen` ("unknown"
+	// before the first event) and the session id is minted once per flow — a
+	// funnel-local value: it never touches `common`, so no existing request
+	// body changes.
+	const funnelAccessSessionId = common.accessSessionId ?? randomUUID()
+	const funnelUserAgent = options.nativeIdentity?.device
+		? buildNativeAndroidRegistrationUserAgent(
+				options.nativeIdentity.device,
+				common.appVariant === 'business' ? 'business' : 'consumer'
+			)
+		: undefined
+	const funnelOptions = {
+		accessSessionId: funnelAccessSessionId,
+		...(options.advertisingId ? { advertisingId: options.advertisingId } : {}),
+		...(options.environment ? { environment: options.environment } : {}),
+		...(funnelUserAgent ? { userAgent: funnelUserAgent } : {})
+	}
+	let funnelPreviousScreen: string | undefined
+	let lastRequestedMethod: string | undefined
+
+	const sendFunnelEvent = async (request: NativeAndroidRegistrationRequest, currentScreen: string): Promise<void> => {
+		if (options.skipFunnel) return
+		// The APK stores the new previous-screen pref before the POST goes out.
+		funnelPreviousScreen = currentScreen
+		try {
+			await client(request)
+		} catch {
+			// Allowlisted metadata only (audit M10): the Error never reaches the log.
+			logger.debug(
+				safeRegistrationLog({
+					endpoint: request.endpoint,
+					operationId: 'funnel-event',
+					phase: 'funnel',
+					attempts: 1,
+					durationMs: 0,
+					category: 'funnel_send_failed'
+				}),
+				'native_android registration funnel log failed'
+			)
+		}
+	}
+
+	const sendPrePnFunnel = async (actionTaken: string, eventName: string): Promise<void> => {
+		await sendFunnelEvent(
+			buildNativeAndroidPrePnFunnelRequest(
+				common,
+				{
+					currentScreen: 'enter_number',
+					previousScreen: funnelPreviousScreen ?? 'unknown',
+					actionTaken,
+					eventName
+				},
+				funnelOptions
+			),
+			'enter_number'
+		)
+	}
+
+	const sendClientFunnel = async (
+		currentScreen: string,
+		actionTaken: string,
+		eventName: string
+	): Promise<void> => {
+		await sendFunnelEvent(
+			buildNativeAndroidClientFunnelRequest(
+				common,
+				{
+					currentScreen,
+					previousScreen: funnelPreviousScreen ?? 'unknown',
+					actionTaken,
+					eventName
+				},
+				funnelOptions
+			),
+			currentScreen
+		)
+	}
+
 	// The APK's registration onboarding always announces the install identity
 	// (abprop) and checks the device state (exist) before the first /v2/code of
 	// a registration; both run under the SAME identity/keys as the code request.
 	let onboardPromise: Promise<NativeAndroidOnboardResult> | undefined
 	const onboard = (): Promise<NativeAndroidOnboardResult> => {
 		onboardPromise ??= (async () => {
+			// Session-start event, fired before the number is committed — the
+			// APK's PrePn funnel sends it from the number-entry screen before
+			// any registration request exists.
+			await sendPrePnFunnel('session_start', 'registration_session_start')
 			const abpropRequest = buildNativeAndroidRegOnboardAbpropRequest(common, {
 				environment: options.environment
 			})
 			const abpropHttp = await client(abpropRequest)
+			await sendClientFunnel('enter_number', 'exist_check', 'exist_attempt')
 			const existRequest = buildNativeAndroidExistRequest(common, {
 				environment: options.environment,
 				advertisingId: options.advertisingId,
 				clientMetrics: options.onboardClientMetrics
 			})
 			const existHttp = await client(existRequest)
+			// `exist_success` means the identity is fresh (`reason: incorrect`),
+			// the state that lets the client proceed to /v2/code;
+			// `exist_failure` means the server found it already registered.
+			const existBody = existHttp.body as { status?: string; reason?: string } | undefined
+			const existFresh = existBody?.reason === 'incorrect' || existBody?.status !== 'ok'
+			await sendClientFunnel('enter_number', 'exist_check', existFresh ? 'exist_success' : 'exist_failure')
 			return {
 				abprop: {
 					request: abpropRequest,
@@ -275,6 +383,11 @@ export const createNativeAndroidRegistrationFlow = (
 				)
 			}
 
+			// The screen a later event belongs to is named after the method asked
+			// for here, so record it before the request rather than after.
+			lastRequestedMethod = input.method
+			const verifyScreen = `verify_${input.method}`
+			await sendClientFunnel(verifyScreen, 'request_code', 'request_code_attempt')
 			const request = buildNativeAndroidRequestCodeRequest(common, {
 				...input,
 				token,
@@ -286,6 +399,9 @@ export const createNativeAndroidRegistrationFlow = (
 			pendingAuthChallenge = response.authChallenge
 				? decodeRegistrationAuthChallenge(response.authChallenge)
 				: undefined
+			if (isRegistrationSuccess(response)) {
+				await sendClientFunnel(verifyScreen, 'request_code', 'request_code_success')
+			}
 			return { request, httpStatus: http.status, attempts: http.attempts, response }
 		},
 		verifyCode: async input => {
@@ -301,6 +417,8 @@ export const createNativeAndroidRegistrationFlow = (
 				})
 			}
 
+			const verifyScreen = lastRequestedMethod ? `verify_${lastRequestedMethod}` : 'enter_number'
+			await sendClientFunnel(verifyScreen, 'submit_code', 'submit_code_attempt')
 			const request = buildNativeAndroidRegisterRequest(common, {
 				...input,
 				authResponse: input.authResponse ?? pendingAuthChallenge
@@ -321,7 +439,10 @@ export const createNativeAndroidRegistrationFlow = (
 			// it on the verification screen state and clears it on completion). Only
 			// a completed registration consumes it — a failed attempt keeps the
 			// challenge so the retry can echo the same auth_response (audit A07).
-			if (creds) pendingAuthChallenge = undefined
+			if (creds) {
+				pendingAuthChallenge = undefined
+				await sendClientFunnel('account_verification_complete', 'submit_code', 'submit_code_success')
+			}
 			return { request, httpStatus: http.status, attempts: http.attempts, response, creds }
 		}
 	}

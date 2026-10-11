@@ -166,20 +166,27 @@ export const createNativeAndroidRegistrationHttpClient = (
 
 	return async (request: NativeAndroidRegistrationRequest): Promise<NativeAndroidRegistrationHttpResponse> => {
 		const registrationType = request.registrationType ?? config.registrationType
-		const attested = await attestationProvider({
-			endpoint: request.endpoint,
-			appVariant: config.appVariant,
-			phoneNumber: config.phoneNumber,
-			login: config.login,
-			...(registrationType !== undefined ? { registrationType } : {}),
-			...(config.profileId ? { profileId: config.profileId } : {}),
-			...(config.packageName ? { packageName: config.packageName } : {}),
-			body: request.body
-		})
+		// `sendAttestationPayload: false` is the APK's `HS5(false)` funnel flag
+		// (RetryingHttpClient p8, `if-eqz v17, :cond_11`): the body is already
+		// sealed and unsigned, so the attestation provider is never called and
+		// the request goes out without `&H=` and without `Authorization`.
+		const attested =
+			request.sendAttestationPayload === false
+				? null
+				: await attestationProvider({
+						endpoint: request.endpoint,
+						appVariant: config.appVariant,
+						phoneNumber: config.phoneNumber,
+						login: config.login,
+						...(registrationType !== undefined ? { registrationType } : {}),
+						...(config.profileId ? { profileId: config.profileId } : {}),
+						...(config.packageName ? { packageName: config.packageName } : {}),
+						body: request.body
+					})
 
 		// When the bridge executed the HTTP request inside the APK process,
 		// the response is already available and no direct fetch is needed.
-		if (attested.apkResponse) {
+		if (attested?.apkResponse) {
 			const apkText = attested.apkResponse.body
 			let apkParsed: unknown
 			try {
@@ -208,10 +215,14 @@ export const createNativeAndroidRegistrationHttpClient = (
 					redirect: 'error',
 					headers: {
 						'Content-Type': 'application/x-www-form-urlencoded',
-						...(attested.authorization ? { Authorization: attested.authorization } : {}),
-						...(attested.userAgent ? { 'User-Agent': attested.userAgent } : {})
+						...(attested?.authorization ? { Authorization: attested.authorization } : {}),
+						// Without the provider (funnel routes) the request carries
+						// its own User-Agent; the platform selector rejects none.
+						...((attested?.userAgent ?? request.userAgent)
+							? { 'User-Agent': (attested?.userAgent ?? request.userAgent)! }
+							: {})
 					},
-					body: attested.body ?? request.body,
+					body: attested?.body ?? request.body,
 					signal: controller.signal
 				})
 				const text = await readBoundedResponseText(response)
