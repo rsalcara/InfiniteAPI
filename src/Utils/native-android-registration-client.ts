@@ -69,10 +69,16 @@ const readBoundedResponseText = async (response: Response): Promise<string> => {
 }
 
 /**
- * Fetch com o conjunto de headers EXATO do APK (RetryingHttpClient):
- * Content-Type, Authorization, User-Agent, Accept-Encoding: identity — nada
- * mais. O fetch padrão do Node/undici acrescenta `accept`/`accept-encoding`
- * que destoam do fio oficial e mudam a codificação da resposta.
+ * Fetch com o conjunto de headers do APK (RetryingHttpClient + stack
+ * msys/Tigon): Content-Type, Authorization, User-Agent, `Accept: text/json`,
+ * `WaMsysRequest: 1` e um `request_token` UUIDv4 por requisição — o mesmo
+ * conjunto de `registrationHeaders` do whalibmob (Android), com `User-Agent`
+ * e `WaMsysRequest` confirmados literalmente no smali do request builder
+ * msys (GIq.1/IUw.1: `TigonRequestBuilder.addHeader("WaMsysRequest", "1")`
+ * e o mapa de headers iterado após). O fetch padrão do Node/undici acrescenta
+ * `accept`/`accept-encoding` que destoam do fio oficial; `Accept-Encoding:
+ * identity` mantém a resposta em JSON puro (o servidor responde JSON
+ * independente do Accept, como nas capturas do lab: `{"status":"ok"}`).
  */
 export const createNativeAndroidRegistrationOfficialFetch = (): typeof fetch => async (input, init) => {
 	const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
@@ -93,6 +99,10 @@ export const createNativeAndroidRegistrationOfficialFetch = (): typeof fetch => 
 					'Content-Type': headers.get('content-type') ?? 'application/x-www-form-urlencoded',
 					...(headers.get('authorization') ? { Authorization: headers.get('authorization')! } : {}),
 					...(headers.get('user-agent') ? { 'User-Agent': headers.get('user-agent')! } : {}),
+					'Accept': 'text/json',
+					'WaMsysRequest': '1',
+					// Fresh per request, the way the native client mints it.
+					'request_token': randomUUID(),
 					'Accept-Encoding': 'identity',
 					...(body ? { 'Content-Length': String(Buffer.byteLength(body)) } : {})
 				}
