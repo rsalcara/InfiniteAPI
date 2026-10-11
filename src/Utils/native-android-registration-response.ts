@@ -424,3 +424,27 @@ export const parseNativeAndroidRegisterResponse = (body: unknown): NativeAndroid
 /** The APK treats `ok` and `sent` as non-fail outcomes on both endpoints. */
 export const isRegistrationSuccess = (response: { status: NativeAndroidRegistrationStatus }): boolean =>
 	response.status === 'ok' || response.status === 'sent'
+
+/**
+ * The pre-flight block gate the APK screens before ever issuing /v2/code
+ * (`/v2/reg_onboard_abprop`, `/v2/exist` bodies carry the same `status`/
+ * `reason`/`custom_block_screen` fail shape as the code/register DTOs). A
+ * `custom_block_screen` is rendered verbatim and stops the registration;
+ * `reason: 'incorrect'` is the fresh-identity signal that lets the client
+ * continue to /v2/code.
+ */
+export type NativeAndroidRegistrationBlockGate = {
+	status: NativeAndroidRegistrationStatus
+	reason: string | null
+	/** `custom_block_screen` — opaque server-rendered screen DTO. */
+	customBlockScreen: Record<string, unknown> | null
+}
+
+export const parseNativeAndroidRegistrationBlockGate = (body: unknown): NativeAndroidRegistrationBlockGate => {
+	const source = asRecord(body)
+	return {
+		status: readStatus(source),
+		reason: readString(source, 'reason'),
+		customBlockScreen: readRawObject(source, 'custom_block_screen')
+	}
+}

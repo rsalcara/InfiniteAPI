@@ -237,7 +237,10 @@ export const createNativeAndroidRegistrationHttpClient = (
 
 				if (!RETRYABLE_STATUS.has(response.status) || attempt === maxAttempts) {
 					// Allowlisted metadata only (audit M10): never the request,
-					// the response body or the provider result.
+					// the response body or the provider result. The proof
+					// diagnostics (audit gap F) correlate this HTTP attempt with
+					// the attestation that signed it.
+					const proof = attested?.attestation
 					logger.debug(
 						safeRegistrationLog({
 							endpoint: request.endpoint,
@@ -245,7 +248,10 @@ export const createNativeAndroidRegistrationHttpClient = (
 							phase: 'http',
 							attempts: attempt,
 							durationMs: Date.now() - started,
-							httpStatus: response.status
+							httpStatus: response.status,
+							...(proof?.signatureHash !== undefined ? { proofHash: proof.signatureHash } : {}),
+							...(proof?.attestedPackage != null ? { attestedPackage: proof.attestedPackage } : {}),
+							...(typeof proof?.challengeAgeMs === 'number' ? { challengeAgeMs: proof.challengeAgeMs } : {})
 						}),
 						'native_android registration response'
 					)

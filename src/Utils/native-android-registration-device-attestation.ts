@@ -81,12 +81,18 @@ const sanitizeUserAgentPart = (value: string): string => value.replace(/[^,\.\w\
  * registration platform selector rejects requests without it. The consumer
  * build names itself `Android` (live native registration capture) — the
  * server reads the platform out of exactly this string.
+ *
+ * `appVersion` overrides the pinned build when the token material carries a
+ * manifest (audit gap A): the announced version then follows
+ * `manifest.version`, which `validateMaterialManifest` pins to the build the
+ * material was extracted from.
  */
 export const buildNativeAndroidRegistrationUserAgentFromParts = (
 	parts: NativeAndroidRegistrationUserAgentParts,
-	appVariant: 'consumer' | 'business' = 'business'
+	appVariant: 'consumer' | 'business' = 'business',
+	appVersion?: NativeAndroidAppVersion
 ): string =>
-	`WhatsApp/${nativeAndroidRegistrationAppVersion(appVariant).join('.')} ${appVariant === 'consumer' ? 'Android' : 'SMBA'}/${sanitizeUserAgentPart(
+	`WhatsApp/${(appVersion ?? nativeAndroidRegistrationAppVersion(appVariant)).join('.')} ${appVariant === 'consumer' ? 'Android' : 'SMBA'}/${sanitizeUserAgentPart(
 		parts.androidVersion
 	)} Device/${sanitizeUserAgentPart(parts.manufacturer)}-${sanitizeUserAgentPart(parts.model)}`
 
@@ -99,7 +105,8 @@ export const buildNativeAndroidRegistrationUserAgentFromParts = (
  */
 export const buildNativeAndroidRegistrationUserAgent = (
 	profile: Pick<NativeAndroidDeviceProfile, 'manufacturer' | 'deviceModelType' | 'osVersion'>,
-	appVariant: 'consumer' | 'business' = 'business'
+	appVariant: 'consumer' | 'business' = 'business',
+	appVersion?: NativeAndroidAppVersion
 ): string =>
 	buildNativeAndroidRegistrationUserAgentFromParts(
 		{
@@ -109,8 +116,28 @@ export const buildNativeAndroidRegistrationUserAgent = (
 			manufacturer: profile.manufacturer ?? 'unknown',
 			model: profile.deviceModelType ?? 'unknown'
 		},
-		appVariant
+		appVariant,
+		appVersion
 	)
+
+/**
+ * Real hardware fields an attesting device reports (`signer.deviceProperties()`:
+ * `manufacturer`, `model`, `androidVersion`), mapped to the Build.* shape the
+ * UA builder and the creds device profile expect. The Keystore chain is
+ * TEE-signed and reveals the true hardware, so the announced identity must name
+ * exactly it. The already-mapped motor shape is accepted as alias for records
+ * built in-process. Returns undefined when the record cannot name the hardware
+ * (any of the three fields missing) — the caller then keeps its own profile.
+ */
+export const mapAttestedDeviceProfile = (
+	raw: Record<string, string> | undefined
+): Pick<NativeAndroidDeviceProfile, 'manufacturer' | 'deviceModelType' | 'osVersion'> | undefined => {
+	const manufacturer = raw?.manufacturer?.trim()
+	const model = (raw?.model ?? raw?.deviceModelType)?.trim()
+	const osVersion = (raw?.androidVersion ?? raw?.osVersion)?.trim()
+	if (!manufacturer || !model || !osVersion) return undefined
+	return { manufacturer, deviceModelType: model, osVersion }
+}
 
 export type NativeAndroidRegistrationDeviceAttestationOptions = {
 	signer: NativeAndroidRegistrationDeviceSigner
@@ -128,6 +155,12 @@ export type NativeAndroidRegistrationDeviceAttestationOptions = {
 	deviceProfile?: Pick<NativeAndroidDeviceProfile, 'manufacturer' | 'deviceModelType' | 'osVersion'>
 	/** Explicit User-Agent override; takes precedence over `deviceProfile`. */
 	userAgent?: string
+	/**
+	 * Announced build for the derived User-Agent (audit gap A): pass
+	 * `materialManifestAppVersion(material.manifest)` so the wire UA names the
+	 * build whose token material signs this registration.
+	 */
+	appVersion?: NativeAndroidAppVersion
 }
 
 /**
@@ -156,7 +189,7 @@ export const createNativeAndroidRegistrationDeviceAttestationProvider = (
 		const userAgent =
 			options.userAgent ??
 			(options.deviceProfile
-				? buildNativeAndroidRegistrationUserAgent(options.deviceProfile, context.appVariant)
+				? buildNativeAndroidRegistrationUserAgent(options.deviceProfile, context.appVariant, options.appVersion)
 				: undefined)
 		if (!userAgent) throw new Error('registration User-Agent is required')
 		return {

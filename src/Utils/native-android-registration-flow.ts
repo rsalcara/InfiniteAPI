@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, NativeAndroidDeviceProfile } from '../Types'
 import { buildPrimaryRegistrationAuthCreds } from './native-android-registration-auth'
+import type { NativeAndroidAttestationProofDiagnostics } from './native-android-registration-attestation-validation'
 import type {
 	NativeAndroidRegistrationBridgeAttestation,
 	NativeAndroidRegistrationBridgeContext
@@ -11,7 +12,10 @@ import {
 	createNativeAndroidRegistrationHttpClient,
 	type NativeAndroidRegistrationHttpConfig
 } from './native-android-registration-client'
-import { buildNativeAndroidRegistrationUserAgent } from './native-android-registration-device-attestation'
+import {
+	buildNativeAndroidRegistrationUserAgent,
+	mapAttestedDeviceProfile
+} from './native-android-registration-device-attestation'
 import {
 	buildNativeAndroidClientFunnelRequest,
 	buildNativeAndroidPrePnFunnelRequest
@@ -28,6 +32,7 @@ import {
 	buildNativeAndroidRequestCodeRequest,
 	type NativeAndroidRegisterInput,
 	type NativeAndroidRegistrationCommon,
+	type NativeAndroidRegistrationEndpoint,
 	type NativeAndroidRegistrationRequest,
 	type NativeAndroidRequestCodeEnvironment,
 	type NativeAndroidRequestCodeInput
@@ -36,15 +41,18 @@ import {
 	type NativeAndroidRegisterResponse,
 	type NativeAndroidRequestCodeResponse,
 	isRegistrationSuccess,
+	parseNativeAndroidRegistrationBlockGate,
 	parseNativeAndroidRegisterResponse,
 	parseNativeAndroidRequestCodeResponse
 } from './native-android-registration-response'
 import {
 	buildClassicRegistrationToken,
+	computeRegistrationMaterialHash,
+	materialManifestAppVersion,
 	type NativeAndroidRegistrationTokenMaterial
 } from './native-android-registration-token'
 import logger from './logger'
-import { safeRegistrationLog } from './safe-registration-log'
+import { registrationBlockScreenHash, safeRegistrationLog } from './safe-registration-log'
 
 export type NativeAndroidRegistrationFlowHttpOptions = Omit<
 	NativeAndroidRegistrationHttpConfig,
@@ -143,6 +151,13 @@ export type NativeAndroidRegistrationFlow = {
 	/** The exact common context (with key bundle) every request was/will be built from. */
 	common: NativeAndroidRegistrationCommon
 	/**
+	 * The technical identity this registration runs as (audit gap D): the
+	 * persisted device profile merged with the hardware the attestation chain
+	 * reported (attested fields win). Callers persist it back into their flow
+	 * state so requestCode, verify and every later connect announce one device.
+	 */
+	deviceProfile: () => NativeAndroidDeviceProfile | undefined
+	/**
 	 * Runs the official onboarding pre-flight once per flow (abprop → exist).
 	 * `requestCode` awaits it automatically unless `skipOnboarding` is set; the
 	 * same promise is shared, so explicit + automatic calls never duplicate.
@@ -197,6 +212,104 @@ export const createNativeAndroidRegistrationFlow = (
 	const computedToken = options.tokenMaterial
 		? buildClassicRegistrationToken(tokenDigits, options.tokenMaterial)
 		: undefined
+	// Announced build (audit gap A): with a material manifest the UA and the
+	// seeded creds name the exact build whose blobs signed the token; without
+	// one the pinned per-variant build applies (previous behavior).
+	const announcedAppVersion = options.tokenMaterial?.manifest
+		? materialManifestAppVersion(options.tokenMaterial.manifest)
+		: undefined
+	// Sanitized correlation identity (audit gap F): one digest naming the exact
+	// APK material this flow signs with, computed once and logged per step —
+	// the material bytes themselves never reach any log.
+	const materialHash = options.tokenMaterial ? computeRegistrationMaterialHash(options.tokenMaterial) : undefined
+
+	// Attested hardware identity (audit gap D): the attesting device is
+	// authoritative for its own Build.* fields (the Keystore chain is TEE-signed),
+	// so the flow captures the profile from the first attestation that reports
+	// one. A later attestation reporting different hardware is a divergence the
+	// flow rejects — one registration runs as exactly one device.
+	let attestedDeviceProfile: Record<string, string> | undefined
+	/** Last proof diagnostics per endpoint, keyed for the per-step correlation log. */
+	const stepProofs = new Map<NativeAndroidRegistrationEndpoint, NativeAndroidAttestationProofDiagnostics>()
+	const sameAttestedDeviceProfile = (a: Record<string, string>, b: Record<string, string>): boolean => {
+		const left = mapAttestedDeviceProfile(a)
+		const right = mapAttestedDeviceProfile(b)
+		// Alias spellings (`model`/`deviceModelType`) normalize before comparing;
+		// records that cannot name the hardware compare raw.
+		if (left && right) {
+			return (
+				left.manufacturer === right.manufacturer &&
+				left.deviceModelType === right.deviceModelType &&
+				left.osVersion === right.osVersion
+			)
+		}
+		const leftKeys = Object.keys(a).sort()
+		const rightKeys = Object.keys(b).sort()
+		if (leftKeys.length !== rightKeys.length) return false
+		return leftKeys.every((key, index) => key === rightKeys[index] && a[key] === b[key])
+	}
+	const capturedAttestationProvider: typeof options.attestationProvider = async context => {
+		const attestation = await options.attestationProvider(context)
+		const reported = attestation.deviceProfile
+		if (reported) {
+			if (!attestedDeviceProfile) attestedDeviceProfile = reported
+			else if (!sameAttestedDeviceProfile(attestedDeviceProfile, reported)) {
+				throw new Boom('native_android registration: attested device profile diverged mid-registration', {
+					statusCode: 500,
+					data: { step: 'device-profile-divergence' }
+				})
+			}
+		}
+		// Last proof per endpoint (audit gap F): the step log correlates the
+		// response with the exact attestation that signed its request.
+		if (attestation.attestation) stepProofs.set(context.endpoint, attestation.attestation)
+		return attestation
+	}
+
+	/** Persisted profile merged with the attested hardware (attested fields win). */
+	const mergedDeviceProfile = (): NativeAndroidDeviceProfile | undefined => {
+		const persisted = options.nativeIdentity?.device
+		const attested = mapAttestedDeviceProfile(attestedDeviceProfile)
+		if (!persisted) return undefined
+		return attested ? { ...persisted, ...attested } : persisted
+	}
+
+	/**
+	 * One allowlisted correlation line per registration step (audit gap F):
+	 * status/reason, the block-screen digest and the material/proof digests —
+	 * never bodies, screens, creds or provider results. `safeRegistrationLog`
+	 * re-validates every field, so hostile server/device tokens can only be
+	 * dropped here, never leak or throw.
+	 */
+	const logRegistrationStep = (
+		step: string,
+		endpoint: NativeAndroidRegistrationEndpoint,
+		http: { status: number; attempts: number },
+		startedAt: number,
+		response: unknown
+	): void => {
+		const gate = parseNativeAndroidRegistrationBlockGate(response)
+		const proof = stepProofs.get(endpoint)
+		const blockScreenHash = registrationBlockScreenHash(gate.customBlockScreen)
+		logger.debug(
+			safeRegistrationLog({
+				endpoint,
+				operationId: 'native-android-registration',
+				phase: step,
+				attempts: http.attempts,
+				durationMs: Date.now() - startedAt,
+				httpStatus: http.status,
+				status: gate.status,
+				...(gate.reason !== null ? { reason: gate.reason } : {}),
+				...(blockScreenHash !== undefined ? { blockScreenHash } : {}),
+				...(materialHash !== undefined ? { materialHash } : {}),
+				...(proof?.signatureHash !== undefined ? { proofHash: proof.signatureHash } : {}),
+				...(proof?.attestedPackage != null ? { attestedPackage: proof.attestedPackage } : {}),
+				...(typeof proof?.challengeAgeMs === 'number' ? { challengeAgeMs: proof.challengeAgeMs } : {})
+			}),
+			'native_android registration step'
+		)
+	}
 
 	const digits = `${common.countryCallingCode}${common.nationalNumber}`
 	const client = createNativeAndroidRegistrationHttpClient(
@@ -207,7 +320,7 @@ export const createNativeAndroidRegistrationFlow = (
 			login: common.login ?? `${digits}@s.whatsapp.net`,
 			registrationType: common.registrationType
 		},
-		options.attestationProvider
+		capturedAttestationProvider
 	)
 
 	/** Pending auth challenge from the last /v2/code, echoed by /v2/register. */
@@ -222,17 +335,27 @@ export const createNativeAndroidRegistrationFlow = (
 	// funnel-local value: it never touches `common`, so no existing request
 	// body changes.
 	const funnelAccessSessionId = common.accessSessionId ?? randomUUID()
-	const funnelUserAgent = options.nativeIdentity?.device
-		? buildNativeAndroidRegistrationUserAgent(
-				options.nativeIdentity.device,
-				common.appVariant === 'business' ? 'business' : 'consumer'
-			)
-		: undefined
-	const funnelOptions = {
-		accessSessionId: funnelAccessSessionId,
-		...(options.advertisingId ? { advertisingId: options.advertisingId } : {}),
-		...(options.environment ? { environment: options.environment } : {}),
-		...(funnelUserAgent ? { userAgent: funnelUserAgent } : {})
+	// Funnel UA is lazy (audit gap D): events sent after the first attestation
+	// name the TEE-reported hardware; earlier ones fall back to the persisted
+	// profile. The attested fields always win (`atestado ?? persistido`).
+	const funnelUserAgent = (): string | undefined => {
+		const profile = mapAttestedDeviceProfile(attestedDeviceProfile) ?? options.nativeIdentity?.device
+		return profile
+			? buildNativeAndroidRegistrationUserAgent(
+					profile,
+					common.appVariant === 'business' ? 'business' : 'consumer',
+					announcedAppVersion
+				)
+			: undefined
+	}
+	const funnelOptions = () => {
+		const userAgent = funnelUserAgent()
+		return {
+			accessSessionId: funnelAccessSessionId,
+			...(options.advertisingId ? { advertisingId: options.advertisingId } : {}),
+			...(options.environment ? { environment: options.environment } : {}),
+			...(userAgent ? { userAgent } : {})
+		}
 	}
 	let funnelPreviousScreen: string | undefined
 	let lastRequestedMethod: string | undefined
@@ -267,12 +390,12 @@ export const createNativeAndroidRegistrationFlow = (
 					currentScreen: 'enter_number',
 					previousScreen: funnelPreviousScreen ?? 'unknown',
 					actionTaken,
-					eventName
-				},
-				funnelOptions
-			),
-			'enter_number'
-		)
+				eventName
+			},
+			funnelOptions()
+		),
+		'enter_number'
+	)
 	}
 
 	const sendClientFunnel = async (
@@ -287,12 +410,12 @@ export const createNativeAndroidRegistrationFlow = (
 					currentScreen,
 					previousScreen: funnelPreviousScreen ?? 'unknown',
 					actionTaken,
-					eventName
-				},
-				funnelOptions
-			),
-			currentScreen
-		)
+				eventName
+			},
+			funnelOptions()
+		),
+		currentScreen
+	)
 	}
 
 	// The APK's registration onboarding always announces the install identity
@@ -308,19 +431,25 @@ export const createNativeAndroidRegistrationFlow = (
 			const abpropRequest = buildNativeAndroidRegOnboardAbpropRequest(common, {
 				environment: options.environment
 			})
+			const abpropStartedAt = Date.now()
 			const abpropHttp = await client(abpropRequest)
+			logRegistrationStep('abprop', '/v2/reg_onboard_abprop', abpropHttp, abpropStartedAt, abpropHttp.body)
 			await sendClientFunnel('enter_number', 'exist_check', 'exist_attempt')
 			const existRequest = buildNativeAndroidExistRequest(common, {
 				environment: options.environment,
 				advertisingId: options.advertisingId,
 				clientMetrics: options.onboardClientMetrics
 			})
+			const existStartedAt = Date.now()
 			const existHttp = await client(existRequest)
+			logRegistrationStep('exist', '/v2/exist', existHttp, existStartedAt, existHttp.body)
 			// `exist_success` means the identity is fresh (`reason: incorrect`),
 			// the state that lets the client proceed to /v2/code;
-			// `exist_failure` means the server found it already registered.
-			const existBody = existHttp.body as { status?: string; reason?: string } | undefined
-			const existFresh = existBody?.reason === 'incorrect' || existBody?.status !== 'ok'
+			// `exist_failure` means the server found it already registered (or
+			// blocked). Only `incorrect` counts as fresh — any other outcome is
+			// a failure, never a silent success (audit gap E).
+			const existGate = parseNativeAndroidRegistrationBlockGate(existHttp.body)
+			const existFresh = existGate.reason === 'incorrect'
 			await sendClientFunnel('enter_number', 'exist_check', existFresh ? 'exist_success' : 'exist_failure')
 			return {
 				abprop: {
@@ -348,6 +477,7 @@ export const createNativeAndroidRegistrationFlow = (
 	return {
 		keys,
 		common,
+		deviceProfile: mergedDeviceProfile,
 		onboard,
 		requestCode: async input => {
 			if (!options.skipOnboarding) {
@@ -363,6 +493,26 @@ export const createNativeAndroidRegistrationFlow = (
 								step,
 								endpoint: step === 'abprop' ? '/v2/reg_onboard_abprop' : '/v2/exist',
 								httpStatus: result.httpStatus
+							}
+						})
+					}
+					// A server-side block stops the flow BEFORE /v2/code (audit gap E):
+					// the APK renders `custom_block_screen` verbatim and never hammers
+					// the endpoint while blocked. A hard fail with a non-fresh reason
+					// stops too; `reason: 'incorrect'` (fresh identity) and `status:
+					// 'ok'` continue. The screen is preserved in the error data so the
+					// caller can render exactly what the server sent.
+					const gate = parseNativeAndroidRegistrationBlockGate(result.response)
+					const blockedByReason = gate.status === 'fail' && gate.reason !== null && gate.reason !== 'incorrect'
+					if (gate.customBlockScreen || blockedByReason) {
+						throw new Boom(`registration blocked at ${step}`, {
+							statusCode: 403,
+							data: {
+								step,
+								endpoint: step === 'abprop' ? '/v2/reg_onboard_abprop' : '/v2/exist',
+								status: gate.status,
+								reason: gate.reason,
+								customBlockScreen: gate.customBlockScreen
 							}
 						})
 					}
@@ -394,7 +544,9 @@ export const createNativeAndroidRegistrationFlow = (
 				advertisingId: input.advertisingId ?? options.advertisingId,
 				environment: input.environment ?? options.environment
 			})
+			const codeStartedAt = Date.now()
 			const http = await client(request)
+			logRegistrationStep('code', '/v2/code', http, codeStartedAt, http.body)
 			const response = parseNativeAndroidRequestCodeResponse(http.body)
 			pendingAuthChallenge = response.authChallenge
 				? decodeRegistrationAuthChallenge(response.authChallenge)
@@ -416,6 +568,9 @@ export const createNativeAndroidRegistrationFlow = (
 					data: { step: 'device-profile' }
 				})
 			}
+			// Attested hardware wins over the raffled fields (audit gap D): the
+			// creds must name exactly the device the TEE-signed chain revealed.
+			const device = mergedDeviceProfile() ?? deviceProfile
 
 			const verifyScreen = lastRequestedMethod ? `verify_${lastRequestedMethod}` : 'enter_number'
 			await sendClientFunnel(verifyScreen, 'submit_code', 'submit_code_attempt')
@@ -423,7 +578,9 @@ export const createNativeAndroidRegistrationFlow = (
 				...input,
 				authResponse: input.authResponse ?? pendingAuthChallenge
 			})
+			const registerStartedAt = Date.now()
 			const http = await client(request)
+			logRegistrationStep('register', '/v2/register', http, registerStartedAt, http.body)
 			const response = parseNativeAndroidRegisterResponse(http.body)
 			const creds =
 				http.status >= 200 && http.status < 300 && response.status === 'ok'
@@ -432,7 +589,8 @@ export const createNativeAndroidRegistrationFlow = (
 							common,
 							register: response,
 							account: options.account,
-							device: deviceProfile
+							device,
+							appVersion: announcedAppVersion
 						})
 					: undefined
 			// The challenge answers exactly one /v2/register attempt (the APK keeps

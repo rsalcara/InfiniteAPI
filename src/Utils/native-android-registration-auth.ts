@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import type { proto } from '../../WAProto/index.js'
-import type { AuthenticationCreds, Contact, NativeAndroidDeviceProfile } from '../Types'
+import type { AuthenticationCreds, Contact, NativeAndroidAppVersion, NativeAndroidDeviceProfile } from '../Types'
 import { jidEncode } from '../WABinary/jid-utils'
 import { Curve } from './crypto'
 import { nativeAndroidRegistrationAppVersion } from './native-android-registration-device-attestation'
@@ -42,6 +42,14 @@ export type NativeAndroidPrimaryRegistrationAuthInput = {
 	 * registration unmarked and be classified as non-primary (audit A06).
 	 */
 	device: NativeAndroidDeviceProfile
+	/**
+	 * Announced build (audit gap A). When the token material carries a
+	 * manifest, the flow passes `materialManifestAppVersion(material.manifest)`
+	 * so the seeded `nativeAndroidIdentity.appVersion` names the exact build
+	 * whose material signed the registration token. Defaults to the pinned
+	 * per-variant build.
+	 */
+	appVersion?: NativeAndroidAppVersion
 }
 
 /**
@@ -79,7 +87,8 @@ export const buildPrimaryRegistrationAuthCreds = ({
 	common,
 	register,
 	account,
-	device
+	device,
+	appVersion
 }: NativeAndroidPrimaryRegistrationAuthInput): AuthenticationCreds => {
 	// Fail-closed (audit M09): restored key material must be a valid bundle
 	// before any cred is derived from it or any request echoes it back.
@@ -124,8 +133,9 @@ export const buildPrimaryRegistrationAuthCreds = ({
 		clientAppId: getNativeAndroidAppIdentity(appVariant).clientAppId,
 		// The official app registers and logs in with the same build, so the
 		// seeded identity pins the registration version for every login — the
-		// build whose APK material signs this variant's registration token.
-		appVersion: nativeAndroidRegistrationAppVersion(appVariant),
+		// build whose APK material signs this variant's registration token
+		// (manifest version when present, else the pinned per-variant build).
+		appVersion: appVersion ?? nativeAndroidRegistrationAppVersion(appVariant),
 		device,
 		connectionLc: 0,
 		registrationSeeded: true,

@@ -1,8 +1,10 @@
+import { jest } from '@jest/globals'
 import { readFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import type { proto } from '../../../WAProto/index.js'
 import { buildPrimaryRegistrationAuthCreds, normalizeLidJid } from '../../Utils/native-android-registration-auth'
+import type { NativeAndroidAttestationProofDiagnostics } from '../../Utils/native-android-registration-attestation-validation'
 import type { NativeAndroidRegistrationBridgeContext } from '../../Utils/native-android-registration-bridge-provider'
 import {
 	createNativeAndroidRegistrationFlow,
@@ -13,9 +15,12 @@ import type { NativeAndroidRegistrationCommon } from '../../Utils/native-android
 import { percentEncodeRegistrationString } from '../../Utils/native-android-registration-protocol'
 import {
 	buildClassicRegistrationToken,
+	computeRegistrationMaterialHash,
 	NATIVE_ANDROID_REGISTRATION_PACKAGES,
 	type NativeAndroidRegistrationTokenMaterial
 } from '../../Utils/native-android-registration-token'
+import logger from '../../Utils/logger'
+import { registrationBlockScreenHash, type RegistrationLogMetadata } from '../../Utils/safe-registration-log'
 
 const COMMON: Omit<NativeAndroidRegistrationCommon, 'keyBundle'> = {
 	appVariant: 'business',
@@ -437,5 +442,428 @@ describe('native_android registration flow self-computed token', () => {
 		await expect(flow.requestCode({ method: 'sms' })).rejects.toThrow(/official token/)
 		const code = await flow.requestCode({ method: 'sms', token: '1531997072' })
 		expect(code.request.body).toContain('&token=1531997072')
+	})
+})
+
+describe('native_android registration block gate before /v2/code (audit gap E)', () => {
+	const gateFlow = (existBody: unknown, abpropBody: unknown = { status: 'ok' }) => {
+		const calls: string[] = []
+		const flow = createNativeAndroidRegistrationFlow({
+			skipFunnel: true,
+			common: COMMON,
+			attestationProvider: async context => ({ authorization: 'Native attestation', body: context.body }),
+			http: {
+				baseUrl: 'https://registration.lab.invalid',
+				fetch: (async (url: RequestInfo | URL) => {
+					const endpoint = String(url).replace('https://registration.lab.invalid', '')
+					calls.push(endpoint)
+					const payload =
+						endpoint === '/v2/exist' ? existBody : endpoint === '/v2/reg_onboard_abprop' ? abpropBody : { status: 'sent' }
+					return new Response(JSON.stringify(payload), { status: 200 })
+				}) as unknown as typeof fetch
+			}
+		})
+		return { flow, calls }
+	}
+
+	const rejectWith = async (promise: Promise<unknown>) =>
+		promise.then(
+			() => null,
+			(error: unknown) => error as { message: string; data: Record<string, unknown> }
+		)
+
+	it('stops on a custom_block_screen from /v2/exist and preserves the screen in the error data', async () => {
+		const screen = { title: 'Baixe o app oficial do WhatsApp para continuar' }
+		const { flow, calls } = gateFlow({ status: 'fail', reason: 'blocked', custom_block_screen: screen })
+		const rejected = await rejectWith(flow.requestCode({ method: 'sms', token: '11999999999' }))
+		expect(rejected).not.toBeNull()
+		expect(rejected!.message).toMatch(/registration blocked at exist/)
+		expect(rejected!.data).toMatchObject({
+			step: 'exist',
+			endpoint: '/v2/exist',
+			status: 'fail',
+			reason: 'blocked',
+			customBlockScreen: screen
+		})
+		// The APK renders the screen and never hammers the endpoint while blocked.
+		expect(calls).toEqual(['/v2/reg_onboard_abprop', '/v2/exist'])
+		expect(calls).not.toContain('/v2/code')
+	})
+
+	it('stops on a hard fail with a non-fresh reason before /v2/code', async () => {
+		const { flow, calls } = gateFlow({ status: 'fail', reason: 'too_recent', retry_after: '24' })
+		const rejected = await rejectWith(flow.requestCode({ method: 'sms', token: '11999999999' }))
+		expect(rejected).not.toBeNull()
+		expect(rejected!.message).toMatch(/registration blocked at exist/)
+		expect(rejected!.data).toMatchObject({ step: 'exist', status: 'fail', reason: 'too_recent', customBlockScreen: null })
+		expect(calls).not.toContain('/v2/code')
+	})
+
+	it('stops on a custom_block_screen from the abprop step too', async () => {
+		const screen = { title: 'Atualize o WhatsApp para continuar' }
+		const { flow, calls } = gateFlow({ status: 'fail', reason: 'incorrect' }, { status: 'fail', custom_block_screen: screen })
+		const rejected = await rejectWith(flow.requestCode({ method: 'sms', token: '11999999999' }))
+		expect(rejected).not.toBeNull()
+		expect(rejected!.message).toMatch(/registration blocked at abprop/)
+		expect(rejected!.data).toMatchObject({ step: 'abprop', endpoint: '/v2/reg_onboard_abprop', customBlockScreen: screen })
+		// The onboarding pair (abprop → exist) runs as one pre-flight unit; the
+		// gate guards the number-burning /v2/code, which must never go out.
+		expect(calls).toEqual(['/v2/reg_onboard_abprop', '/v2/exist'])
+		expect(calls).not.toContain('/v2/code')
+	})
+
+	it('treats reason incorrect as the fresh identity and continues to /v2/code', async () => {
+		const { flow, calls } = gateFlow({ status: 'fail', reason: 'incorrect' })
+		const code = await flow.requestCode({ method: 'sms', token: '11999999999' })
+		expect(code.response.status).toBe('sent')
+		expect(calls).toContain('/v2/code')
+	})
+
+	it('continues on status ok and on a fail with no actionable reason', async () => {
+		const ok = gateFlow({ status: 'ok' })
+		expect((await ok.flow.requestCode({ method: 'sms', token: '11999999999' })).response.status).toBe('sent')
+		expect(ok.calls).toContain('/v2/code')
+
+		// The gate needs an actionable reason to block (locked decision): a bare
+		// `fail` without one does not name a screen, so the flow continues.
+		const bare = gateFlow({ status: 'fail' })
+		expect((await bare.flow.requestCode({ method: 'sms', token: '11999999999' })).response.status).toBe('sent')
+		expect(bare.calls).toContain('/v2/code')
+	})
+})
+
+describe('native_android registration attested device identity (audit gap D)', () => {
+	// `signer.deviceProperties()` on the physical device: Build.MANUFACTURER,
+	// Build.MODEL, Build.VERSION.RELEASE.
+	const ATTESTED = { manufacturer: 'Xiaomi', model: '25078PC3EG', androidVersion: '16' }
+
+	const rejectWith = async (promise: Promise<unknown>) =>
+		promise.then(
+			() => null,
+			(error: unknown) => error as { message: string; data: Record<string, unknown> }
+		)
+
+	const fetchRecording = (calls: string[], payloads?: Record<string, unknown>) =>
+		((async (url: RequestInfo | URL) => {
+			calls.push(String(url).replace('https://registration.lab.invalid', ''))
+			const body = String(url).endsWith('/register')
+				? { status: 'ok', lid: '123456789012345' }
+				: (payloads ?? { status: 'sent' })
+			return new Response(JSON.stringify(body), { status: 200 })
+		}) as unknown as typeof fetch)
+
+	it('seeds the creds with the attested hardware winning over the raffled fields', async () => {
+		const calls: string[] = []
+		const flow = createNativeAndroidRegistrationFlow({
+			skipOnboarding: true,
+			skipFunnel: true,
+			common: COMMON,
+			nativeIdentity: { device: DEVICE },
+			attestationProvider: async context => ({
+				authorization: 'Native attestation',
+				body: context.body,
+				deviceProfile: ATTESTED
+			}),
+			http: { baseUrl: 'https://registration.lab.invalid', fetch: fetchRecording(calls) }
+		})
+		const code = await flow.requestCode({ method: 'sms', token: '11999999999' })
+		expect(code.response.status).toBe('sent')
+		const verified = await flow.verifyCode({ code: '123456' })
+		const device = verified.creds?.nativeAndroidIdentity?.device
+		expect(device).toMatchObject({
+			// The TEE-reported Build.* fields win over the raffled ones...
+			manufacturer: 'Xiaomi',
+			deviceModelType: '25078PC3EG',
+			osVersion: '16',
+			// ...while the rest of the persisted install identity survives.
+			profileId: DEVICE.profileId,
+			phoneId: DEVICE.phoneId,
+			deviceExpId: DEVICE.deviceExpId,
+			mcc: DEVICE.mcc
+		})
+		// The flow exposes the same merged identity for the caller to persist.
+		expect(flow.deviceProfile()).toMatchObject({
+			manufacturer: 'Xiaomi',
+			deviceModelType: '25078PC3EG',
+			osVersion: '16',
+			profileId: DEVICE.profileId
+		})
+	})
+
+	it('rejects a mid-registration divergence of the attested hardware', async () => {
+		const calls: string[] = []
+		const reports = [ATTESTED, { manufacturer: 'Samsung', model: 'SM-A546B', androidVersion: '14' }]
+		const flow = createNativeAndroidRegistrationFlow({
+			skipFunnel: true,
+			common: COMMON,
+			nativeIdentity: { device: DEVICE },
+			attestationProvider: async context => ({
+				authorization: 'Native attestation',
+				body: context.body,
+				deviceProfile: reports.shift()
+			}),
+			http: { baseUrl: 'https://registration.lab.invalid', fetch: fetchRecording(calls) }
+		})
+		const rejected = await rejectWith(flow.requestCode({ method: 'sms', token: '11999999999' }))
+		expect(rejected).not.toBeNull()
+		expect(rejected!.message).toMatch(/diverged mid-registration/)
+		expect(rejected!.data).toMatchObject({ step: 'device-profile-divergence' })
+		// The divergent attestation never releases a request to the wire.
+		expect(calls).toEqual(['/v2/reg_onboard_abprop'])
+		expect(calls).not.toContain('/v2/code')
+	})
+
+	it('accepts alias spellings of the same hardware across attestations', async () => {
+		const calls: string[] = []
+		const reports = [ATTESTED, { manufacturer: 'Xiaomi', deviceModelType: '25078PC3EG', osVersion: '16' }]
+		const flow = createNativeAndroidRegistrationFlow({
+			skipOnboarding: true,
+			skipFunnel: true,
+			common: COMMON,
+			nativeIdentity: { device: DEVICE },
+			attestationProvider: async context => ({
+				authorization: 'Native attestation',
+				body: context.body,
+				deviceProfile: reports.shift()
+			}),
+			http: { baseUrl: 'https://registration.lab.invalid', fetch: fetchRecording(calls) }
+		})
+		const first = await flow.requestCode({ method: 'sms', token: '11999999999' })
+		const second = await flow.requestCode({ method: 'sms', token: '11999999999' })
+		expect(first.response.status).toBe('sent')
+		expect(second.response.status).toBe('sent')
+		expect(calls).toEqual(['/v2/code', '/v2/code'])
+	})
+
+	it('names the attested hardware on funnel events sent after the first attestation', async () => {
+		const userAgents: { endpoint: string; ua: string | null }[] = []
+		const flow = createNativeAndroidRegistrationFlow({
+			common: COMMON,
+			// Persisted profile: the raffled install identity (Redmi model code).
+			nativeIdentity: { device: { ...DEVICE, deviceModelType: '23127PN0CC' } },
+			attestationProvider: async context => ({
+				authorization: 'Native attestation',
+				body: context.body,
+				// Only the first attestation reports hardware; later silence is
+				// not divergence and the captured profile keeps winning.
+				...(context.endpoint === '/v2/reg_onboard_abprop' ? { deviceProfile: ATTESTED } : {})
+			}),
+			http: {
+				baseUrl: 'https://registration.lab.invalid',
+				fetch: (async (url: RequestInfo | URL, init?: RequestInit) => {
+					const endpoint = String(url).replace('https://registration.lab.invalid', '')
+					userAgents.push({ endpoint, ua: new Headers(init?.headers).get('user-agent') })
+					return new Response(JSON.stringify(endpoint.endsWith('_log') ? {} : { status: 'sent' }), { status: 200 })
+				}) as unknown as typeof fetch
+			}
+		})
+		await flow.requestCode({ method: 'sms', token: '11999999999' })
+
+		const uaFor = (endpoint: string) => userAgents.filter(entry => entry.endpoint === endpoint).map(entry => entry.ua)
+		// `session_start` fires before any attestation: the persisted profile.
+		expect(uaFor('/v2/pre_pn_client_log')).toEqual(['WhatsApp/2.26.36.72 SMBA/14 Device/Xiaomi-23127PN0CC'])
+		// Every funnel event after the first attestation names the TEE hardware.
+		const clientLogs = uaFor('/v2/client_log')
+		expect(clientLogs.length).toBeGreaterThan(0)
+		for (const ua of clientLogs) {
+			expect(ua).toBe('WhatsApp/2.26.36.72 SMBA/16 Device/Xiaomi-25078PC3EG')
+		}
+	})
+})
+
+describe('native_android registration sanitized step correlation (audit gap F)', () => {
+	const PROOF: NativeAndroidAttestationProofDiagnostics = {
+		chainLength: 3,
+		chainHash: 'a'.repeat(64),
+		signatureHash: 'b'.repeat(64),
+		attestationHash: 'c'.repeat(64),
+		attestedPackage: 'com.whatsapp.w4b',
+		packageNameMatches: true,
+		signingCertMatches: true,
+		challengeTimestampMs: 1_700_000_000_000,
+		challengeAgeMs: 42,
+		rootFingerprint: 'd'.repeat(64)
+	}
+
+	const material: NativeAndroidRegistrationTokenMaterial = {
+		packageName: NATIVE_ANDROID_REGISTRATION_PACKAGES.business,
+		logoResource: Uint8Array.from([1, 2, 3]),
+		signingCertDer: Uint8Array.from([4, 5]),
+		// The token validation pins classesDexMd5 to the raw 16-byte MD5 digest.
+		classesDexMd5: Uint8Array.from({ length: 16 }, (_, index) => index)
+	}
+
+	const ALLOWED_KEYS = new Set([
+		'endpoint',
+		'operationId',
+		'phase',
+		'attempts',
+		'durationMs',
+		'httpStatus',
+		'category',
+		'status',
+		'reason',
+		'blockScreenHash',
+		'materialHash',
+		'proofHash',
+		'attestedPackage',
+		'challengeAgeMs'
+	])
+
+	const stepLines = (spy: { mock: { calls: unknown[][] } }): RegistrationLogMetadata[] =>
+		spy.mock.calls
+			.filter(call => call[1] === 'native_android registration step')
+			.map(call => call[0] as RegistrationLogMetadata)
+
+	const httpLines = (spy: { mock: { calls: unknown[][] } }): RegistrationLogMetadata[] =>
+		spy.mock.calls
+			.filter(call => call[1] === 'native_android registration response')
+			.map(call => call[0] as RegistrationLogMetadata)
+
+	const fetchRecording = (calls: string[], payloads?: Record<string, unknown>) =>
+		((async (url: RequestInfo | URL) => {
+			calls.push(String(url).replace('https://registration.lab.invalid', ''))
+			const body = String(url).endsWith('/register')
+				? { status: 'ok', lid: '123456789012345' }
+				: (payloads ?? { status: 'sent' })
+			return new Response(JSON.stringify(body), { status: 200 })
+		}) as unknown as typeof fetch)
+
+	it('logs one allowlisted correlation line per registration step', async () => {
+		const debugSpy = jest.spyOn(logger, 'debug').mockImplementation(() => {})
+		try {
+			const calls: string[] = []
+			const flow = createNativeAndroidRegistrationFlow({
+				skipFunnel: true,
+				common: COMMON,
+				nativeIdentity: { device: DEVICE },
+				tokenMaterial: material,
+				attestationProvider: async context => ({
+					authorization: 'Native attestation',
+					body: context.body,
+					attestation: PROOF
+				}),
+				http: { baseUrl: 'https://registration.lab.invalid', fetch: fetchRecording(calls) }
+			})
+			await flow.requestCode({ method: 'sms' })
+			await flow.verifyCode({ code: '123456' })
+
+			const steps = stepLines(debugSpy)
+			expect(steps.map(line => line.phase)).toEqual(['abprop', 'exist', 'code', 'register'])
+			expect(steps.map(line => line.endpoint)).toEqual([
+				'/v2/reg_onboard_abprop',
+				'/v2/exist',
+				'/v2/code',
+				'/v2/register'
+			])
+			for (const line of steps) {
+				expect(line.operationId).toBe('native-android-registration')
+				expect(line.status).toBeDefined()
+				// The material and the proof are named by digest/identity only.
+				expect(line.materialHash).toBe(computeRegistrationMaterialHash(material))
+				expect(line.proofHash).toBe(PROOF.signatureHash)
+				expect(line.attestedPackage).toBe(PROOF.attestedPackage)
+				expect(line.challengeAgeMs).toBe(42)
+				expect(Object.keys(line).every(key => ALLOWED_KEYS.has(key))).toBe(true)
+			}
+
+			// The per-HTTP lines carry the same proof correlation per request.
+			const http = httpLines(debugSpy)
+			expect(http.map(line => line.endpoint)).toEqual([
+				'/v2/reg_onboard_abprop',
+				'/v2/exist',
+				'/v2/code',
+				'/v2/register'
+			])
+			for (const line of http) {
+				expect(line.proofHash).toBe(PROOF.signatureHash)
+				expect(line.attestedPackage).toBe(PROOF.attestedPackage)
+				expect(line.challengeAgeMs).toBe(42)
+				expect(line.materialHash).toBeUndefined()
+			}
+		} finally {
+			debugSpy.mockRestore()
+		}
+	})
+
+	it('digests a custom_block_screen on the step line and never logs its content', async () => {
+		const debugSpy = jest.spyOn(logger, 'debug').mockImplementation(() => {})
+		try {
+			const screen = { title: 'Baixe o app oficial do WhatsApp para continuar' }
+			const calls: string[] = []
+			const flow = createNativeAndroidRegistrationFlow({
+				skipFunnel: true,
+				common: COMMON,
+				tokenMaterial: material,
+				attestationProvider: async context => ({
+					authorization: 'Native attestation',
+					body: context.body,
+					attestation: PROOF
+				}),
+				http: {
+					baseUrl: 'https://registration.lab.invalid',
+					fetch: (async (url: RequestInfo | URL) => {
+						const endpoint = String(url).replace('https://registration.lab.invalid', '')
+						calls.push(endpoint)
+						const payload =
+							endpoint === '/v2/exist'
+								? { status: 'fail', reason: 'blocked', custom_block_screen: screen }
+								: { status: 'ok' }
+						return new Response(JSON.stringify(payload), { status: 200 })
+					}) as unknown as typeof fetch
+				}
+			})
+			await expect(flow.requestCode({ method: 'sms' })).rejects.toThrow(/registration blocked at exist/)
+
+			const steps = stepLines(debugSpy)
+			expect(steps.map(line => line.phase)).toEqual(['abprop', 'exist'])
+			const exist = steps.find(line => line.phase === 'exist')!
+			expect(exist.status).toBe('fail')
+			expect(exist.reason).toBe('blocked')
+			expect(exist.blockScreenHash).toBe(registrationBlockScreenHash(screen))
+			// The screen document itself never reaches any log line.
+			expect(JSON.stringify(debugSpy.mock.calls)).not.toContain('Baixe o app oficial')
+		} finally {
+			debugSpy.mockRestore()
+		}
+	})
+
+	it('drops hostile server/device tokens instead of logging or throwing on them', async () => {
+		const debugSpy = jest.spyOn(logger, 'debug').mockImplementation(() => {})
+		try {
+			const flow = createNativeAndroidRegistrationFlow({
+				skipFunnel: true,
+				skipOnboarding: true,
+				common: COMMON,
+				tokenMaterial: material,
+				attestationProvider: async context => ({
+					authorization: 'Native attestation',
+					body: context.body,
+					attestation: {
+						...PROOF,
+						attestedPackage: '<script>alert(1)</script>',
+						challengeAgeMs: Number.NaN
+					}
+				}),
+				http: {
+					baseUrl: 'https://registration.lab.invalid',
+					fetch: (async () =>
+						new Response(JSON.stringify({ status: 'fail', reason: 'too recent!' }), {
+							status: 200
+						})) as unknown as typeof fetch
+				}
+			})
+			await flow.requestCode({ method: 'sms' })
+
+			const code = stepLines(debugSpy).find(line => line.phase === 'code')!
+			expect(code.status).toBe('fail')
+			// Hostile tokens are dropped — the line still logs, the flow still runs.
+			expect(code.reason).toBeUndefined()
+			expect(code.attestedPackage).toBeUndefined()
+			expect(code.challengeAgeMs).toBeUndefined()
+			expect(code.proofHash).toBe(PROOF.signatureHash)
+		} finally {
+			debugSpy.mockRestore()
+		}
 	})
 })

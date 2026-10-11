@@ -1,5 +1,6 @@
 import { Boom } from '@hapi/boom'
 import { DisconnectReason } from '../Types'
+import type { NativeAndroidAttestationProofDiagnostics } from './native-android-registration-attestation-validation'
 import type {
 	NativeAndroidRegistrationEndpoint,
 	NativeAndroidRequestCodeEnvironment
@@ -44,6 +45,12 @@ export type NativeAndroidRegistrationBridgeAttestation = {
 	 * wire UA coherent with the TEE-signed key chain.
 	 */
 	deviceProfile?: Record<string, string>
+	/**
+	 * Pre-send proof validation diagnostics (signature, chain, challenge
+	 * binding, attested install identity). Present when a validating provider
+	 * produced the proof; feeds the sanitized correlation log.
+	 */
+	attestation?: NativeAndroidAttestationProofDiagnostics
 }
 
 const MAX_REQUEST_BYTES = 1_048_576

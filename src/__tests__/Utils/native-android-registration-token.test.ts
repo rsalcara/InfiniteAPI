@@ -3,9 +3,14 @@ import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import {
 	buildClassicRegistrationToken,
+	computeMaterialManifestHashes,
 	createClassicRegistrationTokenBuilder,
+	materialManifestAppVersion,
 	NATIVE_ANDROID_REGISTRATION_PACKAGES,
 	NATIVE_ANDROID_REGISTRATION_TOKEN_SALT_BASE64,
+	parseMaterialManifest,
+	validateMaterialManifest,
+	type NativeAndroidRegistrationMaterialManifest,
 	type NativeAndroidRegistrationTokenMaterial
 } from '../../Utils/native-android-registration-token'
 
@@ -167,5 +172,105 @@ describe('native android classic registration token — consumer (WhatsApp Messe
 		expect(() => buildClassicRegistrationToken('82956348194', { ...consumerMaterial(), packageName: '' })).toThrow(
 			/packageName/
 		)
+	})
+})
+
+describe('native android registration material manifest (audit gap A)', () => {
+	const captureManifest = (): NativeAndroidRegistrationMaterialManifest => ({
+		appVariant: 'business',
+		packageName: NATIVE_ANDROID_REGISTRATION_PACKAGES.business,
+		version: '2.26.36.72',
+		hashes: computeMaterialManifestHashes(captureMaterial())
+	})
+
+	it('hashes the exact bytes the token computation consumes', () => {
+		const material = captureMaterial()
+		const hashes = computeMaterialManifestHashes(material)
+		// sha-256, hex lowercase — 3 fields, 64 chars each.
+		for (const field of ['logoResource', 'signingCertDer', 'classesDexMd5'] as const) {
+			expect(hashes[field]).toMatch(/^[0-9a-f]{64}$/)
+		}
+		// classesDexMd5 is hashed as the raw 16-byte digest, not the hex file.
+		expect(hashes.classesDexMd5).not.toBe(computeMaterialManifestHashes({
+			...material,
+			classesDexMd5: Uint8Array.from(Buffer.from('2122b0e07d77d1ac1fe458d167c7cbc5', 'hex'))
+		}).classesDexMd5)
+	})
+
+	it('parses the documented manifest.json shape and fails closed on anything else', () => {
+		const manifest = captureManifest()
+		expect(parseMaterialManifest(JSON.parse(JSON.stringify(manifest)))).toEqual(manifest)
+
+		expect(() => parseMaterialManifest(null)).toThrow(/invalid manifest.json shape/)
+		expect(() => parseMaterialManifest({ ...manifest, appVariant: 'web' })).toThrow(/invalid manifest.json shape/)
+		expect(() => parseMaterialManifest({ ...manifest, packageName: '' })).toThrow(/invalid manifest.json shape/)
+		expect(() => parseMaterialManifest({ ...manifest, version: '2.26.36' })).toThrow(/invalid manifest.json shape/)
+		expect(() => parseMaterialManifest({ ...manifest, version: 2 })).toThrow(/invalid manifest.json shape/)
+		expect(() =>
+			parseMaterialManifest({ ...manifest, hashes: { ...manifest.hashes, logoResource: 'ABC' } })
+		).toThrow(/invalid manifest.json shape/)
+		expect(() => parseMaterialManifest({ ...manifest, hashes: {} })).toThrow(/invalid manifest.json shape/)
+	})
+
+	it('parses manifest.version into the 4-tuple app version', () => {
+		expect(materialManifestAppVersion(captureManifest())).toEqual([2, 26, 36, 72])
+		expect(materialManifestAppVersion({ ...captureManifest(), version: '2.26.40.7' })).toEqual([2, 26, 40, 7])
+	})
+
+	it('pins variant, package, authorized build and blob hashes to the configured material', () => {
+		const material = captureMaterial()
+		const manifest = captureManifest()
+
+		expect(() => validateMaterialManifest(manifest, material, 'business')).not.toThrow()
+		expect(() => validateMaterialManifest(manifest, material)).not.toThrow()
+
+		// Material from the other variant must never sign this flow's token.
+		expect(() => validateMaterialManifest(manifest, material, 'consumer')).toThrow(/appVariant/)
+		expect(() => validateMaterialManifest({ ...manifest, appVariant: 'consumer' }, material)).toThrow(/packageName/)
+
+		// Only the authorized build for the variant may be announced.
+		expect(() => validateMaterialManifest({ ...manifest, version: '2.26.36.71' }, material)).toThrow(
+			/version is not the authorized build/
+		)
+
+		// Each blob hash pins the exact bytes.
+		expect(() =>
+			validateMaterialManifest({ ...manifest, hashes: { ...manifest.hashes, logoResource: '0'.repeat(64) } }, material)
+		).toThrow(/hashes.logoResource/)
+		expect(() =>
+			validateMaterialManifest({ ...manifest, hashes: { ...manifest.hashes, signingCertDer: '0'.repeat(64) } }, material)
+		).toThrow(/hashes.signingCertDer/)
+		expect(() =>
+			validateMaterialManifest({ ...manifest, hashes: { ...manifest.hashes, classesDexMd5: '0'.repeat(64) } }, material)
+		).toThrow(/hashes.classesDexMd5/)
+
+		// The manifest and the material must name the same package.
+		expect(() => validateMaterialManifest(manifest, { ...material, packageName: 'com.whatsapp' })).toThrow(
+			/packageName does not match the material/
+		)
+	})
+
+	it('refuses to mint a token when the attached manifest does not pin the material', () => {
+		const material = captureMaterial()
+		expect(buildClassicRegistrationToken('1531997072', { ...material, manifest: captureManifest() })).toBe(
+			'hEjVbznrgA3o2tS3JoE4vuRVxVg='
+		)
+		expect(() =>
+			buildClassicRegistrationToken('1531997072', {
+				...material,
+				manifest: { ...captureManifest(), version: '2.26.36.71' }
+			})
+		).toThrow(/version is not the authorized build/)
+		expect(() =>
+			createClassicRegistrationTokenBuilder({
+				...captureMaterial(),
+				manifest: {
+					appVariant: 'consumer',
+					packageName: NATIVE_ANDROID_REGISTRATION_PACKAGES.consumer,
+					version: '2.26.40.7',
+					hashes: computeMaterialManifestHashes(captureMaterial())
+				}
+			})
+		).toThrow(/packageName does not match the material/)
 	})
 })
