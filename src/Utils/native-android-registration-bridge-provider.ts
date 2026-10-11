@@ -289,12 +289,25 @@ export const mapBridgeRegistrationEnvironment = (raw: Record<string, unknown>): 
 	return environment as NativeAndroidRequestCodeEnvironment
 }
 
+/**
+ * `requestHash` do `gpia-param-prepare` de registro: `Base64.encodeToString(
+ * authkey, 3)` do APK — flag 3 = NO_WRAP|NO_PADDING, alfabeto padrão. Ground
+ * truth 1:1: `GWM` case 25 (W4B 2.26.37.6) e `C42288Ijh` (consumer
+ * 2.26.38.10), ambos `Base64.encodeToString(authkeyBytes, 3)` antes do
+ * `request(surface "reg")`. Calculado AQUI (motor): o device só repassa o
+ * string ao Play Integrity Standard.
+ */
+export const nativeAndroidGpiaRequestHash = (authkey: Uint8Array): string =>
+	Buffer.from(authkey).toString('base64').replace(/=+$/, '')
+
 export type NativeAndroidRegistrationEnvironmentProviderOptions = {
 	/**
-	 * `authkey` do registro (o `metadata.A0I()` do APK). O device o devolve em
-	 * Base64 URL_SAFE|NO_WRAP como `requestHash` do Play Integrity Standard que
-	 * produz o campo `gpia` — 1:1 com o `gpia-param-prepare` oficial
-	 * (C42288Ijh case 16 → HXY.A02), que amarra o token ao authkey enviado.
+	 * `authkey` do registro (a chave pública estática do cliente, o
+	 * `metadata.A0I()`/`A04.A0J()` do APK). O motor envia o `requestHash` pronto
+	 * (`gpiaRequestHashBase64`, ver `nativeAndroidGpiaRequestHash`); o device o
+	 * repassa ao Play Integrity Standard que produz o campo `gpia` — 1:1 com o
+	 * `gpia-param-prepare` oficial (GWM case 25 → superfície "reg"), que amarra
+	 * o token ao authkey enviado.
 	 */
 	challenge?: Uint8Array
 }
@@ -338,7 +351,10 @@ export const createNativeAndroidRegistrationEnvironmentProvider = (
 				body: JSON.stringify({
 					appVariant,
 					...(options?.challenge?.length
-						? { challengeBase64: Buffer.from(options.challenge).toString('base64') }
+						? {
+								challengeBase64: Buffer.from(options.challenge).toString('base64'),
+								gpiaRequestHashBase64: nativeAndroidGpiaRequestHash(options.challenge)
+							}
 						: {})
 				}),
 				signal: controller.signal

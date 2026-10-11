@@ -4,6 +4,7 @@ import {
 	createNativeAndroidRegistrationBridgeProvider,
 	createNativeAndroidRegistrationEnvironmentProvider,
 	mapBridgeRegistrationEnvironment,
+	nativeAndroidGpiaRequestHash,
 	type NativeAndroidRegistrationBridgeContext,
 	percentDecodeRegistrationBytes
 } from '../../Utils/native-android-registration-bridge-provider'
@@ -602,6 +603,32 @@ describe('native_android registration environment provider', () => {
 		expect(environment._gs).toEqual(Uint8Array.from(Buffer.from('abc', 'utf8')))
 		expect(environment.gpia).toBe('tok')
 		expect(environment.mcc).toBe('310')
+	})
+
+	it('computes the official gpia requestHash (Base64 flag 3 of the authkey) and sends it ready', async () => {
+		// Flag 3 = NO_WRAP|NO_PADDING, alfabeto padrão — 1:1 com
+		// `Base64.encodeToString(authkey, 3)` (GWM case 25 / C42288Ijh).
+		// 0xfb,0xff,0xbf produz "+/+/" no alfabeto padrão e "-_-_" no URL_SAFE;
+		// 0x00 produz "AA==" com padding e "AA" sem.
+		expect(nativeAndroidGpiaRequestHash(Uint8Array.from([0xfb, 0xff, 0xbf]))).toBe('+/+/')
+		expect(nativeAndroidGpiaRequestHash(Uint8Array.from([0x00]))).toBe('AA')
+
+		const authkey = Uint8Array.from([0x02, 0xfb, 0xff, 0xbf, 0x01])
+		const calls: Array<{ body: unknown }> = []
+		const provider = createNativeAndroidRegistrationEnvironmentProvider({
+			url: 'http://127.0.0.1:8790',
+			fetch: (async (url: RequestInfo | URL, init?: RequestInit) => {
+				calls.push({ body: JSON.parse(String(init?.body)) })
+				return new Response(JSON.stringify({ environment: {} }), { status: 200 })
+			}) as unknown as typeof fetch
+		})
+
+		await provider('business', { challenge: authkey })
+		expect(calls[0]!.body).toEqual({
+			appVariant: 'business',
+			challengeBase64: Buffer.from(authkey).toString('base64'),
+			gpiaRequestHashBase64: nativeAndroidGpiaRequestHash(authkey)
+		})
 	})
 
 	it('rejects answers without an environment object and invalid app variants', async () => {
