@@ -37,6 +37,13 @@ import { nativeAndroidRegistrationAppVersion } from './native-android-registrati
  * given install may carry several buckets (2.26.38.10 ships hdpi-v4 and
  * xxhdpi-v4 inside `split_config.xhdpi.apk`).
  *
+ * Wire-verified bucket (2026-10-12): the token the live server accepts is the
+ * one computed over the XXHDPI asset — W4B 2.26.36.72 and 2.26.39.72 ship the
+ * SAME 32006-byte `drawable-xxhdpi-v4/about_logo.png` (sha256 bcf87af0…) and
+ * the hdpi-v4 pick (12170 B, 150×150 vs 300×300) answers `bad_token`. The
+ * classpath order above walks hdpi first, but the server-side expectation
+ * follows the xxhdpi bucket — extract the xxhdpi variant.
+ *
  * `signingCertDer` is the OLDEST certificate of the signing lineage, not the
  * current signer: on SDK 28+ the chain takes
  * `SigningInfo.getSigningCertificateHistory()[0]`, so a key-rotated install
