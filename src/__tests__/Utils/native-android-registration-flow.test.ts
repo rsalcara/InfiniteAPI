@@ -12,6 +12,7 @@ import {
 	createNativeAndroidRegistrationFlow,
 	decodeRegistrationAuthChallenge
 } from '../../Utils/native-android-registration-flow'
+import { mintWamsysGpiaBlob } from '../../Utils/native-android-registration-gpia'
 import { createNativeAndroidRegistrationSignalKeys } from '../../Utils/native-android-registration-keys'
 import type { NativeAndroidRegistrationCommon } from '../../Utils/native-android-registration-protocol'
 import { percentEncodeRegistrationString } from '../../Utils/native-android-registration-protocol'
@@ -988,6 +989,36 @@ describe('native_android registration unattested profile (whalibmob default)', (
 		// gpiaMaterial owns only `gpia`: the Play Integrity legs stay dropped.
 		expect(code.request.body).not.toContain('_gg=')
 		expect(code.request.body).toContain('mcc=724')
+	})
+
+	it('mints the wamsys gpia blob from gpiaSeed when no captured material is given', async () => {
+		const calls: WireCall[] = []
+		const seed = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])
+		const flow = unattestedFlow(calls, {
+			environment: { gpia: 'foreign-jws-token', mcc: '724' },
+			gpiaSeed: seed
+		})
+		const code = await flow.requestCode({ method: 'sms', token: '1531997072' })
+		const minted = mintWamsysGpiaBlob(seed)
+		expect(minted).toHaveLength(399)
+		expect(code.request.body).toContain(`gpia=${minted}`)
+		expect(code.request.body).not.toContain('foreign-jws-token')
+		expect(code.request.body).toContain('mcc=724')
+		// The mint is deterministic per install seed: the same flow keeps
+		// serving the same blob, like the real artifact within one registration.
+		const second = await flow.requestCode({ method: 'sms', token: '1531997072' })
+		expect(second.request.body).toContain(`gpia=${minted}`)
+	})
+
+	it('prefers captured gpiaMaterial over a minted blob', async () => {
+		const calls: WireCall[] = []
+		const flow = unattestedFlow(calls, {
+			gpiaSeed: new Uint8Array([1, 2, 3]),
+			gpiaMaterial: 'CucBARCnMGuUec80qoccpQQaREALBLOB'
+		})
+		const code = await flow.requestCode({ method: 'sms', token: '1531997072' })
+		expect(code.request.body).toContain('gpia=CucBARCnMGuUec80qoccpQQaREALBLOB')
+		expect(code.request.body).not.toContain(mintWamsysGpiaBlob(new Uint8Array([1, 2, 3])))
 	})
 
 	it('seals with the caller envelope material so the plaintext round-trips', async () => {

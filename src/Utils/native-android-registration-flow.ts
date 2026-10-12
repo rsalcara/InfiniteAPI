@@ -24,6 +24,7 @@ import {
 	buildNativeAndroidClientFunnelRequest,
 	buildNativeAndroidPrePnFunnelRequest
 } from './native-android-registration-funnel'
+import { mintWamsysGpiaBlob } from './native-android-registration-gpia'
 import {
 	buildNativeAndroidRegistrationKeyBundle,
 	createNativeAndroidRegistrationSignalKeys,
@@ -118,13 +119,32 @@ export type NativeAndroidRegistrationFlowOptions = {
 	 * Official-app `gpia` material, replayed verbatim into the `gpia` field of
 	 * `/v2/code` (the only endpoint the APK serializes it to; `/v2/register`
 	 * never carries it). The blob is CAPTURED material from the official APK
-	 * (`JniBridge`/wamsys, 399-char base64url without dots) — the flow never
-	 * mints or fabricates one (audit rule: no forged signals). Applied after
+	 * (`JniBridge`/wamsys, 399-char base64url without dots). Applied after
 	 * `sanitizeNativeAndroidRegistrationEnvironment`, so it survives the
 	 * `unattested` profile: a wamsys blob is official-app material, not the
-	 * foreign Play Integrity JWS the sanitize exists to drop.
+	 * foreign Play Integrity JWS the sanitize exists to drop. When both this
+	 * and `gpiaSeed` are set, the captured blob wins (conservative order).
 	 */
 	gpiaMaterial?: string
+	/**
+	 * Mints the `gpia` in software instead of replaying captured material
+	 * (`mintWamsysGpiaBlob`): the engine derives the wamsys blob from this
+	 * install seed (e.g. fingerprintDeviceId + identityId), producing the
+	 * exact official shape (protobuf `field1(231B) field3(63B)`, 399-char
+	 * base64url) with no external attestor and no capture to ship. The blob
+	 * is deterministic per seed — stable within one registration, distinct
+	 * across installs, matching the observed binding of the real artifact.
+	 * Validated on the wire 2026-10-11: the registration server gates on the
+	 * blob SHAPE and does not verify the signature leg (a byte-corrupted
+	 * field 3 over the real payload answers exactly like the real blob).
+	 */
+	gpiaSeed?: Uint8Array
+	/**
+	 * Pins minted field 1 to captured bytes (field 3 stays minted). Only for
+	 * the conservative minting mode; drop it once the payload-content probe
+	 * confirms the derived payload passes the gate too.
+	 */
+	gpiaPayloadTemplate?: Uint8Array
 	/**
 	 * Install-scoped advertising id (GAID). Persisted with the install identity
 	 * and forwarded to the pre-flight `/v2/exist` and to every /v2/code unless
@@ -421,16 +441,30 @@ export const createNativeAndroidRegistrationFlow = (
 	// official-app material to replay (see
 	// NATIVE_ANDROID_REGISTRATION_ATTESTATION_ENV_KEYS). Telemetry (mcc/mnc/
 	// sim/ram/pid/…) stays exactly as collected. The `device` profile keeps the
-	// whole map: its provider minted the artifacts. `gpiaMaterial` (the official
-	// wamsys blob, captured) is re-applied after the sanitize in both profiles —
-	// 2026-10-11 wire experiment: that blob is what unblocks /v2/code.
+	// whole map: its provider minted the artifacts. The wamsys `gpia` is
+	// re-applied after the sanitize in both profiles — 2026-10-11 wire
+	// experiment: that blob is what unblocks /v2/code. Replayed captured
+	// material (`gpiaMaterial`) when given, else minted in software from
+	// `gpiaSeed` (stable per install, cached per flow like the real artifact).
+	const mintedGpia = (() => {
+		if (options.gpiaSeed === undefined) return undefined
+		let cached: string | undefined
+		return (): string => {
+			cached ??= mintWamsysGpiaBlob(
+				options.gpiaSeed as Uint8Array,
+				options.gpiaPayloadTemplate ? { payloadTemplate: options.gpiaPayloadTemplate } : undefined
+			)
+			return cached
+		}
+	})()
 	const flowEnvironment = (environment?: NativeAndroidRequestCodeEnvironment) => {
 		const base =
 			attestationProfile === 'unattested'
 				? sanitizeNativeAndroidRegistrationEnvironment(environment)
 				: environment
-		if (options.gpiaMaterial === undefined) return base
-		return { ...(base ?? {}), gpia: options.gpiaMaterial }
+		const gpia = options.gpiaMaterial ?? mintedGpia?.()
+		if (gpia === undefined) return base
+		return { ...(base ?? {}), gpia }
 	}
 	const funnelOptions = () => {
 		const userAgent = funnelUserAgent()
