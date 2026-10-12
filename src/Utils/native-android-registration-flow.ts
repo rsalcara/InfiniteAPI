@@ -90,12 +90,17 @@ export type NativeAndroidRegistrationFlowOptions = {
 	 * `unattested`: the whalibmob reference profile with no attestation server
 	 * attached (`attestBody` -> `EMPTY_BODY`, every attestation field omitted).
 	 * The flow seals `ENC=` itself and each request goes out with no `&H=`, no
-	 * `Authorization` and no attestation artifacts in the environment. The
-	 * registration server treats an absent artifact as nothing to validate,
-	 * while an artifact minted by another application names another package
-	 * and is exactly what triggers the app-identity block ("Baixe o app
-	 * oficial"). A registration client that cannot attest as the official
-	 * application must send this profile.
+	 * `Authorization` and no Play Integrity legs in the environment.
+	 *
+	 * Falsified 2026-10-11 (wire experiment against v.whatsapp.net): the
+	 * app-identity block ("Baixe o app oficial") is keyed on the `gpia` VALUE,
+	 * not on the attestor package name. Absent `gpia` -> block; `gpia` = the
+	 * Play Integrity Standard JWS minted by the Connector (556 chars, names
+	 * `br.com.infiniteapi.connector`) -> block; `gpia` = the official app's
+	 * wamsys blob (399 chars base64url, protobuf `field1(231B) field3(63B)`,
+	 * minted by `JniBridge` inside the APK) -> normal protocol even with the
+	 * Connector's Keystore `&H=` + `Authorization` naming our package on the
+	 * same request. `gpiaMaterial` below is that official blob replayed.
 	 */
 	attestationProfile?: 'device' | 'unattested'
 	attestationProvider?: (
@@ -109,6 +114,17 @@ export type NativeAndroidRegistrationFlowOptions = {
 	http?: NativeAndroidRegistrationFlowHttpOptions
 	/** Default /v2/code environment; overridable per request. */
 	environment?: NativeAndroidRequestCodeEnvironment
+	/**
+	 * Official-app `gpia` material, replayed verbatim into the `gpia` field of
+	 * `/v2/code` (the only endpoint the APK serializes it to; `/v2/register`
+	 * never carries it). The blob is CAPTURED material from the official APK
+	 * (`JniBridge`/wamsys, 399-char base64url without dots) — the flow never
+	 * mints or fabricates one (audit rule: no forged signals). Applied after
+	 * `sanitizeNativeAndroidRegistrationEnvironment`, so it survives the
+	 * `unattested` profile: a wamsys blob is official-app material, not the
+	 * foreign Play Integrity JWS the sanitize exists to drop.
+	 */
+	gpiaMaterial?: string
 	/**
 	 * Install-scoped advertising id (GAID). Persisted with the install identity
 	 * and forwarded to the pre-flight `/v2/exist` and to every /v2/code unless
@@ -400,15 +416,22 @@ export const createNativeAndroidRegistrationFlow = (
 			: undefined
 	}
 	// Unattested profile: the Play Integrity legs are dropped from every
-	// environment map — an artifact minted by another application names that
-	// package and is the app-identity block trigger (see
+	// environment map — the JWS minted by another application is the shape the
+	// server rejects ("Baixe o app oficial"), and the unattested profile has no
+	// official-app material to replay (see
 	// NATIVE_ANDROID_REGISTRATION_ATTESTATION_ENV_KEYS). Telemetry (mcc/mnc/
 	// sim/ram/pid/…) stays exactly as collected. The `device` profile keeps the
-	// whole map: its provider minted the artifacts.
-	const flowEnvironment = (environment?: NativeAndroidRequestCodeEnvironment) =>
-		attestationProfile === 'unattested'
-			? sanitizeNativeAndroidRegistrationEnvironment(environment)
-			: environment
+	// whole map: its provider minted the artifacts. `gpiaMaterial` (the official
+	// wamsys blob, captured) is re-applied after the sanitize in both profiles —
+	// 2026-10-11 wire experiment: that blob is what unblocks /v2/code.
+	const flowEnvironment = (environment?: NativeAndroidRequestCodeEnvironment) => {
+		const base =
+			attestationProfile === 'unattested'
+				? sanitizeNativeAndroidRegistrationEnvironment(environment)
+				: environment
+		if (options.gpiaMaterial === undefined) return base
+		return { ...(base ?? {}), gpia: options.gpiaMaterial }
+	}
 	const funnelOptions = () => {
 		const userAgent = funnelUserAgent()
 		const environment = flowEnvironment(options.environment)

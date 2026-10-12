@@ -371,6 +371,16 @@ export const addKeyBundle = (builder: RegistrationRequestBuilder, bundle: Native
  * nothing to validate — the official serializer omits the map entries its
  * attestor never produced, and the whalibmob reference registers with every one
  * of these fields absent.
+ *
+ * `gpia` correction (2026-10-11 wire experiment, see the flow's
+ * `gpiaMaterial`): the block is keyed on the `gpia` VALUE, not on the attestor
+ * package. The official APK's `gpia` is a wamsys blob minted by `JniBridge`
+ * (399-char base64url, protobuf `field1(231B) field3(63B)`, no dots) and that
+ * exact shape is what the server accepts; the Play Integrity Standard JWS
+ * (558 chars, dotted) or a missing `gpia` both answer the block even when the
+ * Keystore `&H=`/`Authorization` of the same request name another package. So
+ * `gpia` is dropped here as a foreign artifact UNLESS the caller replays the
+ * official blob via `gpiaMaterial`.
  */
 export const NATIVE_ANDROID_REGISTRATION_ATTESTATION_ENV_KEYS: ReadonlyArray<keyof NativeAndroidRequestCodeEnvironment> =
 	['gpia', '_gg', '_gi', '_gp', '_ge', '_ga']

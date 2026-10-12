@@ -970,6 +970,26 @@ describe('native_android registration unattested profile (whalibmob default)', (
 		expect(code.request.body).toContain('pid=4321')
 	})
 
+	it('replays the official wamsys gpia blob via gpiaMaterial over the sanitized map', async () => {
+		const calls: WireCall[] = []
+		const flow = unattestedFlow(calls, {
+			environment: {
+				gpia: 'foreign-jws-token',
+				_gg: 'gg-leg',
+				mcc: '724'
+			},
+			// Captured official-APK blob (399-char base64url, no dots) — replayed
+			// verbatim, never minted by the flow.
+			gpiaMaterial: 'CucBARCnMGuUec80qoccpQQaREALBLOB'
+		})
+		const code = await flow.requestCode({ method: 'sms', token: '1531997072' })
+		expect(code.request.body).toContain('gpia=CucBARCnMGuUec80qoccpQQaREALBLOB')
+		expect(code.request.body).not.toContain('foreign-jws-token')
+		// gpiaMaterial owns only `gpia`: the Play Integrity legs stay dropped.
+		expect(code.request.body).not.toContain('_gg=')
+		expect(code.request.body).toContain('mcc=724')
+	})
+
 	it('seals with the caller envelope material so the plaintext round-trips', async () => {
 		const server = Curve.generateKeyPair()
 		const calls: WireCall[] = []
