@@ -91,18 +91,18 @@ describe('native android device attestation provider', () => {
 		})
 
 		const attested = await provider(CONTEXT)
-		expect(attested.userAgent).toBe('WhatsApp/2.26.39.72 SMBA/16 Device/samsung-SM-S948B')
+		expect(attested.userAgent).toBe('WhatsApp/2.26.36.72 SMBA/16 Device/samsung-SM-S948B')
 	})
 
 	it('prefers an explicit User-Agent over the profile derivation', async () => {
 		const provider = createNativeAndroidRegistrationDeviceAttestationProvider({
 			signer: makeSigner([]),
 			deviceProfile: { manufacturer: 'samsung', deviceModelType: 'SM-S948B', osVersion: '16' },
-			userAgent: 'WhatsApp/2.26.39.72 SMBA/12 Device/Google-emulator64_x86_64_arm64'
+			userAgent: 'WhatsApp/2.26.36.72 SMBA/12 Device/Google-emulator64_x86_64_arm64'
 		})
 
 		const attested = await provider(CONTEXT)
-		expect(attested.userAgent).toBe('WhatsApp/2.26.39.72 SMBA/12 Device/Google-emulator64_x86_64_arm64')
+		expect(attested.userAgent).toBe('WhatsApp/2.26.36.72 SMBA/12 Device/Google-emulator64_x86_64_arm64')
 	})
 
 	it('fails closed when neither profile nor override is given', async () => {
@@ -117,7 +117,7 @@ describe('native android device attestation provider', () => {
 				manufacturer: 'Google',
 				model: 'Pixel 7'
 			})
-		).toBe('WhatsApp/2.26.39.72 SMBA/14 Device/Google-Pixel_7')
+		).toBe('WhatsApp/2.26.36.72 SMBA/14 Device/Google-Pixel_7')
 		// [^,\.\w\-\(\)] -> '_': spaces and other loose characters collapse to _
 		expect(
 			buildNativeAndroidRegistrationUserAgentFromParts({
@@ -125,25 +125,26 @@ describe('native android device attestation provider', () => {
 				manufacturer: 'HMD Global',
 				model: 'Nokia G50'
 			})
-		).toBe('WhatsApp/2.26.39.72 SMBA/12L Device/HMD_Global-Nokia_G50')
+		).toBe('WhatsApp/2.26.36.72 SMBA/12L Device/HMD_Global-Nokia_G50')
 		expect(
 			buildNativeAndroidRegistrationUserAgent({
 				manufacturer: 'Google',
 				deviceModelType: 'emulator64_x86_64_arm64',
 				osVersion: '12'
 			})
-		).toBe('WhatsApp/2.26.39.72 SMBA/12 Device/Google-emulator64_x86_64_arm64')
+		).toBe('WhatsApp/2.26.36.72 SMBA/12 Device/Google-emulator64_x86_64_arm64')
 	})
 
 	it('announces the variant build with the official platform token', () => {
 		// The token material of each variant comes from a specific build, and the
 		// server pairs the announced User-Agent version with that material — a
-		// mismatch reads as `bad_token`. Business material is 2.26.39.72
+		// mismatch reads as `bad_token`. Business material is 2.26.36.72 (the
+		// 39.72 extraction answers bad_token — staged rollout; fixture kept prepared)
 		// (`SMBA`); consumer material is 2.26.40.7 (`Android`, live native
 		// registration capture — never the all-caps `ANDROID`).
-		expect(nativeAndroidRegistrationAppVersion('business')).toEqual([2, 26, 39, 72])
+		expect(nativeAndroidRegistrationAppVersion('business')).toEqual([2, 26, 36, 72])
 		expect(nativeAndroidRegistrationAppVersion('consumer')).toEqual([2, 26, 40, 7])
-		expect(nativeAndroidRegistrationAppVersion()).toEqual([2, 26, 39, 72])
+		expect(nativeAndroidRegistrationAppVersion()).toEqual([2, 26, 36, 72])
 		expect(
 			buildNativeAndroidRegistrationUserAgentFromParts(
 				{ androidVersion: '14', manufacturer: 'Google', model: 'Pixel 7' },
@@ -155,7 +156,7 @@ describe('native android device attestation provider', () => {
 				{ androidVersion: '14', manufacturer: 'Google', model: 'Pixel 7' },
 				'business'
 			)
-		).toBe('WhatsApp/2.26.39.72 SMBA/14 Device/Google-Pixel_7')
+		).toBe('WhatsApp/2.26.36.72 SMBA/14 Device/Google-Pixel_7')
 	})
 
 	it('rejects a provider without a device signer', () => {

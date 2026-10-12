@@ -38,14 +38,20 @@ export type NativeAndroidRegistrationUserAgentParts = {
 }
 
 /**
- * Official client build of W4B 2.26.39.72 (aligned 2026-10-12 with the build
- * installed on the production Xiaomi — the whole chain now speaks the same
- * version: engine, platform manifest and the phone). The app registers and
- * logs in with the SAME build, so a registration-seeded identity carries this
- * version and every later ClientPayload.userAgent.appVersion matches the
- * registration User-Agent byte for byte.
+ * Official client build of W4B 2.26.36.72 — the build the server's token
+ * validation answers today. Wire evidence 2026-10-12: a request announcing
+ * 2.26.39.72 with material extracted from the official 39.72 APK (xxhdpi
+ * logo byte-identical to the validated one, same lineage cert, documented
+ * dex-md5 rule) answers `bad_token`, while the same flow on 2.26.36.72
+ * material answers `no_routes` minutes apart. 39.72 is a 2-day-old staged
+ * rollout — the prepared material/fixtures stay in the tree
+ * (`w4b-2.26.39.72/`) for the switch back once the server registers the
+ * build. The app registers and logs in with the SAME build, so a
+ * registration-seeded identity carries this version and every later
+ * ClientPayload.userAgent.appVersion matches the registration User-Agent
+ * byte for byte.
  */
-export const NATIVE_ANDROID_REGISTRATION_APP_VERSION: NativeAndroidAppVersion = [2, 26, 39, 72]
+export const NATIVE_ANDROID_REGISTRATION_APP_VERSION: NativeAndroidAppVersion = [2, 26, 36, 72]
 /**
  * Official client build of the consumer APK (com.whatsapp 2.26.40.7). Pinned
  * to the SAME build the consumer token material comes from
@@ -53,8 +59,8 @@ export const NATIVE_ANDROID_REGISTRATION_APP_VERSION: NativeAndroidAppVersion = 
  * that build's `classes.dex`, so a User-Agent announcing another version
  * describes a different client than the one the token proves and the server
  * answers `bad_token` ("a token that does not belong to the client sending
- * it"). Business keeps 2.26.39.72 for the same reason — that is the build its
- * material is read from (extracted from the installed APK on 2026-10-12).
+ * it"). Business keeps 2.26.36.72 for the same reason — that is the build its
+ * material is read from and the pair that already registers.
  */
 export const NATIVE_ANDROID_REGISTRATION_CONSUMER_APP_VERSION: NativeAndroidAppVersion = [2, 26, 40, 7]
 /** Official client version embedded in the registration User-Agent. */
@@ -78,7 +84,7 @@ const sanitizeUserAgentPart = (value: string): string => value.replace(/[^,\.\w\
 
 /**
  * Official registration User-Agent (`X.0d3.A00`, W4B 2.26.36.72):
- * `WhatsApp/2.26.39.72 SMBA/<release> Device/<manufacturer>-<model>`, each
+ * `WhatsApp/2.26.36.72 SMBA/<release> Device/<manufacturer>-<model>`, each
  * device part sanitized with the APK's `[^,\.\w\-\(\)]` -> `_` rule. The
  * registration platform selector rejects requests without it. The consumer
  * build names itself `Android` (live native registration capture) — the
