@@ -55,7 +55,7 @@ const OPTIONS: NativeAndroidRegistrationFunnelOptions = {
 	accessSessionId: '1c9a2f6e-5b3d-4a21-9f0e-88aa77bb66cc',
 	advertisingId: '11111111-2222-3333-4444-555555555555',
 	environment: { network_radio_type: 13, simnum: 1, hasinrc: 0 },
-	userAgent: 'WhatsApp/2.26.36.72 SMBA/14 Device/Xiaomi-fixture-device'
+	userAgent: 'WhatsApp/2.26.39.72 SMBA/14 Device/Xiaomi-fixture-device'
 }
 
 const queryKeys = (query: string): string[] => query.split('&').map(part => part.split('=')[0]!)

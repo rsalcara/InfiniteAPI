@@ -664,12 +664,12 @@ describe('native_android registration attested device identity (audit gap D)', (
 
 		const uaFor = (endpoint: string) => userAgents.filter(entry => entry.endpoint === endpoint).map(entry => entry.ua)
 		// `session_start` fires before any attestation: the persisted profile.
-		expect(uaFor('/v2/pre_pn_client_log')).toEqual(['WhatsApp/2.26.36.72 SMBA/14 Device/Xiaomi-23127PN0CC'])
+		expect(uaFor('/v2/pre_pn_client_log')).toEqual(['WhatsApp/2.26.39.72 SMBA/14 Device/Xiaomi-23127PN0CC'])
 		// Every funnel event after the first attestation names the TEE hardware.
 		const clientLogs = uaFor('/v2/client_log')
 		expect(clientLogs.length).toBeGreaterThan(0)
 		for (const ua of clientLogs) {
-			expect(ua).toBe('WhatsApp/2.26.36.72 SMBA/16 Device/Xiaomi-25078PC3EG')
+			expect(ua).toBe('WhatsApp/2.26.39.72 SMBA/16 Device/Xiaomi-25078PC3EG')
 		}
 	})
 })

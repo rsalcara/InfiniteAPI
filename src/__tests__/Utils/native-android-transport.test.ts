@@ -470,7 +470,7 @@ describe('native_android transport contract', () => {
 		const resolved = resolveTransportSession(nativeConfig(), creds)
 
 		expect(resolved.credsChanged).toBe(true)
-		expect(creds.nativeAndroidIdentity?.appVersion).toEqual([2, 26, 36, 72])
+		expect(creds.nativeAndroidIdentity?.appVersion).toEqual([2, 26, 39, 72])
 		expect(creds.nativeAndroidIdentity?.connectionLc).toBe(0)
 
 		// An explicit non-legacy build is a real registration and is trusted.

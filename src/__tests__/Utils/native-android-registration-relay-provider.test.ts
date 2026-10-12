@@ -147,7 +147,7 @@ describe('native android registration relay provider', () => {
 		// Connector's `signer.deviceProperties()`.
 		const withDeviceFields = (proof: RelayProof) => ({
 			...proof,
-			userAgent: 'WhatsApp/2.26.36.72 SMBA/16 Device/Xiaomi-25078PC3EG',
+			userAgent: 'WhatsApp/2.26.39.72 SMBA/16 Device/Xiaomi-25078PC3EG',
 			deviceProfile: { manufacturer: 'Xiaomi', model: '25078PC3EG', androidVersion: '16', sdkInt: '36' }
 		})
 		const CONSUMER_CONTEXT: NativeAndroidRegistrationBridgeContext = { ...CONTEXT, appVariant: 'consumer' }
@@ -171,11 +171,11 @@ describe('native android registration relay provider', () => {
 		const withOverride = createNativeAndroidRegistrationRelayProvider({
 			url: 'https://api.example.com',
 			challenge: FIXTURE_ATTESTATION_MATERIAL,
-			userAgent: 'WhatsApp/2.26.36.72 SMBA/16 Device/samsung-SM-S948B',
+			userAgent: 'WhatsApp/2.26.39.72 SMBA/16 Device/samsung-SM-S948B',
 			fetch: makeFetch({ json: withDeviceFields }, calls)
 		})
 		const overridden = await withOverride(CONTEXT)
-		expect(overridden.userAgent).toBe('WhatsApp/2.26.36.72 SMBA/16 Device/samsung-SM-S948B')
+		expect(overridden.userAgent).toBe('WhatsApp/2.26.39.72 SMBA/16 Device/samsung-SM-S948B')
 
 		const withoutDeviceProfile = createNativeAndroidRegistrationRelayProvider({
 			url: 'https://api.example.com',
@@ -184,7 +184,7 @@ describe('native android registration relay provider', () => {
 			fetch: makeFetch({}, calls)
 		})
 		const raffled = await withoutDeviceProfile(CONTEXT)
-		expect(raffled.userAgent).toBe('WhatsApp/2.26.36.72 SMBA/16 Device/samsung-SM-S948B')
+		expect(raffled.userAgent).toBe('WhatsApp/2.26.39.72 SMBA/16 Device/samsung-SM-S948B')
 
 		const bare = createNativeAndroidRegistrationRelayProvider({
 			url: 'https://api.example.com',
@@ -201,7 +201,7 @@ describe('native android registration relay provider', () => {
 		})
 		const lastResort = await onlyString(CONSUMER_CONTEXT)
 		expect(consumerBare.userAgent).toBe('WhatsApp/2.26.40.7 Android/16 Device/Xiaomi-25078PC3EG')
-		expect(lastResort.userAgent).toBe('WhatsApp/2.26.36.72 SMBA/16 Device/Xiaomi-25078PC3EG')
+		expect(lastResort.userAgent).toBe('WhatsApp/2.26.39.72 SMBA/16 Device/Xiaomi-25078PC3EG')
 	})
 
 	it('rejects relay responses without signature or attestation', async () => {

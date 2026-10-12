@@ -46,6 +46,31 @@ const consumerMaterial = (): NativeAndroidRegistrationTokenMaterial => ({
 	)
 })
 
+/**
+ * Material of the CURRENT authorized business build (W4B 2.26.39.72),
+ * extracted 2026-10-12 from the APK installed on the production Xiaomi
+ * (base.apk + split_config.xhdpi.apk): logo = first bucket of the official
+ * resolution order (`/res/drawable-hdpi-v4/about_logo.png` shipped inside the
+ * xhdpi split), cert = OLDEST lineage entry (the same "Brian Acton" DER every
+ * W4B build carries after key rotation), dex MD5 = raw MD5 of the base
+ * `classes.dex` entry.
+ */
+const currentBusinessMaterial = (): NativeAndroidRegistrationTokenMaterial => ({
+	packageName: NATIVE_ANDROID_REGISTRATION_PACKAGES.business,
+	logoResource: readFileSync(join(fixturesDir, 'w4b-2.26.39.72', 'about_logo.png')),
+	signingCertDer: readFileSync(join(fixturesDir, 'w4b-2.26.39.72', 'signing-cert.der')),
+	classesDexMd5: Uint8Array.from(
+		Buffer.from(readFileSync(join(fixturesDir, 'w4b-2.26.39.72', 'classes-dex.md5'), 'utf8').trim(), 'hex')
+	)
+})
+
+const currentBusinessManifest = (): NativeAndroidRegistrationMaterialManifest => ({
+	appVariant: 'business',
+	packageName: NATIVE_ANDROID_REGISTRATION_PACKAGES.business,
+	version: '2.26.39.72',
+	hashes: computeMaterialManifestHashes(currentBusinessMaterial())
+})
+
 describe('native android classic registration token', () => {
 	it('reproduces the real wire token byte-for-byte (golden /v2/code capture)', () => {
 		// Captured query: cc=55&token=hEjVbznrgA3o2tS3JoE4vuRVxVg=&in=1531997072
@@ -214,22 +239,29 @@ describe('native android registration material manifest (audit gap A)', () => {
 
 	it('parses manifest.version into the 4-tuple app version', () => {
 		expect(materialManifestAppVersion(captureManifest())).toEqual([2, 26, 36, 72])
+		expect(materialManifestAppVersion(currentBusinessManifest())).toEqual([2, 26, 39, 72])
 		expect(materialManifestAppVersion({ ...captureManifest(), version: '2.26.40.7' })).toEqual([2, 26, 40, 7])
 	})
 
 	it('pins variant, package, authorized build and blob hashes to the configured material', () => {
-		const material = captureMaterial()
-		const manifest = captureManifest()
+		const material = currentBusinessMaterial()
+		const manifest = currentBusinessManifest()
 
 		expect(() => validateMaterialManifest(manifest, material, 'business')).not.toThrow()
 		expect(() => validateMaterialManifest(manifest, material)).not.toThrow()
+
+		// The retired 2.26.36.72 capture build is no longer authorized: the
+		// manifest describing it fails closed even against its own material.
+		expect(() => validateMaterialManifest(captureManifest(), captureMaterial(), 'business')).toThrow(
+			/version is not the authorized build/
+		)
 
 		// Material from the other variant must never sign this flow's token.
 		expect(() => validateMaterialManifest(manifest, material, 'consumer')).toThrow(/appVariant/)
 		expect(() => validateMaterialManifest({ ...manifest, appVariant: 'consumer' }, material)).toThrow(/packageName/)
 
 		// Only the authorized build for the variant may be announced.
-		expect(() => validateMaterialManifest({ ...manifest, version: '2.26.36.71' }, material)).toThrow(
+		expect(() => validateMaterialManifest({ ...manifest, version: '2.26.39.71' }, material)).toThrow(
 			/version is not the authorized build/
 		)
 
@@ -251,24 +283,31 @@ describe('native android registration material manifest (audit gap A)', () => {
 	})
 
 	it('refuses to mint a token when the attached manifest does not pin the material', () => {
-		const material = captureMaterial()
-		expect(buildClassicRegistrationToken('1531997072', { ...material, manifest: captureManifest() })).toBe(
-			'hEjVbznrgA3o2tS3JoE4vuRVxVg='
-		)
+		const material = currentBusinessMaterial()
+		const token = buildClassicRegistrationToken('1531997072', {
+			...material,
+			manifest: currentBusinessManifest()
+		})
+		expect(token).toMatch(/^[A-Za-z0-9+/]{27}=$/)
+		expect(token).toBe(buildClassicRegistrationToken('1531997072', { ...material, manifest: currentBusinessManifest() }))
 		expect(() =>
 			buildClassicRegistrationToken('1531997072', {
 				...material,
-				manifest: { ...captureManifest(), version: '2.26.36.71' }
+				manifest: { ...currentBusinessManifest(), version: '2.26.39.71' }
 			})
+		).toThrow(/version is not the authorized build/)
+		// The retired capture build's manifest can no longer mint either.
+		expect(() =>
+			buildClassicRegistrationToken('1531997072', { ...captureMaterial(), manifest: captureManifest() })
 		).toThrow(/version is not the authorized build/)
 		expect(() =>
 			createClassicRegistrationTokenBuilder({
-				...captureMaterial(),
+				...currentBusinessMaterial(),
 				manifest: {
 					appVariant: 'consumer',
 					packageName: NATIVE_ANDROID_REGISTRATION_PACKAGES.consumer,
 					version: '2.26.40.7',
-					hashes: computeMaterialManifestHashes(captureMaterial())
+					hashes: computeMaterialManifestHashes(currentBusinessMaterial())
 				}
 			})
 		).toThrow(/packageName does not match the material/)
