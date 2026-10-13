@@ -48,15 +48,18 @@ export const parseWamsysGpiaBlob = (blob: string): NativeAndroidWamsysGpia => {
 	if (bytes.length !== 299) {
 		throw new Error(`wamsys gpia: expected 299 bytes, got ${bytes.length}`)
 	}
+
 	// field 1: tag 0x0A + length varint 231 = 0xE7 0x01 (two bytes).
 	// field 3: tag 0x1A at offset 234 (3 header bytes + 231 payload), length
 	// varint 63 = 0x3F (one byte).
 	if (bytes[0] !== 0x0a || bytes[234] !== 0x1a) {
 		throw new Error('wamsys gpia: unexpected protobuf field tags')
 	}
+
 	if (bytes[1] !== 0xe7 || bytes[2] !== 0x01 || bytes[235] !== 0x3f) {
 		throw new Error('wamsys gpia: unexpected protobuf length prefix')
 	}
+
 	return {
 		payload: bytes.slice(3, 3 + NATIVE_ANDROID_GPIA_PAYLOAD_LENGTH),
 		signature: bytes.slice(3 + NATIVE_ANDROID_GPIA_PAYLOAD_LENGTH + 2)
@@ -72,9 +75,13 @@ export const buildWamsysGpiaBlob = (gpia: NativeAndroidWamsysGpia): string => {
 	if (payload.length !== NATIVE_ANDROID_GPIA_PAYLOAD_LENGTH) {
 		throw new Error(`wamsys gpia: payload must be ${NATIVE_ANDROID_GPIA_PAYLOAD_LENGTH} bytes, got ${payload.length}`)
 	}
+
 	if (signature.length !== NATIVE_ANDROID_GPIA_SIGNATURE_LENGTH) {
-		throw new Error(`wamsys gpia: signature must be ${NATIVE_ANDROID_GPIA_SIGNATURE_LENGTH} bytes, got ${signature.length}`)
+		throw new Error(
+			`wamsys gpia: signature must be ${NATIVE_ANDROID_GPIA_SIGNATURE_LENGTH} bytes, got ${signature.length}`
+		)
 	}
+
 	const bytes = new Uint8Array(299)
 	bytes[0] = 0x0a
 	bytes[1] = 0xe7
@@ -102,6 +109,7 @@ const expandSeed = (seed: Uint8Array, length: number, info: string): Uint8Array 
 		out.set(block.subarray(0, take), written)
 		written += take
 	}
+
 	return out
 }
 
@@ -119,19 +127,18 @@ const expandSeed = (seed: Uint8Array, length: number, info: string): Uint8Array 
  * derived ones (field 3 stays minted — the server never validates it). That is
  * the conservative mode while the payload-content probe is still open.
  */
-export const mintWamsysGpiaBlob = (
-	seed: Uint8Array,
-	options?: { payloadTemplate?: Uint8Array }
-): string => {
+export const mintWamsysGpiaBlob = (seed: Uint8Array, options?: { payloadTemplate?: Uint8Array }): string => {
 	if (seed.length === 0) {
 		throw new Error('wamsys gpia: seed must not be empty')
 	}
+
 	const template = options?.payloadTemplate
 	if (template && template.length !== NATIVE_ANDROID_GPIA_PAYLOAD_LENGTH) {
 		throw new Error(
 			`wamsys gpia: payload template must be ${NATIVE_ANDROID_GPIA_PAYLOAD_LENGTH} bytes, got ${template.length}`
 		)
 	}
+
 	const payload = new Uint8Array(NATIVE_ANDROID_GPIA_PAYLOAD_LENGTH)
 	if (template) {
 		payload.set(template)
@@ -139,6 +146,7 @@ export const mintWamsysGpiaBlob = (
 		payload.set(expandSeed(seed, NATIVE_ANDROID_GPIA_PAYLOAD_LENGTH - 1, 'gpia-payload'), 1)
 		payload[0] = NATIVE_ANDROID_GPIA_LEG_PREFIX
 	}
+
 	const signature = new Uint8Array(NATIVE_ANDROID_GPIA_SIGNATURE_LENGTH)
 	signature.set(expandSeed(seed, NATIVE_ANDROID_GPIA_SIGNATURE_LENGTH - 1, 'gpia-signature'), 1)
 	signature[0] = NATIVE_ANDROID_GPIA_LEG_PREFIX

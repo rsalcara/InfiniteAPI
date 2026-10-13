@@ -382,8 +382,9 @@ export const addKeyBundle = (builder: RegistrationRequestBuilder, bundle: Native
  * `gpia` is dropped here as a foreign artifact UNLESS the caller replays the
  * official blob via `gpiaMaterial`.
  */
-export const NATIVE_ANDROID_REGISTRATION_ATTESTATION_ENV_KEYS: ReadonlyArray<keyof NativeAndroidRequestCodeEnvironment> =
-	['gpia', '_gg', '_gi', '_gp', '_ge', '_ga']
+export const NATIVE_ANDROID_REGISTRATION_ATTESTATION_ENV_KEYS: ReadonlyArray<
+	keyof NativeAndroidRequestCodeEnvironment
+> = ['gpia', '_gg', '_gi', '_gp', '_ge', '_ga']
 
 /**
  * Drops the attestation artifacts from an environment map for the unattested
@@ -398,6 +399,7 @@ export const sanitizeNativeAndroidRegistrationEnvironment = (
 	for (const key of NATIVE_ANDROID_REGISTRATION_ATTESTATION_ENV_KEYS) {
 		delete sanitized[key]
 	}
+
 	return sanitized
 }
 

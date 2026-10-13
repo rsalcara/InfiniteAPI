@@ -76,9 +76,9 @@ describe('native android wamsys gpia blob', () => {
 		expect(payload).toEqual(template)
 		expect(signature[0]).toBe(NATIVE_ANDROID_GPIA_LEG_PREFIX)
 		expect(signature.slice(1).every(byte => byte === 0x31)).toBe(false)
-		expect(() =>
-			mintWamsysGpiaBlob(new Uint8Array([1]), { payloadTemplate: new Uint8Array(230) })
-		).toThrow(/payload template/)
+		expect(() => mintWamsysGpiaBlob(new Uint8Array([1]), { payloadTemplate: new Uint8Array(230) })).toThrow(
+			/payload template/
+		)
 	})
 
 	it('refuses an empty seed', () => {

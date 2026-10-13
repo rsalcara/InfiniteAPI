@@ -99,10 +99,10 @@ export const createNativeAndroidRegistrationOfficialFetch = (): typeof fetch => 
 					'Content-Type': headers.get('content-type') ?? 'application/x-www-form-urlencoded',
 					...(headers.get('authorization') ? { Authorization: headers.get('authorization')! } : {}),
 					...(headers.get('user-agent') ? { 'User-Agent': headers.get('user-agent')! } : {}),
-					'Accept': 'text/json',
-					'WaMsysRequest': '1',
+					Accept: 'text/json',
+					WaMsysRequest: '1',
 					// Fresh per request, the way the native client mints it.
-					'request_token': randomUUID(),
+					request_token: randomUUID(),
 					'Accept-Encoding': 'identity',
 					...(body ? { 'Content-Length': String(Buffer.byteLength(body)) } : {})
 				}
@@ -264,7 +264,9 @@ export const createNativeAndroidRegistrationHttpClient = (
 							durationMs: Date.now() - started,
 							httpStatus: response.status,
 							...(proof?.signatureHash !== undefined ? { proofHash: proof.signatureHash } : {}),
-							...(proof?.attestedPackage != null ? { attestedPackage: proof.attestedPackage } : {}),
+							...(proof?.attestedPackage !== undefined && proof?.attestedPackage !== null
+								? { attestedPackage: proof.attestedPackage }
+								: {}),
 							...(typeof proof?.challengeAgeMs === 'number' ? { challengeAgeMs: proof.challengeAgeMs } : {})
 						}),
 						'native_android registration response'

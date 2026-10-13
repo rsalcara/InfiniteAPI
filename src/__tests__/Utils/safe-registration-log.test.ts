@@ -1,15 +1,15 @@
 import { createHash } from 'node:crypto'
 import {
-	registrationBlockScreenHash,
-	safeRegistrationLog,
-	type RegistrationLogMetadata
-} from '../../Utils/safe-registration-log'
-import {
 	computeMaterialManifestHashes,
 	computeRegistrationMaterialHash,
 	NATIVE_ANDROID_REGISTRATION_PACKAGES,
 	type NativeAndroidRegistrationTokenMaterial
 } from '../../Utils/native-android-registration-token'
+import {
+	registrationBlockScreenHash,
+	type RegistrationLogMetadata,
+	safeRegistrationLog
+} from '../../Utils/safe-registration-log'
 
 const BASE: RegistrationLogMetadata = {
 	endpoint: '/v2/exist',
@@ -57,9 +57,7 @@ describe('safe-registration-log allowlist (audit module M10)', () => {
 			material: Uint8Array.from([1, 2, 3])
 		} as unknown as RegistrationLogMetadata
 		const logged = safeRegistrationLog(polluted) as Record<string, unknown>
-		expect(Object.keys(logged).sort()).toEqual(
-			['attempts', 'durationMs', 'endpoint', 'operationId', 'phase'].sort()
-		)
+		expect(Object.keys(logged).sort()).toEqual(['attempts', 'durationMs', 'endpoint', 'operationId', 'phase'].sort())
 		expect(JSON.stringify(logged)).not.toContain('Baixe')
 		expect(JSON.stringify(logged)).not.toContain('secret')
 	})

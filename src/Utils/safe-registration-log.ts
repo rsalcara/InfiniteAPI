@@ -117,9 +117,7 @@ export function safeRegistrationLog(input: RegistrationLogMetadata): Registratio
  * auditor match the same block across motor, platform and Connector lines.
  * Key order follows the parsed document (`JSON.parse` preserves wire order).
  */
-export const registrationBlockScreenHash = (
-	screen: Record<string, unknown> | null | undefined
-): string | undefined => {
+export const registrationBlockScreenHash = (screen: Record<string, unknown> | null | undefined): string | undefined => {
 	if (!screen || typeof screen !== 'object') return undefined
 	const serialized = JSON.stringify(screen)
 	if (!serialized || serialized === '{}') return undefined

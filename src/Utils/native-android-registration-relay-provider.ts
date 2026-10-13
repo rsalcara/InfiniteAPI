@@ -1,6 +1,7 @@
 import { Boom } from '@hapi/boom'
 import type { NativeAndroidAppVersion, NativeAndroidDeviceProfile } from '../Types'
 import { DisconnectReason } from '../Types'
+import { verifyNativeAndroidRegistrationAttestationProof } from './native-android-registration-attestation-validation'
 import type {
 	NativeAndroidRegistrationBridgeAttestation,
 	NativeAndroidRegistrationBridgeContext
@@ -13,10 +14,6 @@ import {
 	buildNativeAndroidRegistrationWireBody,
 	type NativeAndroidRegistrationEnvelopeMaterial
 } from './native-android-registration-envelope'
-import {
-	verifyNativeAndroidRegistrationAttestationProof,
-	type NativeAndroidAttestationProofDiagnostics
-} from './native-android-registration-attestation-validation'
 
 export type NativeAndroidRegistrationRelayProviderConfig = {
 	/**
@@ -238,24 +235,22 @@ export const createNativeAndroidRegistrationRelayProvider = (
 				})
 			}
 
-				const data = parseRelayResponse(text)
-				// Pre-send proof validation (audit gap): the parser above only
-				// bounds the strings; this checks the signature over the exact
-				// signed bytes, the certificate chain, the challenge binding and
-				// the attested install identity BEFORE the request goes out.
-				const attestation = verifyNativeAndroidRegistrationAttestationProof({
-					payloadToSign: wire.payloadToSign,
-					signature: data.h,
-					authorization: data.authorization,
-					challengeMaterial: config.challenge,
-					...(config.installIdentity?.packageName
-						? { packageName: config.installIdentity.packageName }
-						: {}),
-					...(config.installIdentity?.signingCertSha256
-						? { signingCertSha256: config.installIdentity.signingCertSha256 }
-						: {}),
-					installIdentityPolicy: config.installIdentityPolicy ?? 'report'
-				})
+			const data = parseRelayResponse(text)
+			// Pre-send proof validation (audit gap): the parser above only
+			// bounds the strings; this checks the signature over the exact
+			// signed bytes, the certificate chain, the challenge binding and
+			// the attested install identity BEFORE the request goes out.
+			const attestation = verifyNativeAndroidRegistrationAttestationProof({
+				payloadToSign: wire.payloadToSign,
+				signature: data.h,
+				authorization: data.authorization,
+				challengeMaterial: config.challenge,
+				...(config.installIdentity?.packageName ? { packageName: config.installIdentity.packageName } : {}),
+				...(config.installIdentity?.signingCertSha256
+					? { signingCertSha256: config.installIdentity.signingCertSha256 }
+					: {}),
+				installIdentityPolicy: config.installIdentityPolicy ?? 'report'
+			})
 			// The device is authoritative only for its Keystore material and its
 			// real hardware: the version/platform pair is a property of the APK
 			// build the token material comes from (server-side), and the server
@@ -266,15 +261,17 @@ export const createNativeAndroidRegistrationRelayProvider = (
 			const profile = mapAttestedDeviceProfile(data.deviceProfile) ?? config.deviceProfile
 			const userAgent =
 				config.userAgent ??
-				(profile ? buildNativeAndroidRegistrationUserAgent(profile, context.appVariant, config.appVersion) : data.userAgent)
+				(profile
+					? buildNativeAndroidRegistrationUserAgent(profile, context.appVariant, config.appVersion)
+					: data.userAgent)
 
-				return {
-					authorization: data.authorization,
-					body: `${wire.body}&H=${data.h}`,
-					attestation,
-					...(userAgent ? { userAgent } : {}),
-					...(data.deviceProfile ? { deviceProfile: data.deviceProfile } : {})
-				}
+			return {
+				authorization: data.authorization,
+				body: `${wire.body}&H=${data.h}`,
+				attestation,
+				...(userAgent ? { userAgent } : {}),
+				...(data.deviceProfile ? { deviceProfile: data.deviceProfile } : {})
+			}
 		} catch (error) {
 			if (error instanceof Error && error.name === 'AbortError') {
 				throw new Boom('native_android registration relay timed out', {

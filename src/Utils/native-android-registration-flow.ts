@@ -2,8 +2,9 @@ import { Boom } from '@hapi/boom'
 import { randomUUID } from 'node:crypto'
 import type { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, NativeAndroidDeviceProfile } from '../Types'
-import { buildPrimaryRegistrationAuthCreds } from './native-android-registration-auth'
+import logger from './logger'
 import type { NativeAndroidAttestationProofDiagnostics } from './native-android-registration-attestation-validation'
+import { buildPrimaryRegistrationAuthCreds } from './native-android-registration-auth'
 import type {
 	NativeAndroidRegistrationBridgeAttestation,
 	NativeAndroidRegistrationBridgeContext
@@ -35,20 +36,20 @@ import {
 	buildNativeAndroidRegisterRequest,
 	buildNativeAndroidRegOnboardAbpropRequest,
 	buildNativeAndroidRequestCodeRequest,
-	sanitizeNativeAndroidRegistrationEnvironment,
 	type NativeAndroidRegisterInput,
 	type NativeAndroidRegistrationCommon,
 	type NativeAndroidRegistrationEndpoint,
 	type NativeAndroidRegistrationRequest,
 	type NativeAndroidRequestCodeEnvironment,
-	type NativeAndroidRequestCodeInput
+	type NativeAndroidRequestCodeInput,
+	sanitizeNativeAndroidRegistrationEnvironment
 } from './native-android-registration-protocol'
 import {
+	isRegistrationSuccess,
 	type NativeAndroidRegisterResponse,
 	type NativeAndroidRequestCodeResponse,
-	isRegistrationSuccess,
-	parseNativeAndroidRegistrationBlockGate,
 	parseNativeAndroidRegisterResponse,
+	parseNativeAndroidRegistrationBlockGate,
 	parseNativeAndroidRequestCodeResponse
 } from './native-android-registration-response'
 import {
@@ -57,7 +58,6 @@ import {
 	materialManifestAppVersion,
 	type NativeAndroidRegistrationTokenMaterial
 } from './native-android-registration-token'
-import logger from './logger'
 import { registrationBlockScreenHash, safeRegistrationLog } from './safe-registration-log'
 
 export type NativeAndroidRegistrationFlowHttpOptions = Omit<
@@ -267,10 +267,13 @@ export const createNativeAndroidRegistrationFlow = (
 		if (options.attestationProvider) {
 			throw new Error('native_android registration flow: the unattested profile never uses an attestation provider')
 		}
+
 		// The User-Agent is the one platform-selector input left once the
 		// provider is gone — the provider is what normally supplies it.
 		if (!options.nativeIdentity?.device) {
-			throw new Error('native_android registration flow: the unattested profile requires a device profile for the User-Agent')
+			throw new Error(
+				'native_android registration flow: the unattested profile requires a device profile for the User-Agent'
+			)
 		}
 	} else if (!options.attestationProvider) {
 		throw new Error('native_android registration flow requires an attestation provider')
@@ -320,11 +323,13 @@ export const createNativeAndroidRegistrationFlow = (
 				left.osVersion === right.osVersion
 			)
 		}
+
 		const leftKeys = Object.keys(a).sort()
 		const rightKeys = Object.keys(b).sort()
 		if (leftKeys.length !== rightKeys.length) return false
 		return leftKeys.every((key, index) => key === rightKeys[index] && a[key] === b[key])
 	}
+
 	const capturedAttestationProvider = async (
 		context: NativeAndroidRegistrationBridgeContext
 	): Promise<NativeAndroidRegistrationBridgeAttestation> => {
@@ -341,6 +346,7 @@ export const createNativeAndroidRegistrationFlow = (
 				})
 			}
 		}
+
 		// Last proof per endpoint (audit gap F): the step log correlates the
 		// response with the exact attestation that signed its request.
 		if (attestation.attestation) stepProofs.set(context.endpoint, attestation.attestation)
@@ -384,7 +390,9 @@ export const createNativeAndroidRegistrationFlow = (
 			...(blockScreenHash !== undefined ? { blockScreenHash } : {}),
 			...(materialHash !== undefined ? { materialHash } : {}),
 			...(proof?.signatureHash !== undefined ? { proofHash: proof.signatureHash } : {}),
-			...(proof?.attestedPackage != null ? { attestedPackage: proof.attestedPackage } : {}),
+			...(proof?.attestedPackage !== undefined && proof?.attestedPackage !== null
+				? { attestedPackage: proof.attestedPackage }
+				: {}),
 			...(typeof proof?.challengeAgeMs === 'number' ? { challengeAgeMs: proof.challengeAgeMs } : {}),
 			...(proof?.packageNameMatches !== undefined ? { packageNameMatches: proof.packageNameMatches } : {}),
 			...(proof?.signingCertMatches !== undefined ? { signingCertMatches: proof.signingCertMatches } : {})
@@ -393,7 +401,7 @@ export const createNativeAndroidRegistrationFlow = (
 		// material is the server's "Baixe o app oficial" trigger waiting to
 		// happen — surface it at warn level so it is visible without debug.
 		const identityDiverged =
-			proof != null && (proof.packageNameMatches === false || proof.signingCertMatches === false)
+			proof !== undefined && (proof.packageNameMatches === false || proof.signingCertMatches === false)
 		if (identityDiverged) logger.warn(line, 'native_android registration step')
 		else logger.debug(line, 'native_android registration step')
 	}
@@ -435,6 +443,7 @@ export const createNativeAndroidRegistrationFlow = (
 				)
 			: undefined
 	}
+
 	// Unattested profile: the Play Integrity legs are dropped from every
 	// environment map — the JWS minted by another application is the shape the
 	// server rejects ("Baixe o app oficial"), and the unattested profile has no
@@ -459,13 +468,12 @@ export const createNativeAndroidRegistrationFlow = (
 	})()
 	const flowEnvironment = (environment?: NativeAndroidRequestCodeEnvironment) => {
 		const base =
-			attestationProfile === 'unattested'
-				? sanitizeNativeAndroidRegistrationEnvironment(environment)
-				: environment
+			attestationProfile === 'unattested' ? sanitizeNativeAndroidRegistrationEnvironment(environment) : environment
 		const gpia = options.gpiaMaterial ?? mintedGpia?.()
 		if (gpia === undefined) return base
 		return { ...(base ?? {}), gpia }
 	}
+
 	const funnelOptions = () => {
 		const userAgent = funnelUserAgent()
 		const environment = flowEnvironment(options.environment)
@@ -476,6 +484,7 @@ export const createNativeAndroidRegistrationFlow = (
 			...(userAgent ? { userAgent } : {})
 		}
 	}
+
 	// The unattested profile has no provider to seal and sign, so the flow
 	// seals the body itself (whalibmob `encryptPayload` + `sendEncrypted` over
 	// `EMPTY_BODY`): `ENC=` only — never `&H=`, never `Authorization`. The
@@ -492,6 +501,7 @@ export const createNativeAndroidRegistrationFlow = (
 			userAgent: request.userAgent ?? funnelUserAgent()
 		}
 	}
+
 	let funnelPreviousScreen: string | undefined
 	let lastRequestedMethod: string | undefined
 
@@ -525,19 +535,15 @@ export const createNativeAndroidRegistrationFlow = (
 					currentScreen: 'enter_number',
 					previousScreen: funnelPreviousScreen ?? 'unknown',
 					actionTaken,
-				eventName
-			},
-			funnelOptions()
-		),
-		'enter_number'
-	)
+					eventName
+				},
+				funnelOptions()
+			),
+			'enter_number'
+		)
 	}
 
-	const sendClientFunnel = async (
-		currentScreen: string,
-		actionTaken: string,
-		eventName: string
-	): Promise<void> => {
+	const sendClientFunnel = async (currentScreen: string, actionTaken: string, eventName: string): Promise<void> => {
 		await sendFunnelEvent(
 			buildNativeAndroidClientFunnelRequest(
 				common,
@@ -545,12 +551,12 @@ export const createNativeAndroidRegistrationFlow = (
 					currentScreen,
 					previousScreen: funnelPreviousScreen ?? 'unknown',
 					actionTaken,
-				eventName
-			},
-			funnelOptions()
-		),
-		currentScreen
-	)
+					eventName
+				},
+				funnelOptions()
+			),
+			currentScreen
+		)
 	}
 
 	// The APK's registration onboarding always announces the install identity
@@ -631,6 +637,7 @@ export const createNativeAndroidRegistrationFlow = (
 							}
 						})
 					}
+
 					// A server-side block stops the flow BEFORE /v2/code (audit gap E):
 					// the APK renders `custom_block_screen` verbatim and never hammers
 					// the endpoint while blocked. A hard fail with a non-fresh reason
@@ -689,6 +696,7 @@ export const createNativeAndroidRegistrationFlow = (
 			if (isRegistrationSuccess(response)) {
 				await sendClientFunnel(verifyScreen, 'request_code', 'request_code_success')
 			}
+
 			return { request, httpStatus: http.status, attempts: http.attempts, response }
 		},
 		verifyCode: async input => {
@@ -703,6 +711,7 @@ export const createNativeAndroidRegistrationFlow = (
 					data: { step: 'device-profile' }
 				})
 			}
+
 			// Attested hardware wins over the raffled fields (audit gap D): the
 			// creds must name exactly the device the TEE-signed chain revealed.
 			const device = mergedDeviceProfile() ?? deviceProfile
@@ -736,6 +745,7 @@ export const createNativeAndroidRegistrationFlow = (
 				pendingAuthChallenge = undefined
 				await sendClientFunnel('account_verification_complete', 'submit_code', 'submit_code_success')
 			}
+
 			return { request, httpStatus: http.status, attempts: http.attempts, response, creds }
 		}
 	}

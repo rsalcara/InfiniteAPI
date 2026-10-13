@@ -1,12 +1,13 @@
-import { createDecipheriv } from 'node:crypto'
 import { jest } from '@jest/globals'
 import { readFileSync } from 'fs'
+import { createDecipheriv } from 'node:crypto'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import type { proto } from '../../../WAProto/index.js'
 import { Curve } from '../../Utils/crypto'
-import { buildPrimaryRegistrationAuthCreds, normalizeLidJid } from '../../Utils/native-android-registration-auth'
+import logger from '../../Utils/logger'
 import type { NativeAndroidAttestationProofDiagnostics } from '../../Utils/native-android-registration-attestation-validation'
+import { buildPrimaryRegistrationAuthCreds, normalizeLidJid } from '../../Utils/native-android-registration-auth'
 import type { NativeAndroidRegistrationBridgeContext } from '../../Utils/native-android-registration-bridge-provider'
 import {
 	createNativeAndroidRegistrationFlow,
@@ -22,7 +23,6 @@ import {
 	NATIVE_ANDROID_REGISTRATION_PACKAGES,
 	type NativeAndroidRegistrationTokenMaterial
 } from '../../Utils/native-android-registration-token'
-import logger from '../../Utils/logger'
 import { registrationBlockScreenHash, type RegistrationLogMetadata } from '../../Utils/safe-registration-log'
 
 const COMMON: Omit<NativeAndroidRegistrationCommon, 'keyBundle'> = {
@@ -461,7 +461,11 @@ describe('native_android registration block gate before /v2/code (audit gap E)',
 					const endpoint = String(url).replace('https://registration.lab.invalid', '')
 					calls.push(endpoint)
 					const payload =
-						endpoint === '/v2/exist' ? existBody : endpoint === '/v2/reg_onboard_abprop' ? abpropBody : { status: 'sent' }
+						endpoint === '/v2/exist'
+							? existBody
+							: endpoint === '/v2/reg_onboard_abprop'
+								? abpropBody
+								: { status: 'sent' }
 					return new Response(JSON.stringify(payload), { status: 200 })
 				}) as unknown as typeof fetch
 			}
@@ -498,17 +502,29 @@ describe('native_android registration block gate before /v2/code (audit gap E)',
 		const rejected = await rejectWith(flow.requestCode({ method: 'sms', token: '11999999999' }))
 		expect(rejected).not.toBeNull()
 		expect(rejected!.message).toMatch(/registration blocked at exist/)
-		expect(rejected!.data).toMatchObject({ step: 'exist', status: 'fail', reason: 'too_recent', customBlockScreen: null })
+		expect(rejected!.data).toMatchObject({
+			step: 'exist',
+			status: 'fail',
+			reason: 'too_recent',
+			customBlockScreen: null
+		})
 		expect(calls).not.toContain('/v2/code')
 	})
 
 	it('stops on a custom_block_screen from the abprop step too', async () => {
 		const screen = { title: 'Atualize o WhatsApp para continuar' }
-		const { flow, calls } = gateFlow({ status: 'fail', reason: 'incorrect' }, { status: 'fail', custom_block_screen: screen })
+		const { flow, calls } = gateFlow(
+			{ status: 'fail', reason: 'incorrect' },
+			{ status: 'fail', custom_block_screen: screen }
+		)
 		const rejected = await rejectWith(flow.requestCode({ method: 'sms', token: '11999999999' }))
 		expect(rejected).not.toBeNull()
 		expect(rejected!.message).toMatch(/registration blocked at abprop/)
-		expect(rejected!.data).toMatchObject({ step: 'abprop', endpoint: '/v2/reg_onboard_abprop', customBlockScreen: screen })
+		expect(rejected!.data).toMatchObject({
+			step: 'abprop',
+			endpoint: '/v2/reg_onboard_abprop',
+			customBlockScreen: screen
+		})
 		// The onboarding pair (abprop → exist) runs as one pre-flight unit; the
 		// gate guards the number-burning /v2/code, which must never go out.
 		expect(calls).toEqual(['/v2/reg_onboard_abprop', '/v2/exist'])
@@ -547,13 +563,13 @@ describe('native_android registration attested device identity (audit gap D)', (
 		)
 
 	const fetchRecording = (calls: string[], payloads?: Record<string, unknown>) =>
-		((async (url: RequestInfo | URL) => {
+		(async (url: RequestInfo | URL) => {
 			calls.push(String(url).replace('https://registration.lab.invalid', ''))
 			const body = String(url).endsWith('/register')
 				? { status: 'ok', lid: '123456789012345' }
 				: (payloads ?? { status: 'sent' })
 			return new Response(JSON.stringify(body), { status: 200 })
-		}) as unknown as typeof fetch)
+		}) as unknown as typeof fetch
 
 	it('seeds the creds with the attested hardware winning over the raffled fields', async () => {
 		const calls: string[] = []
@@ -726,13 +742,13 @@ describe('native_android registration sanitized step correlation (audit gap F)',
 			.map(call => call[0] as RegistrationLogMetadata)
 
 	const fetchRecording = (calls: string[], payloads?: Record<string, unknown>) =>
-		((async (url: RequestInfo | URL) => {
+		(async (url: RequestInfo | URL) => {
 			calls.push(String(url).replace('https://registration.lab.invalid', ''))
 			const body = String(url).endsWith('/register')
 				? { status: 'ok', lid: '123456789012345' }
 				: (payloads ?? { status: 'sent' })
 			return new Response(JSON.stringify(body), { status: 200 })
-		}) as unknown as typeof fetch)
+		}) as unknown as typeof fetch
 
 	it('logs one allowlisted correlation line per registration step', async () => {
 		const debugSpy = jest.spyOn(logger, 'debug').mockImplementation(() => {})
@@ -884,20 +900,20 @@ describe('native_android registration unattested profile (whalibmob default)', (
 		const aesKey = Curve.sharedKey(serverPrivate, ephemeralPublic)
 		const decipher = createDecipheriv('aes-256-gcm', aesKey, new Uint8Array(12))
 		decipher.setAuthTag(cipherText.subarray(cipherText.length - 16))
-		return Buffer.concat([
-			decipher.update(cipherText.subarray(0, cipherText.length - 16)),
-			decipher.final()
-		]).toString('utf8')
+		return Buffer.concat([decipher.update(cipherText.subarray(0, cipherText.length - 16)), decipher.final()]).toString(
+			'utf8'
+		)
 	}
 
 	type WireCall = { endpoint: string; headers: Record<string, string>; body: string }
 
 	const wireRecording = (calls: WireCall[]) =>
-		((async (url: RequestInfo | URL, init?: RequestInit) => {
+		(async (url: RequestInfo | URL, init?: RequestInit) => {
 			const headers: Record<string, string> = {}
 			for (const [key, value] of Object.entries((init?.headers ?? {}) as Record<string, string>)) {
 				headers[key.toLowerCase()] = String(value)
 			}
+
 			const endpoint = String(url).replace('https://registration.lab.invalid', '')
 			calls.push({ endpoint, headers, body: String(init?.body ?? '') })
 			const body = endpoint.endsWith('/register')
@@ -906,7 +922,7 @@ describe('native_android registration unattested profile (whalibmob default)', (
 					? { status: 'fail', reason: 'incorrect' }
 					: { status: 'sent' }
 			return new Response(JSON.stringify(body), { status: 200 })
-		}) as unknown as typeof fetch)
+		}) as unknown as typeof fetch
 
 	const unattestedFlow = (
 		calls: WireCall[],
@@ -940,6 +956,7 @@ describe('native_android registration unattested profile (whalibmob default)', (
 			// gone: it names the persisted device and the announced build.
 			expect(call.headers['user-agent']).toMatch(/^WhatsApp\/[\d.]+ SMBA\/14 Device\/Xiaomi-/)
 		}
+
 		// The unattested wire still completes the registration.
 		expect(verified.creds?.registered).toBe(true)
 	})
@@ -966,6 +983,7 @@ describe('native_android registration unattested profile (whalibmob default)', (
 		for (const key of ['gpia', '_gg', '_gi', '_gp', '_ge', '_ga']) {
 			expect(code.request.body).not.toContain(`${key}=`)
 		}
+
 		expect(code.request.body).toContain('mcc=724')
 		expect(code.request.body).toContain('mnc=005')
 		expect(code.request.body).toContain('pid=4321')
@@ -1048,8 +1066,8 @@ describe('native_android registration unattested profile (whalibmob default)', (
 	})
 
 	it('still requires an attestation provider on the device profile', () => {
-		expect(() => createNativeAndroidRegistrationFlow({ skipOnboarding: true, skipFunnel: true, common: COMMON })).toThrow(
-			/requires an attestation provider/
-		)
+		expect(() =>
+			createNativeAndroidRegistrationFlow({ skipOnboarding: true, skipFunnel: true, common: COMMON })
+		).toThrow(/requires an attestation provider/)
 	})
 })

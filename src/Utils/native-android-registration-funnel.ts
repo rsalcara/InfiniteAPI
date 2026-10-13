@@ -1,11 +1,11 @@
 import { randomBytes } from 'node:crypto'
 import { buildNativeAndroidRegistrationWireBody } from './native-android-registration-envelope'
 import {
-	RegistrationRequestBuilder,
 	addKeyBundle,
 	type NativeAndroidRegistrationCommon,
 	type NativeAndroidRegistrationRequest,
-	type NativeAndroidRequestCodeEnvironment
+	type NativeAndroidRequestCodeEnvironment,
+	RegistrationRequestBuilder
 } from './native-android-registration-protocol'
 
 /**
@@ -71,7 +71,10 @@ const generateFunnelTraceId = (): string => {
 	return BigInt(`0x${bytes.toString('hex')}`).toString(10)
 }
 
-const mergeAdditionalParams = (map: Map<string, string>, params: NativeAndroidRegistrationFunnelEvent['additionalParams']): void => {
+const mergeAdditionalParams = (
+	map: Map<string, string>,
+	params: NativeAndroidRegistrationFunnelEvent['additionalParams']
+): void => {
 	if (!params) return
 	const entries = params instanceof Map ? params.entries() : Object.entries(params)
 	for (const [key, value] of entries) map.set(key, value)
@@ -86,7 +89,8 @@ const mergeAdditionalParams = (map: Map<string, string>, params: NativeAndroidRe
  */
 const putFieldStatParams = (map: Map<string, string>, options?: NativeAndroidRegistrationFunnelOptions): void => {
 	const environment = options?.environment ?? {}
-	if (environment.network_radio_type !== undefined) map.set('network_radio_type', String(environment.network_radio_type))
+	if (environment.network_radio_type !== undefined)
+		map.set('network_radio_type', String(environment.network_radio_type))
 	if (environment.simnum !== undefined) map.set('simnum', String(environment.simnum))
 	if (environment.hasinrc !== undefined) map.set('hasinrc', String(environment.hasinrc))
 	// A0L writes the sending process id unconditionally.
@@ -179,6 +183,7 @@ export const buildNativeAndroidClientFunnelQuery = (
 		builder.optionalString('cc', common.countryCallingCode)
 		builder.optionalString('in', common.nationalNumber)
 	}
+
 	builder.requiredString('lg', common.language)
 	builder.requiredString('lc', common.country)
 	builder.requiredString('fdid', common.fingerprintDeviceId)

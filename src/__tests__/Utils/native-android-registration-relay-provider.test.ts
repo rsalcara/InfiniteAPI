@@ -37,10 +37,7 @@ type RelayResponseSpec = Record<string, unknown> | ((proof: RelayProof) => Recor
 // Every relay response is proof-checked against the exact bytes the provider
 // signed, so the mock signs the received payload with the fixture leaf key and
 // answers with the fixture chain (official flag-11 / flag-2 encodings).
-const makeFetch = (
-	response: { status?: number; ok?: boolean; json?: RelayResponseSpec },
-	calls: FetchCall[]
-) =>
+const makeFetch = (response: { status?: number; ok?: boolean; json?: RelayResponseSpec }, calls: FetchCall[]) =>
 	((url: unknown, init?: unknown) => {
 		const initRecord = (init ?? {}) as { body?: string; headers?: Record<string, string> }
 		const request = JSON.parse(initRecord.body ?? '{}') as RelayRequestBody

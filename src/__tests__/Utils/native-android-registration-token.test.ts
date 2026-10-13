@@ -8,10 +8,10 @@ import {
 	materialManifestAppVersion,
 	NATIVE_ANDROID_REGISTRATION_PACKAGES,
 	NATIVE_ANDROID_REGISTRATION_TOKEN_SALT_BASE64,
-	parseMaterialManifest,
-	validateMaterialManifest,
 	type NativeAndroidRegistrationMaterialManifest,
-	type NativeAndroidRegistrationTokenMaterial
+	type NativeAndroidRegistrationTokenMaterial,
+	parseMaterialManifest,
+	validateMaterialManifest
 } from '../../Utils/native-android-registration-token'
 
 const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'native-android-registration-token')
@@ -215,11 +215,14 @@ describe('native android registration material manifest (audit gap A)', () => {
 		for (const field of ['logoResource', 'signingCertDer', 'classesDexMd5'] as const) {
 			expect(hashes[field]).toMatch(/^[0-9a-f]{64}$/)
 		}
+
 		// classesDexMd5 is hashed as the raw 16-byte digest, not the hex file.
-		expect(hashes.classesDexMd5).not.toBe(computeMaterialManifestHashes({
-			...material,
-			classesDexMd5: Uint8Array.from(Buffer.from('2122b0e07d77d1ac1fe458d167c7cbc5', 'hex'))
-		}).classesDexMd5)
+		expect(hashes.classesDexMd5).not.toBe(
+			computeMaterialManifestHashes({
+				...material,
+				classesDexMd5: Uint8Array.from(Buffer.from('2122b0e07d77d1ac1fe458d167c7cbc5', 'hex'))
+			}).classesDexMd5
+		)
 	})
 
 	it('parses the documented manifest.json shape and fails closed on anything else', () => {
@@ -231,9 +234,9 @@ describe('native android registration material manifest (audit gap A)', () => {
 		expect(() => parseMaterialManifest({ ...manifest, packageName: '' })).toThrow(/invalid manifest.json shape/)
 		expect(() => parseMaterialManifest({ ...manifest, version: '2.26.36' })).toThrow(/invalid manifest.json shape/)
 		expect(() => parseMaterialManifest({ ...manifest, version: 2 })).toThrow(/invalid manifest.json shape/)
-		expect(() =>
-			parseMaterialManifest({ ...manifest, hashes: { ...manifest.hashes, logoResource: 'ABC' } })
-		).toThrow(/invalid manifest.json shape/)
+		expect(() => parseMaterialManifest({ ...manifest, hashes: { ...manifest.hashes, logoResource: 'ABC' } })).toThrow(
+			/invalid manifest.json shape/
+		)
 		expect(() => parseMaterialManifest({ ...manifest, hashes: {} })).toThrow(/invalid manifest.json shape/)
 	})
 
@@ -272,7 +275,10 @@ describe('native android registration material manifest (audit gap A)', () => {
 			validateMaterialManifest({ ...manifest, hashes: { ...manifest.hashes, logoResource: '0'.repeat(64) } }, material)
 		).toThrow(/hashes.logoResource/)
 		expect(() =>
-			validateMaterialManifest({ ...manifest, hashes: { ...manifest.hashes, signingCertDer: '0'.repeat(64) } }, material)
+			validateMaterialManifest(
+				{ ...manifest, hashes: { ...manifest.hashes, signingCertDer: '0'.repeat(64) } },
+				material
+			)
 		).toThrow(/hashes.signingCertDer/)
 		expect(() =>
 			validateMaterialManifest({ ...manifest, hashes: { ...manifest.hashes, classesDexMd5: '0'.repeat(64) } }, material)

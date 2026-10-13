@@ -1,3 +1,4 @@
+import { createNativeAndroidRegistrationFlow } from '../../Utils/native-android-registration-flow'
 import {
 	buildNativeAndroidClientFunnelQuery,
 	buildNativeAndroidClientFunnelRequest,
@@ -5,7 +6,6 @@ import {
 	buildNativeAndroidPrePnFunnelRequest,
 	type NativeAndroidRegistrationFunnelOptions
 } from '../../Utils/native-android-registration-funnel'
-import { createNativeAndroidRegistrationFlow } from '../../Utils/native-android-registration-flow'
 import {
 	buildNativeAndroidRegistrationKeyBundle,
 	createNativeAndroidRegistrationSignalKeys
@@ -182,6 +182,7 @@ describe('native_android registration funnel wire (APK 1:1)', () => {
 			expect(request.sendAttestationPayload).toBe(false)
 			expect(request.userAgent).toBe(OPTIONS.userAgent)
 		}
+
 		expect(buildNativeAndroidPrePnFunnelRequest(COMMON, EVENT, OPTIONS).endpoint).toBe('/v2/pre_pn_client_log')
 		expect(buildNativeAndroidClientFunnelRequest(COMMON, EVENT, OPTIONS).endpoint).toBe('/v2/client_log')
 	})
@@ -252,6 +253,7 @@ describe('native_android registration funnel flow sequence', () => {
 			expect(call.body.startsWith('ENC=')).toBe(true)
 			expect(call.body).not.toContain('&H=')
 		}
+
 		expect(attestedEndpoints).toEqual(['/v2/reg_onboard_abprop', '/v2/exist', '/v2/code', '/v2/register'])
 
 		// previous_screen follows the APK's pref chain ("unknown" first).
@@ -261,17 +263,15 @@ describe('native_android registration funnel flow sequence', () => {
 
 	it('never lets funnel telemetry abort a registration', async () => {
 		let registerStatus = ''
-		const flow = flowHarness(
-			(async (url: RequestInfo | URL) => {
-				if (String(url).endsWith('_log')) throw new Error('telemetry endpoint down')
-				if (String(url).endsWith('/register')) {
-					registerStatus = 'ok'
-					return new Response(JSON.stringify({ status: 'ok', lid: '123456789012345' }), { status: 200 })
-				}
+		const flow = flowHarness((async (url: RequestInfo | URL) => {
+			if (String(url).endsWith('_log')) throw new Error('telemetry endpoint down')
+			if (String(url).endsWith('/register')) {
+				registerStatus = 'ok'
+				return new Response(JSON.stringify({ status: 'ok', lid: '123456789012345' }), { status: 200 })
+			}
 
-				return new Response(JSON.stringify({ status: 'sent', auth_challenge: 'Cgs' }), { status: 200 })
-			}) as unknown as typeof fetch
-		)
+			return new Response(JSON.stringify({ status: 'sent', auth_challenge: 'Cgs' }), { status: 200 })
+		}) as unknown as typeof fetch)
 
 		const code = await flow.requestCode({ method: 'sms', token: '11999999999' })
 		expect(code.response.status).toBe('sent')

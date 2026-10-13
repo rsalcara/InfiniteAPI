@@ -1,5 +1,5 @@
-import { createHash, X509Certificate, verify as cryptoVerify } from 'node:crypto'
 import { Boom } from '@hapi/boom'
+import { createHash, verify as cryptoVerify, X509Certificate } from 'node:crypto'
 import { DisconnectReason } from '../Types'
 
 /**
@@ -106,8 +106,10 @@ const readDerTlv = (
 		for (let index = 0; index < lengthBytes; ++index) {
 			length = length * 256 + buffer[contentStart + index]!
 		}
+
 		contentStart += lengthBytes
 	}
+
 	const contentEnd = contentStart + length
 	if (contentEnd > buffer.length) fail('truncated DER content')
 	return { tag, start: offset, contentStart, contentEnd, end: contentEnd }
@@ -122,6 +124,7 @@ const readDerChildren = (buffer: Buffer, start: number, end: number): ReturnType
 		children.push(node)
 		offset = node.end
 	}
+
 	return children
 }
 
@@ -139,6 +142,7 @@ export const splitConcatenatedDerCertificates = (bytes: Uint8Array): Uint8Array[
 		certificates.push(Uint8Array.from(buffer.subarray(node.start, node.end)))
 		offset = node.end
 	}
+
 	return certificates
 }
 
@@ -153,9 +157,7 @@ const base64Decode = (value: string, encoding: 'base64url' | 'base64', label: st
  * value DER plus the `attestationChallenge` bytes (5th element of the
  * `KeyDescription` SEQUENCE in every keymaster/keymint revision).
  */
-const readAttestationExtension = (
-	certificate: X509Certificate
-): { value: Buffer; challenge: Uint8Array } => {
+const readAttestationExtension = (certificate: X509Certificate): { value: Buffer; challenge: Uint8Array } => {
 	const raw = certificate.raw
 	const oidOffset = raw.indexOf(ATTESTATION_EXTENSION_OID)
 	if (oidOffset < 0) fail('key attestation extension is missing')
@@ -171,7 +173,7 @@ const readAttestationExtension = (
 	if (description.tag !== 0x30) fail('attestation description is not a SEQUENCE')
 	const fields = readDerChildren(value, description.contentStart, description.contentEnd)
 	const challengeNode = fields[4]
-	if (!challengeNode || challengeNode.tag !== 0x04) fail('attestation challenge is missing')
+	if (challengeNode?.tag !== 0x04) fail('attestation challenge is missing')
 	return {
 		value: Buffer.from(value),
 		challenge: Uint8Array.from(value.subarray(challengeNode.contentStart, challengeNode.contentEnd))
@@ -222,6 +224,7 @@ const findLeafIndex = (certificates: X509Certificate[]): number => {
 		})
 		if (!issuesAnother) return index
 	}
+
 	return fail('certificate chain has no leaf')
 }
 
@@ -284,6 +287,7 @@ export const verifyNativeAndroidRegistrationAttestationProof = (
 	} catch {
 		signatureOk = false
 	}
+
 	if (!signatureOk) fail('payload signature does not verify against the attested leaf key')
 
 	const { value: attestationValue, challenge } = readAttestationExtension(leaf)
@@ -302,9 +306,7 @@ export const verifyNativeAndroidRegistrationAttestationProof = (
 	const expectedDigest = expectation.signingCertSha256
 		? Buffer.from(expectation.signingCertSha256.toLowerCase(), 'hex')
 		: undefined
-	const signingCertMatches = expectedDigest?.length
-		? attestationValue.includes(expectedDigest)
-		: true
+	const signingCertMatches = expectedDigest?.length ? attestationValue.includes(expectedDigest) : true
 	const packageMatch = /[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){2,}/.exec(attestationValue.toString('latin1'))
 	const attestedPackage = packageMatch?.[0] ?? null
 

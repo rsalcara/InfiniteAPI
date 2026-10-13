@@ -1,5 +1,5 @@
 import { readFileSync } from 'fs'
-import { createPrivateKey, sign, type KeyObject } from 'node:crypto'
+import { createPrivateKey, type KeyObject, sign } from 'node:crypto'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -18,16 +18,13 @@ const plainCertDer = Uint8Array.from(readFileSync(join(fixturesDir, 'plain-cert.
 const leafKey: KeyObject = createPrivateKey(readFileSync(join(fixturesDir, 'leaf-key.pem')))
 
 /** Binding material the fixture attestation challenge ends with (0x01..0x20). */
-export const FIXTURE_ATTESTATION_MATERIAL = Uint8Array.from(
-	Array.from({ length: 32 }, (_, index) => index + 1)
-)
+export const FIXTURE_ATTESTATION_MATERIAL = Uint8Array.from(Array.from({ length: 32 }, (_, index) => index + 1))
 
 /**
  * Fake signing-certificate sha-256 embedded in the fixture attestation
  * application id (next to the `com.whatsapp.w4b` package bytes).
  */
-export const FIXTURE_SIGNING_CERT_SHA256 =
-	'a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf'
+export const FIXTURE_SIGNING_CERT_SHA256 = 'a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf'
 
 const concatChain = (leaf: Uint8Array): string =>
 	Buffer.concat([Buffer.from(leaf), Buffer.from(rootCertDer)]).toString('base64')

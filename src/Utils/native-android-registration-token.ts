@@ -153,6 +153,7 @@ export const parseMaterialManifest = (raw: unknown): NativeAndroidRegistrationMa
 	const invalid: () => never = (): never => {
 		throw new Error('native_android registration manifest: invalid manifest.json shape')
 	}
+
 	if (typeof raw !== 'object' || raw === null) invalid()
 	const source = raw as Record<string, unknown>
 	const appVariant = source.appVariant
@@ -169,6 +170,7 @@ export const parseMaterialManifest = (raw: unknown): NativeAndroidRegistrationMa
 		if (typeof value !== 'string' || !MANIFEST_HASH_PATTERN.test(value)) invalid()
 		return value
 	}
+
 	return {
 		appVariant,
 		packageName,
@@ -193,6 +195,7 @@ export const materialManifestAppVersion = (
 	if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0)) {
 		throw new Error('native_android registration manifest: version must be the 4-part versionName')
 	}
+
 	return [parts[0]!, parts[1]!, parts[2]!, parts[3]!]
 }
 

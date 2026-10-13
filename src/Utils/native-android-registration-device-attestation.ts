@@ -76,9 +76,7 @@ export const NATIVE_ANDROID_REGISTRATION_USER_AGENT_PLATFORM = 'SMBA'
 export const nativeAndroidRegistrationAppVersion = (
 	appVariant: 'consumer' | 'business' = 'business'
 ): NativeAndroidAppVersion =>
-	appVariant === 'consumer'
-		? NATIVE_ANDROID_REGISTRATION_CONSUMER_APP_VERSION
-		: NATIVE_ANDROID_REGISTRATION_APP_VERSION
+	appVariant === 'consumer' ? NATIVE_ANDROID_REGISTRATION_CONSUMER_APP_VERSION : NATIVE_ANDROID_REGISTRATION_APP_VERSION
 
 const sanitizeUserAgentPart = (value: string): string => value.replace(/[^,\.\w\-\(\)]/g, '_')
 
