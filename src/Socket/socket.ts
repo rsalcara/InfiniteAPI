@@ -590,7 +590,7 @@ export const makeSocket = (config: SocketConfig) => {
 		// Register the response listener BEFORE sending — avoids a race where the server
 		// responds before we start listening. waitForMessage already handles its own
 		// timeout (returns undefined) and connection-close errors (throws).
-		const responsePromise = waitForMessage<any>(msgId, timeoutMs)
+		const responsePromise = waitForMessage<BinaryNode>(msgId, timeoutMs)
 		// Prevent unhandled-rejection if sendNode throws before we reach
 		// `await responsePromise` below. The error from sendNode still propagates
 		// to the caller; this only silences the secondary rejection from

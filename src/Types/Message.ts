@@ -83,7 +83,7 @@ export type MetaAiPromptRequest = {
 
 export type WAMessage = proto.IWebMessageInfo & {
 	key: WAMessageKey
-	messageStubParameters?: any
+	messageStubParameters?: unknown[]
 	category?: string
 	retryCount?: number
 	/**
