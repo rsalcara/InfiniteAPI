@@ -90,6 +90,7 @@ import {
 	recordConnectionError,
 	recordConnectionRestart
 } from '../Utils/prometheus-metrics'
+import { buildServerPongNode, SERVER_PING_XMLNS } from '../Utils/server-ping'
 import { createExpectedSocketTeardownError, isExpectedSocketTeardownError } from '../Utils/socket-teardown'
 import {
 	isRegularUser,
@@ -2526,6 +2527,31 @@ export const makeSocket = (config: SocketConfig) => {
 		'CB:xmlstreamend',
 		() => void end(new Boom('Connection Terminated by Server', { statusCode: DisconnectReason.connectionClosed }))
 	)
+	// Server→client keepalive ping. The server sends `<iq type="get"
+	// xmlns="urn:xmpp:ping" t="<unix>"/>` to probe liveness; the app answers
+	// with a bare, id-less result and treats the exchange as network activity.
+	// Wire parity is exact (W4B 2.26.36.72): inbound handler
+	// `X/AbstractC37331lB.java:384` (reads `t`, never echoes the id), pong built
+	// at `X/C17Q.java:175` ("onSendServerPong") as
+	// `<iq type="result" to="s.whatsapp.net"/>` — attribute order `type` then
+	// `to`, and NO id, xmlns, from or child. Do not add any of those: the bare
+	// shape IS the parity.
+	//
+	// PARIDADE COMPARTILHADA COM A PR #8 (native-android primary): o primário
+	// também responde a este ping do servidor com exatamente este stanza. Se a
+	// camada de conexão do primário divergir deste handler, a paridade quebra —
+	// manter os dois em sincronia.
+	ws.on(`CB:iq,xmlns:${SERVER_PING_XMLNS}`, (stanza: BinaryNode) => {
+		if (stanza.attrs.type !== 'get') {
+			return
+		}
+
+		// An inbound frame is itself proof of life; record it so the keepalive
+		// watchdog does not count this interval as idle.
+		lastDateRecv = new Date()
+		// Shared parity source — the exact bare id-less result (see server-ping.ts).
+		void sendNode(buildServerPongNode())
+	})
 	// QR gen
 	ws.on('CB:iq,type:set,pair-device', async (stanza: BinaryNode) => {
 		const iq: BinaryNode = {

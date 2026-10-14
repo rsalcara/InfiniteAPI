@@ -484,9 +484,14 @@ describe('audit 1:1 regressions', () => {
 		}
 	})
 
-	// C-03 · app answers server pings (X/AbstractC37331lB.java:384 →
-	// ConnectionThreadRequestsImpl/onServerPingReceived). Fixed by PR-08.
-	it.failing('answers a server ping iq with a result carrying the same id', async () => {
+	// C-03 · app answers server pings with a BARE id-less result. The inbound
+	// `<iq type="get" xmlns="urn:xmpp:ping" t=..>` is answered by
+	// `<iq type="result" to="s.whatsapp.net"/>` — the request id is deliberately
+	// NOT echoed (W4B 2.26.36.72: inbound handler X/AbstractC37331lB.java:384
+	// reads only `t`; pong X/C17Q.java:175 "onSendServerPong"). Closed by PR-08
+	// (#30); the earlier expectation here (echo the id) was the generic-XMPP
+	// assumption, which the app does not follow.
+	it('answers a server ping iq with a bare id-less result (no echoed id)', async () => {
 		const { socket } = await makeSocket()
 		const client = latestClient()
 		const ping: BinaryNode = {
@@ -507,9 +512,17 @@ describe('audit 1:1 regressions', () => {
 		await new Promise(resolve => setTimeout(resolve, 200))
 		await endSocket(socket)
 		const replies = client.sentNodes.filter(
-			(node: BinaryNode) => node.tag === 'iq' && node.attrs.id === 'SRV-PING-1' && node.attrs.type === 'result'
+			(node: BinaryNode) =>
+				node.tag === 'iq' && node.attrs.type === 'result' && /(?:^|@)s\.whatsapp\.net$/.test(node.attrs.to ?? '')
 		)
+		// Exactly one pong, and it carries the app's bare shape: no echoed id,
+		// no xmlns/from, no child.
 		expect(replies).toHaveLength(1)
+		const pong = replies[0]!
+		expect(pong.attrs.id).toBeUndefined()
+		expect(pong.attrs.xmlns).toBeUndefined()
+		expect(pong.attrs.from).toBeUndefined()
+		expect(pong.content === undefined || (Array.isArray(pong.content) && pong.content.length === 0)).toBe(true)
 	})
 
 	// C-01 · `connection.update: open` is emitted synchronously inside the
