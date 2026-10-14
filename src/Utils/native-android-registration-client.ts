@@ -1,8 +1,8 @@
 import { Boom } from '@hapi/boom'
 import { randomUUID } from 'node:crypto'
+import type { Agent } from 'node:http'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
-import type { Agent } from 'node:http'
 import { DisconnectReason } from '../Types'
 import logger from './logger'
 import type {
@@ -87,74 +87,77 @@ const readBoundedResponseText = async (response: Response): Promise<string> => {
  * vale SÓ para estas chamadas de validação, nunca para a conexão da
  * instância.
  */
-export const createNativeAndroidRegistrationOfficialFetch = (
-	options?: { agent?: Agent }
-): typeof fetch => async (input, init) => {
-	const agent = options?.agent
-	const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
-	const headers = new Headers(init?.headers)
-	const body =
-		typeof init?.body === 'string'
-			? init.body
-			: init?.body === null || init?.body === undefined
-				? null
-				: String(init.body)
-	const doRequest = url.protocol === 'https:' ? httpsRequest : httpRequest
-	return await new Promise<Response>((resolve, reject) => {
-		const req = doRequest(
-			url,
-			{
-				...(agent !== undefined ? { agent } : {}),
-				method: init?.method ?? 'GET',
-				headers: {
-					'Content-Type': headers.get('content-type') ?? 'application/x-www-form-urlencoded',
-					...(headers.get('authorization') ? { Authorization: headers.get('authorization')! } : {}),
-					...(headers.get('user-agent') ? { 'User-Agent': headers.get('user-agent')! } : {}),
-					Accept: 'text/json',
-					WaMsysRequest: '1',
-					// Fresh per request, the way the native client mints it.
-					request_token: randomUUID(),
-					'Accept-Encoding': 'identity',
-					...(body ? { 'Content-Length': String(Buffer.byteLength(body)) } : {})
-				}
-			},
-			res => {
-				const chunks: Buffer[] = []
-				let size = 0
-				const declared = res.headers['content-length']
-				if (declared !== undefined && (!/^\d+$/.test(declared) || Number(declared) > MAX_REGISTRATION_RESPONSE_BYTES)) {
-					res.destroy()
-					reject(new Error('registration response exceeds limit'))
-					return
-				}
-
-				res.on('data', chunk => {
-					size += chunk.length
-					if (size > MAX_REGISTRATION_RESPONSE_BYTES) {
+export const createNativeAndroidRegistrationOfficialFetch =
+	(options?: { agent?: Agent }): typeof fetch =>
+	async (input, init) => {
+		const agent = options?.agent
+		const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
+		const headers = new Headers(init?.headers)
+		const body =
+			typeof init?.body === 'string'
+				? init.body
+				: init?.body === null || init?.body === undefined
+					? null
+					: String(init.body)
+		const doRequest = url.protocol === 'https:' ? httpsRequest : httpRequest
+		return await new Promise<Response>((resolve, reject) => {
+			const req = doRequest(
+				url,
+				{
+					...(agent !== undefined ? { agent } : {}),
+					method: init?.method ?? 'GET',
+					headers: {
+						'Content-Type': headers.get('content-type') ?? 'application/x-www-form-urlencoded',
+						...(headers.get('authorization') ? { Authorization: headers.get('authorization')! } : {}),
+						...(headers.get('user-agent') ? { 'User-Agent': headers.get('user-agent')! } : {}),
+						Accept: 'text/json',
+						WaMsysRequest: '1',
+						// Fresh per request, the way the native client mints it.
+						request_token: randomUUID(),
+						'Accept-Encoding': 'identity',
+						...(body ? { 'Content-Length': String(Buffer.byteLength(body)) } : {})
+					}
+				},
+				res => {
+					const chunks: Buffer[] = []
+					let size = 0
+					const declared = res.headers['content-length']
+					if (
+						declared !== undefined &&
+						(!/^\d+$/.test(declared) || Number(declared) > MAX_REGISTRATION_RESPONSE_BYTES)
+					) {
 						res.destroy()
 						reject(new Error('registration response exceeds limit'))
 						return
 					}
 
-					chunks.push(Buffer.from(chunk))
-				})
-				res.on('end', () => {
-					const text = Buffer.concat(chunks).toString('utf8')
-					const status = res.statusCode ?? 0
-					resolve({
-						ok: status >= 200 && status < 300,
-						status,
-						text: async () => text
-					} as unknown as Response)
-				})
-			}
-		)
-		init?.signal?.addEventListener('abort', () => req.destroy(new Error('aborted')))
-		req.on('error', reject)
-		if (body) req.write(body)
-		req.end()
-	})
-}
+					res.on('data', chunk => {
+						size += chunk.length
+						if (size > MAX_REGISTRATION_RESPONSE_BYTES) {
+							res.destroy()
+							reject(new Error('registration response exceeds limit'))
+							return
+						}
+
+						chunks.push(Buffer.from(chunk))
+					})
+					res.on('end', () => {
+						const text = Buffer.concat(chunks).toString('utf8')
+						const status = res.statusCode ?? 0
+						resolve({
+							ok: status >= 200 && status < 300,
+							status,
+							text: async () => text
+						} as unknown as Response)
+					})
+				}
+			)
+			init?.signal?.addEventListener('abort', () => req.destroy(new Error('aborted')))
+			req.on('error', reject)
+			if (body) req.write(body)
+			req.end()
+		})
+	}
 
 export const createNativeAndroidRegistrationHttpClient = (
 	config: NativeAndroidRegistrationHttpConfig,
