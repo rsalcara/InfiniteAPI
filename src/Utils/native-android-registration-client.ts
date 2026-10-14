@@ -2,6 +2,7 @@ import { Boom } from '@hapi/boom'
 import { randomUUID } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
+import type { Agent } from 'node:http'
 import { DisconnectReason } from '../Types'
 import logger from './logger'
 import type {
@@ -79,8 +80,17 @@ const readBoundedResponseText = async (response: Response): Promise<string> => {
  * `accept`/`accept-encoding` que destoam do fio oficial; `Accept-Encoding:
  * identity` mantém a resposta em JSON puro (o servidor responde JSON
  * independente do Accept, como nas capturas do lab: `{"status":"ok"}`).
+ *
+ * `options.agent` despacha as requisições de registro por um proxy
+ * (ex.: HttpsProxyAgent residencial) — a ativação por número saindo de IP de
+ * datacenter é respondida com o custom_block_screen de segurança; o agente
+ * vale SÓ para estas chamadas de validação, nunca para a conexão da
+ * instância.
  */
-export const createNativeAndroidRegistrationOfficialFetch = (): typeof fetch => async (input, init) => {
+export const createNativeAndroidRegistrationOfficialFetch = (
+	options?: { agent?: Agent }
+): typeof fetch => async (input, init) => {
+	const agent = options?.agent
 	const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
 	const headers = new Headers(init?.headers)
 	const body =
@@ -94,6 +104,7 @@ export const createNativeAndroidRegistrationOfficialFetch = (): typeof fetch => 
 		const req = doRequest(
 			url,
 			{
+				...(agent !== undefined ? { agent } : {}),
 				method: init?.method ?? 'GET',
 				headers: {
 					'Content-Type': headers.get('content-type') ?? 'application/x-www-form-urlencoded',
