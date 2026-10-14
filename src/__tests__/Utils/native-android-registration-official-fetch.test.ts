@@ -1,5 +1,5 @@
 import http from 'node:http'
-import { AddressInfo } from 'node:net'
+import type { AddressInfo } from 'node:net'
 import { once } from 'node:events'
 import { Agent } from 'node:http'
 import { createNativeAndroidRegistrationOfficialFetch } from '../../Utils/native-android-registration-client'
