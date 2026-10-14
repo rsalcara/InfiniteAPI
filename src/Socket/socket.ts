@@ -33,11 +33,13 @@ import {
 	addTransactionCapability,
 	aesEncryptCTR,
 	appendNativeAndroidPairingAttestation,
+	applyNativeAndroidTerminalLoginFailure,
 	bindWaitForConnectionUpdate,
 	buildCompanionDeviceProps,
 	buildPairingQRData,
 	buildWebInfo,
 	bytesToCrockford,
+	classifyNativeAndroidLoginFailure,
 	configureSuccessfulPairing,
 	createNativeAndroidClientPayloadContext,
 	createNativeAndroidFallbackDeviceProfile,
@@ -56,9 +58,12 @@ import {
 	getQrCodeCompanionIdentity,
 	incrementNativeAndroidConnectionLc,
 	inspectAuthStateCapabilities,
+	isRegistrationSeededPrimary,
 	makeEventBuffer,
 	makeNoiseHandler,
+	type NativeAndroidLoginState,
 	obfuscateJid,
+	parseNativeAndroidPreKeyDigestNode,
 	preparePhoneValidation,
 	promiseTimeout,
 	resolveNativeAndroidClientPayloadPhase,
@@ -69,10 +74,13 @@ import {
 	resolveTransportSession,
 	shouldFallbackNativeAndroidProfile,
 	signedKeyPair,
+	verifyNativeAndroidPreKeyDigest,
 	xmppSignedPreKey
 } from '../Utils'
 import { isAndroidBrowser } from '../Utils/browser-utils'
 import { makeMutex } from '../Utils/make-mutex'
+import { type MultiDbSqliteStore, SignalTypedBackend } from '../Utils/multi-db-sqlite'
+import { initOptionalMirror } from '../Utils/multi-db-sqlite/optional-mirror'
 import { applyReconciledPrekeyCursors } from '../Utils/prekey-upload-cursors'
 import { resolvePrekeyUploadQueryTimeout } from '../Utils/prekey-upload-timeout'
 import {
@@ -167,6 +175,77 @@ export const makeSocket = (config: SocketConfig) => {
 	} = runtimeConfig
 	const transportSession = resolveTransportSession(runtimeConfig, authState.creds)
 	const isNativeAndroid = transportSession.profile === 'native_android'
+	// Official `connect()` gate ("ConnectionThread/connect/not-allowed/login-
+	// failed"): a registration-seeded primary whose last login failure was
+	// terminal (`login_failed`, C0GB) must not open a new connection — only a
+	// fresh registration clears the flag (FHW.A01). Companion sessions never
+	// carry the flag and keep connecting exactly as before.
+	if (isRegistrationSeededPrimary(authState.creds) && authState.creds.nativeAndroidIdentity?.loginFailed) {
+		const identity = authState.creds.nativeAndroidIdentity
+		const gateReason = identity.loginFailedReason ?? 401
+		// Report the real official category (persisted at failure time when
+		// available, otherwise re-derived from the raw reason) instead of the
+		// default type 0 — 405 keeps type 3 and a 403 ban keeps type 7 across
+		// restarts (audit C10).
+		const gateClassification = classifyNativeAndroidLoginFailure(gateReason)
+		throw new Boom('primary login failed: re-registration required', {
+			statusCode: 401,
+			data: {
+				category: 'native-android-login-failed',
+				loginFailed: true,
+				reason: gateReason,
+				failureType: identity.loginFailedType ?? gateClassification.failureType,
+				retryable: false
+			}
+		})
+	}
+
+	// Explicit login states for registration-seeded primaries (see
+	// NativeAndroidLoginState): they drive the official passive/shortConnect/
+	// lid_db_migrated decisions from real persisted state. Companion and Web
+	// sessions never match and keep the legacy phase-derived behavior.
+	//
+	// `hasPreacks` reads the axolotl.db `preacks` buffer (Android
+	// C34691fX.A0P: DB rows + in-memory pending; the motor's rows are the whole
+	// buffer). Same optional-mirror gating as messages-recv: without the
+	// multi-db store there is no preack buffer and the flag stays false.
+	const signalTypedBackend =
+		isNativeAndroid && isRegistrationSeededPrimary(authState.creds)
+			? initOptionalMirror(
+					config.multiDbStore,
+					logger,
+					'axolotl.db.transient_signal_tables',
+					'legacy_signal_flow',
+					() => new SignalTypedBackend((config.multiDbStore as MultiDbSqliteStore).handle('axolotl.db'))
+				)
+			: undefined
+	const currentNativeLoginState = (): NativeAndroidLoginState | undefined => {
+		if (!isNativeAndroid || !isRegistrationSeededPrimary(authState.creds)) return undefined
+		const identity = authState.creds.nativeAndroidIdentity
+		let hasPreacks = false
+		try {
+			hasPreacks = (signalTypedBackend?.countPreacks() ?? 0) > 0
+		} catch (err) {
+			logger.debug({ err }, 'native_android: preack count unavailable; hasPreacks stays false')
+		}
+
+		return {
+			signalProtocolStoreIsNew: identity?.signalProtocolStoreIsNew ?? true,
+			loginsWithMessages: identity?.loginsWithMessages ?? 0,
+			hasJid: Boolean(authState.creds.me),
+			hasPreacks,
+			// Official A0v: `forcePassiveMode` is an explicit argument and is
+			// false in the normal flow; `queueSizePassive` compares the
+			// processing-queue depth against C34781fg.A00 which is -1
+			// (disabled) — both stay false.
+			forcePassiveMode: false,
+			queueSizePassive: false,
+			// A registration-seeded primary is push-registered by its number
+			// (C08570aM.A03 counts c2dm_reg_id/fbns_token).
+			hasPushToken: true
+		}
+	}
+
 	const nativeAndroidIntegrityPolicy = transportSession.nativeAndroid?.integrityPolicy ?? 'audit'
 	if (runtimeConfig.startChatTrustSignalsPolicy === 'require-known' && process.env.NODE_ENV === 'production') {
 		throw new Boom('require-known start-chat trust signals policy is disabled in production', {
@@ -305,7 +384,8 @@ export const makeSocket = (config: SocketConfig) => {
 					accountSyncCounter: authState.creds.accountSyncCounter
 				}),
 				connectionLc: authState.creds.nativeAndroidIdentity?.connectionLc,
-				port: url.port ? Number.parseInt(url.port, 10) : 443
+				port: url.port ? Number.parseInt(url.port, 10) : 443,
+				loginState: currentNativeLoginState()
 			})
 		: undefined
 
@@ -500,7 +580,7 @@ export const makeSocket = (config: SocketConfig) => {
 	}
 
 	/** send a query, and wait for its response. auto-generates message ID if not provided */
-	const query = async (node: BinaryNode, timeoutMs?: number) => {
+	const query = async (node: BinaryNode, timeoutMs?: number, opts?: { acceptErrorIq?: boolean }) => {
 		if (!node.attrs.id) {
 			node.attrs.id = generateMessageTag()
 		}
@@ -510,7 +590,7 @@ export const makeSocket = (config: SocketConfig) => {
 		// Register the response listener BEFORE sending — avoids a race where the server
 		// responds before we start listening. waitForMessage already handles its own
 		// timeout (returns undefined) and connection-close errors (throws).
-		const responsePromise = waitForMessage<any>(msgId, timeoutMs)
+		const responsePromise = waitForMessage<BinaryNode>(msgId, timeoutMs)
 		// Prevent unhandled-rejection if sendNode throws before we reach
 		// `await responsePromise` below. The error from sendNode still propagates
 		// to the caller; this only silences the secondary rejection from
@@ -539,14 +619,22 @@ export const makeSocket = (config: SocketConfig) => {
 			})
 		}
 
-		if (result && 'tag' in result) {
+		// `acceptErrorIq` lets the caller inspect a server error-iq answer itself
+		// (the active-mode handshake must treat it as a non-fatal answer, A1N
+		// z=false, instead of rejecting).
+		if (result && 'tag' in result && !opts?.acceptErrorIq) {
 			assertNodeErrorFree(result)
 		}
 
 		return result
 	}
 
-	// Validate current key-bundle on server; on failure, trigger pre-key upload and rethrow
+	// Validate current key-bundle on server; on failure, trigger pre-key upload and rethrow.
+	// Registration-seeded primaries run the official content compare
+	// (RecvPreKeyMessageListener/onGetPreKeyDigest, DT6): registration id,
+	// signed pre-key id, local coverage of the server's key list and the SHA1
+	// over the exact uploaded key material. Companion and Web sessions never
+	// carry this identity and keep the historical presence-only check.
 	const digestKeyBundle = async (): Promise<void> => {
 		const res = await query({
 			tag: 'iq',
@@ -558,6 +646,46 @@ export const makeSocket = (config: SocketConfig) => {
 			await uploadPreKeys()
 			throw new Error('encrypt/get digest returned no digest node')
 		}
+
+		if (!isNativeAndroid || !isRegistrationSeededPrimary(authState.creds)) return
+
+		const digest = parseNativeAndroidPreKeyDigestNode(digestNode)
+		const serverIds = digest?.serverPreKeyIds ?? []
+		const stored = serverIds.length
+			? await authState.keys.get(
+					'pre-key',
+					serverIds.map(id => id.toString())
+				)
+			: {}
+		const preKeys = new Map<number, Uint8Array>()
+		for (const [id, pair] of Object.entries(stored)) {
+			if (pair?.public) preKeys.set(Number(id), pair.public)
+		}
+
+		const verdict = verifyNativeAndroidPreKeyDigest(digest, {
+			registrationId: authState.creds.registrationId,
+			signedPreKeyId: authState.creds.signedPreKey.keyId,
+			identityPublicKey: authState.creds.signedIdentityKey.public,
+			signedPreKeyPublic: authState.creds.signedPreKey.keyPair.public,
+			signedPreKeySignature: authState.creds.signedPreKey.signature,
+			preKeys
+		})
+		if (verdict.ok) {
+			logger.info('RecvPreKeyMessageListener/onGetPreKeyDigest prekey digest check passed')
+			return
+		}
+
+		logger.warn(
+			{ reason: verdict.reason, officialCode: verdict.officialCode, detail: verdict.detail },
+			'RecvPreKeyMessageListener/onGetPreKeyDigest prekey digest check failed'
+		)
+		// Official A0O(code): keys are marked unsent and the upload batches run
+		// again before the failure surfaces to the caller.
+		await uploadPreKeys()
+		throw new Boom(`native_android: prekey digest check failed (${verdict.reason})`, {
+			statusCode: 400,
+			data: { category: 'native-android-prekey-digest', ...verdict }
+		})
 	}
 
 	// Rotate our signed pre-key on server; on failure, run digest as fallback and rethrow
@@ -1394,6 +1522,15 @@ export const makeSocket = (config: SocketConfig) => {
 	}
 
 	const uploadPreKeysToServerIfRequired = async () => {
+		// 1:1 with MyPreKeysManager (C1C6.A0M / CYF in W4B 2.26.36.72): while
+		// `signal_protocol_store_is_new` is set the app force-sends the key batch
+		// ("sendSetPreKeyOrGenerate") — `/v2/register` uploads only identity +
+		// signed pre-key, so the first login MUST upload the one-time prekeys
+		// regardless of the server count. The flag is cleared ONLY after a batch
+		// upload completes (CYF.java is the sole `A18(false)` call site): a skip
+		// or an error keeps it set so the next login retries.
+		const identity = authState.creds.nativeAndroidIdentity
+		const storeIsNew = identity?.signalProtocolStoreIsNew === true
 		try {
 			let count = 0
 			const preKeyCount = await getAvailablePreKeysOnServer()
@@ -1403,10 +1540,17 @@ export const makeSocket = (config: SocketConfig) => {
 
 			const lowServerCount = preKeyCount <= count
 			const missingCurrentPreKey = !currentPreKeyExists && currentPreKeyId > 0
-			const shouldUpload = lowServerCount || missingCurrentPreKey
+			const shouldUpload = lowServerCount || missingCurrentPreKey || storeIsNew
 
 			logger.info(
-				{ serverCount: preKeyCount, threshold: count, currentPreKeyId, currentPreKeyExists, willUpload: shouldUpload },
+				{
+					serverCount: preKeyCount,
+					threshold: count,
+					currentPreKeyId,
+					currentPreKeyExists,
+					signalProtocolStoreIsNew: storeIsNew,
+					willUpload: shouldUpload
+				},
 				`pre-keys: server has ${preKeyCount} (threshold ${count}), current prekey #${currentPreKeyId} ${currentPreKeyExists ? 'present' : 'MISSING'} in storage`
 			)
 
@@ -1414,14 +1558,26 @@ export const makeSocket = (config: SocketConfig) => {
 				const reasons = []
 				if (lowServerCount) reasons.push(`server count low (${preKeyCount} ≤ ${count})`)
 				if (missingCurrentPreKey) reasons.push(`current prekey #${currentPreKeyId} missing from storage`)
+				if (storeIsNew) reasons.push('signal_protocol_store_is_new set (force upload)')
 
 				logger.info(`pre-keys: upload required — ${reasons.join('; ')}`)
 				await uploadPreKeys(count)
+
+				// Batches uploaded (CYF.java:43-51) — and only now — the flag
+				// flips false and later logins compute passive=false.
+				if (identity?.signalProtocolStoreIsNew) {
+					identity.signalProtocolStoreIsNew = false
+					ev.emit('creds.update', { nativeAndroidIdentity: identity })
+					logger.info('native_android: signal_protocol_store_is_new cleared after pre-key batches completed')
+				}
 			} else {
 				logger.info(`pre-keys: validation passed — no upload needed (server ${preKeyCount} > ${count})`)
 			}
 		} catch (error) {
-			logger.error({ error }, 'Failed to check/upload pre-keys during initialization')
+			logger.error(
+				{ error, signalProtocolStoreIsNew: storeIsNew },
+				'Failed to check/upload pre-keys during initialization'
+			)
 			// Don't throw - allow connection to continue even if pre-key check fails
 		}
 	}
@@ -2060,19 +2216,85 @@ export const makeSocket = (config: SocketConfig) => {
 	}
 
 	/** i have no idea why this exists. pls enlighten me */
-	const sendPassiveIq = (tag: 'passive' | 'active') =>
-		query({
-			tag: 'iq',
-			attrs: {
-				to: S_WHATSAPP_NET,
-				xmlns: 'passive',
-				type: 'set'
+	const sendPassiveIq = (tag: 'passive' | 'active', timeoutMs?: number, opts?: { acceptErrorIq?: boolean }) =>
+		query(
+			{
+				tag: 'iq',
+				attrs: {
+					to: S_WHATSAPP_NET,
+					xmlns: 'passive',
+					type: 'set'
+				},
+				content: [{ tag, attrs: {} }]
 			},
-			content: [{ tag, attrs: {} }]
+			timeoutMs,
+			opts
+		)
+
+	/**
+	 * Official active-mode handshake for registration-seeded primaries
+	 * (HandlerThreadC08660aV.A1K "sendActiveModeIq" → C17A.A02 =
+	 * sendEmptyMessageDelayed(2, 32000)): the login is only usable after the
+	 * active-mode IQ is answered, and a 32 s watchdog bounds the wait.
+	 *   'ack'         — answer received (A1N z=true cancels the watchdog)
+	 *   'error'       — server error-iq answer: continue WITHOUT disconnect (A1N z=false)
+	 *   'local-error' — local send/transport failure: the socket is already
+	 *                   broken, so the session ends with that error
+	 *   'timeout'     — no answer: official A0k(0L, 10, true) → disconnect code 10
+	 *                   (reconnectable — NOT login_failed)
+	 */
+	const ACTIVE_MODE_ACK_WATCHDOG_MS = 32_000
+	const waitForActiveModeAck = async (): Promise<'ack' | 'error' | 'local-error' | 'timeout'> =>
+		new Promise(resolve => {
+			let settled = false
+			const settle = (outcome: 'ack' | 'error' | 'local-error' | 'timeout') => {
+				if (settled) return
+				settled = true
+				clearTimeout(watchdog)
+				resolve(outcome)
+			}
+
+			const watchdog = setTimeout(() => {
+				logger.warn('connection active timeout fired')
+				settle('timeout')
+			}, ACTIVE_MODE_ACK_WATCHDOG_MS)
+			watchdog.unref?.()
+			sendPassiveIq('active', ACTIVE_MODE_ACK_WATCHDOG_MS, { acceptErrorIq: true })
+				.then(result => {
+					// An error-iq is still an answer: the official handler keeps the
+					// connection (A1N z=false).
+					if (result && 'tag' in result && getBinaryNodeChild(result, 'error')) {
+						logger.warn('native_android: active mode iq error response (A1N z=false)')
+						settle('error')
+					} else {
+						settle('ack')
+					}
+				})
+				.catch(err => {
+					// A query timeout is a non-answer just like the watchdog — both
+					// map to the official 32 s code-10 disconnect.
+					if (err instanceof Boom && err.output.statusCode === DisconnectReason.timedOut) {
+						settle('timeout')
+					} else {
+						// Local send/transport failure: the socket is broken beyond the
+						// active-mode exchange — end with the real error instead of
+						// continuing on a dead connection.
+						logger.warn({ err }, 'native_android: active mode iq failed locally')
+						void end(err as Error)
+						settle('local-error')
+					}
+				})
 		})
 
 	/** logout & invalidate connection */
 	const logout = async (msg?: string) => {
+		// Remote primary logout is not implemented (audit A10):
+		// `remove-companion-device` is a companion operation and would desync a
+		// registration-seeded primary; refusing keeps the primary wire clean.
+		if (isRegistrationSeededPrimary(authState.creds)) {
+			throw new Boom('remote primary logout is not implemented', { statusCode: 501 })
+		}
+
 		const jid = authState.creds.me?.id
 		if (jid) {
 			await sendNode({
@@ -2262,16 +2484,32 @@ export const makeSocket = (config: SocketConfig) => {
 	ws.on('open', async () => {
 		try {
 			if (isNativeAndroid && ws instanceof TcpSocketClient && ws.selectedEndpoint && nativeClientPayloadContext) {
+				const loginState = currentNativeLoginState()
 				nativeClientPayloadContext = createNativeAndroidClientPayloadContext({
 					phase: nativeClientPayloadContext.phase,
 					connectionLc: nativeClientPayloadContext.connectionLc,
 					sessionId: nativeClientPayloadContext.sessionId,
 					port: ws.selectedEndpoint.port,
-					sequenceStep: ws.selectedEndpoint.sequenceStep ?? 1,
+					// The payload bits 7..11 report the official moveToNext counter
+					// (C35511hh.A08 → XppLoginContext.A01), NOT the endpoint stage id
+					// (`selectedEndpoint.sequenceStep` is diagnostics-only). Only for
+					// seeded primaries; companion/Web sessions keep the historical
+					// `selectedEndpoint.sequenceStep` payload byte-for-byte (audit A02).
+					sequenceStep: loginState ? ws.stageAdvanceCount : ws.selectedEndpoint.sequenceStep,
 					dnsAppCached: ws.dnsAppCached,
 					connectAttemptCount: ws.connectAttemptCount,
 					addressSource: ws.addressSource,
-					proxyDirectness: transportSession.nativeAndroid?.proxy ? 1 : 0
+					proxyDirectness: transportSession.nativeAndroid?.proxy ? 1 : 0,
+					// dnsMethod provenance (dnsResolverInfo.A00): a hardcoded-address
+					// route reports HARDCODED, anything the OS resolved reports
+					// SYSTEM. Only seeded primaries report real provenance; companion
+					// sessions keep the historical phase-derived default.
+					dnsMethod: loginState
+						? ws.selectedEndpoint.source === 'hardcoded'
+							? proto.ClientPayload.DNSSource.DNSResolutionMethod.HARDCODED
+							: proto.ClientPayload.DNSSource.DNSResolutionMethod.SYSTEM
+						: undefined,
+					loginState
 				})
 			}
 
@@ -2410,6 +2648,15 @@ export const makeSocket = (config: SocketConfig) => {
 				// with account/me so reconnects cannot rotate the device profile.
 				updatedCreds.registered = true
 				updatedCreds.nativeAndroidIdentity = authState.creds.nativeAndroidIdentity
+				// (P19) NÃO incrementar accountSyncCounter aqui: pair-success é
+				// pareamento, não sincronização concluída. O contador é avançado
+				// apenas pelos produtores de sync (chats.ts), que confirmam
+				// histórico/offline/app-state. Incrementar aqui faria o primeiro
+				// reconnect assumir "já sincronizado" (skipOfflineBuffer/
+				// isReconnection) e pular o buffer offline indevidamente — e o
+				// próprio motor zera esse estado espúrio na migração de
+				// native-android-transport (store novo + connectionLc 0 + counter>0).
+				// updatedCreds.accountSyncCounter = (authState.creds.accountSyncCounter ?? 0) + 1
 			} else {
 				updatedCreds.webTransportIdentity = authState.creds.webTransportIdentity
 			}
@@ -2493,27 +2740,57 @@ export const makeSocket = (config: SocketConfig) => {
 		// final gauge correct in both branches. (audit PR #589: Codex)
 		markConnectionActive(connectionId)
 
+		// ─── Official post-login active-mode handshake (A1K/A1N) ───
+		// Every official login path sends the active-mode IQ and arms the 32 s
+		// watchdog BEFORE the session is usable (HandlerThreadC08660aV.A1K).
+		// Registration-seeded primaries reproduce that gate before emitting
+		// `connection: open`; companion and Web sessions never carry this
+		// identity and keep the historical fire-and-forget behavior untouched.
+		const isSeededPrimary = isNativeAndroid && isRegistrationSeededPrimary(authState.creds)
+		if (isSeededPrimary) {
+			const activeModeOutcome = await waitForActiveModeAck()
+			if (closed) return
+			if (activeModeOutcome === 'local-error') {
+				// The local transport failure already ended the session with the
+				// real error (audit A11) — never emit `connection: open` on it.
+				return
+			}
+
+			if (activeModeOutcome === 'timeout') {
+				// Official "connection active timeout fired" → A0k(0L, 10, true):
+				// reconnectable disconnect (code 10), NOT login_failed.
+				void end(
+					new Boom('native_android: active mode iq timed out', {
+						statusCode: DisconnectReason.timedOut,
+						data: { code: 10, category: 'native-android-active-mode-timeout', reconnectable: true }
+					})
+				)
+				return
+			}
+		}
+
 		// Emit connection:open immediately so the application layer begins processing
 		// incoming messages without waiting for any WA round-trips.
 		ev.emit('connection.update', { connection: 'open', authCapabilities })
 
-		// ─── Background: sendPassiveIq + pre-key validation + key-bundle digest ──
-		// sendPassiveIq('active') tells the WA edge server to start routing live
-		// messages to this connection. All three operations involve WA round-trips
-		// (100–500 ms each) but none need to complete before the app can handle
-		// messages. Run them in parallel, fire-and-forget, non-blocking.
-		Promise.allSettled([sendPassiveIq('active'), uploadPreKeysToServerIfRequired(), digestKeyBundle()])
+		// ─── Background: pre-key validation + key-bundle digest (companion/web also send the initial passive iq) ───
+		// All operations involve WA round-trips (100–500 ms each) but none need
+		// to complete before the app can handle messages. Run them in parallel,
+		// fire-and-forget, non-blocking.
+		const backgroundTasks = isSeededPrimary
+			? [uploadPreKeysToServerIfRequired(), digestKeyBundle()]
+			: [sendPassiveIq('active'), uploadPreKeysToServerIfRequired(), digestKeyBundle()]
+		Promise.allSettled(backgroundTasks)
 			.then(results => {
-				const [passiveResult] = results
-				if (passiveResult.status === 'rejected') {
-					logger.warn({ err: passiveResult.reason }, 'failed to send initial passive iq')
-				}
-
-				for (const result of results.slice(1)) {
+				results.forEach((result, index) => {
 					if (result.status === 'rejected') {
-						logger.warn({ err: result.reason }, 'background key operation failed after login (non-critical)')
+						const label =
+							!isSeededPrimary && index === 0
+								? 'failed to send initial passive iq'
+								: 'background key operation failed after login (non-critical)'
+						logger.warn({ err: result.reason }, label)
 					}
-				}
+				})
 			})
 			.catch(err => {
 				logger.error({ err }, 'unexpected error in background post-login handler')
@@ -2604,6 +2881,10 @@ export const makeSocket = (config: SocketConfig) => {
 	// stream fail, possible logout
 	ws.on('CB:failure', (node: BinaryNode) => {
 		const reason = +(node.attrs.reason || 500)
+		// Official login-sequence failure taxonomy (1:1 with the app's dispatch):
+		// 5xx retries with backoff; every other reason — 401 included — is a
+		// terminal failure (type 0 default) that ends in `login_failed`.
+		const failure = classifyNativeAndroidLoginFailure(reason, node.attrs)
 		const currentNativeDevice = transportSession.nativeAndroid?.device
 		if (
 			isNativeAndroid &&
@@ -2641,7 +2922,36 @@ export const makeSocket = (config: SocketConfig) => {
 			)
 		}
 
-		void end(new Boom('Connection Failure', { statusCode: reason, data: node.attrs }))
+		// Official terminal-failure bookkeeping (HandlerC08360a1 type-0 chain):
+		// `login_failed` + `previously_logged_out_from_primary`, persisted only
+		// for registration-seeded primaries. Retryable (5xx) failures never set
+		// it — the official client schedules a reconnect instead.
+		if (!failure.retryable) {
+			const update = applyNativeAndroidTerminalLoginFailure(authState.creds, reason, failure.failureType)
+			if (update?.nativeAndroidIdentity) {
+				authState.creds.nativeAndroidIdentity = update.nativeAndroidIdentity
+				ev.emit('creds.update', update)
+				logger.warn(
+					{ reason, failureType: failure.failureType },
+					'native_android primary terminal login failure; login_failed persisted (re-registration required)'
+				)
+			}
+		}
+
+		// `appeal_token` is a recovery credential: keep it in the in-memory error
+		// data so the platform can persist it for the ban appeal (audit C10), but
+		// it must NEVER reach a log — the worker redacts it before logging (C19).
+		void end(
+			new Boom('Connection Failure', {
+				statusCode: reason,
+				data: {
+					...node.attrs,
+					hasAppealToken: node.attrs.appeal_token !== undefined,
+					failureType: failure.failureType,
+					retryable: failure.retryable
+				}
+			})
+		)
 	})
 
 	ws.on('CB:ib,,downgrade_webclient', () => {

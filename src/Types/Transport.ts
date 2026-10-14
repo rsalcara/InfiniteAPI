@@ -306,4 +306,46 @@ export type PersistedNativeAndroidIdentity = {
 	connectionEndpoint?: NativeAndroidConnectionEndpoint
 	/** Durable metadata only; never contains nonce, token or attestation bytes. */
 	integrity?: PersistedNativeAndroidIntegrityState
+	/**
+	 * Set only when these credentials were seeded by a primary phone-number
+	 * registration (device-0, /v2/register). Companion pairing (QR / pair-code)
+	 * never sets it, so its login semantics stay exactly as before.
+	 */
+	registrationSeeded?: boolean
+	/**
+	 * APK pref `signal_protocol_store_is_new` (C018408o.A1H): written true when
+	 * the Signal identity is created (`SignalCoordinator/createIdentityKeysAnd-
+	 * SignedPreKeys`) and cleared false only after MyPreKeysManager finishes
+	 * uploading the pre-key batches. While true the official passive decision
+	 * stays true (no pre-acks, PAA off).
+	 */
+	signalProtocolStoreIsNew?: boolean
+	/**
+	 * APK pref `logins_with_messages`: counts short-connect logins that kept
+	 * processing messages past the app's 15-minute window. Official shortConnect
+	 * is `(c2dm_reg_id || fbns_token) && logins_with_messages < 3`.
+	 */
+	loginsWithMessages?: number
+	/**
+	 * APK `login_failed` (C0GB.A0K): set when a non-retryable login failure hits
+	 * a registration-seeded primary (the official type-0 chain of
+	 * HandlerC08360a1). `connect()` refuses while set and only a new successful
+	 * registration clears it (FHW.A01), 1:1 with the app.
+	 */
+	loginFailed?: boolean
+	/** Failure reason recorded alongside `loginFailed` (the APK stores the int). */
+	loginFailedReason?: number
+	/**
+	 * Official failure category classified from the `<failure>` node (0 default,
+	 * 2/13/14/15 ban family, 3 expired, 4 retryable 5xx, 5 underage, 7 permanent
+	 * ban, 11 violation). Persisted alongside `loginFailedReason` so a later
+	 * `connect()` gate can report the real category instead of collapsing every
+	 * terminal failure into type 0 (audit C10).
+	 */
+	loginFailedType?: number
+	/**
+	 * APK pref `previously_logged_out_from_primary`: set once the primary is
+	 * definitively logged out by a terminal failure (HandlerC08360a1).
+	 */
+	previouslyLoggedOutFromPrimary?: boolean
 }

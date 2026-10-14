@@ -184,6 +184,7 @@ export class SignalTypedBackend {
 		deletePreack: SqliteStatementLike
 		drainPreacksUpTo: SqliteStatementLike
 		clearPreacks: SqliteStatementLike
+		countPreacks: SqliteStatementLike
 	}
 
 	private readonly db: SqliteDbLike
@@ -389,7 +390,12 @@ export class SignalTypedBackend {
 			insertPreack: this.db.prepare('INSERT INTO preacks (ptn) VALUES (?)'),
 			deletePreack: this.db.prepare('DELETE FROM preacks WHERE _id = ?'),
 			drainPreacksUpTo: this.db.prepare('DELETE FROM preacks WHERE _id <= ?'),
-			clearPreacks: this.db.prepare('DELETE FROM preacks')
+			clearPreacks: this.db.prepare('DELETE FROM preacks'),
+			// Android's `C34691fX.A0B` counts the buffered pre-acks (DB rows +
+			// in-memory pending). The motor has no in-memory layer — every
+			// pending pre-ack lives in this table — so the row count is the
+			// exact equivalent of the mobile value behind `hasPreacks` (A0P).
+			countPreacks: this.db.prepare('SELECT COUNT(*) AS count FROM preacks')
 		}
 	}
 
@@ -915,5 +921,11 @@ export class SignalTypedBackend {
 	/** Wipes every buffered pre-ack (socket close). */
 	clearPreacks(): void {
 		this.stmts.clearPreacks.run()
+	}
+
+	/** Pending pre-ack count (Android `C34691fX.A0B`) behind the `hasPreacks` login-state flag. */
+	countPreacks(): number {
+		const r = this.stmts.countPreacks.get() as { count: number } | undefined
+		return Number(r?.count ?? 0)
 	}
 }

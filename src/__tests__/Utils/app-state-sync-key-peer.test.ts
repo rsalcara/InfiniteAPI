@@ -57,7 +57,7 @@ describe('buildAppStateSyncKeyPeerNode — official SendPeerMessageJob wire cont
 		expect(node.attrs.to).toBe(primary)
 	})
 
-	it('fails closed for a pkmsg without signed device identity', () => {
+	it('fails closed for a pkmsg without signed device identity (companion)', () => {
 		expect(() =>
 			buildAppStateSyncKeyPeerNode({
 				targetDeviceJid,
@@ -65,6 +65,21 @@ describe('buildAppStateSyncKeyPeerNode — official SendPeerMessageJob wire cont
 				encrypted: { type: 'pkmsg', ciphertext: Buffer.from([4, 5]) }
 			})
 		).toThrow(Boom)
+	})
+
+	it('sends a primary pkmsg without the device-identity node', () => {
+		// Primary registration never owns an ADV signed device identity and the
+		// APK omits the node for it (SendPeerMessageJob companion gate), so the
+		// stanza must go out without `device-identity` instead of failing.
+		const node = buildAppStateSyncKeyPeerNode({
+			targetDeviceJid,
+			messageId: 'peer-share-38',
+			encrypted: { type: 'pkmsg', ciphertext: Buffer.from([4, 5]) },
+			primary: true
+		})
+		const content = node.content as Array<{ tag: string }>
+
+		expect(content.map(child => child.tag)).toEqual(['enc'])
 	})
 
 	it.each(['5511999999999@s.whatsapp.net', 'invalid', '120363000000000000@g.us'])(

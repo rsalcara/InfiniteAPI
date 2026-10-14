@@ -7,6 +7,12 @@ type BuildAppStateSyncKeyPeerNodeOptions = {
 	messageId: string
 	encrypted: { type: string; ciphertext: Uint8Array }
 	deviceIdentity?: Uint8Array
+	/**
+	 * Registration-seeded primary: it never owns an ADV signed device identity,
+	 * so its pkmsg travels without the node and without the companion
+	 * requirement (audit A16/A17b). Companion/QR keeps the historical contract.
+	 */
+	primary?: boolean
 }
 
 /** Builds the direct SendPeerMessageJob-compatible stanza used by syncd key types 38/39. */
@@ -14,7 +20,8 @@ export const buildAppStateSyncKeyPeerNode = ({
 	targetDeviceJid,
 	messageId,
 	encrypted,
-	deviceIdentity
+	deviceIdentity,
+	primary = false
 }: BuildAppStateSyncKeyPeerNodeOptions): BinaryNode => {
 	const target = jidDecode(targetDeviceJid)
 	// jidDecode intentionally collapses `:0` to device=undefined. Peer jobs,
@@ -25,7 +32,9 @@ export const buildAppStateSyncKeyPeerNode = ({
 		throw new Boom('App-state peer message requires an explicit target device', { statusCode: 400 })
 	}
 
-	if (encrypted.type === 'pkmsg' && !deviceIdentity) {
+	// Historical companion contract (audit A16): a pkmsg without the signed
+	// device identity cannot be sent — only a primary is exempt.
+	if (!primary && encrypted.type === 'pkmsg' && !deviceIdentity) {
 		throw new Boom('Missing signed device identity for app-state peer message', { statusCode: 500 })
 	}
 
@@ -36,7 +45,9 @@ export const buildAppStateSyncKeyPeerNode = ({
 			content: encrypted.ciphertext
 		}
 	]
-	if (encrypted.type === 'pkmsg') {
+	// The device-identity node is companion-only (APK gates it on owning an ADV
+	// identity). A primary pkmsg travels without the node instead of failing.
+	if (encrypted.type === 'pkmsg' && deviceIdentity && !primary) {
 		content.push({ tag: 'device-identity', attrs: {}, content: deviceIdentity })
 	}
 

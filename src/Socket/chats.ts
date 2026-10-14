@@ -117,6 +117,7 @@ import {
 } from '../Utils/multi-db-sqlite'
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
+import { isRegistrationSeededPrimary } from '../Utils/native-android-transport'
 import { backfillNctSalt as backfillNctSaltCore, type NctSaltBackfillContext } from '../Utils/nct-salt-fallback'
 import {
 	buildNctSaltSnapshotQuery,
@@ -463,7 +464,17 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		// SendPeerMessageJob marks peer_messages.acked only after the transport
 		// future completes. query() registers the ACK listener before writing and
 		// converts a late/missing ACK into a retryable timeout.
-		await query(buildAppStateSyncKeyPeerNode({ targetDeviceJid, messageId, encrypted, deviceIdentity }))
+		await query(
+			buildAppStateSyncKeyPeerNode({
+				targetDeviceJid,
+				messageId,
+				encrypted,
+				deviceIdentity,
+				// A registration-seeded primary never owns an ADV identity (audit
+				// A17): its pkmsg travels without the device-identity node.
+				primary: isRegistrationSeededPrimary(authState.creds)
+			})
+		)
 	}
 
 	const appStateSyncRecoveryLogger = logger.child({

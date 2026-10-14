@@ -98,7 +98,7 @@ export type AuthenticationCreds = SignalCreds & {
 	 */
 	verifiedNameSerial?: string
 	routingInfo: Buffer | undefined
-	additionalData?: any | undefined
+	additionalData?: unknown
 	/**
 	 * Durable protocol marker and complete device identity for native-Android
 	 * sessions. Absent means the established Web session format.
