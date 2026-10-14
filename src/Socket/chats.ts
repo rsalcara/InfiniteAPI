@@ -1456,6 +1456,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 							tag: 'collection',
 							attrs: {
 								name,
+								// APK C28250CaN.A01: order = 0 for 'critical_unblock_low', else 1
+								// (serialized right after `name`, before version/return_snapshot).
+								order: name === 'critical_unblock_low' ? '0' : '1',
 								version: state.version.toString(),
 								// return snapshot if syncing from scratch or forcing after a failed attempt
 								return_snapshot: (shouldForceSnapshot || !state.version).toString()
@@ -1473,7 +1476,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 						content: [
 							{
 								tag: 'sync',
-								attrs: {},
+								// APK C28250CaN.A00: the <sync> node carries data_namespace="3".
+								attrs: { data_namespace: '3' },
 								content: nodes
 							}
 						]
@@ -1914,12 +1918,15 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					content: [
 						{
 							tag: 'sync',
-							attrs: {},
+							// APK C28250CaN.A00: the <sync> node carries data_namespace="3".
+							attrs: { data_namespace: '3' },
 							content: [
 								{
 									tag: 'collection',
 									attrs: {
 										name,
+										// APK C28250CaN.A01: order = 0 for 'critical_unblock_low', else 1.
+										order: name === 'critical_unblock_low' ? '0' : '1',
 										version: (state.version - 1).toString(),
 										return_snapshot: 'false'
 									},

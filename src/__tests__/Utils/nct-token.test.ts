@@ -137,8 +137,14 @@ describe('NCT salt backfill from regular_high', () => {
 			content: [
 				{
 					tag: 'sync',
-					attrs: {},
-					content: [{ tag: 'collection', attrs: { name: 'regular_high', version: '0', return_snapshot: 'true' } }]
+					// APK C28250CaN.A00 stamps data_namespace="3"; A01 stamps order (1 for regular_high).
+					attrs: { data_namespace: '3' },
+					content: [
+						{
+							tag: 'collection',
+							attrs: { name: 'regular_high', order: '1', version: '0', return_snapshot: 'true' }
+						}
+					]
 				}
 			]
 		})

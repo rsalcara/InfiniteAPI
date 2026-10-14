@@ -86,11 +86,19 @@ export const buildNctSaltSnapshotQuery = (version: number): BinaryNode => ({
 	content: [
 		{
 			tag: 'sync',
-			attrs: {},
+			// APK C28250CaN.A00: the <sync> node carries data_namespace="3".
+			attrs: { data_namespace: '3' },
 			content: [
 				{
 					tag: 'collection',
-					attrs: { name: NCT_SALT_COLLECTION, version: String(version), return_snapshot: 'true' }
+					// APK C28250CaN.A01: order = 0 for 'critical_unblock_low', else 1;
+					// NCT_SALT_COLLECTION is 'regular_high', so order is always '1'.
+					attrs: {
+						name: NCT_SALT_COLLECTION,
+						order: '1',
+						version: String(version),
+						return_snapshot: 'true'
+					}
 				}
 			]
 		}
