@@ -697,6 +697,8 @@ export const makeSocket = (config: SocketConfig) => {
 			tag: 'iq',
 			attrs: { to: S_WHATSAPP_NET, type: 'set', xmlns: 'encrypt' },
 			content: [
+				// APK C28998Cmx.java:110-112 precedes <rotate> with a bare <op mode="rotate"/>.
+				{ tag: 'op', attrs: { mode: 'rotate' } },
 				{
 					tag: 'rotate',
 					attrs: {},
@@ -733,7 +735,8 @@ export const makeSocket = (config: SocketConfig) => {
 		const iq = {
 			tag: 'iq',
 			attrs: {
-				to: S_WHATSAPP_NET,
+				// APK C45431ye.java:344 omits `to` on the usync IQ — an IQ with no
+				// `to` is directed to the user's own server (matches the app wire).
 				type: 'get',
 				xmlns: 'usync'
 			},
