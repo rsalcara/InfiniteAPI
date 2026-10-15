@@ -9,6 +9,18 @@ export type WMexQueryOptions = { includeQueryId?: boolean; includeTrace?: boolea
 export const MEX_CONTACT_PROFILE_QUERY_ID = '32735378489440100'
 export const MEX_CONTACT_PROFILE_BATCH_SIZE = 40
 
+/**
+ * MexFatalExtensionError `error_code` for an unknown/rotated persisted query.
+ *
+ * Design note (see docs/auditoria-1a1/MATRIZ_L2_WMEX.md): this engine pins
+ * `w:mex` `doc_id`s from the **WhatsApp-Web** bundle, not the Business Android
+ * assets registry. WA-Web ids rotate without version negotiation, and when the
+ * server no longer recognizes a pinned id it answers with this code. The
+ * Android app ships its ids in `assets/` so it never hits this. Surfacing it
+ * explicitly makes a silent rotation diagnosable instead of a generic failure.
+ */
+export const MEX_PERSISTED_QUERY_ROTATED_ERROR_CODE = 421
+
 /** Official MEX USync shape. Callers opt in only for a known regular-user target. */
 export const withMexPrivacyToken = (
 	variables: Record<string, unknown>,
@@ -88,7 +100,17 @@ export const executeWMexQuery = async <T>(
 			const errorMessages = data.errors.map((err: Error) => err.message || 'Unknown error').join(', ')
 			const firstError = data.errors[0]
 			const errorCode = firstError.extensions?.error_code || 400
-			throw new Boom(`GraphQL server error: ${errorMessages}`, { statusCode: errorCode, data: firstError })
+			const rotated = errorCode === MEX_PERSISTED_QUERY_ROTATED_ERROR_CODE
+			// A 421 means the server did not recognize the pinned persisted query
+			// (a rotated WA-Web doc_id). Name it so operators can diagnose the
+			// rotation instead of reading a generic GraphQL failure.
+			const message = rotated
+				? `w:mex persisted query ${queryId} rejected (error_code 421 — doc_id likely rotated): ${errorMessages}`
+				: `GraphQL server error: ${errorMessages}`
+			throw new Boom(message, {
+				statusCode: errorCode,
+				data: { ...firstError, mexQueryId: queryId, mexPersistedQueryRotated: rotated }
+			})
 		}
 
 		const response = dataPath ? data?.data?.[dataPath] : data?.data

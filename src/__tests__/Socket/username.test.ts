@@ -202,7 +202,9 @@ describe('@username MEX wire protocol', () => {
 
 	describe('error handling', () => {
 		it('GraphQL `errors[]` MUST throw Boom with the server error_code', async () => {
-			queryMock.mockResolvedValue(makeErrorResponse('unknown query', 421))
+			// 421 (persisted-query rotation) has a dedicated message now and is
+			// covered in mex-error-handling.test.ts; use a generic code here.
+			queryMock.mockResolvedValue(makeErrorResponse('unknown query', 500))
 
 			await expect(
 				executeWMexQuery({}, UsernameQueryIds.SET, XWAUsernamePaths.SET, queryMock, generateMessageTag)
