@@ -107,6 +107,7 @@ import {
 	resolveSelfSendLid
 } from '../Utils/relay-stanza'
 import { getMessageReportingToken, shouldIncludeReportingToken } from '../Utils/reporting-utils'
+import { rememberRelayedRecipientCount } from '../Utils/process-message'
 import { resolveSessionFetchJids } from '../Utils/session-fetch-addressing'
 import {
 	isRegularUser,
@@ -2191,6 +2192,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				if (isStatus && statusJidList) {
 					participantsList.push(...statusJidList)
+				}
+
+				if (isGroup) {
+					// R6: pin the app's add-msg recipient_count (participants
+					// including me − 1, BotUtilPreprocessor X/A7L.java) on the relayed
+					// content so the mirrored message row can aggregate group receipt
+					// status exactly like MessageStatusStore.A02.
+					rememberRelayedRecipientCount(message, Math.max(participantsList.length - 1, 0))
 				}
 
 				const additionalDevices = await getUSyncDevices(participantsList, !!useUserDevicesCache, false)

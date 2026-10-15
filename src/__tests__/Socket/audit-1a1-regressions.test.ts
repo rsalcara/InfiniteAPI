@@ -403,20 +403,26 @@ describe('audit 1:1 regressions', () => {
 				client.emit('CB:receipt', { tag: 'receipt', attrs: { ...attrs, id, t: '1789500200' }, content: undefined })
 			}
 
-			await waitFor(() => updateSpy.mock.calls.length === receipts.length)
+			// inactive no longer calls updateMessageStatus at all (R6), so 6 of
+			// the 7 receipts reach the status mirror.
+			await waitFor(() => updateSpy.mock.calls.length === receipts.length - 1)
 			await endSocket(socket)
-			// What msgstore.db really holds after the live receipts.
 			const persisted = Object.fromEntries(
 				receipts.map(({ id, fromMe }) => [id, messages.getMessageByKeyId(DM_A_PN, fromMe, id)?.status])
 			)
+			// R6 errata (2.26.38.10 decompile, X/C28106CSb.java:281-323 +
+			// X/C17C.java:400): played-self 18 is APPLIED as PLAYED 8 (the live
+			// helper builds the status receipt with 8) and inactive 15 never
+			// reaches message.status — dropped as "statusunchanged" — so the
+			// row keeps the NULL recordMessage left.
 			expect(persisted).toEqual({
 				'R09-delivery': 5,
 				'R09-read': 13,
 				'R09-played': 8,
-				'R09-inactive': 15,
+				'R09-inactive': null,
 				'R09-sender': 5,
 				'R09-read-self': 17,
-				'R09-played-self': 18
+				'R09-played-self': 8
 			})
 			// receipt_user progression follows the same table: sender is a delivery.
 			expect(Object.fromEntries(userReceiptKinds)).toEqual({
@@ -466,10 +472,12 @@ describe('audit 1:1 regressions', () => {
 				client.emit('CB:receipt', { tag: 'receipt', attrs: { ...attrs, id, t: '1789500300' }, content: undefined })
 			}
 
-			await waitFor(() => updateSpy.mock.calls.length === receipts.length)
+			// inactive never calls updateMessageStatus under R6 (the app drops
+			// it as "statusunchanged"), so 3 of the 4 receipts reach the mirror.
+			await waitFor(() => updateSpy.mock.calls.length === receipts.length - 1)
 			await endSocket(socket)
 			// read orphans through receipt_user (replays as 13); the status-only
-			// states are held with their own value.
+			// states are held with their exact wire value — the R6 raw integer.
 			expect(Object.fromEntries(orphans)).toEqual({
 				'LATE-inactive': 15,
 				'LATE-read-self': 17,
@@ -479,6 +487,64 @@ describe('audit 1:1 regressions', () => {
 			updateSpy.mockRestore()
 			orphanSpy.mockRestore()
 			userSpy.mockRestore()
+			store.close()
+			rmSync(sessionDir, { recursive: true, force: true })
+		}
+	})
+
+	// R6 · played-self in a group: the live helper normalizes it to played(8)
+	// and stores a receipt_user row for the SENDER'S OWN user
+	// (C5W.A00(device, null, ...) → device.userJid, X/C28106CSb.java:281-323 in
+	// 2.26.38.10), which feeds the group aggregate exactly like a
+	// participant's played receipt. No consumer event changes: the group
+	// contract stays `message-receipt.update` for participant receipts.
+	it('records a played-self group receipt as the own-user played row and promotes the aggregate', async () => {
+		const sessionDir = mkdtempSync(join(tmpdir(), 'audit-1a1-r06-played-self-'))
+		const store = new MultiDbSqliteStore({ sessionDir })
+		await store.open()
+		const db = store.handle('msgstore.db')
+		const messages = new MessageStoreBackend(db, new JidMapBackend(db))
+		const GROUP = '120363000000000010@g.us'
+		const keyId = 'R06-played-self-group'
+		messages.recordMessage({
+			chatJid: GROUP,
+			fromMe: true,
+			keyId,
+			status: 4, // SERVER_ACK
+			timestamp: 1_789_500_000,
+			recipientCount: 1
+		})
+		try {
+			const { socket } = await makeSocket(undefined, { multiDbStore: store })
+			const client = latestClient()
+			const receiptUpdates: string[] = []
+			socket.ev.on('message-receipt.update', updates => {
+				for (const { key } of updates) receiptUpdates.push(key.id!)
+			})
+			client.emit('CB:receipt', {
+				tag: 'receipt',
+				attrs: {
+					// A group receipt carries the GROUP as `from`; the member is
+					// identified by `participant` — here, ourselves.
+					from: GROUP,
+					participant: ME_PN,
+					type: 'played-self',
+					id: keyId,
+					t: '1789500400'
+				},
+				content: undefined
+			})
+
+			// played 1/1 reaches recipient_count → PLAYED 8 via the aggregate.
+			await waitFor(() => messages.getMessageByKeyId(GROUP, true, keyId)?.status === 8)
+			await endSocket(socket)
+			const messageRow = messages.getMessageByKeyId(GROUP, true, keyId)
+			const userRows = db
+				.prepare('SELECT played_timestamp FROM receipt_user WHERE message_row_id = ?')
+				.all(messageRow!._id) as Array<{ played_timestamp: number }>
+			expect(userRows).toEqual([{ played_timestamp: 1_789_500_400 }])
+			expect(receiptUpdates).toEqual([]) // no participant receipt → no per-user event
+		} finally {
 			store.close()
 			rmSync(sessionDir, { recursive: true, force: true })
 		}

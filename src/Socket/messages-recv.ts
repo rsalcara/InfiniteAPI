@@ -105,6 +105,7 @@ import {
 	parseTextStatusUpdateNotification
 } from '../Utils/mex-notifications'
 import {
+	ANDROID_MESSAGE_STATUS,
 	androidStatusFromReceiptType,
 	JidMapBackend,
 	MessageStoreBackend,
@@ -3743,13 +3744,26 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					// A receipt can arrive before its message row is mirrored; the
 					// status-only states then wait in receipt_orphaned with their exact
 					// value (delivery/read/played orphan through receipt_user below).
+					// R6 (MessageStatusUpdateHelper, X/C28106CSb.java:281-323 in
+					// 2.26.38.10): played-self 18 is APPLIED as PLAYED 8 — the live
+					// helper builds the status receipt with 8 (arrayListA1B5) — and
+					// inactive 15 never reaches message.status at all (dropped as
+					// "statusunchanged" in MessageStatusStore.A02, X/C17C.java:400).
+					// The orphan row still holds the raw wire integer either way.
 					const mirrorReceiptStatus = () => {
 						const androidStatus = androidStatusFromReceiptType(attrs.type)
 						if (!receiptChatResolver || !key.remoteJid || androidStatus === null) return
 						const statusOnly = attrs.type === 'read-self' || attrs.type === 'played-self' || attrs.type === 'inactive'
+						const applyStatus =
+							androidStatus === ANDROID_MESSAGE_STATUS.PLAYED_SELF
+								? ANDROID_MESSAGE_STATUS.PLAYED
+								: androidStatus === ANDROID_MESSAGE_STATUS.INACTIVE
+									? null
+									: androidStatus
 						try {
 							for (const id of ids) {
-								const applied = receiptChatResolver.updateMessageStatus(key.remoteJid, !!key.fromMe, id, androidStatus)
+								const applied =
+									applyStatus !== null && receiptChatResolver.updateMessageStatus(key.remoteJid, !!key.fromMe, id, applyStatus)
 								if (!applied && statusOnly && receiptBackend) {
 									receiptBackend.recordStatusOrphan({
 										chatJid: key.remoteJid,
@@ -3768,6 +3782,39 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 					if (typeof status === 'undefined' && !isJidGroup(remoteJid) && !isJidStatusBroadcast(remoteJid)) {
 						mirrorReceiptStatus()
+					}
+
+					// played-self in a group: my other companion played the voice
+					// note I sent. The app normalizes it to played(8) and stores a
+					// receipt_user row for MY user (C5W.A00(device, null, ...) →
+					// device.userJid), which feeds the group aggregate like any
+					// participant's played receipt. read-self(17) is not storable in
+					// receipt_user (C9A.A01 rejects it) and inactive(15) is dropped,
+					// so only played-self needs handling here.
+					if (
+						typeof status === 'undefined' &&
+						attrs.type === 'played-self' &&
+						isJidGroup(remoteJid) &&
+						attrs.participant &&
+						receiptBackend &&
+						key.remoteJid
+					) {
+						try {
+							const resolvedSelfJid = await resolveLidToPn(attrs.participant, lidMapping, logger)
+							const normalizedSelfJid = jidNormalizedUser(resolvedSelfJid || attrs.participant)
+							for (const id of ids) {
+								receiptBackend.recordUserReceipt({
+									chatJid: key.remoteJid,
+									fromMe: !!key.fromMe,
+									keyId: id,
+									receiptUserJid: normalizedSelfJid,
+									kind: 'played',
+									timestamp: +attrs.t!
+								})
+							}
+						} catch (err) {
+							logger.warn({ err }, 'failed to record played-self group receipt row')
+						}
 					}
 
 					if (

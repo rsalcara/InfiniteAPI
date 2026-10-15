@@ -304,6 +304,30 @@ const MIGRATIONS: Partial<Record<MultiDbFile, ReadonlyArray<Migration>>> = {
 						DELETE FROM message_view_once_media WHERE message_row_id = old._id;
 					END;
 			`
+		},
+		{
+			// R6 (audit PR-30): `receipt_orphaned.status` now stores the app's own
+			// Android status integer, exactly as MessageStatusUpdateHelper writes it
+			// (`put("status", i)`, X/C28106CSb.java — 2.26.38.10): delivery 5,
+			// read 13, played 8, inactive 15, read-self 17, played-self 18. Older
+			// builds invented private codes (0 device ack, 1/2/3 user delivery/
+			// read/played); rewrite them in place. NULL (pre-hardening generic ack)
+			// is deliberately left NULL — it identifies the replay-by-device shape.
+			// The mapping cannot collide on the unique index: 0 was only ever
+			// written with a NULL recipient and 1 only with a recipient set.
+			version: 10,
+			name: 'rewrite legacy receipt orphan codes to Android status integers',
+			sql: `
+				UPDATE receipt_orphaned
+				SET status = CASE status
+					WHEN 0 THEN 5
+					WHEN 1 THEN 5
+					WHEN 2 THEN 13
+					WHEN 3 THEN 8
+					ELSE status
+				END
+				WHERE status IN (0, 1, 2, 3);
+			`
 		}
 	],
 	'status.db': [

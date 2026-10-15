@@ -13,7 +13,12 @@
  *     `message` row existed locally (same holding-pen pattern as
  *     `message_orphaned_edit`/`status_orphan`) — this backend records into
  *     it whenever `getMessageRowId` can't resolve the target, matching
- *     that observed behavior.
+ *     that observed behavior. Its `status` column carries the app's own
+ *     Android status integer (R6).
+ *
+ * Group message status follows MessageStatusStore.A02's multi-participant
+ * path (X/C17C.java, 2.26.38.10): per-user max state in `receipt_user`,
+ * aggregate against `message.recipient_count`, applied even on downgrade.
  *
  * `message_row_id` is resolved by `(chat_row_id, from_me, key_id)` — NOT
  * the full `message` natural key (which also includes `sender_jid_row_id`)
@@ -32,8 +37,22 @@ import type { SqliteDbLike, SqliteStatementLike } from './types'
 
 export type ReceiptKind = 'delivery' | 'read' | 'played'
 
-const ORPHAN_DEVICE_STATUS = 0
-const ORPHAN_USER_STATUS: Record<ReceiptKind, number> = { delivery: 1, read: 2, played: 3 }
+/**
+ * `receipt_orphaned.status` stores the app's own Android status integer for
+ * the receipt, exactly as MessageStatusUpdateHelper writes the row
+ * (`put("status", Integer.valueOf(i4))`, X/C28106CSb.java — 2.26.38.10):
+ * delivery 5, read 13, played 8, inactive 15, read-self 17, played-self 18.
+ * A user-level orphan carries the recipient row; a device-level ack carries
+ * a NULL recipient with status 5 — the same distinction as the app's
+ * `C27813CEd(deviceJid, userJid|null, status, timestamp)`. Codes 0-3 were an
+ * earlier engine invention removed by R6 (msgstore.db migration v10 rewrites
+ * any rows still carrying them).
+ */
+const ORPHAN_KIND_STATUS: Record<ReceiptKind, number> = {
+	delivery: ANDROID_MESSAGE_STATUS.DELIVERY_ACK,
+	read: ANDROID_MESSAGE_STATUS.READ,
+	played: ANDROID_MESSAGE_STATUS.PLAYED
+}
 export const RECEIPT_ORPHAN_REPLAY_LIMIT = 300
 export const RECEIPT_ORPHAN_TTL_SECONDS = 60 * 24 * 60 * 60
 export const RECEIPT_ORPHAN_PRUNE_INTERVAL_SECONDS = 60 * 60
@@ -41,9 +60,8 @@ export const RECEIPT_ORPHAN_PRUNE_INTERVAL_SECONDS = 60 * 60
 /**
  * Receipt states the app keeps only as the message status, with no
  * receipt_user progression: read-self 17, played-self 18, inactive 15
- * (ReceiptStanzaHelper.A00, X/C29301Csr.java:337-378). An orphan of one of
- * them stores that Android status itself; the values never collide with the
- * user/device orphan codes 0-3.
+ * (ReceiptStanzaHelper.A00, X/CSY.java:338-376 in 2.26.38.10). An orphan of
+ * one of them stores that Android status itself.
  */
 const STATUS_ONLY_ORPHAN_STATUSES = new Set<number>([
 	ANDROID_MESSAGE_STATUS.INACTIVE,
@@ -58,12 +76,6 @@ export type RecordStatusOrphanInput = {
 	receiptDeviceJid: string
 	androidStatus: number
 	timestamp: number
-}
-
-const ANDROID_STATUS_BY_ORPHAN_STATUS: Partial<Record<number, number>> = {
-	[ORPHAN_USER_STATUS.delivery]: ANDROID_MESSAGE_STATUS.DELIVERY_ACK,
-	[ORPHAN_USER_STATUS.read]: ANDROID_MESSAGE_STATUS.READ,
-	[ORPHAN_USER_STATUS.played]: ANDROID_MESSAGE_STATUS.PLAYED
 }
 
 export type RecordUserReceiptInput = {
@@ -98,6 +110,7 @@ export class ReceiptBackend {
 		deleteExpiredOrphaned: SqliteStatementLike
 		getMessageStatus: SqliteStatementLike
 		updateMessageStatus: SqliteStatementLike
+		getMessageAggregate: SqliteStatementLike
 		listUserReceipts: SqliteStatementLike
 		listDeviceReceipts: SqliteStatementLike
 	}
@@ -164,13 +177,26 @@ export class ReceiptBackend {
 			listOrphaned: this.db.prepare(
 				'SELECT _id, receipt_device_jid_row_id, receipt_recipient_jid_row_id, status, timestamp ' +
 					'FROM receipt_orphaned WHERE chat_row_id = ? AND from_me = ? AND key_id = ? ' +
-					'AND (status IS NULL OR status IN (0, 1, 2, 3, 15, 17, 18)) ' +
+					'AND (status IS NULL OR status IN (5, 8, 13, 15, 17, 18)) ' +
 					`ORDER BY _id ASC LIMIT ${RECEIPT_ORPHAN_REPLAY_LIMIT}`
 			),
 			deleteOrphaned: this.db.prepare('DELETE FROM receipt_orphaned WHERE _id = ?'),
 			deleteExpiredOrphaned: this.db.prepare('DELETE FROM receipt_orphaned WHERE timestamp IS NULL OR timestamp < ?'),
 			getMessageStatus: this.db.prepare('SELECT status FROM message WHERE _id = ?'),
 			updateMessageStatus: this.db.prepare('UPDATE message SET status = ? WHERE _id = ?'),
+			// Group aggregate inputs, exactly the counters MessageStatusStore.A02
+			// derives from the per-user receipt map: a user's max status is
+			// played(8) when played_timestamp is set, read(13) when read_timestamp
+			// is set, delivered(5) when only receipt_timestamp is (X/C17C.java:823).
+			getMessageAggregate: this.db.prepare(
+				'SELECT status, recipient_count, ' +
+					'(SELECT COUNT(*) FROM receipt_user ru WHERE ru.message_row_id = message._id AND ru.played_timestamp IS NOT NULL) AS played_count, ' +
+					'(SELECT COUNT(*) FROM receipt_user ru WHERE ru.message_row_id = message._id ' +
+					'AND (ru.played_timestamp IS NOT NULL OR ru.read_timestamp IS NOT NULL)) AS read_count, ' +
+					'(SELECT COUNT(*) FROM receipt_user ru WHERE ru.message_row_id = message._id ' +
+					'AND (ru.played_timestamp IS NOT NULL OR ru.read_timestamp IS NOT NULL OR ru.receipt_timestamp IS NOT NULL)) AS delivered_count ' +
+					'FROM message WHERE _id = ?'
+			),
 			listUserReceipts: this.db.prepare(
 				'SELECT _id, message_row_id, receipt_user_jid_row_id, receipt_timestamp, read_timestamp, played_timestamp ' +
 					'FROM receipt_user WHERE message_row_id = ?'
@@ -232,7 +258,7 @@ export class ReceiptBackend {
 					input.keyId,
 					receiptUserRowId,
 					receiptUserRowId,
-					ORPHAN_USER_STATUS[input.kind],
+					ORPHAN_KIND_STATUS[input.kind],
 					this.orphanTimestamp(input.timestamp)
 				)
 				return
@@ -245,6 +271,12 @@ export class ReceiptBackend {
 						? this.stmts.upsertUserReceiptRead
 						: this.stmts.upsertUserReceiptPlayed
 			stmt.run(messageRowId, receiptUserRowId, input.timestamp)
+
+			// Group receipts promote the message status through the recipient
+			// aggregate (R6); 1:1 keeps the live handler's single-path advance.
+			if (isJidGroup(input.chatJid)) {
+				this.promoteGroupMessageStatus(messageRowId)
+			}
 		})()
 	}
 
@@ -270,7 +302,7 @@ export class ReceiptBackend {
 					input.keyId,
 					receiptDeviceRowId,
 					null,
-					ORPHAN_DEVICE_STATUS,
+					ANDROID_MESSAGE_STATUS.DELIVERY_ACK,
 					this.orphanTimestamp(input.timestamp)
 				)
 				return
@@ -305,6 +337,56 @@ export class ReceiptBackend {
 		})()
 	}
 
+	/**
+	 * Group aggregate promotion — the multi-participant path of
+	 * MessageStatusStore.A02 (X/C17C.java:823-891, WhatsApp 2.26.38.10):
+	 *
+	 *   played >= recipientCount → PLAYED 8
+	 *   read    >= recipientCount → READ 13
+	 *   delivered >= recipientCount → DELIVERY_ACK 5
+	 *   otherwise → SERVER_ACK 4
+	 *
+	 * and, unlike the 1:1 single path, the aggregate is applied whenever it
+	 * differs from the current status — DOWNGRADES INCLUDED. The app only
+	 * emits "MessageStatusStore/statusDowngrade" telemetry on the way; the
+	 * write still happens (which is why a group's ticks can only regress when
+	 * the aggregate itself regresses, never from one member's stale receipt —
+	 * the per-user map keeps each member's max state, mirroring our monotonic
+	 * max-timestamp upserts).
+	 *
+	 * Deliberate deviation: a NULL or non-positive `recipient_count` (a send
+	 * whose fan-out list this engine never saw, e.g. history-synced) skips
+	 * promotion entirely. The app's add-msg preprocessor always sets the
+	 * count, so its degenerate recipientCount=0 branch (0 counters >= 0 → 8)
+	 * is unreachable on a real device; fabricating it here would invent a
+	 * played state from nothing.
+	 */
+	private promoteGroupMessageStatus(messageRowId: number): number | null {
+		const row = this.stmts.getMessageAggregate.get(messageRowId) as
+			| {
+					status: number | null
+					recipient_count: number | null
+					played_count: number
+					read_count: number
+					delivered_count: number
+			  }
+			| undefined
+		if (!row || row.recipient_count === null || row.recipient_count <= 0) return null
+
+		const aggregate =
+			row.played_count >= row.recipient_count
+				? ANDROID_MESSAGE_STATUS.PLAYED
+				: row.read_count >= row.recipient_count
+					? ANDROID_MESSAGE_STATUS.READ
+					: row.delivered_count >= row.recipient_count
+						? ANDROID_MESSAGE_STATUS.DELIVERY_ACK
+						: ANDROID_MESSAGE_STATUS.SERVER_ACK
+
+		if (aggregate === row.status) return null
+		this.stmts.updateMessageStatus.run(aggregate, messageRowId)
+		return aggregate
+	}
+
 	/** Replays receipts that arrived before their message row, then removes only rows successfully materialized. */
 	replayOrphaned(chatJid: string, fromMe: boolean, keyId: string): number {
 		return this.db.transaction(() => {
@@ -313,14 +395,17 @@ export class ReceiptBackend {
 			const messageRowId = this.resolveMessageRowId(chatJid, fromMe, keyId)
 			if (messageRowId === null) return 0
 			let replayed = 0
-			// Group receipts are materialized per recipient/device but cannot
-			// establish aggregate message status from one member. Status-broadcast
-			// receipts use status.db instead. Match the live handler's exact split.
-			const canPromoteMessageStatus = !isJidGroup(chatJid) && !isJidStatusBroadcast(chatJid)
+			// Same three-way split as MessageStatusStore.A02: status broadcasts
+			// never touch message status (status.db owns those receipts); 1:1
+			// keeps the single path's advance-only promotion; groups promote
+			// through the recipient aggregate once every row is materialized.
+			const isGroup = isJidGroup(chatJid)
+			const canPromoteMessageStatus = !isJidStatusBroadcast(chatJid)
 			const messageStatusRow = canPromoteMessageStatus
 				? (this.stmts.getMessageStatus.get(messageRowId) as { status: number | null } | undefined)
 				: undefined
 			let promotedStatus = messageStatusRow?.status ?? null
+			let materializedUserReceipt = false
 
 			for (;;) {
 				const rows = this.stmts.listOrphaned.all(chatRowId, fromMe ? 1 : 0, keyId) as Array<{
@@ -339,27 +424,61 @@ export class ReceiptBackend {
 					// target jid and timestamp; materialize that legacy shape as the
 					// schema's generic per-device acknowledgement instead of leaking an
 					// unreplayable orphan forever.
-					if (row.status === null || row.status === ORPHAN_DEVICE_STATUS) {
+					if (row.status === null) {
 						this.stmts.upsertDeviceReceipt.run(messageRowId, row.receipt_device_jid_row_id, row.timestamp)
-					} else if (STATUS_ONLY_ORPHAN_STATUSES.has(row.status)) {
-						if (canPromoteMessageStatus && shouldAdvanceAndroidMessageStatus(promotedStatus, row.status)) {
+					} else if (row.status === ANDROID_MESSAGE_STATUS.INACTIVE) {
+						// inactive(15) never reaches message.status: the app drops it
+						// as "statusunchanged" (X/C17C.java:400). The orphan row is
+						// consumed so retention doesn't leak it — same end state.
+					} else if (row.status === ANDROID_MESSAGE_STATUS.READ_SELF) {
+						// read-self(17) replays verbatim (C17C.A03 keeps i3 = 17) and
+						// only the non-group single path can apply it — the app's
+						// receipt_user store rejects 17 outright (C9A.A01).
+						if (!isGroup && shouldAdvanceAndroidMessageStatus(promotedStatus, row.status)) {
 							promotedStatus = row.status
 						}
-					} else {
-						const recipientRowId = row.receipt_recipient_jid_row_id ?? row.receipt_device_jid_row_id
+					} else if (row.status === ANDROID_MESSAGE_STATUS.PLAYED_SELF) {
+						// played-self(18) is normalized to PLAYED 8 at replay
+						// ("applyingorphanedreceipt", X/C17C.java:124-129: i3 = 8).
+						// In a group the app would also materialize a played
+						// receipt_user row for the sending device's user; this
+						// engine's orphan row keeps only the device jid row id, so
+						// that corner degrades to consuming the row (documented R6
+						// deviation — status-only orphans in groups are rare).
+						if (!isGroup && shouldAdvanceAndroidMessageStatus(promotedStatus, ANDROID_MESSAGE_STATUS.PLAYED)) {
+							promotedStatus = ANDROID_MESSAGE_STATUS.PLAYED
+						}
+					} else if (row.receipt_recipient_jid_row_id !== null) {
 						const stmt =
-							row.status === ORPHAN_USER_STATUS.delivery
+							row.status === ANDROID_MESSAGE_STATUS.DELIVERY_ACK
 								? this.stmts.upsertUserReceiptDelivery
-								: row.status === ORPHAN_USER_STATUS.read
+								: row.status === ANDROID_MESSAGE_STATUS.READ
 									? this.stmts.upsertUserReceiptRead
-									: row.status === ORPHAN_USER_STATUS.played
+									: row.status === ANDROID_MESSAGE_STATUS.PLAYED
 										? this.stmts.upsertUserReceiptPlayed
 										: null
 						if (!stmt) continue
-						stmt.run(messageRowId, recipientRowId, row.timestamp)
-						const receiptStatus = ANDROID_STATUS_BY_ORPHAN_STATUS[row.status]
-						if (receiptStatus !== undefined && shouldAdvanceAndroidMessageStatus(promotedStatus, receiptStatus)) {
-							promotedStatus = receiptStatus
+						stmt.run(messageRowId, row.receipt_recipient_jid_row_id, row.timestamp)
+						materializedUserReceipt = true
+						if (!isGroup && shouldAdvanceAndroidMessageStatus(promotedStatus, row.status)) {
+							promotedStatus = row.status
+						}
+					} else {
+						// Device-level delivery ack (status 5, no recipient). The
+						// app's replay feeds device acks back through A02, which keys
+						// receipt_user by the DEVICE'S USER; group device orphans here
+						// were written under the participant's bare jid, so the stored
+						// row id already is the user's. Non-group device acks keep the
+						// per-device row only (a 1:1 sender's jid may carry a device
+						// suffix this schema can't reverse-map to its user).
+						this.stmts.upsertDeviceReceipt.run(messageRowId, row.receipt_device_jid_row_id, row.timestamp)
+						if (isGroup) {
+							this.stmts.upsertUserReceiptDelivery.run(
+								messageRowId,
+								row.receipt_device_jid_row_id,
+								row.timestamp
+							)
+							materializedUserReceipt = true
 						}
 					}
 
@@ -373,7 +492,9 @@ export class ReceiptBackend {
 				if (rows.length < RECEIPT_ORPHAN_REPLAY_LIMIT || replayedInBatch === 0) break
 			}
 
-			if (messageStatusRow && promotedStatus !== messageStatusRow.status) {
+			if (isGroup) {
+				if (materializedUserReceipt) this.promoteGroupMessageStatus(messageRowId)
+			} else if (messageStatusRow && promotedStatus !== messageStatusRow.status) {
 				this.stmts.updateMessageStatus.run(promotedStatus, messageRowId)
 			}
 

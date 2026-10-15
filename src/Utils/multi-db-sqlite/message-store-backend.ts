@@ -324,6 +324,13 @@ export type RecordMessageInput = {
 	textData?: string | null
 	viewMode?: number | null
 	viewOnceState?: number | null
+	/** `message.recipient_count` — the aggregate-status audience the app
+	 * computes at add-msg time (BotUtilPreprocessor, X/A7L.java — 2.26.38.10):
+	 * group = participants including me − 1. Drives the group receipt
+	 * aggregate (MessageStatusStore.A02); NULL when the fan-out count is
+	 * unknown (history-synced sends), which disables aggregation for that
+	 * message exactly like an unreadable participant list would. */
+	recipientCount?: number | null
 	authorDeviceJid?: string | null
 	messageSecret?: Buffer | null
 	album?: {
@@ -463,8 +470,8 @@ export class MessageStoreBackend implements ChatRowResolver {
 			),
 			upsertMessage: this.db.prepare(
 				'INSERT INTO message (chat_row_id, from_me, key_id, sender_jid_row_id, status, timestamp, ' +
-					'received_timestamp, server_sts, message_type, text_data, view_mode, sort_id) ' +
-					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+					'received_timestamp, server_sts, message_type, text_data, view_mode, recipient_count, sort_id) ' +
+					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
 					'ON CONFLICT(chat_row_id, from_me, key_id, sender_jid_row_id) DO UPDATE SET ' +
 					'status = CASE ' +
 					'WHEN excluded.status IS NULL THEN message.status ' +
@@ -476,7 +483,11 @@ export class MessageStoreBackend implements ChatRowResolver {
 					'server_sts = COALESCE(excluded.server_sts, message.server_sts), ' +
 					'message_type = COALESCE(excluded.message_type, message.message_type), ' +
 					'text_data = COALESCE(excluded.text_data, message.text_data), ' +
-					'view_mode = COALESCE(excluded.view_mode, message.view_mode)'
+					'view_mode = COALESCE(excluded.view_mode, message.view_mode), ' +
+					// The app fixes recipient_count once, at add-msg; a later
+					// re-record of the same key (retry/history) must not clobber a
+					// known count with an unknown one.
+					'recipient_count = COALESCE(excluded.recipient_count, message.recipient_count)'
 			),
 			getMessageByNaturalKey: this.db.prepare(
 				'SELECT * FROM message WHERE chat_row_id = ? AND from_me = ? AND key_id = ? AND sender_jid_row_id IS ?'
@@ -657,6 +668,7 @@ export class MessageStoreBackend implements ChatRowResolver {
 			input.messageType ?? null,
 			input.textData ?? null,
 			input.viewMode ?? null,
+			input.recipientCount ?? null,
 			input.timestamp ?? 0
 		)
 

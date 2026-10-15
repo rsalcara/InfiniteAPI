@@ -705,42 +705,53 @@ describe('msgstore.db message-store backends', () => {
 			expect(messageStore.getMessageByKeyId(chatJid, true, 'LATE-MESSAGE')?.status).toBe(ANDROID_MESSAGE_STATUS.READ)
 		})
 
-		// Audit R-09: read-self/played-self/inactive exist only as the message
-		// status in the app (17/18/15). A receipt that beats its message keeps
-		// that exact value until the message is mirrored.
-		it('replays a status-only orphan with the app status after the message arrives', () => {
-			const db = store.handle('msgstore.db')
-			const messageStore = new MessageStoreBackend(db, jidMap)
-			const receipts = new ReceiptBackend(db, jidMap, messageStore)
-			const chatJid = '5515991426667@s.whatsapp.net'
-			const myDevice = '5511999999999:2@s.whatsapp.net'
-			const now = Math.floor(Date.now() / 1000)
-			const cases = [
-				{ keyId: 'LATE-READ-SELF', fromMe: false, androidStatus: ANDROID_MESSAGE_STATUS.READ_SELF },
-				{ keyId: 'LATE-PLAYED-SELF', fromMe: false, androidStatus: ANDROID_MESSAGE_STATUS.PLAYED_SELF },
-				{ keyId: 'LATE-INACTIVE', fromMe: true, androidStatus: ANDROID_MESSAGE_STATUS.INACTIVE }
-			]
-			for (const { keyId, fromMe, androidStatus } of cases) {
-				receipts.recordStatusOrphan({
-					chatJid,
-					fromMe,
-					keyId,
-					receiptDeviceJid: myDevice,
-					androidStatus,
-					timestamp: now
-				})
-			}
+	// Audit R-09 + R6: read-self/played-self/inactive exist only as the message
+	// status in the app. An orphan keeps the exact wire value (17/18/15) until
+	// the message is mirrored; the REPLAY then applies the app's pipeline
+	// (MessageStatusUpdateHelper + MessageStatusStore.A02, 2.26.38.10):
+	// read-self replays verbatim as 17, played-self is normalized 18 → PLAYED
+	// 8 ("applyingorphanedreceipt", X/C17C.java:124-129), and inactive is
+	// consumed without ever touching message.status ("statusunchanged",
+	// X/C17C.java:400).
+	it('replays a status-only orphan through the app status pipeline after the message arrives', () => {
+		const db = store.handle('msgstore.db')
+		const messageStore = new MessageStoreBackend(db, jidMap)
+		const receipts = new ReceiptBackend(db, jidMap, messageStore)
+		const chatJid = '5515991426667@s.whatsapp.net'
+		const myDevice = '5511999999999:2@s.whatsapp.net'
+		const now = Math.floor(Date.now() / 1000)
+		const cases = [
+			{ keyId: 'LATE-READ-SELF', fromMe: false, androidStatus: ANDROID_MESSAGE_STATUS.READ_SELF, applied: 17 },
+			{ keyId: 'LATE-PLAYED-SELF', fromMe: false, androidStatus: ANDROID_MESSAGE_STATUS.PLAYED_SELF, applied: 8 },
+			{ keyId: 'LATE-INACTIVE', fromMe: true, androidStatus: ANDROID_MESSAGE_STATUS.INACTIVE, applied: null }
+		]
+		for (const { keyId, fromMe, androidStatus } of cases) {
+			receipts.recordStatusOrphan({
+				chatJid,
+				fromMe,
+				keyId,
+				receiptDeviceJid: myDevice,
+				androidStatus,
+				timestamp: now
+			})
+		}
 
-			expect(db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({ n: 3 })
-			for (const { keyId, fromMe, androidStatus } of cases) {
-				const messageRowId = messageStore.recordMessage({ chatJid, fromMe, keyId, timestamp: now - 1 })
-				expect(receipts.replayOrphaned(chatJid, fromMe, keyId)).toBe(1)
-				expect([keyId, messageStore.getMessageByKeyId(chatJid, fromMe, keyId)?.status]).toEqual([keyId, androidStatus])
-				expect(receipts.listUserReceipts(messageRowId)).toEqual([])
-			}
+		expect(db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({ n: 3 })
+		// The stored orphan rows keep the raw wire integers (key_id order:
+		// INACTIVE, PLAYED-SELF, READ-SELF).
+		const storedStatuses = (
+			db.prepare('SELECT status FROM receipt_orphaned ORDER BY key_id').all() as Array<{ status: number }>
+		).map(row => row.status)
+		expect(storedStatuses).toEqual([15, 18, 17])
+		for (const { keyId, fromMe, applied } of cases) {
+			const messageRowId = messageStore.recordMessage({ chatJid, fromMe, keyId, timestamp: now - 1 })
+			expect(receipts.replayOrphaned(chatJid, fromMe, keyId)).toBe(1)
+			expect(messageStore.getMessageByKeyId(chatJid, fromMe, keyId)?.status).toBe(applied)
+			expect(receipts.listUserReceipts(messageRowId)).toEqual([])
+		}
 
-			expect(db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({ n: 0 })
-		})
+		expect(db.prepare('SELECT COUNT(*) AS n FROM receipt_orphaned').get()).toMatchObject({ n: 0 })
+	})
 
 		it('lets a read-self orphan win over the read orphan of the same receipt', () => {
 			const db = store.handle('msgstore.db')
@@ -812,36 +823,235 @@ describe('msgstore.db message-store backends', () => {
 			expect(receipts.listUserReceipts(messageRowId)[0]).toMatchObject({ read_timestamp: now })
 		})
 
-		it('materializes an orphan group receipt without promoting the aggregate message status', () => {
-			const db = store.handle('msgstore.db')
-			const messageStore = new MessageStoreBackend(db, jidMap)
-			const receipts = new ReceiptBackend(db, jidMap, messageStore)
-			const chatJid = '120363000000000000@g.us'
-			const participantJid = '5515991426667@s.whatsapp.net'
-			const now = Math.floor(Date.now() / 1000)
+	// R6: without message.recipient_count (a send whose fan-out list this
+	// engine never saw, e.g. history-synced) the aggregate cannot run — the
+	// receipts still materialize per recipient, the status stays untouched.
+	it('materializes an orphan group receipt without promoting the aggregate message status when recipient_count is unknown', () => {
+		const db = store.handle('msgstore.db')
+		const messageStore = new MessageStoreBackend(db, jidMap)
+		const receipts = new ReceiptBackend(db, jidMap, messageStore)
+		const chatJid = '120363000000000000@g.us'
+		const participantJid = '5515991426667@s.whatsapp.net'
+		const now = Math.floor(Date.now() / 1000)
 
+		receipts.recordUserReceipt({
+			chatJid,
+			fromMe: true,
+			keyId: 'GROUP-ORPHAN',
+			receiptUserJid: participantJid,
+			kind: 'read',
+			timestamp: now
+		})
+		const messageRowId = messageStore.recordMessage({
+			chatJid,
+			fromMe: true,
+			keyId: 'GROUP-ORPHAN',
+			status: ANDROID_MESSAGE_STATUS.SERVER_ACK,
+			timestamp: now - 1
+		})
+
+		expect(receipts.replayOrphaned(chatJid, true, 'GROUP-ORPHAN')).toBe(1)
+		expect(receipts.listUserReceipts(messageRowId)[0]).toMatchObject({ read_timestamp: now })
+		expect(messageStore.getMessageByKeyId(chatJid, true, 'GROUP-ORPHAN')?.status).toBe(
+			ANDROID_MESSAGE_STATUS.SERVER_ACK
+		)
+	})
+
+	// R6 (MessageStatusStore.A02, X/C17C.java:823-891 in 2.26.38.10): a group
+	// message's status is the aggregate of the per-user receipt states counted
+	// against recipient_count (participants excluding the sender, X/A7L.java).
+	// played(8) counts played+read+delivered, read(13) counts read+delivered,
+	// delivered(5) counts delivered; every counter must reach recipient_count
+	// before the corresponding status applies, otherwise SERVER_ACK 4.
+	it('promotes group message status through the recipient aggregate like MessageStatusStore.A02', () => {
+		const db = store.handle('msgstore.db')
+		const messageStore = new MessageStoreBackend(db, jidMap)
+		const receipts = new ReceiptBackend(db, jidMap, messageStore)
+		const chatJid = '120363000000000001@g.us'
+		const alice = '5515991426667@s.whatsapp.net'
+		const bob = '5515998888888@s.whatsapp.net'
+		const now = Math.floor(Date.now() / 1000)
+		const keyId = 'GROUP-AGGREGATE'
+		messageStore.recordMessage({
+			chatJid,
+			fromMe: true,
+			keyId,
+			status: ANDROID_MESSAGE_STATUS.PENDING,
+			timestamp: now - 1,
+			recipientCount: 2
+		})
+
+		const record = (receiptUserJid: string, kind: 'delivery' | 'read' | 'played', timestamp: number) =>
+			receipts.recordUserReceipt({ chatJid, fromMe: true, keyId, receiptUserJid, kind, timestamp })
+		const status = () => messageStore.getMessageByKeyId(chatJid, true, keyId)!.status
+
+		record(alice, 'delivery', now) // 1/2 delivered → sent
+		expect(status()).toBe(ANDROID_MESSAGE_STATUS.SERVER_ACK)
+		record(bob, 'delivery', now + 1) // 2/2 delivered → double tick
+		expect(status()).toBe(ANDROID_MESSAGE_STATUS.DELIVERY_ACK)
+		record(alice, 'read', now + 2) // 1/2 read → still delivered
+		expect(status()).toBe(ANDROID_MESSAGE_STATUS.DELIVERY_ACK)
+		record(bob, 'read', now + 3) // 2/2 read → blue
+		expect(status()).toBe(ANDROID_MESSAGE_STATUS.READ)
+		record(alice, 'played', now + 4) // 1/2 played → still read
+		expect(status()).toBe(ANDROID_MESSAGE_STATUS.READ)
+		record(bob, 'played', now + 5) // 2/2 played → played
+		expect(status()).toBe(ANDROID_MESSAGE_STATUS.PLAYED)
+		expect(receipts.listUserReceipts(messageStore.getMessageByKeyId(chatJid, true, keyId)!._id)).toHaveLength(2)
+	})
+
+	it('keeps a partial group aggregate at the lower status while recipient_count is not reached', () => {
+		const db = store.handle('msgstore.db')
+		const messageStore = new MessageStoreBackend(db, jidMap)
+		const receipts = new ReceiptBackend(db, jidMap, messageStore)
+		const chatJid = '120363000000000002@g.us'
+		const now = Math.floor(Date.now() / 1000)
+		const keyId = 'GROUP-PARTIAL'
+		messageStore.recordMessage({
+			chatJid,
+			fromMe: true,
+			keyId,
+			status: ANDROID_MESSAGE_STATUS.PENDING,
+			timestamp: now - 1,
+			recipientCount: 3
+		})
+
+		for (const index of [0, 1]) {
 			receipts.recordUserReceipt({
 				chatJid,
 				fromMe: true,
-				keyId: 'GROUP-ORPHAN',
-				receiptUserJid: participantJid,
+				keyId,
+				receiptUserJid: `55159777000${index}@s.whatsapp.net`,
 				kind: 'read',
-				timestamp: now
+				timestamp: now + index
 			})
-			const messageRowId = messageStore.recordMessage({
+		}
+
+		// 2/3 read (and delivered) — neither counter reaches 3.
+		expect(messageStore.getMessageByKeyId(chatJid, true, keyId)!.status).toBe(ANDROID_MESSAGE_STATUS.SERVER_ACK)
+	})
+
+	// The multi-participant path applies the aggregate whenever it differs from
+	// the current status, DOWNGRADES INCLUDED — the app only logs
+	// "MessageStatusStore/statusDowngrade" telemetry (X/C17C.java:856-891);
+	// the 1:1 single path (A07) is the one that refuses regressions.
+	it('applies a group aggregate downgrade like the app multi-participant path', () => {
+		const db = store.handle('msgstore.db')
+		const messageStore = new MessageStoreBackend(db, jidMap)
+		const receipts = new ReceiptBackend(db, jidMap, messageStore)
+		const chatJid = '120363000000000003@g.us'
+		const now = Math.floor(Date.now() / 1000)
+		const keyId = 'GROUP-DOWNGRADE'
+		const messageRowId = messageStore.recordMessage({
+			chatJid,
+			fromMe: true,
+			keyId,
+			timestamp: now - 1,
+			recipientCount: 2
+		})
+		// Message claims READ (e.g. imported from a device snapshot) but only
+		// one receipt exists: 1 read + 1 delivered → aggregate DELIVERY_ACK.
+		db.prepare('UPDATE message SET status = ? WHERE _id = ?').run(ANDROID_MESSAGE_STATUS.READ, messageRowId)
+		receipts.recordUserReceipt({
+			chatJid,
+			fromMe: true,
+			keyId,
+			receiptUserJid: '5515991426667@s.whatsapp.net',
+			kind: 'read',
+			timestamp: now
+		})
+		receipts.recordUserReceipt({
+			chatJid,
+			fromMe: true,
+			keyId,
+			receiptUserJid: '5515998888888@s.whatsapp.net',
+			kind: 'delivery',
+			timestamp: now
+		})
+
+		expect(messageStore.getMessageByKeyId(chatJid, true, keyId)!.status).toBe(ANDROID_MESSAGE_STATUS.DELIVERY_ACK)
+	})
+
+	it('promotes a group message from orphaned receipts through the aggregate once the message arrives', () => {
+		const db = store.handle('msgstore.db')
+		const messageStore = new MessageStoreBackend(db, jidMap)
+		const receipts = new ReceiptBackend(db, jidMap, messageStore)
+		const chatJid = '120363000000000004@g.us'
+		const now = Math.floor(Date.now() / 1000)
+		const keyId = 'GROUP-ORPHAN-AGGREGATE'
+		const alice = '551596660000@s.whatsapp.net'
+		const bob = '551596661000@s.whatsapp.net'
+		// Alice progressed delivery → read while the message was still
+		// missing (same user, two rows); Bob only read it.
+		const orphanReceipts = [
+			{ receiptUserJid: alice, kind: 'delivery' as const, timestamp: now },
+			{ receiptUserJid: alice, kind: 'read' as const, timestamp: now + 1 },
+			{ receiptUserJid: bob, kind: 'read' as const, timestamp: now + 2 }
+		]
+		for (const { receiptUserJid, kind, timestamp } of orphanReceipts) {
+			receipts.recordUserReceipt({ chatJid, fromMe: true, keyId, receiptUserJid, kind, timestamp })
+		}
+
+		const messageRowId = messageStore.recordMessage({
+			chatJid,
+			fromMe: true,
+			keyId,
+			status: ANDROID_MESSAGE_STATUS.SERVER_ACK,
+			timestamp: now - 1,
+			recipientCount: 2
+		})
+
+		expect(receipts.replayOrphaned(chatJid, true, keyId)).toBe(3)
+		// Two distinct readers reach recipient_count → READ, and Alice's two
+		// rows merged into one receipt_user row.
+		expect(messageStore.getMessageByKeyId(chatJid, true, keyId)!.status).toBe(ANDROID_MESSAGE_STATUS.READ)
+		const userRows = receipts.listUserReceipts(messageRowId)
+		expect(userRows).toHaveLength(2)
+		expect(userRows.find(row => row.receipt_timestamp !== null)).toMatchObject({
+			receipt_timestamp: now,
+			read_timestamp: now + 1
+		})
+	})
+
+	// R6: the orphan row stores the app's Android status integer — delivery 5,
+	// read 13, played 8 — with the recipient set on user rows and NULL on the
+	// device-level ack (MessageStatusUpdateHelper, X/C28106CSb.java:427-470).
+	it('writes receipt_orphaned rows with the app Android status integer', () => {
+		const db = store.handle('msgstore.db')
+		const messageStore = new MessageStoreBackend(db, jidMap)
+		const receipts = new ReceiptBackend(db, jidMap, messageStore)
+		const chatJid = 'unknown-group-orphans@g.us'
+		const now = Math.floor(Date.now() / 1000)
+
+		const kinds = ['delivery', 'read', 'played'] as const
+		for (const [index, kind] of kinds.entries()) {
+			receipts.recordUserReceipt({
 				chatJid,
 				fromMe: true,
-				keyId: 'GROUP-ORPHAN',
-				status: ANDROID_MESSAGE_STATUS.SERVER_ACK,
-				timestamp: now - 1
+				keyId: `ORPHAN-INT-${kind}`,
+				receiptUserJid: '5515991426667@s.whatsapp.net',
+				kind,
+				timestamp: now + index
 			})
-
-			expect(receipts.replayOrphaned(chatJid, true, 'GROUP-ORPHAN')).toBe(1)
-			expect(receipts.listUserReceipts(messageRowId)[0]).toMatchObject({ read_timestamp: now })
-			expect(messageStore.getMessageByKeyId(chatJid, true, 'GROUP-ORPHAN')?.status).toBe(
-				ANDROID_MESSAGE_STATUS.SERVER_ACK
-			)
+		}
+		receipts.recordDeviceReceipt({
+			chatJid,
+			fromMe: true,
+			keyId: 'ORPHAN-INT-DEVICE',
+			receiptDeviceJid: '5515991426667.0:5@s.whatsapp.net',
+			timestamp: now
 		})
+
+		const rows = db
+			.prepare('SELECT key_id, receipt_recipient_jid_row_id, status FROM receipt_orphaned ORDER BY _id')
+			.all() as Array<{ key_id: string; receipt_recipient_jid_row_id: number | null; status: number }>
+		expect(rows).toEqual([
+			{ key_id: 'ORPHAN-INT-delivery', receipt_recipient_jid_row_id: expect.any(Number), status: 5 },
+			{ key_id: 'ORPHAN-INT-read', receipt_recipient_jid_row_id: expect.any(Number), status: 13 },
+			{ key_id: 'ORPHAN-INT-played', receipt_recipient_jid_row_id: expect.any(Number), status: 8 },
+			{ key_id: 'ORPHAN-INT-DEVICE', receipt_recipient_jid_row_id: null, status: 5 }
+		])
+	})
 
 		it.each(['5515991426667@c.us', '120363000000000000@newsletter', 'updates@broadcast'])(
 			'promotes orphan receipt status for non-group chat %s like the live path',

@@ -135,6 +135,21 @@ export const rememberRawProtocolSender = (message: WAMessage, senderJid: string)
 	if (senderJid) rawProtocolSenders.set(message, senderJid)
 }
 
+// The group fan-out in messages-send knows the participant list; by the time
+// the sent message echoes through processMessage that context is gone. Carry
+// the app's add-msg recipient_count (participants including me − 1, X/A7L.java)
+// on the relayed content object — the same out-of-band pattern as
+// rawProtocolSenders. A missed lookup leaves recipient_count NULL, which just
+// disables aggregate promotion for that message (R6).
+const relayedRecipientCounts = new WeakMap<proto.IMessage, number>()
+
+export const rememberRelayedRecipientCount = (content: proto.IMessage, recipientCount: number): void => {
+	relayedRecipientCounts.set(content, recipientCount)
+}
+
+export const takeRelayedRecipientCount = (content: proto.IMessage | null | undefined): number | null =>
+	(content && relayedRecipientCounts.get(content)) ?? null
+
 /**
  * Persist history-sync messages into the same typed message/chat tables used
  * by live traffic. History events remain available to consumers, but the
@@ -1303,6 +1318,7 @@ const processMessage = async (message: WAMessage, processContext: ProcessMessage
 				textData: content?.extendedTextMessage?.text ?? content?.conversation ?? null,
 				viewMode: isViewOnce ? 0 : null,
 				viewOnceState: isViewOnce ? ANDROID_VIEW_ONCE_STATE.UNOPENED : null,
+				recipientCount: takeRelayedRecipientCount(message.message),
 				authorDeviceJid,
 				messageSecret: getMessageSecretForStorage(message, content),
 				album: content?.albumMessage
