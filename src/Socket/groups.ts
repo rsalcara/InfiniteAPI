@@ -39,7 +39,12 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 	const getLIDForPN = signalRepository.lidMapping.getLIDForPN.bind(signalRepository.lidMapping)
 	const getPNForLID = signalRepository.lidMapping.getPNForLID.bind(signalRepository.lidMapping)
 	const buildPrivacyParticipantNodes = async (participants: string[]): Promise<BinaryNode[]> => {
-		const enabled = config.tcTokenFanout?.enabled ?? false
+		// APK C14210ki.java:116-120 (group create/add) attaches the per-participant
+		// <privacy> trusted-contact token whenever a FRESH local token exists —
+		// there is NO on/off AB gate. (Prop 15491 in C0l1.A0P only switches the LID
+		// lookup implementation; both branches return the token. The earlier "20605"
+		// note was wrong.) Default on to match the app; the flag stays as an opt-out.
+		const enabled = config.tcTokenFanout?.enabled ?? true
 		const maxUsers = config.tcTokenFanout?.maxUsers ?? 2000
 		if (!Number.isInteger(maxUsers) || maxUsers < 0) {
 			throw new Boom('TcToken fanout user limit must be non-negative')

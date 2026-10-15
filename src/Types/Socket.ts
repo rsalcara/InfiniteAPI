@@ -195,9 +195,15 @@ export type SocketConfig = {
 	}>
 	/** Mobile-compatible per-user token contribution for participant fanout. */
 	tcTokenFanout?: Partial<{
-		/** Mirrors the mobile AB gate (20605). Undefined follows the official disabled default. */
+		/**
+		 * Attach the per-participant `<privacy>` trusted-contact token on group
+		 * create/add. The app has NO on/off AB gate for this (`C14210ki` attaches
+		 * whenever a fresh local token exists; prop 15491 in `C0l1.A0P` only
+		 * switches the LID lookup path). Defaults to `true` to match the app; set
+		 * `false` to opt out.
+		 */
 		enabled: boolean
-		/** Mirrors the mobile per-stanza user cap (20606). Defaults to the captured 2000-user limit. */
+		/** Per-stanza participant cap for the token lookup. Defaults to the 2000-user limit. */
 		maxUsers: number
 	}>
 	/** Opt-in pre-send capture for protocol forensics. Payloads may contain ciphertext or user metadata. */
