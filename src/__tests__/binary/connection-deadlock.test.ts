@@ -32,7 +32,18 @@ describe('Connection Deadlock Test', () => {
 			message: { conversation: 'Hello, world!' }
 		}) as WAMessage
 		sock.ev.emit('messages.upsert', { messages: [regularMessage], type: 'notify' })
-		// Wait for the event loop to process any final events.
+		// Wait for the buffer flush + processing by POLLING for the delivery
+		// instead of a fixed sleep. The flush is async and a flat 50ms is flaky
+		// on slow CI runners (node 20.x) — a deadlock (message never delivered)
+		// still fails here because the poll times out with 0 calls and the
+		// assertion below trips.
+		const deadline = Date.now() + 2000
+		while (regularMessageListener.mock.calls.length === 0 && Date.now() < deadline) {
+			await new Promise(resolve => setTimeout(resolve, 10))
+		}
+
+		// brief settle so an erroneous duplicate delivery is still caught by the
+		// toHaveBeenCalledTimes(1) assertion below.
 		await new Promise(resolve => setTimeout(resolve, 50))
 
 		// 3. Check if the regular message listener was called.
