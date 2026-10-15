@@ -569,6 +569,8 @@ const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
 	// Audit S-02: the app opens msgstore with `secure_delete` on and raises an
 	// alarm when it does not apply (MessagesDBHelper.onOpen); deleted rows are
 	// overwritten instead of lingering in free pages. Verified after open.
+	// NB (R1): we apply this to EVERY multi-db handle, not only the msgstore
+	// equivalent — a deliberate hardening choice, broader than the app.
 	'secure_delete = ON',
 	// Audit memory MEM-002 — `mmap_size = 0` desabilita explicitamente o
 	// memory-mapped I/O. better-sqlite3 já usa 0 por default em builds

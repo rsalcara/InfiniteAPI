@@ -690,6 +690,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const node: MediaConnInfo = {
 					hosts: getBinaryNodeChildren(mediaConnNode, 'host').map(({ attrs }) => ({
 						hostname: attrs.hostname!,
+						// R2: captured from the server's media_conn but intentionally NOT
+						// enforced client-side before upload — the engine relies on the
+						// server's own size rejection (failed_server_rejected_media), like
+						// the app. A pre-upload check is deferred on purpose (a conservative
+						// announced limit could otherwise reject valid uploads).
 						maxContentLengthBytes: +attrs.maxContentLengthBytes!
 					})),
 					auth: mediaConnNode.attrs.auth!,

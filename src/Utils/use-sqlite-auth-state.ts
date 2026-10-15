@@ -128,8 +128,12 @@ const DEFAULT_PRAGMAS: ReadonlyArray<string> = [
 	'journal_mode = WAL',
 	'synchronous = NORMAL',
 	'journal_size_limit = 67108864',
-	// Audit S-02: deleted keys are overwritten, not left in free pages (the
-	// app runs its databases with secure_delete on).
+	// Audit S-02 / R1: deleted keys are overwritten, not left in free pages.
+	// NB: the official app enables secure_delete only on its msgstore; its key
+	// store (axolotl.db, C10390dT.java runs only foreign_keys=ON) does NOT use
+	// it. We apply it to this key store too as a deliberate hardening choice
+	// (broader than the app, not literal parity) — key material must never
+	// linger in freed pages.
 	'secure_delete = ON',
 	// Audit S-12: the app runs its key store with the SQLite default page
 	// cache (2000 KiB). Both drivers otherwise open with 16000 KiB; measured

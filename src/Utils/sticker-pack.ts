@@ -459,7 +459,11 @@ export const prepareStickerPackMessage = async (
 				mediaKeyTimestamp: result.ts
 			}
 		} finally {
-			// SECURITY: Always cleanup temp file, even on error
+			// SECURITY: Always cleanup temp file, even on error.
+			// R7: intentionally a direct unlink (not the shared removeTmpFiles
+			// helper) so each cleanup failure is logged per-file; the enc tmp is
+			// already born 0600 inside the per-process 0700 dir, so no extra
+			// helper parity is needed here.
 			if (encFilePath) {
 				try {
 					await fs.unlink(encFilePath)
