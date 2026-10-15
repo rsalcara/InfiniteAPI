@@ -280,8 +280,9 @@ export const getNextPreKeysNode = async (state: AuthenticationState, count: numb
 			to: S_WHATSAPP_NET
 		},
 		content: [
-			// APK C1C6.java:466-487 emits the shared children as
-			// registration, identity, list, skey, …, type — `type` LAST.
+			// APK C1C6.java:465-483 (SET path) leads the upload with <op mode="set">,
+			// then registration, identity, list, skey, …, type (`type` LAST).
+			{ tag: 'op', attrs: { mode: 'set' } },
 			{ tag: 'registration', attrs: {}, content: encodeBigEndian(creds.registrationId) },
 			{ tag: 'identity', attrs: {}, content: creds.signedIdentityKey.public },
 			{ tag: 'list', attrs: {}, content: Object.keys(preKeys).map(k => xmppPreKey(preKeys[+k]!, +k)) },

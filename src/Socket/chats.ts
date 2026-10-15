@@ -1452,16 +1452,27 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 						logger.info(`resyncing ${name} from v${state.version}${shouldForceSnapshot ? ' (forcing snapshot)' : ''}`)
 
+						// APK C28250CaN.A01 emits return_snapshot ONLY when requesting a
+						// snapshot; otherwise it omits the attribute (we no longer send
+						// return_snapshot="false").
+						//
+						// Intentional logic divergence from the app (KEEP the `||`): the app
+						// gates snapshot on `return_snapshot_requested && version == 0`, i.e.
+						// it forces a snapshot by first resetting its local version to 0.
+						// This engine instead forces a snapshot AT THE CURRENT version to
+						// recover from a missing app-state key or corrupted local state (see
+						// the forceSnapshotCollections.add() recovery paths below). Switching
+						// to `&&` would make those recoveries request an incremental patch and
+						// fail — so `||` is deliberate, not a parity bug. (Matrix: [HIP].)
+						const wantSnapshot = shouldForceSnapshot || !state.version
 						nodes.push({
 							tag: 'collection',
 							attrs: {
 								name,
-								// APK C28250CaN.A01: order = 0 for 'critical_unblock_low', else 1
-								// (serialized right after `name`, before version/return_snapshot).
+								// order = 0 for 'critical_unblock_low', else 1 (right after name).
 								order: name === 'critical_unblock_low' ? '0' : '1',
 								version: state.version.toString(),
-								// return snapshot if syncing from scratch or forcing after a failed attempt
-								return_snapshot: (shouldForceSnapshot || !state.version).toString()
+								...(wantSnapshot ? { return_snapshot: 'true' } : {})
 							}
 						})
 					}
@@ -1926,9 +1937,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 									attrs: {
 										name,
 										// APK C28250CaN.A01: order = 0 for 'critical_unblock_low', else 1.
+										// A patch push is never a snapshot, so the app omits
+										// return_snapshot entirely (we no longer send "false").
 										order: name === 'critical_unblock_low' ? '0' : '1',
-										version: (state.version - 1).toString(),
-										return_snapshot: 'false'
+										version: (state.version - 1).toString()
 									},
 									content: [
 										{
