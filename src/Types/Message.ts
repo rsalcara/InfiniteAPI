@@ -632,11 +632,21 @@ export type CarouselCard = {
 	}
 	body: { text: string }
 	footer?: { text: string }
+	/**
+	 * Native flow message (wire parity W4B 2.26.36.72, captured 2026-10-15).
+	 * `messageVersion` and `messageParamsJson` are the captured defaults (3, "{}").
+	 * `buttons[0].name = "galaxy_message"` carries the flow form; the JSON
+	 * structure is in {@link FlowMessageParams} (Utils/flow-message.ts).
+	 */
 	nativeFlowMessage?: {
 		buttons: Array<{
 			name: string
 			buttonParamsJson: string
 		}>
+		/** Proto field 2 (optional string). Captured: "{}". */
+		messageParamsJson?: string
+		/** Proto field 3 (optional int32). Captured: 3. */
+		messageVersion?: number
 	}
 }
 
