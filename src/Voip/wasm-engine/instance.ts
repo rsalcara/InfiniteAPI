@@ -12,7 +12,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as vm from 'node:vm'
-import { Worker } from 'node:worker_threads'
+import { type TransferListItem, Worker } from 'node:worker_threads'
 
 const voipStorageDir = (): string => path.join(os.tmpdir(), 'voip')
 
@@ -83,15 +83,182 @@ export type WasmEngineConfig = {
 	}
 }
 
-const toByteArray = (input: any): Uint8Array => {
+/**
+ * Loose shape of the messages exchanged with the pthread workers. Only the
+ * control fields read by this wrapper are declared; callback arguments ride
+ * along as extra keys.
+ */
+type WorkerMessage = {
+	[key: string]: unknown
+	cmd?: string
+	type?: string
+	workerID?: number
+	error?: unknown
+	__name?: string
+	name?: string
+	args?: CallbackPayload
+	payload?: { name?: string; args?: CallbackPayload }
+}
+
+type WorkerMessageHandler = (data: WorkerMessage) => void
+
+/** Arguments of a WASM → JS callback, keyed by parameter name. */
+type CallbackPayload = Record<string, unknown>
+
+/** `loggingCallback` arguments. */
+type LoggingPayload = { level?: number; message?: string }
+
+/**
+ * `initCaptureDriverJS` / `initPlaybackDriverJS` arguments. The WASM sends
+ * snake_case; the camelCase spelling is accepted as a fallback.
+ */
+type AudioDriverInitPayload = {
+	sample_rate: number
+	channels: number
+	bits_per_sample: number
+	frames_per_chunk: number
+	sampleRate?: number
+	bitsPerSample?: number
+	framesPerChunk?: number
+}
+
+/** `onSignalingXmpp` arguments as the WASM hands them to the main thread. */
+type SignalingXmppPayload = { peerJid: string; callId: string; xmlPayload: Uint8Array }
+
+/** `onSignalingXmpp` arguments forwarded by a worker (structured-cloned). */
+type ForwardedSignalingXmppPayload = Omit<SignalingXmppPayload, 'xmlPayload'> & {
+	xmlPayload: Uint8Array | number[]
+	args?: Partial<ForwardedSignalingXmppPayload>
+}
+
+/** `onCallEvent` arguments. */
+type CallEventPayload = { eventType: number; eventDataJson?: string }
+
+/** `sendDataToRelay` arguments as the WASM hands them to the main thread. */
+type RelayDataPayload = { data: Uint8Array; ip: string; port: number }
+
+/** Relay bytes forwarded by a worker, in any of the shapes a clone can take. */
+type ForwardedRelayBytes =
+	| Uint8Array
+	| number[]
+	| ArrayBuffer
+	| { buffer: ArrayBufferLike; byteOffset?: number; byteLength?: number; length?: number }
+
+/** `sendDataToRelay` arguments forwarded by a worker. */
+type ForwardedRelayDataPayload = {
+	data?: ForwardedRelayBytes
+	ip?: string
+	port?: number
+	args?: ForwardedRelayDataPayload
+}
+
+/** Embind `std::vector` wrapper exposed by the WASM (`StringList`, `Uint8List`). */
+type EmbindList<T> = { push_back(value: T): void; delete(): void }
+
+/**
+ * The Emscripten module instance resolved by the VoIP WASM loader. Only the
+ * bindings this wrapper calls are declared; optional members vary between
+ * WASM builds and are probed at runtime.
+ */
+type WasmVoipInstance = {
+	StringList: new () => EmbindList<string>
+	Uint8List?: new () => EmbindList<number>
+	HEAPU8?: Uint8Array
+	GROWABLE_HEAP_U8?: () => Uint8Array
+	GROWABLE_HEAP_F32?: () => Float32Array
+	PThread?: { pthreads?: Record<number, NodeWorkerMessagePort> }
+	_malloc: (size: number) => number
+	_free: (ptr: number) => void
+	malloc?: (size: number) => number
+	/** Arity differs between WASM builds (3 vs 8 arguments). */
+	initVoipStack: (...args: unknown[]) => void
+	/** Arity differs between WASM builds (7 vs 8 arguments). */
+	startVoipCall: (...args: unknown[]) => unknown
+	endCall: (reason: number, sendTerminate: boolean) => void
+	setCallMute: (muted: boolean) => number
+	updateNetworkMedium?: (networkMedium: number, networkMtu: number) => void
+	handleIncomingSignalingOffer: (
+		payload: string,
+		peerPlatform: string,
+		peerAppVersion: string,
+		epochId: string,
+		timestamp: string,
+		isOffline: boolean,
+		isOfferNotContact: boolean,
+		peerJid: string,
+		tcToken: EmbindList<number> | null
+	) => void
+	handleIncomingSignalingMessage: (
+		payload: string,
+		peerPlatform: string,
+		peerAppVersion: string,
+		epochId: string,
+		timestamp: string,
+		isOffline: boolean,
+		peerJid: string,
+		tcToken: EmbindList<number> | null
+	) => void
+	handleIncomingSignalingAck: (
+		payload: string,
+		ackError: string,
+		msgType: string,
+		peerJid: string,
+		extraData: EmbindList<number> | null
+	) => void
+	handleIncomingSignalingReceipt?: (payload: string, peerJid: string, tcToken: EmbindList<number> | null) => void
+	handleOnMessageFromHeap?: (ptr: number, length: number, ip: string, port: number) => void
+	handleOnMessage?: (data: EmbindList<number> | null, ip: string, port: number) => void
+	updateIceRtt?: (rttMs: number, relayIp: string, relayPort: number) => void
+	onAudioDataFromJs?: (ptr: number, length: number) => void
+	requestAudioDataFromWasmVoip?: (ptr: number, size: number) => void
+	setABPropInt?: (key: string, value: number) => void
+	setABPropBool?: (key: string, value: boolean) => void
+	setABPropString?: (key: string, value: string) => void
+}
+
+/** Default export of the `WAWebVoipWebWasmLoader*` bundle modules. */
+type WasmLoader = (options: {
+	wasmBinary: Buffer
+	wasmMemory: WebAssembly.Memory
+	locateFile: () => string
+	onRuntimeInitialized: () => void
+}) => Promise<WasmVoipInstance>
+
+/** What the bundled module system may export (CommonJS / ES-interop shapes). */
+type ModuleExportsLike = { [key: string]: unknown; __esModule?: boolean; default?: unknown } | null | undefined
+
+/** `Error`-shaped values thrown by Embind (`BindingError`, …). */
+type ErrorLike = { name?: string; message?: string } | null | undefined
+
+/** Subset of a Node `Worker` (or a web-style worker) wrapped by the port. */
+type PortWorker = {
+	postMessage(message: unknown, transferList?: readonly TransferListItem[]): void
+	terminate(): Promise<number> | void
+	on?(event: 'message' | 'error', listener: (data: WorkerMessage) => void): unknown
+	addEventListener?(event: 'message', listener: (event: { data?: WorkerMessage } | null | undefined) => void): unknown
+}
+
+/** Globals the WASM bundle looks the callback dictionaries up on. */
+type VoipCallbackGlobals = {
+	WhatsAppVoipWasmCallbacks?: unknown
+	WhatsAppVoipWasmWorkerCompatibleCallbacks?: unknown
+}
+
+/** Babel-compiled class constructor, as seen by `babelHelpers.inheritsLoose`. */
+type BabelClass = { prototype: { constructor?: unknown }; __proto__?: unknown }
+
+type AtomicsWithWaitAsync = typeof Atomics & { waitAsync?: (...args: unknown[]) => unknown }
+
+const toByteArray = (input: unknown): Uint8Array => {
 	if (!input) return new Uint8Array(0)
 	if (input instanceof Uint8Array) return input
 	if (typeof input === 'string') return new TextEncoder().encode(input)
 	if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
 	if (input instanceof ArrayBuffer) return new Uint8Array(input)
-	if (typeof input === 'object' && typeof input.length === 'number') {
-		const arr = new Uint8Array(input.length)
-		for (let i = 0; i < input.length; i += 1) arr[i] = input[i] ?? 0
+	if (typeof input === 'object' && typeof (input as { length?: unknown }).length === 'number') {
+		const arrayLike = input as ArrayLike<number | undefined>
+		const arr = new Uint8Array(arrayLike.length)
+		for (let i = 0; i < arrayLike.length; i += 1) arr[i] = arrayLike[i] ?? 0
 		return arr
 	}
 
@@ -131,18 +298,18 @@ const resolveWorkerScriptPath = (): string => {
 }
 
 class NodeWorkerMessagePort {
-	readonly #listeners = new Map<string, Set<(data: any) => void>>()
-	readonly #worker: any
+	readonly #listeners = new Map<string, Set<WorkerMessageHandler>>()
+	readonly #worker: PortWorker
 	readonly fullyConnected: Promise<NodeWorkerMessagePort>
 	readonly name: string
 	workerID = 0
 	pthread_ptr = 0
 
-	constructor(worker: any, name = 'WAWebVoipWebWasmWorker') {
+	constructor(worker: PortWorker, name = 'WAWebVoipWebWasmWorker') {
 		this.#worker = worker
 		this.name = name
 		this.fullyConnected = new Promise((resolve, reject) => {
-			const loadedHandler = (msg: any) => {
+			const loadedHandler = (msg: WorkerMessage) => {
 				if (msg?.cmd === 'loaded') {
 					this.workerID = msg.workerID ?? 0
 					this.removeMessageListener('cmd', loadedHandler)
@@ -151,7 +318,7 @@ class NodeWorkerMessagePort {
 				}
 			}
 
-			const errorHandler = (msg: any): void => {
+			const errorHandler = (msg: WorkerMessage): void => {
 				if (msg?.cmd === 'error') {
 					this.removeMessageListener('cmd', loadedHandler)
 					this.removeMessageListener('cmd', errorHandler)
@@ -166,19 +333,19 @@ class NodeWorkerMessagePort {
 		// Suppress the orphan rejection so Node doesn't emit unhandledRejection.
 		this.fullyConnected.catch(() => {})
 		if (typeof worker.on === 'function') {
-			worker.on('message', (data: any) => this.#handleMessage(data))
+			worker.on('message', data => this.#handleMessage(data))
 			worker.on('error', () => {})
 		} else if (typeof worker.addEventListener === 'function') {
-			worker.addEventListener('message', (ev: any) => this.#handleMessage(ev?.data ?? ev))
+			worker.addEventListener('message', ev => this.#handleMessage(ev?.data ?? ev))
 		}
 	}
 
-	postMessage = (msg: any, transferList?: any[]): void => {
+	postMessage = (msg: WorkerMessage | null | undefined, transferList?: readonly TransferListItem[]): void => {
 		const out = msg && typeof msg === 'object' && msg.cmd && !msg.type ? { ...msg, type: 'cmd' } : msg
-		this.#worker.postMessage(out, transferList as any)
+		this.#worker.postMessage(out, transferList)
 	}
 
-	addMessageListener = (type: string, handler: (data: any) => void): typeof handler => {
+	addMessageListener = (type: string, handler: WorkerMessageHandler): typeof handler => {
 		let set = this.#listeners.get(type)
 		if (!set) {
 			set = new Set()
@@ -189,7 +356,7 @@ class NodeWorkerMessagePort {
 		return handler
 	}
 
-	removeMessageListener = (type: string, handler: (data: any) => void): boolean =>
+	removeMessageListener = (type: string, handler: WorkerMessageHandler): boolean =>
 		this.#listeners.get(type)?.delete(handler) ?? false
 
 	removeAllMessageListeners = (type?: string): void => {
@@ -198,18 +365,18 @@ class NodeWorkerMessagePort {
 	}
 
 	terminate = (): void => {
-		this.#worker.terminate()
+		void this.#worker.terminate()
 	}
 	close = (): void => {}
 	isWrappingVirtualMessagePort = (): boolean => false
-	getWorker = (): Worker => this.#worker
+	getWorker = (): PortWorker => this.#worker
 
-	#handleMessage = (data: any): void => {
+	#handleMessage = (data: WorkerMessage | null | undefined): void => {
 		if (!data || typeof data !== 'object') return
 
 		if (data.type === 'callback' || data.type === 'waWasmWorkerCompatibleCallback') {
 			let callbackName: string
-			let callbackArgs: any
+			let callbackArgs: CallbackPayload
 
 			if (data.__name) {
 				callbackName = data.__name
@@ -237,7 +404,7 @@ class NodeWorkerMessagePort {
 				}
 			}
 
-			let listenerData: any = callbackArgs
+			let listenerData: CallbackPayload = callbackArgs
 			if (
 				!callbackArgs ||
 				Object.keys(callbackArgs).length === 0 ||
@@ -281,10 +448,14 @@ class NodeWorkerMessagePort {
 }
 
 export class WasmEngine {
-	static readonly #globalCallbackListeners = new Map<string, Set<(data: any) => void>>()
+	static readonly #globalCallbackListeners = new Map<string, Set<(data: CallbackPayload) => void>>()
 	static #globalCallbacksRegistered = false
 
-	static registerGlobalCallbackListener = (callbackName: string, handler: (data: any) => void): void => {
+	/** `T` is the argument shape the named WASM callback is known to send. */
+	static registerGlobalCallbackListener = <T = CallbackPayload>(
+		callbackName: string,
+		handler: (data: T) => void
+	): void => {
 		const key = `callback:${callbackName}`
 		let set = WasmEngine.#globalCallbackListeners.get(key)
 		if (!set) {
@@ -292,10 +463,10 @@ export class WasmEngine {
 			WasmEngine.#globalCallbackListeners.set(key, set)
 		}
 
-		set.add(handler)
+		set.add(handler as (data: CallbackPayload) => void)
 	}
 
-	static notifyGlobalCallbackListeners = (callbackName: string, data: any): void => {
+	static notifyGlobalCallbackListeners = (callbackName: string, data: CallbackPayload): void => {
 		const set = WasmEngine.#globalCallbackListeners.get(`callback:${callbackName}`)
 		if (!set) return
 		for (const handler of set) {
@@ -306,9 +477,9 @@ export class WasmEngine {
 	}
 
 	readonly #config: Required<Pick<WasmEngineConfig, 'resourcesPath' | 'wasmPath' | 'enableLogs'>> & WasmEngineConfig
-	#instance: any = null
+	#instance: WasmVoipInstance | null = null
 	#initialized = false
-	readonly #moduleRegistry = new Map<string, { deps: string[]; factory: Function; exports?: any }>()
+	readonly #moduleRegistry = new Map<string, { deps: string[]; factory: Function; exports?: unknown }>()
 	#vmContext: vm.Context | null = null
 
 	#unusedWorkers: NodeWorkerMessagePort[] = []
@@ -407,7 +578,7 @@ export class WasmEngine {
 
 		runModuleCode(this.#workerModulesCode)
 		runModuleCode(this.#loaderCode)
-		;(this.#vmContext as any).WAWebVoipWebWasmWorkerResource = this.#requireModule('WAWebVoipWebWasmWorkerResource')
+		this.#vmContext.WAWebVoipWebWasmWorkerResource = this.#requireModule('WAWebVoipWebWasmWorkerResource')
 
 		const loaderModuleNames = [
 			this.#config.loaderModuleName,
@@ -417,16 +588,17 @@ export class WasmEngine {
 			'WAWebVoipWebWasmLoader_ProdLabvideo_internal.worker'
 		].filter((v, i, a): v is string => !!v && a.indexOf(v) === i)
 
-		let wasmLoader: any = null
+		let wasmLoader: WasmLoader | null = null
 		for (const moduleName of loaderModuleNames) {
 			const candidate = this.#requireModule(moduleName)
 			if (typeof candidate === 'function') {
-				wasmLoader = candidate
+				wasmLoader = candidate as WasmLoader
 				break
 			}
 
-			if (typeof candidate?.default === 'function') {
-				wasmLoader = candidate.default
+			const candidateModule = candidate as ModuleExportsLike
+			if (typeof candidateModule?.default === 'function') {
+				wasmLoader = candidateModule.default as WasmLoader
 				break
 			}
 		}
@@ -510,14 +682,15 @@ export class WasmEngine {
 			try {
 				this.#applyDefaultAbProps()
 				try {
-					this.#instance.initVoipStack(selfJid, meUserJid, selfLid)
-				} catch (modernErr: any) {
+					this.#instance!.initVoipStack(selfJid, meUserJid, selfLid)
+				} catch (modernErr) {
+					const bindingErr = modernErr as ErrorLike
 					if (
-						modernErr?.name === 'BindingError' &&
-						(String(modernErr?.message ?? '').includes('expected 8 args') ||
-							String(modernErr?.message ?? '').includes('takes 8'))
+						bindingErr?.name === 'BindingError' &&
+						(String(bindingErr?.message ?? '').includes('expected 8 args') ||
+							String(bindingErr?.message ?? '').includes('takes 8'))
 					) {
-						this.#instance.initVoipStack(selfJid, meUserJid, selfLid, true, 5, 0, 8, 16)
+						this.#instance!.initVoipStack(selfJid, meUserJid, selfLid, true, 5, 0, 8, 16)
 					} else {
 						throw modernErr
 					}
@@ -531,11 +704,18 @@ export class WasmEngine {
 							r()
 						}, VOIP_READY_TIMEOUT_MS)
 					)
-				]).finally(() => {
-					this.#voipStackInitPromise = null
-					resolveInit()
-				})
-			} catch (initErr: any) {
+				])
+					.finally(() => {
+						this.#voipStackInitPromise = null
+						resolveInit()
+					})
+					.catch((err: unknown) => {
+						const onLog = this.#config.callbacks?.onLog
+						const msg = `voip: VoIP stack ready wait failed — ${(err as Error)?.message ?? String(err)}`
+						if (onLog) onLog('error', msg)
+						else process.stderr.write(msg + '\n')
+					})
+			} catch (initErr) {
 				// Stash the error so `waitForVoipStackReady` can re-throw it
 				// instead of pretending init succeeded. Earlier this swallowed
 				// the failure and `waitForVoipStackReady()` returned cleanly,
@@ -638,7 +818,7 @@ export class WasmEngine {
 			// WASM figure out it's group from len(peers) > 1.
 			const firstPeer = options.participants[0]!
 			try {
-				return this.#instance.startVoipCall(
+				return this.#instance!.startVoipCall(
 					firstPeer,
 					peers,
 					options.callId,
@@ -651,7 +831,7 @@ export class WasmEngine {
 			} catch (error: unknown) {
 				const isBindingError = (error as { name?: string })?.name === 'BindingError'
 				if (!isBindingError) throw error
-				return this.#instance.startVoipCall(
+				return this.#instance!.startVoipCall(
 					firstPeer,
 					peers,
 					options.callId,
@@ -749,7 +929,7 @@ export class WasmEngine {
 
 		try {
 			try {
-				return this.#instance.startVoipCall(
+				return this.#instance!.startVoipCall(
 					peerJid,
 					peers,
 					options.callId,
@@ -759,9 +939,9 @@ export class WasmEngine {
 					isFromDialer,
 					tcToken
 				)
-			} catch (error: any) {
-				if (error?.name !== 'BindingError') throw error
-				return this.#instance.startVoipCall(
+			} catch (error: unknown) {
+				if ((error as ErrorLike)?.name !== 'BindingError') throw error
+				return this.#instance!.startVoipCall(
 					peerJid,
 					peers,
 					options.callId,
@@ -779,17 +959,17 @@ export class WasmEngine {
 
 	endCall = (reason = 0, sendTerminate = true): void => {
 		this.#ensureInitialized()
-		this.#instance.endCall(reason, sendTerminate)
+		this.#instance!.endCall(reason, sendTerminate)
 	}
 
 	setMute = (muted: boolean): number => {
 		this.#ensureInitialized()
-		return this.#instance.setCallMute(muted)
+		return this.#instance!.setCallMute(muted)
 	}
 
 	updateNetworkMedium = (networkMedium: number, networkMtu = 0): void => {
 		this.#ensureInitialized()
-		this.#instance.updateNetworkMedium?.(networkMedium, networkMtu)
+		this.#instance!.updateNetworkMedium?.(networkMedium, networkMtu)
 	}
 
 	handleSignalingOffer = (msg: {
@@ -806,7 +986,7 @@ export class WasmEngine {
 		this.#ensureInitialized()
 		const tcTokenList = this.#createUint8List(msg.tcToken)
 		try {
-			this.#instance.handleIncomingSignalingOffer(
+			this.#instance!.handleIncomingSignalingOffer(
 				msg.payload,
 				String(msg.peerPlatform ?? 0),
 				String(msg.peerAppVersion ?? '0'),
@@ -835,7 +1015,7 @@ export class WasmEngine {
 		this.#ensureInitialized()
 		const tcTokenList = this.#createUint8List(msg.tcToken)
 		try {
-			this.#instance.handleIncomingSignalingMessage(
+			this.#instance!.handleIncomingSignalingMessage(
 				msg.payload,
 				String(msg.peerPlatform ?? '0'),
 				String(msg.peerAppVersion ?? '0'),
@@ -860,7 +1040,7 @@ export class WasmEngine {
 		this.#ensureInitialized()
 		const options = this.#createUint8List(msg.extraData)
 		try {
-			this.#instance.handleIncomingSignalingAck(
+			this.#instance!.handleIncomingSignalingAck(
 				msg.payload,
 				String(msg.ackError ?? '0'),
 				String(msg.msgType ?? ''),
@@ -876,7 +1056,7 @@ export class WasmEngine {
 		this.#ensureInitialized()
 		const tcTokenList = this.#createUint8List(msg.tcToken)
 		try {
-			this.#instance.handleIncomingSignalingReceipt?.(msg.payload, msg.peerJid, tcTokenList)
+			this.#instance!.handleIncomingSignalingReceipt?.(msg.payload, msg.peerJid, tcTokenList)
 		} finally {
 			tcTokenList?.delete?.()
 		}
@@ -884,14 +1064,14 @@ export class WasmEngine {
 
 	handleOnTransportMessage = (data: Uint8Array, ip: string, port: number): void => {
 		this.#ensureInitialized()
-		if (typeof this.#instance.handleOnMessageFromHeap === 'function') {
+		if (typeof this.#instance!.handleOnMessageFromHeap === 'function') {
 			const ptr = this.malloc(data.byteLength)
 			if (!ptr) return
 			try {
-				const heapU8 = this.#instance.GROWABLE_HEAP_U8?.() ?? this.#instance.HEAPU8
+				const heapU8 = this.#instance!.GROWABLE_HEAP_U8?.() ?? this.#instance!.HEAPU8
 				if (!heapU8) return
 				heapU8.set(data, ptr)
-				this.#instance.handleOnMessageFromHeap(ptr, data.byteLength, ip, port)
+				this.#instance!.handleOnMessageFromHeap(ptr, data.byteLength, ip, port)
 			} finally {
 				this.free(ptr)
 			}
@@ -899,10 +1079,10 @@ export class WasmEngine {
 			return
 		}
 
-		if (typeof this.#instance.handleOnMessage !== 'function') return
+		if (typeof this.#instance!.handleOnMessage !== 'function') return
 		const dataList = this.#createUint8List(data)
 		try {
-			this.#instance.handleOnMessage(dataList, ip, port)
+			this.#instance!.handleOnMessage(dataList, ip, port)
 		} finally {
 			dataList?.delete?.()
 		}
@@ -910,20 +1090,20 @@ export class WasmEngine {
 
 	updateIceRtt = (rttMs: number, relayIp: string, relayPort: number): void => {
 		this.#ensureInitialized()
-		this.#instance.updateIceRtt?.(rttMs, relayIp, relayPort)
+		this.#instance!.updateIceRtt?.(rttMs, relayIp, relayPort)
 	}
 
 	sendAudioData = (data: Float32Array, ptr: number): void => {
 		this.#ensureInitialized()
 		if (!data || data.length === 0 || !ptr) return
-		if (typeof this.#instance.onAudioDataFromJs !== 'function') return
+		if (typeof this.#instance!.onAudioDataFromJs !== 'function') return
 		try {
-			const heapF32 = this.#instance.GROWABLE_HEAP_F32?.()
+			const heapF32 = this.#instance!.GROWABLE_HEAP_F32?.()
 			if (!heapF32) return
 			const index = Math.floor(ptr / 4)
 			if (index < 0 || index + data.length > heapF32.length) return
 			heapF32.set(data, index)
-			this.#instance.onAudioDataFromJs(ptr, data.length)
+			this.#instance!.onAudioDataFromJs(ptr, data.length)
 		} catch {}
 	}
 
@@ -948,10 +1128,10 @@ export class WasmEngine {
 			const fps = Math.max(1, Math.min(30, Math.trunc(maxFps) || 30))
 			const format = frame.format === 'rgba' ? 1 : 0
 			const orientation = Number.isFinite(frame.orientation) ? Math.trunc(frame.orientation!) : 0
-			ptr = this.#instance._malloc(frame.data.byteLength)
+			ptr = this.#instance!._malloc(frame.data.byteLength)
 			if (!ptr) return false
 
-			const heapU8 = this.#instance.GROWABLE_HEAP_U8?.() ?? this.#instance.HEAPU8
+			const heapU8 = this.#instance!.GROWABLE_HEAP_U8?.() ?? this.#instance!.HEAPU8
 			if (!heapU8 || ptr + frame.data.byteLength > heapU8.length) return false
 			heapU8.set(frame.data, ptr)
 
@@ -966,8 +1146,8 @@ export class WasmEngine {
 					format,
 					orientation
 				)
-			} catch (error: any) {
-				if (error?.name !== 'BindingError') return false
+			} catch (error: unknown) {
+				if ((error as ErrorLike)?.name !== 'BindingError') return false
 				try {
 					;(sendFrame as (...args: unknown[]) => unknown).call(
 						this.#instance,
@@ -978,8 +1158,8 @@ export class WasmEngine {
 						fps,
 						format
 					)
-				} catch (legacyError: any) {
-					if (legacyError?.name !== 'BindingError') return false
+				} catch (legacyError: unknown) {
+					if ((legacyError as ErrorLike)?.name !== 'BindingError') return false
 					;(sendFrame as (...args: unknown[]) => unknown).call(
 						this.#instance,
 						ptr,
@@ -999,7 +1179,7 @@ export class WasmEngine {
 		} finally {
 			if (ptr) {
 				try {
-					this.#instance._free(ptr)
+					this.#instance!._free(ptr)
 				} catch {}
 			}
 		}
@@ -1007,12 +1187,12 @@ export class WasmEngine {
 
 	malloc = (size: number): number => {
 		this.#ensureInitialized()
-		return this.#instance._malloc(size)
+		return this.#instance!._malloc(size)
 	}
 
 	free = (ptr: number): void => {
 		this.#ensureInitialized()
-		this.#instance._free(ptr)
+		this.#instance!._free(ptr)
 	}
 
 	// ─── private ──────────────────────────────────────────────────────────────
@@ -1023,13 +1203,13 @@ export class WasmEngine {
 		}
 	}
 
-	#makeStringList = (arr: string[]): any => {
-		const list = new this.#instance.StringList()
+	#makeStringList = (arr: string[]): EmbindList<string> => {
+		const list = new this.#instance!.StringList()
 		for (const v of arr) list.push_back(v)
 		return list
 	}
 
-	#createUint8List = (data?: Uint8Array): any => {
+	#createUint8List = (data?: Uint8Array): EmbindList<number> | null => {
 		if (!this.#instance?.Uint8List) return null
 		const list = new this.#instance.Uint8List()
 		if (data) data.forEach(byte => list.push_back(byte))
@@ -1040,12 +1220,12 @@ export class WasmEngine {
 		if (this.#audioPlaybackLoopInterval) return
 		this.#ensureInitialized()
 		this.#isPlaybackActive = true
-		if (typeof this.#instance.requestAudioDataFromWasmVoip !== 'function') return
+		if (typeof this.#instance!.requestAudioDataFromWasmVoip !== 'function') return
 
 		const framesPerChunk = 320
 		const bufferSize = framesPerChunk * 4
 		try {
-			const _malloc = this.#instance._malloc ?? this.#instance.malloc
+			const _malloc = this.#instance!._malloc ?? this.#instance!.malloc
 			if (!_malloc) return
 			this.#audioPlaybackBuffer = _malloc(bufferSize)
 		} catch {
@@ -1061,7 +1241,7 @@ export class WasmEngine {
 			}
 
 			try {
-				this.#instance.requestAudioDataFromWasmVoip(this.#audioPlaybackBuffer!, bufferSize)
+				this.#instance.requestAudioDataFromWasmVoip!(this.#audioPlaybackBuffer!, bufferSize)
 				const heapF32 = this.#instance.GROWABLE_HEAP_F32?.()
 				if (!heapF32) return
 				const index = Math.floor(this.#audioPlaybackBuffer! / 4)
@@ -1095,19 +1275,19 @@ export class WasmEngine {
 		const setInt =
 			typeof this.#instance.setABPropInt === 'function'
 				? (k: string, v: number): void => {
-						this.#instance.setABPropInt(k, v)
+						this.#instance!.setABPropInt!(k, v)
 					}
 				: null
 		const setBool =
 			typeof this.#instance.setABPropBool === 'function'
 				? (k: string, v: boolean): void => {
-						this.#instance.setABPropBool(k, v)
+						this.#instance!.setABPropBool!(k, v)
 					}
 				: null
 		const setString =
 			typeof this.#instance.setABPropString === 'function'
 				? (k: string, v: string): void => {
-						this.#instance.setABPropString(k, v)
+						this.#instance!.setABPropString!(k, v)
 					}
 				: null
 		if (!setInt && !setBool && !setString) return
@@ -1236,7 +1416,7 @@ export class WasmEngine {
 				worker.removeMessageListener('cmd', errorHandler)
 			}
 
-			const loadedHandler = (msg: any): void => {
+			const loadedHandler = (msg: WorkerMessage): void => {
 				if (msg?.cmd === 'loaded') {
 					cleanup()
 					this.#workersLoadedCount += 1
@@ -1248,7 +1428,7 @@ export class WasmEngine {
 				}
 			}
 
-			const errorHandler = (msg: any): void => {
+			const errorHandler = (msg: WorkerMessage): void => {
 				if (msg?.cmd === 'error') {
 					cleanup()
 					reject(new Error(`VoIP worker WASM load failed: ${String(msg.error ?? 'unknown')}`))
@@ -1281,7 +1461,7 @@ export class WasmEngine {
 	#registerGlobalCallbacks = (): void => {
 		const callbacks = this.#config.callbacks ?? {}
 
-		WasmEngine.registerGlobalCallbackListener('loggingCallback', data => {
+		WasmEngine.registerGlobalCallbackListener('loggingCallback', (data: LoggingPayload) => {
 			if (!this.#config.enableLogs) return
 			const level = data?.level
 			const msg = data?.message ?? ''
@@ -1290,7 +1470,7 @@ export class WasmEngine {
 		})
 
 		if (callbacks.onAudioCaptureInit) {
-			WasmEngine.registerGlobalCallbackListener('initCaptureDriverJS', data => {
+			WasmEngine.registerGlobalCallbackListener('initCaptureDriverJS', (data: AudioDriverInitPayload) => {
 				callbacks.onAudioCaptureInit!({
 					sampleRate: data?.sample_rate ?? data?.sampleRate,
 					channels: data?.channels,
@@ -1306,7 +1486,7 @@ export class WasmEngine {
 		WasmEngine.registerGlobalCallbackListener('stopVideoCaptureJS', () => callbacks.onVideoCaptureStop?.())
 
 		if (callbacks.onAudioPlaybackInit) {
-			WasmEngine.registerGlobalCallbackListener('initPlaybackDriverJS', data => {
+			WasmEngine.registerGlobalCallbackListener('initPlaybackDriverJS', (data: AudioDriverInitPayload) => {
 				callbacks.onAudioPlaybackInit!({
 					sampleRate: data?.sample_rate ?? data?.sampleRate,
 					channels: data?.channels,
@@ -1326,7 +1506,7 @@ export class WasmEngine {
 		})
 
 		if (callbacks.onSignalingXmpp) {
-			WasmEngine.registerGlobalCallbackListener('onSignalingXmpp', data => {
+			WasmEngine.registerGlobalCallbackListener('onSignalingXmpp', (data: ForwardedSignalingXmppPayload) => {
 				const peerJid = data.peerJid ?? data.args?.peerJid
 				const callId = data.callId ?? data.args?.callId
 				let xmlPayload = data.xmlPayload ?? data.args?.xmlPayload
@@ -1345,27 +1525,27 @@ export class WasmEngine {
 		}
 
 		if (callbacks.onCallEvent) {
-			WasmEngine.registerGlobalCallbackListener('onCallEvent', data => {
+			WasmEngine.registerGlobalCallbackListener('onCallEvent', (data: CallEventPayload) => {
 				callbacks.onCallEvent!(data.eventType, data.eventDataJson)
 			})
 		}
 
 		if (callbacks.sendDataToRelay) {
-			WasmEngine.registerGlobalCallbackListener('sendDataToRelay', data => {
-				let relayData = data.data ?? data.args?.data
+			WasmEngine.registerGlobalCallbackListener('sendDataToRelay', (data: ForwardedRelayDataPayload) => {
+				const rawRelayData = data.data ?? data.args?.data
 				const ip = data.ip ?? data.args?.ip
 				const portNum = data.port ?? data.args?.port
-				if (relayData instanceof Uint8Array) {
-					/* ok */
-				} else if (Array.isArray(relayData)) relayData = new Uint8Array(relayData)
-				else if (Buffer.isBuffer(relayData)) relayData = new Uint8Array(relayData)
-				else if (relayData && typeof relayData === 'object' && relayData.buffer) {
+				let relayData: Uint8Array
+				if (rawRelayData instanceof Uint8Array) relayData = rawRelayData
+				else if (Array.isArray(rawRelayData)) relayData = new Uint8Array(rawRelayData)
+				else if (Buffer.isBuffer(rawRelayData)) relayData = new Uint8Array(rawRelayData)
+				else if (rawRelayData && typeof rawRelayData === 'object' && 'buffer' in rawRelayData && rawRelayData.buffer) {
 					relayData = new Uint8Array(
-						relayData.buffer,
-						relayData.byteOffset ?? 0,
-						relayData.byteLength ?? relayData.length
+						rawRelayData.buffer,
+						rawRelayData.byteOffset ?? 0,
+						rawRelayData.byteLength ?? rawRelayData.length
 					)
-				} else if (relayData instanceof ArrayBuffer) relayData = new Uint8Array(relayData)
+				} else if (rawRelayData instanceof ArrayBuffer) relayData = new Uint8Array(rawRelayData)
 				else return 0
 				if (!ip || !portNum) return 0
 				callbacks.sendDataToRelay!(relayData, ip, portNum)
@@ -1376,15 +1556,15 @@ export class WasmEngine {
 		WasmEngine.#globalCallbacksRegistered = true
 	}
 
-	#requireModule = (name: string): any => {
-		const preDefinedModules: Record<string, any> = {
+	#requireModule = (name: string): unknown => {
+		const preDefinedModules: Record<string, unknown> = {
 			Promise,
 			WAWebVoipWebWasmWorkerResource: {
 				resourcePath: resolveWorkerScriptPath(),
 				name: 'WAWebVoipWebWasmWorker'
 			},
 			WorkerBundleResource: {
-				createDedicatedWebWorker: (resource: any) => {
+				createDedicatedWebWorker: (resource: { resourcePath?: string } | null | undefined) => {
 					const scriptPath =
 						resource?.resourcePath && fs.existsSync(resource.resourcePath)
 							? resource.resourcePath
@@ -1410,7 +1590,7 @@ export class WasmEngine {
 			WorkerClient: { init: () => {} },
 			WorkerMessagePort: {
 				WorkerMessagePort: NodeWorkerMessagePort,
-				CastWorkerMessagePort: (w: any) => w,
+				CastWorkerMessagePort: <T>(w: T): T => w,
 				WorkerSyncedMessagePort: NodeWorkerMessagePort
 			},
 			bx: Object.assign((id: string | number) => String(id), { getURL: () => '' }),
@@ -1437,7 +1617,7 @@ export class WasmEngine {
 		if (mod.exports !== undefined) return mod.exports
 
 		const requireFn = this.#requireModule
-		const normalizeModuleResult = (value: any): any => {
+		const normalizeModuleResult = (value: unknown): unknown => {
 			if (value && typeof value === 'object' && 'exports' in value && Object.keys(value).length === 1) {
 				return value.exports
 			}
@@ -1445,37 +1625,37 @@ export class WasmEngine {
 			return value
 		}
 
-		const importDefaultFn = (dep: string): any => {
-			const v = requireFn(dep)
+		const importDefaultFn = (dep: string): unknown => {
+			const v = requireFn(dep) as ModuleExportsLike
 			return v?.__esModule ? v.default : v
 		}
 
-		const importAllFn = (dep: string): any => {
-			const v = requireFn(dep)
+		const importAllFn = (dep: string): unknown => {
+			const v = requireFn(dep) as ModuleExportsLike
 			if (v == null) return { default: v }
 			if (v.__esModule) return v
 			if (typeof v !== 'object' && typeof v !== 'function') return { default: v }
-			const ns: Record<string, any> = {}
+			const ns: Record<string, unknown> = {}
 			for (const key of Object.keys(v)) ns[key] = v[key]
 			ns.default = v
 			return ns
 		}
 
-		const tryMetro = (): any => {
-			const module = { exports: {} as any }
+		const tryMetro = (): unknown => {
+			const module: { exports: unknown } = { exports: {} }
 			mod.factory(this.#vmContext ?? globalThis, requireFn, importDefaultFn, importAllFn, null, module, module.exports)
 			return normalizeModuleResult(module.exports)
 		}
 
-		const tryLegacy = (): any => {
-			const exports: Record<string, any> = {}
+		const tryLegacy = (): unknown => {
+			const exports: Record<string, unknown> = {}
 			const module = { exports }
 			const resolvedDeps = mod.deps.map(dep => requireFn(dep))
 			mod.factory(this.#vmContext ?? globalThis, requireFn, requireFn, requireFn, module, exports, ...resolvedDeps)
 			return normalizeModuleResult(module.exports)
 		}
 
-		let result: any = {}
+		let result: unknown = {}
 		let metroError: unknown = null
 		try {
 			result = tryMetro()
@@ -1499,22 +1679,23 @@ export class WasmEngine {
 	#createVMContext = (memory: WebAssembly.Memory): vm.Context => {
 		const callbacks = this.#config.callbacks ?? {}
 
-		const wasmCallbacks: Record<string, any> = {
+		const wasmCallbacks = {
 			onVoipReady: (): void => {
 				this.#voipReadyResolver?.()
 				callbacks.onVoipReady?.()
 			},
-			onSignalingXmpp: (data: any) => callbacks.onSignalingXmpp?.(data?.peerJid, data?.callId, data?.xmlPayload),
-			onCallEvent: (data: any) => callbacks.onCallEvent?.(data?.eventType, data?.eventDataJson),
-			sendDataToRelay: (data: any) => callbacks.sendDataToRelay?.(data?.data, data?.ip, data?.port),
-			loggingCallback: (data: any): void => {
+			onSignalingXmpp: (data: SignalingXmppPayload) =>
+				callbacks.onSignalingXmpp?.(data?.peerJid, data?.callId, data?.xmlPayload),
+			onCallEvent: (data: CallEventPayload) => callbacks.onCallEvent?.(data?.eventType, data?.eventDataJson),
+			sendDataToRelay: (data: RelayDataPayload) => callbacks.sendDataToRelay?.(data?.data, data?.ip, data?.port),
+			loggingCallback: (data: LoggingPayload): void => {
 				if (!this.#config.enableLogs) return
 				const level = data?.level
 				const msg = data?.message ?? ''
 				const mapped = level === 1 ? 'error' : level === 2 ? 'warn' : level === 3 ? 'log' : 'debug'
 				callbacks.onLog?.(mapped, msg)
 			},
-			initCaptureDriverJS: (data: any): number => {
+			initCaptureDriverJS: (data: AudioDriverInitPayload): number => {
 				callbacks.onAudioCaptureInit?.({
 					sampleRate: data?.sample_rate,
 					channels: data?.channels,
@@ -1531,7 +1712,7 @@ export class WasmEngine {
 				callbacks.onAudioCaptureStop?.()
 				return 0
 			},
-			initPlaybackDriverJS: (data: any): number => {
+			initPlaybackDriverJS: (data: AudioDriverInitPayload): number => {
 				callbacks.onAudioPlaybackInit?.({
 					sampleRate: data?.sample_rate,
 					channels: data?.channels,
@@ -1564,14 +1745,22 @@ export class WasmEngine {
 			getBrowserAudioProcessingStatus: () => 7,
 			getBweModelPath: () => null,
 			videoFrameConsumed: () => 0,
-			cryptoHkdfExtractWithSaltAndExpand: (data: any): Uint8Array => {
+			cryptoHkdfExtractWithSaltAndExpand: (data: {
+				key_?: unknown
+				salt_?: unknown
+				info_?: unknown
+				length?: number
+			}): Uint8Array => {
 				const key = toByteArray(data?.key_)
 				const salt = data?.salt_ ? toByteArray(data.salt_) : new Uint8Array(0)
 				const info = toByteArray(data?.info_)
 				const length = data?.length ?? 32
 				return callbacks.cryptoHkdf?.(key, salt, info, length) ?? new Uint8Array(length)
 			},
-			hmacSha256KeyGenerator: (data: any): Uint8Array => {
+			hmacSha256KeyGenerator: (data: {
+				data_?: ArrayLike<number> | ArrayBuffer
+				key_?: ArrayLike<number> | ArrayBuffer
+			}): Uint8Array => {
 				const hmacData = new Uint8Array(data?.data_ ?? [])
 				const hmacKey = new Uint8Array(data?.key_ ?? [])
 				return callbacks.hmacSha256?.(hmacData, hmacKey) ?? new Uint8Array(32)
@@ -1593,12 +1782,15 @@ export class WasmEngine {
 
 		const babelHelpers = {
 			extends: Object.assign,
-			inheritsLoose: (sub: any, sup: any): void => {
+			inheritsLoose: (sub: BabelClass, sup: { prototype: object | null }): void => {
 				sub.prototype = Object.create(sup.prototype)
 				sub.prototype.constructor = sub
 				sub.__proto__ = sup
 			},
-			objectWithoutPropertiesLoose: (source: any, excluded: string[]): Record<string, unknown> => {
+			objectWithoutPropertiesLoose: (
+				source: Record<string, unknown> | null | undefined,
+				excluded: string[]
+			): Record<string, unknown> => {
 				if (source == null) return {}
 				const target: Record<string, unknown> = {}
 				for (const key of Object.keys(source)) {
@@ -1610,10 +1802,10 @@ export class WasmEngine {
 			},
 			taggedTemplateLiteralLoose: (strings: TemplateStringsArray, raw?: string[]): TemplateStringsArray => {
 				if (!raw) raw = strings.slice(0) as unknown as string[]
-				;(strings as any).raw = raw
+				;(strings as { raw: readonly string[] }).raw = raw
 				return strings
 			},
-			wrapNativeSuper: (Class: any) => Class
+			wrapNativeSuper: <T>(Class: T): T => Class
 		}
 
 		const addRunDependency = (dep: string): void => {
@@ -1638,7 +1830,7 @@ export class WasmEngine {
 			}
 		}
 
-		const selfObj: Record<string, any> = {
+		const selfObj: Record<string, unknown> = {
 			__swData: { dynamic_data: { hsdp: {}, dynamic_modules: [] } },
 			WhatsAppVoipWasmCallbacks: wasmCallbacks,
 			WhatsAppVoipWasmWorkerCompatibleCallbacks: wasmCallbacks,
@@ -1649,8 +1841,9 @@ export class WasmEngine {
 		selfObj.globalThis = selfObj
 
 		if (typeof global !== 'undefined') {
-			;(global as any).WhatsAppVoipWasmCallbacks = wasmCallbacks
-			;(global as any).WhatsAppVoipWasmWorkerCompatibleCallbacks = wasmCallbacks
+			const voipGlobal = global as typeof globalThis & VoipCallbackGlobals
+			voipGlobal.WhatsAppVoipWasmCallbacks = wasmCallbacks
+			voipGlobal.WhatsAppVoipWasmWorkerCompatibleCallbacks = wasmCallbacks
 		}
 
 		const context = vm.createContext({
@@ -1744,20 +1937,20 @@ export class WasmEngine {
 				addEventListener() {}
 			},
 			__NODE_PTHREAD: {
-				getUnusedWorker: (): any => {
+				getUnusedWorker: (): NodeWorkerMessagePort | null => {
 					if (this.#unusedWorkers.length === 0) return null
 					const worker = this.#unusedWorkers.pop()!
 					this.#runningWorkers.push(worker)
 					return worker
 				},
-				returnWorkerToPool: (worker: any): void => {
+				returnWorkerToPool: (worker: NodeWorkerMessagePort): void => {
 					const idx = this.#runningWorkers.indexOf(worker)
 					if (idx >= 0) {
 						this.#runningWorkers.splice(idx, 1)
 						this.#unusedWorkers.push(worker)
 					}
 				},
-				spawnThread: (params: any): number => {
+				spawnThread: (params: { pthread_ptr: number; startRoutine: unknown; arg: unknown }): number => {
 					const worker = this.#unusedWorkers.pop()
 					if (!worker) return 6
 					this.#runningWorkers.push(worker)
@@ -1787,6 +1980,7 @@ export class WasmEngine {
 	}
 
 	#createAtomicsWrapper = (_memory: WebAssembly.Memory): typeof Atomics => {
+		const atomicsWithWaitAsync = Atomics as AtomicsWithWaitAsync
 		const atomicsWrapper = {
 			add: Atomics.add.bind(Atomics),
 			and: Atomics.and.bind(Atomics),
@@ -1801,13 +1995,14 @@ export class WasmEngine {
 			notify: (typedArray: Int32Array, index: number, count?: number): number => {
 				try {
 					return Atomics.notify(typedArray, index, count)
-				} catch (e: any) {
-					if (e?.message?.includes('futex_wake') || e?.message?.includes('main_browser_thread')) return 0
+				} catch (e: unknown) {
+					const error = e as ErrorLike
+					if (error?.message?.includes('futex_wake') || error?.message?.includes('main_browser_thread')) return 0
 					throw e
 				}
 			},
-			waitAsync: (Atomics as any).waitAsync
-				? (Atomics as any).waitAsync.bind(Atomics)
+			waitAsync: atomicsWithWaitAsync.waitAsync
+				? atomicsWithWaitAsync.waitAsync.bind(Atomics)
 				: (): { async: boolean; value: Promise<'ok'> } => ({ async: true, value: Promise.resolve('ok') }),
 			wait: (
 				typedArray: Int32Array,

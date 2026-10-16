@@ -98,6 +98,42 @@ BEGIN
   DELETE FROM start_chat_trust_signals WHERE jid = old.jid;
 END;
 
+/* Contact Refresh (peer data operation type 14, CONTACT_REFRESH_REQUEST).
+   Pending outbound requests: refresh_id is the request id that travels in
+   protocolMessage.key.id (generateContactRefreshRequestId — 1:1 with the
+   app's request-id format). The ContactRefreshResponse reply fills
+   target_version (collectionVersion), primary_duration_ms and
+   contact_uploaded_count (uniqueContactCount) via captureReplyFacts;
+   reconcile deletes the row once the local critical_unblock_low collection
+   reaches target_version and the patch log shows the version arrived. */
+CREATE TABLE IF NOT EXISTS wa_contact_refresh_pending (
+  refresh_id TEXT PRIMARY KEY NOT NULL,
+  request_start_ms INTEGER NOT NULL,
+  target_version INTEGER,
+  primary_duration_ms INTEGER,
+  contact_uploaded_count INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_contact_refresh_pending_start
+  ON wa_contact_refresh_pending (request_start_ms);
+
+/* Contact patch bookkeeping on collection critical_unblock_low: one row per
+   ingested contact/lid_contact mutation version, written by the best-effort
+   syncd mirror in chats.ts (same non-fatal side channel as syncd_mutations).
+   Reconcile treats a pending request as locally settled when the collection
+   version reached target_version AND that version shows up here — mirroring
+   the app's patch-log check. added/edited counts are best-effort telemetry
+   (the engine ingests one mutation per row; the app aggregates per patch):
+   they default to 0, and the auto-heal replay writes real counts when it
+   repairs. */
+CREATE TABLE IF NOT EXISTS wa_contact_refresh_patch_log (
+  version INTEGER PRIMARY KEY NOT NULL,
+  applied_timestamp_ms INTEGER NOT NULL,
+  apply_duration_ms INTEGER,
+  added_count INTEGER NOT NULL DEFAULT 0,
+  edited_count INTEGER NOT NULL DEFAULT 0
+);
+
 /* InfiniteAPI-only crash-recovery coordination for operations that span
    wa.db and axolotl.db. Canonical WhatsApp tables above remain unchanged. */
 CREATE TABLE IF NOT EXISTS infiniteapi_metadata (

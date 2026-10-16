@@ -6,6 +6,7 @@ import {
 	areJidsSameUser,
 	type BinaryNode,
 	encodeBinaryNode,
+	getBinaryNodeChild,
 	isHostedLidUser,
 	isHostedPnUser,
 	isJidBot,
@@ -22,6 +23,7 @@ import {
 import { compactError } from './error-log-utils'
 import { unpadRandomMax16 } from './generics'
 import type { ILogger } from './logger'
+import { rememberMessageEcho } from './message-echo-cache'
 import {
 	cacheMessageSecretIfPresent,
 	decryptMsmsgBotMessage,
@@ -31,6 +33,7 @@ import {
 } from './meta-ai-msmsg'
 import { retry, RetryExhaustedError, type RetryOptions } from './retry-utils'
 import { LibsignalDecryptError } from './suppress-libsignal-logs'
+import { rememberUsername } from './username-map'
 
 /**
  * Re-used sentinel for the msgBuffer initializer when the e2e type is `msmsg`
@@ -41,6 +44,31 @@ import { LibsignalDecryptError } from './suppress-libsignal-logs'
 const EMPTY_UINT8_ARRAY = new Uint8Array(0)
 
 const SELF_SYNC_FIX_LOG_PREFIX = '[InfiniteAPI:SELF-SYNC-FIX]'
+
+export type UnavailableFanoutType =
+	| 'bot_unavailable_fanout'
+	| 'hosted_unavailable_fanout'
+	| 'view_once_unavailable_fanout'
+
+/**
+ * Classify a stanza whose content is an `<unavailable>` placeholder.
+ *
+ * This mirrors WA Web's fanout precedence: bot > hosted > view-once. All three
+ * are unrecoverable by PDO; a plain fanout remains recoverable.
+ */
+export const classifyUnavailableFanout = (stanza: BinaryNode): UnavailableFanoutType | undefined => {
+	const content = Array.isArray(stanza.content) ? stanza.content : []
+	const unavailable = content.find(child => child.tag === 'unavailable')
+	if (!unavailable) return undefined
+
+	const hostedValue = unavailable.attrs.hosted
+	const hosted = hostedValue === 'true' || hostedValue === '1'
+	if (content.some(child => child.tag === 'bot')) return 'bot_unavailable_fanout'
+	if (hosted) return 'hosted_unavailable_fanout'
+	if (unavailable.attrs.type === 'view_once') return 'view_once_unavailable_fanout'
+
+	return undefined
+}
 
 const getEncType = (stanza: BinaryNode) => {
 	if (!Array.isArray(stanza.content)) return undefined
@@ -496,25 +524,49 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 	}
 
 	const pushname = stanza?.attrs?.notify
+	// Envelope metadata from the captured W4B inbound: `sts` is the server µs
+	// timestamp receipts must echo verbatim (A00), and `<reporting><reporting_tag>`
+	// carries a raw byte blob the reporting pipeline consumes (`C1VN.java` reads
+	// `node.A01` byte[] and persists it as a BLOB). Never base64-decode it: the
+	// dumper renders raw bytes as base64 text, which is a display artifact, not
+	// the wire format. Both live only on the stanza — the key strips them — so
+	// they ride on WAMessage and, for the receipt echo, in the per-id message-echo
+	// cache.
+	const sts = stanza.attrs.sts
+	const reportingNode = getBinaryNodeChild(stanza, 'reporting')
+	const reportingTagNode = reportingNode ? getBinaryNodeChild(reportingNode, 'reporting_tag') : undefined
+	const reportingTagContent = reportingTagNode?.content
+	const reportingTag =
+		reportingTagContent instanceof Uint8Array
+			? reportingTagContent
+			: typeof reportingTagContent === 'string'
+				? new Uint8Array(Buffer.from(reportingTagContent, 'utf8'))
+				: undefined
 	const publicChatId = jidWithoutExplicitZeroDevice(chatId)!
 	const publicParticipant = jidWithoutExplicitZeroDevice(participant)
+
+	// Direct chats only (msgType === 'chat'): on broadcast/newsletter the remoteJid is not a
+	// user, and `stanza.attrs.username` there is participant-level data, not the chat identity.
+	const remoteJidUsername =
+		msgType === 'chat'
+			? stanza.attrs.peer_recipient_username || stanza.attrs.recipient_username || stanza.attrs.username
+			: undefined
+	const participantUsername = stanza.attrs.participant
+		? stanza.attrs.participant_username || stanza.attrs.username
+		: undefined
+	// Feed the peer username map A07 stamps `peer_recipient_username` from.
+	rememberUsername(publicChatId, remoteJidUsername)
+	rememberUsername(publicParticipant, participantUsername)
 
 	const key: WAMessageKey = {
 		remoteJid: publicChatId,
 		remoteJidAlt: !isJidGroup(publicChatId) ? jidWithoutExplicitZeroDevice(addressingContext.senderAlt) : undefined,
-		// Direct chats only (msgType === 'chat'): on broadcast/newsletter the remoteJid is not a
-		// user, and `stanza.attrs.username` there is participant-level data, not the chat identity.
-		remoteJidUsername:
-			msgType === 'chat'
-				? stanza.attrs.peer_recipient_username || stanza.attrs.recipient_username || stanza.attrs.username
-				: undefined,
+		remoteJidUsername,
 		fromMe,
 		id: msgId,
 		participant: publicParticipant,
 		participantAlt: isJidGroup(publicChatId) ? jidWithoutExplicitZeroDevice(addressingContext.senderAlt) : undefined,
-		participantUsername: stanza.attrs.participant
-			? stanza.attrs.participant_username || stanza.attrs.username
-			: undefined,
+		participantUsername,
 		addressingMode: addressingContext.addressingMode,
 		...(msgType === 'newsletter' && stanza.attrs.server_id ? { server_id: stanza.attrs.server_id } : {})
 	}
@@ -524,8 +576,18 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 		category: stanza.attrs.category,
 		messageTimestamp: +(stanza.attrs.t ?? 0),
 		pushName: pushname,
-		broadcast: isJidBroadcast(from)
+		broadcast: isJidBroadcast(from),
+		sts,
+		reportingTag
 	}
+
+	// Receipts echo `sts` and address the sending device (A00/A06); `readMessages`
+	// only receives keys, so stash both here — the last place with the raw stanza.
+	// Scoped by `meId` so sessions never share entries across accounts.
+	rememberMessageEcho(meId, msgId, {
+		sts,
+		senderDeviceJid: participant || from
+	})
 
 	if (key.fromMe) {
 		fullMessage.status = proto.WebMessageInfo.Status.SERVER_ACK
@@ -752,7 +814,7 @@ export const decryptMessageNode = (
 						} else {
 							fullMessage.message = msg
 						}
-					} catch (err: any) {
+					} catch (err) {
 						// Check if this is a final failure after all retries exhausted
 						const isRetryExhausted = err instanceof RetryExhaustedError
 						const originalError = isRetryExhausted ? err.originalError : err
@@ -837,7 +899,10 @@ export const decryptMessageNode = (
 						} else if (isSessionRecord) {
 							// Session record errors are transient and the internal retry
 							// loop already exhausted its retries before reaching here.
-							logger.warn(compactContext, `no session record after ${err.attempts} attempts, will resync`)
+							logger.warn(
+								compactContext,
+								`no session record after ${(err as RetryExhaustedError).attempts} attempts, will resync`
+							)
 						} else if (isOrphanMsmsg) {
 							// Meta AI / FBID bot reply arrived but we never saw the outgoing
 							// message that carried `messageContextInfo.messageSecret`. Common
@@ -870,7 +935,9 @@ export const decryptMessageNode = (
 
 						fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
 						// Safe coercion handling edge cases where message might be undefined
-						fullMessage.messageStubParameters = [String(originalError?.message ?? originalError)]
+						fullMessage.messageStubParameters = [
+							String((originalError as Error | null | undefined)?.message ?? originalError)
+						]
 					}
 				}
 			}
@@ -878,9 +945,16 @@ export const decryptMessageNode = (
 			// If nothing was found to decrypt, preserve unavailable view-once as
 			// an explicit non-ciphertext placeholder. CIPHERTEXT would incorrectly
 			// route it through PDO/retry even though linked devices cannot retrieve
-			// media that was already consumed.
+			// media that was already consumed. Bot/hosted fanouts use the same
+			// unrecoverable marker contract already consumed by the recovery path.
 			if (!decryptables) {
-				if (fullMessage.key?.isViewOnce) {
+				const unavailableFanout = classifyUnavailableFanout(stanza)
+				// Keep view-once's existing compact marker: it is already suppressed by
+				// `isUnavailableViewOnceMessage` and has never been PDO-recoverable.
+				if (unavailableFanout && unavailableFanout !== 'view_once_unavailable_fanout') {
+					fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
+					fullMessage.messageStubParameters = [NO_MESSAGE_FOUND_ERROR_TEXT, 'unavailable', unavailableFanout]
+				} else if (fullMessage.key?.isViewOnce) {
 					fullMessage.messageStubParameters = ['view_once_unavailable']
 				} else {
 					fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
@@ -891,11 +965,17 @@ export const decryptMessageNode = (
 	}
 }
 
+/** `error.message`, falling back to `error.toString()`, for pattern matching */
+const getErrorText = (error: unknown): string => {
+	const err = error as { message?: string; toString(): string } | null | undefined
+	return err?.message || err?.toString() || ''
+}
+
 /**
  * Utility function to check if an error is related to missing session record
  */
-function isSessionRecordError(error: any): boolean {
-	const errorMessage = error?.message || error?.toString() || ''
+function isSessionRecordError(error: unknown): boolean {
+	const errorMessage = getErrorText(error)
 	return DECRYPTION_RETRY_CONFIG.sessionRecordErrors.some(errorPattern => errorMessage.includes(errorPattern))
 }
 
@@ -903,8 +983,8 @@ function isSessionRecordError(error: any): boolean {
  * Utility function to check if an error indicates a corrupted session
  * (Bad MAC, MessageCounterError, Key already used)
  */
-export function isCorruptedSessionError(error: any): boolean {
-	const errorMessage = error?.message || error?.toString() || ''
+export function isCorruptedSessionError(error: unknown): boolean {
+	const errorMessage = getErrorText(error)
 	return DECRYPTION_RETRY_CONFIG.corruptedSessionErrors.some(errorPattern => errorMessage.includes(errorPattern))
 }
 

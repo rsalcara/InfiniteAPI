@@ -1,4 +1,6 @@
 import { jest } from '@jest/globals'
+import type { ProtocolWireCapture } from '../../Types'
+import type { ILogger } from '../../Utils/logger'
 import { captureProtocolWire, validateProtocolWireCapture } from '../../Utils/protocol-wire-capture'
 import type { BinaryNode } from '../../WABinary'
 
@@ -18,7 +20,7 @@ describe('protocol wire capture', () => {
 	})
 
 	it('captures a direct retry only with one top-level encrypted payload', async () => {
-		const hook = jest.fn<(capture: any) => void>()
+		const hook = jest.fn<(capture: ProtocolWireCapture) => void>()
 		const stanza: BinaryNode = {
 			tag: 'message',
 			attrs: { id: 'retry-1', to: '123:4@lid', type: 'text' },
@@ -74,7 +76,7 @@ describe('protocol wire capture', () => {
 	})
 
 	it('captures the complete legacy group-create IQ before query', async () => {
-		const hook = jest.fn<(capture: any) => void>()
+		const hook = jest.fn<(capture: ProtocolWireCapture) => void>()
 		const stanza: BinaryNode = {
 			tag: 'iq',
 			attrs: { id: 'group-1', to: '@g.us', type: 'set', xmlns: 'w:g2' },
@@ -98,7 +100,9 @@ describe('protocol wire capture', () => {
 		const logger = { warn: jest.fn() }
 		const stanza: BinaryNode = { tag: 'message', attrs: { id: 'retry-3', to: '123:4@lid' }, content: [enc()] }
 
-		await expect(captureProtocolWire(hook, 'direct_retry', stanza, logger as any)).resolves.toBeUndefined()
+		await expect(
+			captureProtocolWire(hook, 'direct_retry', stanza, logger as unknown as ILogger)
+		).resolves.toBeUndefined()
 		expect(logger.warn).toHaveBeenCalled()
 	})
 })

@@ -1,4 +1,3 @@
-import Database from 'better-sqlite3'
 import { mkdtemp, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -8,6 +7,7 @@ import { FileAppStateSyncKeyStore, SqliteAppStateSyncKeyStore } from '../../Util
 import { inspectAuthStateCapabilities } from '../../Utils/auth-state-capabilities'
 import type { ILogger } from '../../Utils/logger'
 import { useMultiDbSqliteAuthState } from '../../Utils/multi-db-sqlite'
+import { openSqliteDatabase } from '../../Utils/sqlite-driver'
 import { useMultiFileAuthState } from '../../Utils/use-multi-file-auth-state'
 import { useSqliteAuthState } from '../../Utils/use-sqlite-auth-state'
 
@@ -198,7 +198,7 @@ describe('durable App State key recovery — independent built-in auth backends'
 	})
 
 	it('filters unrelated peer types in the shared sqlite table', async () => {
-		const db = new Database(':memory:')
+		const db = await openSqliteDatabase(':memory:')
 		try {
 			const store = new SqliteAppStateSyncKeyStore(db as never)
 			db.prepare(
@@ -216,7 +216,7 @@ describe('durable App State key recovery — independent built-in auth backends'
 	})
 
 	it('preserves unrelated peer rows when monolithic auth keys are cleared', async () => {
-		const db = new Database(':memory:')
+		const db = await openSqliteDatabase(':memory:')
 		try {
 			const auth = await useSqliteAuthState({ dbPath: ':memory:', database: db, logger: silentLogger() })
 			db.prepare(
@@ -241,7 +241,7 @@ describe('durable App State key recovery — independent built-in auth backends'
 	})
 
 	it('exports missing keys and peer messages from one SQLite read transaction', async () => {
-		const db = new Database(':memory:')
+		const db = await openSqliteDatabase(':memory:')
 		try {
 			const store = new SqliteAppStateSyncKeyStore(db as never)
 			await store.recordMissingKey(keyId, 'regular')
@@ -274,8 +274,8 @@ describe('durable App State key recovery — independent built-in auth backends'
 
 	it('retries contended IMMEDIATE recovery deletes', async () => {
 		const dbPath = join(dir, 'busy-recovery.db')
-		const blocker = new Database(dbPath)
-		const writer = new Database(dbPath)
+		const blocker = await openSqliteDatabase(dbPath)
+		const writer = await openSqliteDatabase(dbPath)
 		let releaseTimer: ReturnType<typeof setTimeout> | undefined
 		writer.pragma('busy_timeout = 1')
 		try {

@@ -12,35 +12,46 @@
 import { EventEmitter } from 'events'
 import P from 'pino'
 import { proto } from '../../../WAProto/index.js'
-import type { AuthenticationCreds, BaileysEventEmitter, WAMessage } from '../../Types'
+import type {
+	AuthenticationCreds,
+	BaileysEventEmitter,
+	BaileysEventMap,
+	Contact,
+	SignalKeyStoreWithTransaction,
+	SignalRepositoryWithLIDStore,
+	WAMessage
+} from '../../Types'
 import { initAuthCreds } from '../../Utils/auth-utils'
 import processMessage, { rememberRawProtocolSender } from '../../Utils/process-message'
 
 const silent = P({ level: 'silent' })
 
+type ProcessContext = Parameters<typeof processMessage>[1]
+
 const credsWithMe = (): AuthenticationCreds => ({
 	...initAuthCreds(),
-	me: { id: 'me@s.whatsapp.net' } as any
+	me: { id: 'me@s.whatsapp.net' } as Contact
 })
 
 const makeContext = () => {
 	const events = new EventEmitter() as unknown as BaileysEventEmitter
-	const updates: any[] = []
-	;(events as any).on('messages.update', (upd: any) => updates.push(upd))
+	const updates: BaileysEventMap['messages.update'][] = []
+	events.on('messages.update', upd => updates.push(upd))
 
+	const ctx: ProcessContext = {
+		shouldProcessHistoryMsg: false,
+		placeholderResendCache: undefined,
+		ev: events,
+		creds: credsWithMe(),
+		keyStore: {} as unknown as SignalKeyStoreWithTransaction,
+		signalRepository: {} as unknown as SignalRepositoryWithLIDStore,
+		logger: silent,
+		options: {},
+		getMessage: async () => undefined
+	}
 	return {
 		updates,
-		ctx: {
-			shouldProcessHistoryMsg: false,
-			placeholderResendCache: undefined,
-			ev: events,
-			creds: credsWithMe(),
-			keyStore: {} as any,
-			signalRepository: {} as any,
-			logger: silent,
-			options: {},
-			getMessage: async () => undefined
-		}
+		ctx
 	}
 }
 
@@ -71,13 +82,13 @@ describe('processMessage — protocolMessage guard (regression for blanket fromM
 		const { ctx, updates } = makeContext()
 		// getMessage finding the target is what gates the emit (see
 		// process-message.orphan-queue.test.ts for the "target not found yet" case)
-		ctx.getMessage = async () => ({ conversation: 'target' }) as any
+		ctx.getMessage = async () => ({ conversation: 'target' })
 		const msg = inbound('msg-1', false, protocolMessage(proto.Message.ProtocolMessage.Type.REVOKE))
 
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 
 		expect(updates).toHaveLength(1)
-		expect(updates[0][0].update.messageStubType).toBeDefined()
+		expect(updates[0]?.[0]?.update.messageStubType).toBeDefined()
 	})
 
 	it('processes inbound MESSAGE_EDIT from a non-self sender (emits messages.update)', async () => {
@@ -89,10 +100,10 @@ describe('processMessage — protocolMessage guard (regression for blanket fromM
 			protocolMessage(proto.Message.ProtocolMessage.Type.MESSAGE_EDIT, { editedMessage })
 		)
 
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 
 		expect(updates).toHaveLength(1)
-		expect(updates[0][0].update.message?.editedMessage).toBeDefined()
+		expect(updates[0]?.[0]?.update.message?.editedMessage).toBeDefined()
 	})
 
 	it('drops a spoofed HISTORY_SYNC_NOTIFICATION from a non-self sender', async () => {
@@ -101,28 +112,32 @@ describe('processMessage — protocolMessage guard (regression for blanket fromM
 			'msg-3',
 			false,
 			protocolMessage(proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION, {
-				historySyncNotification: {} as any
+				historySyncNotification: {}
 			})
 		)
 
 		// Should NOT throw / NOT process the history sync. processedHistoryMessages stays empty.
 		const credsBefore = ctx.creds.processedHistoryMessages?.length ?? 0
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 		expect(ctx.creds.processedHistoryMessages?.length ?? 0).toBe(credsBefore)
 	})
 
 	it('drops a spoofed APP_STATE_SYNC_KEY_SHARE from a non-self sender', async () => {
 		const events = new EventEmitter() as unknown as BaileysEventEmitter
-		const credUpdates: any[] = []
-		;(events as any).on('creds.update', (u: any) => credUpdates.push(u))
+		const credUpdates: BaileysEventMap['creds.update'][] = []
+		events.on('creds.update', u => credUpdates.push(u))
 
-		const ctx = {
+		const ctx: ProcessContext = {
 			shouldProcessHistoryMsg: false,
 			placeholderResendCache: undefined,
 			ev: events,
 			creds: credsWithMe(),
-			keyStore: { set: async () => {}, get: async () => ({}), transaction: async (w: any) => w() } as any,
-			signalRepository: {} as any,
+			keyStore: {
+				set: async () => {},
+				get: async () => ({}),
+				transaction: async (w: () => Promise<unknown>) => w()
+			} as unknown as SignalKeyStoreWithTransaction,
+			signalRepository: {} as unknown as SignalRepositoryWithLIDStore,
 			logger: silent,
 			options: {},
 			getMessage: async () => undefined
@@ -132,11 +147,11 @@ describe('processMessage — protocolMessage guard (regression for blanket fromM
 			'msg-4',
 			false,
 			protocolMessage(proto.Message.ProtocolMessage.Type.APP_STATE_SYNC_KEY_SHARE, {
-				appStateSyncKeyShare: { keys: [] } as any
+				appStateSyncKeyShare: { keys: [] }
 			})
 		)
 
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 
 		// No creds.update fired — the spoofed key share was rejected.
 		expect(credUpdates.filter(u => u.myAppStateKeyId !== undefined)).toHaveLength(0)
@@ -145,7 +160,7 @@ describe('processMessage — protocolMessage guard (regression for blanket fromM
 	it('routes type 39 once through the durable lifecycle handler', async () => {
 		const { ctx } = makeContext()
 		let handled = 0
-		;(ctx as any).onAppStateSyncKeyRequest = async () => {
+		ctx.onAppStateSyncKeyRequest = async () => {
 			handled++
 		}
 
@@ -162,14 +177,14 @@ describe('processMessage — protocolMessage guard (regression for blanket fromM
 			messageTimestamp: 1675888000
 		}
 
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 		expect(handled).toBe(1)
 	})
 
 	it('passes the raw companion device author after the public message key was normalized', async () => {
 		const { ctx } = makeContext()
 		const senders: string[] = []
-		;(ctx as any).onAppStateSyncKeyRequest = async (senderJid: string) => {
+		ctx.onAppStateSyncKeyRequest = async (senderJid: string) => {
 			senders.push(senderJid)
 		}
 
@@ -182,14 +197,14 @@ describe('processMessage — protocolMessage guard (regression for blanket fromM
 		}
 		rememberRawProtocolSender(msg, 'me:7@s.whatsapp.net')
 
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 		expect(senders).toEqual(['me:7@s.whatsapp.net'])
 	})
 
 	it('routes type 38 once without also writing the legacy peer-message mirror', async () => {
 		const events = new EventEmitter() as unknown as BaileysEventEmitter
-		const credUpdates: any[] = []
-		;(events as any).on('creds.update', (update: any) => credUpdates.push(update))
+		const credUpdates: BaileysEventMap['creds.update'][] = []
+		events.on('creds.update', update => credUpdates.push(update))
 		let handled = 0
 		let legacyKeyWrites = 0
 		let legacyMirrorWrites = 0
@@ -236,7 +251,7 @@ describe('processMessage — protocolMessage guard (regression for blanket fromM
 			messageTimestamp: 1675888000
 		}
 
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx as unknown as ProcessContext)
 		expect(handled).toBe(1)
 		expect(legacyKeyWrites).toBe(0)
 		expect(legacyMirrorWrites).toBe(0)
@@ -255,22 +270,23 @@ describe('processMessage — protocolMessage guard (regression for blanket fromM
 describe('processMessage — GROUP_MEMBER_LABEL_CHANGE event emission', () => {
 	const makeGroupCtx = () => {
 		const events = new EventEmitter() as unknown as BaileysEventEmitter
-		const tagUpdates: any[] = []
-		;(events as any).on('group.member-tag.update', (upd: any) => tagUpdates.push(upd))
+		const tagUpdates: BaileysEventMap['group.member-tag.update'][] = []
+		events.on('group.member-tag.update', upd => tagUpdates.push(upd))
 
+		const ctx: ProcessContext = {
+			shouldProcessHistoryMsg: false,
+			placeholderResendCache: undefined,
+			ev: events,
+			creds: credsWithMe(),
+			keyStore: {} as unknown as SignalKeyStoreWithTransaction,
+			signalRepository: {} as unknown as SignalRepositoryWithLIDStore,
+			logger: silent,
+			options: {},
+			getMessage: async () => undefined
+		}
 		return {
 			tagUpdates,
-			ctx: {
-				shouldProcessHistoryMsg: false,
-				placeholderResendCache: undefined,
-				ev: events,
-				creds: credsWithMe(),
-				keyStore: {} as any,
-				signalRepository: {} as any,
-				logger: silent,
-				options: {},
-				getMessage: async () => undefined
-			}
+			ctx
 		}
 	}
 
@@ -291,11 +307,11 @@ describe('processMessage — GROUP_MEMBER_LABEL_CHANGE event emission', () => {
 		const msg = groupInbound(
 			'lbl-set',
 			protocolMessage(proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE, {
-				memberLabel: { label: 'moderator', labelTimestamp: 1770000000 } as any
+				memberLabel: { label: 'moderator', labelTimestamp: 1770000000 }
 			})
 		)
 
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 
 		expect(tagUpdates).toHaveLength(1)
 		expect(tagUpdates[0]).toEqual({
@@ -314,11 +330,11 @@ describe('processMessage — GROUP_MEMBER_LABEL_CHANGE event emission', () => {
 			protocolMessage(proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE, {
 				// removal arrives as memberLabel patch WITHOUT label populated —
 				// previously silently swallowed by the `if (labelAssociationMsg?.label)` guard
-				memberLabel: { labelTimestamp: 1770000000 } as any
+				memberLabel: { labelTimestamp: 1770000000 }
 			})
 		)
 
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 
 		expect(tagUpdates).toHaveLength(1)
 		expect(tagUpdates[0]).toEqual({
@@ -335,14 +351,14 @@ describe('processMessage — GROUP_MEMBER_LABEL_CHANGE event emission', () => {
 		const msg = groupInbound(
 			'lbl-empty',
 			protocolMessage(proto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE, {
-				memberLabel: { label: '', labelTimestamp: 1770000000 } as any
+				memberLabel: { label: '', labelTimestamp: 1770000000 }
 			})
 		)
 
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 
 		expect(tagUpdates).toHaveLength(1)
-		expect(tagUpdates[0].label).toBe('')
+		expect(tagUpdates[0]?.label).toBe('')
 	})
 
 	it('does NOT emit when memberLabel patch is entirely absent', async () => {
@@ -354,7 +370,7 @@ describe('processMessage — GROUP_MEMBER_LABEL_CHANGE event emission', () => {
 			})
 		)
 
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 
 		expect(tagUpdates).toHaveLength(0)
 	})

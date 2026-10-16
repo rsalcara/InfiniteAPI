@@ -12,6 +12,7 @@ import { APP_STATE_SYNC_KEY_REQUEST_MESSAGE_TYPE, APP_STATE_SYNC_KEY_SHARE_MESSA
 import type { SqliteDbLike, SqliteStatementLike } from './multi-db-sqlite/types'
 import { BufferJSON } from './generics'
 import { makeKeyedMutex } from './make-mutex'
+import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, restrictHandle } from './private-fs'
 
 type MissingKeyParts = { deviceId: number; epoch: number }
 
@@ -126,11 +127,12 @@ export class FileAppStateSyncKeyStore implements AppStateSyncKeyStore {
 	}
 
 	private async persist(state: FileState): Promise<void> {
-		await mkdir(dirname(this.path), { recursive: true })
+		await mkdir(dirname(this.path), { recursive: true, mode: PRIVATE_DIR_MODE })
 		const temporary = `${this.path}.tmp`
 		const backup = `${this.path}.bak`
-		const handle = await open(temporary, 'w')
+		const handle = await open(temporary, 'w', PRIVATE_FILE_MODE)
 		try {
+			await restrictHandle(handle)
 			await handle.writeFile(JSON.stringify(state, BufferJSON.replacer))
 			await handle.sync()
 		} finally {

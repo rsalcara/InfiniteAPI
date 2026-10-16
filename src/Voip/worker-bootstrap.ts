@@ -16,7 +16,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { fileURLToPath } from 'url'
 import * as vm from 'vm'
-import { parentPort, workerData } from 'worker_threads'
+import { parentPort, type TransferListItem, workerData } from 'worker_threads'
 
 // NOTE: tsc-esm-fix runs a global `replace(/_wbFilename/g, ...)` and
 // `replace(/_wbDirname/g, ...)` on the compiled .js, intending to translate
@@ -51,16 +51,237 @@ interface _WasmCallbackPayload {
 
 const typedWorkerData = workerData as WorkerData | undefined
 
-declare const global: typeof globalThis & { [key: string]: any }
+// ---------------------------------------------------------------------------
+// Local typings. They describe only the fields this bootstrap touches on the
+// shimmed worker global, the `__d`/`__r` module registry, the emscripten
+// `Module` object and the messages exchanged with the host thread.
+// ---------------------------------------------------------------------------
+
+/** Minimal `process` stand-in installed when the worker has no Node `process`. */
+interface ProcessShim {
+	cwd: () => string
+	env: Record<string, string | undefined>
+	platform: string
+	version: string
+	versions: Record<string, string>
+	nextTick: (fn: Function, ...args: unknown[]) => unknown
+	exit: (code: number) => void
+	on: () => void
+	off: () => void
+	once: () => void
+	emit: () => void
+}
+
+/** Babel runtime helpers installed on `global.babelHelpers`. */
+interface BabelHelpers {
+	assertThisInitialized: (self: unknown) => unknown
+	[helper: string]: unknown
+}
+
+/** A constructor function whose legacy `__proto__` slot may be written. */
+type ClassLike = Function & { __proto__?: unknown }
+
+/** Any value whose legacy `__proto__` accessor may be read or written. */
+interface WithProto {
+	__proto__?: unknown
+}
+
+/** Entry of the `protoProps`/`staticProps` arrays given to `createClass`. */
+interface ClassPropertyDescriptor extends PropertyDescriptor {
+	key: PropertyKey
+}
+
+/** Template strings array as seen by `taggedTemplateLiteralLoose`. */
+type TemplateStrings = string[] & { raw?: readonly string[] }
+
+/** Whatever a `__d` factory left on `module.exports`, viewed as a namespace. */
+interface ModuleNamespace {
+	__esModule?: boolean
+	default?: unknown
+	[key: string]: unknown
+}
+
+type ModuleExports = ModuleNamespace | null | undefined
+
+interface ModuleFactoryEntry {
+	factory: Function | undefined
+	deps: string[]
+	flags?: unknown
+}
+
+type WhatsAppVoipWasmWorkerCompatibleCallbacks = Record<string, (...args: any[]) => unknown>
+
+/**
+ * Message posted to this worker by the host thread. Routing keys on
+ * `type`/`cmd`; every other field depends on the command, so anything not
+ * listed here stays `unknown`.
+ */
+interface WorkerMessage {
+	type?: string
+	cmd?: string
+	target?: string
+	/** `cmd: 'load'` */
+	wasmModule?: WebAssembly.Module
+	wasmMemory?: WebAssembly.Memory
+	workerID?: number
+	handlers?: string[]
+	/** `cmd: 'run'` */
+	pthread_ptr?: number
+	start_routine?: number
+	arg?: number
+	/** `type: 'jsWorkerCmd'` */
+	jsWorkerCmd?: string
+	/** `type: 'waWasmWorkerCompatibleCallback'` */
+	__name?: string
+	[key: string]: unknown
+}
+
+type WorkerMessageEventHandler = (event: { data: unknown }) => void
+
+/** Shape read off a thrown value / rejection reason. */
+interface ErrorLike {
+	name?: unknown
+	message?: unknown
+	stack?: unknown
+}
+
+interface UnhandledRejectionLike {
+	reason?: unknown
+}
+
+/** `onVideoDataFromJs` / `onDesktopCaptureDataFromJs` embind entry points. */
+type VideoFrameSender = (...args: number[]) => void
+
+/** Subset of the emscripten `Module` object the pthread worker drives. */
+interface VoipEmscriptenModule {
+	wasmModule?: WebAssembly.Module | null
+	wasmMemory?: WebAssembly.Memory
+	buffer?: ArrayBuffer
+	workerID?: number
+	ENVIRONMENT_IS_PTHREAD?: boolean
+	WhatsAppVoipWasmWorkerCompatibleCallbacks?: WhatsAppVoipWasmWorkerCompatibleCallbacks
+	instantiateWasm?: (
+		imports: WebAssembly.Imports,
+		successCallback: (instance: WebAssembly.Instance) => unknown
+	) => unknown
+	PThread?: {
+		receiveObjectTransfer: (data: WorkerMessage) => void
+		threadInitTLS: () => void
+	}
+	_pthread_self?: () => number
+	_malloc?: (size: number) => number
+	_free?: (ptr: number) => void
+	GROWABLE_HEAP_U8?: () => Uint8Array
+	onVideoDataFromJs?: VideoFrameSender
+	onDesktopCaptureDataFromJs?: VideoFrameSender
+	establishStackSpace?: () => void
+	invokeEntryPoint?: (startRoutine: number | undefined, arg: number | undefined) => void
+	checkMailbox?: () => void
+	__emscripten_thread_init?: (
+		pthreadPtr: number,
+		isMainBrowserThread: number,
+		isMainRuntimeThread: number,
+		canBlock: number
+	) => void
+	__emscripten_thread_mailbox_await?: (pthreadPtr: number) => void
+	__emscripten_thread_exit?: (status: number) => void
+	__emscripten_thread_crashed?: () => void
+	__embind_initialize_bindings?: () => void
+	/** Host handlers proxied by name (see `h()` in the `load` command). */
+	[key: string]: unknown
+}
+
+/** The worker's global object as the WA Web loader expects to see it. */
+interface WorkerGlobal {
+	process?: NodeJS.Process | ProcessShim
+	require?: NodeJS.Require
+	babelHelpers: BabelHelpers
+	__d: (name: string, deps: string[] | Function, factory?: Function, flags?: unknown) => void
+	__r: (name: string) => ModuleExports
+	importScripts: (...urls: string[]) => void
+	postMessage: (data: unknown, transfer?: readonly TransferListItem[]) => void
+	addEventListener: (type: string, handler: WorkerMessageEventHandler) => void
+	self: WorkerGlobal
+	window?: unknown
+	location?: unknown
+	alert?: (...args: unknown[]) => void
+	onunhandledrejection?: (event: UnhandledRejectionLike) => void
+	startWorker?: (module: VoipEmscriptenModule) => void
+	__waModule?: VoipEmscriptenModule
+	WhatsAppVoipWasmWorkerCompatibleCallbacks?: WhatsAppVoipWasmWorkerCompatibleCallbacks
+}
+
+/** Payloads the WASM side hands to `WhatsAppVoipWasmWorkerCompatibleCallbacks`. */
+interface SignalingXmppArgs {
+	peerJid: unknown
+	callId: unknown
+	xmlPayload: unknown
+}
+
+interface CallEventArgs {
+	eventType: unknown
+	userData: unknown
+	eventDataJson: unknown
+}
+
+interface RelayPacketArgs {
+	data?: { length?: number; byteLength?: number } | null
+	len?: number
+	ip?: unknown
+	port?: unknown
+}
+
+/** Callbacks whose payload is forwarded verbatim to the host thread. */
+type ForwardedCallbackArgs = Record<string, unknown>
+
+interface VideoFrameArgs {
+	userJid: unknown
+	frameBuffer: ArrayBuffer
+	width: unknown
+	height: unknown
+	orientation: unknown
+	format: unknown
+	timestamp: unknown
+	isKeyFrame: unknown
+}
+
+type ByteSource = ArrayLike<number> | ArrayBuffer
+
+/** Inputs `WABinary.Binary.build` knows how to turn into bytes. */
+type BinaryInput = string | ArrayLike<number> | ArrayBuffer | ArrayBufferView | null | undefined
+
+interface HkdfArgs {
+	key_: ByteSource
+	salt_?: ByteSource | null
+	info_: BinaryInput
+	length: number
+}
+
+interface HmacArgs {
+	data_: ByteSource
+	key_: ByteSource
+}
+
+/** Stub for the WA Web `bx` resource-id helper module. */
+interface BxModule {
+	(id: unknown): unknown
+	getURL?: (id: unknown, opts?: unknown) => string
+}
+
+interface JsWorkerMessageHandlerModule {
+	handleJsWorkerMessage: Function
+}
+
+declare const global: WorkerGlobal
 
 if (typeof process === 'undefined') {
-	;(global as any).process = {
+	global.process = {
 		cwd: () => _wbDirname || '.',
 		env: {},
 		platform: 'linux',
 		version: 'v18.0.0',
 		versions: {},
-		nextTick: (fn: Function, ...args: unknown[]) => setImmediate(fn as any, ...args),
+		nextTick: (fn: Function, ...args: unknown[]) => setImmediate(fn as (...args: unknown[]) => void, ...args),
 		exit: (code: number) => {
 			throw new Error(`Process exit: ${code}`)
 		},
@@ -69,12 +290,12 @@ if (typeof process === 'undefined') {
 		once: () => {},
 		emit: () => {}
 	}
-} else if (!(process as any).cwd) {
-	;(process as any).cwd = () => _wbDirname || '.'
+} else if (!(process as { cwd?: () => string }).cwd) {
+	;(process as { cwd?: () => string }).cwd = () => _wbDirname || '.'
 }
 
-;(global as any).babelHelpers = {
-	extends: function (target: any) {
+global.babelHelpers = {
+	extends: function (target: Record<string, unknown>) {
 		for (var i = 1; i < arguments.length; i++) {
 			var source = arguments[i]
 			if (source != null) {
@@ -89,25 +310,25 @@ if (typeof process === 'undefined') {
 		return target
 	},
 
-	inheritsLoose: function (subClass: any, superClass: any) {
+	inheritsLoose: function (subClass: ClassLike, superClass: Function) {
 		subClass.prototype = Object.create(superClass.prototype)
 		subClass.prototype.constructor = subClass
 		subClass.__proto__ = superClass
 	},
 
-	taggedTemplateLiteralLoose: function (strings: any, raw?: any) {
+	taggedTemplateLiteralLoose: function (strings: TemplateStrings, raw?: readonly string[]) {
 		if (!raw) raw = strings.slice(0)
 		strings.raw = raw
 		return strings
 	},
 
 	asyncToGenerator: function (fn: Function) {
-		return function (this: any) {
+		return function (this: unknown) {
 			var self = this
 			var args = arguments
 			return new Promise(function (resolve, reject) {
 				var gen = fn.apply(self, args)
-				function step(key: string, arg?: any) {
+				function step(key: string, arg?: unknown) {
 					try {
 						var info = gen[key](arg)
 						var value = info.value
@@ -120,10 +341,10 @@ if (typeof process === 'undefined') {
 						resolve(value)
 					} else {
 						Promise.resolve(value).then(
-							function (val: any) {
+							function (val: unknown) {
 								step('next', val)
 							},
-							function (err: any) {
+							function (err: unknown) {
 								step('throw', err)
 							}
 						)
@@ -135,10 +356,14 @@ if (typeof process === 'undefined') {
 		}
 	},
 
-	createClass: function (Constructor: any, protoProps?: any[], staticProps?: any[]) {
+	createClass: function (
+		Constructor: Function,
+		protoProps?: ClassPropertyDescriptor[],
+		staticProps?: ClassPropertyDescriptor[]
+	) {
 		if (protoProps) {
 			for (var i = 0; i < protoProps.length; i++) {
-				var descriptor: any = protoProps[i]
+				var descriptor: ClassPropertyDescriptor = protoProps[i]!
 				descriptor.enumerable = descriptor.enumerable || false
 				descriptor.configurable = true
 				if ('value' in descriptor) descriptor.writable = true
@@ -148,7 +373,7 @@ if (typeof process === 'undefined') {
 
 		if (staticProps) {
 			for (var j = 0; j < staticProps.length; j++) {
-				var staticDescriptor: any = staticProps[j]
+				var staticDescriptor: ClassPropertyDescriptor = staticProps[j]!
 				staticDescriptor.enumerable = staticDescriptor.enumerable || false
 				staticDescriptor.configurable = true
 				if ('value' in staticDescriptor) staticDescriptor.writable = true
@@ -159,13 +384,13 @@ if (typeof process === 'undefined') {
 		return Constructor
 	},
 
-	classCallCheck: function (instance: any, Constructor: any) {
+	classCallCheck: function (instance: unknown, Constructor: Function) {
 		if (!(instance instanceof Constructor)) {
 			throw new TypeError('Cannot call a class as a function')
 		}
 	},
 
-	defineProperty: function (obj: any, key: string, value: any) {
+	defineProperty: function (obj: Record<string, unknown>, key: string, value: unknown) {
 		if (key in obj) {
 			Object.defineProperty(obj, key, {
 				value: value,
@@ -180,19 +405,19 @@ if (typeof process === 'undefined') {
 		return obj
 	},
 
-	objectSpread: function (target: any) {
+	objectSpread: function (target: Record<PropertyKey, unknown>) {
 		for (var i = 1; i < arguments.length; i++) {
 			var source = arguments[i] != null ? arguments[i] : {}
-			var ownKeys = Object.keys(source)
+			var ownKeys: PropertyKey[] = Object.keys(source)
 			if (typeof Object.getOwnPropertySymbols === 'function') {
 				ownKeys = ownKeys.concat(
 					Object.getOwnPropertySymbols(source).filter(function (sym) {
 						return Object.getOwnPropertyDescriptor(source, sym)!.enumerable
-					}) as any
+					})
 				)
 			}
 
-			ownKeys.forEach(function (key: any) {
+			ownKeys.forEach(function (key: PropertyKey) {
 				target[key] = source[key]
 			})
 		}
@@ -200,7 +425,7 @@ if (typeof process === 'undefined') {
 		return target
 	},
 
-	objectSpread2: function (target: any) {
+	objectSpread2: function (target: Record<string, unknown>) {
 		for (var i = 1; i < arguments.length; i++) {
 			var source = arguments[i] != null ? arguments[i] : {}
 			if (i % 2) {
@@ -219,29 +444,29 @@ if (typeof process === 'undefined') {
 		return target
 	},
 
-	wrapNativeSuper: function (Class: any) {
-		var _cache: Map<any, any> | undefined = typeof Map === 'function' ? new Map() : undefined
+	wrapNativeSuper: function (Class: Function) {
+		var _cache: Map<unknown, unknown> | undefined = typeof Map === 'function' ? new Map() : undefined
 
-		function Wrapper(this: any) {
+		function Wrapper(this: unknown) {
 			return _construct(Class, arguments, _getPrototypeOf(this).constructor)
 		}
 
-		function _construct(Parent: any, args: any, Class: any) {
+		function _construct(Parent: Function, args: ArrayLike<unknown>, Class: Function | undefined) {
 			if (typeof Reflect !== 'undefined' && Reflect.construct) {
 				return Reflect.construct(Parent, args, Class)
 			}
 
-			var a: any[] = [null]
-			a.push.apply(a, args)
-			var instance = new (Function.bind.apply(Parent, a as [any, ...any[]]) as any)()
+			var a: unknown[] = [null]
+			a.push.apply(a, args as unknown[])
+			var instance = new ((Function.bind as Function).apply(Parent, a) as new () => object)()
 			if (Class) Object.setPrototypeOf(instance, Class.prototype)
 			return instance
 		}
 
-		function _getPrototypeOf(_o: any) {
+		function _getPrototypeOf(_o: unknown) {
 			return (
 				Object.getPrototypeOf ||
-				function (o: any) {
+				function (o: WithProto) {
 					return o.__proto__
 				}
 			)
@@ -265,15 +490,15 @@ if (typeof process === 'undefined') {
 		return Function.toString.call(fn).indexOf('[native code]') !== -1
 	},
 
-	getPrototypeOf: function (o: any) {
+	getPrototypeOf: function (o: WithProto) {
 		return Object.getPrototypeOf ? Object.getPrototypeOf(o) : o.__proto__
 	},
 
-	setPrototypeOf: function (o: any, p: any) {
+	setPrototypeOf: function (o: WithProto, p: object | null) {
 		return Object.setPrototypeOf ? Object.setPrototypeOf(o, p) : ((o.__proto__ = p), o)
 	},
 
-	assertThisInitialized: function (self: any) {
+	assertThisInitialized: function (self: unknown) {
 		if (self === void 0) {
 			throw new ReferenceError("this hasn't been initialised - super() hasn't been called")
 		}
@@ -281,12 +506,12 @@ if (typeof process === 'undefined') {
 		return self
 	},
 
-	possibleConstructorReturn: function (self: any, call: any) {
+	possibleConstructorReturn: function (self: unknown, call: unknown) {
 		if (call && (typeof call === 'object' || typeof call === 'function')) return call
-		return (global as any).babelHelpers.assertThisInitialized(self)
+		return global.babelHelpers.assertThisInitialized(self)
 	},
 
-	inherits: function (subClass: any, superClass: any) {
+	inherits: function (subClass: Function, superClass: Function | null) {
 		if (typeof superClass !== 'function' && superClass !== null) {
 			throw new TypeError('Super expression must either be null or a function')
 		}
@@ -297,14 +522,14 @@ if (typeof process === 'undefined') {
 		if (superClass) Object.setPrototypeOf(subClass, superClass)
 	},
 
-	construct: function (Parent: any, args: any, Class: any) {
+	construct: function (Parent: Function, args: ArrayLike<unknown>, Class?: Function) {
 		if (typeof Reflect !== 'undefined' && Reflect.construct) {
 			return Reflect.construct(Parent, args, Class)
 		}
 
-		var a: any[] = [null]
-		a.push.apply(a, args)
-		var Constructor = Function.bind.apply(Parent, a as [any, ...any[]]) as any
+		var a: unknown[] = [null]
+		a.push.apply(a, args as unknown[])
+		var Constructor = (Function.bind as Function).apply(Parent, a) as new () => object
 		var instance = new Constructor()
 		if (Class) Object.setPrototypeOf(instance, Class.prototype)
 		return instance
@@ -319,7 +544,7 @@ if (typeof process === 'undefined') {
 			return false
 		}
 	}
-} as Record<string, unknown>
+}
 
 if (typeof global.require === 'undefined') {
 	global.require = _require
@@ -330,15 +555,15 @@ const _originalRequire = global.require
 
 const hideNodeEnv = (): void => {
 	try {
-		delete (global as any).process
+		delete global.process
 	} catch (e) {
-		global.process = undefined as any
+		global.process = undefined
 	}
 
 	try {
-		delete (global as any).require
+		delete global.require
 	} catch (e) {
-		global.require = undefined as any
+		global.require = undefined
 	}
 }
 
@@ -350,10 +575,10 @@ const _restoreNodeEnv = (): void => {
 	global.require = _originalRequire
 }
 
-const __modules: Record<string, { exports: any }> = {}
-const __moduleFactories: Record<string, { factory: Function; deps: string[]; flags?: any }> = {}
+const __modules: Record<string, { exports: unknown }> = {}
+const __moduleFactories: Record<string, ModuleFactoryEntry> = {}
 
-global.__d = function (name: string, deps: any, factory?: any, flags?: any): void {
+global.__d = function (name: string, deps: string[] | Function, factory?: Function, flags?: unknown): void {
 	if (typeof deps === 'function') {
 		factory = deps
 		deps = []
@@ -362,12 +587,12 @@ global.__d = function (name: string, deps: any, factory?: any, flags?: any): voi
 	__moduleFactories[name] = { factory, deps, flags }
 }
 
-const importDefaultModule = (name: string): any => {
+const importDefaultModule = (name: string): unknown => {
 	const value = global.__r(name)
 	return value?.__esModule ? value.default : value
 }
 
-const importAllModule = (name: string): any => {
+const importAllModule = (name: string): unknown => {
 	const value = global.__r(name)
 	if (value == null) {
 		return { default: value }
@@ -390,31 +615,31 @@ const importAllModule = (name: string): any => {
 	return namespace
 }
 
-global.__r = function (name: string): any {
-	if (__modules[name]) return __modules[name].exports
+global.__r = function (name: string): ModuleExports {
+	if (__modules[name]) return __modules[name].exports as ModuleExports
 
 	const moduleFactory = __moduleFactories[name]
 	if (!moduleFactory) throw new Error(`Module "${name}" not found`)
 
-	const module = { exports: {} as any }
+	const module: { exports: unknown } = { exports: {} }
 	__modules[name] = module
 
 	try {
-		moduleFactory.factory(global, global.__r, importDefaultModule, importAllModule, null, module, module.exports)
+		moduleFactory.factory!(global, global.__r, importDefaultModule, importAllModule, null, module, module.exports)
 	} catch (e) {
 		delete __modules[name]
 		throw e
 	}
 
-	return module.exports
+	return module.exports as ModuleExports
 }
 
 __modules['Promise'] = { exports: Promise }
 
-const bxFunc = function (id: any) {
+const bxFunc = function (id: unknown) {
 	return id
-} as any
-bxFunc.getURL = function (_id: any, _opts?: any) {
+} as BxModule
+bxFunc.getURL = function (_id: unknown, _opts?: unknown) {
 	return ''
 }
 
@@ -432,9 +657,9 @@ __modules['WorkerMessagePort'] = {
 }
 __modules['WAWebVoipWebWasmWorkerResource'] = { exports: {} }
 
-if (typeof self === 'undefined') (global as any).self = global
-;(global as any).self = global
-if (typeof (global as any).window === 'undefined') (global as any).window = global
+if (typeof self === 'undefined') global.self = global
+global.self = global
+if (typeof global.window === 'undefined') global.window = global
 
 global.importScripts = function (...urls: string[]): void {
 	for (const url of urls) {
@@ -445,8 +670,8 @@ global.importScripts = function (...urls: string[]): void {
 	}
 }
 
-if (typeof (global as any).location === 'undefined') {
-	;(global as any).location = {
+if (typeof global.location === 'undefined') {
+	global.location = {
 		href: _wbFilename,
 		origin: 'file://',
 		protocol: 'file:',
@@ -459,16 +684,16 @@ if (typeof (global as any).location === 'undefined') {
 	}
 }
 
-global.postMessage = function (data: any, transfer?: any): void {
+global.postMessage = function (data: unknown, transfer?: readonly TransferListItem[]): void {
 	if (parentPort) parentPort.postMessage(data, transfer)
 }
 
-const messageListeners: Array<(event: { data: any }) => void> = []
-global.addEventListener = function (type: string, handler: any): void {
+const messageListeners: Array<WorkerMessageEventHandler> = []
+global.addEventListener = function (type: string, handler: WorkerMessageEventHandler): void {
 	if (type === 'message') {
 		messageListeners.push(handler)
 		if (parentPort)
-			parentPort.on('message', (data: any) => {
+			parentPort.on('message', (data: unknown) => {
 				handler({ data })
 			})
 	}
@@ -502,26 +727,28 @@ class SimpleHook<T = unknown> {
 }
 
 class WorkerSyncedMessagePort {
-	private $1: Record<string, SimpleHook<any>> = {}
-	public onUnhandledMessage = new SimpleHook<any>()
-	public onMessage = new SimpleHook<any>()
-	public onPostMessage = new SimpleHook<any>()
-	public onError = new SimpleHook<any>()
-	private $2: any
+	private $1: Record<string, SimpleHook<WorkerMessage>> = {}
+	public onUnhandledMessage = new SimpleHook<WorkerMessage>()
+	public onMessage = new SimpleHook<WorkerMessage>()
+	public onPostMessage = new SimpleHook<unknown>()
+	public onError = new SimpleHook<unknown>()
+	private $2: unknown
 	public name: string
 
-	constructor(port: any, name: string) {
+	constructor(port: unknown, name: string) {
 		this.$2 = port
 		this.name = name
 
 		if (parentPort) {
-			parentPort.on('message', (data: any) => {
-				this.onMessageHandler(data)
+			// Host messages are trusted to follow the `WorkerMessage` shape; the
+			// dispatcher below tolerates missing routing keys.
+			parentPort.on('message', (data: unknown) => {
+				this.onMessageHandler(data as WorkerMessage)
 			})
 		}
 	}
 
-	onMessageHandler(data: any): void {
+	onMessageHandler(data: WorkerMessage): void {
 		try {
 			this.onMessage.call(data)
 			let handled = false
@@ -542,7 +769,7 @@ class WorkerSyncedMessagePort {
 		}
 	}
 
-	postMessage(data: any, transfer?: any): void {
+	postMessage(data: unknown, transfer?: readonly TransferListItem[]): void {
 		this.onPostMessage.call(data)
 		if (parentPort) {
 			if (transfer) parentPort.postMessage(data, transfer)
@@ -550,17 +777,17 @@ class WorkerSyncedMessagePort {
 		}
 	}
 
-	addMessageListener(type: string, fn: (data: any) => void): (data: any) => void {
+	addMessageListener(type: string, fn: (data: WorkerMessage) => void): (data: WorkerMessage) => void {
 		let hook = this.$1[type]
 		if (!hook) {
-			hook = new SimpleHook<any>()
+			hook = new SimpleHook<WorkerMessage>()
 			this.$1[type] = hook
 		}
 
 		return hook.add(fn)
 	}
 
-	removeMessageListener(type: string, fn: (data: any) => void): boolean {
+	removeMessageListener(type: string, fn: (data: WorkerMessage) => void): boolean {
 		const hook = this.$1[type]
 		return !!hook && hook.remove(fn)
 	}
@@ -573,7 +800,7 @@ class WorkerSyncedMessagePort {
 
 const WABinary = {
 	Binary: {
-		build: function (data: any) {
+		build: function (data: BinaryInput) {
 			return {
 				readByteArrayView: function (): Uint8Array {
 					if (data instanceof Uint8Array) return data
@@ -601,7 +828,7 @@ const WABinary = {
 const WACryptoHkdfSync = {
 	hkdf: function (
 		key: Uint8Array,
-		salt: Buffer | undefined,
+		salt: Uint8Array | undefined,
 		info: Uint8Array | Buffer | undefined,
 		length: number
 	): Uint8Array {
@@ -650,12 +877,12 @@ const WAWebVoipPersistentFS = {
 	getVoipPersistentDirectoryPath: function (): string {
 		return path.join(os.tmpdir(), 'voip')
 	},
-	initPersistentFS: async function (_module?: any): Promise<void> {
+	initPersistentFS: async function (_module?: unknown): Promise<void> {
 		return Promise.resolve()
 	}
 }
 
-let WAWebVoipJsWorkerMessageHandler: { handleJsWorkerMessage: Function } = {
+let WAWebVoipJsWorkerMessageHandler: JsWorkerMessageHandlerModule = {
 	handleJsWorkerMessage: function () {}
 }
 
@@ -690,18 +917,18 @@ const nullthrows = <T>(value: T | null | undefined): T => {
 
 const asyncToGeneratorRuntime = {
 	asyncToGenerator: function (fn: Function) {
-		return function (this: any, ...args: any[]) {
+		return function (this: unknown, ...args: any[]) {
 			const gen = fn.apply(this, args)
 			return new Promise((resolve, reject) => {
-				function step(key: string, arg?: any) {
+				function step(key: string, arg?: unknown) {
 					try {
 						const info = gen[key](arg)
 						const value = info.value
 						if (info.done) resolve(value)
 						else
 							Promise.resolve(value).then(
-								(val: any) => step('next', val),
-								(err: any) => step('throw', err)
+								(val: unknown) => step('next', val),
+								(err: unknown) => step('throw', err)
 							)
 					} catch (e) {
 						reject(e)
@@ -714,11 +941,10 @@ const asyncToGeneratorRuntime = {
 	}
 }
 
-const e = new WorkerSyncedMessagePort((global as any).self, 'VoipWebWasmWorker')
+const e = new WorkerSyncedMessagePort(global.self, 'VoipWebWasmWorker')
 
-type WhatsAppVoipWasmWorkerCompatibleCallbacks = Record<string, (...args: any[]) => unknown>
-;(global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks = {
-	onSignalingXmpp: function (n: any) {
+global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks = {
+	onSignalingXmpp: function (n: SignalingXmppArgs) {
 		e.postMessage({
 			type: 'waWasmWorkerCompatibleCallback',
 			__name: 'onSignalingXmpp',
@@ -728,7 +954,7 @@ type WhatsAppVoipWasmWorkerCompatibleCallbacks = Record<string, (...args: any[])
 		})
 	},
 
-	onCallEvent: function (n: any) {
+	onCallEvent: function (n: CallEventArgs) {
 		e.postMessage({
 			type: 'waWasmWorkerCompatibleCallback',
 			__name: 'onCallEvent',
@@ -738,7 +964,7 @@ type WhatsAppVoipWasmWorkerCompatibleCallbacks = Record<string, (...args: any[])
 		})
 	},
 
-	sendDataToRelay: function (n: any) {
+	sendDataToRelay: function (n: RelayPacketArgs) {
 		const t = n.data
 		const r = n.len
 		const o = n.ip
@@ -756,13 +982,13 @@ type WhatsAppVoipWasmWorkerCompatibleCallbacks = Record<string, (...args: any[])
 		return r || (t ? t.length || t.byteLength || 0 : 0)
 	},
 
-	loggingCallback: function (n: any) {
+	loggingCallback: function (n: ForwardedCallbackArgs) {
 		try {
 			e.postMessage(Object.assign({ type: 'waWasmWorkerCompatibleCallback', __name: 'loggingCallback' }, n))
 		} catch (err) {}
 	},
 
-	initCaptureDriverJS: function (n: any) {
+	initCaptureDriverJS: function (n: ForwardedCallbackArgs) {
 		e.postMessage(Object.assign({ type: 'waWasmWorkerCompatibleCallback', __name: 'initCaptureDriverJS' }, n))
 		return 0
 	},
@@ -783,7 +1009,7 @@ type WhatsAppVoipWasmWorkerCompatibleCallbacks = Record<string, (...args: any[])
 		return 0
 	},
 
-	initPlaybackDriverJS: function (n: any) {
+	initPlaybackDriverJS: function (n: ForwardedCallbackArgs) {
 		e.postMessage(Object.assign({ type: 'waWasmWorkerCompatibleCallback', __name: 'initPlaybackDriverJS' }, n))
 		return 0
 	},
@@ -804,7 +1030,7 @@ type WhatsAppVoipWasmWorkerCompatibleCallbacks = Record<string, (...args: any[])
 		return 0
 	},
 
-	startVideoCaptureJS: function (n: any) {
+	startVideoCaptureJS: function (n: ForwardedCallbackArgs) {
 		e.postMessage(Object.assign({ type: 'waWasmWorkerCompatibleCallback', __name: 'startVideoCaptureJS' }, n))
 		return 0
 	},
@@ -817,7 +1043,7 @@ type WhatsAppVoipWasmWorkerCompatibleCallbacks = Record<string, (...args: any[])
 		return 0
 	},
 
-	onVideoFrameWasmToJs: function (n: any) {
+	onVideoFrameWasmToJs: function (n: VideoFrameArgs) {
 		e.postMessage(
 			{
 				type: 'waWasmWorkerCompatibleCallback',
@@ -835,7 +1061,7 @@ type WhatsAppVoipWasmWorkerCompatibleCallbacks = Record<string, (...args: any[])
 		)
 	},
 
-	startDesktopCaptureJS: function (n: any) {
+	startDesktopCaptureJS: function (n: ForwardedCallbackArgs) {
 		e.postMessage(Object.assign({ type: 'waWasmWorkerCompatibleCallback', __name: 'startDesktopCaptureJS' }, n))
 		return 0
 	},
@@ -848,20 +1074,20 @@ type WhatsAppVoipWasmWorkerCompatibleCallbacks = Record<string, (...args: any[])
 		return 0
 	},
 
-	cryptoHkdfExtractWithSaltAndExpand: function (t: any) {
+	cryptoHkdfExtractWithSaltAndExpand: function (t: HkdfArgs) {
 		const i = new Uint8Array(t.key_)
 		const l = t.salt_ ? new Uint8Array(t.salt_) : undefined
 		const s = WABinary.Binary.build(t.info_).readByteArrayView()
-		return WACryptoHkdfSync.hkdf(i, l as any, s, t.length)
+		return WACryptoHkdfSync.hkdf(i, l, s, t.length)
 	},
 
-	hmacSha256KeyGenerator: function (t: any) {
+	hmacSha256KeyGenerator: function (t: HmacArgs) {
 		const r = new Uint8Array(t.data_)
 		const a = new Uint8Array(t.key_)
 		return new Sha256HMacBuilder(a).update(r).finish()
 	},
 
-	isParticipantKnownContact: function (_t: any) {
+	isParticipantKnownContact: function (_t: unknown) {
 		return false
 	},
 
@@ -887,7 +1113,7 @@ let wasmLoader: Function | null = null
 if (typedWorkerData && (typedWorkerData.loaderCode || typedWorkerData.workerModulesCode)) {
 	try {
 		const modulePrelude = 'var __d = global.__d, __r = global.__r;\n'
-		const savedCallbacks = (global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks
+		const savedCallbacks = global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks
 
 		if (typedWorkerData.workerModulesCode) {
 			const workerScript = new vm.Script(modulePrelude + typedWorkerData.workerModulesCode, {
@@ -903,25 +1129,24 @@ if (typedWorkerData && (typedWorkerData.loaderCode || typedWorkerData.workerModu
 			loaderScript.runInThisContext()
 		}
 
-		if (!(global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks?.loggingCallback) {
-			;(global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks = savedCallbacks
-			if ((global as any).self !== (global as any).self) {
-				;(global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks = savedCallbacks
+		if (!global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks?.loggingCallback) {
+			global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks = savedCallbacks
+			if (global.self !== global.self) {
+				global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks = savedCallbacks
 			}
 		}
 
-		if (global.self !== (global as any).self) {
-			if ((global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks) {
-				;(global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks = (
-					global as any
-				).self.WhatsAppVoipWasmWorkerCompatibleCallbacks
-			} else if ((global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks) {
-				;(global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks = (
-					global as any
-				).self.WhatsAppVoipWasmWorkerCompatibleCallbacks
+		if (global.self !== global.self) {
+			// `currentSelf` is the same reference as `global.self`; reading it once
+			// keeps these (no-op) re-assignments from being literal self-assignments.
+			const currentSelf = global.self
+			if (currentSelf.WhatsAppVoipWasmWorkerCompatibleCallbacks) {
+				global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks = currentSelf.WhatsAppVoipWasmWorkerCompatibleCallbacks
+			} else if (currentSelf.WhatsAppVoipWasmWorkerCompatibleCallbacks) {
+				global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks = currentSelf.WhatsAppVoipWasmWorkerCompatibleCallbacks
 			}
 
-			;(global as any).self = (global as any).self
+			global.self = currentSelf
 		}
 
 		wasmLoader = resolveLoaderModule()
@@ -929,7 +1154,7 @@ if (typedWorkerData && (typedWorkerData.loaderCode || typedWorkerData.workerModu
 		try {
 			const jsWorkerModule = global.__r('WAWebVoipJsWorkerMessageHandler')
 			if (jsWorkerModule) {
-				WAWebVoipJsWorkerMessageHandler = jsWorkerModule.default ?? jsWorkerModule
+				WAWebVoipJsWorkerMessageHandler = (jsWorkerModule.default ?? jsWorkerModule) as JsWorkerMessageHandlerModule
 			}
 		} catch (e) {}
 	} catch (e) {}
@@ -941,13 +1166,13 @@ if (!wasmLoader) {
 	if (fs.existsSync(rsrcPath)) {
 		try {
 			const loaderCode = fs.readFileSync(rsrcPath, 'utf8')
-			const savedCallbacks = (global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks
+			const savedCallbacks = global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks
 
 			const script = new vm.Script(loaderCode, { filename: rsrcPath })
 			script.runInThisContext()
 
-			if (!(global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks?.loggingCallback) {
-				;(global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks = savedCallbacks
+			if (!global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks?.loggingCallback) {
+				global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks = savedCallbacks
 			}
 
 			wasmLoader = resolveLoaderModule()
@@ -955,9 +1180,9 @@ if (!wasmLoader) {
 	}
 }
 
-let s: any = {}
+let s: VoipEmscriptenModule = {}
 let u = false
-let _: any = null
+let _: VoipEmscriptenModule | null = null
 let jsWorkerRawVideoFramePtr = 0
 let jsWorkerRawVideoFrameSize = 0
 
@@ -969,7 +1194,7 @@ const d = (..._args: any[]): void => {}
 
 const m = (...args: any[]): void => {
 	const text = args.join(' ')
-	;(global as any).postMessage({
+	global.postMessage({
 		cmd: 'alert',
 		text: text,
 		threadId: s._pthread_self ? s._pthread_self() : undefined
@@ -977,24 +1202,27 @@ const m = (...args: any[]): void => {
 }
 
 const p = d
-;(global as any).self.alert = m
+global.self.alert = m
 
-s.instantiateWasm = function (imports: any, successCallback: (instance: WebAssembly.Instance) => any) {
+s.instantiateWasm = function (
+	imports: WebAssembly.Imports,
+	successCallback: (instance: WebAssembly.Instance) => unknown
+) {
 	const wasmModule = nullthrows(s.wasmModule)
 	s.wasmModule = null
 	const instance = new WebAssembly.Instance(wasmModule, imports)
 	return successCallback(instance)
 }
 // eslint-disable-next-line padding-line-between-statements
-;(global as any).self.onunhandledrejection = function (event: any) {
+global.self.onunhandledrejection = function (event: UnhandledRejectionLike) {
 	throw event.reason ?? event
 }
 
-const getActiveWasmModule = (): any => {
-	return _ || (global as any).self.__waModule || s
+const getActiveWasmModule = (): VoipEmscriptenModule => {
+	return _ || global.self.__waModule || s
 }
 
-const releaseJsWorkerRawVideoFrameBuffer = (moduleRef: any): void => {
+const releaseJsWorkerRawVideoFrameBuffer = (moduleRef: VoipEmscriptenModule | null | undefined): void => {
 	if (jsWorkerRawVideoFramePtr && moduleRef && typeof moduleRef._free === 'function') {
 		try {
 			moduleRef._free(jsWorkerRawVideoFramePtr)
@@ -1005,7 +1233,7 @@ const releaseJsWorkerRawVideoFrameBuffer = (moduleRef: any): void => {
 	jsWorkerRawVideoFrameSize = 0
 }
 
-const handleRawVideoFrameOnJsWorker = (msg: any): void => {
+const handleRawVideoFrameOnJsWorker = (msg: WorkerMessage): void => {
 	const moduleRef = getActiveWasmModule()
 	const sendFrameFn = msg?.useDesktopCapture ? moduleRef?.onDesktopCaptureDataFromJs : moduleRef?.onVideoDataFromJs
 	const frameBuffer = msg?.frameBuffer
@@ -1043,19 +1271,19 @@ const handleRawVideoFrameOnJsWorker = (msg: any): void => {
 		return
 	}
 
-	moduleRef.GROWABLE_HEAP_U8().set(bytes, jsWorkerRawVideoFramePtr)
+	moduleRef.GROWABLE_HEAP_U8!().set(bytes, jsWorkerRawVideoFramePtr)
 
 	try {
 		sendFrameFn.call(moduleRef, jsWorkerRawVideoFramePtr, bytes.byteLength, width, height, fps, format, orientation)
-	} catch (error: any) {
-		if (error?.name !== 'BindingError') {
+	} catch (error) {
+		if ((error as ErrorLike | null | undefined)?.name !== 'BindingError') {
 			throw error
 		}
 
 		try {
 			sendFrameFn.call(moduleRef, jsWorkerRawVideoFramePtr, bytes.byteLength, width, height, fps, format)
-		} catch (legacyError: any) {
-			if (legacyError?.name !== 'BindingError') {
+		} catch (legacyError) {
+			if ((legacyError as ErrorLike | null | undefined)?.name !== 'BindingError') {
 				throw legacyError
 			}
 
@@ -1073,24 +1301,24 @@ const handleRawVideoFrameOnJsWorker = (msg: any): void => {
 	}
 }
 
-function f(t: any): void {
+function f(t: WorkerMessage): void {
 	try {
 		if (t.cmd === 'load') {
 			const wasmModule = t.wasmModule
-			const wasmMemory = t.wasmMemory
+			const wasmMemory = t.wasmMemory!
 			const workerID = t.workerID
-			const handlers = t.handlers
-			const pendingMessages: any[] = []
+			const handlers = t.handlers!
+			const pendingMessages: WorkerMessage[] = []
 
-			function g(msg: any): void {
+			function g(msg: WorkerMessage): void {
 				pendingMessages.push(msg)
 			}
 
 			e.removeMessageListener('cmd', f)
 			e.addMessageListener('cmd', g)
-			;(global as any).self.startWorker = function (module: any): void {
-				;(global as any).self.__waModule = module
-				;(global as any).__waModule = module
+			global.self.startWorker = function (module: VoipEmscriptenModule): void {
+				global.self.__waModule = module
+				global.__waModule = module
 				s = module
 				e.postMessage({ type: 'cmd', cmd: 'loaded' })
 				for (const msg of pendingMessages) f(msg)
@@ -1119,24 +1347,20 @@ function f(t: any): void {
 			s.ENVIRONMENT_IS_PTHREAD = true
 
 			if (!s.WhatsAppVoipWasmWorkerCompatibleCallbacks) {
-				s.WhatsAppVoipWasmWorkerCompatibleCallbacks = (global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks
+				s.WhatsAppVoipWasmWorkerCompatibleCallbacks = global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks
 			}
 
 			if (wasmLoader) {
 				hideNodeEnv()
 				wasmLoader(s)
 					.then(
-						asyncToGeneratorRuntime.asyncToGenerator(function* (module: any) {
+						asyncToGeneratorRuntime.asyncToGenerator(function* (module: VoipEmscriptenModule) {
 							if (!module.WhatsAppVoipWasmWorkerCompatibleCallbacks) {
-								module.WhatsAppVoipWasmWorkerCompatibleCallbacks = (
-									global as any
-								).self.WhatsAppVoipWasmWorkerCompatibleCallbacks
+								module.WhatsAppVoipWasmWorkerCompatibleCallbacks = global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks
 							}
 
 							if (!s.WhatsAppVoipWasmWorkerCompatibleCallbacks?.loggingCallback) {
-								s.WhatsAppVoipWasmWorkerCompatibleCallbacks = (
-									global as any
-								).self.WhatsAppVoipWasmWorkerCompatibleCallbacks
+								s.WhatsAppVoipWasmWorkerCompatibleCallbacks = global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks
 							}
 
 							_ = module
@@ -1152,12 +1376,12 @@ function f(t: any): void {
 					// with an error attr — that hit the loaded-handler in the
 					// parent and made init appear to succeed while the worker
 					// was broken. `cmd: 'error'` ensures the failure surfaces.
-					.catch((err: any) => {
+					.catch((err: unknown) => {
 						try {
 							e.postMessage({
 								type: 'cmd',
 								cmd: 'error',
-								error: String(err?.message ?? err ?? 'wasmLoader rejected')
+								error: String((err as ErrorLike | null | undefined)?.message ?? err ?? 'wasmLoader rejected')
 							})
 						} catch {}
 					})
@@ -1165,7 +1389,7 @@ function f(t: any): void {
 				e.postMessage({ type: 'cmd', cmd: 'loaded' })
 			}
 		} else if (t.cmd === 'run') {
-			const pthread_ptr = t.pthread_ptr
+			const pthread_ptr = t.pthread_ptr!
 
 			if (s.__emscripten_thread_init) s.__emscripten_thread_init(pthread_ptr, 0, 0, 1)
 			if (s.__emscripten_thread_mailbox_await) s.__emscripten_thread_mailbox_await(pthread_ptr)
@@ -1183,7 +1407,7 @@ function f(t: any): void {
 
 			try {
 				if (s.invokeEntryPoint) s.invokeEntryPoint(t.start_routine, t.arg)
-			} catch (err: any) {
+			} catch (err) {
 				if (err !== 'unwind') throw err
 			}
 		} else if (t.cmd === 'cancel') {
@@ -1200,9 +1424,9 @@ function f(t: any): void {
 				p(t)
 			}
 		}
-	} catch (err: any) {
+	} catch (err) {
 		p('worker.js onmessage() captured an uncaught exception: ' + err)
-		if (err?.stack) p(err.stack)
+		if ((err as ErrorLike | null | undefined)?.stack) p((err as ErrorLike).stack)
 		if (s.__emscripten_thread_crashed) s.__emscripten_thread_crashed()
 		throw err
 	}
@@ -1210,7 +1434,7 @@ function f(t: any): void {
 
 e.addMessageListener('cmd', f)
 
-e.addMessageListener('jsWorkerCmd', function (msg: any): void {
+e.addMessageListener('jsWorkerCmd', function (msg: WorkerMessage): void {
 	try {
 		if (msg?.jsWorkerCmd === 'pushRawVideoFrame') {
 			return handleRawVideoFrameOnJsWorker(msg)
@@ -1226,23 +1450,23 @@ e.addMessageListener('jsWorkerCmd', function (msg: any): void {
 	}
 })
 
-e.addMessageListener('waWasmWorkerCompatibleCallback', function (msg: any): void {
+e.addMessageListener('waWasmWorkerCompatibleCallback', function (msg: WorkerMessage): void {
 	const callbackName = msg.__name
 	if (!callbackName) return
 
-	if (!(global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks) return
-	if (typeof (global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks[callbackName] !== 'function') return
+	if (!global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks) return
+	if (typeof global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks[callbackName] !== 'function') return
 
 	try {
 		if (['startCaptureJS', 'startPlaybackJS', 'stopCaptureJS', 'stopPlaybackJS'].includes(callbackName)) {
-			;(global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks[callbackName]()
+			global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks[callbackName]()
 		} else {
 			const args: Record<string, unknown> = {}
 			for (const key in msg) {
 				if (key !== 'type' && key !== '__name' && !key.startsWith('__')) args[key] = msg[key]
 			}
 
-			;(global as any).self.WhatsAppVoipWasmWorkerCompatibleCallbacks[callbackName](args)
+			global.self.WhatsAppVoipWasmWorkerCompatibleCallbacks[callbackName](args)
 		}
 	} catch (err) {}
 })

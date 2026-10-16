@@ -398,6 +398,12 @@ export const processHistoryMessage = (item: proto.IHistorySync, logger?: ILogger
 
 	// Convert Map back to array for return
 	const lidPnMappings = Array.from(lidPnMap.values())
+	// The app reads the account NCT salt only from the initial bootstrap
+	// (`HistorySyncChunkProcessor`, `X/C29379CuL.java:474-476`).
+	const nctSalt =
+		item.syncType === proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP && item.nctSalt?.length
+			? item.nctSalt
+			: undefined
 
 	return {
 		chats,
@@ -405,6 +411,7 @@ export const processHistoryMessage = (item: proto.IHistorySync, logger?: ILogger
 		messages,
 		lidPnMappings,
 		...(tcTokens.length ? { tcTokens } : {}),
+		...(nctSalt ? { nctSalt } : {}),
 		pastParticipants: item.pastParticipants,
 		syncType: item.syncType,
 		progress: item.progress

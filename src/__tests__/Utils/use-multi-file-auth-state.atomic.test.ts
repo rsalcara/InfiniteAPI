@@ -18,6 +18,7 @@
 import { mkdtemp, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import type { SignalDataSet } from '../../Types'
 import { useMultiFileAuthState } from '../../Utils/use-multi-file-auth-state'
 
 describe('useMultiFileAuthState — atomic write & corruption recovery (H7)', () => {
@@ -73,7 +74,7 @@ describe('useMultiFileAuthState — atomic write & corruption recovery (H7)', ()
 		// or permission denial.
 		const realKeySet = state.keys.set
 		let count = 0
-		state.keys.set = (async (data: any) => {
+		state.keys.set = (async (data: SignalDataSet) => {
 			count++
 			if (count === 1) {
 				// Pretend disk fills up halfway: write session, fail identity-key.
@@ -88,8 +89,8 @@ describe('useMultiFileAuthState — atomic write & corruption recovery (H7)', ()
 
 		await expect(
 			state.keys.set({
-				session: { [jid]: Buffer.from([0x01]) as any },
-				'identity-key': { [jid]: Buffer.from([0x02]) as any }
+				session: { [jid]: Buffer.from([0x01]) },
+				'identity-key': { [jid]: Buffer.from([0x02]) }
 			})
 		).rejects.toThrow('disk full')
 

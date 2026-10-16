@@ -7,7 +7,8 @@ import {
 	isAppStateSyncIrrecoverable,
 	isMissingKeyError,
 	MAX_SYNC_ATTEMPTS,
-	newLTHashState
+	newLTHashState,
+	type RawSyncdMutation
 } from '../../Utils/chat-utils'
 import { aesEncrypt } from '../../Utils/crypto'
 import { expandAppStateKeys } from '../../Utils/wasm-bridge'
@@ -20,7 +21,7 @@ describe('App State Sync', () => {
 			const msg: proto.ISyncdPatch = {
 				keyId: { id: Buffer.from('missing-key') },
 				mutations: [],
-				version: { version: 1 as any },
+				version: { version: 1 },
 				snapshotMac: Buffer.alloc(32),
 				patchMac: Buffer.alloc(32)
 			}
@@ -28,14 +29,14 @@ describe('App State Sync', () => {
 			try {
 				await decodeSyncdPatch(msg, 'regular_low', newLTHashState(), missingKeyFn, () => {}, true)
 				fail('should have thrown')
-			} catch (error: any) {
+			} catch (error) {
 				expect(isMissingKeyError(error)).toBe(true)
 			}
 		})
 
 		it('decodeSyncdSnapshot throws with isMissingKey on missing snapshot key', async () => {
 			const snapshot: proto.ISyncdSnapshot = {
-				version: { version: 1 as any },
+				version: { version: 1 },
 				records: [],
 				keyId: { id: Buffer.from('missing-key') },
 				mac: Buffer.alloc(32)
@@ -44,7 +45,7 @@ describe('App State Sync', () => {
 			try {
 				await decodeSyncdSnapshot('regular_low', snapshot, missingKeyFn, undefined, true)
 				fail('should have thrown')
-			} catch (error: any) {
+			} catch (error) {
 				expect(isMissingKeyError(error)).toBe(true)
 			}
 		})
@@ -61,7 +62,7 @@ describe('App State Sync', () => {
 			try {
 				await decodeSyncdMutations(records, newLTHashState(), missingKeyFn, () => {}, true)
 				fail('should have thrown')
-			} catch (error: any) {
+			} catch (error) {
 				expect(isMissingKeyError(error)).toBe(true)
 			}
 		})
@@ -139,7 +140,7 @@ describe('App State Sync', () => {
 				}
 			]
 
-			const rawMutations: any[] = []
+			const rawMutations: RawSyncdMutation[] = []
 			await decodeSyncdMutations(
 				records,
 				newLTHashState(),
@@ -150,11 +151,11 @@ describe('App State Sync', () => {
 			)
 
 			expect(rawMutations).toHaveLength(1)
-			expect(rawMutations[0].operation).toBe(proto.SyncdMutation.SyncdOperation.SET)
-			expect(Buffer.from(rawMutations[0].indexMac)).toEqual(fakeIndexMac)
-			expect(Buffer.from(rawMutations[0].valueMac)).toEqual(fakeValueMac)
-			expect(rawMutations[0].mutation.index).toEqual(['mute', 'chat@s.whatsapp.net'])
-			expect(rawMutations[0].mutation.syncAction.value?.muteAction?.muted).toBe(true)
+			expect(rawMutations[0]!.operation).toBe(proto.SyncdMutation.SyncdOperation.SET)
+			expect(Buffer.from(rawMutations[0]!.indexMac)).toEqual(fakeIndexMac)
+			expect(Buffer.from(rawMutations[0]!.valueMac)).toEqual(fakeValueMac)
+			expect(rawMutations[0]!.mutation.index).toEqual(['mute', 'chat@s.whatsapp.net'])
+			expect(rawMutations[0]!.mutation.syncAction.value?.muteAction?.muted).toBe(true)
 		})
 
 		it('decodePatches threads onRawMutation through with the patch version attached', async () => {
@@ -168,7 +169,7 @@ describe('App State Sync', () => {
 
 			const syncd: proto.ISyncdPatch = {
 				keyId: { id: Buffer.from('key-1') },
-				version: { version: 42 as any },
+				version: { version: 42 },
 				mutations: [
 					{
 						operation: proto.SyncdMutation.SyncdOperation.SET,
@@ -183,15 +184,15 @@ describe('App State Sync', () => {
 				patchMac: Buffer.alloc(32)
 			}
 
-			const rawMutations: any[] = []
+			const rawMutations: (RawSyncdMutation & { version: number })[] = []
 			const { decodePatches } = await import('../../Utils/chat-utils')
 			await decodePatches('regular_high', [syncd], newLTHashState(), getKey, {}, undefined, undefined, false, raw =>
 				rawMutations.push(raw)
 			)
 
 			expect(rawMutations).toHaveLength(1)
-			expect(rawMutations[0].version).toBe(42)
-			expect(rawMutations[0].mutation.index).toEqual(['archive', 'chat@s.whatsapp.net'])
+			expect(rawMutations[0]!.version).toBe(42)
+			expect(rawMutations[0]!.mutation.index).toEqual(['archive', 'chat@s.whatsapp.net'])
 		})
 	})
 })

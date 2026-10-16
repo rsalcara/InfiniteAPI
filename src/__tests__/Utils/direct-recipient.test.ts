@@ -1,9 +1,10 @@
 import { jest } from '@jest/globals'
-import { ReachoutTimelockEnforcementType } from '../../Types'
+import { NewChatMessageCappingStatusType, ReachoutTimelockEnforcementType } from '../../Types'
 import {
 	assertDirectRecipientCiphertext,
 	buildDirectRecipientChatMerges,
 	type DirectRecipientPreflightOptions,
+	isOwnAccountJid,
 	resolveDirectRecipientUSync,
 	resolveDirectRecipientWireJid,
 	runDirectRecipientPreflight
@@ -315,6 +316,214 @@ describe('cold-recipient preflight orchestration', () => {
 			)
 		).rejects.toMatchObject({ output: { statusCode: 403 }, data: { category: 'reachout' } })
 		expect(resolveUSync).not.toHaveBeenCalled()
+	})
+
+	it('applies the account policy to a new chat whose LID is already known', async () => {
+		// The app's send gate does not care whether the LID is cached: a chat
+		// without a privacy token is refused while the timelock is active.
+		const resolveUSync = jest.fn(async () => [])
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					getKnownLIDForPN: async () => lid,
+					resolveUSync,
+					hasPrivacyToken: async () => false,
+					fetchReachout: async () => ({
+						isActive: true,
+						enforcementType: ReachoutTimelockEnforcementType.RESTRICT_ALL_COMPANIONS
+					})
+				})
+			)
+		).rejects.toMatchObject({ output: { statusCode: 403 }, data: { category: 'reachout' } })
+		expect(resolveUSync).not.toHaveBeenCalled()
+	})
+
+	it('blocks a new chat that is not ready before USync, with every reason', async () => {
+		const resolveUSync = jest.fn(async () => [])
+		const coldOutboundReadiness = jest.fn(() => ['reachout_state_unknown', 'nct_salt_missing'])
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					resolveUSync,
+					hasPrivacyToken: async () => false,
+					fetchReachout: async () => {
+						throw new Error('lookup failed')
+					},
+					coldOutboundReadiness
+				})
+			)
+		).rejects.toMatchObject({
+			output: { statusCode: 403 },
+			data: {
+				category: 'cold-outbound-not-ready',
+				reasons: ['reachout_state_unknown', 'nct_salt_missing'],
+				action: 'blocked-no-retry'
+			}
+		})
+		// The failed lookup reaches the readiness check as "unknown", not "open".
+		expect(coldOutboundReadiness).toHaveBeenCalledWith(expect.objectContaining({ reachout: undefined }))
+		expect(resolveUSync).not.toHaveBeenCalled()
+	})
+
+	it('does not apply readiness to a recipient with a privacy token or to our own number', async () => {
+		const coldOutboundReadiness = jest.fn(() => ['nct_salt_missing'])
+		await expect(
+			runDirectRecipientPreflight(
+				options({ getKnownLIDForPN: async () => lid, hasPrivacyToken: async () => true, coldOutboundReadiness })
+			)
+		).resolves.toMatchObject({ lidJid: lid })
+		await expect(
+			runDirectRecipientPreflight(
+				options({ getKnownLIDForPN: async () => lid, isOwnAccount: () => true, coldOutboundReadiness })
+			)
+		).resolves.toMatchObject({ lidJid: lid })
+		expect(coldOutboundReadiness).not.toHaveBeenCalled()
+	})
+
+	it('lets a recipient that gave us a privacy token through without reading the policy', async () => {
+		const fetchReachout = jest.fn(async () => ({
+			isActive: true,
+			enforcementType: ReachoutTimelockEnforcementType.RESTRICT_ALL_COMPANIONS
+		}))
+		const fetchCapping = jest.fn(async () => undefined)
+		const hasPrivacyToken = jest.fn(async () => true)
+
+		await expect(
+			runDirectRecipientPreflight(
+				options({ getKnownLIDForPN: async () => lid, fetchReachout, fetchCapping, hasPrivacyToken })
+			)
+		).resolves.toMatchObject({ lidJid: lid })
+		await expect(
+			runDirectRecipientPreflight(options({ fetchReachout, fetchCapping, hasPrivacyToken }))
+		).resolves.toMatchObject({ lidJid: lid })
+		expect(hasPrivacyToken).toHaveBeenCalledWith([pn, lid])
+		expect(hasPrivacyToken).toHaveBeenCalledWith([pn])
+		expect(fetchReachout).not.toHaveBeenCalled()
+		expect(fetchCapping).not.toHaveBeenCalled()
+	})
+
+	it('blocks a new chat with a known LID once the new-chat quota is capped', async () => {
+		const nowSeconds = Math.floor(Date.now() / 1000)
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					getKnownLIDForPN: async () => lid,
+					hasPrivacyToken: async () => false,
+					fetchCapping: async () => ({
+						capping_status: NewChatMessageCappingStatusType.CAPPED,
+						total_quota: 20,
+						used_quota: 20,
+						cycle_end_timestamp: String(nowSeconds + 3600)
+					})
+				})
+			)
+		).rejects.toMatchObject({
+			output: { statusCode: 403 },
+			data: { category: 'capping', quota: { total: 20, used: 20 } }
+		})
+	})
+
+	it('treats the account itself as no new chat: no policy, no CHAT_FMX lookup', async () => {
+		// A PDO or app-state key request goes to our own number. The app's
+		// gate skips it (`CappingGatingManager.A02` → `UserScopeMeManager.BN3`),
+		// so a timelocked or capped account must still reach its own phone.
+		const fetchReachout = jest.fn(async () => ({
+			isActive: true,
+			enforcementType: ReachoutTimelockEnforcementType.RESTRICT_ALL_COMPANIONS
+		}))
+		const fetchCapping = jest.fn(async () => undefined)
+		const hasPrivacyToken = jest.fn(async () => false)
+		const fetchStartChatTrustSignals = jest.fn(async () => {
+			throw new Error('must not look up trust signals for the account itself')
+		})
+		const isOwnAccount = jest.fn((jids: string[]) => jids.includes(lid))
+
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					getKnownLIDForPN: async () => lid,
+					fetchReachout,
+					fetchCapping,
+					hasPrivacyToken,
+					isOwnAccount,
+					fetchStartChatTrustSignals,
+					startChatTrustSignalsPolicy: 'require-known'
+				})
+			)
+		).resolves.toEqual({ requestedPn: pn, pnJid: pn, lidJid: lid })
+		expect(isOwnAccount).toHaveBeenCalledWith([pn, lid])
+		expect(fetchReachout).not.toHaveBeenCalled()
+		expect(fetchCapping).not.toHaveBeenCalled()
+		expect(hasPrivacyToken).not.toHaveBeenCalled()
+		expect(fetchStartChatTrustSignals).not.toHaveBeenCalled()
+	})
+
+	it('resolves the account itself without a known LID and still skips policy and CHAT_FMX', async () => {
+		const fetchReachout = jest.fn(async () => ({
+			isActive: true,
+			enforcementType: ReachoutTimelockEnforcementType.RESTRICT_ALL_COMPANIONS
+		}))
+		const fetchStartChatTrustSignals = jest.fn(async () => {
+			throw new Error('must not look up trust signals for the account itself')
+		})
+
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					fetchReachout,
+					isOwnAccount: jids => jids.includes(pn),
+					fetchStartChatTrustSignals,
+					startChatTrustSignalsPolicy: 'require-known'
+				})
+			)
+		).resolves.toMatchObject({ pnJid: pn, lidJid: lid })
+		expect(fetchReachout).not.toHaveBeenCalled()
+		expect(fetchStartChatTrustSignals).not.toHaveBeenCalled()
+	})
+
+	it('recognizes the account itself only within the same namespace', () => {
+		const me = { id: '5511000000001:3@s.whatsapp.net', lid: '100000000000001:3@lid' }
+		expect(isOwnAccountJid(['5511000000001@s.whatsapp.net'], me)).toBe(true)
+		expect(isOwnAccountJid(['100000000000001@lid'], me)).toBe(true)
+		expect(isOwnAccountJid(['5511000000001@c.us'], me)).toBe(true)
+		// A contact whose PN has our LID digits, or whose LID has our PN digits.
+		expect(isOwnAccountJid(['100000000000001@s.whatsapp.net'], me)).toBe(false)
+		expect(isOwnAccountJid(['5511000000001@lid'], me)).toBe(false)
+		expect(isOwnAccountJid(['5511000000001@s.whatsapp.net'], undefined)).toBe(false)
+	})
+
+	it('skips CHAT_FMX when USync resolves a variant of our own number to the account', async () => {
+		// The cache knows neither the requested variant nor its LID; only the
+		// USync answer shows that it is this account.
+		const fetchStartChatTrustSignals = jest.fn(async () => {
+			throw new Error('must not look up trust signals for the account itself')
+		})
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					isOwnAccount: jids => jids.includes(lid),
+					fetchStartChatTrustSignals,
+					startChatTrustSignalsPolicy: 'require-known'
+				})
+			)
+		).resolves.toMatchObject({ lidJid: lid })
+		expect(fetchStartChatTrustSignals).not.toHaveBeenCalled()
+	})
+
+	it('still gates other recipients when the own-account check is wired', async () => {
+		await expect(
+			runDirectRecipientPreflight(
+				options({
+					getKnownLIDForPN: async () => lid,
+					hasPrivacyToken: async () => false,
+					isOwnAccount: () => false,
+					fetchReachout: async () => ({
+						isActive: true,
+						enforcementType: ReachoutTimelockEnforcementType.RESTRICT_ALL_COMPANIONS
+					})
+				})
+			)
+		).rejects.toMatchObject({ output: { statusCode: 403 }, data: { category: 'reachout' } })
 	})
 
 	it('records provider-backed CHAT_FMX signals without altering token state', async () => {

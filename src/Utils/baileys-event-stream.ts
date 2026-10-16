@@ -42,7 +42,7 @@ export type BaileysEventType =
 	| 'call'
 	| 'blocklist.set'
 	| 'blocklist.update'
-	| string // For custom events
+	| (string & {}) // For custom events (keeps literal autocomplete)
 
 /**
  * Event priority
@@ -350,7 +350,7 @@ export class BaileysEventStream extends EventEmitter {
 			event === 'batch-processed' ||
 			event === 'retry'
 		) {
-			super.on(event, handler as any)
+			super.on(event, handler)
 			return this
 		}
 
@@ -378,7 +378,7 @@ export class BaileysEventStream extends EventEmitter {
 			event === 'batch-processed' ||
 			event === 'retry'
 		) {
-			super.off(event, handler as any)
+			super.off(event, handler)
 			return this
 		}
 

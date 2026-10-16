@@ -24,6 +24,12 @@
  * subset we exercise. Adding a new better-sqlite3 method to a backend
  * means either widening this interface or routing the call through a
  * boundary cast — both choices stay explicit.
+ *
+ * At runtime the handle may also be the `node:sqlite` fallback adapter
+ * (`src/Utils/sqlite-driver.ts`), which implements exactly this subset with
+ * better-sqlite3 semantics. Any newly used method or option must be added to
+ * that adapter too, and covered by the driver tests run against both drivers
+ * (`INFINITEAPI_SQLITE_DRIVER=node`), or the fallback breaks silently.
  */
 
 /**

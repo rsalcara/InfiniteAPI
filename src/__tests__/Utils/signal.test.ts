@@ -53,7 +53,7 @@ describe('parseAndInjectE2ESessions', () => {
 			]
 		}
 
-		await parseAndInjectE2ESessions(mockNode, mockRepository as any)
+		await parseAndInjectE2ESessions(mockNode, mockRepository as unknown as SignalRepositoryWithLIDStore)
 
 		expect(mockRepository.injectE2ESession).toHaveBeenCalledTimes(3)
 		expect(mockRepository.injectE2ESession).toHaveBeenCalledWith(

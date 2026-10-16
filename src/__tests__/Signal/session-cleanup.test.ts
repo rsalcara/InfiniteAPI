@@ -5,20 +5,27 @@ import type { SessionActivityTracker } from '../../Signal/session-activity-track
 import { makeSessionCleanup } from '../../Signal/session-cleanup'
 import type { SignalKeyStoreWithTransaction } from '../../Types'
 
-const mockKeys: jest.Mocked<SignalKeyStoreWithTransaction> = {
-	get: jest.fn<SignalKeyStoreWithTransaction['get']>() as any,
+type MockedKeys = jest.Mocked<SignalKeyStoreWithTransaction>
+
+const mockKeys: MockedKeys = {
+	get: jest.fn<SignalKeyStoreWithTransaction['get']>() as MockedKeys['get'],
 	set: jest.fn<SignalKeyStoreWithTransaction['set']>(),
-	transaction: jest.fn<SignalKeyStoreWithTransaction['transaction']>(async (work: () => any) => await work()) as any,
+	transaction: jest.fn(async (work: () => Promise<unknown>) => await work()) as unknown as MockedKeys['transaction'],
 	isInTransaction: jest.fn<SignalKeyStoreWithTransaction['isInTransaction']>()
 }
 
 const mockLidMapping: jest.Mocked<Pick<LIDMappingStore, 'getPNForLID'>> = {
-	getPNForLID: jest.fn<LIDMappingStore['getPNForLID']>() as any
+	getPNForLID: jest.fn<LIDMappingStore['getPNForLID']>()
 }
 
 const mockActivityTracker: jest.Mocked<Pick<SessionActivityTracker, 'getAllActivities'>> = {
-	getAllActivities: jest.fn<SessionActivityTracker['getAllActivities']>() as any
+	getAllActivities: jest.fn<SessionActivityTracker['getAllActivities']>()
 }
+
+// makeSessionCleanup only touches the mocked members; the full class types are
+// required by its signature.
+const lidMappingStore = mockLidMapping as unknown as LIDMappingStore
+const activityTracker = mockActivityTracker as unknown as SessionActivityTracker
 
 const logger = P({ level: 'silent' })
 
@@ -58,7 +65,7 @@ describe('SessionCleanup', () => {
 			// Mock: Activity 25h ago
 			mockActivityTracker.getAllActivities.mockResolvedValue(new Map([['123456789@lid', lastActivity]]))
 
-			const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, mockActivityTracker as any, logger, config)
+			const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, config)
 
 			const stats = await cleanup.runCleanup()
 
@@ -82,7 +89,7 @@ describe('SessionCleanup', () => {
 
 			mockActivityTracker.getAllActivities.mockResolvedValue(new Map([['123456789@lid', lastActivity]]))
 
-			const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, mockActivityTracker as any, logger, config)
+			const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, config)
 
 			const stats = await cleanup.runCleanup()
 
@@ -102,7 +109,7 @@ describe('SessionCleanup', () => {
 			// No activity tracked
 			mockActivityTracker.getAllActivities.mockResolvedValue(new Map())
 
-			const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, mockActivityTracker as any, logger, config)
+			const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, config)
 
 			const stats = await cleanup.runCleanup()
 
@@ -124,7 +131,7 @@ describe('SessionCleanup', () => {
 
 			mockActivityTracker.getAllActivities.mockResolvedValue(new Map([['123456789@lid', lastActivity]]))
 
-			const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, mockActivityTracker as any, logger, config)
+			const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, config)
 
 			const stats = await cleanup.runCleanup()
 
@@ -159,7 +166,7 @@ describe('SessionCleanup', () => {
 				new Map([['5511999999999:1@s.whatsapp.net', lastActivity]])
 			)
 
-			const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, mockActivityTracker as any, logger, config)
+			const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, config)
 
 			const stats = await cleanup.runCleanup()
 
@@ -180,7 +187,7 @@ describe('SessionCleanup', () => {
 				new Map([['5511999999999:1@s.whatsapp.net', lastActivity]])
 			)
 
-			const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, mockActivityTracker as any, logger, config)
+			const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, config)
 
 			const stats = await cleanup.runCleanup()
 
@@ -197,7 +204,7 @@ describe('SessionCleanup', () => {
 			// No activity tracked - grace period
 			mockActivityTracker.getAllActivities.mockResolvedValue(new Map())
 
-			const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, mockActivityTracker as any, logger, config)
+			const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, config)
 
 			const stats = await cleanup.runCleanup()
 
@@ -230,7 +237,7 @@ describe('SessionCleanup', () => {
 
 			mockActivityTracker.getAllActivities.mockResolvedValue(new Map([['5511999999999@s.whatsapp.net', lastActivity]]))
 
-			const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, mockActivityTracker as any, logger, config)
+			const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, config)
 
 			const stats = await cleanup.runCleanup()
 
@@ -249,7 +256,7 @@ describe('SessionCleanup', () => {
 
 			mockActivityTracker.getAllActivities.mockResolvedValue(new Map([['5511999999999@s.whatsapp.net', lastActivity]]))
 
-			const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, mockActivityTracker as any, logger, config)
+			const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, config)
 
 			const stats = await cleanup.runCleanup()
 
@@ -288,7 +295,7 @@ describe('SessionCleanup', () => {
 
 				mockActivityTracker.getAllActivities.mockResolvedValue(new Map([['123456789@lid', lastActivity]]))
 
-				const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, mockActivityTracker as any, logger, config)
+				const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, config)
 
 				const stats = await cleanup.runCleanup()
 
@@ -304,7 +311,7 @@ describe('SessionCleanup', () => {
 			// @ts-ignore
 			mockKeys.get.mockResolvedValue({})
 
-			const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, mockActivityTracker as any, logger, config)
+			const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, config)
 
 			const stats = await cleanup.runCleanup()
 
@@ -324,7 +331,7 @@ describe('SessionCleanup', () => {
 			mockLidMapping.getPNForLID.mockResolvedValue(null)
 
 			// Pass null tracker
-			const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, null, logger, config)
+			const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, null, logger, config)
 
 			const stats = await cleanup.runCleanup()
 
@@ -372,7 +379,7 @@ describe('SessionCleanup', () => {
 				])
 			)
 
-			const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, mockActivityTracker as any, logger, config)
+			const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, config)
 
 			const stats = await cleanup.runCleanup()
 
@@ -381,6 +388,127 @@ describe('SessionCleanup', () => {
 			expect(stats.secondaryDevicesDeleted).toBe(1)
 			expect(stats.primaryDevicesDeleted).toBe(1)
 			expect(stats.totalDeleted).toBe(3)
+		})
+	})
+
+	// Audit C-01: the scheduler must never outlive stop(), and its timers must
+	// not keep the process alive.
+	describe('Scheduler lifecycle', () => {
+		const config = {
+			enabled: true,
+			intervalMs: DAY_MS,
+			cleanupHour: 3,
+			secondaryDeviceInactiveDays: 15,
+			primaryDeviceInactiveDays: 30,
+			lidOrphanHours: 24,
+			cleanupOnStartup: false,
+			autoCleanCorrupted: false
+		}
+
+		const trackTimers = () => {
+			const created: Array<{ kind: 'timeout' | 'interval'; handle: NodeJS.Timeout; fn: () => unknown }> = []
+			const originalTimeout = global.setTimeout
+			const originalInterval = global.setInterval
+			const timeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+				const handle = originalTimeout(fn, ms)
+				created.push({ kind: 'timeout', handle, fn })
+				return handle
+			}) as typeof setTimeout)
+			const intervalSpy = jest.spyOn(global, 'setInterval').mockImplementation(((fn: () => void, ms?: number) => {
+				const handle = originalInterval(fn, ms)
+				created.push({ kind: 'interval', handle, fn })
+				return handle
+			}) as typeof setInterval)
+			return {
+				created,
+				restore: () => {
+					timeoutSpy.mockRestore()
+					intervalSpy.mockRestore()
+					for (const { handle } of created) {
+						clearTimeout(handle)
+						clearInterval(handle)
+					}
+				}
+			}
+		}
+
+		it('arms a single unref-ed first-run timer even if start() is called twice', () => {
+			const timers = trackTimers()
+			try {
+				const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, config)
+				cleanup.start()
+				cleanup.start()
+				expect(timers.created).toHaveLength(1)
+				expect(timers.created[0]!.handle.hasRef()).toBe(false)
+				cleanup.stop()
+			} finally {
+				timers.restore()
+			}
+		})
+
+		it('does not arm the recurring interval when stop() runs during the first cleanup', async () => {
+			const timers = trackTimers()
+			try {
+				let releaseFirstRun!: () => void
+				// @ts-ignore
+				mockKeys.get.mockImplementation(
+					() =>
+						new Promise(resolve => {
+							releaseFirstRun = () => resolve({})
+						})
+				)
+				mockActivityTracker.getAllActivities.mockResolvedValue(new Map())
+				const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, config)
+				cleanup.start()
+
+				// Run the scheduled first cleanup now; it blocks inside runCleanup().
+				const firstRun = timers.created[0]!
+				clearTimeout(firstRun.handle)
+				const firstRunDone = firstRun.fn()
+				await new Promise(resolve => setImmediate(resolve))
+
+				cleanup.stop()
+				releaseFirstRun()
+				await firstRunDone
+
+				expect(timers.created.filter(timer => timer.kind === 'interval')).toHaveLength(0)
+			} finally {
+				timers.restore()
+			}
+		})
+
+		it('keeps start() a no-op while the first cleanup is still running', async () => {
+			const timers = trackTimers()
+			try {
+				let releaseFirstRun!: () => void
+				// @ts-ignore
+				mockKeys.get.mockImplementation(
+					() =>
+						new Promise(resolve => {
+							releaseFirstRun = () => resolve({})
+						})
+				)
+				mockActivityTracker.getAllActivities.mockResolvedValue(new Map())
+				const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, config)
+				cleanup.start()
+
+				const firstRun = timers.created[0]!
+				clearTimeout(firstRun.handle)
+				const firstRunDone = firstRun.fn()
+				await new Promise(resolve => setImmediate(resolve))
+
+				cleanup.start()
+				expect(timers.created).toHaveLength(1)
+
+				releaseFirstRun()
+				await firstRunDone
+				const intervals = timers.created.filter(timer => timer.kind === 'interval')
+				expect(intervals).toHaveLength(1)
+				expect(intervals[0]!.handle.hasRef()).toBe(false)
+				cleanup.stop()
+			} finally {
+				timers.restore()
+			}
 		})
 	})
 
@@ -402,7 +530,7 @@ describe('SessionCleanup', () => {
 				'123456789_2.0': Buffer.from('session-data')
 			})
 
-			const cleanup = makeSessionCleanup(mockKeys, mockLidMapping as any, mockActivityTracker as any, logger, config)
+			const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, config)
 
 			const stats = await cleanup.runCleanup()
 
@@ -439,13 +567,7 @@ describe('SessionCleanup', () => {
 				])
 			)
 
-			const cleanup = makeSessionCleanup(
-				mockKeys,
-				mockLidMapping as any,
-				mockActivityTracker as any,
-				logger,
-				customConfig
-			)
+			const cleanup = makeSessionCleanup(mockKeys, lidMappingStore, activityTracker, logger, customConfig)
 
 			const stats = await cleanup.runCleanup()
 

@@ -37,6 +37,13 @@ import {
 	jidEncode,
 	jidNormalizedUser
 } from '../WABinary'
+import { CONTACT_MUTATION_COLLECTION } from './companion-contact-auto-healer'
+import {
+	CONTACT_REFRESH_MAX_COVERED_IDS,
+	extractContactRefreshReply,
+	reconcileContactRefresh,
+	replyFactsForPending
+} from './contact-refresh'
 import { aesDecryptGCM, hmacSign, sha256 } from './crypto'
 import { getKeyAuthor, toNumber } from './generics'
 import { downloadAndProcessHistorySyncNotification } from './history'
@@ -46,10 +53,17 @@ import {
 	type ProcessedHistorySync
 } from './history-sync-coordinator'
 import type { ILogger } from './logger'
+import {
+	decryptEncComment,
+	decryptEncReaction,
+	deriveMessageSecretKey,
+	requireRawUser
+} from './message-secret-envelope'
 import { classifyMessageWithoutAuthorDevice } from './message-sender-source'
 import {
 	ANDROID_VIEW_ONCE_STATE,
 	type AppStateBackend,
+	type ContactRefreshBackend,
 	isAndroidViewOnceMessageType,
 	LOCATION_OPEN_ENDED_EXPIRES_MS,
 	type LocationBackend,
@@ -65,6 +79,7 @@ import {
 	UI_ELEMENT_TYPE
 } from './multi-db-sqlite'
 import { type OrphanEntry, OrphanQueue } from './orphan-queue'
+import { isSamePlaceholderRecovery } from './pdo-recovery'
 import { metrics, recordHistorySyncMessages } from './prometheus-metrics.js'
 import { restoreTcTokensFromHistory } from './tc-token-utils'
 
@@ -84,6 +99,8 @@ type ProcessMessageContext = {
 	orphanQueue?: OrphanQueue
 	/** Optional sync.db mirror (collection_versions/syncd_mutations/peer_messages). */
 	appStateBackend?: AppStateBackend
+	/** Optional wa.db contact-refresh mirror (pending requests + patch log). */
+	contactRefreshBackend?: ContactRefreshBackend
 	/** Optional location.db mirror (location_cache/location_sharer). */
 	locationBackend?: LocationBackend
 	/** Optional status.db mirror (status/status_info). */
@@ -131,12 +148,146 @@ const assertHistoryApplyActive = (signal?: AbortSignal): void => {
 	if (signal?.aborted) throw new Error('history sync apply interrupted by socket teardown')
 }
 
+export type MessageSecretEnvelopeProcessContext = Pick<
+	ProcessMessageContext,
+	'creds' | 'logger' | 'signalRepository' | 'getMessage' | 'orphanQueue'
+>
+
+/**
+ * CAG comments and reactions arrive in a message-secret envelope. Resolve the
+ * parent and decrypt in place before the caller exposes `messages.upsert`, so
+ * consumers receive the official plaintext child (`commentMessage` or
+ * `reactionMessage`) instead of opaque ciphertext. Missing parents are queued,
+ * never dropped.
+ *
+ * Returns true when the caller must suppress normal processing (missing parent,
+ * malformed envelope, or an isolated decryption failure); false when the message
+ * is either not an envelope or has been hydrated and is ready for normal
+ * processing. `parentCandidate` lets the arriving parent replay its own queued
+ * children even when a consumer-backed `getMessage` cannot yet observe it.
+ */
+export const hydrateMessageSecretEnvelope = async (
+	targetMessage: WAMessage,
+	processContext: MessageSecretEnvelopeProcessContext,
+	parentCandidate?: proto.IMessage
+): Promise<boolean> => {
+	const { creds, logger, signalRepository, getMessage, orphanQueue } = processContext
+	const rawContent = targetMessage.message
+	const encComment = rawContent?.encCommentMessage
+	const encReaction = rawContent?.encReactionMessage
+	if (!encComment && !encReaction) return false
+
+	const meUser = creds.me
+	if (!meUser) {
+		logger?.warn({ messageKey: targetMessage.key }, 'processMessage: creds.me not set, skipping encrypted envelope')
+		return true
+	}
+
+	try {
+		const envelope = encComment || encReaction
+		const target = envelope?.targetMessageKey
+		if (!target?.id) {
+			logger?.warn(
+				{ messageKey: targetMessage.key },
+				'processMessage: encrypted message-secret envelope has no target key'
+			)
+			return true
+		}
+
+		const chatJid = jidNormalizedUser(targetMessage.key.remoteJid!)
+		const parentParticipant = target.participant || targetMessage.key.participant
+		const parentFromMe =
+			areJidsSameUser(parentParticipant || chatJid, meUser.id) ||
+			(!!meUser.lid && areJidsSameUser(parentParticipant || chatJid, meUser.lid))
+		const parentKey: WAMessageKey = {
+			...target,
+			remoteJid: chatJid,
+			participant: parentParticipant,
+			fromMe: parentFromMe
+		}
+		const parent = parentCandidate || (await getMessage(parentKey))
+		const parentSecret = parent?.messageContextInfo?.messageSecret
+		if (!parent || !parentSecret) {
+			if (orphanQueue) {
+				orphanQueue.enqueue(parentKey, encComment ? 'comment' : 'reaction', targetMessage)
+				logger?.debug(
+					{ parentKey },
+					'processMessage: encrypted comment/reaction parent not found yet, queued as orphan'
+				)
+			} else {
+				logger?.warn({ parentKey }, 'encrypted comment/reaction parent not found and no orphan queue configured')
+			}
+
+			return true
+		}
+
+		const resolveCryptoJid = async (jid: string | null | undefined, fallback: string): Promise<string> => {
+			const selectedInput = jid || fallback
+			if (!selectedInput) throw new Boom('Could not resolve message-secret identity')
+			const normalized = jidNormalizedUser(selectedInput)
+			if (!isAnyLidUser(normalized)) return normalized
+			const pn = await signalRepository.lidMapping.getPNForLID(normalized)
+			const selected = pn || normalized
+			if (!selected) throw new Boom('Could not resolve message-secret identity')
+			return jidNormalizedUser(selected)
+		}
+
+		const targetAuthorJid = await resolveCryptoJid(
+			parentFromMe ? meUser.id : parentKey.participant || undefined,
+			parentFromMe ? meUser.id : targetMessage.key.participant || chatJid
+		)
+		const senderJid = await resolveCryptoJid(
+			targetMessage.key.fromMe ? meUser.id : targetMessage.key.participant || undefined,
+			meUser.id
+		)
+		const targetMessageId = target.id
+		if (!targetMessageId) throw new Boom('Encrypted envelope has no target message ID')
+		const key = deriveMessageSecretKey(parentSecret, encComment ? 'Enc Comment' : 'Enc Reaction', {
+			targetAuthorRaw: requireRawUser(targetAuthorJid),
+			senderRaw: requireRawUser(senderJid),
+			targetMessageId
+		})
+
+		if (encComment) {
+			const commentMessage = decryptEncComment(encComment, key)
+			targetMessage.message = proto.Message.create({ commentMessage })
+		} else if (encReaction) {
+			const reactionMessage = decryptEncReaction(encReaction, key)
+			// Android clears ReactionMessage.key on the wire and carries the target
+			// once on the envelope. Downstream reaction handling needs the complete,
+			// normalized key, not the sparse wire key.
+			reactionMessage.key = parentKey
+			targetMessage.message = proto.Message.create({ reactionMessage })
+		}
+
+		return false
+	} catch (err) {
+		logger?.warn({ err, messageKey: targetMessage.key }, 'failed to hydrate encrypted CAG envelope')
+		return true
+	}
+}
+
 export const isUnavailableViewOnceMessage = (message: WAMessage): boolean => {
 	if (getContentType(normalizeMessageContent(message.message))) return false
 
 	const hasSerializedPlaceholder =
 		Array.isArray(message.messageStubParameters) && message.messageStubParameters.includes('view_once_unavailable')
 	return !!message.key?.isViewOnce || hasSerializedPlaceholder
+}
+
+/**
+ * Resolve the secret that must survive in a message mirror.
+ *
+ * Most messages carry `messageContextInfo` inside their regular content. CAG
+ * comments are the exception: after `hydrateMessageSecretEnvelope` unwraps
+ * `encCommentMessage`, the comment's *own* secret remains on the outer
+ * `WebMessageInfo.messageSecret`. Prefer the content-local secret, but fall
+ * back to that outer value so a future encrypted reaction is decryptable.
+ */
+export const getMessageSecretForStorage = (message: WAMessage, content: proto.IMessage | undefined): Buffer | null => {
+	const secret = content?.messageContextInfo?.messageSecret ?? message.messageSecret
+
+	return secret ? Buffer.from(secret) : null
 }
 
 const mapStickerPackToMirror = (
@@ -223,9 +374,7 @@ export const mirrorHistoryMessagesToStore = async (
 				viewMode: isViewOnce ? 0 : null,
 				viewOnceState: isViewOnce ? ANDROID_VIEW_ONCE_STATE.UNOPENED : null,
 				authorDeviceJid: senderJid,
-				messageSecret: content?.messageContextInfo?.messageSecret
-					? Buffer.from(content.messageContextInfo.messageSecret)
-					: null,
+				messageSecret: getMessageSecretForStorage(message, content),
 				album: content?.albumMessage
 					? {
 							expectedImageCount: content.albumMessage.expectedImageCount ?? 0,
@@ -370,9 +519,12 @@ export const emitProcessedHistorySync = (
 		message.senderSource ??= classifyMessageWithoutAuthorDevice()
 	}
 
-	if (data.lidPnMappings?.length) ev.emit('lid-mapping.update', data.lidPnMappings)
+	// The NCT salt is account credential state, not history for the consumer.
+	const { nctSalt, ...history } = data
+	if (nctSalt) ev.emit('creds.update', { nctSalt })
+	if (history.lidPnMappings?.length) ev.emit('lid-mapping.update', history.lidPnMappings)
 	ev.emit('messaging-history.set', {
-		...data,
+		...history,
 		isLatest: data.syncType !== proto.HistorySync.HistorySyncType.ON_DEMAND ? metadata.isLatest : undefined,
 		chunkOrder: metadata.chunkOrder,
 		peerDataRequestSessionId: metadata.peerDataRequestSessionId
@@ -927,9 +1079,8 @@ const extractUiElements = (content: proto.IMessage | undefined | null): UiElemen
 	return out
 }
 
-const processMessage = async (
-	message: WAMessage,
-	{
+const processMessage = async (message: WAMessage, processContext: ProcessMessageContext) => {
+	const {
 		shouldProcessHistoryMsg,
 		placeholderResendCache,
 		ev,
@@ -941,6 +1092,7 @@ const processMessage = async (
 		getMessage,
 		orphanQueue,
 		appStateBackend,
+		contactRefreshBackend,
 		locationBackend,
 		statusBackend,
 		messageStoreBackend,
@@ -951,8 +1103,7 @@ const processMessage = async (
 		onHistorySyncCommitted,
 		onAppStateSyncKeyRequest,
 		onAppStateSyncKeyShare
-	}: ProcessMessageContext
-) => {
+	} = processContext
 	const meUser = creds.me
 	if (!meUser) {
 		logger?.warn({ messageKey: message.key }, 'processMessage: creds.me not set, skipping message')
@@ -961,6 +1112,33 @@ const processMessage = async (
 
 	const meId = meUser.id
 	const { accountSettings } = creds
+
+	const replayMessageSecretOrphan = async (entry: OrphanEntry): Promise<void> => {
+		try {
+			// The current parent is authoritative: consumer-backed getMessage()
+			// implementations cannot generally observe the message that is still
+			// being processed by this invocation.
+			const hydrated = await hydrateMessageSecretEnvelope(entry.message, processContext, message.message ?? undefined)
+			if (!hydrated) {
+				// The child is now ordinary plaintext protocol traffic. Run it through
+				// the same processMessage path as a live child so side effects remain
+				// identical. processMessage deliberately does not own the normal
+				// messages.upsert emission, so replay emits the standard envelope here.
+				await processMessage(entry.message, processContext)
+				ev.emit('messages.upsert', { messages: [entry.message], type: 'notify' })
+			}
+		} catch (err) {
+			// A malformed dependent must not prevent delivery of the parent or the
+			// remaining queued children. The live envelope is never emitted as
+			// opaque ciphertext.
+			logger?.warn(
+				{ err, orphanKind: entry.kind, messageKey: entry.message.key },
+				'failed to replay encrypted CAG orphan'
+			)
+		}
+	}
+
+	if (await hydrateMessageSecretEnvelope(message, processContext)) return
 
 	const chat: Partial<Chat> = { id: jidNormalizedUser(getChatId(message.key)) }
 	const isUnavailableViewOnce = isUnavailableViewOnceMessage(message)
@@ -1126,9 +1304,7 @@ const processMessage = async (
 				viewMode: isViewOnce ? 0 : null,
 				viewOnceState: isViewOnce ? ANDROID_VIEW_ONCE_STATE.UNOPENED : null,
 				authorDeviceJid,
-				messageSecret: content?.messageContextInfo?.messageSecret
-					? Buffer.from(content.messageContextInfo.messageSecret)
-					: null,
+				messageSecret: getMessageSecretForStorage(message, content),
 				album: content?.albumMessage
 					? {
 							expectedImageCount: content.albumMessage.expectedImageCount ?? 0,
@@ -1310,6 +1486,8 @@ const processMessage = async (
 				if (creationMsgKey) {
 					await decryptAndEmitEventResponse(entry.message, encEventResponse, creationMsgKey, content!)
 				}
+			} else if ((entry.kind === 'comment' || entry.kind === 'reaction') && entryContent) {
+				await replayMessageSecretOrphan(entry)
 			}
 		}
 	}
@@ -1791,6 +1969,51 @@ const processMessage = async (
 			case proto.Message.ProtocolMessage.Type.PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE:
 				const response = protocolMsg.peerDataOperationRequestResponseMessage
 				if (response) {
+					// Contact refresh (type 14) reply: facts only — contact data
+					// arrives later as syncd contact mutations. Capture the facts
+					// on every covered request id, then reconcile pending requests
+					// against local syncd state (1:1 with the app's reply handler:
+					// settle + wam_companion_contact_refresh facts + patch-log
+					// prune once the local collection reaches the target version).
+					// Never allowed to affect message processing: best-effort side
+					// channel, same rule as the other optional multi-db-sqlite
+					// mirrors in this file — a transient store error must not skip
+					// the placeholderResendCache cleanup below nor bubble out of
+					// processMessage.
+					try {
+						const contactRefreshReply = extractContactRefreshReply(response)
+						if (contactRefreshReply && contactRefreshBackend) {
+							const facts = replyFactsForPending(contactRefreshReply)
+							// Defensive ceiling on the covered-id loop: a hostile or
+							// buggy reply must not turn into unbounded DB writes
+							// inside the receive path. The app coalesces only a
+							// handful of request ids per reply.
+							const coveredIds = contactRefreshReply.coveredRequestIds.slice(0, CONTACT_REFRESH_MAX_COVERED_IDS)
+							for (const coveredId of coveredIds) {
+								contactRefreshBackend.captureReplyFacts(coveredId, facts)
+							}
+
+							const outcome = reconcileContactRefresh(contactRefreshBackend.listPending(), {
+								getCollectionVersion: () =>
+									appStateBackend?.getCollectionVersion(CONTACT_MUTATION_COLLECTION)?.version ?? null,
+								hasPatchAtOrAbove: version => contactRefreshBackend.hasPatchAtOrAbove(version),
+								deletePending: refreshId => contactRefreshBackend.deletePending(refreshId),
+								deletePatchesAtOrBelow: version => contactRefreshBackend.deletePatchesAtOrBelow(version)
+							})
+							if (outcome.settled.length > 0) {
+								// The settled entries ARE the wam_companion_contact_refresh
+								// facts (event id 8586 in the app). Logged until the engine
+								// registers the event in its WAM schema.
+								logger?.info(
+									{ settled: outcome.settled, stillWaiting: outcome.waiting },
+									'contact refresh settled (wam_companion_contact_refresh)'
+								)
+							}
+						}
+					} catch (err) {
+						logger?.warn({ err }, 'failed to process contact refresh reply (wam_companion_contact_refresh)')
+					}
+
 					// Retrieve cached metadata BEFORE deletion
 					// This preserves original message details that the phone might not send
 					const cachedData = response.stanzaId
@@ -1821,8 +2044,40 @@ const processMessage = async (
 
 							// Merge cached metadata with decoded message
 							// This ensures we don't lose critical information like pushName and LID mappings
+							//
+							// Message IDs are chosen by the sending client. Before trusting the
+							// request-side metadata, verify the response names the same chat,
+							// ID and sender (including LID/PN aliases when mapped).
+							const requestMatchesResponse =
+								!cachedData ||
+								typeof cachedData !== 'object' ||
+								(await isSamePlaceholderRecovery(cachedData.key, webMessageInfo.key as WAMessageKey, async jid => {
+									const normalized = jidNormalizedUser(jid)
+									if (!normalized) return []
 
-							if (cachedData && typeof cachedData === 'object') {
+									if (isAnyLidUser(normalized)) {
+										const pn = await signalRepository.lidMapping.getPNForLID(normalized)
+										return [normalized, pn ? jidNormalizedUser(pn) : '']
+									}
+
+									if (isAnyPnUser(normalized)) {
+										const lid = await signalRepository.lidMapping.getLIDForPN(normalized)
+										return [normalized, lid ? jidNormalizedUser(lid) : '']
+									}
+
+									return [normalized]
+								}))
+
+							if (!requestMatchesResponse) {
+								logger?.warn(
+									{
+										requestId: response.stanzaId,
+										requestKey: cachedData.key,
+										responseKey: webMessageInfo.key
+									},
+									'PDO response sender does not match request; preserving response identity only'
+								)
+							} else if (cachedData && typeof cachedData === 'object') {
 								// Preserve pushName if not present in PDO response
 
 								if (cachedData.pushName && !webMessageInfo.pushName) {
@@ -1835,7 +2090,7 @@ const processMessage = async (
 
 								if (cachedData.participantAlt && webMessageInfo.key) {
 									const msgKey = webMessageInfo.key as WAMessageKey
-									// eslint-disable-next-line max-depth
+
 									if (!msgKey.participantAlt) {
 										msgKey.participantAlt = cachedData.participantAlt
 										logger?.debug(
@@ -1876,6 +2131,21 @@ const processMessage = async (
 
 							if (webMessageInfo.key && signalRepository) {
 								await normalizeKeyLidToPn(webMessageInfo.key as WAMessageKey, signalRepository.lidMapping, logger)
+							}
+
+							// PDO recovery is a third `messages.upsert` producer and bypasses
+							// `upsertMessage`. Hydrate encrypted CAG envelopes here too so a
+							// recovered dependent can never expose ciphertext to consumers.
+							if (
+								await hydrateMessageSecretEnvelope(webMessageInfo as WAMessage, {
+									creds,
+									logger,
+									signalRepository,
+									getMessage,
+									orphanQueue
+								})
+							) {
+								continue
 							}
 
 							// wait till another upsert event is available, don't want it to be part of the PDO response message
@@ -2074,12 +2344,12 @@ const processMessage = async (
 
 		switch (message.messageStubType) {
 			case WAMessageStubType.GROUP_PARTICIPANT_CHANGE_NUMBER:
-				participants = message.messageStubParameters.map((a: any) => JSON.parse(a as string)) || []
+				participants = message.messageStubParameters!.map((a: string) => JSON.parse(a)) || []
 				emitParticipantsUpdate('modify')
 				break
 			case WAMessageStubType.GROUP_PARTICIPANT_LEAVE:
 			case WAMessageStubType.GROUP_PARTICIPANT_REMOVE:
-				participants = message.messageStubParameters.map((a: any) => JSON.parse(a as string)) || []
+				participants = message.messageStubParameters!.map((a: string) => JSON.parse(a)) || []
 				emitParticipantsUpdate('remove')
 				// mark the chat read only if you left the group
 				if (participantsIncludesMe()) {
@@ -2090,7 +2360,7 @@ const processMessage = async (
 			case WAMessageStubType.GROUP_PARTICIPANT_ADD:
 			case WAMessageStubType.GROUP_PARTICIPANT_INVITE:
 			case WAMessageStubType.GROUP_PARTICIPANT_ADD_REQUEST_JOIN:
-				participants = message.messageStubParameters.map((a: any) => JSON.parse(a as string)) || []
+				participants = message.messageStubParameters!.map((a: string) => JSON.parse(a)) || []
 				if (participantsIncludesMe()) {
 					chat.readOnly = false
 				}
@@ -2098,11 +2368,11 @@ const processMessage = async (
 				emitParticipantsUpdate('add')
 				break
 			case WAMessageStubType.GROUP_PARTICIPANT_DEMOTE:
-				participants = message.messageStubParameters.map((a: any) => JSON.parse(a as string)) || []
+				participants = message.messageStubParameters!.map((a: string) => JSON.parse(a)) || []
 				emitParticipantsUpdate('demote')
 				break
 			case WAMessageStubType.GROUP_PARTICIPANT_PROMOTE:
-				participants = message.messageStubParameters.map((a: any) => JSON.parse(a as string)) || []
+				participants = message.messageStubParameters!.map((a: string) => JSON.parse(a)) || []
 				emitParticipantsUpdate('promote')
 				break
 			case WAMessageStubType.GROUP_CHANGE_ANNOUNCE:
@@ -2136,7 +2406,7 @@ const processMessage = async (
 				emitGroupUpdate({ joinApprovalMode: approvalMode === 'on' })
 				break
 			case WAMessageStubType.GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD: // TODO: Add other events
-				const participant = JSON.parse(message.messageStubParameters?.[0]) as LIDMapping
+				const participant = JSON.parse(message.messageStubParameters?.[0] as string) as LIDMapping
 				const action = message.messageStubParameters?.[1] as RequestJoinAction
 				const method = message.messageStubParameters?.[2] as RequestJoinMethod
 				emitGroupRequestJoin(participant, action, method)

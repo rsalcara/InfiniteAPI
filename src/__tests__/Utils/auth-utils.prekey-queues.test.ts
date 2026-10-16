@@ -11,7 +11,7 @@
  * validate-then-write sequence for a non-transactional `set()` runs under one
  * lock per `(namespace, id)`. These tests pin the merged-lock contract.
  */
-import type { SignalDataSet, SignalKeyStore } from '../../Types'
+import type { SignalDataSet, SignalDataTypeMap, SignalKeyStore } from '../../Types'
 import { addTransactionCapability } from '../../Utils/auth-utils'
 import type { ILogger } from '../../Utils/logger'
 
@@ -40,9 +40,9 @@ const makeTrackingStore = (events: string[]) => {
 			events.push(`get-start:${type}:${ids.join(',')}`)
 			await delay(15)
 			const bucket = data[type] ?? {}
-			const out: Record<string, any> = {}
+			const out: { [id: string]: SignalDataTypeMap[typeof type] } = {}
 			for (const id of ids) {
-				if (id in bucket) out[id] = bucket[id]
+				if (id in bucket) out[id] = bucket[id] as SignalDataTypeMap[typeof type]
 			}
 
 			events.push(`get-end:${type}:${ids.join(',')}`)
@@ -57,7 +57,7 @@ const makeTrackingStore = (events: string[]) => {
 			for (const type in d) {
 				data[type] = data[type] ?? {}
 				const bucket = data[type]
-				const incoming = (d as any)[type] as Record<string, unknown>
+				const incoming = d[type as keyof SignalDataSet] as Record<string, unknown>
 				for (const id in incoming) {
 					const v = incoming[id]
 					if (v === null) delete bucket[id]
@@ -81,7 +81,7 @@ describe('addTransactionCapability — pre-key validation vs write coordination 
 		})
 
 		// Seed: id "5" exists.
-		await store.set({ 'pre-key': { '5': { public: Buffer.from([1]), private: Buffer.from([2]) } as any } })
+		await store.set({ 'pre-key': { '5': { public: Buffer.from([1]), private: Buffer.from([2]) } } })
 		events.length = 0
 
 		await keys.set({ 'pre-key': { '5': null } })
@@ -106,13 +106,13 @@ describe('addTransactionCapability — pre-key validation vs write coordination 
 
 		// Seed: id "7" exists, so the deleter's validation has something to find.
 		await store.set({
-			'pre-key': { '7': { public: Buffer.from([1]), private: Buffer.from([2]) } as any }
+			'pre-key': { '7': { public: Buffer.from([1]), private: Buffer.from([2]) } }
 		})
 		events.length = 0
 
 		const deleter = keys.set({ 'pre-key': { '7': null } })
 		const creator = keys.set({
-			'pre-key': { '7': { public: Buffer.from([9]), private: Buffer.from([8]) } as any }
+			'pre-key': { '7': { public: Buffer.from([9]), private: Buffer.from([8]) } }
 		})
 
 		await Promise.all([deleter, creator])
@@ -154,7 +154,7 @@ describe('addTransactionCapability — pre-key validation vs write coordination 
 		events.length = 0
 
 		const creator = keys.set({
-			'pre-key': { '9': { public: Buffer.from([1]), private: Buffer.from([2]) } as any }
+			'pre-key': { '9': { public: Buffer.from([1]), private: Buffer.from([2]) } }
 		})
 		const deleter = keys.set({ 'pre-key': { '9': null } })
 

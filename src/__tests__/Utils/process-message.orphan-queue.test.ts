@@ -13,37 +13,50 @@ import { jest } from '@jest/globals'
 import { EventEmitter } from 'events'
 import P from 'pino'
 import { proto } from '../../../WAProto/index.js'
-import type { AuthenticationCreds, BaileysEventEmitter, WAMessage } from '../../Types'
+import type {
+	AuthenticationCreds,
+	BaileysEventEmitter,
+	BaileysEventMap,
+	Contact,
+	SignalKeyStoreWithTransaction,
+	SignalRepositoryWithLIDStore,
+	WAMessage
+} from '../../Types'
 import { initAuthCreds } from '../../Utils/auth-utils'
 import { OrphanQueue } from '../../Utils/orphan-queue'
 import processMessage from '../../Utils/process-message'
 
 const silent = P({ level: 'silent' })
 
+type ProcessContext = Parameters<typeof processMessage>[1]
+
 const credsWithMe = (): AuthenticationCreds => ({
 	...initAuthCreds(),
-	me: { id: 'me@s.whatsapp.net' } as any
+	me: { id: 'me@s.whatsapp.net' } as Contact
 })
 
-const makeContext = (getMessage: () => Promise<any>) => {
+const makeContext = (getMessage: ProcessContext['getMessage']) => {
 	const events = new EventEmitter() as unknown as BaileysEventEmitter
-	const updates: any[] = []
-	;(events as any).on('messages.update', (upd: any) => updates.push(upd))
+	const updates: BaileysEventMap['messages.update'][] = []
+	events.on('messages.update', upd => updates.push(upd))
 
+	const ctx: ProcessContext = {
+		shouldProcessHistoryMsg: false,
+		placeholderResendCache: undefined,
+		ev: events,
+		creds: credsWithMe(),
+		keyStore: {} as unknown as SignalKeyStoreWithTransaction,
+		signalRepository: {
+			lidMapping: { getPNForLID: async (jid: string) => jid }
+		} as unknown as SignalRepositoryWithLIDStore,
+		logger: silent,
+		options: {},
+		getMessage
+	}
 	return {
 		updates,
 		orphanQueue: new OrphanQueue(silent),
-		ctx: {
-			shouldProcessHistoryMsg: false,
-			placeholderResendCache: undefined,
-			ev: events,
-			creds: credsWithMe(),
-			keyStore: {} as any,
-			signalRepository: { lidMapping: { getPNForLID: async (jid: string) => jid } } as any,
-			logger: silent,
-			options: {},
-			getMessage
-		}
+		ctx
 	}
 }
 
@@ -61,7 +74,7 @@ describe('processMessage — orphan queue (REVOKE)', () => {
 			protocolMessage: { type: proto.Message.ProtocolMessage.Type.REVOKE, key: targetKey }
 		})
 
-		await processMessage(revokeMsg, { ...ctx, orphanQueue } as any)
+		await processMessage(revokeMsg, { ...ctx, orphanQueue })
 
 		expect(updates).toHaveLength(0)
 		expect(orphanQueue.drain(targetKey)).toHaveLength(1)
@@ -75,7 +88,7 @@ describe('processMessage — orphan queue (REVOKE)', () => {
 		})
 
 		// 1) revoke arrives first — target unknown, gets queued
-		await processMessage(revokeMsg, { ...ctx, orphanQueue } as any)
+		await processMessage(revokeMsg, { ...ctx, orphanQueue })
 		expect(updates).toHaveLength(0)
 
 		// 2) the target message itself arrives afterward (real content, matches key.id)
@@ -84,26 +97,26 @@ describe('processMessage — orphan queue (REVOKE)', () => {
 			message: { conversation: 'the original message' },
 			messageTimestamp: 1770000001
 		}
-		await processMessage(targetMsg, { ...ctx, orphanQueue } as any)
+		await processMessage(targetMsg, { ...ctx, orphanQueue })
 
 		// the queued revoke is replayed against the now-known target
 		expect(updates).toHaveLength(1)
-		expect(updates[0][0].key.id).toBe('target-2')
-		expect(updates[0][0].update.messageStubType).toBeDefined()
-		expect(updates[0][0].update.message).toBeNull()
+		expect(updates[0]?.[0]?.key.id).toBe('target-2')
+		expect(updates[0]?.[0]?.update.messageStubType).toBeDefined()
+		expect(updates[0]?.[0]?.update.message).toBeNull()
 
 		// and it's gone from the queue — a third unrelated real message doesn't replay it again
 		expect(orphanQueue.drain(targetKey)).toHaveLength(0)
 	})
 
 	it('emits immediately (no queueing) when the revoke target is already known', async () => {
-		const { ctx, updates, orphanQueue } = makeContext(async () => ({ conversation: 'known' }) as any)
+		const { ctx, updates, orphanQueue } = makeContext(async () => ({ conversation: 'known' }))
 		const targetKey = { id: 'target-3', remoteJid: 'chat@s.whatsapp.net', fromMe: false }
 		const revokeMsg = inbound('revoke-3', {
 			protocolMessage: { type: proto.Message.ProtocolMessage.Type.REVOKE, key: targetKey }
 		})
 
-		await processMessage(revokeMsg, { ...ctx, orphanQueue } as any)
+		await processMessage(revokeMsg, { ...ctx, orphanQueue })
 
 		expect(updates).toHaveLength(1)
 		expect(orphanQueue.drain(targetKey)).toHaveLength(0) // nothing was ever queued
@@ -116,7 +129,7 @@ describe('processMessage — orphan queue (REVOKE)', () => {
 			protocolMessage: { type: proto.Message.ProtocolMessage.Type.REVOKE, key: targetKey }
 		})
 
-		await processMessage(revokeMsg, { ...ctx, orphanQueue: undefined } as any)
+		await processMessage(revokeMsg, { ...ctx, orphanQueue: undefined })
 
 		expect(updates).toHaveLength(0)
 	})
@@ -134,7 +147,7 @@ describe('processMessage — orphan queue (event-response)', () => {
 			}
 		})
 
-		await processMessage(responseMsg, { ...ctx, orphanQueue } as any)
+		await processMessage(responseMsg, { ...ctx, orphanQueue })
 
 		expect(updates).toHaveLength(0)
 		const drained = orphanQueue.drain(creationKey)
@@ -153,11 +166,11 @@ describe('processMessage — orphan queue (event-response)', () => {
 			}
 		})
 
-		await processMessage(responseMsg, { ...ctx, orphanQueue } as any)
+		await processMessage(responseMsg, { ...ctx, orphanQueue })
 		expect(orphanQueue.drain(creationKey)).toHaveLength(1) // queued by the call above; drain() also removes it
 		orphanQueue.enqueue(creationKey, 'event-response', responseMsg) // put it back to exercise the replay path below
 
-		const warnSpy = jest.spyOn(ctx.logger, 'warn')
+		const warnSpy = jest.spyOn(ctx.logger!, 'warn')
 		const creationMsg: WAMessage = {
 			key: creationKey,
 			message: {
@@ -166,7 +179,7 @@ describe('processMessage — orphan queue (event-response)', () => {
 			},
 			messageTimestamp: 1770000002
 		}
-		await processMessage(creationMsg, { ...ctx, orphanQueue } as any)
+		await processMessage(creationMsg, { ...ctx, orphanQueue })
 
 		// Replay was attempted (decryption fails on this fabricated ciphertext, which
 		// is expected — the point is it's no longer silently dropped as "not found").

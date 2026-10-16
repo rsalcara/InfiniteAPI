@@ -1,6 +1,5 @@
 import { Boom } from '@hapi/boom'
 import { randomBytes } from 'crypto'
-import { promises as fs } from 'fs'
 import { type Transform } from 'stream'
 import { proto } from '../../WAProto/index.js'
 import {
@@ -39,6 +38,7 @@ import { isJidGroup, isJidNewsletter, isJidStatusBroadcast, jidNormalizedUser } 
 import { sha256 } from './crypto'
 import { generateMessageIDV2, getKeyAuthor, unixTimestampSeconds } from './generics'
 import type { ILogger } from './logger'
+import { assertMessageSecret, deriveMessageSecretKey, encryptWithMessageSecretKey } from './message-secret-envelope'
 import {
 	downloadContentFromMessage,
 	encryptedStream,
@@ -50,12 +50,78 @@ import {
 	getRawMediaUploadData,
 	getStream,
 	type MediaDownloadOptions,
+	removeTmpFiles,
 	toBuffer
 } from './messages-media'
 import { shouldIncludeReportingToken } from './reporting-utils'
 import { prepareStickerPackMessage } from './sticker-pack.js'
 
-type ExtractByKey<T, K extends PropertyKey> = T extends Record<K, any> ? T : never
+/**
+ * Loose runtime views of the legacy interactive payloads. The generator accepts
+ * a few aliases beyond the declared `Buttonable`/`Templatable`/`Listable`/
+ * `Carouselable` shapes (e.g. `displayText`/`text` on buttons, `id` on rows).
+ */
+type LegacyButtonsInput = {
+	text?: string
+	footerText?: string
+	headerType?: proto.Message.ButtonsMessage.HeaderType
+	buttons: Array<{
+		buttonId?: string
+		buttonText?: { displayText?: string }
+		displayText?: string
+		text?: string
+		type?: proto.Message.ButtonsMessage.Button.Type
+	}>
+}
+
+type LegacyMediaButtonsInput = Omit<LegacyButtonsInput, 'headerType'> & {
+	image?: WAMediaUpload
+	video?: WAMediaUpload
+	caption?: string
+	jpegThumbnail?: string
+	mimetype?: string
+	gifPlayback?: boolean
+	ptv?: boolean
+}
+
+type LegacyTemplateInput = {
+	text?: string
+	footer?: string
+	templateButtons: Array<{
+		index?: number
+		quickReplyButton?: proto.HydratedTemplateButton.IHydratedQuickReplyButton
+		urlButton?: proto.HydratedTemplateButton.IHydratedURLButton
+		callButton?: proto.HydratedTemplateButton.IHydratedCallButton
+	}>
+}
+
+type LegacyListInput = {
+	text?: string
+	title?: string
+	buttonText?: string
+	footerText?: string
+	sections: Array<{
+		title: string
+		rows: Array<{ id?: string; rowId?: string; title: string; description?: string }>
+	}>
+}
+
+type LegacyCarouselInput = {
+	text?: string
+	carousel: {
+		header?: proto.Message.InteractiveMessage.IHeader
+		title?: string
+		description?: string
+		footer?: string
+		cards: Array<Pick<proto.Message.IInteractiveMessage, 'header' | 'body' | 'footer' | 'nativeFlowMessage'>>
+		messageVersion?: number
+	}
+}
+
+/** Any inner message proto that may carry a `contextInfo` */
+type MessageWithContextInfoShape = { contextInfo?: proto.IContextInfo | null }
+
+type ExtractByKey<T, K extends PropertyKey> = T extends Record<K, unknown> ? T : never
 type RequireKey<T, K extends keyof T> = T & {
 	[P in K]-?: Exclude<T[P], null | undefined>
 }
@@ -95,6 +161,16 @@ const MessageTypeProto = {
 	document: WAProto.Message.DocumentMessage
 } as const
 
+const rawUserFromJid = (jid: string | null | undefined, fieldName: string): string => {
+	const normalized = jid ? jidNormalizedUser(jid) : undefined
+	const raw = normalized?.split('@')[0]
+	if (!raw) {
+		throw new Boom(`${fieldName} is required to derive the encrypted envelope key`, { statusCode: 400 })
+	}
+
+	return raw
+}
+
 /**
  * Uses a regex to test whether the string contains a URL, and returns the URL if it does.
  * @param text eg. hello https://google.com
@@ -112,14 +188,14 @@ export const generateLinkPreviewIfRequired = async (
 		try {
 			const urlInfo = await getUrlInfo(url)
 			return urlInfo
-		} catch (error: any) {
+		} catch (error) {
 			// ignore if fails
-			logger?.warn({ trace: error.stack }, 'url generation failed')
+			logger?.warn({ trace: (error as Error).stack }, 'url generation failed')
 		}
 	}
 }
 
-const assertColor = async (color: any) => {
+const assertColor = async (color: number | string) => {
 	let assertedColor
 	if (typeof color === 'number') {
 		assertedColor = color > 0 ? color : 0xffffffff + Number(color) + 1
@@ -155,7 +231,7 @@ export const prepareWAMessageMedia = async (
 		// upload `true` as media, breaking every voice note and animated
 		// GIF send. The guard makes the loop pick the real payload key
 		// regardless of iteration order.
-		if (key in message && typeof (message as any)[key] !== 'boolean') {
+		if (key in message && typeof (message as Record<string, unknown>)[key] !== 'boolean') {
 			mediaType = key
 		}
 	}
@@ -166,9 +242,9 @@ export const prepareWAMessageMedia = async (
 
 	const uploadData: MediaUploadData = {
 		...message,
-		media: (message as any)[mediaType]
+		media: (message as Record<string, unknown>)[mediaType] as MediaUploadData['media']
 	}
-	delete (uploadData as any)[mediaType]
+	delete (uploadData as Record<string, unknown>)[mediaType]
 	// check if cacheable + generate cache key
 	const cacheableKey =
 		typeof uploadData.media === 'object' &&
@@ -212,23 +288,24 @@ export const prepareWAMessageMedia = async (
 		)
 
 		const fileSha256B64 = fileSha256.toString('base64')
-		const { mediaUrl, directPath } = await options.upload(filePath, {
-			fileEncSha256B64: fileSha256B64,
-			mediaType: mediaType,
-			timeoutMs: options.mediaUploadTimeoutMs,
-			// Route through NEWSLETTER_MEDIA_PATH_MAP so the upload goes to
-			// `/newsletter/newsletter-<type>` instead of `/mms/<type>`.
-			// Server-side routing enforces this — a newsletter message that
-			// references a `/mms/*` upload is rejected with ACK 479 and the
-			// media never becomes visible to subscribers.
-			newsletter: true
-		})
-
-		await fs.unlink(filePath)
+		const { mediaUrl, directPath } = await options
+			.upload(filePath, {
+				fileEncSha256B64: fileSha256B64,
+				mediaType: mediaType,
+				timeoutMs: options.mediaUploadTimeoutMs,
+				// Route through NEWSLETTER_MEDIA_PATH_MAP so the upload goes to
+				// `/newsletter/newsletter-<type>` instead of `/mms/<type>`.
+				// Server-side routing enforces this — a newsletter message that
+				// references a `/mms/*` upload is rejected with ACK 479 and the
+				// media never becomes visible to subscribers.
+				newsletter: true
+			})
+			// A failed upload must not leave the raw media behind (audit G-03).
+			.finally(() => removeTmpFiles([filePath], logger))
 
 		const obj = WAProto.Message.fromObject({
 			// todo: add more support here
-			[`${mediaType}Message`]: (MessageTypeProto as any)[mediaType].fromObject({
+			[`${mediaType}Message`]: MessageTypeProto[mediaType as keyof typeof MessageTypeProto].fromObject({
 				url: mediaUrl,
 				directPath,
 				fileSha256,
@@ -337,7 +414,7 @@ export const prepareWAMessageMedia = async (
 				}
 
 				if (requiresAudioBackground) {
-					uploadData.backgroundArgb = await assertColor(options.backgroundColor)
+					uploadData.backgroundArgb = await assertColor(options.backgroundColor!)
 					logger?.debug('computed backgroundColor audio status')
 				}
 			} catch (error) {
@@ -345,16 +422,8 @@ export const prepareWAMessageMedia = async (
 			}
 		})()
 	]).finally(async () => {
-		try {
-			await fs.unlink(encFilePath)
-			if (originalFilePath) {
-				await fs.unlink(originalFilePath)
-			}
-
-			logger?.debug('removed tmp files')
-		} catch (error) {
-			logger?.warn('failed to remove tmp file')
-		}
+		await removeTmpFiles([encFilePath, originalFilePath], logger)
+		logger?.debug('removed tmp files')
 	})
 
 	const obj = WAProto.Message.fromObject({
@@ -368,7 +437,7 @@ export const prepareWAMessageMedia = async (
 			mediaKeyTimestamp: unixTimestampSeconds(),
 			...uploadData,
 			media: undefined
-		} as any)
+		})
 	})
 
 	if (uploadData.ptv) {
@@ -865,7 +934,7 @@ export const generateCarouselMessage = async (
 		cards.map(async card => {
 			const hasMedia = !!(card.image || card.video)
 
-			const header: any = {
+			const header: proto.Message.InteractiveMessage.IHeader = {
 				title: card.title || '',
 				subtitle: card.footer || '',
 				hasMediaAttachment: hasMedia
@@ -931,7 +1000,7 @@ export const generateCarouselMessage = async (
 	mediaOptions?.logger?.info(
 		{
 			totalCards: carouselCards.length,
-			cards: carouselCards.map((c: any, i: number) => ({
+			cards: carouselCards.map((c, i) => ({
 				index: i,
 				hasMedia: c.header?.hasMediaAttachment,
 				mediaType: c.header?.imageMessage ? 'image' : c.header?.videoMessage ? 'video' : 'none',
@@ -1449,7 +1518,7 @@ export const generateWAMessageContent = async (
 	// ========== NATIVE FLOW BUTTONS (Modern approach) ==========
 	// Check for nativeButtons first - this is the recommended modern approach
 	else if (hasNonNullishProperty(message, 'nativeButtons')) {
-		const nativeMsg = message as any
+		const nativeMsg = message
 		const nativeButtons = nativeMsg.nativeButtons
 		if (!Array.isArray(nativeButtons)) {
 			throw new Boom('nativeButtons must be an array', { statusCode: 400 })
@@ -1460,7 +1529,7 @@ export const generateWAMessageContent = async (
 		}
 
 		for (const button of nativeButtons) validateNativeButton(button)
-		const buttons = nativeButtons as NativeButton[]
+		const buttons = nativeButtons
 
 		// Standard reply sets use the legacy envelope validated across mobile and
 		// companion clients. Sets beyond that envelope's limit become a list.
@@ -1495,7 +1564,7 @@ export const generateWAMessageContent = async (
 									sectionIndex * LIST_LIMITS.MAX_ROWS_PER_SECTION,
 									(sectionIndex + 1) * LIST_LIMITS.MAX_ROWS_PER_SECTION
 								)
-								.map((btn: any) => {
+								.map(btn => {
 									const displayText = String(btn.text)
 									const title = truncateUtf16(displayText, LIST_LIMITS.MAX_ROW_TITLE)
 
@@ -1551,7 +1620,7 @@ export const generateWAMessageContent = async (
 						? proto.Message.ButtonsMessage.HeaderType.TEXT
 						: proto.Message.ButtonsMessage.HeaderType.EMPTY,
 					...(hasHeaderTitle ? { text: nativeMsg.headerTitle } : {}),
-					buttons: buttons.map((btn: any) => ({
+					buttons: buttons.map(btn => ({
 						buttonId: btn.id,
 						buttonText: { displayText: btn.text },
 						type: proto.Message.ButtonsMessage.Button.Type.RESPONSE
@@ -1576,7 +1645,7 @@ export const generateWAMessageContent = async (
 	}
 	// Check for nativeCarousel
 	else if (hasNonNullishProperty(message, 'nativeCarousel')) {
-		const carouselMsg = message as any
+		const carouselMsg = message as typeof message & { title?: string; nativeCarousel: { title?: string } }
 		const carouselOptions: CarouselMessageOptions = {
 			cards: carouselMsg.nativeCarousel.cards,
 			title: carouselMsg.nativeCarousel.title || carouselMsg.title,
@@ -1592,7 +1661,7 @@ export const generateWAMessageContent = async (
 	}
 	// Check for nativeList
 	else if (hasNonNullishProperty(message, 'nativeList')) {
-		const listMsg = message as any
+		const listMsg = message
 		// Use LEGACY format to avoid error 479
 		// Modern format (interactiveMessage) causes rejection
 		// Legacy format (listMessage) works on all platforms
@@ -1608,7 +1677,8 @@ export const generateWAMessageContent = async (
 	}
 	// Check for productList (multi-product message from catalog)
 	else if (hasNonNullishProperty(message, 'productList')) {
-		const productMsg = message as any
+		// `productList` is accepted at runtime but not declared in AnyMessageContent
+		const productMsg = message as { productList: ProductListMessageOptions }
 		const productListOptions: ProductListMessageOptions = {
 			title: productMsg.productList.title,
 			description: productMsg.productList.description,
@@ -1624,7 +1694,7 @@ export const generateWAMessageContent = async (
 	}
 	// Check for productCarousel (WhatsApp Business catalog products)
 	else if (hasNonNullishProperty(message, 'productCarousel')) {
-		const productCarouselMsg = message as any
+		const productCarouselMsg = message
 		const productCarouselOptions: ProductCarouselMessageOptions = {
 			businessOwnerJid: productCarouselMsg.productCarousel.businessOwnerJid,
 			products: productCarouselMsg.productCarousel.products,
@@ -1637,13 +1707,14 @@ export const generateWAMessageContent = async (
 	// Interactive messages: buttons, lists, templates
 	else if (hasNonNullishProperty(message, 'text') && hasNonNullishProperty(message, 'buttons')) {
 		// Process buttons for text messages
+		const buttonsInput = message as LegacyButtonsInput
 		const buttonsMessage: proto.Message.IButtonsMessage = {
-			contentText: (message as any).text,
-			footerText: (message as any).footerText,
-			headerType: (message as any).headerType || proto.Message.ButtonsMessage.HeaderType.EMPTY
+			contentText: buttonsInput.text,
+			footerText: buttonsInput.footerText,
+			headerType: buttonsInput.headerType || proto.Message.ButtonsMessage.HeaderType.EMPTY
 		}
 
-		buttonsMessage.buttons = ((message as any).buttons as any[]).map((btn: any, idx: number) => ({
+		buttonsMessage.buttons = buttonsInput.buttons.map((btn, idx) => ({
 			buttonId: btn.buttonId || `btn_${idx}`,
 			buttonText: { displayText: btn.buttonText?.displayText || btn.displayText || btn.text },
 			type: btn.type || proto.Message.ButtonsMessage.Button.Type.RESPONSE
@@ -1653,7 +1724,8 @@ export const generateWAMessageContent = async (
 		options.logger?.info('[Interactive] Sending buttonsMessage (legacy format)')
 	} else if (hasNonNullishProperty(message, 'text') && hasNonNullishProperty(message, 'templateButtons')) {
 		// Process templateButtons
-		const hydratedButtons = ((message as any).templateButtons as any[]).map((btn: any) => {
+		const templateInput = message as LegacyTemplateInput
+		const hydratedButtons = templateInput.templateButtons.map(btn => {
 			if (btn.quickReplyButton) {
 				return { index: btn.index, quickReplyButton: btn.quickReplyButton }
 			} else if (btn.urlButton) {
@@ -1667,8 +1739,8 @@ export const generateWAMessageContent = async (
 
 		const templateMessage: proto.Message.ITemplateMessage = {
 			hydratedTemplate: {
-				hydratedContentText: (message as any).text,
-				hydratedFooterText: (message as any).footer,
+				hydratedContentText: templateInput.text,
+				hydratedFooterText: templateInput.footer,
 				hydratedButtons
 			}
 		}
@@ -1677,18 +1749,19 @@ export const generateWAMessageContent = async (
 		options.logger?.info('[Interactive] Sending templateMessage')
 	} else if (hasNonNullishProperty(message, 'sections')) {
 		// Process list messages - validate limits
-		validateListSections((message as any).sections, (message as any).buttonText)
+		const listInput = message as LegacyListInput
+		validateListSections(listInput.sections, listInput.buttonText)
 		const listMessage: proto.Message.IListMessage = {
-			title: (message as any).title,
-			description: (message as any).text,
-			buttonText: (message as any).buttonText || 'View options',
-			footerText: (message as any).footerText,
+			title: listInput.title,
+			description: listInput.text,
+			buttonText: listInput.buttonText || 'View options',
+			footerText: listInput.footerText,
 			listType: proto.Message.ListMessage.ListType.SINGLE_SELECT
 		}
 
-		listMessage.sections = ((message as any).sections as any[]).map((section: any) => ({
+		listMessage.sections = listInput.sections.map(section => ({
 			title: section.title,
-			rows: section.rows.map((row: any) => ({
+			rows: section.rows.map(row => ({
 				rowId: row.rowId || row.id,
 				title: row.title,
 				description: row.description
@@ -1702,13 +1775,14 @@ export const generateWAMessageContent = async (
 		)
 	} else if (hasNonNullishProperty(message, 'carousel')) {
 		// Process carousel/interactive messages with viewOnceMessage wrapper
-		const carousel = (message as any).carousel
+		const carouselInput = message as LegacyCarouselInput
+		const carousel = carouselInput.carousel
 		const interactiveMessage: proto.Message.IInteractiveMessage = {
 			header: carousel.header || { title: carousel.title || 'Carousel', hasMediaAttachment: false },
-			body: { text: (message as any).text || carousel.description || '' },
+			body: { text: carouselInput.text || carousel.description || '' },
 			footer: carousel.footer ? { text: carousel.footer } : undefined,
 			carouselMessage: {
-				cards: carousel.cards.map((card: any) => ({
+				cards: carousel.cards.map(card => ({
 					header: card.header,
 					body: card.body,
 					footer: card.footer,
@@ -1816,7 +1890,76 @@ export const generateWAMessageContent = async (
 			message.react.senderTimestampMs = Date.now()
 		}
 
-		m.reactionMessage = WAProto.Message.ReactionMessage.create(message.react)
+		const { parentMessageSecret, targetAuthorJid, senderJid, ...reaction } = message.react
+		if (parentMessageSecret) {
+			const targetKey = reaction.key
+			if (!targetKey?.id) {
+				throw new Boom('react.key.id is required for an encrypted CAG reaction', { statusCode: 400 })
+			}
+
+			assertMessageSecret(parentMessageSecret)
+			const targetAuthorRaw = rawUserFromJid(
+				targetAuthorJid ||
+					(targetKey.fromMe ? senderJid || (options as MessageGenerationOptions).userJid : targetKey.participant || ''),
+				'reaction target author'
+			)
+			const senderRaw = rawUserFromJid(senderJid || (options as MessageGenerationOptions).userJid, 'reaction sender')
+			const key = deriveMessageSecretKey(parentMessageSecret, 'Enc Reaction', {
+				targetAuthorRaw,
+				senderRaw,
+				targetMessageId: targetKey.id
+			})
+			// Android clears ReactionMessage.key before encryption and carries it
+			// once on EncReactionMessage.targetMessageKey.
+			const plaintext = WAProto.Message.ReactionMessage.create({ ...reaction, key: null })
+			const { iv, payload } = encryptWithMessageSecretKey(
+				WAProto.Message.ReactionMessage.encode(plaintext).finish(),
+				key
+			)
+			m.encReactionMessage = WAProto.Message.EncReactionMessage.create({
+				targetMessageKey: targetKey,
+				encPayload: payload,
+				encIv: iv
+			})
+		} else {
+			m.reactionMessage = WAProto.Message.ReactionMessage.create(reaction)
+		}
+	} else if (hasNonNullishProperty(message, 'channelComment')) {
+		const comment = message.channelComment
+		assertMessageSecret(comment.parentMessageSecret)
+		const targetKey = comment.targetMessageKey
+		const targetMessageId = targetKey.id
+		if (!targetMessageId) {
+			throw new Boom('channelComment.targetMessageKey.id is required', { statusCode: 400 })
+		}
+
+		const senderJid = comment.senderJid || (options as MessageGenerationOptions).userJid
+		const targetAuthorCandidate =
+			comment.targetAuthorJid || (targetKey.fromMe ? senderJid : targetKey.participant || '')
+		const targetAuthorJid = targetAuthorCandidate || ''
+		const targetAuthorRaw = rawUserFromJid(targetAuthorJid, 'channelComment target author')
+		const senderRaw = rawUserFromJid(senderJid, 'channelComment sender')
+		const key = deriveMessageSecretKey(comment.parentMessageSecret, 'Enc Comment', {
+			targetAuthorRaw,
+			senderRaw,
+			targetMessageId
+		})
+
+		// Android decrypts an E2E.Message (not a bare CommentMessage) and reads
+		// its commentMessage field. Keep this framing byte-for-byte compatible.
+		const innerMessage = await generateWAMessageContent(comment.message, { ...options, jid: options.jid })
+		const commentPlaintext = WAProto.Message.create({
+			commentMessage: WAProto.Message.CommentMessage.create({
+				message: innerMessage,
+				targetMessageKey: targetKey
+			})
+		})
+		const { iv, payload } = encryptWithMessageSecretKey(WAProto.Message.encode(commentPlaintext).finish(), key)
+		m.encCommentMessage = WAProto.Message.EncCommentMessage.create({
+			targetMessageKey: targetKey,
+			encPayload: payload,
+			encIv: iv
+		})
 	} else if (hasNonNullishProperty(message, 'delete')) {
 		m.protocolMessage = {
 			key: message.delete,
@@ -1893,29 +2036,30 @@ export const generateWAMessageContent = async (
 				: proto.Message.ButtonsMessage.HeaderType.VIDEO
 
 		// Extract only media properties to avoid type errors
+		const mediaInput = message as LegacyMediaButtonsInput
 		const mediaContent: AnyMediaMessageContent =
 			mediaType === 'image'
 				? {
-						image: (message as any).image,
-						caption: (message as any).caption,
-						jpegThumbnail: (message as any).jpegThumbnail,
-						mimetype: (message as any).mimetype
+						image: mediaInput.image!,
+						caption: mediaInput.caption,
+						jpegThumbnail: mediaInput.jpegThumbnail,
+						mimetype: mediaInput.mimetype
 					}
 				: {
-						video: (message as any).video,
-						caption: (message as any).caption,
-						jpegThumbnail: (message as any).jpegThumbnail,
-						gifPlayback: (message as any).gifPlayback,
-						ptv: (message as any).ptv,
-						mimetype: (message as any).mimetype
+						video: mediaInput.video!,
+						caption: mediaInput.caption,
+						jpegThumbnail: mediaInput.jpegThumbnail,
+						gifPlayback: mediaInput.gifPlayback,
+						ptv: mediaInput.ptv,
+						mimetype: mediaInput.mimetype
 					}
 
 		// Prepare media
 		const mediaMessage = await prepareWAMessageMedia(mediaContent, options)
 
 		const buttonsMessage: proto.Message.IButtonsMessage = {
-			contentText: (message as any).caption || (message as any).text || '',
-			footerText: (message as any).footerText,
+			contentText: mediaInput.caption || mediaInput.text || '',
+			footerText: mediaInput.footerText,
 			headerType: headerType
 		}
 
@@ -1927,7 +2071,7 @@ export const generateWAMessageContent = async (
 		}
 
 		// Add buttons
-		buttonsMessage.buttons = ((message as any).buttons as any[]).map((btn: any, idx: number) => ({
+		buttonsMessage.buttons = mediaInput.buttons.map((btn, idx) => ({
 			buttonId: btn.buttonId || `btn_${idx}`,
 			buttonText: { displayText: btn.buttonText?.displayText || btn.displayText || btn.text },
 			type: btn.type || proto.Message.ButtonsMessage.Button.Type.RESPONSE
@@ -2215,8 +2359,8 @@ export const generateWAMessageFromContent = (
 
 	// Skip ephemeral contextInfo for carousel messages
 	const isCarouselEphemeral =
-		!!(message as any)?.interactiveMessage?.carouselMessage ||
-		!!(message as any)?.viewOnceMessage?.message?.interactiveMessage?.carouselMessage
+		!!message?.interactiveMessage?.carouselMessage ||
+		!!message?.viewOnceMessage?.message?.interactiveMessage?.carouselMessage
 	if (
 		// if we want to send a disappearing message
 		!!options?.ephemeralExpiration &&
@@ -2231,7 +2375,7 @@ export const generateWAMessageFromContent = (
 	) {
 		/* @ts-ignore */
 		innerMessage[key].contextInfo = {
-			...((innerMessage[key] as any).contextInfo || {}),
+			...((innerMessage[key] as MessageWithContextInfoShape).contextInfo || {}),
 			expiration: options.ephemeralExpiration || WA_DEFAULT_EPHEMERAL
 			//ephemeralSettingTimestamp: options.ephemeralOptions.eph_setting_ts?.toString()
 		}
@@ -2240,8 +2384,8 @@ export const generateWAMessageFromContent = (
 	// Skip Message.create() for carousel — InteractiveMessage has oneOf (fields 4-7)
 	// and create() may corrupt the carouselMessage/nativeFlowMessage oneOf resolution
 	const isCarouselMsg =
-		!!(message as any)?.interactiveMessage?.carouselMessage ||
-		!!(message as any)?.viewOnceMessage?.message?.interactiveMessage?.carouselMessage
+		!!message?.interactiveMessage?.carouselMessage ||
+		!!message?.viewOnceMessage?.message?.interactiveMessage?.carouselMessage
 	if (!isCarouselMsg) {
 		message = WAProto.Message.create(message)
 	}

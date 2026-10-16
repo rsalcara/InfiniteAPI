@@ -8,15 +8,24 @@ import { jest } from '@jest/globals'
 import { EventEmitter } from 'events'
 import P from 'pino'
 import { proto } from '../../../WAProto/index.js'
-import type { AuthenticationCreds, BaileysEventEmitter, WAMessage } from '../../Types'
+import type {
+	AuthenticationCreds,
+	BaileysEventEmitter,
+	Contact,
+	SignalKeyStoreWithTransaction,
+	SignalRepositoryWithLIDStore,
+	WAMessage
+} from '../../Types'
 import { initAuthCreds } from '../../Utils/auth-utils'
 import processMessage from '../../Utils/process-message'
 
 const silent = P({ level: 'silent' })
 
+type ProcessContext = Parameters<typeof processMessage>[1]
+
 const credsWithMe = (): AuthenticationCreds => ({
 	...initAuthCreds(),
-	me: { id: 'me@s.whatsapp.net' } as any
+	me: { id: 'me@s.whatsapp.net' } as Contact
 })
 
 const makeStatusBackendMock = () => ({
@@ -25,20 +34,21 @@ const makeStatusBackendMock = () => ({
 
 const makeContext = (statusBackend: ReturnType<typeof makeStatusBackendMock>) => {
 	const events = new EventEmitter() as unknown as BaileysEventEmitter
-	return {
-		ctx: {
-			shouldProcessHistoryMsg: false,
-			placeholderResendCache: undefined,
-			ev: events,
-			creds: credsWithMe(),
-			keyStore: {} as any,
-			signalRepository: { lidMapping: { getPNForLID: async (jid: string) => jid } } as any,
-			logger: silent,
-			options: {},
-			getMessage: async () => undefined,
-			statusBackend: statusBackend as any
-		}
+	const ctx: ProcessContext = {
+		shouldProcessHistoryMsg: false,
+		placeholderResendCache: undefined,
+		ev: events,
+		creds: credsWithMe(),
+		keyStore: {} as unknown as SignalKeyStoreWithTransaction,
+		signalRepository: {
+			lidMapping: { getPNForLID: async (jid: string) => jid }
+		} as unknown as SignalRepositoryWithLIDStore,
+		logger: silent,
+		options: {},
+		getMessage: async () => undefined,
+		statusBackend: statusBackend as unknown as NonNullable<ProcessContext['statusBackend']>
 	}
+	return { ctx }
 }
 
 const inboundStatus = (id: string, message: proto.IMessage): WAMessage => ({
@@ -53,7 +63,7 @@ describe('processMessage — status.db mirror', () => {
 		const { ctx } = makeContext(statusBackend)
 
 		const msg = inboundStatus('status-1', { extendedTextMessage: { text: 'hello world' } })
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 
 		expect(statusBackend.recordReceivedStatus).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -72,7 +82,7 @@ describe('processMessage — status.db mirror', () => {
 		// `??` (not `||`) must be used for textData - an empty string is falsy but
 		// still a real (non-null) value, unlike `||` which would drop it to null.
 		const msg = inboundStatus('status-empty', { extendedTextMessage: { text: '' } })
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 
 		expect(statusBackend.recordReceivedStatus).toHaveBeenCalledWith(expect.objectContaining({ textData: '' }))
 	})
@@ -86,16 +96,16 @@ describe('processMessage — status.db mirror', () => {
 			message: { conversation: 'hi' },
 			messageTimestamp: 1770000000
 		}
-		await processMessage(msg, ctx as any)
+		await processMessage(msg, ctx)
 
 		expect(statusBackend.recordReceivedStatus).not.toHaveBeenCalled()
 	})
 
 	it('does nothing when statusBackend is not configured (additive/opt-in)', async () => {
 		const { ctx } = makeContext(makeStatusBackendMock())
-		;(ctx as any).statusBackend = undefined
+		ctx.statusBackend = undefined
 
 		const msg = inboundStatus('status-2', { conversation: 'x' })
-		await expect(processMessage(msg, ctx as any)).resolves.not.toThrow()
+		await expect(processMessage(msg, ctx)).resolves.not.toThrow()
 	})
 })

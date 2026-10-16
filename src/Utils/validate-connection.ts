@@ -30,6 +30,50 @@ export type NativeAndroidClientPayloadContext = {
 	paaLink: boolean
 }
 
+/**
+ * Explicit login states of a registration-seeded primary session (device-0).
+ * They reproduce the official passive decision inputs byte for byte:
+ *   passive = !companionRegistrationInProgress && !paaLinkMode
+ *             && (forcePassiveMode || hasPreacks
+ *                 || signalProtocolStoreIsNew || queueSizePassive)
+ * (smali of HandlerThreadC08660aV.A0v — the JADX view inverts the first
+ * condition). Companion sessions do not carry this state and keep the legacy
+ * `phase`-derived behavior untouched.
+ */
+export type NativeAndroidLoginState = {
+	/** APK pref `signal_protocol_store_is_new` (C018408o.A1H). */
+	signalProtocolStoreIsNew: boolean
+	/** APK pref-driven `hasPreacks` (C34691fX.A0P); false until pre-acks exist. */
+	hasPreacks?: boolean
+	/** Official `forcePassiveMode` argument of A0v; false in the normal flow. */
+	forcePassiveMode?: boolean
+	/** Queue-size-based passive (C35091gy.A09); false without a backlog. */
+	queueSizePassive?: boolean
+	/** APK pref `logins_with_messages`; shortConnect is `< 3` with push present. */
+	loginsWithMessages?: number
+	/** Whether the session has a JID (lid_db_migrated needs one to be written). */
+	hasJid?: boolean
+	/**
+	 * APK push-token presence: prefs `c2dm_reg_id` / `fbns_token`
+	 * (C08570aM.A03). A registration-seeded primary is push-registered by its
+	 * number (same as the captured device), so this is `true` there.
+	 */
+	hasPushToken?: boolean
+}
+
+/**
+ * Official `C08580aN` login trigger snapshot: `type` 1 = USER_ACTIVATED,
+ * 2 = PUSH, plus the trigger timestamp (`A00`/`A02`). The app only maps it to
+ * `connectReason` when the snapshot is FRESH at login start —
+ * `triggerTimestampMs > 0 && loginStartTime - triggerTimestampMs < 10_000` —
+ * and keeps `connectReason = UNKNOWN(6)` otherwise. The motor captures no
+ * such trigger, so seeded primaries report UNKNOWN by default.
+ */
+export type NativeAndroidConnectTriggerSnapshot = {
+	type: 1 | 2
+	timestampMs: number
+}
+
 type NativeAndroidClientPayloadContextOptions = {
 	phase: NativeAndroidClientPayloadContext['phase']
 	connectionLc?: number
@@ -43,6 +87,10 @@ type NativeAndroidClientPayloadContextOptions = {
 	connectAttemptCount?: number
 	addressSource?: number
 	proxyDirectness?: 0 | 1
+	/** Present only for registration-seeded primary sessions. */
+	loginState?: NativeAndroidLoginState
+	/** Present only for registration-seeded primary sessions (see {@link NativeAndroidConnectTriggerSnapshot}). */
+	connectTriggerSnapshot?: NativeAndroidConnectTriggerSnapshot
 }
 
 export const resolveNativeAndroidClientPayloadPhase = ({
@@ -55,6 +103,22 @@ export const resolveNativeAndroidClientPayloadPhase = ({
 	!hasRegisteredIdentity ? 'registration' : (accountSyncCounter ?? 0) === 0 ? 'initial_pair_login' : 'reconnect'
 
 const nativeAndroidSessionId = () => randomBytes(4).readInt32BE(0)
+
+/** Official C08580aN freshness window: a trigger older than 10 s at login start is ignored. */
+const NATIVE_ANDROID_TRIGGER_FRESH_MS = 10_000
+
+const resolveConnectReasonFromTrigger = (
+	snapshot: NativeAndroidConnectTriggerSnapshot | undefined,
+	loginStartTimeMs: number
+): proto.ClientPayload.ConnectReason => {
+	const fresh =
+		snapshot &&
+		(snapshot.type === 1 || snapshot.type === 2) &&
+		snapshot.timestampMs > 0 &&
+		loginStartTimeMs - snapshot.timestampMs < NATIVE_ANDROID_TRIGGER_FRESH_MS
+	if (!fresh) return proto.ClientPayload.ConnectReason.UNKNOWN
+	return snapshot.type === 1 ? proto.ClientPayload.ConnectReason.USER_ACTIVATED : proto.ClientPayload.ConnectReason.PUSH
+}
 
 /**
  * Encodes the connection metadata bit-field used by the official Android
@@ -116,21 +180,68 @@ export const createNativeAndroidClientPayloadContext = (
 
 	const isReconnect = options.phase === 'reconnect'
 	const isInitialPairLogin = options.phase === 'initial_pair_login'
+	const loginState = options.loginState
+
+	// Official passive decision (smali of HandlerThreadC08660aV.A0v):
+	//   passive = !companionRegistrationInProgress && !paaLinkMode
+	//             && (forcePassiveMode || hasPreacks
+	//                 || signalProtocolStoreIsNew || queueSizePassive)
+	// Companion registration and PAA link mode are never active in the motor,
+	// so only the four state flags remain. Without an explicit login state
+	// (companion/web) the historical phase-derived behavior is preserved.
+	const passive = loginState
+		? Boolean(
+				loginState.forcePassiveMode ||
+				loginState.hasPreacks ||
+				loginState.signalProtocolStoreIsNew ||
+				loginState.queueSizePassive
+			)
+		: isInitialPairLogin
+	// Official shortConnect (C08570aM.A03) is
+	// `(prefs c2dm_reg_id || fbns_token) && logins_with_messages < 3`.
+	const shortConnect = loginState
+		? Boolean((loginState.hasPushToken ?? true) && (loginState.loginsWithMessages ?? 0) < 3)
+		: true
+	// Official lid_db_migrated is written only when a JID exists and the Signal
+	// store is no longer new (case 312 of AbstractC45341yV).
+	const lidDbMigrated = loginState
+		? loginState.hasJid && !loginState.signalProtocolStoreIsNew
+			? true
+			: undefined
+		: isReconnect
+			? true
+			: undefined
 
 	return {
 		phase: options.phase,
 		sessionId: options.sessionId ?? nativeAndroidSessionId(),
-		passive: isInitialPairLogin,
-		shortConnect: true,
+		passive,
+		shortConnect,
 		connectType: options.connectType ?? proto.ClientPayload.ConnectType.CELLULAR_HSPA,
+		// Official connectReason (C08580aN): UNKNOWN(6) unless a FRESH trigger
+		// snapshot exists (< 10 s before login start) — type 1 = USER_ACTIVATED,
+		// 2 = PUSH. Seeded primaries carry no trigger snapshot, so they report
+		// UNKNOWN exactly like an untriggered app start. Companion/web keep the
+		// historical phase-derived default untouched.
 		connectReason:
 			options.connectReason ??
-			(isReconnect ? proto.ClientPayload.ConnectReason.USER_ACTIVATED : proto.ClientPayload.ConnectReason.UNKNOWN),
+			(loginState
+				? resolveConnectReasonFromTrigger(options.connectTriggerSnapshot, Date.now())
+				: isReconnect
+					? proto.ClientPayload.ConnectReason.USER_ACTIVATED
+					: proto.ClientPayload.ConnectReason.UNKNOWN),
+		// dnsMethod is the provenance of the address we connected through
+		// (dnsResolverInfo.A00: SYSTEM / HARDCODED / MNS …). The caller passes
+		// the real provenance for seeded primaries; SYSTEM is the honest
+		// fallback (the motor resolves through the OS resolver). Companion/web
+		// keep the historical phase-derived default.
 		dnsMethod:
 			options.dnsMethod ??
-			(isReconnect
-				? proto.ClientPayload.DNSSource.DNSResolutionMethod.MNS
-				: proto.ClientPayload.DNSSource.DNSResolutionMethod.SYSTEM),
+			(loginState
+				? proto.ClientPayload.DNSSource.DNSResolutionMethod.SYSTEM
+				: isReconnect
+					? proto.ClientPayload.DNSSource.DNSResolutionMethod.MNS
+					: proto.ClientPayload.DNSSource.DNSResolutionMethod.SYSTEM),
 		dnsAppCached: options.dnsAppCached ?? !isReconnect,
 		connectAttemptCount: options.connectAttemptCount ?? 0,
 		connectionSequenceInfo: encodeNativeAndroidConnectionSequenceInfo({
@@ -141,7 +252,7 @@ export const createNativeAndroidClientPayloadContext = (
 		}),
 		connectionLc,
 		trafficAnonymization: proto.ClientPayload.TrafficAnonymization.OFF,
-		lidDbMigrated: isReconnect ? true : undefined,
+		lidDbMigrated,
 		paaLink: false
 	}
 }
@@ -285,7 +396,10 @@ export const generateLoginNode = (
 					...getClientPayload(config, nativeContext),
 					passive: nativeContext!.passive,
 					username: +user,
-					device: device
+					// Official ClientPayload writes `device_` explicitly; a device-0
+					// primary has no suffix in its JID, so fill the zero the server
+					// expects instead of leaving the field unset.
+					device: device ?? 0
 				}
 			: {
 					...getClientPayload(config),

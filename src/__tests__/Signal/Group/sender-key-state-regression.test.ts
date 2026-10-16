@@ -1,3 +1,4 @@
+import type { SenderKeyStateStructure } from '../../../Signal/Group/sender-key-record'
 import { SenderKeyState } from '../../../Signal/Group/sender-key-state'
 import { SenderMessageKey } from '../../../Signal/Group/sender-message-key'
 
@@ -9,7 +10,15 @@ describe('SenderKeyState regression: missing senderMessageKeys array', () => {
 			senderSigningKey: { public: Buffer.from([4, 5, 6]) }
 		}
 
-		const state = new SenderKeyState(null, null, null, null, null, null, legacyStructure as any)
+		const state = new SenderKeyState(
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			legacyStructure as unknown as SenderKeyStateStructure
+		)
 		const msgKey = new SenderMessageKey(0, Buffer.from([7, 8, 9]))
 		state.addSenderMessageKey(msgKey)
 

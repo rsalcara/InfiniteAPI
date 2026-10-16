@@ -94,7 +94,8 @@ export const isAndroidViewOnceMessageType = (messageType: number | null | undefi
 
 /**
  * Android msgstore status values confirmed against the official app:
- *   0 pending/new, 4 server ack, 5 delivered, 13 read, 8 played.
+ *   0 pending/new, 4 server ack, 5 delivered, 13 read, 8 played, and the
+ *   receipt-only 15 inactive, 17 read-self, 18 played-self.
  *
  * These are not numerically identical to WebMessageInfo.Status after PENDING,
  * so storing the protobuf enum directly would corrupt msgstore semantics.
@@ -104,8 +105,42 @@ export const ANDROID_MESSAGE_STATUS = {
 	SERVER_ACK: 4,
 	DELIVERY_ACK: 5,
 	READ: 13,
-	PLAYED: 8
+	PLAYED: 8,
+	// Receipt-only states (ReceiptStanzaHelper.A00, X/C29301Csr.java:337-378).
+	INACTIVE: 15,
+	READ_SELF: 17,
+	PLAYED_SELF: 18
 } as const
+
+/**
+ * Android msgstore status for a receipt type, exactly as the app computes it
+ * in ReceiptStanzaHelper.A00 (X/C29301Csr.java:337-378) and carries it as
+ * ReceiptProcessingJob.status (com/whatsapp/xmpp/jobqueue/job/
+ * ReceiptProcessingJob.java:45). A receipt without `type` is a delivery
+ * receipt. Unknown types return null: the app rejects them ("invalid type").
+ *
+ * This is the msgstore mirror only. Consumer events keep the
+ * WebMessageInfo.Status contract of getStatusFromReceiptType (audit R-09).
+ */
+export const androidStatusFromReceiptType = (type: string | undefined): number | null => {
+	switch (type ?? 'delivery') {
+		case 'sender':
+		case 'delivery':
+			return ANDROID_MESSAGE_STATUS.DELIVERY_ACK
+		case 'read':
+			return ANDROID_MESSAGE_STATUS.READ
+		case 'read-self':
+			return ANDROID_MESSAGE_STATUS.READ_SELF
+		case 'played':
+			return ANDROID_MESSAGE_STATUS.PLAYED
+		case 'played-self':
+			return ANDROID_MESSAGE_STATUS.PLAYED_SELF
+		case 'inactive':
+			return ANDROID_MESSAGE_STATUS.INACTIVE
+		default:
+			return null
+	}
+}
 
 export const mapWebMessageStatusToAndroid = (status: number | null | undefined): number | null => {
 	switch (status) {
@@ -283,6 +318,8 @@ export type RecordMessageInput = {
 	status?: number | null
 	timestamp?: number | null
 	receivedTimestamp?: number | null
+	/** Inbound envelope `sts` (server µs timestamp) → `message.server_sts`. */
+	serverSts?: number | null
 	messageType?: number | null
 	textData?: string | null
 	viewMode?: number | null
@@ -426,8 +463,8 @@ export class MessageStoreBackend implements ChatRowResolver {
 			),
 			upsertMessage: this.db.prepare(
 				'INSERT INTO message (chat_row_id, from_me, key_id, sender_jid_row_id, status, timestamp, ' +
-					'received_timestamp, message_type, text_data, view_mode, sort_id) ' +
-					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+					'received_timestamp, server_sts, message_type, text_data, view_mode, sort_id) ' +
+					'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
 					'ON CONFLICT(chat_row_id, from_me, key_id, sender_jid_row_id) DO UPDATE SET ' +
 					'status = CASE ' +
 					'WHEN excluded.status IS NULL THEN message.status ' +
@@ -436,6 +473,7 @@ export class MessageStoreBackend implements ChatRowResolver {
 					'>= (CASE message.status WHEN 0 THEN 0 WHEN 4 THEN 1 WHEN 5 THEN 2 WHEN 13 THEN 3 WHEN 8 THEN 4 ELSE 99 END) ' +
 					'THEN excluded.status ELSE message.status END, ' +
 					'received_timestamp = COALESCE(excluded.received_timestamp, message.received_timestamp), ' +
+					'server_sts = COALESCE(excluded.server_sts, message.server_sts), ' +
 					'message_type = COALESCE(excluded.message_type, message.message_type), ' +
 					'text_data = COALESCE(excluded.text_data, message.text_data), ' +
 					'view_mode = COALESCE(excluded.view_mode, message.view_mode)'
@@ -615,6 +653,7 @@ export class MessageStoreBackend implements ChatRowResolver {
 			input.status ?? null,
 			input.timestamp ?? null,
 			input.receivedTimestamp ?? null,
+			input.serverSts ?? null,
 			input.messageType ?? null,
 			input.textData ?? null,
 			input.viewMode ?? null,

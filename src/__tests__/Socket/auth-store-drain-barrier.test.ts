@@ -34,7 +34,7 @@ describe('auth-store drain barrier', () => {
 			releaseSecond = resolve
 		})
 
-		registerAuthStoreDrainBarrier(authKeyStore, first)
+		void registerAuthStoreDrainBarrier(authKeyStore, first)
 		const combined = registerAuthStoreDrainBarrier(authKeyStore, second)
 		let completed = false
 		void combined.then(() => {

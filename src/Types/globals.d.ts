@@ -1,7 +1,7 @@
 declare global {
 	interface RequestInit {
 		agent?: import('http').Agent
-		dispatcher?: any
+		dispatcher?: unknown
 		duplex?: 'half' | 'full'
 	}
 }

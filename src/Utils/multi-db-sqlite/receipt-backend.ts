@@ -38,6 +38,28 @@ export const RECEIPT_ORPHAN_REPLAY_LIMIT = 300
 export const RECEIPT_ORPHAN_TTL_SECONDS = 60 * 24 * 60 * 60
 export const RECEIPT_ORPHAN_PRUNE_INTERVAL_SECONDS = 60 * 60
 
+/**
+ * Receipt states the app keeps only as the message status, with no
+ * receipt_user progression: read-self 17, played-self 18, inactive 15
+ * (ReceiptStanzaHelper.A00, X/C29301Csr.java:337-378). An orphan of one of
+ * them stores that Android status itself; the values never collide with the
+ * user/device orphan codes 0-3.
+ */
+const STATUS_ONLY_ORPHAN_STATUSES = new Set<number>([
+	ANDROID_MESSAGE_STATUS.INACTIVE,
+	ANDROID_MESSAGE_STATUS.READ_SELF,
+	ANDROID_MESSAGE_STATUS.PLAYED_SELF
+])
+
+export type RecordStatusOrphanInput = {
+	chatJid: string
+	fromMe: boolean
+	keyId: string
+	receiptDeviceJid: string
+	androidStatus: number
+	timestamp: number
+}
+
 const ANDROID_STATUS_BY_ORPHAN_STATUS: Partial<Record<number, number>> = {
 	[ORPHAN_USER_STATUS.delivery]: ANDROID_MESSAGE_STATUS.DELIVERY_ACK,
 	[ORPHAN_USER_STATUS.read]: ANDROID_MESSAGE_STATUS.READ,
@@ -142,7 +164,7 @@ export class ReceiptBackend {
 			listOrphaned: this.db.prepare(
 				'SELECT _id, receipt_device_jid_row_id, receipt_recipient_jid_row_id, status, timestamp ' +
 					'FROM receipt_orphaned WHERE chat_row_id = ? AND from_me = ? AND key_id = ? ' +
-					'AND (status IS NULL OR status IN (0, 1, 2, 3)) ' +
+					'AND (status IS NULL OR status IN (0, 1, 2, 3, 15, 17, 18)) ' +
 					`ORDER BY _id ASC LIMIT ${RECEIPT_ORPHAN_REPLAY_LIMIT}`
 			),
 			deleteOrphaned: this.db.prepare('DELETE FROM receipt_orphaned WHERE _id = ?'),
@@ -258,6 +280,31 @@ export class ReceiptBackend {
 		})()
 	}
 
+	/**
+	 * Holds a status-only receipt (read-self, played-self, inactive) whose
+	 * target message row does not exist yet, so the exact Android status is
+	 * applied when the message is mirrored (audit R-09).
+	 */
+	recordStatusOrphan(input: RecordStatusOrphanInput): void {
+		if (!STATUS_ONLY_ORPHAN_STATUSES.has(input.androidStatus)) {
+			throw new TypeError(`ReceiptBackend: ${input.androidStatus} is not a status-only receipt state`)
+		}
+
+		this.db.transaction(() => {
+			if (this.resolveMessageRowId(input.chatJid, input.fromMe, input.keyId) !== null) return
+			const chatRowId = this.chatResolver.resolveChatRowId(input.chatJid)
+			this.stmts.insertOrphaned.run(
+				chatRowId,
+				input.fromMe ? 1 : 0,
+				input.keyId,
+				this.jidMap.resolveJidRowId(input.receiptDeviceJid),
+				null,
+				input.androidStatus,
+				this.orphanTimestamp(input.timestamp)
+			)
+		})()
+	}
+
 	/** Replays receipts that arrived before their message row, then removes only rows successfully materialized. */
 	replayOrphaned(chatJid: string, fromMe: boolean, keyId: string): number {
 		return this.db.transaction(() => {
@@ -294,6 +341,10 @@ export class ReceiptBackend {
 					// unreplayable orphan forever.
 					if (row.status === null || row.status === ORPHAN_DEVICE_STATUS) {
 						this.stmts.upsertDeviceReceipt.run(messageRowId, row.receipt_device_jid_row_id, row.timestamp)
+					} else if (STATUS_ONLY_ORPHAN_STATUSES.has(row.status)) {
+						if (canPromoteMessageStatus && shouldAdvanceAndroidMessageStatus(promotedStatus, row.status)) {
+							promotedStatus = row.status
+						}
 					} else {
 						const recipientRowId = row.receipt_recipient_jid_row_id ?? row.receipt_device_jid_row_id
 						const stmt =

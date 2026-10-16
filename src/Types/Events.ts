@@ -222,7 +222,7 @@ export type BaileysEventMap = {
 	}
 	'newsletter.view': { id: string; server_id: string; count: number }
 	'newsletter-participants.update': { id: string; author: string; user: string; new_role: string; action: string }
-	'newsletter-settings.update': { id: string; update: any }
+	'newsletter-settings.update': { id: string; update: unknown }
 
 	/** Server-side notification de novo limite de chats — port de upstream `c89d97b13b` (PR #2445). */
 	'message-capping.update': NewChatMessageCapInfo

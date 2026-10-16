@@ -21,6 +21,16 @@ export class TcpSocketClient extends AbstractSocketClient {
 	private readonly connectionPhase = resolveProxyConnectionPhase(this.config)
 	selectedEndpoint?: NativeAndroidConnectionEndpoint
 	connectAttemptCount = 0
+	/**
+	 * Official `C35511hh.A08` ("ConnectionSequence/moveToNext" counter): one
+	 * increment per connection-sequence STAGE entered, not per TCP attempt —
+	 * several addresses inside the same stage keep the same value. This is
+	 * what the ClientPayload `connectionSequenceInfo` bits 7..11 report
+	 * (`XppLoginContext.A01`), unlike `selectedEndpoint.sequenceStep` which is
+	 * the stage id the payload never sends. Bounded by the 5-bit field
+	 * (0..31) the encoder validates.
+	 */
+	stageAdvanceCount = 0
 	dnsAppCached = false
 	addressSource = 1
 
@@ -53,6 +63,8 @@ export class TcpSocketClient extends AbstractSocketClient {
 			return
 		}
 
+		this.stageAdvanceCount = 0
+
 		const abortController = new AbortController()
 		this.connectAbortController = abortController
 		const isCurrentAttempt = () => this.state === 'connecting' && this.connectAbortController === abortController
@@ -80,12 +92,27 @@ export class TcpSocketClient extends AbstractSocketClient {
 		let lastError: Error | undefined
 		try {
 			let index = 0
+			let previousStage: { sequenceStep: number; source: string } | undefined
 			for await (const candidate of candidates) {
 				if (!isCurrentAttempt()) return
 				const remainingSequenceMs = sequenceDeadline - Date.now()
 				if (remainingSequenceMs <= 0) {
 					lastError = new Error('native_android: connection sequence timed out')
 					break
+				}
+
+				// Stage transitions drive the official moveToNext counter
+				// (C35511hh.A08). The generator yields one stage at a time; a
+				// history stage reports the ORIGINAL step id (never 15), so the
+				// stage identity is the (step, source) pair — two adjacent
+				// stages can report the same sequenceStep.
+				const stageKey = {
+					sequenceStep: candidate.sequenceStep ?? 0,
+					source: candidate.source ?? 'configured'
+				}
+				if (previousStage?.sequenceStep !== stageKey.sequenceStep || previousStage.source !== stageKey.source) {
+					this.stageAdvanceCount++
+					previousStage = stageKey
 				}
 
 				try {
@@ -182,6 +209,7 @@ export class TcpSocketClient extends AbstractSocketClient {
 				whatsappConnectAddress: connectedHost,
 				candidateSource: candidate.source,
 				sequenceStep: candidate.sequenceStep,
+				stageAdvanceCount: this.stageAdvanceCount,
 				connectAttempt: this.connectAttemptCount + 1,
 				dnsAppCached: candidate.dnsCached,
 				addressSource: candidate.addressSource

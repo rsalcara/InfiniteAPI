@@ -11,6 +11,11 @@ export type NativeAndroidPairingBridgeProviderConfig = {
 	url: string
 	/** Optional bearer token when the bridge requires authentication. */
 	token?: string
+	/**
+	 * Explicit host aliases that may use plain HTTP only because they are
+	 * Docker loopback aliases. This is not a general private-network bypass.
+	 */
+	allowInsecureLoopbackAliases?: string[]
 	/** Request timeout in milliseconds. Defaults to 40 seconds. */
 	timeoutMs?: number
 	/** Optional custom fetch implementation for testing. */
@@ -26,9 +31,10 @@ type PairingBridgeResponse = {
 const MAX_RESPONSE_BYTES = 1_048_576
 const MAX_KEY_ATTESTATION_BYTES = 128 * 1024
 
-const isLoopbackHost = (hostname: string): boolean => {
+const isLoopbackHost = (hostname: string, aliases?: string[]): boolean => {
 	const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '')
-	return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1'
+	if (normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1') return true
+	return (aliases ?? []).some(alias => alias.toLowerCase().replace(/^\[|\]$/g, '') === normalized)
 }
 
 /**
@@ -54,7 +60,7 @@ export const createNativeAndroidPairingBridgeProvider = (
 		throw new Error('native_android pairing bridge requires a valid http(s) url')
 	}
 
-	if (bridgeUrl.protocol === 'http:' && !isLoopbackHost(bridgeUrl.hostname)) {
+	if (bridgeUrl.protocol === 'http:' && !isLoopbackHost(bridgeUrl.hostname, config.allowInsecureLoopbackAliases)) {
 		throw new Error('native_android pairing bridge requires HTTPS for non-loopback urls')
 	}
 

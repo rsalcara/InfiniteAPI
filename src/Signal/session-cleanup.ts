@@ -51,6 +51,14 @@ export const makeSessionCleanup = (
 ) => {
 	let cleanupInterval: ReturnType<typeof setInterval> | null = null
 	let initialTimeout: ReturnType<typeof setTimeout> | null = null
+	// True from start() until stop(), including while the first run is in
+	// flight (initialTimeout already fired, interval not yet armed), so a
+	// second start() in that window is a no-op instead of rescheduling.
+	let scheduled = false
+	// Bumped by stop(). A first-run callback that is still awaiting its cleanup
+	// when stop() runs sees a different generation afterwards and must not arm
+	// the recurring interval on a stopped scheduler.
+	let generation = 0
 	let lastCleanupAt = 0
 	let cleanupRunning = false
 	let startupCleanupPromise: Promise<void> | null = null
@@ -370,10 +378,13 @@ export const makeSessionCleanup = (
 			return
 		}
 
-		if (cleanupInterval) {
+		if (scheduled) {
 			logger.warn('Session cleanup already started')
 			return
 		}
+
+		scheduled = true
+		const startedGeneration = generation
 
 		logger.info(
 			{
@@ -417,20 +428,29 @@ export const makeSessionCleanup = (
 				await startupCleanupPromise
 			}
 
+			if (startedGeneration !== generation) return
+
 			// Run first cleanup
 			await runCleanup()
+
+			if (startedGeneration !== generation) return
 
 			// Schedule recurring cleanup
 			cleanupInterval = setInterval(async () => {
 				await runCleanup()
 			}, config.intervalMs)
+			cleanupInterval.unref?.()
 		}, msUntilFirst)
+		initialTimeout.unref?.()
 	}
 
 	/**
 	 * Stop periodic session cleanup
 	 */
 	const stop = () => {
+		scheduled = false
+		generation++
+
 		if (initialTimeout) {
 			clearTimeout(initialTimeout)
 			initialTimeout = null

@@ -32,6 +32,17 @@ export interface SessionActivityMetadata {
 	createdAt?: number
 }
 
+/** Minimal key-store view for the off-map 'session-activity' record type */
+type SessionActivityKeyStore = {
+	get(
+		type: 'session-activity',
+		ids: string[]
+	):
+		| Promise<{ [id: string]: SessionActivityMetadata | undefined }>
+		| { [id: string]: SessionActivityMetadata | undefined }
+	set(data: { 'session-activity': { [id: string]: SessionActivityMetadata } }): Promise<void> | void
+}
+
 /**
  * Session Activity Tracker
  *
@@ -63,6 +74,11 @@ export const makeSessionActivityTracker = (
 	logger: ILogger,
 	config: SessionActivityConfig = DEFAULT_SESSION_ACTIVITY_CONFIG
 ) => {
+	// 'session-activity' is not part of SignalDataTypeMap; the key store is a
+	// generic type->id->value map at runtime, so view it through a local
+	// signature for this record type instead of widening the public map.
+	const activityStore = keys as unknown as SessionActivityKeyStore
+
 	// In-memory cache: JID -> timestamp
 	const activityCache = new Map<string, number>()
 
@@ -109,8 +125,8 @@ export const makeSessionActivityTracker = (
 		// Fallback to disk
 		try {
 			const key = `session-activity:${jid}`
-			const data = await keys.get('session-activity' as any, [key])
-			const metadata = data[key] as SessionActivityMetadata | undefined
+			const data = await activityStore.get('session-activity', [key])
+			const metadata = data[key]
 			return metadata?.lastActivityAt
 		} catch (error) {
 			logger.warn({ error, jid }, 'Failed to get session activity from disk')
@@ -129,7 +145,7 @@ export const makeSessionActivityTracker = (
 
 		try {
 			// Get all session activity keys from disk
-			const allData = await keys.get('session-activity' as any, [])
+			const allData = await activityStore.get('session-activity', [])
 
 			for (const [key, value] of Object.entries(allData)) {
 				if (key.startsWith('session-activity:')) {
@@ -177,7 +193,7 @@ export const makeSessionActivityTracker = (
 
 			// Single transaction for all updates
 			await keys.transaction(async () => {
-				await keys.set({ 'session-activity': updates } as any)
+				await activityStore.set({ 'session-activity': updates })
 			}, 'session-activity-flush')
 
 			isDirty = false

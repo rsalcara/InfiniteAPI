@@ -2,13 +2,24 @@ import { Boom } from '@hapi/boom'
 import { execFile } from 'child_process'
 import * as Crypto from 'crypto'
 import { once } from 'events'
-import { createReadStream, createWriteStream, promises as fs, WriteStream } from 'fs'
+import {
+	createReadStream,
+	createWriteStream,
+	existsSync,
+	mkdtempSync,
+	promises as fs,
+	readdirSync,
+	rmSync,
+	statSync,
+	WriteStream
+} from 'fs'
 import * as http from 'http'
 import * as https from 'https'
 import type { IAudioMetadata } from 'music-metadata'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { Readable, Transform } from 'stream'
+import type { ReadableStream as NodeWebReadableStream } from 'stream/web'
 import { URL } from 'url'
 import { proto } from '../../WAProto/index.js'
 import {
@@ -38,7 +49,73 @@ import { generateMessageIDV2 } from './generics'
 import type { ILogger } from './logger'
 import { isFetchDispatcher } from './proxy-route'
 
-const getTmpFilesDirectory = () => tmpdir()
+/**
+ * Media temporaries (including the decrypted original) live in a directory
+ * private to this process (mkdtemp creates it 0700) instead of the shared
+ * tmpdir root with umask permissions (audit G-03).
+ *
+ * The directory name carries the owner PID. When the first directory of this
+ * process is created, directories left by other processes are swept only if
+ * their owner is gone AND they are older than a day: age alone does not prove
+ * the owner died (an idle instance under the same UID must keep its files).
+ */
+const MEDIA_TMP_PREFIX = 'infiniteapi-media-'
+const MEDIA_TMP_OWNER = /^infiniteapi-media-(\d+)-/
+const MEDIA_TMP_STALE_MS = 24 * 60 * 60 * 1000
+export const MEDIA_TMP_FILE_MODE = 0o600
+let mediaTmpDirectory: string | undefined
+
+const isProcessAlive = (pid: number) => {
+	try {
+		process.kill(pid, 0)
+		return true
+	} catch (error) {
+		// EPERM: it exists but belongs to another user. Only ESRCH proves it is gone.
+		return (error as NodeJS.ErrnoException).code !== 'ESRCH'
+	}
+}
+
+/** @internal exported for tests */
+export const sweepStaleMediaTmpDirectories = () => {
+	const root = tmpdir()
+	let entries: string[]
+	try {
+		entries = readdirSync(root)
+	} catch {
+		return
+	}
+
+	const cutoff = Date.now() - MEDIA_TMP_STALE_MS
+	for (const entry of entries) {
+		const owner = MEDIA_TMP_OWNER.exec(entry)?.[1]
+		if (!owner) continue
+		const pid = Number(owner)
+		if (pid === process.pid || isProcessAlive(pid)) continue
+		const fullPath = join(root, entry)
+		try {
+			if (statSync(fullPath).mtimeMs < cutoff) rmSync(fullPath, { recursive: true, force: true })
+		} catch {
+			// Another process may be removing it; never fail a send for this.
+		}
+	}
+}
+
+export const getTmpFilesDirectory = () => {
+	if (mediaTmpDirectory && existsSync(mediaTmpDirectory)) return mediaTmpDirectory
+	if (!mediaTmpDirectory) sweepStaleMediaTmpDirectories()
+	mediaTmpDirectory = mkdtempSync(join(tmpdir(), `${MEDIA_TMP_PREFIX}${process.pid}-`))
+	return mediaTmpDirectory
+}
+
+/** Removes every path independently: one failure never leaves the others behind. */
+export const removeTmpFiles = async (paths: Array<string | undefined>, logger?: ILogger) => {
+	const results = await Promise.allSettled(
+		paths.filter((path): path is string => !!path).map(path => fs.rm(path, { force: true }))
+	)
+	for (const result of results) {
+		if (result.status === 'rejected') logger?.warn({ err: result.reason }, 'failed to remove media tmp file')
+	}
+}
 
 /**
  * Get available image processing library (Sharp or Jimp)
@@ -70,8 +147,8 @@ export const getRawMediaUploadData = async (media: WAMediaUpload, mediaType: Med
 	logger?.debug('got stream for raw upload')
 
 	const hasher = Crypto.createHash('sha256')
-	const filePath = join(tmpdir(), mediaType + generateMessageIDV2())
-	const fileWriteStream = createWriteStream(filePath)
+	const filePath = join(getTmpFilesDirectory(), mediaType + generateMessageIDV2())
+	const fileWriteStream = createWriteStream(filePath, { mode: MEDIA_TMP_FILE_MODE })
 
 	let fileLength = 0
 	try {
@@ -96,11 +173,7 @@ export const getRawMediaUploadData = async (media: WAMediaUpload, mediaType: Med
 	} catch (error) {
 		fileWriteStream.destroy()
 		stream.destroy()
-		try {
-			await fs.unlink(filePath)
-		} catch {
-			//
-		}
+		await removeTmpFiles([filePath], logger)
 
 		throw error
 	}
@@ -170,7 +243,7 @@ export const extractImageThumb = async (bufferOrFilePath: Readable | Buffer | st
 			}
 		}
 	} else if ('jimp' in lib && typeof lib.jimp?.Jimp === 'function') {
-		const jimp = await (lib.jimp.Jimp as any).read(bufferOrFilePath)
+		const jimp = await lib.jimp.Jimp.read(bufferOrFilePath)
 		const dimensions = {
 			width: jimp.width,
 			height: jimp.height
@@ -218,7 +291,7 @@ export const generateProfilePicture = async (
 			})
 			.toBuffer()
 	} else if ('jimp' in lib && typeof lib.jimp?.Jimp === 'function') {
-		const jimp = await (lib.jimp.Jimp as any).read(buffer)
+		const jimp = await lib.jimp.Jimp.read(buffer)
 		const min = Math.min(jimp.width, jimp.height)
 		const cropped = jimp.crop({ x: 0, y: 0, w: min, h: min })
 
@@ -363,13 +436,16 @@ export async function generateThumbnail(
 	} else if (mediaType === 'video') {
 		const imgFilename = join(getTmpFilesDirectory(), generateMessageIDV2() + '.jpg')
 		try {
+			// ffmpeg runs with -y and overwrites in place, so the file it writes
+			// keeps the 0600 created here instead of the umask default.
+			await fs.writeFile(imgFilename, '', { mode: MEDIA_TMP_FILE_MODE })
 			await extractVideoThumb(file, imgFilename, '00:00:00', { width: 32, height: 32 })
 			const buff = await fs.readFile(imgFilename)
 			thumbnail = buff.toString('base64')
-
-			await fs.unlink(imgFilename)
 		} catch (err) {
 			options.logger?.debug('could not generate video thumb: ' + err)
+		} finally {
+			await removeTmpFiles([imgFilename], options.logger)
 		}
 	}
 
@@ -595,7 +671,10 @@ const getHttpStreamWithFetch = async (
 	}
 
 	// @ts-ignore Node18+ Readable.fromWeb exists
-	const readable = response.body instanceof Readable ? response.body : Readable.fromWeb(response.body as any)
+	const readable =
+		response.body instanceof Readable
+			? response.body
+			: Readable.fromWeb(response.body as unknown as NodeWebReadableStream)
 	readable.once('close', requestAbort.cleanup)
 	return readable
 }
@@ -619,7 +698,7 @@ export const getHttpStream = async (
 type EncryptedStreamOptions = {
 	saveOriginalFileIfRequired?: boolean
 	logger?: ILogger
-	opts?: RequestInit
+	opts?: RequestInit & { maxContentLength?: number }
 	/** Optional mediaKey to reuse (required for sticker pack thumbnail to match ZIP encryption) */
 	mediaKey?: Uint8Array
 }
@@ -638,14 +717,14 @@ export const encryptedStream = async (
 	const { cipherKey, iv, macKey } = getMediaKeys(mediaKey, mediaType)
 
 	const encFilePath = join(getTmpFilesDirectory(), mediaType + generateMessageIDV2() + '-enc')
-	const encFileWriteStream = createWriteStream(encFilePath)
+	const encFileWriteStream = createWriteStream(encFilePath, { mode: MEDIA_TMP_FILE_MODE })
 
 	let originalFileStream: WriteStream | undefined
 	let originalFilePath: string | undefined
 
 	if (saveOriginalFileIfRequired) {
 		originalFilePath = join(getTmpFilesDirectory(), mediaType + generateMessageIDV2() + '-original')
-		originalFileStream = createWriteStream(originalFilePath)
+		originalFileStream = createWriteStream(originalFilePath, { mode: MEDIA_TMP_FILE_MODE })
 	}
 
 	let fileLength = 0
@@ -671,11 +750,9 @@ export const encryptedStream = async (
 		for await (const data of stream) {
 			fileLength += data.length
 
-			if (
-				type === 'remote' &&
-				(opts as any)?.maxContentLength &&
-				fileLength + data.length > (opts as any).maxContentLength
-			) {
+			// fileLength already includes this chunk; adding it again refused
+			// content at or just under the limit.
+			if (type === 'remote' && opts?.maxContentLength && fileLength > opts.maxContentLength) {
 				throw new Boom(`content length exceeded when encrypting "${type}"`, {
 					data: { media, type }
 				})
@@ -734,14 +811,7 @@ export const encryptedStream = async (
 		sha256Enc.destroy()
 		stream.destroy()
 
-		try {
-			await fs.unlink(encFilePath)
-			if (originalFilePath) {
-				await fs.unlink(originalFilePath)
-			}
-		} catch (err) {
-			logger?.error({ err }, 'failed deleting tmp files')
-		}
+		await removeTmpFiles([encFilePath, originalFilePath], logger)
 
 		throw error
 	}
@@ -941,7 +1011,7 @@ export const downloadEncryptedContent = async (
 	const isRangeRequest = !!startByte || !!endByte
 	const verifyMac = !!macKey && !isRangeRequest && !firstBlockIsIV
 	const HMAC_TRAILER_LEN = 10
-	const hmac = verifyMac ? Crypto.createHmac('sha256', macKey!).update(iv) : null
+	const hmac = verifyMac ? Crypto.createHmac('sha256', macKey).update(iv) : null
 	let trailerBuf = Buffer.alloc(0)
 
 	const output = new Transform({
@@ -986,8 +1056,8 @@ export const downloadEncryptedContent = async (
 				hmac?.update(data)
 				pushBytes(aes.update(data), b => this.push(b))
 				callback()
-			} catch (error: any) {
-				callback(error)
+			} catch (error) {
+				callback(error as Error)
 			}
 		},
 		final(callback) {
@@ -1032,8 +1102,8 @@ export const downloadEncryptedContent = async (
 
 				pushBytes(aes.final(), b => this.push(b))
 				callback()
-			} catch (error: any) {
-				callback(error)
+			} catch (error) {
+				callback(error as Error)
 			}
 		}
 	})
@@ -1059,7 +1129,7 @@ const isNodeRuntime = (): boolean => {
 		typeof process !== 'undefined' &&
 		process.versions?.node !== null &&
 		typeof process.versions.bun === 'undefined' &&
-		typeof (globalThis as any).Deno === 'undefined'
+		typeof (globalThis as { Deno?: unknown }).Deno === 'undefined'
 	)
 }
 
@@ -1290,7 +1360,7 @@ export const getWAUploadToServer = (
 			)
 		}
 
-		for (const { hostname } of hosts) {
+		for (const [index, { hostname }] of hosts.entries()) {
 			logger.debug(`uploading to "${hostname}"`)
 
 			const auth = encodeURIComponent(uploadInfo.auth)
@@ -1349,10 +1419,11 @@ export const getWAUploadToServer = (
 					uploadInfo = await refreshMediaConn(true)
 					throw new Error(`upload failed, reason: ${JSON.stringify(result)}`)
 				}
-			} catch (error: any) {
-				const isLast = hostname === hosts[uploadInfo.hosts.length - 1]?.hostname
+			} catch (error) {
+				// hosts = custom + media_conn, so the last one is at hosts.length - 1
+				const isLast = index === hosts.length - 1
 				logger.warn(
-					{ trace: error?.stack, uploadResult: result },
+					{ trace: (error as Error | null | undefined)?.stack, uploadResult: result },
 					`Error in uploading to ${hostname} ${isLast ? '' : ', retrying...'}`
 				)
 			}

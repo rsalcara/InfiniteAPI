@@ -45,12 +45,13 @@ const markConnectionActive = (id: string) => {
 }
 
 beforeAll(async () => {
-	const mod: any = await import('../../Utils/prometheus-metrics')
+	const mod = await import('../../Utils/prometheus-metrics')
 
 	// Point the module's gauge at our capture mock. `metrics` is exported
 	// for exactly this kind of test/introspection.
-	if (mod.metrics) {
-		mod.metrics.activeConnections = gaugeMock
+	const metrics = mod.metrics as { activeConnections: unknown } | undefined
+	if (metrics) {
+		metrics.activeConnections = gaugeMock
 	}
 
 	rawMarkActive = mod.markConnectionActive

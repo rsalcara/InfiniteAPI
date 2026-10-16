@@ -31,6 +31,15 @@ describe('native_android bridge provider', () => {
 		expect(() => createNativeAndroidBridgeProvider({ url: 'http://127.0.0.1', timeoutMs: 1.5 })).toThrow(
 			'timeoutMs must be an integer between 1 and 2147483647'
 		)
+		expect(() => createNativeAndroidBridgeProvider({ url: 'http://host.docker.internal' })).toThrow(
+			'requires HTTPS for non-loopback urls'
+		)
+		expect(() =>
+			createNativeAndroidBridgeProvider({
+				url: 'http://host.docker.internal',
+				allowInsecureLoopbackAliases: ['host.docker.internal']
+			})
+		).not.toThrow()
 	})
 
 	it('sends the challenge without leaking credentials in error messages', async () => {

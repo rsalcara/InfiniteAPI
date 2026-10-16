@@ -1,0 +1,8 @@
+{
+	"apk": "com.whatsapp",
+	"version": "2.26.37.1",
+	"path": "res/raw/countries.tsv",
+	"sha256": "86e115c91b11cd115b876a221bd07cd9b1af1fdabe3d4f484925a03734333690",
+	"verifiedAgainst": "com.whatsapp.w4b 2.26.36.72",
+	"verifiedSha256Match": true
+}

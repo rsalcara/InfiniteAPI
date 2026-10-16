@@ -75,6 +75,7 @@ import {
 	resolveLidToPn,
 	resolvePresenceUpdateIdentifiers
 } from '../Utils'
+import { abPropsRequestAttrs, isAbPropEnabled, readAbPropsResponse } from '../Utils/ab-props'
 import {
 	discoverOwnAppStateDevices,
 	encodeExplicitDeviceJid,
@@ -83,6 +84,7 @@ import {
 } from '../Utils/app-state-sync-key-devices'
 import { AppStateSyncKeyLifecycle } from '../Utils/app-state-sync-key-lifecycle'
 import { buildAppStateSyncKeyPeerNode } from '../Utils/app-state-sync-key-peer'
+import { type ContactAutoHealScheduler, makeCompanionContactAutoHealer } from '../Utils/companion-contact-auto-healer'
 import {
 	AdaptiveHistoryBatchController,
 	DurableHistorySyncCoordinator,
@@ -96,6 +98,7 @@ import {
 	ChatSettingsBackend,
 	type ChatSettingsRow,
 	CompanionDevicesBackend,
+	ContactRefreshBackend,
 	JidMapBackend,
 	LocationBackend,
 	type LocationCacheRow,
@@ -103,6 +106,7 @@ import {
 	MessageAddOnBackend,
 	MessageMediaBackend,
 	MessageStoreBackend,
+	type MultiDbSqliteStore,
 	ReceiptBackend,
 	StatusBackend,
 	StickersBackend,
@@ -113,7 +117,20 @@ import {
 } from '../Utils/multi-db-sqlite'
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
 import { resolveStoredContact } from '../Utils/multi-db-sqlite/wa-contacts-backend'
-import processMessage, { applyProcessedHistorySync, emitProcessedHistorySync } from '../Utils/process-message'
+import { isRegistrationSeededPrimary } from '../Utils/native-android-transport'
+import { backfillNctSalt as backfillNctSaltCore, type NctSaltBackfillContext } from '../Utils/nct-salt-fallback'
+import {
+	buildNctSaltSnapshotQuery,
+	findNctSaltInSnapshot,
+	isNctSaltSnapshotAuthoritativeAbsence,
+	NCT_SALT_COLLECTION,
+	NCT_TOKEN_AB_PROP
+} from '../Utils/nct-token'
+import processMessage, {
+	applyProcessedHistorySync,
+	emitProcessedHistorySync,
+	hydrateMessageSecretEnvelope
+} from '../Utils/process-message'
 import { mapParticipantFanout } from '../Utils/relay-stanza'
 import {
 	buildTcTokenFromJid,
@@ -169,7 +186,8 @@ const recordRawMutation = (
 	appStateBackend: AppStateBackend,
 	collectionName: WAPatchName,
 	raw: RawSyncdMutation & { version: number },
-	logger?: ILogger
+	logger?: ILogger,
+	contactRefreshBackend?: ContactRefreshBackend
 ) => {
 	try {
 		const index = raw.mutation.index
@@ -189,6 +207,22 @@ const recordRawMutation = (
 			chatJid: typeof index[1] === 'string' && index[1].includes('@') ? index[1] : null,
 			mutationName: index[0]
 		})
+
+		// Contact-refresh patch log: one row per ingested version on the
+		// contact collection (any mutation name — a version's row must exist
+		// even when the patch that reached it carried non-contact mutations,
+		// or reconcile's version probe would stall). The live apply
+		// (onMutation → processSyncAction) already ran for this mutation —
+		// onRawMutation fires after it in the same decode step — so the row
+		// faithfully marks the version as locally applied. added/edited
+		// counts stay 0 here (no per-patch aggregation at this layer); the
+		// auto-heal replay records real counts when it repairs.
+		if (contactRefreshBackend && collectionName === 'critical_unblock_low') {
+			contactRefreshBackend.recordPatchApplied({
+				version: raw.version,
+				appliedTimestampMs: Date.now()
+			})
+		}
 	} catch (err) {
 		logger?.warn?.({ err, collectionName }, 'failed to record syncd_mutation')
 	}
@@ -286,8 +320,40 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const appStateBackend = initOptionalMirror(
 		'sync.db.app_state',
 		'auth_state_keys',
-		() => new AppStateBackend((config.multiDbStore as any).handle('sync.db'))
+		() => new AppStateBackend((config.multiDbStore as MultiDbSqliteStore).handle('sync.db'))
 	)
+
+	// Contact Refresh (type-14 request/response lifecycle, patch log and
+	// auto-heal window marker) — wa.db tables. Same boundary-cast rationale
+	// as waContactsBackend.
+	const contactRefreshBackend = initOptionalMirror(
+		'wa.db.contact_refresh',
+		'none (tables are multi-db only)',
+		() => new ContactRefreshBackend((config.multiDbStore as MultiDbSqliteStore).handle('wa.db'))
+	)
+
+	// CompanionContactAutoHealer — hourly local-only repair of contact syncd
+	// mutations (1:1 with the app's heal task). Fail-closed by default: the
+	// app requires BOTH its config master switch AND an interval > 0, so the
+	// engine requires `enabled: true` AND `intervalHours > 0` — no single
+	// knob can turn it on by accident.
+	// getStoredContact is referenced lazily from its closure (defined below),
+	// and the scheduler only ticks after the connection opens.
+	const contactAutoHealScheduler: ContactAutoHealScheduler | undefined =
+		contactRefreshBackend && appStateBackend
+			? makeCompanionContactAutoHealer({
+					isCompanion: () => true,
+					isEnabled: () => config.contactAutoHealConfig?.enabled ?? false,
+					intervalHours: () => config.contactAutoHealConfig?.intervalHours ?? 0,
+					getLastHealTimestamp: () => contactRefreshBackend.getLastContactAutoHealTimestamp(),
+					setLastHealTimestamp: ms => contactRefreshBackend.setLastContactAutoHealTimestamp(ms),
+					listContactMutationsForHeal: () => appStateBackend.listContactMutationsForHeal(),
+					listPendingContactMutations: () => appStateBackend.listPendingContactMutations(),
+					getLocalContact: jid => getStoredContact(jid),
+					ev,
+					logger
+				})
+			: undefined
 
 	const listOwnAppStateDevices = async (): Promise<string[]> => {
 		const meId = authState.creds.me?.id
@@ -398,7 +464,17 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		// SendPeerMessageJob marks peer_messages.acked only after the transport
 		// future completes. query() registers the ACK listener before writing and
 		// converts a late/missing ACK into a retryable timeout.
-		await query(buildAppStateSyncKeyPeerNode({ targetDeviceJid, messageId, encrypted, deviceIdentity }))
+		await query(
+			buildAppStateSyncKeyPeerNode({
+				targetDeviceJid,
+				messageId,
+				encrypted,
+				deviceIdentity,
+				// A registration-seeded primary never owns an ADV identity (audit
+				// A17): its pkmsg travels without the device-identity node.
+				primary: isRegistrationSeededPrimary(authState.creds)
+			})
+		)
 	}
 
 	const appStateSyncRecoveryLogger = logger.child({
@@ -463,7 +539,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const waContactsBackend = initOptionalMirror(
 		'wa.db.wa_contacts',
 		'contacts_events',
-		() => new WaContactsBackend((config.multiDbStore as any).handle('wa.db'))
+		() => new WaContactsBackend((config.multiDbStore as MultiDbSqliteStore).handle('wa.db'))
 	)
 
 	// Mirrors THIS client's own device registration into `companion_devices.db`
@@ -474,7 +550,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const companionDevicesBackend = initOptionalMirror(
 		'companion_devices.db.companion_devices',
 		'creds_device_state',
-		() => new CompanionDevicesBackend((config.multiDbStore as any).handle('companion_devices.db'))
+		() => new CompanionDevicesBackend((config.multiDbStore as MultiDbSqliteStore).handle('companion_devices.db'))
 	)
 
 	// Mirrors static/live location (location_cache/location_sharer)
@@ -484,7 +560,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const locationBackend = initOptionalMirror(
 		'location.db.location',
 		'message_proto_location',
-		() => new LocationBackend((config.multiDbStore as any).handle('location.db'))
+		() => new LocationBackend((config.multiDbStore as MultiDbSqliteStore).handle('location.db'))
 	)
 
 	// Mirrors mute/pin chat settings into chatsettings.db when a
@@ -494,7 +570,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const chatSettingsBackend = initOptionalMirror(
 		'chatsettings.db.chat_settings',
 		'chat_events',
-		() => new ChatSettingsBackend((config.multiDbStore as any).handle('chatsettings.db'))
+		() => new ChatSettingsBackend((config.multiDbStore as MultiDbSqliteStore).handle('chatsettings.db'))
 	)
 
 	// Mirrors received status/story updates (status/status_info)
@@ -504,7 +580,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const statusBackend = initOptionalMirror(
 		'status.db.status',
 		'status_message_events',
-		() => new StatusBackend((config.multiDbStore as any).handle('status.db'))
+		() => new StatusBackend((config.multiDbStore as MultiDbSqliteStore).handle('status.db'))
 	)
 
 	// Mirrors starred/recent stickers into stickers.db from the
@@ -512,7 +588,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const stickersBackend = initOptionalMirror(
 		'stickers.db.stickers',
 		'app_state_sticker_actions',
-		() => new StickersBackend((config.multiDbStore as any).handle('stickers.db'))
+		() => new StickersBackend((config.multiDbStore as MultiDbSqliteStore).handle('stickers.db'))
 	)
 
 	// Mirrors real messages (message/chat tables) + delete-for-everyone
@@ -527,8 +603,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		'legacy_message_proto',
 		() =>
 			new MessageStoreBackend(
-				(config.multiDbStore as any).handle('msgstore.db'),
-				new JidMapBackend((config.multiDbStore as any).handle('msgstore.db'))
+				(config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db'),
+				new JidMapBackend((config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db'))
 			)
 	)
 	const receiptReplayBackend = messageStoreBackend
@@ -537,8 +613,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				'live_receipt_events',
 				() =>
 					new ReceiptBackend(
-						(config.multiDbStore as any).handle('msgstore.db'),
-						new JidMapBackend((config.multiDbStore as any).handle('msgstore.db')),
+						(config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db'),
+						new JidMapBackend((config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db')),
 						messageStoreBackend
 					)
 			)
@@ -550,7 +626,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	const mediaBackend = initOptionalMirror(
 		'msgstore.db.message_media',
 		'message_proto_media',
-		() => new MessageMediaBackend((config.multiDbStore as any).handle('msgstore.db'))
+		() => new MessageMediaBackend((config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db'))
 	)
 
 	// Mirrors reactions/polls/locations/vcards attached to a message
@@ -563,8 +639,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				'legacy_message_proto',
 				() =>
 					new MessageAddOnBackend(
-						(config.multiDbStore as any).handle('msgstore.db'),
-						new JidMapBackend((config.multiDbStore as any).handle('msgstore.db')),
+						(config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db'),
+						new JidMapBackend((config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db')),
 						messageStoreBackend
 					)
 			)
@@ -1416,7 +1492,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 									getCachedAppStateSyncKey,
 									initialVersionMap[name],
 									appStateMacVerification.snapshot,
-									appStateBackend ? raw => recordRawMutation(appStateBackend, name, raw) : undefined
+									appStateBackend
+										? raw => recordRawMutation(appStateBackend, name, raw, logger, contactRefreshBackend)
+										: undefined
 								)
 								states[name] = newState
 								Object.assign(globalMutationMap, mutationMap)
@@ -1441,7 +1519,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 									initialVersionMap[name],
 									logger,
 									appStateMacVerification.patch,
-									appStateBackend ? raw => recordRawMutation(appStateBackend, name, raw) : undefined
+									appStateBackend
+										? raw => recordRawMutation(appStateBackend, name, raw, logger, contactRefreshBackend)
+										: undefined
 								)
 
 								await authState.keys.set({ 'app-state-sync-version': { [name]: newState } })
@@ -1459,7 +1539,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 								// collection is done with sync
 								collectionsToHandle.delete(name)
 							}
-						} catch (error: any) {
+						} catch (caught) {
+							const error = caught as Error & { output?: { statusCode?: number }; data?: { keyId?: unknown } }
 							attemptsMap[name] = (attemptsMap[name] || 0) + 1
 
 							const logData = {
@@ -1475,7 +1556,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 							if (durableRecoveryQueued) {
 								logger.warn(
-									{ ...logData, keyId: error.data.keyId },
+									{ ...logData, keyId: error.data!.keyId },
 									`${name} blocked on missing key; durable syncd-key-request queued`
 								)
 								blockedCollections.add(name)
@@ -1800,7 +1881,20 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		await appStatePatchMutex.mutex(async () => {
 			await authState.keys.transaction(async () => {
-				logger.debug({ patch: patchCreate }, 'applying app patch')
+				// Shape only — never `syncAction`: its value is the payload (the
+				// account NCT salt on `nct_salt_sync`), and a log line is no place
+				// for a secret. Jids in `index` are fine (logs may carry them).
+				logger.debug(
+					{
+						patch: {
+							type: patchCreate.type,
+							index: patchCreate.index,
+							operation: patchCreate.operation,
+							apiVersion: patchCreate.apiVersion
+						}
+					},
+					'applying app patch'
+				)
 
 				await resyncAppState([name], false)
 
@@ -1878,13 +1972,80 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	}
 
+	let socketEnding = false
+	/**
+	 * Engine-side NCT salt fallbacks, not app behavior (see
+	 * `Utils/nct-salt-fallback.ts` for the decision tree). The one-shot
+	 * `regular_high` snapshot read always runs — it recovers the account's
+	 * real salt when an incremental `nct_salt_sync` push was missed. The mint
+	 * is opt-in (`config.nctSaltFallback === 'mint'`): by default the
+	 * companion never creates a salt (app parity) and sends without
+	 * `<cstoken>` when none arrived. Wired here to creds, the socket and the
+	 * key store.
+	 */
+	const nctSaltFallbackCtx = (): NctSaltBackfillContext => ({
+		getSalt: () => authState.creds.nctSalt,
+		isEnding: () => socketEnding,
+		enabled: config.nctSaltFallback === 'mint',
+		// The key share can land tens of milliseconds after the initial
+		// sync ends; until it does the snapshot read is impossible and a
+		// mint would mask the primary's delivery (see
+		// `Utils/nct-salt-fallback.ts`).
+		hasAppStateKey: () => !!authState.creds.myAppStateKeyId,
+		store: salt => ev.emit('creds.update', { nctSalt: salt, nctSaltBackfilled: true, nctSaltSource: 'local' }),
+		isLocalSalt: () => authState.creds.nctSaltSource === 'local',
+		logger,
+		isBackfilled: () => !!authState.creds.nctSaltBackfilled,
+		markBackfilled: salt =>
+			ev.emit(
+				'creds.update',
+				salt ? { nctSalt: salt, nctSaltBackfilled: true, nctSaltSource: 'primary' } : { nctSaltBackfilled: true }
+			),
+		// Read the salt once from a `regular_high` snapshot (the collection the
+		// app files it under, `X/C1LE.java`) without persisting that snapshot or
+		// emitting any of its other mutations: replaying old deleteChat/clearChat
+		// would be destructive.
+		readSnapshotSalt: async () => {
+			if (socketEnding) return undefined
+			// Always request the full snapshot. A query at the local version can
+			// return collection metadata without a snapshot after regular_high has
+			// already synced, which is not evidence that a salt is absent.
+			const result = await query(buildNctSaltSnapshotQuery(0))
+			if (socketEnding) return undefined
+			if (isNctSaltSnapshotAuthoritativeAbsence(result, 0)) return undefined
+			const snapshot = (await extractSyncdPatches(result, config.options))[NCT_SALT_COLLECTION]?.snapshot
+			if (!snapshot) throw new Error('regular_high snapshot missing from the app-state response')
+			const salt = await findNctSaltInSnapshot(snapshot, getCachedAppStateSyncKey, appStateMacVerification.snapshot)
+			return socketEnding ? undefined : salt
+		}
+	})
+	// One cached context per socket: `mintNctSalt` dedupes concurrent calls by
+	// context identity, so overlapping backfills share a single in-flight mint
+	// instead of publishing twice.
+	let nctSaltCtx: NctSaltBackfillContext | undefined
+	const getNctSaltCtx = (): NctSaltBackfillContext => {
+		nctSaltCtx ??= nctSaltFallbackCtx()
+		return nctSaltCtx
+	}
+
+	/**
+	 * The read-then-mint chain for sessions the app left without a salt:
+	 * sessions paired before the NCT salt was kept dropped its `nct_salt_sync`
+	 * mutation (an incremental resync never delivers it again), and an account
+	 * whose history sync is off may never see the bootstrap copy. When the
+	 * snapshot read cannot place a salt — or fails on a transient drop — the
+	 * fallback mints one instead of leaving the account bare.
+	 */
+	const backfillNctSalt = () => backfillNctSaltCore(getNctSaltCtx())
+
 	/** fetch AB props */
 	const fetchProps = async () => {
 		// Upstream #2473: query AB props using `abt` xmlns with protocol 1.
 		// Previously used `w` xmlns + protocol 2 which the server rejects with
-		// "bad-request" on current WA versions. Hash is now conditionally
-		// included only when we have one stored (vs. always sending empty
-		// string), matching server expectations.
+		// "bad-request" on current WA versions. The hash goes out only with
+		// the props it describes, and the response is kept like the app's
+		// ab_props store (see ab-props.ts).
+		const requestAttrs = abPropsRequestAttrs(authState.creds)
 		const resultNode = await query({
 			tag: 'iq',
 			attrs: {
@@ -1892,31 +2053,31 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				xmlns: 'abt',
 				type: 'get'
 			},
-			content: [
-				{
-					tag: 'props',
-					attrs: {
-						protocol: '1',
-						...(authState?.creds?.lastPropHash ? { hash: authState.creds.lastPropHash } : {})
-					}
-				}
-			]
+			content: [{ tag: 'props', attrs: requestAttrs }]
 		})
 
 		const propsNode = getBinaryNodeChild(resultNode, 'props')
 
 		let props: { [_: string]: string } = {}
 		if (propsNode) {
-			if (propsNode.attrs?.hash) {
-				// on some clients, the hash is returning as undefined
-				authState.creds.lastPropHash = propsNode?.attrs?.hash
-				ev.emit('creds.update', authState.creds)
-			}
-
 			props = reduceBinaryNodeToDictionary(propsNode, 'prop')
-		}
+			const response = readAbPropsResponse(authState.creds, propsNode, { requestedHash: !!requestAttrs.hash })
+			if (response.update) ev.emit('creds.update', response.update)
 
-		logger.debug('fetched props')
+			logger.debug(
+				{
+					requestedHash: !!requestAttrs.hash,
+					received: response.received,
+					stored: Object.keys(response.abProps ?? {}).length,
+					deltaUpdate: response.deltaUpdate,
+					nctTokenKnown: response.abProps?.[NCT_TOKEN_AB_PROP] !== undefined,
+					nctToken: isAbPropEnabled(response.abProps, NCT_TOKEN_AB_PROP)
+				},
+				'fetched props'
+			)
+		} else {
+			logger.debug({ requestedHash: !!requestAttrs.hash }, 'fetched props: response without a props node')
+		}
 
 		return props
 	}
@@ -2087,6 +2248,18 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	const upsertMessage = ev.createBufferedFunction(async (msg: WAMessage, type: MessageUpsertType) => {
+		// Decrypt CAG envelopes before the buffered `messages.upsert` is created.
+		// Otherwise a child that arrives before its parent can expose ciphertext
+		// and later emit a second event for the same message ID after replay.
+		const suppressMessageSecretEnvelope = await hydrateMessageSecretEnvelope(msg, {
+			creds: authState.creds,
+			logger,
+			signalRepository,
+			getMessage,
+			orphanQueue
+		})
+		if (suppressMessageSecretEnvelope) return
+
 		msg.senderSource ??= msg.key.fromMe
 			? classifyCurrentClientMessageSenderSource(config.transportProfile, authState.creds.me?.id)
 			: classifyMessageWithoutAuthorDevice()
@@ -2173,6 +2346,17 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				// singleton DB writes while w:sync:app:state is still active.
 				syncState = SyncState.Online
 				appStateSyncCompleted = true
+				// regular_high synced from scratch: a salt the account has is stored by now.
+				logger.info({ nctSalt: !!authState.creds.nctSalt?.length }, 'initial app-state sync finished')
+				// Fresh pairing whose primary delivered nothing (no bootstrap, no
+				// nct_salt_sync push): run the read-then-mint chain instead of
+				// sending bare first contacts. The read must come first — a bare
+				// mint could supersede a real salt the snapshot still holds.
+				if (!authState.creds.nctSalt?.length) {
+					backfillNctSalt().catch(err =>
+						logger.warn({ err }, 'NCT salt backfill failed; retrying on the next connection')
+					)
+				}
 
 				const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
 				ev.emit('creds.update', { accountSyncCounter })
@@ -2198,6 +2382,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					getMessage,
 					orphanQueue,
 					appStateBackend,
+					contactRefreshBackend,
 					locationBackend,
 					statusBackend,
 					messageStoreBackend,
@@ -2345,6 +2530,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	ev.on('connection.update', ({ connection, receivedPendingNotifications }) => {
 		if (connection === 'open') {
 			mirrorOwnDevice()
+			contactAutoHealScheduler?.start()
 			historySyncCoordinator?.startRecovery().catch(error => onUnexpectedError(error, 'durable history sync recovery'))
 			appStateSyncKeyLifecycle
 				?.startRecovery()
@@ -2361,6 +2547,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		// Clean up app state sync key cache on connection close
 		if (connection === 'close') {
+			contactAutoHealScheduler?.stop()
 			appStateSyncKeyLifecycle?.stop()
 			blockedCollections.clear()
 			clearTimeout(historySyncPausedTimeout)
@@ -2406,9 +2593,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			ev.emit('creds.update', { accountSyncCounter })
 			// Fire-and-forget: pick up patches missed during downtime (mute/archive/pin/read state).
 			// Runs in background so live incoming messages are not blocked.
-			resyncAppState(ALL_WA_PATCH_NAMES, true).catch(err =>
-				logger.warn({ err }, 'Background app state resync failed (non-critical on reconnection)')
-			)
+			resyncAppState(ALL_WA_PATCH_NAMES, true)
+				.catch(err => logger.warn({ err }, 'Background app state resync failed (non-critical on reconnection)'))
+				.then(backfillNctSalt)
+				.catch(err => logger.warn({ err }, 'NCT salt backfill failed; retrying on the next connection'))
 			setTimeout(() => ev.flush(), 0)
 			return
 		}
@@ -2423,6 +2611,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			logger.info('History sync is disabled by config, not waiting for notification. Transitioning to Online.')
 			syncState = SyncState.Online
 			setTimeout(() => ev.flush(), 0)
+			// Without the history bootstrap the salt can only come from regular_high.
+			backfillNctSalt().catch(err => logger.warn({ err }, 'NCT salt backfill failed; retrying on the next connection'))
 			return
 		}
 
@@ -2460,6 +2650,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				// regardless of the state machine phase.
 				const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
 				ev.emit('creds.update', { accountSyncCounter })
+				// The bootstrap carrying the salt has not arrived yet; until it does,
+				// cold sends on this connection would go out without a cstoken.
+				backfillNctSalt().catch(err =>
+					logger.warn({ err }, 'NCT salt backfill failed; retrying on the next connection')
+				)
 			}
 		}, initialHistorySyncWaitMs)
 	})
@@ -2468,6 +2663,17 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	// collections blocked on a missing key, trigger a re-sync for just those collections.
 	// This mirrors WA Web's Blocked → retry-on-key-arrival behavior.
 	ev.on('creds.update', ({ myAppStateKeyId }) => {
+		// The NCT fallback chain waits on this key — before it arrives the
+		// snapshot cannot be decoded and the mint cannot publish. A fresh
+		// pairing reaches this point with both delivery windows of the primary
+		// already exhausted (bootstrap processed, snapshot read), so a bare
+		// account here is exactly the primary-did-not-deliver case the mint is
+		// for. Not run during a full sync: doAppStateSync's own end-of-sync
+		// trigger covers it with fresher state.
+		if (myAppStateKeyId && syncState !== SyncState.Syncing && !authState.creds.nctSalt?.length) {
+			backfillNctSalt().catch(err => logger.warn({ err }, 'NCT salt backfill failed; retrying on the next connection'))
+		}
+
 		// The durable lifecycle correlates exact key sets and retries only the
 		// collections whose missing-key dependencies are now resolved. Running
 		// the legacy listener as well would retry every blocked collection and
@@ -2653,6 +2859,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	}
 
 	registerSocketEndHandler(() => {
+		socketEnding = true
 		if (awaitingSyncTimeout) {
 			clearTimeout(awaitingSyncTimeout)
 			awaitingSyncTimeout = undefined
@@ -2667,8 +2874,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		// and the entries don't pin the old socket via closure. NEVER touch a consumer-provided
 		// cache — they reuse it across reconnects intentionally (CTWA recovery continuity).
 		if (ownsPlaceholderResendCache) {
-			placeholderResendCache.close?.()
-			placeholderResendCache.flushAll?.()
+			void placeholderResendCache.close?.()
+			void placeholderResendCache.flushAll?.()
 			// Reset the back-assignment so a reconnect using the same config object doesn't pick
 			// our just-closed cache up as "consumer-provided" (ownership flip-flop) — that would
 			// leave the new socket using a timer-stopped cache where entries accumulate forever
@@ -2858,6 +3065,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		getStatusViewers,
 		getStarredStickers,
 		getRecentStickers,
+		contactRefreshBackend,
 		orphanQueue,
 		messageMutex,
 		receiptMutex,

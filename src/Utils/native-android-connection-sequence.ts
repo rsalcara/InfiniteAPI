@@ -328,7 +328,7 @@ export async function* iterateNativeAndroidConnectionSequence({
 	const persistedStep = persisted?.connectionEndpoint?.sequenceStep
 	if (persistedStep && [6, 7, 10, 11, 13, 14].includes(persistedStep)) {
 		for (const history of await expandEndpoint({
-			...persisted!.connectionEndpoint!,
+			...persisted.connectionEndpoint!,
 			source: 'history',
 			sequenceStep: persistedStep
 		}))

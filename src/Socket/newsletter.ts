@@ -39,6 +39,28 @@ const parseNewsletterCreateResponse = (response: NewsletterCreateResponse): News
 	}
 }
 
+/** Picture descriptor as sent on the wire (snake_case) */
+type RawNewsletterPicture = { id?: string; direct_path?: string }
+
+/** Raw newsletter metadata response shape (snake_case, all fields optional) */
+type RawNewsletterNode = {
+	id?: unknown
+	thread_metadata?: {
+		name?: { text?: string }
+		description?: { text?: string }
+		invite?: string
+		creation_time?: string
+		subscribers_count?: string
+		picture?: RawNewsletterPicture
+		image?: RawNewsletterPicture
+		preview?: RawNewsletterPicture
+		verification?: NewsletterMetadata['verification']
+	}
+	viewer_metadata?: { mute?: NewsletterMetadata['mute_state'] }
+	image?: RawNewsletterPicture
+	preview?: RawNewsletterPicture
+}
+
 const parseNewsletterMetadata = (result: unknown): NewsletterMetadata | null => {
 	// Port of upstream PR #2620 (vinikjkkj). Earlier behavior cast the raw
 	// server response to `NewsletterMetadata` whole, which broke two
@@ -63,14 +85,14 @@ const parseNewsletterMetadata = (result: unknown): NewsletterMetadata | null => 
 	}
 
 	const raw = result as Record<string, unknown>
-	const node = (raw.result && typeof raw.result === 'object' ? raw.result : raw) as Record<string, any>
+	const node = (raw.result && typeof raw.result === 'object' ? raw.result : raw) as RawNewsletterNode
 
 	if (typeof node.id !== 'string') {
 		return null
 	}
 
-	const thread = node.thread_metadata ?? {}
-	const viewer = node.viewer_metadata ?? {}
+	const thread: NonNullable<RawNewsletterNode['thread_metadata']> = node.thread_metadata ?? {}
+	const viewer: NonNullable<RawNewsletterNode['viewer_metadata']> = node.viewer_metadata ?? {}
 	const pic = thread.picture ?? thread.image ?? thread.preview ?? node.image ?? node.preview
 
 	return {

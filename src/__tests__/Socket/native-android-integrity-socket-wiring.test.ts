@@ -4,13 +4,15 @@ import type { AuthenticationState, NativeAndroidTransportConfig, SocketConfig } 
 import { initAuthCreds } from '../../Utils/auth-utils'
 import type { BinaryNode } from '../../WABinary'
 
-type FakeSocketClient = Record<string, any>
+type FakeSocketClient = {
+	emit(event: string, payload?: unknown): boolean
+}
 
 const integrityTestClients = globalThis as typeof globalThis & {
 	__infiniteApiIntegrityTestClients?: FakeSocketClient[]
 }
 integrityTestClients.__infiniteApiIntegrityTestClients ??= []
-const clients = integrityTestClients.__infiniteApiIntegrityTestClients!
+const clients = integrityTestClients.__infiniteApiIntegrityTestClients
 
 const mockMakeFakeSocketClient = () =>
 	class FakeSocketClient {

@@ -14,7 +14,7 @@
  *
  * Failing while H8 is unresolved. Flipped to `it(...)` in Stage 3.
  */
-import type { SignalDataSet, SignalKeyStore } from '../../Types'
+import type { SignalDataSet, SignalDataTypeMap, SignalKeyStore } from '../../Types'
 import { addTransactionCapability } from '../../Utils/auth-utils'
 import type { ILogger } from '../../Utils/logger'
 
@@ -35,9 +35,9 @@ const makeStore = (initial: Record<string, Record<string, unknown>> = {}): Signa
 	return {
 		async get(type, ids) {
 			const bucket = data[type] ?? {}
-			const out: Record<string, any> = {}
+			const out: { [id: string]: SignalDataTypeMap[typeof type] } = {}
 			for (const id of ids) {
-				if (id in bucket) out[id] = bucket[id]
+				if (id in bucket) out[id] = bucket[id] as SignalDataTypeMap[typeof type]
 			}
 
 			return out
@@ -45,7 +45,7 @@ const makeStore = (initial: Record<string, Record<string, unknown>> = {}): Signa
 		async set(d: SignalDataSet) {
 			for (const type in d) {
 				data[type] = data[type] ?? {}
-				const incoming = (d as any)[type] as Record<string, unknown>
+				const incoming = d[type as keyof SignalDataSet] as Record<string, unknown>
 				for (const id in incoming) {
 					const v = incoming[id]
 					if (v === null) delete data[type][id]

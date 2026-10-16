@@ -101,6 +101,28 @@ export type StartChatTrustSignalsProvider = (request: {
 	signal?: AbortSignal
 }) => Promise<StartChatTrustSignals>
 
+export type PhoneNumberClassification = 'mobile' | 'landline' | 'legacy-mobile' | 'unknown'
+
+export type PhoneValidationCandidate = {
+	/** Exact caller-supplied digits; the motor never inserts or removes digits. */
+	phone: string
+	exists: boolean
+	/** Canonical WhatsApp PN JID, present only for an existing candidate. */
+	jid?: string
+	/** Local metadata classification; existence is determined only by WhatsApp. */
+	classification: PhoneNumberClassification
+}
+
+export type PhoneValidationResult = {
+	/** Exact caller-supplied digits after removing non-digit characters. */
+	normalizedPhone: string
+	/** Non-null only after WhatsApp confirmed exactly one existing candidate. */
+	acceptedJid: string | null
+	candidates: PhoneValidationCandidate[]
+	/** Identifies which metadata source classified the candidates. */
+	classificationSource: string
+}
+
 export type SocketConfig = {
 	/** Stable consumer instance identifier included in auth-state diagnostics. */
 	instanceId?: string
@@ -117,6 +139,40 @@ export type SocketConfig = {
 	 * SafetyNet/GPIA providers.
 	 */
 	startChatTrustSignalsMode?: 'off' | 'native'
+	/**
+	 * First-contact `<cstoken>` (NCT) on 1:1 sends that carry no usable privacy
+	 * token. Omitted (default) is `ab-prop`, which reproduces the Android app
+	 * exactly: the token goes out only with AB prop 24941 on (the app's own
+	 * gate, `X.C30120DHe`). `salt` is the coverage opt-in: it attaches the
+	 * token whenever the account has a salt (synced from the primary, or minted
+	 * by the fallback if enabled), ignoring the AB prop. `off` never sends it
+	 * (rollback).
+	 */
+	csTokenMode?: 'off' | 'ab-prop' | 'salt'
+	/**
+	 * Gate for a new 1:1 chat (recipient never gave us a privacy token).
+	 * `legacy` (default) blocks only a restriction the server reported (active
+	 * reachout timelock or exhausted quota). `policy` also blocks while the
+	 * timelock or quota is unknown (the app always knows them). `strict` also
+	 * requires the message to carry a `<cstoken>`. `getColdOutboundReadiness()`
+	 * reports these checks in any mode.
+	 */
+	coldOutboundMode?: 'strict' | 'policy' | 'legacy'
+	/**
+	 * NCT-salt fallback (engine behavior, not app behavior): when a paired
+	 * account never got its salt from the primary — no history bootstrap and
+	 * no `nct_salt_sync` mutation, e.g. the primary was offline at pairing —
+	 * `mint` (opt-in) serves one: it publishes a SET `nct_salt_sync` mutation
+	 * and stores the salt, so every device of the account signs the same
+	 * `<cstoken>`. Omitted (default) is `off`, which reproduces the app
+	 * exactly: a companion never creates a salt (`NctSaltProvider.A00` returns
+	 * null when `registration_device_id > 0`), it waits for the primary's push
+	 * and sends without `<cstoken>` when none arrived. Enable `mint` only where
+	 * a `<cstoken>` must go out even though the primary never delivered a salt
+	 * (a minted salt is not the account's real one, so its token can diverge
+	 * from the primary's).
+	 */
+	nctSaltFallback?: 'mint' | 'off'
 	/**
 	 * Controls what happens when the optional start-chat lookup is unavailable.
 	 * `observe` preserves existing send behavior; `require-known` is intended
@@ -514,4 +570,34 @@ export type SocketConfig = {
 
 	/** Session cleanup configuration (optional, partial overrides merged with defaults) */
 	sessionCleanupConfig?: Partial<SessionCleanupConfig>
+
+	/**
+	 * CompanionContactAutoHealer — local-only replay of contact syncd mutations
+	 * (1:1 with the app's hourly heal task; never sends anything on the wire).
+	 * Fail-closed: BOTH knobs must be set to turn it on — `enabled: true` (the
+	 * app's master config switch, default false here) AND `intervalHours > 0`
+	 * (the app's heal-window interval; 0 or absent = disabled). No single
+	 * field can enable the healer by itself.
+	 */
+	contactAutoHealConfig?: {
+		enabled?: boolean
+		intervalHours?: number
+	}
+
+	/**
+	 * Optional phone metadata provider for classifyPhoneNumber.
+	 * When absent, the motor loads the countries.tsv from the configured path
+	 * (or falls back to classifying everything as 'unknown').
+	 */
+	phoneMetadataProvider?: import('../Utils/phone-metadata-provider').PhoneMetadataProvider
+
+	/**
+	 * Optional rate limiter for phone validation. When absent, the motor
+	 * creates an in-process singleton. Inject a distributed limiter (e.g. Redis)
+	 * for multi-worker deployments.
+	 */
+	phoneValidationRateLimiter?: {
+		consume(key: string): Promise<{ allowed: boolean; retryAfterSeconds: number; scope?: 'number' | 'tenant' }>
+		consumeMany(keys: string[]): Promise<{ allowed: boolean; retryAfterSeconds: number; scope?: 'number' | 'tenant' }>
+	}
 }

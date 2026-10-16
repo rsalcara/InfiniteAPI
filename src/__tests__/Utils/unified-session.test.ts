@@ -7,6 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals'
+import type { ILogger } from '../../Utils/logger.js'
 import {
 	createUnifiedSessionManager,
 	extractServerTime,
@@ -57,7 +58,7 @@ describe('UnifiedSessionManager', () => {
 
 		manager = createUnifiedSessionManager({
 			enabled: true,
-			logger: mockLogger as any,
+			logger: mockLogger as unknown as ILogger,
 			sendNode: mockSendNode
 		})
 	})
@@ -295,23 +296,23 @@ describe('UnifiedSessionManager', () => {
 describe('extractServerTime', () => {
 	it('should extract time from string attribute', () => {
 		const node = { tag: 'test', attrs: { t: '1234567890' } }
-		expect(extractServerTime(node as any)).toBe(1234567890)
+		expect(extractServerTime(node)).toBe(1234567890)
 	})
 
 	it('should extract time from number attribute', () => {
 		const node = { tag: 'test', attrs: { t: 1234567890 } }
-		expect(extractServerTime(node as any)).toBe(1234567890)
+		expect(extractServerTime(node as unknown as BinaryNode)).toBe(1234567890)
 	})
 
 	it('should return undefined for missing attribute', () => {
 		const node = { tag: 'test', attrs: {} }
-		expect(extractServerTime(node as any)).toBeUndefined()
+		expect(extractServerTime(node)).toBeUndefined()
 	})
 
 	it('should return undefined for invalid values', () => {
-		expect(extractServerTime({ tag: 'test', attrs: { t: 'invalid' } } as any)).toBeUndefined()
-		expect(extractServerTime({ tag: 'test', attrs: { t: 0 } } as any)).toBeUndefined()
-		expect(extractServerTime({ tag: 'test', attrs: { t: -1 } } as any)).toBeUndefined()
+		expect(extractServerTime({ tag: 'test', attrs: { t: 'invalid' } })).toBeUndefined()
+		expect(extractServerTime({ tag: 'test', attrs: { t: 0 } } as unknown as BinaryNode)).toBeUndefined()
+		expect(extractServerTime({ tag: 'test', attrs: { t: -1 } } as unknown as BinaryNode)).toBeUndefined()
 	})
 })
 
@@ -363,7 +364,7 @@ describe('UnifiedSessionManager error handling', () => {
 
 		manager = createUnifiedSessionManager({
 			enabled: true,
-			logger: createMockLogger() as any,
+			logger: createMockLogger() as unknown as ILogger,
 			sendNode: mockSendNode
 		})
 	})

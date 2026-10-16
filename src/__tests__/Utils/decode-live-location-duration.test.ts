@@ -1,6 +1,7 @@
 import P from 'pino'
 import { proto } from '../../../WAProto/index.js'
-import { decryptMessageNode } from '../../Utils/decode-wa-message'
+import type { SignalRepositoryWithLIDStore } from '../../Types/Signal'
+import { decryptMessageNode, NO_MESSAGE_FOUND_ERROR_TEXT } from '../../Utils/decode-wa-message'
 import { writeRandomPadMax16 } from '../../Utils/generics'
 import type { BinaryNode } from '../../WABinary'
 
@@ -37,14 +38,14 @@ describe('live-location transport metadata', () => {
 			},
 			decryptMessage: async () => plaintext,
 			migrateSession: async () => undefined
-		} as any
+		} as unknown as SignalRepositoryWithLIDStore
 
 		const decoded = decryptMessageNode(
 			stanza,
 			'5511888888888@s.whatsapp.net',
 			'123456789@lid',
 			repository,
-			P({ level: 'silent' }) as any
+			P({ level: 'silent' })
 		)
 		await decoded.decrypt()
 
@@ -77,8 +78,8 @@ describe('live-location transport metadata', () => {
 			{
 				lidMapping: { getLIDForPN: async () => undefined },
 				decryptMessage: async () => plaintext
-			} as any,
-			P({ level: 'silent' }) as any
+			} as unknown as SignalRepositoryWithLIDStore,
+			P({ level: 'silent' })
 		)
 		await decoded.decrypt()
 		expect(decoded.fullMessage.duration).toBeUndefined()
@@ -100,8 +101,8 @@ describe('unavailable view-once placeholder', () => {
 			stanza,
 			'5511888888888@s.whatsapp.net',
 			'123456789@lid',
-			{ lidMapping: { getLIDForPN: async () => undefined } } as any,
-			P({ level: 'silent' }) as any
+			{ lidMapping: { getLIDForPN: async () => undefined } } as unknown as SignalRepositoryWithLIDStore,
+			P({ level: 'silent' })
 		)
 
 		await decoded.decrypt()
@@ -110,5 +111,41 @@ describe('unavailable view-once placeholder', () => {
 		expect(decoded.fullMessage.message).toBeUndefined()
 		expect(decoded.fullMessage.messageStubType).toBeUndefined()
 		expect(decoded.fullMessage.messageStubParameters).toEqual(['view_once_unavailable'])
+	})
+})
+
+describe('unrecoverable unavailable fanout classification', () => {
+	it.each([
+		['hosted', [{ tag: 'unavailable', attrs: { hosted: 'true' } }], 'hosted_unavailable_fanout'],
+		[
+			'bot precedence over hosted/view-once',
+			[
+				{ tag: 'unavailable', attrs: { hosted: 'true', type: 'view_once' } },
+				{ tag: 'bot', attrs: {} }
+			],
+			'bot_unavailable_fanout'
+		]
+	])('marks %s as an unrecoverable PDO fanout', async (_name, unavailableChildren, expectedType) => {
+		const stanza: BinaryNode = {
+			tag: 'message',
+			attrs: { id: 'FANOUT', from: '5511999999999@s.whatsapp.net', t: '1770000000' },
+			content: unavailableChildren as BinaryNode[]
+		}
+		const decoded = decryptMessageNode(
+			stanza,
+			'5511888888888@s.whatsapp.net',
+			'123456789@lid',
+			{ lidMapping: { getLIDForPN: async () => undefined } } as unknown as SignalRepositoryWithLIDStore,
+			P({ level: 'silent' })
+		)
+
+		await decoded.decrypt()
+
+		expect(decoded.fullMessage.messageStubType).toBe(proto.WebMessageInfo.StubType.CIPHERTEXT)
+		expect(decoded.fullMessage.messageStubParameters).toEqual([
+			NO_MESSAGE_FOUND_ERROR_TEXT,
+			'unavailable',
+			expectedType
+		])
 	})
 })

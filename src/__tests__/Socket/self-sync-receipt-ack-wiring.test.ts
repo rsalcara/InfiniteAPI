@@ -1,11 +1,29 @@
 import { jest } from '@jest/globals'
 import { proto } from '../../../WAProto/index.js'
 import { DEFAULT_CONNECTION_CONFIG, NOISE_WA_HEADER } from '../../Defaults'
+import type { SignalKeyStore } from '../../Types'
 import { initAuthCreds, makeCacheableSignalKeyStore } from '../../Utils/auth-utils'
+import { decodeMessageNode } from '../../Utils/decode-wa-message'
+import { pdoRequestCacheKey } from '../../Utils/pdo-recovery'
 import type { BinaryNode } from '../../WABinary'
 import { decodeBinaryNode } from '../../WABinary'
 
-type FakeSocketClient = Record<string, any>
+type FakeSocketClient = {
+	sentNodes: BinaryNode[]
+	failTags: string[]
+	emit(event: string, payload?: unknown): boolean
+}
+
+type TestLogger = {
+	level: string
+	child: () => TestLogger
+	trace: jest.Mock
+	debug: jest.Mock
+	info: jest.Mock
+	warn: jest.Mock
+	error: jest.Mock
+	fatal: jest.Mock
+}
 
 const ME_PN = '5511999999999@s.whatsapp.net'
 const ME_LID = '1029384756@lid'
@@ -110,7 +128,7 @@ jest.unstable_mockModule('../../Socket/Client/tcp', () => ({ TcpSocketClient: mo
 const makeWASocket = (await import('../../Socket')).default
 
 const makeTestLogger = () => {
-	const logger: Record<string, any> = {
+	const logger: TestLogger = {
 		level: 'warn',
 		child: () => logger,
 		trace: jest.fn(),
@@ -133,6 +151,40 @@ const makeSelfSyncStanza = (): BinaryNode => ({
 		t: '1789500000',
 		peer_recipient_pn: PEER_PN
 	},
+	content: [{ tag: 'enc', attrs: { type: 'msg' }, content: makeEncryptedPayload() }]
+})
+
+const makeInboundDmLidStanza = (): BinaryNode => ({
+	tag: 'message',
+	attrs: {
+		id: 'PDO-IDENTITY-WIRING-1',
+		from: PEER_LID,
+		type: 'chat',
+		t: '1789500001',
+		addressing_mode: 'lid',
+		sender_pn: PEER_PN
+	},
+	content: [{ tag: 'enc', attrs: { type: 'msg' }, content: makeEncryptedPayload() }]
+})
+
+const makeAbsentContentDmStanza = (id: string, addressing: 'lid' | 'pn'): BinaryNode => ({
+	// What a freshly linked device receives when the sender encrypted only for
+	// the devices it already knew: the envelope without an <enc> for us. The
+	// real content follows in a second stanza with the same id, which the
+	// server may address in the other domain.
+	tag: 'message',
+	attrs: {
+		id,
+		type: 'text',
+		t: String(Math.floor(Date.now() / 1000)),
+		addressing_mode: addressing,
+		...(addressing === 'lid' ? { from: PEER_LID, sender_pn: PEER_PN } : { from: PEER_PN, sender_lid: PEER_LID })
+	},
+	content: []
+})
+
+const makeDeliveredDmStanza = (id: string, addressing: 'lid' | 'pn'): BinaryNode => ({
+	...makeAbsentContentDmStanza(id, addressing),
 	content: [{ tag: 'enc', attrs: { type: 'msg' }, content: makeEncryptedPayload() }]
 })
 
@@ -170,7 +222,7 @@ const makeSocket = async () => {
 
 	const logger = makeTestLogger()
 	const signalStore = new Map<string, unknown>()
-	const rawSignalStore: any = {
+	const rawSignalStore = {
 		get: async (type: string, ids: string[]) =>
 			ids.reduce<Record<string, unknown>>((result: Record<string, unknown>, id: string) => {
 				const value = signalStore.get(`${type}.${id}`)
@@ -186,7 +238,7 @@ const makeSocket = async () => {
 		},
 		clear: async () => signalStore.clear()
 	}
-	const keys = makeCacheableSignalKeyStore(rawSignalStore, logger as never)
+	const keys = makeCacheableSignalKeyStore(rawSignalStore as unknown as SignalKeyStore, logger as never)
 	const socket = makeWASocket({
 		...DEFAULT_CONNECTION_CONFIG,
 		auth: { creds, keys },
@@ -198,6 +250,13 @@ const makeSocket = async () => {
 	// the repository boundary so decrypt succeeds deterministically while the
 	// real decode, receipt, fallback ACK, upsert and NACK wiring still run.
 	socket.signalRepository.decryptMessage = async () => makeEncryptedPayload()
+	// The inbound LID/PN envelope triggers session migration before the retry
+	// branch under test. That repository side effect is outside this wiring and
+	// can wait on real Signal records, so keep it deterministic as well.
+	socket.signalRepository.migrateSession = async () => ({ migrated: 0, skipped: 0, total: 0 })
+	socket.signalRepository.lidMapping.getLIDForPN = async () => null
+	socket.signalRepository.lidMapping.getPNForLID = async () => null
+	socket.signalRepository.lidMapping.storeLIDPNMappings = async () => ({ stored: 0, skipped: 0, errors: 0 })
 
 	return { socket, logger }
 }
@@ -287,10 +346,106 @@ describe('self-sync receipt fallback ACK wiring', () => {
 
 		const handlingError = logger.error.mock.calls
 			.map((call: unknown[]) => call[0])
-			.find((context: any) => context?.error?.message === RECEIPT_ERROR)
+			.find(
+				(context: unknown) =>
+					(context as { error?: { message?: unknown } } | undefined)?.error?.message === RECEIPT_ERROR
+			)
 		expect(handlingError).toBeDefined()
 
 		await socket.end(new Error('test complete'))
 		await new Promise(resolve => setTimeout(resolve, 2_100))
 	})
+
+	it('completes retry state staged before JID normalization through the real message handler', async () => {
+		const { socket } = await makeSocket()
+		const client = latestClient()
+		const stanza = makeInboundDmLidStanza()
+
+		// This is the same boundary used by handleMessage: the raw decoded key is
+		// captured before normalizeMessageJids can rewrite the DM LID to its PN.
+		const { fullMessage } = decodeMessageNode(stanza, ME_PN, ME_LID)
+		const rawRetryIdentity = pdoRequestCacheKey(fullMessage.key)
+		const manager = socket.messageRetryManager
+		if (!manager) throw new Error('messageRetryManager was not exposed by the socket')
+		const phoneRequestCallback = jest.fn()
+		const upserts: unknown[] = []
+
+		manager.tryIncrement(rawRetryIdentity)
+		manager.schedulePhoneRequest(rawRetryIdentity, phoneRequestCallback, 50)
+		socket.ev.on('messages.upsert', update => upserts.push(update))
+
+		try {
+			client.emit('CB:message', stanza)
+			await waitFor(() => upserts.length > 0)
+
+			expect(upserts).toEqual([
+				expect.objectContaining({
+					type: 'notify',
+					messages: [
+						expect.objectContaining({
+							key: expect.objectContaining({
+								remoteJid: PEER_PN,
+								fromMe: false,
+								id: 'PDO-IDENTITY-WIRING-1'
+							})
+						})
+					]
+				})
+			])
+
+			expect((manager as unknown as { pendingPhoneRequests: Record<string, unknown> }).pendingPhoneRequests).toEqual({})
+			expect(phoneRequestCallback).not.toHaveBeenCalled()
+			expect(manager.tryIncrement(rawRetryIdentity)).toEqual({ proceed: true, count: 1 })
+		} finally {
+			// A successful completion must have canceled the pending PDO timer.
+			manager.cancelPendingPhoneRequest(rawRetryIdentity)
+		}
+
+		await socket.end(new Error('test complete'))
+		// Drain the socket teardown timer on real timers before ending the test.
+		await new Promise(resolve => setTimeout(resolve, 2_100))
+	})
+	it.each([
+		['lid', 'lid'],
+		['lid', 'pn'],
+		['pn', 'lid']
+	] as const)(
+		'cancels the CTWA placeholder resend once the content arrives (envelope %s, content %s)',
+		async (absentAddressing, deliveredAddressing) => {
+			const { socket } = await makeSocket()
+			const client = latestClient()
+			const id = `PDO-ABSENT-${absentAddressing}-THEN-${deliveredAddressing}`
+			const manager = socket.messageRetryManager
+			if (!manager) throw new Error('messageRetryManager was not exposed by the socket')
+			const pending = () =>
+				(manager as unknown as { pendingPhoneRequests: Record<string, unknown> }).pendingPhoneRequests
+			// The timer is keyed on the normalized (PN) identity, the one key both
+			// stanzas share whatever domain each one was addressed in.
+			const normalizedIdentity = pdoRequestCacheKey({ remoteJid: PEER_PN, fromMe: false, id })
+			const upserts: unknown[] = []
+			socket.ev.on('messages.upsert', update => upserts.push(update))
+
+			try {
+				client.emit('CB:message', makeAbsentContentDmStanza(id, absentAddressing))
+				await waitFor(() => Object.keys(pending()).length > 0)
+				expect(Object.keys(pending())).toEqual([normalizedIdentity])
+
+				client.emit('CB:message', makeDeliveredDmStanza(id, deliveredAddressing))
+				await waitFor(() =>
+					upserts.some(
+						update => (update as { messages?: Array<{ key?: { id?: string } }> }).messages?.[0]?.key?.id === id
+					)
+				)
+
+				// Left armed, the PDO goes to the phone 3 s later although the
+				// content already arrived (seen in the cold-lead log).
+				expect(pending()).toEqual({})
+			} finally {
+				for (const key of Object.keys(pending())) manager.cancelPendingPhoneRequest(key)
+			}
+
+			await socket.end(new Error('test complete'))
+			await new Promise(resolve => setTimeout(resolve, 2_100))
+		}
+	)
 })

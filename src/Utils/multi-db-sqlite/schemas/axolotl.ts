@@ -209,5 +209,4 @@ CREATE TABLE IF NOT EXISTS signal_kv (
   PRIMARY KEY (type, id)
 );
 
-CREATE INDEX IF NOT EXISTS signal_kv_by_type ON signal_kv(type);
 `

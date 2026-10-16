@@ -447,26 +447,29 @@ export class MessageRetryManager {
 	}
 
 	/**
-	 * Increment retry counter for a message
+	 * Increment retry counter for a retry identity.
+	 * Accepts the composite key produced by `pdoRequestCacheKey`.
 	 */
-	incrementRetryCount(messageId: string): number {
-		this.retryCounters.set(messageId, (this.retryCounters.get(messageId) || 0) + 1)
+	incrementRetryCount(identity: string): number {
+		this.retryCounters.set(identity, (this.retryCounters.get(identity) || 0) + 1)
 		this.statistics.totalRetries++
-		return this.retryCounters.get(messageId)!
+		return this.retryCounters.get(identity)!
 	}
 
 	/**
-	 * Get retry count for a message
+	 * Get retry count for a retry identity.
+	 * Accepts the composite key produced by `pdoRequestCacheKey`.
 	 */
-	getRetryCount(messageId: string): number {
-		return this.retryCounters.get(messageId) || 0
+	getRetryCount(identity: string): number {
+		return this.retryCounters.get(identity) || 0
 	}
 
 	/**
-	 * Check if message has exceeded maximum retry attempts
+	 * Check if a retry identity has exceeded maximum retry attempts.
+	 * Accepts the composite key produced by `pdoRequestCacheKey`.
 	 */
-	hasExceededMaxRetries(messageId: string): boolean {
-		return this.getRetryCount(messageId) >= this.maxMsgRetryCount
+	hasExceededMaxRetries(identity: string): boolean {
+		return this.getRetryCount(identity) >= this.maxMsgRetryCount
 	}
 
 	/**
@@ -481,25 +484,25 @@ export class MessageRetryManager {
 	 * `await` boundary between the two ops and a concurrent caller can
 	 * race past the cap.
 	 */
-	tryIncrement(messageId: string): { proceed: boolean; count: number } {
-		const current = this.getRetryCount(messageId)
+	tryIncrement(identity: string): { proceed: boolean; count: number } {
+		const current = this.getRetryCount(identity)
 		if (current >= this.maxMsgRetryCount) {
 			return { proceed: false, count: current }
 		}
 
 		const next = current + 1
-		this.retryCounters.set(messageId, next)
+		this.retryCounters.set(identity, next)
 		this.statistics.totalRetries++
 		return { proceed: true, count: next }
 	}
 
 	/** Completes state held for an inbound message that now decrypts. */
-	markInboundRetrySuccess(messageId: string): boolean {
-		this.cancelPendingPhoneRequest(messageId)
-		if (!this.retryCounters.has(messageId)) return false
+	markInboundRetrySuccess(identity: string): boolean {
+		this.cancelPendingPhoneRequest(identity)
+		if (!this.retryCounters.has(identity)) return false
 
 		this.statistics.successfulRetries++
-		this.retryCounters.delete(messageId)
+		this.retryCounters.delete(identity)
 		return true
 	}
 
@@ -525,39 +528,49 @@ export class MessageRetryManager {
 	/**
 	 * Mark an inbound retry as failed and remove only payload aliases belonging
 	 * to that conversation. A custom id reused elsewhere must remain retryable.
+	 *
+	 * @param identity - The sender-aware composite key from `pdoRequestCacheKey`.
+	 * @param toJids   - Chat JIDs whose recent-message payloads should be cleaned.
+	 * @param recentMessageId - The bare message ID for payload lookup; defaults to
+	 *   `identity` for backward compatibility with callers that pass a bare ID.
 	 */
-	markRetryFailed(messageId: string, toJids: readonly string[] = []): void {
+	markRetryFailed(
+		identity: string,
+		toJids: readonly string[] = [],
+		/** The bare message ID for payload lookup when `identity` is a sender-aware composite key. */
+		recentMessageId: string = identity
+	): void {
 		this.statistics.failedRetries++
-		this.retryCounters.delete(messageId)
-		this.cancelPendingPhoneRequest(messageId)
-		for (const to of new Set(toJids.filter(Boolean))) this.removeRecentMessage(to, messageId)
+		this.retryCounters.delete(identity)
+		this.cancelPendingPhoneRequest(identity)
+		for (const to of new Set(toJids.filter(Boolean))) this.removeRecentMessage(to, recentMessageId)
 	}
 
 	/**
 	 * Schedule a phone request with delay
 	 */
-	schedulePhoneRequest(messageId: string, callback: () => void, delay: number = PHONE_REQUEST_DELAY): void {
+	schedulePhoneRequest(identity: string, callback: () => void, delay: number = PHONE_REQUEST_DELAY): void {
 		// Cancel any existing request for this message
-		this.cancelPendingPhoneRequest(messageId)
+		this.cancelPendingPhoneRequest(identity)
 
-		this.pendingPhoneRequests[messageId] = setTimeout(() => {
-			delete this.pendingPhoneRequests[messageId]
+		this.pendingPhoneRequests[identity] = setTimeout(() => {
+			delete this.pendingPhoneRequests[identity]
 			this.statistics.phoneRequests++
 			callback()
 		}, delay)
 
-		this.logger.debug(`Scheduled phone request for message ${messageId} with ${delay}ms delay`)
+		this.logger.debug(`Scheduled phone request for identity ${identity} with ${delay}ms delay`)
 	}
 
 	/**
 	 * Cancel pending phone request
 	 */
-	cancelPendingPhoneRequest(messageId: string): void {
-		const timeout = this.pendingPhoneRequests[messageId]
+	cancelPendingPhoneRequest(identity: string): void {
+		const timeout = this.pendingPhoneRequests[identity]
 		if (timeout) {
 			clearTimeout(timeout)
-			delete this.pendingPhoneRequests[messageId]
-			this.logger.debug(`Cancelled pending phone request for message ${messageId}`)
+			delete this.pendingPhoneRequests[identity]
+			this.logger.debug(`Cancelled pending phone request for identity ${identity}`)
 		}
 	}
 

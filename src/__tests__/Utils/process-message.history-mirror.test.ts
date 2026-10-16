@@ -1,4 +1,5 @@
 import { jest } from '@jest/globals'
+import { randomBytes } from 'crypto'
 import { proto } from '../../../WAProto/index.js'
 import type {
 	SignalDataTypeMap,
@@ -6,6 +7,7 @@ import type {
 	SignalRepositoryWithLIDStore,
 	WAMessage
 } from '../../Types'
+import type { ILogger } from '../../Utils/logger'
 import type { MessageStoreBackend } from '../../Utils/multi-db-sqlite'
 import { applyProcessedHistorySync, mirrorHistoryMessagesToStore } from '../../Utils/process-message'
 
@@ -296,7 +298,7 @@ describe('history-sync message mirror', () => {
 					signalRepository,
 					keyStore,
 					messageStoreBackend: { recordMessages } as unknown as MessageStoreBackend,
-					logger: logger as any
+					logger: logger as unknown as ILogger
 				},
 				undefined,
 				false
@@ -311,7 +313,7 @@ describe('history-sync message mirror', () => {
 
 	it('persists historical messages without incrementing unread state', async () => {
 		const recordMessages = jest.fn(() => [1])
-		const backend = { recordMessages } as any
+		const backend = { recordMessages } as unknown as MessageStoreBackend
 		const messages: WAMessage[] = [
 			{
 				key: {
@@ -341,9 +343,33 @@ describe('history-sync message mirror', () => {
 		)
 	})
 
+	it('persists an outer CAG message secret through the history mirror', async () => {
+		const recordMessages = jest.fn(() => [1])
+		const backend = { recordMessages } as unknown as MessageStoreBackend
+		const outerSecret = randomBytes(32)
+		const message: WAMessage = {
+			key: {
+				remoteJid: '5511999999999@s.whatsapp.net',
+				fromMe: false,
+				id: 'HISTORY-CAG-SECRET'
+			},
+			messageTimestamp: 1_700_000_000,
+			messageSecret: outerSecret,
+			message: { encCommentMessage: {} }
+		}
+
+		await expect(mirrorHistoryMessagesToStore([message], backend)).resolves.toEqual({ stored: 1, failed: 0 })
+		expect(recordMessages).toHaveBeenCalledWith([
+			expect.objectContaining({
+				keyId: 'HISTORY-CAG-SECRET',
+				messageSecret: outerSecret
+			})
+		])
+	})
+
 	it('does not fabricate a server ACK for an outgoing Web ERROR row', async () => {
 		const recordMessages = jest.fn(() => [1])
-		const backend = { recordMessages } as any
+		const backend = { recordMessages } as unknown as MessageStoreBackend
 		const message: WAMessage = {
 			key: {
 				remoteJid: '5511999999999@s.whatsapp.net',
@@ -370,11 +396,11 @@ describe('history-sync message mirror', () => {
 		['audio', 'viewOnceMessageV2Extension', 'audioMessage', 82]
 	])('persists historical view-once %s metadata', async (_kind, wrapper, media, messageType) => {
 		const recordMessages = jest.fn(() => [1])
-		const backend = { recordMessages } as any
+		const backend = { recordMessages } as unknown as MessageStoreBackend
 		const message: WAMessage = {
 			key: { remoteJid: '5511999999999@s.whatsapp.net', fromMe: false, id: `HISTORY-${messageType}` },
 			messageTimestamp: 1_700_000_000,
-			message: { [wrapper]: { message: { [media]: {} } } } as any
+			message: { [wrapper]: { message: { [media]: {} } } } as proto.IMessage
 		}
 
 		await mirrorHistoryMessagesToStore([message], backend)
@@ -390,7 +416,7 @@ describe('history-sync message mirror', () => {
 
 	it('persists an unavailable historical view-once placeholder without inventing a media type', async () => {
 		const recordMessages = jest.fn(() => [1])
-		const backend = { recordMessages } as any
+		const backend = { recordMessages } as unknown as MessageStoreBackend
 		const encoded = proto.WebMessageInfo.encode({
 			key: {
 				remoteJid: '5511999999999@s.whatsapp.net',
@@ -417,7 +443,7 @@ describe('history-sync message mirror', () => {
 
 	it('stores an incoming broadcast history row under its participant chat', async () => {
 		const recordMessages = jest.fn(() => [1])
-		const backend = { recordMessages } as any
+		const backend = { recordMessages } as unknown as MessageStoreBackend
 		const message: WAMessage = {
 			key: {
 				remoteJid: '12345@broadcast',
@@ -440,7 +466,7 @@ describe('history-sync message mirror', () => {
 
 	it('carries Android album-root counters into the relational history mirror', async () => {
 		const recordMessages = jest.fn(() => [99])
-		const backend = { recordMessages } as any
+		const backend = { recordMessages } as unknown as MessageStoreBackend
 		const messages: WAMessage[] = [
 			{
 				key: {
@@ -465,7 +491,7 @@ describe('history-sync message mirror', () => {
 
 	it('carries the complete Android sticker-pack manifest into the relational history mirror', async () => {
 		const recordMessages = jest.fn(() => [105])
-		const backend = { recordMessages } as any
+		const backend = { recordMessages } as unknown as MessageStoreBackend
 		const messages: WAMessage[] = [
 			{
 				key: {
@@ -535,7 +561,7 @@ describe('history-sync message mirror', () => {
 			if (rows.some(row => row.keyId === 'A')) throw new Error('row failed')
 			return rows.map(() => 2)
 		})
-		const backend = { recordMessages } as any
+		const backend = { recordMessages } as unknown as MessageStoreBackend
 		const makeMessage = (id: string): WAMessage => ({
 			key: { remoteJid: '120363000000000000@g.us', fromMe: true, id },
 			messageTimestamp: 1,
@@ -552,7 +578,7 @@ describe('history-sync message mirror', () => {
 
 	it('persists large histories in bounded pages and yields between them', async () => {
 		const recordMessages = jest.fn((rows: unknown[]) => rows.map((_, index) => index + 1))
-		const backend = { recordMessages } as any
+		const backend = { recordMessages } as unknown as MessageStoreBackend
 		const messages = Array.from(
 			{ length: 300 },
 			(_, index): WAMessage => ({

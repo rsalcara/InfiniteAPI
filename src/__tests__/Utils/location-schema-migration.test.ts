@@ -1,8 +1,8 @@
-import Database from 'better-sqlite3'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { MultiDbSqliteStore } from '../../Utils/multi-db-sqlite'
+import { openSqliteDatabase } from '../../Utils/sqlite-driver'
 
 describe('location.db migration v2 — canonical location_sharer', () => {
 	let dir: string
@@ -19,7 +19,7 @@ describe('location.db migration v2 — canonical location_sharer', () => {
 	})
 
 	it('converts legacy seconds and bounds received rows before removing received_ts', async () => {
-		const pre = new Database(join(dir, 'location.db'))
+		const pre = await openSqliteDatabase(join(dir, 'location.db'))
 		pre.exec(`
 			CREATE TABLE location_sharer (
 				_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,7 +107,7 @@ describe('location.db migration v2 — canonical location_sharer', () => {
 	})
 
 	it('repairs an intermediate v3 database without retaining resurrected received rows', async () => {
-		const pre = new Database(join(dir, 'location.db'))
+		const pre = await openSqliteDatabase(join(dir, 'location.db'))
 		pre.exec(`
 			CREATE TABLE location_cache (
 				_id INTEGER PRIMARY KEY AUTOINCREMENT,

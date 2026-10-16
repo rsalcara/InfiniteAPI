@@ -1,8 +1,9 @@
+import type { WAMessage } from '../../Types'
 import { OrphanQueue } from '../../Utils/orphan-queue'
 
 const key = (id: string, remoteJid = 'chat@s.whatsapp.net') => ({ remoteJid, id, fromMe: false })
 
-const fakeMessage = (id: string) => ({ key: key(id), message: {} }) as any
+const fakeMessage = (id: string): WAMessage => ({ key: key(id), message: {} })
 
 describe('OrphanQueue', () => {
 	it('drain returns nothing for a parent that was never enqueued', () => {

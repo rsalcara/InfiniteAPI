@@ -13,16 +13,47 @@ import type {
 	SocketConfig
 } from '../Types'
 import type { BinaryNode } from '../WABinary'
+import { jidDecode } from '../WABinary'
 import { makePersistedWebTransportIdentity, validatePersistedWebTransportIdentity } from './connection-presets'
 import { MAX_NODE_TIMER_MS } from './native-android-constants'
 import {
 	GENERIC_NATIVE_ANDROID_FALLBACK_PROFILE_ID,
 	isNativeAndroidCatalogProfile
 } from './native-android-device-catalog'
+import { nativeAndroidRegistrationAppVersion } from './native-android-registration-device-attestation'
 export { createNativeAndroidBridgeProvider } from './native-android-bridge-provider'
 export type { NativeAndroidBridgeProviderConfig } from './native-android-bridge-provider'
 export { createNativeAndroidPairingBridgeProvider } from './native-android-pairing-bridge-provider'
 export type { NativeAndroidPairingBridgeProviderConfig } from './native-android-pairing-bridge-provider'
+export {
+	createNativeAndroidRegistrationBridgeProvider,
+	createNativeAndroidRegistrationEnvironmentProvider,
+	mapBridgeRegistrationEnvironment,
+	percentDecodeRegistrationBytes
+} from './native-android-registration-bridge-provider'
+export type {
+	NativeAndroidRegistrationBridgeProviderConfig,
+	NativeAndroidRegistrationBridgeContext,
+	NativeAndroidRegistrationBridgeAttestation,
+	NativeAndroidRegistrationEnvironmentProvider
+} from './native-android-registration-bridge-provider'
+export { createNativeAndroidRegistrationRelayProvider } from './native-android-registration-relay-provider'
+export type { NativeAndroidRegistrationRelayProviderConfig } from './native-android-registration-relay-provider'
+export * from './native-android-registration-keys'
+export * from './native-android-registration-protocol'
+export {
+	createNativeAndroidRegistrationHttpClient,
+	createNativeAndroidRegistrationOfficialFetch
+} from './native-android-registration-client'
+export type {
+	NativeAndroidRegistrationHttpConfig,
+	NativeAndroidRegistrationHttpResponse
+} from './native-android-registration-client'
+export * from './native-android-registration-response'
+export * from './native-android-registration-auth'
+export * from './native-android-registration-flow'
+export * from './native-android-registration-environment'
+export * from './native-android-registration-token'
 import { makeNativeAndroidNodeAttestationProvider } from './native-android-node-attestation'
 
 const PROFILE_FIELDS: ReadonlyArray<keyof NativeAndroidDeviceProfile> = [
@@ -383,6 +414,22 @@ export type ResolvedTransportSession = {
 }
 
 /**
+ * True for credentials seeded by a primary phone-number registration
+ * (device-0, /v2/register): an explicit `registrationSeeded` marker, or the
+ * unambiguous legacy shape (registered device-0 identity without the ADV
+ * account that companion pairing always creates). Companion sessions are
+ * never matched, so their behavior stays exactly as before.
+ */
+export const isRegistrationSeededPrimary = (creds: AuthenticationCreds): boolean => {
+	const identity = creds.nativeAndroidIdentity
+	if (identity?.profile !== 'native_android') return false
+	if (identity.registrationSeeded) return true
+	const decoded = creds.me?.id ? jidDecode(creds.me.id) : undefined
+	const device = decoded?.device
+	return Boolean(creds.registered && creds.me && !creds.account && (device === undefined || device === 0))
+}
+
+/**
  * Applies the fail-closed session isolation rules before opening a socket.
  * Existing Web credentials have no marker and remain untouched.
  */
@@ -462,11 +509,78 @@ export const resolveTransportSession = (config: SocketConfig, creds: Authenticat
 		)
 	}
 
+	if (persisted && isRegistrationSeededPrimary(creds)) {
+		// Registration-seeded primaries pin the app build they registered with
+		// (the official app registers and logs in as the same build) and carry
+		// the explicit login-state fields the passive decision reads. Sessions
+		// seeded before those fields existed are upgraded in place.
+		if (!persisted.registrationSeeded) {
+			persisted.registrationSeeded = true
+			migratedAppIdentity = true
+		}
+
+		if (!persisted.appVariant && creds.platform) {
+			persisted.appVariant = creds.platform === 'smba' ? 'business' : 'consumer'
+			persisted.clientAppId = getNativeAndroidAppIdentity(persisted.appVariant).clientAppId
+			persisted.preset = persisted.appVariant === 'consumer' ? 'native_android_consumer' : 'native_android_business'
+			migratedAppIdentity = true
+		}
+
+		// The official app logs in as the SAME build it registered with. A
+		// missing value — or the pre-seeding default [2,26,35,75] written by
+		// early patching — is an artifact; pin the registration build. Identities
+		// seeded by buildPrimaryRegistrationAuthCreds already carry the exact
+		// build, and any other explicit value is trusted as a real registration.
+		const legacyPatchedAppVersion = [2, 26, 35, 75].join('.')
+		if (!persisted.appVersion || persisted.appVersion.join('.') === legacyPatchedAppVersion) {
+			persisted.appVersion = nativeAndroidRegistrationAppVersion(
+				persisted.appVariant === 'consumer' ? 'consumer' : 'business'
+			)
+			migratedAppIdentity = true
+		}
+
+		if (persisted.connectionLc === undefined) {
+			// Official connection_lc default (AbstractC45341yV), reset when the
+			// auth key is created; early patching left it unset.
+			persisted.connectionLc = 0
+			migratedAppIdentity = true
+		}
+
+		if (persisted.signalProtocolStoreIsNew === undefined) {
+			// Set true at Signal-identity creation and cleared only by the
+			// pre-key batch upload; a session that never completed that upload
+			// still owns the flag.
+			persisted.signalProtocolStoreIsNew = true
+			migratedAppIdentity = true
+		}
+
+		if (persisted.loginsWithMessages === undefined) {
+			persisted.loginsWithMessages = 0
+			migratedAppIdentity = true
+		}
+
+		if (
+			persisted.signalProtocolStoreIsNew &&
+			(persisted.connectionLc ?? 0) === 0 &&
+			(creds.accountSyncCounter ?? 0) > 0
+		) {
+			// accountSyncCounter only advances after an accepted login (the
+			// initial-sync settlement runs post-open) and connectionLc counts
+			// server successes. A never-used Signal store with a counter above
+			// zero is a pairing no official lifecycle produces — and it forces
+			// the login into the 'reconnect' phase, contradicting the same
+			// payload's passive/signal-store state. Sessions that never logged
+			// in carry the real value: 0 (first-login phase, 1:1 with the app).
+			creds.accountSyncCounter = 0
+			migratedAppIdentity = true
+		}
+	}
+
 	if (persisted && (!persisted.appVariant || !persisted.clientAppId)) {
 		// Every native session created before app-variant support used WABA.
 		persisted.appVariant = 'business'
 		persisted.clientAppId = WABA_CLIENT_APP_ID
-		persisted.appVersion = config.nativeAndroid.appVersions?.business ?? config.nativeAndroid.appVersion
+		persisted.appVersion ??= config.nativeAndroid.appVersions?.business ?? config.nativeAndroid.appVersion
 		migratedAppIdentity = true
 	}
 

@@ -2,8 +2,8 @@ import type { LTHashState } from '../../Types'
 import { ensureLTHashStateVersion } from '../../Utils/chat-utils'
 
 describe('ensureLTHashStateVersion', () => {
-	const makeState = (version: any): LTHashState => ({
-		version,
+	const makeState = (version: unknown): LTHashState => ({
+		version: version as number,
 		hash: Buffer.alloc(128),
 		indexValueMap: { someKey: { valueMac: Buffer.from([1, 2, 3]) } }
 	})
@@ -34,7 +34,7 @@ describe('ensureLTHashStateVersion', () => {
 	})
 
 	it('should fix string version to 0', () => {
-		const state = makeState('3' as any)
+		const state = makeState('3')
 		const result = ensureLTHashStateVersion(state)
 		expect(result.version).toBe(0)
 	})

@@ -169,8 +169,8 @@ export const MAX_SYNC_ATTEMPTS = 2
  * WA Web treats these as "Blocked" (waits for key arrival), not fatal.
  * In Baileys we retry with a snapshot which may use a different key.
  */
-export const isMissingKeyError = (error: any): boolean => {
-	return error?.data?.isMissingKey === true
+export const isMissingKeyError = (error: unknown): boolean => {
+	return (error as { data?: { isMissingKey?: unknown } } | null | undefined)?.data?.isMissingKey === true
 }
 
 /**
@@ -178,8 +178,8 @@ export const isMissingKeyError = (error: any): boolean => {
  * TypeError indicates a WASM crash; otherwise we give up after MAX_SYNC_ATTEMPTS.
  * Missing keys are NOT checked here — they are handled separately as "Blocked".
  */
-export const isAppStateSyncIrrecoverable = (error: any, attempts: number): boolean => {
-	return attempts >= MAX_SYNC_ATTEMPTS || error?.name === 'TypeError'
+export const isAppStateSyncIrrecoverable = (error: unknown, attempts: number): boolean => {
+	return attempts >= MAX_SYNC_ATTEMPTS || (error as { name?: unknown } | null | undefined)?.name === 'TypeError'
 }
 
 export const encodeSyncdPatch = async (
@@ -341,7 +341,7 @@ export const decodeSyncdMutations = async (
 		}
 
 		const indexStr = Buffer.from(syncActionIndex).toString()
-		const mutation = { syncAction, index: JSON.parse(indexStr) }
+		const mutation: ChatMutation = { syncAction, index: JSON.parse(indexStr), operation }
 		onMutation(mutation)
 		onRawMutation?.({ indexMac: indexBlob, valueMac: ogValueMac, operation, mutation })
 
@@ -1295,6 +1295,15 @@ export const processSyncAction = (
 			} catch (err) {
 				logger?.warn({ err }, 'failed to remove recent sticker from stickers.db')
 			}
+		}
+	} else if (action?.nctSaltSyncAction) {
+		// The app parses `nct_salt_sync` only for SET (`X/AbstractC25280B9y.java:1513`)
+		// and a companion stores that salt (`:5197-5205`). It is the account's
+		// salt for `<cstoken>`; never logged.
+		const salt = action.nctSaltSyncAction.salt
+		if (syncAction.operation !== proto.SyncdMutation.SyncdOperation.REMOVE && salt?.length) {
+			ev.emit('creds.update', { nctSalt: salt, nctSaltSource: 'primary' })
+			logger?.debug({ saltLength: salt.length }, 'stored NCT salt from app-state sync')
 		}
 	} else {
 		logger?.debug({ syncAction, id }, 'unprocessable update')

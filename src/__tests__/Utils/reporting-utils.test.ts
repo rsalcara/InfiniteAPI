@@ -92,10 +92,10 @@ describe('Reporting Utils', () => {
 			const result = await getMessageReportingToken(encode(msg), msg, createKey())
 
 			expect(result).toMatchObject({ tag: 'reporting', attrs: {} })
-			const content = result?.content as any[]
+			const content = result?.content as BinaryNode[]
 			expect(content).toHaveLength(1)
 			expect(content[0]).toMatchObject({ tag: 'reporting_token', attrs: { v: '2' } })
-			expect(content[0].content).toHaveLength(16)
+			expect(content[0]!.content).toHaveLength(16)
 		})
 
 		it('should produce consistent tokens for the same input', async () => {

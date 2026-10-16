@@ -1,8 +1,9 @@
 import { describe, expect, it } from '@jest/globals'
+import type { proto } from '../../../WAProto/index.js'
 import { getMessageTypeLabel } from '../../Utils/messages'
 
 describe('getMessageTypeLabel', () => {
-	it.each([
+	it.each<[string, proto.IMessage]>([
 		['text', { conversation: 'hello' }],
 		['text', { extendedTextMessage: { text: 'hello' } }],
 		['image', { imageMessage: {} }],
@@ -23,7 +24,7 @@ describe('getMessageTypeLabel', () => {
 		['interactive', { interactiveMessage: {} }],
 		['interactive_response', { buttonsResponseMessage: {} }]
 	])('classifies %s', (expected, content) => {
-		expect(getMessageTypeLabel(content as any)).toBe(expected)
+		expect(getMessageTypeLabel(content)).toBe(expected)
 	})
 
 	it('classifies view-once media after unwrapping nested containers', () => {
@@ -36,12 +37,12 @@ describe('getMessageTypeLabel', () => {
 						}
 					}
 				}
-			} as any)
+			})
 		).toBe('view_once_image')
-		expect(getMessageTypeLabel({ viewOnceMessage: { message: { videoMessage: {} } } } as any)).toBe('view_once_video')
-		expect(
-			getMessageTypeLabel({ viewOnceMessageV2Extension: { message: { audioMessage: { ptt: true } } } } as any)
-		).toBe('view_once_audio')
+		expect(getMessageTypeLabel({ viewOnceMessage: { message: { videoMessage: {} } } })).toBe('view_once_video')
+		expect(getMessageTypeLabel({ viewOnceMessageV2Extension: { message: { audioMessage: { ptt: true } } } })).toBe(
+			'view_once_audio'
+		)
 	})
 
 	it('classifies an unavailable placeholder without inventing its media kind', () => {
@@ -49,10 +50,10 @@ describe('getMessageTypeLabel', () => {
 	})
 
 	it('uses a deterministic label for future protobuf message types', () => {
-		expect(getMessageTypeLabel({ scheduledCallCreationMessage: {} } as any)).toBe('scheduled_call_creation')
+		expect(getMessageTypeLabel({ scheduledCallCreationMessage: {} })).toBe('scheduled_call_creation')
 	})
 
 	it('ignores explicit null protobuf fields before the real content', () => {
-		expect(getMessageTypeLabel({ imageMessage: null, conversation: 'hello' } as any)).toBe('text')
+		expect(getMessageTypeLabel({ imageMessage: null, conversation: 'hello' })).toBe('text')
 	})
 })

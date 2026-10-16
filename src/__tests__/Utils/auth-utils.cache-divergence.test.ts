@@ -12,7 +12,7 @@
  *
  * Failing while H6 is unresolved. Flipped to `it(...)` in Stage 4.
  */
-import type { CacheStore, SignalDataSet, SignalKeyStore } from '../../Types'
+import type { CacheStore, SignalDataSet, SignalDataTypeMap, SignalKeyStore } from '../../Types'
 import { makeCacheableSignalKeyStore } from '../../Utils/auth-utils'
 import type { ILogger } from '../../Utils/logger'
 
@@ -40,9 +40,9 @@ describe('makeCacheableSignalKeyStore — cache divergence on store failure (H6)
 		const flakyStore: SignalKeyStore = {
 			async get(type, ids) {
 				const bucket = persisted[type] ?? {}
-				const out: Record<string, any> = {}
+				const out: { [id: string]: SignalDataTypeMap[typeof type] } = {}
 				for (const id of ids) {
-					if (id in bucket) out[id] = bucket[id]
+					if (id in bucket) out[id] = bucket[id] as SignalDataTypeMap[typeof type]
 				}
 
 				return out
@@ -55,7 +55,7 @@ describe('makeCacheableSignalKeyStore — cache divergence on store failure (H6)
 
 				for (const type in data) {
 					persisted[type] = persisted[type] ?? {}
-					const incoming = (data as any)[type] as Record<string, unknown>
+					const incoming = data[type as keyof SignalDataSet] as Record<string, unknown>
 					for (const id in incoming) {
 						persisted[type][id] = incoming[id]
 					}
@@ -68,7 +68,7 @@ describe('makeCacheableSignalKeyStore — cache divergence on store failure (H6)
 		const id = '1'
 		const uncommittedValue = { public: Buffer.from([0xaa]), private: Buffer.from([0xbb]) }
 
-		await expect(cacheable.set({ 'pre-key': { [id]: uncommittedValue as any } })).rejects.toThrow(
+		await expect(cacheable.set({ 'pre-key': { [id]: uncommittedValue } })).rejects.toThrow(
 			'simulated transient durable-store failure'
 		)
 
@@ -87,9 +87,9 @@ describe('makeCacheableSignalKeyStore — cache divergence on store failure (H6)
 		const flakyStore: SignalKeyStore = {
 			async get(type, ids) {
 				const bucket = persisted[type] ?? {}
-				const out: Record<string, any> = {}
+				const out: { [id: string]: SignalDataTypeMap[typeof type] } = {}
 				for (const id of ids) {
-					if (id in bucket) out[id] = bucket[id]
+					if (id in bucket) out[id] = bucket[id] as SignalDataTypeMap[typeof type]
 				}
 
 				return out
@@ -103,7 +103,7 @@ describe('makeCacheableSignalKeyStore — cache divergence on store failure (H6)
 
 				for (const type in data) {
 					persisted[type] = persisted[type] ?? {}
-					const incoming = (data as any)[type] as Record<string, unknown>
+					const incoming = data[type as keyof SignalDataSet] as Record<string, unknown>
 					for (const id in incoming) {
 						persisted[type][id] = incoming[id]
 					}
@@ -118,7 +118,7 @@ describe('makeCacheableSignalKeyStore — cache divergence on store failure (H6)
 
 		// First set fails. After it rejects, an interleaved reader must not
 		// observe v1 — it was never durably persisted.
-		const failingSet = cacheable.set({ 'pre-key': { [id]: v1 as any } })
+		const failingSet = cacheable.set({ 'pre-key': { [id]: v1 } })
 
 		await expect(failingSet).rejects.toThrow('first attempt failed')
 
@@ -128,7 +128,7 @@ describe('makeCacheableSignalKeyStore — cache divergence on store failure (H6)
 
 	it('invalidates a cached tctoken after authoritative compare-and-prune', async () => {
 		const jid = 'cache-prune@lid'
-		let durable: any = { token: Buffer.from([0xaa]), timestamp: '100' }
+		let durable: SignalDataTypeMap['tctoken'] | undefined = { token: Buffer.from([0xaa]), timestamp: '100' }
 		const entries = new Map<string, unknown>()
 		const cache: CacheStore = {
 			get: <T>(key: string) => entries.get(key) as T | undefined,
@@ -156,8 +156,8 @@ describe('makeCacheableSignalKeyStore — cache divergence on store failure (H6)
 				compareAndPruneSent: async () => false
 			},
 			async get(type, ids) {
-				const out: Record<string, any> = {}
-				if (type === 'tctoken' && ids.includes(jid) && durable) out[jid] = durable
+				const out: { [id: string]: SignalDataTypeMap[typeof type] } = {}
+				if (type === 'tctoken' && ids.includes(jid) && durable) out[jid] = durable as SignalDataTypeMap[typeof type]
 				return out
 			},
 			async set() {}

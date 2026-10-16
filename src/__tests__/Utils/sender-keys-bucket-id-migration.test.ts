@@ -12,11 +12,11 @@
  *   (2) UPGRADE — a pre-migration axolotl.db without the column gets the ALTER
  *       applied exactly once on open.
  */
-import Database from 'better-sqlite3'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { MultiDbSqliteStore, SignalTypedBackend } from '../../Utils/multi-db-sqlite'
+import { openSqliteDatabase } from '../../Utils/sqlite-driver'
 
 describe('axolotl.db migration v1 — sender_keys.bucket_id', () => {
 	let dir: string
@@ -64,7 +64,7 @@ describe('axolotl.db migration v1 — sender_keys.bucket_id', () => {
 
 	it('upgrade path: a pre-migration DB without the column gets ALTER applied on open', async () => {
 		const dbPath = join(dir, 'axolotl.db')
-		const pre = new Database(dbPath)
+		const pre = await openSqliteDatabase(dbPath)
 		// Pre-migration shape: sender_keys WITHOUT bucket_id.
 		pre.exec(`
 			CREATE TABLE IF NOT EXISTS sender_keys (
@@ -100,7 +100,7 @@ describe('axolotl.db migration v1 — sender_keys.bucket_id', () => {
 		// bookkeeping row. A raw ALTER would throw "duplicate column name" and
 		// fail open(); the PRAGMA preflight must make it a safe no-op.
 		const dbPath = join(dir, 'axolotl.db')
-		const pre = new Database(dbPath)
+		const pre = await openSqliteDatabase(dbPath)
 		pre.exec(`
 			CREATE TABLE IF NOT EXISTS sender_keys (
 				_id INTEGER PRIMARY KEY AUTOINCREMENT,

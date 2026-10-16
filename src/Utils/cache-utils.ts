@@ -528,7 +528,7 @@ export function clearGlobalCaches(): void {
  * forcing the concrete type on every callsite.
  */
 export type NodeCacheSetLike<V> = {
-	set: (key: string, value: V, ttl?: number) => unknown | Promise<unknown>
+	set: (key: string, value: V, ttl?: number) => unknown
 }
 
 const NODE_CACHE_FULL_TOKENS = ['max keys', 'ECACHEFULL']

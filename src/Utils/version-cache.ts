@@ -88,7 +88,10 @@ async function readCacheFile(filePath: string): Promise<VersionCacheEntry | null
  */
 async function writeCacheFile(filePath: string, entry: VersionCacheEntry, logger?: VersionCacheLogger): Promise<void> {
 	try {
-		await fs.writeFile(filePath, JSON.stringify(entry, null, 2), 'utf-8')
+		// Atomic replace (audit M08): a torn cache file must never be observed.
+		const temporaryPath = `${filePath}.tmp`
+		await fs.writeFile(temporaryPath, JSON.stringify(entry, null, 2), 'utf-8')
+		await fs.rename(temporaryPath, filePath)
 	} catch (error) {
 		// Log write errors for debugging - cache is optional but failures should be visible
 		logger?.warn({ error, filePath }, 'Failed to write version cache file')

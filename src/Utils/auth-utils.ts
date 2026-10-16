@@ -217,14 +217,14 @@ export function makeCacheableSignalKeyStore(
 			const idsToFetch: string[] = []
 
 			for (const id of ids) {
-				const item = (await cache.get<SignalDataTypeMap[typeof type]>(getUniqueId(type, id))) as any
+				const item = await cache.get<SignalDataTypeMap[typeof type] | null>(getUniqueId(type, id))
 				// Stage 5 null tombstone fix (adapted from upstream #2575):
 				// `null` is the SignalDataSet delete sentinel. A cached `null`
 				// must be treated as a miss — `get` returns "absent" by
 				// omitting the id, not "present with value null". Without
 				// this filter, libsignal would observe tombstones.
 				if (typeof item !== 'undefined' && item !== null) {
-					data[id] = item
+					data[id] = item as SignalDataTypeMap[typeof type]
 				} else {
 					idsToFetch.push(id)
 				}
@@ -455,12 +455,12 @@ export const addTransactionCapability = (
 				const fetched = await locks.withLock({ namespace: '__type__', id: type }, () => state.get(type, missing))
 
 				// Update cache
-				ctx.cache[type] = ctx.cache[type] || ({} as any)
+				ctx.cache[type] = ctx.cache[type] || {}
 				Object.assign(ctx.cache[type]!, fetched)
 			}
 
 			// Return requested ids from cache
-			const result: { [key: string]: any } = {}
+			const result: { [key: string]: SignalDataTypeMap[typeof type] } = {}
 			for (const id of ids) {
 				const value = ctx.cache[type]?.[id]
 				if (value !== undefined && value !== null) {
@@ -542,9 +542,12 @@ export const addTransactionCapability = (
 			for (const key_ in data) {
 				const key = key_ as keyof SignalDataTypeMap
 
-				// Ensure structures exist
-				ctx.cache[key] = ctx.cache[key] || ({} as any)
-				ctx.mutations[key] = ctx.mutations[key] || ({} as any)
+				// Ensure structures exist (indexed by a union key, so write through
+				// a type-erased view of the per-type buckets)
+				const cacheByType = ctx.cache as { [type: string]: object | undefined }
+				const mutationsByType = ctx.mutations as { [type: string]: object | undefined }
+				cacheByType[key] = cacheByType[key] || {}
+				mutationsByType[key] = mutationsByType[key] || {}
 
 				// Special handling for pre-keys
 				if (key === 'pre-key') {

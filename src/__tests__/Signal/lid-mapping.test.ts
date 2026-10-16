@@ -5,11 +5,18 @@ import type { LIDMapping, SignalDataTypeMap, SignalKeyStoreWithTransaction } fro
 
 const HOSTED_DEVICE_ID = 99
 
-const mockKeys: jest.Mocked<SignalKeyStoreWithTransaction> = {
-	get: jest.fn<SignalKeyStoreWithTransaction['get']>() as any,
+type MockedKeys = jest.Mocked<SignalKeyStoreWithTransaction>
+
+const mockKeys: MockedKeys = {
+	get: jest.fn<SignalKeyStoreWithTransaction['get']>() as MockedKeys['get'],
 	set: jest.fn<SignalKeyStoreWithTransaction['set']>(),
-	transaction: jest.fn<SignalKeyStoreWithTransaction['transaction']>(async (work: () => any) => await work()) as any,
+	transaction: jest.fn(async (work: () => Promise<unknown>) => await work()) as unknown as MockedKeys['transaction'],
 	isInTransaction: jest.fn<SignalKeyStoreWithTransaction['isInTransaction']>()
+}
+
+/** Private surface of LIDMappingStore exercised directly by the admission-budget test. */
+type LIDMappingStoreInternals = {
+	enqueueMappingWrite(pairs: LIDMapping[]): Promise<{ stored: number; skipped: number; errors: number }>
 }
 const logger = P({ level: 'silent' })
 
@@ -132,7 +139,7 @@ describe('LIDMappingStore', () => {
 		it('does not publish a failed batch into cache', async () => {
 			lidMappingStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc, { retryAttempts: 1 })
 			mockKeys.get.mockResolvedValue({} as never)
-			;(mockKeys.set as any).mockRejectedValueOnce(new Error('disk full'))
+			mockKeys.set.mockRejectedValueOnce(new Error('disk full') as never)
 
 			await expect(
 				lidMappingStore.storeLIDPNMappings([{ pn: '11111@s.whatsapp.net', lid: 'aaaaa@lid' }])
@@ -215,7 +222,7 @@ describe('LIDMappingStore', () => {
 
 			release()
 			await Promise.all([active, large, small])
-			const mappingBuckets = mockKeys.set.mock.calls.map(call => (call[0] as any)['lid-mapping'])
+			const mappingBuckets = mockKeys.set.mock.calls.map(call => call[0]['lid-mapping'])
 			expect(mappingBuckets[1]).toHaveProperty('30000', '40000')
 			expect(mappingBuckets[2]).toHaveProperty('99999', '88888')
 		})
@@ -230,7 +237,9 @@ describe('LIDMappingStore', () => {
 				lid: `${60_000 + index}@lid`
 			}))
 
-			await expect((lidMappingStore as any).enqueueMappingWrite(oversized)).rejects.toMatchObject({
+			await expect(
+				(lidMappingStore as unknown as LIDMappingStoreInternals).enqueueMappingWrite(oversized)
+			).rejects.toMatchObject({
 				code: LIDMappingErrorCode.BACKPRESSURE
 			})
 		})
@@ -451,7 +460,7 @@ describe('LIDMappingStore', () => {
 
 	describe('Destroyed Flag Protection (V4, M2)', () => {
 		it('should reject operations after destroy()', async () => {
-			lidMappingStore.destroy()
+			await lidMappingStore.destroy()
 
 			// All operations should throw after destroy
 			await expect(lidMappingStore.getLIDForPN('12345@s.whatsapp.net')).rejects.toThrow(
@@ -467,7 +476,7 @@ describe('LIDMappingStore', () => {
 
 		it('should allow destroy() to be called multiple times safely', () => {
 			// First destroy
-			lidMappingStore.destroy()
+			void lidMappingStore.destroy()
 
 			// Second destroy should not throw (reentrancy guard)
 			expect(() => lidMappingStore.destroy()).not.toThrow()
@@ -639,7 +648,7 @@ describe('LIDMappingStore', () => {
 			await lidMappingStore.getLIDForPN(pn)
 
 			// Destroy should clear cache
-			lidMappingStore.destroy()
+			await lidMappingStore.destroy()
 
 			// Create new store
 			const newStore = new LIDMappingStore(mockKeys, logger, mockPnToLIDFunc)

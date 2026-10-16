@@ -13,7 +13,7 @@
  *
  * Failing while H0 is unresolved. Flipped to `it(...)` in Stage 2.
  */
-import type { SignalDataSet, SignalKeyStore } from '../../Types'
+import type { SignalDataSet, SignalDataTypeMap, SignalKeyStore } from '../../Types'
 import { addTransactionCapability } from '../../Utils/auth-utils'
 import type { ILogger } from '../../Utils/logger'
 
@@ -34,9 +34,9 @@ const makeInMemoryStore = (): SignalKeyStore => {
 	return {
 		async get(type, ids) {
 			const bucket = data[type] ?? {}
-			const out: Record<string, any> = {}
+			const out: { [id: string]: SignalDataTypeMap[typeof type] } = {}
 			for (const id of ids) {
-				if (id in bucket) out[id] = bucket[id]
+				if (id in bucket) out[id] = bucket[id] as SignalDataTypeMap[typeof type]
 			}
 
 			return out
@@ -45,7 +45,7 @@ const makeInMemoryStore = (): SignalKeyStore => {
 			for (const type in d) {
 				data[type] = data[type] ?? {}
 				const bucket = data[type]
-				const incoming = (d as any)[type] as Record<string, unknown>
+				const incoming = d[type as keyof SignalDataSet] as Record<string, unknown>
 				for (const id in incoming) {
 					const v = incoming[id]
 					if (v === null) delete bucket[id]

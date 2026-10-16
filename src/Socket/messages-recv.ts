@@ -91,7 +91,7 @@ import { logMessageReceived, logTcToken } from '../Utils/baileys-logger'
 import { isRecoverableLidSelfSyncStanza } from '../Utils/decode-wa-message'
 import { applyDeviceListDelta } from '../Utils/device-list-delta'
 import { makeLockManager } from '../Utils/lock-manager'
-import { makeMutex } from '../Utils/make-mutex'
+import { makeKeyedOrderGate, makeMutex } from '../Utils/make-mutex'
 import {
 	getMessageAckErrorPolicy,
 	getNativeOtpAckDiagnostic,
@@ -105,16 +105,19 @@ import {
 	parseTextStatusUpdateNotification
 } from '../Utils/mex-notifications'
 import {
+	androidStatusFromReceiptType,
 	JidMapBackend,
-	mapWebMessageStatusToAndroid,
 	MessageStoreBackend,
+	type MultiDbSqliteStore,
 	ReceiptBackend,
 	type ReceiptKind,
 	SignalTypedBackend,
 	StatusBackend
 } from '../Utils/multi-db-sqlite'
 import { initOptionalMirror as initOptionalMirrorBase } from '../Utils/multi-db-sqlite/optional-mirror'
+import { isRegistrationSeededPrimary } from '../Utils/native-android-transport'
 import { makeOfflineNodeProcessor, type MessageType } from '../Utils/offline-node-processor'
+import { pdoRequestCacheKey } from '../Utils/pdo-recovery'
 import { markPrekeyDirectDistributionIntent } from '../Utils/prekey-direct-distribution'
 import { applyReconciledPrekeyCursors } from '../Utils/prekey-upload-cursors'
 import {
@@ -223,12 +226,14 @@ const isValidEnforcementType = (value: string | undefined): value is ReachoutTim
  * dropped PLAYED (voice-note listen) receipts into read_timestamp instead
  * of played_timestamp — confirmed real bug.
  */
-const receiptKindFromStatus = (status: proto.WebMessageInfo.Status | undefined): ReceiptKind =>
-	status === proto.WebMessageInfo.Status.PLAYED
-		? 'played'
-		: status === proto.WebMessageInfo.Status.DELIVERY_ACK
-			? 'delivery'
-			: 'read'
+/**
+ * receipt_user progression kind for a receipt type, following the app's
+ * status table (ReceiptStanzaHelper.A00): sender/delivery/inactive are
+ * delivery (5/15), read/read-self are read (13/17), played/played-self are
+ * played (8/18). A `sender` receipt is not a read.
+ */
+const receiptKindFromReceiptType = (type: string | undefined): ReceiptKind =>
+	type === 'played' || type === 'played-self' ? 'played' : type === 'read' || type === 'read-self' ? 'read' : 'delivery'
 
 export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const {
@@ -293,6 +298,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
 	const retryMutex = makeMutex()
+	// Live stanzas can spend different amounts of time in LID/PN setup before
+	// reaching messageMutex. Acquire a stable chat key *before* that setup so
+	// message B cannot overtake message A in the same chat. Other chats remain
+	// parallel, and the offline drain is intentionally excluded.
+	const liveChatOrderGate = makeKeyedOrderGate()
+	const LIVE_CHAT_ORDER_GATE_WAIT_LOG_INTERVAL_MS = 1_000
 
 	// Audit MEM-B3 — `maxKeys` previne crescimento ilimitado sob retry storm
 	// (msgRetryCache com TTL 1h) e em paths que poucos consumers fornecem
@@ -331,7 +342,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const statusBackend = initOptionalMirror(
 		'status.db.status_seen_receipt',
 		'message_receipt_events',
-		() => new StatusBackend((config.multiDbStore as any).handle('status.db'))
+		() => new StatusBackend((config.multiDbStore as MultiDbSqliteStore).handle('status.db'))
 	)
 
 	// Mirrors message receipts (receipt_user/receipt_device) into
@@ -347,8 +358,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		'message_receipt_events',
 		() =>
 			new MessageStoreBackend(
-				(config.multiDbStore as any).handle('msgstore.db'),
-				new JidMapBackend((config.multiDbStore as any).handle('msgstore.db'))
+				(config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db'),
+				new JidMapBackend((config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db'))
 			)
 	)
 	const receiptBackend = receiptChatResolver
@@ -357,8 +368,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				'message_receipt_events',
 				() =>
 					new ReceiptBackend(
-						(config.multiDbStore as any).handle('msgstore.db'),
-						new JidMapBackend((config.multiDbStore as any).handle('msgstore.db')),
+						(config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db'),
+						new JidMapBackend((config.multiDbStore as MultiDbSqliteStore).handle('msgstore.db')),
 						receiptChatResolver
 					)
 			)
@@ -378,7 +389,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const signalTypedBackend = initOptionalMirror(
 		'axolotl.db.transient_signal_tables',
 		'legacy_signal_flow',
-		() => new SignalTypedBackend((config.multiDbStore as any).handle('axolotl.db'))
+		() => new SignalTypedBackend((config.multiDbStore as MultiDbSqliteStore).handle('axolotl.db'))
 	)
 
 	// Per-socket cache of Meta AI / FBID bot message secrets (msmsg). Bounded by
@@ -711,7 +722,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		const resendId = messageKey.id
+		// The sending client owns message IDs. Two group participants may choose
+		// the same ID, so the in-flight request gate must include the sender.
+		const resendId = pdoRequestCacheKey(messageKey)
 
 		// Stage 9 (upstream #2579): collapse the previous `get → set` cache-
 		// dedupe into one per-id critical section so two concurrent callers
@@ -789,8 +802,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// BOT-001-B: safeCacheSet swallows maxKeys saturation — losing this entry only
 		// means the eventual PDO response won't find its metadata, which is recoverable
 		// (downstream code already handles missing cache entries).
-		if (msgData && stanzaId) {
-			await safeCacheSet(placeholderResendCache, stanzaId, msgData, logger, 'placeholderResendCache')
+		// Keep request identity even for the generic retry path. The PDO response
+		// handler uses it to verify chat/sender before applying cached metadata.
+		if (stanzaId) {
+			const requestMetadata = msgData ?? { key: messageKey }
+			await safeCacheSet(placeholderResendCache, stanzaId, requestMetadata, logger, 'placeholderResendCache')
 			logger.debug(
 				{ messageKey: messageKey.id, stanzaId },
 				'CTWA: Cached metadata using stanzaId for PDO response lookup'
@@ -933,7 +949,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
-		let data: any
+		// JSON body of a mex notification; every field is server-controlled.
+		let data: { operation?: unknown; updates?: unknown; data?: { xwa2_notify_linked_profiles?: unknown } } | null
 		try {
 			// Narrow payload content type before JSON.parse:
 			// content can be string (UTF-16 internally), Uint8Array, Buffer, or
@@ -1267,7 +1284,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				case 'update': {
 					const settingsNode = getBinaryNodeChild(child, 'settings')
 					if (settingsNode) {
-						const update: Record<string, any> = {}
+						const update: Record<string, unknown> = {}
 						const nameNode = getBinaryNodeChild(settingsNode, 'name')
 						if (nameNode?.content) update.name = nameNode.content.toString()
 
@@ -1342,6 +1359,21 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// ACK still goes out instead of throwing and letting the server retry forever (Codex #440).
 		const meId = authState.creds.me?.id
 		const stanza = buildAckStanza(node, errorCode, meId)
+
+		// Official primary ACK shape (audit A12, AbstractC29477Cu0.A05): a
+		// receipt+delivery ack carries NO `type` at all, and `edit` is echoed only
+		// when non-empty and not "0". WA-Web baseline (companion/QR) keeps the
+		// historical always-copy-type stanza untouched.
+		if (isRegistrationSeededPrimary(authState.creds)) {
+			if (node.tag === 'receipt' && node.attrs.type === 'delivery') {
+				delete stanza.attrs.type
+			}
+
+			const edit = node.attrs.edit
+			if (edit && edit !== '0') {
+				stanza.attrs.edit = edit
+			}
+		}
 
 		// Best-effort pre-ack mirror (axolotl.db `preacks`): persist the encoded
 		// ack BEFORE sending, drop THIS ack's row AFTER it goes out. During
@@ -1984,7 +2016,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		// Fallback: search any child with token/link-token
 		if (!token && Array.isArray(response.content)) {
-			for (const child of response.content as BinaryNode[]) {
+			for (const child of response.content) {
 				if (child.attrs?.token || child.attrs?.['link-token']) {
 					token = child.attrs.token || child.attrs['link-token']
 					break
@@ -2079,14 +2111,23 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const { fullMessage } = decodeMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '')
 		const { key: msgKey } = fullMessage
 		const msgId = msgKey.id!
+		// Retry counters and PDO timers share this full identity. A bare message
+		// ID lets two group participants with the same client-generated ID
+		// consume or cancel each other's recovery.
+		const retryIdentity = pdoRequestCacheKey(msgKey)
 
 		// Per-JID deduplication: when multiple messages from the same contact
 		// fail with Bad MAC simultaneously, only send ONE retry request.
 		// The peer will resend all failed messages when it receives the retry receipt.
 		// For group messages, scope by participant (each participant has its own Signal session).
-		const retryDedupeJid = msgKey.participant
-			? jidNormalizedUser(msgKey.participant)
-			: jidNormalizedUser(node.attrs.from)
+		// Registration-seeded primaries dedupe per MESSAGE identity instead (audit
+		// A13): the official client answers every failed message individually;
+		// companion/QR keeps the historical per-JID suppression.
+		const retryDedupeJid = isRegistrationSeededPrimary(authState.creds)
+			? retryIdentity
+			: msgKey.participant
+				? jidNormalizedUser(msgKey.participant)
+				: jidNormalizedUser(node.attrs.from)
 		if (retryRequestActiveJids.has(retryDedupeJid)) {
 			logger.debug(
 				{ fromJid: retryDedupeJid, msgId },
@@ -2102,12 +2143,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// check before either increments. Replaces the split
 			// `hasExceededMaxRetries` + `incrementRetryCount` pair which had
 			// an await boundary between the two operations.
-			const attempt = messageRetryManager.tryIncrement(msgId)
+			const attempt = messageRetryManager.tryIncrement(retryIdentity)
 			if (!attempt.proceed) {
 				logger.debug({ msgId, count: attempt.count }, 'reached retry limit with new retry manager, clearing')
 				messageRetryManager.markRetryFailed(
-					msgId,
-					msgKey.remoteJid ? await resolveRetryLookupJids(msgKey.remoteJid) : []
+					retryIdentity,
+					msgKey.remoteJid ? await resolveRetryLookupJids(msgKey.remoteJid) : [],
+					msgId
 				)
 				recordMessageFailure('retry', 'max_retries_reached')
 
@@ -2232,7 +2274,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			// Use new retry manager for phone requests if available
 			if (messageRetryManager) {
 				// Schedule phone request with delay (like whatsmeow)
-				messageRetryManager.schedulePhoneRequest(msgId, async () => {
+				messageRetryManager.schedulePhoneRequest(retryIdentity, async () => {
 					try {
 						const requestId = await requestPlaceholderResend(msgKey)
 						logger.debug(
@@ -2249,8 +2291,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 		}
 
-		if (!account) throw new Boom('Account not available', { statusCode: 401 })
-		const deviceIdentity = encodeSignedDeviceIdentity(account, true)
+		// A primary never owns an ADV signed device identity (the APK omits the
+		// device-identity node for non-companions — SendRetryReceiptJob gate
+		// `meManager.BLz()`), so its absence must not fail the retry receipt.
+		// Companion/QR keeps the historical contract (audit A14): without an
+		// account there is no signed identity to attach and the retry cannot be
+		// built.
+		const primaryRetry = isRegistrationSeededPrimary(authState.creds)
+		if (!primaryRetry && !account) throw new Boom('Account not available', { statusCode: 401 })
+		const deviceIdentity = !primaryRetry && account ? encodeSignedDeviceIdentity(account, true) : undefined
 		let receipt: BinaryNode | undefined
 		let directDistributionKeyId: number | undefined
 		let directDistributionKeysNode: BinaryNode | undefined
@@ -2353,7 +2402,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						{ tag: 'identity', attrs: {}, content: identityKey.public },
 						xmppPreKey(key!, +keyId!),
 						xmppSignedPreKey(signedPreKey),
-						{ tag: 'device-identity', attrs: {}, content: deviceIdentity }
+						// Companion-only node: omitted for primaries, 1:1 with the APK
+						// retry-receipt builder (`if (bArr3 != null)`).
+						...(deviceIdentity ? [{ tag: 'device-identity' as const, attrs: {}, content: deviceIdentity }] : [])
 					]
 				}
 
@@ -3685,6 +3736,40 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					}
 
 					const status = getStatusFromReceiptType(attrs.type)
+					// msgstore.db keeps the app's own status integer for the receipt
+					// type (audit R-09), which is not the WebMessageInfo.Status the
+					// consumer event carries. inactive/played-self have no Web status
+					// and so no event, but the app still records them.
+					// A receipt can arrive before its message row is mirrored; the
+					// status-only states then wait in receipt_orphaned with their exact
+					// value (delivery/read/played orphan through receipt_user below).
+					const mirrorReceiptStatus = () => {
+						const androidStatus = androidStatusFromReceiptType(attrs.type)
+						if (!receiptChatResolver || !key.remoteJid || androidStatus === null) return
+						const statusOnly = attrs.type === 'read-self' || attrs.type === 'played-self' || attrs.type === 'inactive'
+						try {
+							for (const id of ids) {
+								const applied = receiptChatResolver.updateMessageStatus(key.remoteJid, !!key.fromMe, id, androidStatus)
+								if (!applied && statusOnly && receiptBackend) {
+									receiptBackend.recordStatusOrphan({
+										chatJid: key.remoteJid,
+										fromMe: !!key.fromMe,
+										keyId: id,
+										receiptDeviceJid: attrs.from!,
+										androidStatus,
+										timestamp: +(attrs.t ?? 0)
+									})
+								}
+							}
+						} catch (err) {
+							logger.warn({ err }, 'failed to advance message status mirror')
+						}
+					}
+
+					if (typeof status === 'undefined' && !isJidGroup(remoteJid) && !isJidStatusBroadcast(remoteJid)) {
+						mirrorReceiptStatus()
+					}
+
 					if (
 						typeof status !== 'undefined' &&
 						// basically, we only want to know when a message from us has been delivered to/read by the other person
@@ -3755,7 +3840,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								// not msgstore.db's receipt tables.
 								if (receiptBackend && isJidGroup(remoteJid) && key.remoteJid) {
 									try {
-										const receiptKind = receiptKindFromStatus(status)
+										const receiptKind = receiptKindFromReceiptType(attrs.type)
 										for (const id of ids) {
 											receiptBackend.recordUserReceipt({
 												chatJid: key.remoteJid,
@@ -3797,28 +3882,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								}))
 							)
 
-							// Android's msgstore status integers are not the same
-							// numbers as WebMessageInfo.Status. Advance the typed
-							// message row using the confirmed Android mapping.
-							if (receiptChatResolver && key.remoteJid) {
-								const androidStatus = mapWebMessageStatusToAndroid(status)
-								if (androidStatus !== null) {
-									try {
-										for (const id of ids) {
-											receiptChatResolver.updateMessageStatus(key.remoteJid, !!key.fromMe, id, androidStatus)
-										}
-									} catch (err) {
-										logger.warn({ err }, 'failed to advance message status mirror')
-									}
-								}
-							}
+							mirrorReceiptStatus()
 
 							// Mirrors 1:1 message receipts into msgstore.db. The other
 							// party IS the receipt_user for a 1:1 chat (no separate
 							// participant field the way group/status receipts have one).
 							if (receiptBackend && key.remoteJid) {
 								try {
-									const receiptKind = receiptKindFromStatus(status)
+									const receiptKind = receiptKindFromReceiptType(attrs.type)
 									for (const id of ids) {
 										receiptBackend.recordUserReceipt({
 											chatJid: key.remoteJid,
@@ -3948,6 +4019,56 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			return
 		}
 
+		const canonicalRecipientJid = jidWithoutExplicitZeroDevice(node.attrs.recipient)
+		const canonicalStatusParticipant = jidWithoutExplicitZeroDevice(node.attrs.participant)
+		const fromIsMe =
+			!!canonicalRemoteJid &&
+			((!!authState.creds.me?.id && areJidsSameUser(canonicalRemoteJid, authState.creds.me.id)) ||
+				(!!authState.creds.me?.lid && areJidsSameUser(canonicalRemoteJid, authState.creds.me.lid)))
+		// Linked-device sends carry the sender in `from` and the real chat in
+		// `recipient`; decodeMessageNode resolves the latter as chatId. Status
+		// shares one wire chat across all participants, so admission order is
+		// preserved per participant without serializing unrelated contacts.
+		const liveChatOrderTarget = isJidStatusBroadcast(canonicalRemoteJid!)
+			? canonicalRemoteJid
+			: fromIsMe && canonicalRecipientJid
+				? canonicalRecipientJid
+				: canonicalRemoteJid
+		const liveChatOrderKey =
+			!node.attrs.offline && liveChatOrderTarget
+				? isJidStatusBroadcast(liveChatOrderTarget)
+					? `${liveChatOrderTarget}:${jidNormalizedUser(canonicalStatusParticipant) || 'unknown'}`
+					: jidNormalizedUser(liveChatOrderTarget)
+				: undefined
+		let releaseLiveChatOrder: (() => void) | undefined
+		if (liveChatOrderKey) {
+			const liveChatOrderWaitStartedAt = Date.now()
+			const liveChatOrderScope = isJidStatusBroadcast(liveChatOrderTarget!)
+				? 'status'
+				: isJidGroup(liveChatOrderTarget)
+					? 'group'
+					: 'chat'
+			const liveChatOrderWaitTimer: ReturnType<typeof setInterval> = setInterval(() => {
+				logger.warn(
+					{
+						chatJid: liveChatOrderKey,
+						scope: liveChatOrderScope,
+						waitedMs: Date.now() - liveChatOrderWaitStartedAt
+					},
+					'live chat admission order gate is still waiting'
+				)
+			}, LIVE_CHAT_ORDER_GATE_WAIT_LOG_INTERVAL_MS)
+			liveChatOrderWaitTimer.unref?.()
+			try {
+				releaseLiveChatOrder = await liveChatOrderGate.acquire(liveChatOrderKey)
+			} finally {
+				clearInterval(liveChatOrderWaitTimer)
+			}
+
+			const liveChatOrderWaitMs = Date.now() - liveChatOrderWaitStartedAt
+			metrics.inboundOrderGateWait.observe({ scope: liveChatOrderScope }, liveChatOrderWaitMs)
+		}
+
 		// Note on `<enc type="msmsg">`: upstream baileys (and the previous InfiniteAPI
 		// release) NACK'd these unconditionally with MissingMessageSecret because the
 		// Meta AI / FBID bot decryption was unimplemented. We now route msmsg into
@@ -3982,6 +4103,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				msmsgSecretCache,
 				config.onMessageQuarantine
 			)
+			// Retry/PDO state is staged from the raw decoded key and must be completed
+			// with that same identity. normalizeMessageJids can rewrite remoteJid and
+			// participant LID→PN before the success branch runs, which would otherwise
+			// miss the counter/timer created by sendRetryRequest.
+			const retryIdentity = pdoRequestCacheKey(msg.key)
 			rememberRawProtocolSender(msg, author)
 			msg.senderSource = classifyProtocolMessageSenderSource({
 				authorJid: author,
@@ -3990,7 +4116,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			})
 
 			const alt = msg.key.participantAlt || msg.key.remoteJidAlt
-			// Handle LID/PN mappings with hybrid approach:
+			// Handle LID/PN mappings with hybrid approach. The live admission gate
+			// used the raw wire identity and serializes same-chat setup. Aliases
+			// that resolve to the same user only after the mapping lookup are not
+			// known at admission time; messageMutex remains the normalized-chat
+			// barrier for that residual race.
 			// - Store mapping operation runs in background (non-critical for decrypt)
 			// - Session migration MUST complete before decrypt() to avoid "No session record" errors
 			// This addresses Codex/Copilot review concerns about race conditions with decrypt()
@@ -4039,8 +4169,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 						await signalRepository.migrateSession(primaryJid, alt)
 					} else {
-						// Symmetric hybrid guard for the PN-alt branch.
-						const existingLid = await signalRepository.lidMapping.getLIDForPN(alt)
+						// Symmetric hybrid guard for the PN-alt branch. Local lookup only
+						// (audit R-02): the stanza itself carries the pair, as the app
+						// learns it; getLIDForPN would fire a USync query on a miss and
+						// hold this message until the IQ answers or times out.
+						const existingLid = await signalRepository.lidMapping.getKnownLIDForPN(alt)
 						if (existingLid !== primaryJid) {
 							// MUST await: normalizeMessageJids() runs after this and needs the mapping
 							// in the LIDMappingStore to resolve LID→PN for events delivered to consumers
@@ -4085,6 +4218,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 
 			await messageMutex.mutex(mutexKey, async () => {
+				// A now owns the normalized chat mutex. Release the admission gate so
+				// B can perform LID/PN setup concurrently while A decrypts/processes;
+				// B still waits on messageMutex, preserving delivery order.
+				releaseLiveChatOrder?.()
+				releaseLiveChatOrder = undefined
 				await decrypt()
 				// message failed to decrypt
 				if (msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT && msg.category !== 'peer') {
@@ -4179,6 +4317,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							const startTime = Date.now()
 							const msgId = msg.key.id!
 							const msgKey = msg.key
+							// Keyed on the normalized (PN) identity: it is the same whether
+							// this envelope or the stanza that later brings the content is
+							// LID- or PN-addressed. The success branch cancels it.
+							const pdoIdentity = pdoRequestCacheKey(msgKey)
 
 							// Prepare metadata to preserve original message details
 							// The phone may not send all metadata in PDO response (e.g., pushName, participantAlt)
@@ -4202,7 +4344,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							if (messageRetryManager) {
 								metrics.ctwaRecoveryRequests.inc({ status: 'scheduled' })
 
-								messageRetryManager.schedulePhoneRequest(msgId, async () => {
+								messageRetryManager.schedulePhoneRequest(pdoIdentity, async () => {
 									try {
 										const requestId = await requestPlaceholderResend(msgKey, msgData)
 										if (requestId && requestId !== 'RESOLVED') {
@@ -4320,7 +4462,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					})
 				} else {
 					if (messageRetryManager && msg.key.id) {
-						messageRetryManager.markInboundRetrySuccess(msg.key.id)
+						messageRetryManager.markInboundRetrySuccess(retryIdentity)
+						// A CTWA placeholder resend for this message is armed under the
+						// normalized identity (see the absent-content branch), which
+						// the raw one misses when this stanza is LID-addressed. Left
+						// armed, it sent a needless PDO to the phone after the content
+						// had arrived.
+						const normalizedIdentity = pdoRequestCacheKey(msg.key)
+						if (normalizedIdentity !== retryIdentity) {
+							messageRetryManager.cancelPendingPhoneRequest(normalizedIdentity)
+						}
 					}
 
 					// Best-effort: a previously-held stanza's resend just decrypted —
@@ -4495,6 +4646,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					logger.error({ ackErr }, 'failed to ack message after error')
 				)
 			}
+		} finally {
+			releaseLiveChatOrder?.()
 		}
 	}
 
@@ -4815,7 +4968,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								messageId: ackId,
 								state: 'durably-queued'
 							})
-						} catch (error: any) {
+						} catch (error) {
 							// The message is already server-acknowledged. A local
 							// queue failure must not turn it into a delivery error.
 							// Release the claim so a queued duplicate ACK can retry.
@@ -4823,7 +4976,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							logTcToken('reissue_ack_fail', {
 								jid: tokenJid,
 								messageId: ackId,
-								error: error?.message,
+								error: (error as Error | null | undefined)?.message,
 								state: 'enqueue-failed-claim-released'
 							})
 						}
@@ -4897,6 +5050,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						.finally(() => {
 							inFlightReachoutCheck = false
 						})
+						.catch(error => logger.warn({ error, jid, msgId }, 'failed to refresh 463 restriction diagnostics'))
 				}
 
 				logger.warn(
@@ -5269,13 +5423,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// close() stops the NodeCache check-period timer; flushAll() drops the entries so they're
 		// released immediately rather than waiting for the whole cache to be GC'd.
 		if (!config.msgRetryCounterCache) {
-			msgRetryCache.close?.()
-			msgRetryCache.flushAll?.()
+			void msgRetryCache.close?.()
+			void msgRetryCache.flushAll?.()
 		}
 
 		if (!config.callOfferCache) {
-			callOfferCache.close?.()
-			callOfferCache.flushAll?.()
+			void callOfferCache.close?.()
+			void callOfferCache.flushAll?.()
 		}
 
 		identityAssertDebounce.close?.()

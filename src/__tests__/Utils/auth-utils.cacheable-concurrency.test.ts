@@ -41,7 +41,7 @@
  * to its first real await without giving the other promise a chance — the
  * "concurrent" tests would degenerate into sequential ones.
  */
-import type { SignalDataSet, SignalKeyStore } from '../../Types'
+import type { SignalDataSet, SignalDataTypeMap, SignalKeyStore } from '../../Types'
 import { makeCacheableSignalKeyStore } from '../../Utils/auth-utils'
 import type { ILogger } from '../../Utils/logger'
 
@@ -78,25 +78,25 @@ const makeMemoryStore = (): MemoryStoreHandle => {
 			await Promise.resolve()
 			getCalls.push({ type, ids: [...ids] })
 			const bucket = persisted[type] ?? {}
-			const out: Record<string, unknown> = {}
+			const out: { [id: string]: SignalDataTypeMap[typeof type] } = {}
 			for (const id of ids) {
-				if (id in bucket) out[id] = bucket[id]
+				if (id in bucket) out[id] = bucket[id] as SignalDataTypeMap[typeof type]
 			}
 
-			return out as any
+			return out
 		},
 		async set(data: SignalDataSet) {
 			await Promise.resolve() // yield to peers — see file header comment
 			setCallCount++
 			for (const type in data) {
 				persisted[type] = persisted[type] ?? {}
-				const incoming = (data as any)[type] as Record<string, unknown>
+				const incoming = data[type as keyof SignalDataSet] as Record<string, unknown>
 				for (const id in incoming) {
 					const value = incoming[id]
 					if (value === null || value === undefined) {
-						delete persisted[type]![id]
+						delete persisted[type][id]
 					} else {
-						persisted[type]![id] = value
+						persisted[type][id] = value
 					}
 				}
 			}
@@ -114,7 +114,7 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 	it('concurrent GETs of the same missing id end up populating the cache; next read is a pure cache hit', async () => {
 		const handle = makeMemoryStore()
 		const { store, persisted, getCalls } = handle
-		persisted.session = { 'aaa:0': Buffer.from([0xab]) as any }
+		persisted.session = { 'aaa:0': Buffer.from([0xab]) }
 		const cacheable = makeCacheableSignalKeyStore(store, silentLogger())
 
 		const [a, b, c] = await Promise.all([
@@ -124,9 +124,9 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 		])
 
 		// All three callers see the same persisted value.
-		expect(a['aaa:0']).toEqual(persisted.session!['aaa:0'])
-		expect(b['aaa:0']).toEqual(persisted.session!['aaa:0'])
-		expect(c['aaa:0']).toEqual(persisted.session!['aaa:0'])
+		expect(a['aaa:0']).toEqual(persisted.session['aaa:0'])
+		expect(b['aaa:0']).toEqual(persisted.session['aaa:0'])
+		expect(c['aaa:0']).toEqual(persisted.session['aaa:0'])
 
 		// Subsequent read is a pure cache hit — no new `store.get` invocation.
 		// Use the recorded call list, NOT `store.get.length` (which returns
@@ -141,8 +141,8 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 		const cacheable = makeCacheableSignalKeyStore(store, silentLogger())
 
 		await Promise.all([
-			cacheable.set({ session: { 'aaa:0': Buffer.from([0x01]) as any } }),
-			cacheable.set({ session: { 'bbb:0': Buffer.from([0x02]) as any } })
+			cacheable.set({ session: { 'aaa:0': Buffer.from([0x01]) } }),
+			cacheable.set({ session: { 'bbb:0': Buffer.from([0x02]) } })
 		])
 
 		expect(persisted.session!['aaa:0']).toEqual(Buffer.from([0x01]))
@@ -161,8 +161,8 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 		const cacheable = makeCacheableSignalKeyStore(store, silentLogger())
 
 		await Promise.all([
-			cacheable.set({ session: { 'aaa:0': Buffer.from([0xa1]) as any } }),
-			cacheable.set({ session: { 'aaa:0': Buffer.from([0xa2]) as any } })
+			cacheable.set({ session: { 'aaa:0': Buffer.from([0xa1]) } }),
+			cacheable.set({ session: { 'aaa:0': Buffer.from([0xa2]) } })
 		])
 
 		// The store has the value from whichever set() committed last.
@@ -184,12 +184,12 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 			async get(type, ids) {
 				await Promise.resolve()
 				const bucket = persisted[type] ?? {}
-				const out: Record<string, unknown> = {}
+				const out: { [id: string]: SignalDataTypeMap[typeof type] } = {}
 				for (const id of ids) {
-					if (id in bucket) out[id] = bucket[id]
+					if (id in bucket) out[id] = bucket[id] as SignalDataTypeMap[typeof type]
 				}
 
-				return out as any
+				return out
 			},
 			async set(data: SignalDataSet) {
 				await Promise.resolve()
@@ -200,17 +200,15 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 
 				for (const type in data) {
 					persisted[type] = persisted[type] ?? {}
-					const incoming = (data as any)[type] as Record<string, unknown>
-					for (const id in incoming) persisted[type]![id] = incoming[id]
+					const incoming = data[type as keyof SignalDataSet] as Record<string, unknown>
+					for (const id in incoming) persisted[type][id] = incoming[id]
 				}
 			}
 		}
 
 		const cacheable = makeCacheableSignalKeyStore(flaky, silentLogger())
 
-		await expect(cacheable.set({ session: { 'aaa:0': Buffer.from([0xee]) as any } })).rejects.toThrow(
-			/simulated transient/
-		)
+		await expect(cacheable.set({ session: { 'aaa:0': Buffer.from([0xee]) } })).rejects.toThrow(/simulated transient/)
 
 		// Cache must NOT serve the uncommitted value.
 		const got = await cacheable.get('session', ['aaa:0'])
@@ -219,7 +217,7 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 
 	it('Stage 5 null tombstone preserved: set({id: null}) evicts the cache', async () => {
 		const { store, persisted } = makeMemoryStore()
-		persisted.session = { 'aaa:0': Buffer.from([0xab]) as any }
+		persisted.session = { 'aaa:0': Buffer.from([0xab]) }
 		const cacheable = makeCacheableSignalKeyStore(store, silentLogger())
 
 		// Warm cache
@@ -227,10 +225,10 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 		expect(warm['aaa:0']).toBeDefined()
 
 		// Tombstone via null
-		await cacheable.set({ session: { 'aaa:0': null as any } })
+		await cacheable.set({ session: { 'aaa:0': null } })
 
 		// Both store and cache must reflect the deletion
-		expect(persisted.session!['aaa:0']).toBeUndefined()
+		expect(persisted.session['aaa:0']).toBeUndefined()
 		const after = await cacheable.get('session', ['aaa:0'])
 		expect(after['aaa:0']).toBeUndefined()
 	})
@@ -250,14 +248,14 @@ describe('makeCacheableSignalKeyStore — concurrency after global-mutex removal
 		const cacheable = makeCacheableSignalKeyStore(store, silentLogger())
 
 		// Pre-populate
-		await cacheable.set({ session: { 'aaa:0': Buffer.from([0x01]) as any } })
+		await cacheable.set({ session: { 'aaa:0': Buffer.from([0x01]) } })
 		expect(persisted.session!['aaa:0']).toEqual(Buffer.from([0x01]))
 
 		// Concurrently: a set() + TWO clear()s. The two clear() calls
 		// exercise the mutex (clear-vs-clear); the set() is the unprotected
 		// racer.
 		await Promise.all([
-			cacheable.set({ session: { 'bbb:0': Buffer.from([0x02]) as any } }),
+			cacheable.set({ session: { 'bbb:0': Buffer.from([0x02]) } }),
 			cacheable.clear!(),
 			cacheable.clear!()
 		])

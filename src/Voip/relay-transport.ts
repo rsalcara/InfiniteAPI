@@ -64,11 +64,63 @@ type RelayConnectionInfo = {
 
 type RelayConnectionState = 'none' | 'connecting' | 'open' | 'closed' | 'failed'
 
+/**
+ * Structural view of the `@roamhq/wrtc` objects this transport drives. The
+ * optional peer dependency ships without types here (see
+ * `voip-optional-peers.d.ts`), so only the members used below are declared.
+ */
+type RelaySessionDescription = { type: 'offer' | 'answer'; sdp?: string }
+
+type RelayStatsEntry =
+	| {
+			type?: unknown
+			id?: unknown
+			selectedCandidatePairId?: unknown
+			selected?: unknown
+			nominated?: unknown
+			currentRoundTripTime?: unknown
+			totalRoundTripTime?: unknown
+			responsesReceived?: unknown
+	  }
+	| null
+	| undefined
+
+/** `getStats()` result: a Map-like `RTCStatsReport`, an array or a plain object. */
+type RelayStatsReport =
+	| { values: () => Iterable<RelayStatsEntry> }
+	| RelayStatsEntry[]
+	| Record<string, RelayStatsEntry>
+
+type RelayDataChannel = {
+	readyState: string
+	binaryType: string
+	onopen: (() => void) | null
+	onclose: (() => void) | null
+	onerror: (() => void) | null
+	onmessage: ((event: { data: unknown }) => void) | null
+	send(data: ArrayBuffer): void
+	close?(): void
+}
+
+type RelayPeerConnection = {
+	iceConnectionState: string
+	onicecandidate: ((event: { candidate?: { candidate?: string } | null }) => void) | null
+	oniceconnectionstatechange: (() => void) | null
+	createDataChannel(label: string, options: Record<string, unknown>): RelayDataChannel
+	createOffer(options?: { iceRestart?: boolean }): Promise<RelaySessionDescription>
+	setLocalDescription(description: RelaySessionDescription): Promise<void>
+	setRemoteDescription(description: RelaySessionDescription): Promise<void>
+	getStats(): Promise<RelayStatsReport | null | undefined>
+	close?(): void
+}
+
+type WrtcModule = { RTCPeerConnection?: new () => RelayPeerConnection }
+
 type RelayConnectionRuntime = {
 	info: RelayConnectionInfo
 	state: RelayConnectionState
-	peerConnection: any | null
-	dataChannel: any | null
+	peerConnection: RelayPeerConnection | null
+	dataChannel: RelayDataChannel | null
 	iceCandidate: string | null
 	packetBuffer: ArrayBuffer[]
 	bufferedBytes: number
@@ -244,7 +296,7 @@ export class RelayRtcTransport {
 	readonly #relayInfoById = new Map<string, RelayConnectionInfo>()
 	readonly #connections = new Map<string, RelayConnectionRuntime>()
 	readonly #totals = createEmptyStats()
-	#wrtcPromise: Promise<any> | null = null
+	#wrtcPromise: Promise<WrtcModule> | null = null
 
 	constructor(private readonly config: RelayTransportConfig) {}
 
@@ -701,7 +753,7 @@ export class RelayRtcTransport {
 		connection.lastIceRttMs = null
 	}
 
-	#readCurrentRoundTripTimeMs = async (pc: any): Promise<number | null> => {
+	#readCurrentRoundTripTimeMs = async (pc: RelayPeerConnection): Promise<number | null> => {
 		try {
 			const stats = await pc.getStats()
 			const reports =
@@ -770,8 +822,8 @@ export class RelayRtcTransport {
 		connection.peerConnection = null
 	}
 
-	#loadWrtc = (): Promise<any> => {
-		this.#wrtcPromise ??= import('@roamhq/wrtc').then(module => (module.default ?? module) as any)
+	#loadWrtc = (): Promise<WrtcModule> => {
+		this.#wrtcPromise ??= import('@roamhq/wrtc').then(module => (module.default ?? module) as WrtcModule)
 		return this.#wrtcPromise
 	}
 }
