@@ -1,7 +1,7 @@
-import http from 'node:http'
-import type { AddressInfo } from 'node:net'
 import { once } from 'node:events'
+import http from 'node:http'
 import { Agent } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { createNativeAndroidRegistrationOfficialFetch } from '../../Utils/native-android-registration-client'
 
 /**
@@ -17,9 +17,11 @@ class CountingAgent extends Agent {
 	// protótipo com cast; a contagem prova que o fetch despachou pelo agent.
 	addRequest(req: http.ClientRequest, options: http.RequestOptions): void {
 		this.used += 1
-		const base = (Agent.prototype as unknown as {
-			addRequest: (this: Agent, req: http.ClientRequest, options: http.RequestOptions) => void
-		}).addRequest
+		const base = (
+			Agent.prototype as unknown as {
+				addRequest: (this: Agent, req: http.ClientRequest, options: http.RequestOptions) => void
+			}
+		).addRequest
 		base.call(this, req, options)
 	}
 }
